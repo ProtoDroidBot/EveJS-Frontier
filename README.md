@@ -4,19 +4,57 @@ EVE.js is a local EVE Online server emulator. This release targets **EVE 24.01 b
 
 Join the project Discord: [https://discord.gg/KMuJrMDEBa](https://discord.gg/KMuJrMDEBa)
 
+## TypeScript development
+
+The server, Node tools, tests, and browser editor use TypeScript sources
+(`.ts`, or `.mts` for ES modules). Use Node.js 24 LTS and install both package
+sets from the repository root:
+
+```sh
+npm ci --include=dev
+npm --prefix server ci
+npm run typecheck
+npm run build
+npm test
+```
+
+The root install compiles the project automatically. `npm run build` emits
+JavaScript and source maps beside the sources, preserving existing `.js` and
+`.mjs` runtime paths, data paths, and CommonJS/ES module behavior. Generated
+JavaScript and maps are ignored by Git; edit the TypeScript sources and rebuild
+before running a direct `node` command. Source maps let stack traces point back
+to TypeScript when Node runs with `--enable-source-maps`.
+
+Server start commands compile before launching. Windows setup, certificate,
+database, and editor launchers also prepare compiled tools. Docker compiles in
+a separate build stage and includes the compiled files and production
+packages in the runtime image. Source checkouts need the root development
+dependencies even when running a production server.
+
+`npm test` builds and runs the self-contained static, runner, isolation, and
+TypeScript runtime checks. The Frontier server suite additionally needs the
+generated client/static data described below.
+
+The initial conversion uses permissive compiler settings (`strict: false`)
+and explicit `any` types where the existing protocol and data structures are
+dynamic. Compiler checking is enabled for the whole project; stronger domain
+types and strictness can be introduced incrementally.
+
 ## EVE Frontier compatibility fork
 
 This checkout contains an experimental, isolated EVE Frontier compatibility
-profile. The last live-accepted macOS target is build `3467658`; Windows build
-`3474408` now has exact extraction, bytecode, and `blue.pyd` profiles. A
-LogLite-assisted session-free smoke run completed the exact handshake, login,
-character creation/selection, rendered station and space, station docking,
-XMPP, and the secure public gateway. The remaining flight/warp, Creation
-reload/unload, Smart Storage, Heavy Gate, and HUD/map interactions still need a
-complete live pass, so the Windows profile remains a candidate. Each workflow
-extracts static data from the locally installed client, stages a separate
-client copy, and leaves the retail client and normal EveJS installation
-untouched.
+profile. The Windows port now targets build `3502403` as an exact-build
+candidate, not a gameplay-accepted release. The last live-accepted macOS target
+remains `3467658`. Earlier Windows build `3474408` reached handshake, login,
+character creation/selection, rendered station and space, docking, XMPP, and
+the secure gateway; that evidence does not establish live compatibility for
+`3502403`. See [the 3502403 port notes](doc/FRONTIER_BUILD_3502403.md) for the
+current evidence and remaining checks.
+
+The normal setup workflow extracts static data from the installed client and
+patches only a separate staged copy, leaving the retail client and conventional
+EveJS installation untouched. An explicitly requested native-only in-place
+`blue.pyd`/resource-cache patch is a separate operation, not full staged setup.
 
 The live-accepted macOS profile reaches character creation and selection,
 rendered space, native flight and warp, modular Creation fitting, local XMPP, deployables,
@@ -31,10 +69,10 @@ and character-selection history.
 > and `StartServer.bat` target EVE Online build `3396210` and its `tq` layout.
 > Never use their `blue.dll` recipe against a Frontier installation.
 
-### Frontier Windows quickstart (build 3474408 candidate)
+### Frontier Windows quickstart (build 3502403 candidate)
 
 The Windows workflow is native: the server and staged client run on the same
-Windows machine. The exact build `3474408` profile uses `bin64\blue.pyd`, not
+Windows machine. The exact build `3502403` profile uses `bin64\blue.pyd`, not
 `blue.dll`. Unknown hashes, partial patches, another build, or a manifest with
 unexpected entries fail closed.
 
@@ -51,8 +89,11 @@ external Python 3.12 probe cannot use the client loaders and the minimal
 embedded-Python runner must be compiled. Rust, Docker, OpenSSL, the SQLite CLI,
 and the market daemon are not part of the default Frontier Windows path.
 
-Open PowerShell 7 in the repository root. Discovery is automatic, or pass the
-actual build directory explicitly with `-SourceRoot`:
+Open PowerShell 7 in the repository root. For a fresh source checkout, run
+`npm ci --include=dev` before the read-only status and dry-run commands so the
+discovery tools are compiled. Full setup installs and compiles them itself.
+Discovery is automatic, or pass the actual build directory explicitly with
+`-SourceRoot`:
 
 ```powershell
 .\SetupFrontierWindows.ps1 -Status
@@ -70,7 +111,7 @@ wrapper that can install PowerShell 7 and invoke the same script.
 The default stage is:
 
 ```text
-%LOCALAPPDATA%\EveJS-Frontier\windows\staged-client\3474408
+%LOCALAPPDATA%\EveJS-Frontier\windows\staged-client\3502403
 ```
 
 By default its `ResFiles` entry is a junction to the official shared cache.
@@ -83,7 +124,7 @@ the staging base.
 Verify an existing stage independently before starting the client:
 
 ```powershell
-$stage = "$env:LOCALAPPDATA\EveJS-Frontier\windows\staged-client\3474408"
+$stage = "$env:LOCALAPPDATA\EveJS-Frontier\windows\staged-client\3502403"
 .\PatchFrontierClientTrust.ps1 -StagedRoot $stage -Check
 ```
 
@@ -99,13 +140,13 @@ For daily use, start the explicit build server in one PowerShell and keep it in
 the foreground:
 
 ```powershell
-.\StartFrontierServer.ps1 -Build 3474408
+.\StartFrontierServer.ps1 -Build 3502403
 ```
 
 In another PowerShell, launch only through the checked stage:
 
 ```powershell
-.\PlayFrontier.ps1 -Build 3474408
+.\PlayFrontier.ps1 -Build 3502403
 ```
 
 Session-free launch is the default. If it proves insufficient, start the
@@ -114,20 +155,22 @@ then replay the current-user-only file without printing credentials:
 
 ```powershell
 .\CaptureFrontierSession.ps1 -SourceRoot 'C:\CCP\EVE Frontier\stillness'
-.\PlayFrontier.ps1 -Build 3474408 -UseCapturedSession
+.\PlayFrontier.ps1 -Build 3502403 -UseCapturedSession
 ```
 
 Use `Ctrl+C` to stop a foreground server and close a foreground client
 normally. For a server started with `-Background`, stop only its recorded PID:
 
 ```powershell
-.\StopFrontier.ps1 -Build 3474408
+.\StopFrontier.ps1 -Build 3502403
 ```
 
 The server does not run or require the market daemon and binds the game, image,
 HTTP/bridge, secure gateway, XMPP, and monitor listeners to `127.0.0.1` only.
-See [Frontier Windows setup](doc/FRONTIER_WINDOWS_SETUP.md) for exact hashes,
-paths, upgrades, backup policy, port checks, and current validation status.
+See [the current port notes](doc/FRONTIER_BUILD_3502403.md) for exact hashes
+and validation status. [Frontier Windows setup](doc/FRONTIER_WINDOWS_SETUP.md)
+preserves the detailed workflow and historical `3474408` acceptance evidence;
+pass `-Build 3502403` and use the new build-numbered paths for this candidate.
 
 ### Frontier macOS quickstart (build 3467658)
 
@@ -178,7 +221,7 @@ bash StageFrontierClient.sh --build "$BUILD"
 bash PatchFrontierClientTrust.sh \
   --staged-root "$HOME/Library/Application Support/evejs-frontier/macos/staged-client/current" \
   --check
-npm run test:frontier-server
+npm run test:frontier-server -- --build "$BUILD"
 ```
 
 Launch only through the project script so the staged resource cache, secure
@@ -201,6 +244,42 @@ second. Do not launch `exefile` directly, expose the local ports to a LAN, use
 an older binary patch profile on a newer build, or pass `--reset-runtime`
 unless discarding the isolated world is intentional. Client updates require a
 new exact-build patch profile and a new build-numbered static snapshot.
+
+### Frontier local Sui character binding
+
+`CreateCharacterInSpace` also provisions the build `3502403` world identity on
+the local Sui network at `http://localhost:9000`. EveJS derives the same
+account-scoped development wallet address as the Frontier client, submits the
+world `character::create_character` and `character::share_character` calls with
+the authorized admin signer, and stores only public linkage on the character
+record. The resulting `Character` is shared, as required by the package, and
+the wallet owns its `PlayerProfile`. No player or admin private key is stored in
+the game database.
+
+This mirrors the client's predictable local-development wallet derivation. Do
+not use these wallets for valuable assets or on a public network. If the client
+already has a different `sui_signer_key_pair_v1` saved in its settings, clear or
+replace that setting before creating the character so its active wallet matches
+the account-derived address recorded by EveJS.
+
+The default package is
+`0x2aa4f4bac8c506f389b69e2e761804904854d9b61dfd9ac3f93b9d9cb07f0a00`
+with tenant `dev` and tribe `100`. The signer is read from
+`EVEJS_SUI_ADMIN_PRIVATE_KEY`, `ADMIN_PRIVATE_KEY`, or the adjacent
+`ef-code/3502403/world-contracts/.env`. Deployment IDs and that directory can
+be overridden with `EVEJS_SUI_WORLD_PACKAGE_ID`,
+`EVEJS_SUI_OBJECT_REGISTRY_ID`, `EVEJS_SUI_ADMIN_ACL_ID`,
+`EVEJS_SUI_TRIBE_ID`, and `EVEJS_SUI_WORLD_CONTRACTS_DIR`. The Frontier
+launchers pin the client tenant to `dev`, and MachoNet advertises `localnet` so
+the in-game signer uses the Docker-published Sui endpoint at `127.0.0.1:9000`.
+Set
+`EVEJS_SUI_CHARACTER_PROVISIONING_ENABLED=false` only when intentionally
+running isolated tests without a disposable chain.
+
+Inspect the local world in
+[SuiScan](https://custom.suiscan.xyz/custom/home/?network=http%3A%2F%2Flocalhost%3A9000).
+When EveJS itself runs in Docker, `localhost` is that EveJS container; connect
+it to the Sui container's network or provide an explicit host route.
 
 ## Localhost only
 

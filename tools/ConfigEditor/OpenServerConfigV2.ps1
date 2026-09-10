@@ -14,6 +14,8 @@ Add-Type -Namespace EvEJS -Name NativeChrome -MemberDefinition @'
 public static extern int DwmSetWindowAttribute(System.IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 '@
 
+& (Join-Path $PSScriptRoot '..\BuildTypeScript.ps1')
+
 $script:CliPath = Join-Path $PSScriptRoot "config-manager-cli.js"
 $script:IconManifestPath = Join-Path $PSScriptRoot "assets\icon-map.json"
 $script:ClientIconsRoot = Join-Path $PSScriptRoot "assets\eve-icons"

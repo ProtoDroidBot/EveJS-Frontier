@@ -88,14 +88,20 @@ You do not need any of this if you ran `SetupEveJS.bat`, but each step still has
 its own launcher:
 
 ```powershell
-npm ci
+npm ci --include=dev
 npm --prefix server ci
+npm run build
 ```
 
 ```text
 tools\ClientSETUP\StartClientSetup.bat
 tools\DatabaseCreator\CreateDatabase.bat
 ```
+
+The root install compiles the TypeScript sources. Rebuild with `npm run build`
+after editing `.ts` or `.mts` files, and use `npm run typecheck` to check types
+without generating files. The server launcher compiles before startup. Keep
+root development dependencies installed because they include the compiler.
 
 To rebuild the local database later:
 
@@ -159,7 +165,7 @@ Start here:
 ## The Shortest Possible Version
 
 1. Install Node.js `LTS`
-2. Run `npm ci`
+2. Run `npm ci --include=dev` (installs the compiler and builds TypeScript)
 3. Run `npm --prefix server ci`
 4. Run `tools\ClientSETUP\StartClientSetup.bat`
 5. Run `StartServer.bat`

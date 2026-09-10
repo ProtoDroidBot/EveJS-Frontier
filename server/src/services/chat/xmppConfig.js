@@ -1,58 +1,47 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
-
 const config = require(path.join(__dirname, "../../config"));
-
 function normalizeValue(value, fallback) {
-  const normalized = String(value || "").trim();
-  return normalized || fallback;
+    const normalized = String(value || "").trim();
+    return normalized || fallback;
 }
-
 function escapeRegExp(value) {
-  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-
 function getXmppConnectHost() {
-  return normalizeValue(config.xmppConnectHost, "localhost");
+    return normalizeValue(config.xmppConnectHost, "localhost");
 }
-
 function getXmppDomain() {
-  return normalizeValue(config.xmppDomain, "localhost");
+    return normalizeValue(config.xmppDomain, "localhost");
 }
-
 function getXmppConferenceDomain() {
-  return normalizeValue(
-    config.xmppConferenceDomain,
-    `conference.${getXmppDomain()}`,
-  );
+    return normalizeValue(config.xmppConferenceDomain, `conference.${getXmppDomain()}`);
 }
-
 function getXmppConferenceDomainPattern() {
-  return new RegExp(`@${escapeRegExp(getXmppConferenceDomain())}$`, "i");
+    return new RegExp(`@${escapeRegExp(getXmppConferenceDomain())}$`, "i");
 }
-
 function buildXmppUserJid(userName, resource = "") {
-  const bareJid = `${String(userName || "").trim()}@${getXmppDomain()}`;
-  if (!resource) {
-    return bareJid;
-  }
-  return `${bareJid}/${String(resource || "").trim()}`;
+    const bareJid = `${String(userName || "").trim()}@${getXmppDomain()}`;
+    if (!resource) {
+        return bareJid;
+    }
+    return `${bareJid}/${String(resource || "").trim()}`;
 }
-
 function buildXmppConferenceJid(roomName) {
-  return `${String(roomName || "").trim()}@${getXmppConferenceDomain()}`;
+    return `${String(roomName || "").trim()}@${getXmppConferenceDomain()}`;
 }
-
 function stripConferenceDomain(roomJid) {
-  return String(roomJid || "").replace(getXmppConferenceDomainPattern(), "");
+    return String(roomJid || "").replace(getXmppConferenceDomainPattern(), "");
 }
-
 module.exports = {
-  buildXmppConferenceJid,
-  buildXmppUserJid,
-  escapeRegExp,
-  getXmppConferenceDomain,
-  getXmppConferenceDomainPattern,
-  getXmppConnectHost,
-  getXmppDomain,
-  stripConferenceDomain,
+    buildXmppConferenceJid,
+    buildXmppUserJid,
+    escapeRegExp,
+    getXmppConferenceDomain,
+    getXmppConferenceDomainPattern,
+    getXmppConnectHost,
+    getXmppDomain,
+    stripConferenceDomain,
 };
+//# sourceMappingURL=xmppConfig.js.map

@@ -1,189 +1,135 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
-
 const BaseService = require(path.join(__dirname, "../baseService"));
 const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
-const {
-  canEntitiesInteractLocally,
-} = require(path.join(
-  __dirname,
-  "../../space/destiny/identity/interactionScope",
-));
-const {
-  clearDeferredDockedShipSessionChange,
-  clearDockedFittingBootstrap,
-} = require(path.join(__dirname, "../character/characterState"));
-const {
-  throwWrappedUserError,
-} = require(path.join(__dirname, "../../common/machoErrors"));
+const { canEntitiesInteractLocally, } = require(path.join(__dirname, "../../space/destiny/identity/interactionScope"));
+const { clearDeferredDockedShipSessionChange, clearDockedFittingBootstrap, } = require(path.join(__dirname, "../character/characterState"));
+const { throwWrappedUserError, } = require(path.join(__dirname, "../../common/machoErrors"));
 const structureState = require(path.join(__dirname, "./structureState"));
-const {
-  STRUCTURE_SETTING_ID,
-  characterHasStructureSetting,
-} = require(path.join(__dirname, "./structurePayloads"));
-const {
-  normalizePositiveInt,
-  getSessionStructureID,
-  getSessionSolarSystemID,
-  getStructurePilotCharacterID,
-  boardStructureControlFromSpace,
-  ejectFromStructureControl,
-  relinquishStructureControl,
-  assumeStructureControl,
-} = require(path.join(__dirname, "./structureControlState"));
-
+const { STRUCTURE_SETTING_ID, characterHasStructureSetting, } = require(path.join(__dirname, "./structurePayloads"));
+const { normalizePositiveInt, getSessionStructureID, getSessionSolarSystemID, getStructurePilotCharacterID, boardStructureControlFromSpace, ejectFromStructureControl, relinquishStructureControl, assumeStructureControl, } = require(path.join(__dirname, "./structureControlState"));
 function throwControlDenied(errorMsg = "") {
-  switch (String(errorMsg || "").trim()) {
-    case "NOT_DOCKED_IN_STRUCTURE":
-      throwWrappedUserError("CustomNotify", {
-        notify: "You must be docked in this structure to take control.",
-      });
-      break;
-    case "STRUCTURE_CONTROL_DENIED":
-      throwWrappedUserError("StructureDefenseDenied");
-      break;
-    case "STRUCTURE_NOT_FOUND":
-      throwWrappedUserError("TargetingAttemptCancelled");
-      break;
-    case "ALREADY_IN_STRUCTURE":
-      throwWrappedUserError("CustomNotify", {
-        notify: "You are already in a structure.",
-      });
-      break;
-    case "STRUCTURE_NOT_IN_SYSTEM":
-      throwWrappedUserError("CustomNotify", {
-        notify: "That structure is not in your current solar system.",
-      });
-      break;
-    default:
-      throwWrappedUserError("CustomNotify", {
-        notify: "Unable to assume structure control.",
-      });
-      break;
-  }
+    switch (String(errorMsg || "").trim()) {
+        case "NOT_DOCKED_IN_STRUCTURE":
+            throwWrappedUserError("CustomNotify", {
+                notify: "You must be docked in this structure to take control.",
+            });
+            break;
+        case "STRUCTURE_CONTROL_DENIED":
+            throwWrappedUserError("StructureDefenseDenied");
+            break;
+        case "STRUCTURE_NOT_FOUND":
+            throwWrappedUserError("TargetingAttemptCancelled");
+            break;
+        case "ALREADY_IN_STRUCTURE":
+            throwWrappedUserError("CustomNotify", {
+                notify: "You are already in a structure.",
+            });
+            break;
+        case "STRUCTURE_NOT_IN_SYSTEM":
+            throwWrappedUserError("CustomNotify", {
+                notify: "That structure is not in your current solar system.",
+            });
+            break;
+        default:
+            throwWrappedUserError("CustomNotify", {
+                notify: "Unable to assume structure control.",
+            });
+            break;
+    }
 }
-
 function clearStructureControlDockedBootstrapState(session) {
-  if (!session) {
-    return;
-  }
-
-  clearDeferredDockedShipSessionChange(session);
-  clearDockedFittingBootstrap(session);
+    if (!session) {
+        return;
+    }
+    clearDeferredDockedShipSessionChange(session);
+    clearDockedFittingBootstrap(session);
 }
-
 class StructureControlService extends BaseService {
-  constructor() {
-    super("structureControl");
-  }
-
-  Handle_GetStructurePilot(args, session) {
-    const structureID = normalizePositiveInt(args && args[0], 0);
-    return getStructurePilotCharacterID(structureID) || null;
-  }
-
-  Handle_TakeControl(args, session) {
-    const structureID = normalizePositiveInt(
-      args && args[0],
-      getSessionStructureID(session),
-    );
-    const structure = structureState.getStructureByID(structureID, {
-      refresh: false,
-    });
-    if (!structure) {
-      throwControlDenied("STRUCTURE_NOT_FOUND");
+    constructor() {
+        super("structureControl");
     }
-
-    if (getSessionStructureID(session) !== structureID) {
-      throwControlDenied("NOT_DOCKED_IN_STRUCTURE");
+    Handle_GetStructurePilot(args, session) {
+        const structureID = normalizePositiveInt(args && args[0], 0);
+        return getStructurePilotCharacterID(structureID) || null;
     }
-
-    if (!characterHasStructureSetting(
-      session,
-      structure,
-      STRUCTURE_SETTING_ID.DEFENSE_CAN_CONTROL_STRUCTURE,
-    )) {
-      throwControlDenied("STRUCTURE_CONTROL_DENIED");
+    Handle_TakeControl(args, session) {
+        const structureID = normalizePositiveInt(args && args[0], getSessionStructureID(session));
+        const structure = structureState.getStructureByID(structureID, {
+            refresh: false,
+        });
+        if (!structure) {
+            throwControlDenied("STRUCTURE_NOT_FOUND");
+        }
+        if (getSessionStructureID(session) !== structureID) {
+            throwControlDenied("NOT_DOCKED_IN_STRUCTURE");
+        }
+        if (!characterHasStructureSetting(session, structure, STRUCTURE_SETTING_ID.DEFENSE_CAN_CONTROL_STRUCTURE)) {
+            throwControlDenied("STRUCTURE_CONTROL_DENIED");
+        }
+        const result = assumeStructureControl(session, structureID, {
+            solarSystemID: structure.solarSystemID,
+        });
+        if (!result.success) {
+            throwControlDenied(result.errorMsg);
+        }
+        clearStructureControlDockedBootstrapState(session);
+        return null;
     }
-
-    const result = assumeStructureControl(session, structureID, {
-      solarSystemID: structure.solarSystemID,
-    });
-    if (!result.success) {
-      throwControlDenied(result.errorMsg);
+    Handle_BoardStructure(args, session) {
+        const structureID = normalizePositiveInt(args && args[0], 0);
+        const structure = structureState.getStructureByID(structureID, {
+            refresh: false,
+        });
+        if (!structure) {
+            throwControlDenied("STRUCTURE_NOT_FOUND");
+        }
+        const sessionSolarSystemID = getSessionSolarSystemID(session);
+        if (sessionSolarSystemID &&
+            Number(structure.solarSystemID || 0) > 0 &&
+            Number(structure.solarSystemID) !== sessionSolarSystemID) {
+            throwControlDenied("STRUCTURE_NOT_IN_SYSTEM");
+        }
+        if (session && session._space) {
+            const scene = spaceRuntime.getSceneForSession(session);
+            const shipEntity = scene && scene.getShipEntityForSession(session);
+            const structureEntity = scene && scene.getEntityByID(structureID);
+            if (!shipEntity ||
+                !structureEntity ||
+                !canEntitiesInteractLocally(shipEntity, structureEntity)) {
+                throwControlDenied("STRUCTURE_NOT_FOUND");
+            }
+        }
+        if (!characterHasStructureSetting(session, structure, STRUCTURE_SETTING_ID.DEFENSE_CAN_CONTROL_STRUCTURE)) {
+            throwControlDenied("STRUCTURE_CONTROL_DENIED");
+        }
+        const result = boardStructureControlFromSpace(session, structureID, {
+            solarSystemID: structure.solarSystemID,
+        });
+        if (!result.success) {
+            throwControlDenied(result.errorMsg);
+        }
+        clearStructureControlDockedBootstrapState(session);
+        return null;
     }
-
-    clearStructureControlDockedBootstrapState(session);
-    return null;
-  }
-
-  Handle_BoardStructure(args, session) {
-    const structureID = normalizePositiveInt(args && args[0], 0);
-    const structure = structureState.getStructureByID(structureID, {
-      refresh: false,
-    });
-    if (!structure) {
-      throwControlDenied("STRUCTURE_NOT_FOUND");
+    Handle_EjectFromStructure(args, session) {
+        const restoreShipID = normalizePositiveInt(args && args[0], 0);
+        ejectFromStructureControl(session, {
+            restoreShipID,
+        });
+        clearStructureControlDockedBootstrapState(session);
+        spaceRuntime.clearDockedStructureView(session);
+        return null;
     }
-
-    const sessionSolarSystemID = getSessionSolarSystemID(session);
-    if (
-      sessionSolarSystemID &&
-      Number(structure.solarSystemID || 0) > 0 &&
-      Number(structure.solarSystemID) !== sessionSolarSystemID
-    ) {
-      throwControlDenied("STRUCTURE_NOT_IN_SYSTEM");
+    Handle_ReleaseControl(args, session) {
+        relinquishStructureControl(session, {
+            reason: "release",
+        });
+        clearStructureControlDockedBootstrapState(session);
+        spaceRuntime.clearDockedStructureView(session);
+        return null;
     }
-
-    if (session && session._space) {
-      const scene = spaceRuntime.getSceneForSession(session);
-      const shipEntity = scene && scene.getShipEntityForSession(session);
-      const structureEntity = scene && scene.getEntityByID(structureID);
-      if (
-        !shipEntity ||
-        !structureEntity ||
-        !canEntitiesInteractLocally(shipEntity, structureEntity)
-      ) {
-        throwControlDenied("STRUCTURE_NOT_FOUND");
-      }
-    }
-
-    if (!characterHasStructureSetting(
-      session,
-      structure,
-      STRUCTURE_SETTING_ID.DEFENSE_CAN_CONTROL_STRUCTURE,
-    )) {
-      throwControlDenied("STRUCTURE_CONTROL_DENIED");
-    }
-
-    const result = boardStructureControlFromSpace(session, structureID, {
-      solarSystemID: structure.solarSystemID,
-    });
-    if (!result.success) {
-      throwControlDenied(result.errorMsg);
-    }
-
-    clearStructureControlDockedBootstrapState(session);
-    return null;
-  }
-
-  Handle_EjectFromStructure(args, session) {
-    const restoreShipID = normalizePositiveInt(args && args[0], 0);
-    ejectFromStructureControl(session, {
-      restoreShipID,
-    });
-    clearStructureControlDockedBootstrapState(session);
-    spaceRuntime.clearDockedStructureView(session);
-    return null;
-  }
-
-  Handle_ReleaseControl(args, session) {
-    relinquishStructureControl(session, {
-      reason: "release",
-    });
-    clearStructureControlDockedBootstrapState(session);
-    spaceRuntime.clearDockedStructureView(session);
-    return null;
-  }
 }
-
 module.exports = StructureControlService;
+//# sourceMappingURL=structureControlService.js.map

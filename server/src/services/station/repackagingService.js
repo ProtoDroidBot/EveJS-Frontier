@@ -1,24 +1,16 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
-
 const BaseService = require(path.join(__dirname, "../baseService"));
-const {
-  extractRepackageRequests,
-  repackageItemsForSession,
-} = require(path.join(__dirname, "./repackagingSupport"));
-
+const { extractRepackageRequests, repackageItemsForSession, } = require(path.join(__dirname, "./repackagingSupport"));
 class RepackagingService extends BaseService {
-  constructor() {
-    super("repackagingSvc");
-  }
-
-  Handle_RepackageItems(args, session) {
-    repackageItemsForSession(
-      session,
-      extractRepackageRequests(args && args[0]),
-      "RepackagingSvc",
-    );
-    return null;
-  }
+    constructor() {
+        super("repackagingSvc");
+    }
+    Handle_RepackageItems(args, session) {
+        repackageItemsForSession(session, extractRepackageRequests(args && args[0]), "RepackagingSvc");
+        return null;
+    }
 }
-
 module.exports = RepackagingService;
+//# sourceMappingURL=repackagingService.js.map

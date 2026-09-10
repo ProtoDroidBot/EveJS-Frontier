@@ -1,5 +1,5 @@
 "use strict";
-
+Object.defineProperty(exports, "__esModule", { value: true });
 /**
  * Phase 0 / 0.C — ownership-aware repository (state-mediation seam).
  *
@@ -30,48 +30,40 @@
  * is injectable (`options.store`) so the policy is testable without opening the
  * database.
  */
-
 const ownership = require("./tableOwnership");
-
 class OwnershipViolationError extends Error {
-  constructor(domain, table, ownerDomain) {
-    super(
-      `domain "${domain}" may not mutate table "${table}" ` +
-        `(owned by ${ownerDomain || "no classified owner"}). ` +
-        `Use the owning domain's repository, or reclassify in tableOwnership.js.`,
-    );
-    this.name = "OwnershipViolationError";
-    this.domain = domain;
-    this.table = table;
-    this.ownerDomain = ownerDomain || null;
-  }
+    constructor(domain, table, ownerDomain) {
+        super(`domain "${domain}" may not mutate table "${table}" ` +
+            `(owned by ${ownerDomain || "no classified owner"}). ` +
+            `Use the owning domain's repository, or reclassify in tableOwnership.js.`);
+        this.name = "OwnershipViolationError";
+        this.domain = domain;
+        this.table = table;
+        this.ownerDomain = ownerDomain || null;
+    }
 }
-
 /** True if `domain` is the classified owner of `table`. */
 function domainOwns(domain, table) {
-  const entry = ownership.getTableOwnership(table);
-  return entry !== null && entry.domain === domain;
+    const entry = ownership.getTableOwnership(table);
+    return entry !== null && entry.domain === domain;
 }
-
 /** True if `table` is a cross-domain shared seam. */
 function isSharedSeam(table) {
-  const entry = ownership.getTableOwnership(table);
-  return entry !== null && entry.domain === "shared";
+    const entry = ownership.getTableOwnership(table);
+    return entry !== null && entry.domain === "shared";
 }
-
 /**
  * Decide whether `domain` may mutate `table`.
  * Returns { allowed, shared, ownerDomain }. Pure — no gameStore access.
  */
 function evaluateWrite(domain, table) {
-  const entry = ownership.getTableOwnership(table);
-  const ownerDomain = entry ? entry.domain : null;
-  if (isSharedSeam(table)) {
-    return { allowed: true, shared: true, ownerDomain };
-  }
-  return { allowed: domainOwns(domain, table), shared: false, ownerDomain };
+    const entry = ownership.getTableOwnership(table);
+    const ownerDomain = entry ? entry.domain : null;
+    if (isSharedSeam(table)) {
+        return { allowed: true, shared: true, ownerDomain };
+    }
+    return { allowed: domainOwns(domain, table), shared: false, ownerDomain };
 }
-
 /**
  * Create a repository bound to an ownership domain (e.g. "service:mail",
  * "in-space"). Options:
@@ -87,71 +79,73 @@ function evaluateWrite(domain, table) {
  *     required so tests that inject a fake never open the database.
  */
 function createTableRepository(domain, options = {}) {
-  if (typeof domain !== "string" || domain.trim() === "") {
-    throw new Error("createTableRepository requires a non-empty domain string");
-  }
-  const strict = options.strict !== false;
-  const allowSharedWrites = options.allowSharedWrites !== false;
-  const onSharedWrite = typeof options.onSharedWrite === "function" ? options.onSharedWrite : null;
-  const onViolation = typeof options.onViolation === "function" ? options.onViolation : null;
-  const store = options.store || require("./index");
-
-  function guard(table, op) {
-    const { allowed, shared, ownerDomain } = evaluateWrite(domain, table);
-    if (shared) {
-      if (!allowSharedWrites) {
-        if (onViolation) onViolation(domain, table, op, ownerDomain);
-        if (strict) throw new OwnershipViolationError(domain, table, ownerDomain);
-        return;
-      }
-      if (onSharedWrite) onSharedWrite(table, op);
-      return;
+    if (typeof domain !== "string" || domain.trim() === "") {
+        throw new Error("createTableRepository requires a non-empty domain string");
     }
-    if (!allowed) {
-      if (onViolation) onViolation(domain, table, op, ownerDomain);
-      if (strict) throw new OwnershipViolationError(domain, table, ownerDomain);
+    const strict = options.strict !== false;
+    const allowSharedWrites = options.allowSharedWrites !== false;
+    const onSharedWrite = typeof options.onSharedWrite === "function" ? options.onSharedWrite : null;
+    const onViolation = typeof options.onViolation === "function" ? options.onViolation : null;
+    const store = options.store || require("./index");
+    function guard(table, op) {
+        const { allowed, shared, ownerDomain } = evaluateWrite(domain, table);
+        if (shared) {
+            if (!allowSharedWrites) {
+                if (onViolation)
+                    onViolation(domain, table, op, ownerDomain);
+                if (strict)
+                    throw new OwnershipViolationError(domain, table, ownerDomain);
+                return;
+            }
+            if (onSharedWrite)
+                onSharedWrite(table, op);
+            return;
+        }
+        if (!allowed) {
+            if (onViolation)
+                onViolation(domain, table, op, ownerDomain);
+            if (strict)
+                throw new OwnershipViolationError(domain, table, ownerDomain);
+        }
     }
-  }
-
-  return {
-    domain,
-    // Reads pass through unrestricted.
-    read: (table, pathArg) => store.read(table, pathArg),
-    tableExists: (table) => store.tableExists(table),
-    // Mutations are guarded by ownership.
-    write: (table, pathArg, value, opts) => {
-      guard(table, "write");
-      return store.write(table, pathArg, value, opts);
-    },
-    remove: (table, pathArg) => {
-      guard(table, "remove");
-      return store.remove(table, pathArg);
-    },
-    ensureTable: (table) => {
-      guard(table, "ensureTable");
-      return store.ensureTable(table);
-    },
-    // Persistence/lifecycle passthroughs — NOT ownership-gated. Flushing
-    // persists already-written cache to disk; it is not a data mutation, so a
-    // domain may flush without owning the table. Lets the repo be a complete
-    // drop-in for the raw gameStore in owner modules.
-    flushTableSync: (table) => store.flushTableSync(table),
-    flushTablesSync: (tables) => store.flushTablesSync(tables),
-    flushAllSync: () => store.flushAllSync(),
-    // Transient-path marking is the dual of flushing: it selects which already
-    // -written cache paths are EXCLUDED from the disk snapshot. Like flush, it
-    // is a persistence-policy hint rather than a data mutation, so it shares the
-    // same non-gated lifecycle bucket (and the gameStore applies it internally
-    // for `write(..., { transient: true })`).
-    setTransientPath: (table, pathArg, enabled) =>
-      store.setTransientPath(table, pathArg, enabled),
-  };
+    return {
+        domain,
+        // Reads pass through unrestricted.
+        read: (table, pathArg) => store.read(table, pathArg),
+        tableExists: (table) => store.tableExists(table),
+        // Mutations are guarded by ownership.
+        write: (table, pathArg, value, opts) => {
+            guard(table, "write");
+            return store.write(table, pathArg, value, opts);
+        },
+        remove: (table, pathArg) => {
+            guard(table, "remove");
+            return store.remove(table, pathArg);
+        },
+        ensureTable: (table) => {
+            guard(table, "ensureTable");
+            return store.ensureTable(table);
+        },
+        // Persistence/lifecycle passthroughs — NOT ownership-gated. Flushing
+        // persists already-written cache to disk; it is not a data mutation, so a
+        // domain may flush without owning the table. Lets the repo be a complete
+        // drop-in for the raw gameStore in owner modules.
+        flushTableSync: (table) => store.flushTableSync(table),
+        flushTablesSync: (tables) => store.flushTablesSync(tables),
+        flushAllSync: () => store.flushAllSync(),
+        // Transient-path marking is the dual of flushing: it selects which already
+        // -written cache paths are EXCLUDED from the disk snapshot. Like flush, it
+        // is a persistence-policy hint rather than a data mutation, so it shares the
+        // same non-gated lifecycle bucket (and the gameStore applies it internally
+        // for `write(..., { transient: true })`).
+        setTransientPath: (table, pathArg, enabled) => store.setTransientPath(table, pathArg, enabled),
+    };
 }
-
 module.exports = {
-  OwnershipViolationError,
-  domainOwns,
-  isSharedSeam,
-  evaluateWrite,
-  createTableRepository,
+    OwnershipViolationError,
+    domainOwns,
+    isSharedSeam,
+    evaluateWrite,
+    createTableRepository,
 };
+//# sourceMappingURL=tableRepository.js.map

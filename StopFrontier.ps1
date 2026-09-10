@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+$')]
-    [string]$Build = '3474408',
+    [string]$Build = '3502403',
 
     [ValidateRange(1, 300)]
     [int]$WaitSeconds = 15,

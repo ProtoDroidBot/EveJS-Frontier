@@ -28,6 +28,17 @@ COPY server/package.json server/package-lock.json ./
 RUN npm ci --omit=dev
 
 
+FROM node:24-bookworm-slim AS typescript-builder
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+# postinstall compiles the source, which is copied in the next layer.
+RUN npm ci --include=dev --ignore-scripts
+COPY . .
+RUN npm run build \
+ && npm prune --omit=dev --ignore-scripts
+
+
 FROM node:24-bookworm-slim AS runtime
 
 RUN apt-get update \
@@ -35,7 +46,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --chown=node:node . .
+COPY --from=typescript-builder --chown=node:node /app/ ./
 COPY --from=node-dependencies --chown=node:node /app/server/node_modules ./server/node_modules
 COPY --from=rust-builder /opt/cargo-target/release/market-server /usr/local/bin/market-server
 COPY --from=rust-builder /opt/cargo-target/release/market-seed /usr/local/bin/market-seed

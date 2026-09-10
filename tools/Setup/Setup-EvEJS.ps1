@@ -554,25 +554,25 @@ function Get-AllPhases {
   }
 
   # ── Setup-tool packages ────────────────────────────────────────────────────
-  $phases += New-Phase -Id "root-deps" -Title "Setup packages (certificate tooling)" -Modes @("native") -Check {
+  $phases += New-Phase -Id "root-deps" -Title "Setup packages and TypeScript build" -Modes @("native") -Check {
     $node = Get-CommandPath -Names @("node.exe", "node")
     if (-not $node) {
       return @{ Ok = $false; Detail = "Node.js is not available yet" }
     }
-    $exit = Invoke-ToolQuiet -FilePath $node -Arguments @("-e", "require('node-forge')") -WorkingDirectory $RepoRoot
-    if ($exit -eq 0) {
-      return @{ Ok = $true; Detail = "node-forge is installed" }
+    $exit = Invoke-ToolQuiet -FilePath $node -Arguments @("-e", "require('node-forge'); require('typescript')") -WorkingDirectory $RepoRoot
+    if ($exit -eq 0 -and (Test-Path (Join-Path $RepoRoot "server\index.js"))) {
+      return @{ Ok = $true; Detail = "setup packages and compiled server are present" }
     }
-    return @{ Ok = $false; Detail = "node-forge is missing (certificates cannot be generated without it)" }
+    return @{ Ok = $false; Detail = "setup packages or compiled TypeScript output are missing" }
   } -Fix {
     $npm = Get-CommandPath -Names @("npm.cmd", "npm")
     if (-not $npm) {
       Write-Info "npm was not found on PATH."
       return $false
     }
-    $arguments = @("install", "--no-audit", "--no-fund")
+    $arguments = @("install", "--include=dev", "--no-audit", "--no-fund")
     if (Test-Path (Join-Path $RepoRoot "package-lock.json")) {
-      $arguments = @("ci", "--no-audit", "--no-fund")
+      $arguments = @("ci", "--include=dev", "--no-audit", "--no-fund")
     }
     Write-Info "Running npm $($arguments[0]) in the project root ..."
     $exit = Invoke-Tool -FilePath $npm -Arguments $arguments -WorkingDirectory $RepoRoot
@@ -624,7 +624,7 @@ function Get-AllPhases {
       return $false
     }
     Write-Info "Running npm ci in the server directory (this builds native modules and can take a few minutes) ..."
-    $exit = Invoke-Tool -FilePath $npm -Arguments @("ci", "--no-audit", "--no-fund") -WorkingDirectory (Join-Path $RepoRoot "server")
+    $exit = Invoke-Tool -FilePath $npm -Arguments @("ci", "--include=dev", "--no-audit", "--no-fund") -WorkingDirectory (Join-Path $RepoRoot "server")
     return ($exit -eq 0)
   }
 

@@ -22,6 +22,7 @@ server/tidi_probe.log
 /server/src/logs
 /tools/DataSync/source_json
 /target
+*.js.map
 
 # Generated per-install TLS certificates and private keys.
 # Created by tools/ClientSETUP/scripts/Install-EvEJSCerts.ps1.
@@ -49,3 +50,16 @@ server/tidi_probe.log
 /tools/market-seederv2/cache/
 /tools/market-seederv2/target/
 /tools/ClientCodeGrabberV2
+
+# JavaScript and source maps are generated next to TypeScript sources by npm run build.
+/server/**/*.js
+/server/**/*.js.map
+/scripts/**/*.js
+/scripts/**/*.js.map
+/tools/**/*.js
+/tools/**/*.mjs
+/tools/**/*.js.map
+/tools/**/*.mjs.map
+/docker/*.js
+/docker/*.js.map
+*.tsbuildinfo

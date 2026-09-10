@@ -1,7 +1,9 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 function applyMiningYieldRadiusCommand(entity, radius) {
-  entity.radius = radius;
+    entity.radius = radius;
 }
-
 module.exports = {
-  applyMiningYieldRadiusCommand,
+    applyMiningYieldRadiusCommand,
 };
+//# sourceMappingURL=mining.js.map

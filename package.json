@@ -1,5 +1,8 @@
 {
   "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.browser.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.browser.json --noEmit",
+    "postinstall": "npm run build",
     "frontier:contracts": "node tools/frontier-contracts/export-frontier-contracts.mjs",
     "frontier:discover": "node tools/frontier-static/discover-frontier-client.mjs",
     "frontier:extract": "node tools/frontier-static/extract-frontier-static.mjs",
@@ -10,13 +13,22 @@
     "test:frontier-server": "node scripts/Tests/run-frontier-server-tests.js",
     "test:frontier-runners": "node --test scripts/Tests/frontier-test-files.test.js scripts/Tests/frontier-windows-runtime.test.js",
     "test:frontier-windows": "node --test scripts/Tests/frontier-windows-client.test.js scripts/Tests/frontier-windows-runtime.test.js && _local\\frontier-python312\\Scripts\\python.exe -m unittest discover -s tools/frontier-client/test -p test_*.py",
-    "test:isolated-helper": "node --test server/tests/isolatedGameStore.test.js"
+    "test:isolated-helper": "node --test server/tests/isolatedGameStore.test.js",
+    "pretest": "npm run build",
+    "test": "npm run test:frontier-static && npm run test:frontier-runners && npm run test:isolated-helper && npm run test:typescript-runtime",
+    "test:typescript-runtime": "node --test server/tests/typescriptRuntime.test.js server/tests/frontierSuiGrpcClient.test.js server/tests/frontierSuiCharacterProvisioning.test.js"
   },
   "dependencies": {
+    "@mysten/sui": "^2.30.0",
     "node-forge": "^1.3.1",
     "yaml": "^2.8.3"
   },
   "devDependencies": {
-    "@babel/parser": "^8.0.4"
+    "@babel/parser": "^8.0.4",
+    "@types/node": "24.13.3",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=24.11.0"
   }
 }

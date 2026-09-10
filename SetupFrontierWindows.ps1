@@ -108,10 +108,10 @@ $oldPath = $env:Path
 $env:Path = "$nodeDirectory;$oldPath"
 try {
     Write-SetupStep 'Installing locked root Node dependencies ...'
-    & $npm ci
+    & $npm --prefix $RepoRoot ci --include=dev
     if ($LASTEXITCODE -ne 0) { throw 'Root npm ci failed.' }
     Write-SetupStep 'Installing locked server Node dependencies ...'
-    & $npm --prefix server ci
+    & $npm --prefix (Join-Path $RepoRoot 'server') ci
     if ($LASTEXITCODE -ne 0) { throw 'Server npm ci failed.' }
 
     & $node -e "const D=require('./server/node_modules/better-sqlite3'); const d=new D(':memory:'); console.log(d.prepare('select sqlite_version() v').get().v); d.close();"

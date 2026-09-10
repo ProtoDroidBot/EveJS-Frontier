@@ -4,7 +4,7 @@ This is the "what should I click?" page. First decide whether you are running
 EVE Frontier or conventional EVE Online; their launchers and client patches
 are intentionally separate.
 
-## EVE Frontier on Windows (build 3474408 candidate)
+## EVE Frontier on Windows (build 3502403 candidate)
 
 Use these PowerShell 7 launchers only for the exact Frontier workflow:
 
@@ -23,26 +23,27 @@ The normal order is:
 ```powershell
 .\SetupFrontierWindows.ps1 -Status
 .\SetupFrontierWindows.ps1 -SourceRoot 'C:\CCP\EVE Frontier\stillness'
-.\StartFrontierServer.ps1 -Build 3474408
+.\StartFrontierServer.ps1 -Build 3502403
 # In another PowerShell:
-.\PlayFrontier.ps1 -Build 3474408
+.\PlayFrontier.ps1 -Build 3502403
 ```
 
 Status and preview commands do not start the client:
 
 ```powershell
 .\SetupFrontierWindows.ps1 -Status
-.\StageFrontierClient.ps1 -Build 3474408 -DryRun
-.\PatchFrontierClientTrust.ps1 -StagedRoot "$env:LOCALAPPDATA\EveJS-Frontier\windows\staged-client\3474408" -Check
-.\StartFrontierServer.ps1 -Build 3474408 -Status
-.\StopFrontier.ps1 -Build 3474408 -DryRun
+.\StageFrontierClient.ps1 -Build 3502403 -DryRun
+.\PatchFrontierClientTrust.ps1 -StagedRoot "$env:LOCALAPPDATA\EveJS-Frontier\windows\staged-client\3502403" -Check
+.\StartFrontierServer.ps1 -Build 3502403 -Status
+.\StopFrontier.ps1 -Build 3502403 -DryRun
 ```
 
-Windows build `3474408` uses `blue.pyd`, not `blue.dll`. Its LogLite-assisted
-session-free smoke reached the local server, login, rendered space, docking,
-XMPP, and the secure gateway. The full flight/warp and Frontier feature matrix
-is still pending; see [FRONTIER_WINDOWS_SETUP.md](FRONTIER_WINDOWS_SETUP.md)
-before treating it as a fully supported target.
+Windows build `3502403` uses `blue.pyd`, not `blue.dll`. No live acceptance
+has been established for this candidate; the earlier `3474408` smoke run
+does not transfer to it. See [FRONTIER_BUILD_3502403.md](FRONTIER_BUILD_3502403.md).
+Setup and staging discover the installed build; Start, Play, Stop, and the
+Frontier server test runner default to `3502403`. Pass an explicit older build
+to use an existing older runtime. macOS shell defaults remain `3467658`.
 
 ## Conventional EVE Online build 3396210
 

@@ -15,7 +15,7 @@ import warnings
 import zipfile
 
 
-DEFAULT_CLIENT_BUILD = 3474408
+DEFAULT_CLIENT_BUILD = 3502403
 
 # These switches are deliberately narrow. Each one corresponds to a server
 # surface implemented and regression-tested by EveJS-Frontier. Do not turn the
@@ -38,10 +38,25 @@ MODULE_PATCHES = {
 
 # Build 3474408 renamed the old REIGNMENT switch to RAIMENT and ships the
 # corrected switch enabled (False) already. Keep the legacy assignment set for
-# 3467658, while changing only the still-hidden implant surface in 3474408.
+# 3467658, while changing only the still-hidden implant surface in 3474408,
+# 3488090, and 3502403. The two feature modules have identical code signatures
+# in these newer builds, but their pyc headers (and therefore exact member
+# hashes) differ.
 BUILD_MODULE_PATCHES = {
     3467658: MODULE_PATCHES,
     3474408: {
+        "frontier/beta.pyc": MODULE_PATCHES["frontier/beta.pyc"],
+        "frontier/shell/common/const.pyc": (
+            "HIDE_SHELL_IMPLANT_SYSTEM",
+        ),
+    },
+    3488090: {
+        "frontier/beta.pyc": MODULE_PATCHES["frontier/beta.pyc"],
+        "frontier/shell/common/const.pyc": (
+            "HIDE_SHELL_IMPLANT_SYSTEM",
+        ),
+    },
+    3502403: {
         "frontier/beta.pyc": MODULE_PATCHES["frontier/beta.pyc"],
         "frontier/shell/common/const.pyc": (
             "HIDE_SHELL_IMPLANT_SYSTEM",
@@ -75,6 +90,34 @@ BUILD_PROFILES = {
             "source_member_sha256": "6c4c6509534082170d5c05b193b1903f4656229f6b90edcbe0eb4edb4012fdfb",
             "source_code_sha256": "e7a195fbc655411a1ee49abc37a44e0a8a30287cf621165d064de28622c6aa61",
             "patched_member_sha256": "35188747970a852bbeaabdd4a5840a7be5beb2eb46d6dec8de1212610f9fa11c",
+            "patched_code_sha256": "d81eed85f3c888fe31025c1420a7f6fbf7bf7d23cee34d409a245a04f2eb0437",
+        },
+    },
+    3488090: {
+        "frontier/beta.pyc": {
+            "source_member_sha256": "75cb628f1de6fc09c564edfcc5a999d0e1b05b418070738adc1f9d717befcd9d",
+            "source_code_sha256": "5280137bf5d4a200b8da21524069605ae9faf8e6ebbcbd3c0ace46edd8e580ca",
+            "patched_member_sha256": "252544d4d2fa14d36c046a1477d9b94dd90e49c54c0e84c24737db8a51e5271c",
+            "patched_code_sha256": "5d53d39d3d1ca156d124540d99c7c771b7ab331a215558bb36f612a48d078495",
+        },
+        "frontier/shell/common/const.pyc": {
+            "source_member_sha256": "d20c81fd4aff0d3c07d953a390a51730ab6c290eb4795254187505344a425f23",
+            "source_code_sha256": "e7a195fbc655411a1ee49abc37a44e0a8a30287cf621165d064de28622c6aa61",
+            "patched_member_sha256": "b067982f836e7cd98dc88cf07a882b8101c333056809d8d9333babaabb6d8836",
+            "patched_code_sha256": "d81eed85f3c888fe31025c1420a7f6fbf7bf7d23cee34d409a245a04f2eb0437",
+        },
+    },
+    3502403: {
+        "frontier/beta.pyc": {
+            "source_member_sha256": "15843490ea0d78341a5497edef6b69c7450f5a15c384e18671eb1939d2332cce",
+            "source_code_sha256": "5280137bf5d4a200b8da21524069605ae9faf8e6ebbcbd3c0ace46edd8e580ca",
+            "patched_member_sha256": "a5f0e3078167548bcc37150d640e6d9b64e028d82b0b6f9cbad490719c485272",
+            "patched_code_sha256": "5d53d39d3d1ca156d124540d99c7c771b7ab331a215558bb36f612a48d078495",
+        },
+        "frontier/shell/common/const.pyc": {
+            "source_member_sha256": "e1808d6561d11adea4796ca319422e723df7d847008be17356e4877f88ea81b3",
+            "source_code_sha256": "e7a195fbc655411a1ee49abc37a44e0a8a30287cf621165d064de28622c6aa61",
+            "patched_member_sha256": "e84944957f88aae34938814f5a5ed563fc5412e7688371b0893ea87a06f70672",
             "patched_code_sha256": "d81eed85f3c888fe31025c1420a7f6fbf7bf7d23cee34d409a245a04f2eb0437",
         },
     },

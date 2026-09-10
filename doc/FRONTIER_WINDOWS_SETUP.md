@@ -1,5 +1,12 @@
 # EVE Frontier on Windows
 
+> The current Windows defaults target build `3502403`. See
+> [FRONTIER_BUILD_3502403.md](FRONTIER_BUILD_3502403.md) for its candidate
+> status, exact native hashes, and upgrade notes. This guide retains the
+> `3474408` workflow examples and historical evidence below; they must not be
+> read as live acceptance of `3502403`. Substitute `3502403` in commands and
+> build-numbered paths when following this workflow for the new client.
+
 This guide covers the native, isolated Windows workflow for the exact EVE
 Frontier build `3474408` candidate. It does not cover conventional EVE Online
 build `3396210`.
@@ -79,7 +86,8 @@ only if Windows requires it for a missing prerequisite.
 - CPython 3.12 x64 exactly, not Python 3.13 or newer
 
 `SetupFrontierWindows.ps1` installs a missing Git, Node, or Python package with
-`winget`, installs locked root and server npm dependencies, and opens an in-
+`winget`, installs locked root and server npm dependencies (including the
+TypeScript compiler), compiles the TypeScript source, and opens an in-
 memory `better-sqlite3` database to prove the active Node ABI. It creates the
 ignored `_local\frontier-python312` environment and installs the pinned
 dependencies in `tools\frontier-client\requirements-windows-frontier.txt`.
@@ -94,6 +102,11 @@ Rust, Docker, the market service, the SQLite command-line tool, and OpenSSL are
 not required. The Frontier server explicitly disables the market daemon.
 
 ## Discover the official client
+
+Read-only status and discovery commands require compiled tools. On a fresh
+source checkout, run `npm ci --include=dev` first. After changing TypeScript
+sources, run `npm run build`; use `npm run typecheck` to check without emitting
+JavaScript. Normal server launch also compiles before starting Node.
 
 Discovery accepts either a launcher/cache root or the build directory itself:
 

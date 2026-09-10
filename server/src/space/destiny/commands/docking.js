@@ -1,7 +1,9 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 function applyPendingDockStateCommand(entity, pendingDock) {
-  entity.pendingDock = pendingDock;
+    entity.pendingDock = pendingDock;
 }
-
 module.exports = {
-  applyPendingDockStateCommand,
+    applyPendingDockStateCommand,
 };
+//# sourceMappingURL=docking.js.map

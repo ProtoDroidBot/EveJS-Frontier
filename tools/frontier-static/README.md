@@ -2,7 +2,8 @@
 
 This tool exports the static data embedded in an installed EVE Frontier client
 into the JSONL shape consumed by EveJS. It supports the existing macOS
-launcher/app layout and the Windows launcher-cache/channel layout. It reads the
+launcher/app layout and the Windows launcher-cache/channel layout, including
+explicit Wine-backed extraction on Linux. It reads the
 selected build and shared resource cache only. It does not modify the Frontier
 installation, the retail EVE client, or an EveJS server database.
 
@@ -31,13 +32,13 @@ The extractor:
 Inspect discovery first:
 
 ```powershell
-npm run frontier:discover -- --client-root 'C:\CCP\EVE Frontier\stillness' --build 3474408
+npm run frontier:discover -- --client-root 'C:\CCP\EVE Frontier\stillness' --build 3502403
 ```
 
-Windows build `3474408` can be extracted explicitly with:
+Windows build `3502403` can be extracted explicitly with:
 
 ```powershell
-npm run frontier:extract -- --client-root 'C:\CCP\EVE Frontier\stillness' --build 3474408
+npm run frontier:extract -- --client-root 'C:\CCP\EVE Frontier\stillness' --build 3502403
 ```
 
 The existing macOS workflow remains:
@@ -55,13 +56,13 @@ One common macOS launcher root is:
 To inspect inputs without decoding, add `--dry-run`:
 
 ```powershell
-npm run frontier:extract -- --client-root 'C:\CCP\EVE Frontier\stillness' --build 3474408 --dry-run
+npm run frontier:extract -- --client-root 'C:\CCP\EVE Frontier\stillness' --build 3502403 --dry-run
 ```
 
 To replace a snapshot previously created by this extractor:
 
 ```powershell
-npm run frontier:extract -- --client-root 'C:\CCP\EVE Frontier\stillness' --build 3474408 --force
+npm run frontier:extract -- --client-root 'C:\CCP\EVE Frontier\stillness' --build 3502403 --force
 ```
 
 The tool refuses to replace a non-empty directory unless it contains a
@@ -70,7 +71,7 @@ recognized extractor manifest.
 ## Validate
 
 ```powershell
-npm run frontier:validate -- --snapshot _local/frontier-sde/3474408
+npm run frontier:validate -- --snapshot _local/frontier-sde/3502403
 ```
 
 Validation checks hashes, JSONL framing, key uniqueness, type/group/category
@@ -97,7 +98,7 @@ descriptors and the client modules that consume them. Export those contracts
 without importing the game runtime or modifying the client:
 
 ```powershell
-npm run frontier:contracts -- --client-root 'C:\CCP\EVE Frontier\stillness' --build 3474408
+npm run frontier:contracts -- --client-root 'C:\CCP\EVE Frontier\stillness' --build 3502403
 ```
 
 The build-numbered output under `_local/frontier-contracts` contains a binary
@@ -109,12 +110,26 @@ build `3467658` descriptor and module artifacts are not present in this
 checkout, so those outputs cannot be claimed byte-for-byte unchanged from the
 older build.
 
+Contract export also works on Linux with native CPython 3.12, using the pure-Python
+protobuf package bundled in `code.ccp`. Set `EVEJS_FRONTIER_PYTHON312` to select
+an explicit interpreter; otherwise `python3.12` and `python3` are probed for the
+exact required minor version. This path decodes descriptor constants without
+importing the game runtime. It does not enable native Windows FSD extraction
+on Linux.
+
+Build `3502403` exports the same 166 public descriptor files and 238 client
+module names as `3488090`. The binary and JSON public descriptor sets are
+byte-for-byte identical; only build metadata changes in the compact index and
+module inventory. See
+`tools/frontier-contracts/frontier-build.3502403.comparison.json` for hashes and
+validation limits.
+
 ## EveJS Input
 
 The generated folder is intentionally compatible with:
 
 ```powershell
-npm run frontier:database -- --snapshot _local/frontier-sde/3474408
+npm run frontier:database -- --snapshot _local/frontier-sde/3502403
 ```
 
 The equivalent low-level generator invocation remains available on every
@@ -150,3 +165,44 @@ by 15. Because the old JSONL snapshot is not committed or available locally,
 the identities of those 15 additional rows cannot be derived from the current
 artifacts alone. The detailed evidence is recorded in
 `tools/frontier-contracts/frontier-build.3474408.comparison.json`.
+
+The validated `3488090` snapshot contains 24,026 systems, 113,253 landscape
+sites, 32,626 types, and 7,072 stargates. Relative to the recorded `3474408`
+counts, types increased by three and the other three counts are unchanged.
+The exact F935/05D8 Rift entry types and triggers, Mraka Fringe Tallyport site,
+and Relay construction-site authority were verified in the new snapshot.
+The baseline JSONL snapshot is unavailable, so the identities of the added
+type rows and other row-level changes cannot be inferred from counts alone.
+
+The validated `3502403` snapshot has the same four headline counts and the
+same game-data semantics consumed by the database as `3488090`. A client-side
+jump-ID ordering change reassigns 337 `jumpID` values, but the 3,536 stargate
+edges, endpoints, coordinates, and types are identical. The public protobuf
+descriptor sets are also byte-for-byte identical. A fresh, build-attested
+snapshot and database are still required rather than relabeling old outputs.
+
+## Linux with Wine
+
+Contract export uses native Linux CPython 3.12. Static extraction instead needs
+the Windows client loaders and an explicitly configured Wine-backed Windows
+Python 3.12; no Wine installation or runtime download happens automatically:
+
+```bash
+EVEJS_FRONTIER_WINE=/path/to/wine-or-wrapper \
+EVEJS_FRONTIER_PYTHON312=/path/to/windows-python312/python.exe \
+npm run frontier:extract -- --client-root '/path/to/EVE Frontier/stillness' --build 3502403
+```
+
+The Wine command receives the Python executable followed by its arguments.
+It must preserve argument boundaries and forward Python stdout and exit status.
+The resolver checks the exact Python minor version, native loader imports,
+and a success marker. Use a disposable prefix when extracting so the game's
+existing Wine prefix is untouched. Standard Wine `Z:` drive mapping is required
+to reach the host input/output paths. Python's standard library takes precedence
+over `code.ccp` to avoid its bundled `ctypes` conflicting with external CPython.
+
+This host's validated `3502403` extraction used portable Windows CPython
+3.12.14, the existing GE-Proton11-6 Wine runtime, and a disposable Wine prefix.
+That was a read-only data extraction; the game client and its existing runtime
+prefix were not launched or modified. Local interpreter and prefix paths are
+temporary environment details, not portable prerequisites for this repo.

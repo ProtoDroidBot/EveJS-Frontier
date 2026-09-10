@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Canonical session -> character identity resolution.
  *
@@ -12,26 +13,25 @@
  * none are present. Callers must treat 0 as "no acting character" and fail or
  * no-op rather than impersonating a default player.
  */
-
+Object.defineProperty(exports, "__esModule", { value: true });
 const CHARACTER_ID_FIELDS = ["characterID", "charID", "charid", "characterId"];
-
 /**
  * @param {object} session
  * @returns {number} a positive character id, or 0 when the session carries none
  */
 function resolveSessionCharacterID(session) {
-  if (!session || typeof session !== "object") {
-    return 0;
-  }
-  for (const field of CHARACTER_ID_FIELDS) {
-    const numeric = Number(session[field]);
-    if (Number.isSafeInteger(numeric) && numeric > 0) {
-      return numeric;
+    if (!session || typeof session !== "object") {
+        return 0;
     }
-  }
-  return 0;
+    for (const field of CHARACTER_ID_FIELDS) {
+        const numeric = Number(session[field]);
+        if (Number.isSafeInteger(numeric) && numeric > 0) {
+            return numeric;
+        }
+    }
+    return 0;
 }
-
 module.exports = {
-  resolveSessionCharacterID,
+    resolveSessionCharacterID,
 };
+//# sourceMappingURL=sessionIdentity.js.map

@@ -6,6 +6,11 @@ the build-`3396210` batch files.
 
 ## EVE Frontier on Windows
 
+The current candidate is `3502403`; its hashes and acceptance limits are in
+[FRONTIER_BUILD_3502403.md](FRONTIER_BUILD_3502403.md). Examples and hashes in
+this section describe `3474408`. Use the new build-numbered paths and exact
+`3502403` profile instead; do not apply the old source hash to the new binary.
+
 Start with read-only checks:
 
 ```powershell

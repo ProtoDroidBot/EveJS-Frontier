@@ -15,6 +15,9 @@ if not defined PYTHON_CMD (
   exit /b 1
 )
 
+call "%REPO_ROOT%\tools\BuildTypeScript.bat"
+if errorlevel 1 exit /b 1
+
 start "New Eden Store Editor" /D "%REPO_ROOT%" cmd /k %PYTHON_CMD% ".\tools\NewEdenStoreEditor\editor.py"
 
 endlocal

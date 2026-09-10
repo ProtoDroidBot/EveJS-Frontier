@@ -18,178 +18,155 @@
  * a second exact copy only so identity/table/payload mismatches fail closed
  * before the transaction runs.
  */
-
 "use strict";
-
+Object.defineProperty(exports, "__esModule", { value: true });
 const { parentPort, workerData } = require("worker_threads");
 const sqliteStore = require("./sqliteStore");
-
 const counters = new Int32Array(workerData.sharedBuffer);
 const PENDING_WRITE_INDEX = 0;
 const FAILED_WRITE_INDEX = 1;
 const blockedByTable = new Map();
-
 // This worker's private connection to the shared WAL database.
 sqliteStore.init(workerData.dbPath);
-
 function complete() {
-  // One unit of work finished (committed or failed). Decrement and wake any
-  // main-thread drainer blocked in Atomics.wait.
-  Atomics.sub(counters, PENDING_WRITE_INDEX, 1);
-  Atomics.notify(counters, PENDING_WRITE_INDEX);
+    // One unit of work finished (committed or failed). Decrement and wake any
+    // main-thread drainer blocked in Atomics.wait.
+    Atomics.sub(counters, PENDING_WRITE_INDEX, 1);
+    Atomics.notify(counters, PENDING_WRITE_INDEX);
 }
-
 function copyUpserts(upserts) {
-  if (!Array.isArray(upserts)) {
-    return [];
-  }
-  return upserts.map((entry) => {
-    if (!Array.isArray(entry) || entry.length < 2) {
-      throw new TypeError("persistence upserts must be [key, json] pairs");
+    if (!Array.isArray(upserts)) {
+        return [];
     }
-    return [String(entry[0]), String(entry[1])];
-  });
-}
-
-function copyDeletes(deletes) {
-  return Array.isArray(deletes) ? deletes.map((key) => String(key)) : [];
-}
-
-function batchesEqual(left, right) {
-  if (left.length !== right.length) {
-    return false;
-  }
-  for (let index = 0; index < left.length; index += 1) {
-    const leftEntry = left[index];
-    const rightEntry = right[index];
-    if (Array.isArray(leftEntry) || Array.isArray(rightEntry)) {
-      if (
-        !Array.isArray(leftEntry) ||
-        !Array.isArray(rightEntry) ||
-        leftEntry.length !== rightEntry.length
-      ) {
-        return false;
-      }
-      for (let part = 0; part < leftEntry.length; part += 1) {
-        if (leftEntry[part] !== rightEntry[part]) {
-          return false;
+    return upserts.map((entry) => {
+        if (!Array.isArray(entry) || entry.length < 2) {
+            throw new TypeError("persistence upserts must be [key, json] pairs");
         }
-      }
-    } else if (leftEntry !== rightEntry) {
-      return false;
-    }
-  }
-  return true;
+        return [String(entry[0]), String(entry[1])];
+    });
 }
-
+function copyDeletes(deletes) {
+    return Array.isArray(deletes) ? deletes.map((key) => String(key)) : [];
+}
+function batchesEqual(left, right) {
+    if (left.length !== right.length) {
+        return false;
+    }
+    for (let index = 0; index < left.length; index += 1) {
+        const leftEntry = left[index];
+        const rightEntry = right[index];
+        if (Array.isArray(leftEntry) || Array.isArray(rightEntry)) {
+            if (!Array.isArray(leftEntry) ||
+                !Array.isArray(rightEntry) ||
+                leftEntry.length !== rightEntry.length) {
+                return false;
+            }
+            for (let part = 0; part < leftEntry.length; part += 1) {
+                if (leftEntry[part] !== rightEntry[part]) {
+                    return false;
+                }
+            }
+        }
+        else if (leftEntry !== rightEntry) {
+            return false;
+        }
+    }
+    return true;
+}
 function assertExactMessage(operation, message) {
-  if (operation.table !== message.table) {
-    throw new Error(
-      `persistence operation ${message.operationId} table mismatch`,
-    );
-  }
-  const messageUpserts = copyUpserts(message.upserts);
-  const messageDeletes = copyDeletes(message.deletes);
-  if (
-    !batchesEqual(operation.upserts, messageUpserts) ||
-    !batchesEqual(operation.deletes, messageDeletes)
-  ) {
-    throw new Error(
-      `persistence operation ${message.operationId} payload mismatch`,
-    );
-  }
+    if (operation.table !== message.table) {
+        throw new Error(`persistence operation ${message.operationId} table mismatch`);
+    }
+    const messageUpserts = copyUpserts(message.upserts);
+    const messageDeletes = copyDeletes(message.deletes);
+    if (!batchesEqual(operation.upserts, messageUpserts) ||
+        !batchesEqual(operation.deletes, messageDeletes)) {
+        throw new Error(`persistence operation ${message.operationId} payload mismatch`);
+    }
 }
-
 function reportWriteError(message, error) {
-  if (!blockedByTable.has(message.table)) {
-    blockedByTable.set(message.table, message.operationId);
-  }
-  Atomics.add(counters, FAILED_WRITE_INDEX, 1);
-  parentPort.postMessage({
-    type: "error",
-    operationId: message.operationId,
-    table: message.table,
-    error: error && error.message ? error.message : String(error),
-  });
+    if (!blockedByTable.has(message.table)) {
+        blockedByTable.set(message.table, message.operationId);
+    }
+    Atomics.add(counters, FAILED_WRITE_INDEX, 1);
+    parentPort.postMessage({
+        type: "error",
+        operationId: message.operationId,
+        table: message.table,
+        error: error && error.message ? error.message : String(error),
+    });
 }
-
 function applyWrite(message) {
-  if (
-    !Number.isSafeInteger(message.operationId) ||
-    message.operationId <= 0 ||
-    typeof message.table !== "string"
-  ) {
-    throw new Error("persistence write requires an exact operationId and table");
-  }
-  const blockedOperationId = blockedByTable.get(message.table);
-  if (blockedOperationId !== undefined) {
-    throw new Error(
-      `persistence table ${message.table} is blocked by failed operation ${blockedOperationId}`,
-    );
-  }
-
-  const recorded = sqliteStore.getPersistenceOperation(message.operationId);
-  if (!recorded) {
-    // Synchronous reconciliation may apply and delete the row before this
-    // queued message runs. Reporting this exact identity as complete is safe;
-    // the controller already released it and ignores the stale success.
-    return null;
-  }
-  assertExactMessage(recorded, message);
-  return sqliteStore.applyPersistenceOperation(
-    message.operationId,
-    message.table,
-  );
+    if (!Number.isSafeInteger(message.operationId) ||
+        message.operationId <= 0 ||
+        typeof message.table !== "string") {
+        throw new Error("persistence write requires an exact operationId and table");
+    }
+    const blockedOperationId = blockedByTable.get(message.table);
+    if (blockedOperationId !== undefined) {
+        throw new Error(`persistence table ${message.table} is blocked by failed operation ${blockedOperationId}`);
+    }
+    const recorded = sqliteStore.getPersistenceOperation(message.operationId);
+    if (!recorded) {
+        // Synchronous reconciliation may apply and delete the row before this
+        // queued message runs. Reporting this exact identity as complete is safe;
+        // the controller already released it and ignores the stale success.
+        return null;
+    }
+    assertExactMessage(recorded, message);
+    return sqliteStore.applyPersistenceOperation(message.operationId, message.table);
 }
-
 parentPort.on("message", (msg) => {
-  if (!msg || typeof msg !== "object") {
-    return;
-  }
-  switch (msg.type) {
-    case "write": {
-      try {
-        const applied = applyWrite(msg);
-        parentPort.postMessage({
-          type: "write-complete",
-          operationId: msg.operationId,
-          table: msg.table,
-          reconciled: applied === null,
-        });
-      } catch (error) {
-        reportWriteError(msg, error);
-      } finally {
-        complete();
-      }
-      break;
+    if (!msg || typeof msg !== "object") {
+        return;
     }
-    case "reconciled": {
-      if (
-        Number.isSafeInteger(msg.operationId) &&
-        typeof msg.table === "string" &&
-        blockedByTable.get(msg.table) === msg.operationId
-      ) {
-        blockedByTable.delete(msg.table);
-      }
-      break;
+    switch (msg.type) {
+        case "write": {
+            try {
+                const applied = applyWrite(msg);
+                parentPort.postMessage({
+                    type: "write-complete",
+                    operationId: msg.operationId,
+                    table: msg.table,
+                    reconciled: applied === null,
+                });
+            }
+            catch (error) {
+                reportWriteError(msg, error);
+            }
+            finally {
+                complete();
+            }
+            break;
+        }
+        case "reconciled": {
+            if (Number.isSafeInteger(msg.operationId) &&
+                typeof msg.table === "string" &&
+                blockedByTable.get(msg.table) === msg.operationId) {
+                blockedByTable.delete(msg.table);
+            }
+            break;
+        }
+        case "close": {
+            let closeError = null;
+            try {
+                sqliteStore.close();
+            }
+            catch (error) {
+                closeError = error && error.message ? error.message : String(error);
+            }
+            try {
+                parentPort.postMessage({ type: "closed", error: closeError });
+            }
+            finally {
+                // Closing the port lets a successfully closed worker exit naturally.
+                // The main thread only calls terminate() as an explicit fallback.
+                parentPort.close();
+            }
+            break;
+        }
+        default:
+            break;
     }
-    case "close": {
-      let closeError = null;
-      try {
-        sqliteStore.close();
-      } catch (error) {
-        closeError = error && error.message ? error.message : String(error);
-      }
-      try {
-        parentPort.postMessage({ type: "closed", error: closeError });
-      } finally {
-        // Closing the port lets a successfully closed worker exit naturally.
-        // The main thread only calls terminate() as an explicit fallback.
-        parentPort.close();
-      }
-      break;
-    }
-    default:
-      break;
-  }
 });
+//# sourceMappingURL=persistenceWorker.worker.js.map

@@ -108,9 +108,9 @@ function Ensure-CertificateToolingDependencies {
     # "$_" keeps npm's stderr warnings from being rendered as red PowerShell
     # error blocks, which look like a crash during a normal install.
     if (Test-Path (Join-Path $repoRoot "package-lock.json")) {
-      & $npmCommand ci --no-audit --no-fund 2>&1 | ForEach-Object { "$_" } | Out-Host
+      & $npmCommand ci --include=dev --no-audit --no-fund 2>&1 | ForEach-Object { "$_" } | Out-Host
     } else {
-      & $npmCommand install --no-audit --no-fund 2>&1 | ForEach-Object { "$_" } | Out-Host
+      & $npmCommand install --include=dev --no-audit --no-fund 2>&1 | ForEach-Object { "$_" } | Out-Host
     }
     $npmExit = $LASTEXITCODE
   } finally {
@@ -457,6 +457,7 @@ function Build-GatewayCertificate {
 }
 
 Ensure-CertificateToolingDependencies
+& (Join-Path $repoRoot 'tools\BuildTypeScript.ps1')
 Ensure-LocalCertificateFiles
 
 if (-not (Test-Path $caCertPath)) {

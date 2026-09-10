@@ -1,5 +1,5 @@
 "use strict";
-
+Object.defineProperty(exports, "__esModule", { value: true });
 /**
  * DOGMA INVALIDATION VERSION (zero-dependency leaf):
  *
@@ -22,18 +22,15 @@
  * because such changes are rare relative to the 10 Hz tick and the post-cache
  * rebuild is cheap.
  */
-
 let version = 1;
-
 function bumpDogmaInvalidationVersion() {
-  version += 1;
+    version += 1;
 }
-
 function getDogmaInvalidationVersion() {
-  return version;
+    return version;
 }
-
 module.exports = {
-  bumpDogmaInvalidationVersion,
-  getDogmaInvalidationVersion,
+    bumpDogmaInvalidationVersion,
+    getDogmaInvalidationVersion,
 };
+//# sourceMappingURL=dogmaInvalidationVersion.js.map

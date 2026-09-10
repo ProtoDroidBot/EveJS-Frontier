@@ -1,17 +1,15 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
-
 const config = require(path.join(__dirname, "../../../config"));
-
 // The five learning (mental) attributes. These are the only character
 // attributes that drive skill training, so they are the only ones the
 // training-speed multiplier scales for client display.
 const MENTAL_ATTRIBUTE_IDS = Object.freeze([164, 165, 166, 167, 168]);
-
 function getSkillTrainingSpeedMultiplier() {
-  const numeric = Number(config.skillTrainingSpeed);
-  return Number.isFinite(numeric) && numeric > 0 ? numeric : 1;
+    const numeric = Number(config.skillTrainingSpeed);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : 1;
 }
-
 // Scales the learning attributes the server reports to the client by the
 // training-speed multiplier.
 //
@@ -29,21 +27,21 @@ function getSkillTrainingSpeedMultiplier() {
 // left untouched. At the retail default (multiplier 1) the map is returned
 // unchanged.
 function applyClientTrainingSpeedScale(attributes) {
-  const multiplier = getSkillTrainingSpeedMultiplier();
-  if (multiplier === 1 || !attributes || typeof attributes !== "object") {
-    return attributes;
-  }
-  for (const attributeID of MENTAL_ATTRIBUTE_IDS) {
-    const value = Number(attributes[attributeID]);
-    if (Number.isFinite(value)) {
-      attributes[attributeID] = value * multiplier;
+    const multiplier = getSkillTrainingSpeedMultiplier();
+    if (multiplier === 1 || !attributes || typeof attributes !== "object") {
+        return attributes;
     }
-  }
-  return attributes;
+    for (const attributeID of MENTAL_ATTRIBUTE_IDS) {
+        const value = Number(attributes[attributeID]);
+        if (Number.isFinite(value)) {
+            attributes[attributeID] = value * multiplier;
+        }
+    }
+    return attributes;
 }
-
 module.exports = {
-  MENTAL_ATTRIBUTE_IDS,
-  getSkillTrainingSpeedMultiplier,
-  applyClientTrainingSpeedScale,
+    MENTAL_ATTRIBUTE_IDS,
+    getSkillTrainingSpeedMultiplier,
+    applyClientTrainingSpeedScale,
 };
+//# sourceMappingURL=skillTrainingSpeed.js.map

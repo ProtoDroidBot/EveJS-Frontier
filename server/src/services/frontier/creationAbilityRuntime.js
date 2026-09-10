@@ -1,5 +1,5 @@
 "use strict";
-
+Object.defineProperty(exports, "__esModule", { value: true });
 /**
  * Behavior-aware Creation module ability registry and dispatch.
  *
@@ -20,12 +20,9 @@
  * execute. online/offline remain driven by Dogma online effect 16 and use
  * the shared fallback handlers.
  */
-
 const path = require("path");
-
 const log = require(path.join(__dirname, "../../utils/logger"));
 const { getCreationModule } = require(path.join(__dirname, "./creationStaticData"));
-
 const ABILITY_ONLINE = "online";
 const ABILITY_OFFLINE = "offline";
 const ABILITY_ACTIVATE_EFFECT = "activate_effect";
@@ -35,60 +32,48 @@ const ABILITY_IFF_RECONFIGURE = "iff_reconfigure";
 const ABILITY_DEPLOY = "deploy";
 const ABILITY_RELOAD = "reload";
 const ABILITY_UNLOAD = "unload";
-
 // (behaviorName -> Map(abilityId -> handler)). Fallback handlers (online/
 // offline) live under the "*" behavior key and apply to every module whose
 // type carries the Dogma online effect.
 const handlersByBehavior = new Map();
-
 function toInt(value, fallback = 0) {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? Math.trunc(numeric) : fallback;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Math.trunc(numeric) : fallback;
 }
-
 function getModuleBehaviorName(typeID) {
-  const module = getCreationModule(typeID);
-  const behavior = module && typeof module.behavior === "string"
-    ? module.behavior.trim()
-    : "";
-  return behavior || "generic";
+    const module = getCreationModule(typeID);
+    const behavior = module && typeof module.behavior === "string"
+        ? module.behavior.trim()
+        : "";
+    return behavior || "generic";
 }
-
 function normalizeAbilityId(value) {
-  return String(value || "").trim().toLowerCase();
+    return String(value || "").trim().toLowerCase();
 }
-
 function registerCreationAbilityHandler(behaviorName, abilityId, handler) {
-  const behaviorKey = String(behaviorName || "").trim() || "*";
-  const normalizedAbility = normalizeAbilityId(abilityId);
-  if (!normalizedAbility || !handler || typeof handler.execute !== "function") {
-    throw new Error(
-      `Invalid creation ability handler registration ${behaviorKey}:${normalizedAbility}`,
-    );
-  }
-  if (!handlersByBehavior.has(behaviorKey)) {
-    handlersByBehavior.set(behaviorKey, new Map());
-  }
-  handlersByBehavior.get(behaviorKey).set(normalizedAbility, handler);
+    const behaviorKey = String(behaviorName || "").trim() || "*";
+    const normalizedAbility = normalizeAbilityId(abilityId);
+    if (!normalizedAbility || !handler || typeof handler.execute !== "function") {
+        throw new Error(`Invalid creation ability handler registration ${behaviorKey}:${normalizedAbility}`);
+    }
+    if (!handlersByBehavior.has(behaviorKey)) {
+        handlersByBehavior.set(behaviorKey, new Map());
+    }
+    handlersByBehavior.get(behaviorKey).set(normalizedAbility, handler);
 }
-
 function getRegisteredBehaviorAbilities(behaviorName) {
-  const handlers = handlersByBehavior.get(String(behaviorName || "").trim());
-  return handlers ? [...handlers.keys()] : [];
+    const handlers = handlersByBehavior.get(String(behaviorName || "").trim());
+    return handlers ? [...handlers.keys()] : [];
 }
-
 function resolveCreationAbilityHandler(behaviorName, abilityId) {
-  const normalizedAbility = normalizeAbilityId(abilityId);
-  const behaviorHandlers = handlersByBehavior.get(
-    String(behaviorName || "").trim(),
-  );
-  if (behaviorHandlers && behaviorHandlers.has(normalizedAbility)) {
-    return behaviorHandlers.get(normalizedAbility);
-  }
-  const fallbackHandlers = handlersByBehavior.get("*");
-  return fallbackHandlers ? fallbackHandlers.get(normalizedAbility) || null : null;
+    const normalizedAbility = normalizeAbilityId(abilityId);
+    const behaviorHandlers = handlersByBehavior.get(String(behaviorName || "").trim());
+    if (behaviorHandlers && behaviorHandlers.has(normalizedAbility)) {
+        return behaviorHandlers.get(normalizedAbility);
+    }
+    const fallbackHandlers = handlersByBehavior.get("*");
+    return fallbackHandlers ? fallbackHandlers.get(normalizedAbility) || null : null;
 }
-
 /**
  * Dispatch a validated ability invocation. The caller (creationService) has
  * already resolved the owned Creation; this validates the module membership,
@@ -96,98 +81,85 @@ function resolveCreationAbilityHandler(behaviorName, abilityId) {
  *
  * Returns { success, data? , errorMsg?, params? }.
  */
-function dispatchCreationAbility({
-  ability,
-  kwargs,
-  session,
-  creationContext,
-  moduleItemID,
-  abilityDependencies,
-}) {
-  const normalizedAbility = normalizeAbilityId(ability);
-  if (!normalizedAbility) {
-    return { success: false, errorMsg: "ABILITY_EMPTY" };
-  }
-  const state = creationContext && creationContext.state;
-  const moduleEntry = state && Array.isArray(state.modules)
-    ? state.modules.find((entry) => toInt(entry && entry.itemID, 0) === toInt(moduleItemID, 0))
-    : null;
-  if (!moduleEntry) {
-    return { success: false, errorMsg: "MODULE_NOT_IN_CREATION" };
-  }
-  const advertisedAbilities = Array.isArray(moduleEntry.abilities)
-    ? moduleEntry.abilities
-    : [];
-  if (!advertisedAbilities.includes(normalizedAbility)) {
-    return {
-      success: false,
-      errorMsg: "ABILITY_NOT_ADVERTISED",
-      params: { advertised: advertisedAbilities },
+function dispatchCreationAbility({ ability, kwargs, session, creationContext, moduleItemID, abilityDependencies, }) {
+    const normalizedAbility = normalizeAbilityId(ability);
+    if (!normalizedAbility) {
+        return { success: false, errorMsg: "ABILITY_EMPTY" };
+    }
+    const state = creationContext && creationContext.state;
+    const moduleEntry = state && Array.isArray(state.modules)
+        ? state.modules.find((entry) => toInt(entry && entry.itemID, 0) === toInt(moduleItemID, 0))
+        : null;
+    if (!moduleEntry) {
+        return { success: false, errorMsg: "MODULE_NOT_IN_CREATION" };
+    }
+    const advertisedAbilities = Array.isArray(moduleEntry.abilities)
+        ? moduleEntry.abilities
+        : [];
+    if (!advertisedAbilities.includes(normalizedAbility)) {
+        return {
+            success: false,
+            errorMsg: "ABILITY_NOT_ADVERTISED",
+            params: { advertised: advertisedAbilities },
+        };
+    }
+    const behaviorName = getModuleBehaviorName(moduleEntry.typeID);
+    const handler = resolveCreationAbilityHandler(behaviorName, normalizedAbility);
+    if (!handler) {
+        // Advertisement derives from the registry, so this indicates a race or a
+        // stale snapshot rather than a normal client request.
+        return { success: false, errorMsg: "ABILITY_HANDLER_MISSING" };
+    }
+    const context = {
+        ability: normalizedAbility,
+        behaviorName,
+        creationItem: creationContext.item,
+        creationState: creationContext.state,
+        creationTemplate: creationContext.template || null,
+        characterID: creationContext.characterID,
+        moduleEntry,
+        moduleItemID: toInt(moduleItemID, 0),
+        kwargs: kwargs && typeof kwargs === "object" ? kwargs : {},
+        session: session || null,
+        dependencies: abilityDependencies || {},
     };
-  }
-
-  const behaviorName = getModuleBehaviorName(moduleEntry.typeID);
-  const handler = resolveCreationAbilityHandler(behaviorName, normalizedAbility);
-  if (!handler) {
-    // Advertisement derives from the registry, so this indicates a race or a
-    // stale snapshot rather than a normal client request.
-    return { success: false, errorMsg: "ABILITY_HANDLER_MISSING" };
-  }
-
-  const context = {
-    ability: normalizedAbility,
-    behaviorName,
-    creationItem: creationContext.item,
-    creationState: creationContext.state,
-    creationTemplate: creationContext.template || null,
-    characterID: creationContext.characterID,
-    moduleEntry,
-    moduleItemID: toInt(moduleItemID, 0),
-    kwargs: kwargs && typeof kwargs === "object" ? kwargs : {},
-    session: session || null,
-    dependencies: abilityDependencies || {},
-  };
-
-  if (typeof handler.validate === "function") {
-    const validation = handler.validate(context);
-    if (validation && validation.success === false) {
-      return validation;
+    if (typeof handler.validate === "function") {
+        const validation = handler.validate(context);
+        if (validation && validation.success === false) {
+            return validation;
+        }
     }
-  }
-
-  try {
-    return handler.execute(context);
-  } catch (error) {
-    log.warn(
-      `[creationAbility] ${behaviorName}:${normalizedAbility} handler failed ` +
-      `module=${context.moduleItemID}: ${error && error.message ? error.message : error}`,
-    );
-    if (error && error.isClientVisible === true) {
-      throw error;
+    try {
+        return handler.execute(context);
     }
-    return { success: false, errorMsg: "ABILITY_EXECUTION_FAILED" };
-  }
+    catch (error) {
+        log.warn(`[creationAbility] ${behaviorName}:${normalizedAbility} handler failed ` +
+            `module=${context.moduleItemID}: ${error && error.message ? error.message : error}`);
+        if (error && error.isClientVisible === true) {
+            throw error;
+        }
+        return { success: false, errorMsg: "ABILITY_EXECUTION_FAILED" };
+    }
 }
-
 function resetCreationAbilityHandlersForTests() {
-  handlersByBehavior.clear();
+    handlersByBehavior.clear();
 }
-
 module.exports = {
-  ABILITY_ACTIVATE_EFFECT,
-  ABILITY_DEACTIVATE_EFFECT,
-  ABILITY_DEPLOY,
-  ABILITY_DIRECTIONAL_SCAN,
-  ABILITY_IFF_RECONFIGURE,
-  ABILITY_OFFLINE,
-  ABILITY_ONLINE,
-  ABILITY_RELOAD,
-  ABILITY_UNLOAD,
-  dispatchCreationAbility,
-  getModuleBehaviorName,
-  getRegisteredBehaviorAbilities,
-  normalizeAbilityId,
-  registerCreationAbilityHandler,
-  resolveCreationAbilityHandler,
-  resetCreationAbilityHandlersForTests,
+    ABILITY_ACTIVATE_EFFECT,
+    ABILITY_DEACTIVATE_EFFECT,
+    ABILITY_DEPLOY,
+    ABILITY_DIRECTIONAL_SCAN,
+    ABILITY_IFF_RECONFIGURE,
+    ABILITY_OFFLINE,
+    ABILITY_ONLINE,
+    ABILITY_RELOAD,
+    ABILITY_UNLOAD,
+    dispatchCreationAbility,
+    getModuleBehaviorName,
+    getRegisteredBehaviorAbilities,
+    normalizeAbilityId,
+    registerCreationAbilityHandler,
+    resolveCreationAbilityHandler,
+    resetCreationAbilityHandlersForTests,
 };
+//# sourceMappingURL=creationAbilityRuntime.js.map

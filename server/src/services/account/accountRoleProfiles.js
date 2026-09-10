@@ -1,3 +1,5 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 const ROLE_GMS = 274877906944n;
 const ROLE_SECURITY = 1125899906842624n;
 const ROLE_PROGRAMMER = 2251799813685248n;
@@ -22,217 +24,125 @@ const ROLE_HEALOTHERS = 8388608n;
 const ROLE_SPAWN = 8589934592n;
 const ROLE_TRANSFER = 137438953472n;
 const ROLE_WORLDMOD = 4096n;
-
 // A normal, non-GM player account carries none of the elevated account-role
 // bits. The session base mask is still applied at session composition, so the
 // account can log in and play as an ordinary capsuleer.
 const PLAYER_ACCOUNT_ROLE = 0n;
-
 const CHAT_CLASSIFICATION_BITS = Object.freeze([
-  ROLE_PINKCHAT,
-  ROLE_QA,
-  ROLE_GML,
-  ROLE_GMH,
-  ROLE_GMS,
-  ROLE_ADMIN,
-  ROLE_CENTURION,
-  ROLE_LEGIONEER,
+    ROLE_PINKCHAT,
+    ROLE_QA,
+    ROLE_GML,
+    ROLE_GMH,
+    ROLE_GMS,
+    ROLE_ADMIN,
+    ROLE_CENTURION,
+    ROLE_LEGIONEER,
 ]);
-
 function combineRoles(...roles) {
-  return roles.reduce(
-    (mask, value) => mask | normalizeRoleValue(value, 0n),
-    0n,
-  );
+    return roles.reduce((mask, value) => mask | normalizeRoleValue(value, 0n), 0n);
 }
-
 const ROLE_EXT_GM4_PLUS = combineRoles(ROLE_EXT_GM4, ROLE_GML, ROLE_GMH);
 const ROLE_EXT_GM3_PLUS = combineRoles(ROLE_EXT_GM3, ROLE_EXT_GM4_PLUS);
 const ROLE_EXT_GM2_PLUS = combineRoles(ROLE_EXT_GM2, ROLE_EXT_GM3_PLUS);
 const ROLE_EXT_GM1_PLUS = combineRoles(ROLE_EXT_GM1, ROLE_EXT_GM2_PLUS);
-const ROLEMASK_VIEW = combineRoles(
-  ROLE_ADMIN,
-  ROLE_CONTENT,
-  ROLE_GML,
-  ROLE_GMH,
-  ROLE_QA,
-  ROLE_EXT_GM1_PLUS,
-);
-
-const MAX_ACCOUNT_ROLE = combineRoles(
-  ROLE_ADMIN,
-  ROLE_CONTENT,
-  ROLE_GML,
-  ROLE_GMH,
-  ROLE_GMS,
-  ROLE_QA,
-  ROLE_PROGRAMMER,
-  ROLE_SECURITY,
-  ROLE_ROLEADMIN,
-  ROLE_BSDADMIN,
-  ROLE_ACCOUNTMANAGEMENT,
-  ROLE_CHTADMINISTRATOR,
-  ROLE_CENTURION,
-  ROLE_LEGIONEER,
-  ROLE_HEALSELF,
-  ROLE_HEALOTHERS,
-  ROLE_SPAWN,
-  ROLE_TRANSFER,
-  ROLE_WORLDMOD,
-);
-
+const ROLEMASK_VIEW = combineRoles(ROLE_ADMIN, ROLE_CONTENT, ROLE_GML, ROLE_GMH, ROLE_QA, ROLE_EXT_GM1_PLUS);
+const MAX_ACCOUNT_ROLE = combineRoles(ROLE_ADMIN, ROLE_CONTENT, ROLE_GML, ROLE_GMH, ROLE_GMS, ROLE_QA, ROLE_PROGRAMMER, ROLE_SECURITY, ROLE_ROLEADMIN, ROLE_BSDADMIN, ROLE_ACCOUNTMANAGEMENT, ROLE_CHTADMINISTRATOR, ROLE_CENTURION, ROLE_LEGIONEER, ROLE_HEALSELF, ROLE_HEALOTHERS, ROLE_SPAWN, ROLE_TRANSFER, ROLE_WORLDMOD);
 const CHAT_ROLE_PROFILES = Object.freeze({
-  red: combineRoles(
-    ROLE_ADMIN,
-    ROLE_GML,
-    ROLE_CHTADMINISTRATOR,
-    ROLE_ACCOUNTMANAGEMENT,
-    ROLE_LEGIONEER,
-  ),
-  blue: combineRoles(
-    ROLE_QA,
-    ROLE_ADMIN,
-    ROLE_GML,
-    ROLE_CHTADMINISTRATOR,
-    ROLE_ACCOUNTMANAGEMENT,
-    ROLE_LEGIONEER,
-  ),
-  yellow: combineRoles(
-    ROLE_PINKCHAT,
-    ROLE_ADMIN,
-    ROLE_GML,
-    ROLE_CHTADMINISTRATOR,
-    ROLE_ACCOUNTMANAGEMENT,
-    ROLE_LEGIONEER,
-  ),
-  teal: combineRoles(
-    ROLE_LEGIONEER,
-    ROLE_CENTURION,
-    ROLE_CHTADMINISTRATOR,
-    ROLE_ACCOUNTMANAGEMENT,
-    ROLE_PROGRAMMER,
-    ROLE_SECURITY,
-    ROLE_CONTENT,
-    ROLE_HEALSELF,
-    ROLE_HEALOTHERS,
-    ROLE_SPAWN,
-    ROLE_TRANSFER,
-    ROLE_WORLDMOD,
-  ),
+    red: combineRoles(ROLE_ADMIN, ROLE_GML, ROLE_CHTADMINISTRATOR, ROLE_ACCOUNTMANAGEMENT, ROLE_LEGIONEER),
+    blue: combineRoles(ROLE_QA, ROLE_ADMIN, ROLE_GML, ROLE_CHTADMINISTRATOR, ROLE_ACCOUNTMANAGEMENT, ROLE_LEGIONEER),
+    yellow: combineRoles(ROLE_PINKCHAT, ROLE_ADMIN, ROLE_GML, ROLE_CHTADMINISTRATOR, ROLE_ACCOUNTMANAGEMENT, ROLE_LEGIONEER),
+    teal: combineRoles(ROLE_LEGIONEER, ROLE_CENTURION, ROLE_CHTADMINISTRATOR, ROLE_ACCOUNTMANAGEMENT, ROLE_PROGRAMMER, ROLE_SECURITY, ROLE_CONTENT, ROLE_HEALSELF, ROLE_HEALOTHERS, ROLE_SPAWN, ROLE_TRANSFER, ROLE_WORLDMOD),
 });
-
 const DEFAULT_CHAT_COLOR = "red";
 const DEFAULT_CHAT_ROLE = CHAT_ROLE_PROFILES[DEFAULT_CHAT_COLOR];
 const SESSION_BASE_ROLE_MASK = 0x6000000080000000n;
-
 function normalizeRoleValue(value, fallback = DEFAULT_CHAT_ROLE) {
-  try {
-    if (typeof value === "bigint") {
-      return value;
+    try {
+        if (typeof value === "bigint") {
+            return value;
+        }
+        if (typeof value === "number" && Number.isFinite(value)) {
+            return BigInt(Math.trunc(value));
+        }
+        if (typeof value === "string" && value.trim() !== "") {
+            return BigInt(value.trim());
+        }
+        if (value && typeof value === "object") {
+            if (value.type === "long" || value.type === "int") {
+                return normalizeRoleValue(value.value, fallback);
+            }
+        }
     }
-
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return BigInt(Math.trunc(value));
+    catch (error) {
+        return fallback;
     }
-
-    if (typeof value === "string" && value.trim() !== "") {
-      return BigInt(value.trim());
-    }
-
-    if (value && typeof value === "object") {
-      if (value.type === "long" || value.type === "int") {
-        return normalizeRoleValue(value.value, fallback);
-      }
-    }
-  } catch (error) {
     return fallback;
-  }
-
-  return fallback;
 }
-
 function roleToString(value) {
-  return normalizeRoleValue(value, 0n).toString();
+    return normalizeRoleValue(value, 0n).toString();
 }
-
 function composeSessionRoleMask(accountRole, chatRole = 0n) {
-  return (
-    normalizeRoleValue(accountRole, 0n) |
-    normalizeRoleValue(chatRole, 0n) |
-    SESSION_BASE_ROLE_MASK
-  );
+    return (normalizeRoleValue(accountRole, 0n) |
+        normalizeRoleValue(chatRole, 0n) |
+        SESSION_BASE_ROLE_MASK);
 }
-
 function stripChatClassificationBits(roleValue) {
-  let normalized = normalizeRoleValue(roleValue, 0n);
-  for (const bit of CHAT_CLASSIFICATION_BITS) {
-    normalized &= ~bit;
-  }
-  return normalized;
+    let normalized = normalizeRoleValue(roleValue, 0n);
+    for (const bit of CHAT_CLASSIFICATION_BITS) {
+        normalized &= ~bit;
+    }
+    return normalized;
 }
-
 function getChatRoleProfile(colorName) {
-  const normalizedColor = String(colorName || "").trim().toLowerCase();
-  return CHAT_ROLE_PROFILES[normalizedColor] || null;
+    const normalizedColor = String(colorName || "").trim().toLowerCase();
+    return CHAT_ROLE_PROFILES[normalizedColor] || null;
 }
-
 function buildPersistedAccountRoleRecord(account = {}) {
-  const normalizedChatRole = normalizeRoleValue(
-    account.chatRole,
-    DEFAULT_CHAT_ROLE,
-  );
-
-  // Per-account GM control. When isGM is omitted the account stays a full
-  // GM/admin account, which keeps existing bootstrap accounts working exactly
-  // as before. Setting isGM:false persists a normal (non-GM) player account:
-  // no elevated account role and no GM chat classification bits, so the login
-  // path (which re-runs this on every handshake) no longer clobbers it back to
-  // full GM.
-  const isGM = account.isGM !== false;
-
-  const nextAccount = {
-    ...account,
-    isGM,
-    role: roleToString(isGM ? MAX_ACCOUNT_ROLE : PLAYER_ACCOUNT_ROLE),
-    chatRole: roleToString(
-      isGM
-        ? (normalizedChatRole || DEFAULT_CHAT_ROLE)
-        : stripChatClassificationBits(normalizedChatRole),
-    ),
-  };
-
-  if (typeof nextAccount.banned !== "boolean") {
-    nextAccount.banned = Boolean(nextAccount.banned);
-  }
-
-  return nextAccount;
+    const normalizedChatRole = normalizeRoleValue(account.chatRole, DEFAULT_CHAT_ROLE);
+    // Per-account GM control. When isGM is omitted the account stays a full
+    // GM/admin account, which keeps existing bootstrap accounts working exactly
+    // as before. Setting isGM:false persists a normal (non-GM) player account:
+    // no elevated account role and no GM chat classification bits, so the login
+    // path (which re-runs this on every handshake) no longer clobbers it back to
+    // full GM.
+    const isGM = account.isGM !== false;
+    const nextAccount = {
+        ...account,
+        isGM,
+        role: roleToString(isGM ? MAX_ACCOUNT_ROLE : PLAYER_ACCOUNT_ROLE),
+        chatRole: roleToString(isGM
+            ? (normalizedChatRole || DEFAULT_CHAT_ROLE)
+            : stripChatClassificationBits(normalizedChatRole)),
+    };
+    if (typeof nextAccount.banned !== "boolean") {
+        nextAccount.banned = Boolean(nextAccount.banned);
+    }
+    return nextAccount;
 }
-
 function withChatColor(colorName) {
-  const profile = getChatRoleProfile(colorName);
-  if (!profile) {
-    return null;
-  }
-
-  return profile;
+    const profile = getChatRoleProfile(colorName);
+    if (!profile) {
+        return null;
+    }
+    return profile;
 }
-
 module.exports = {
-  CHAT_ROLE_PROFILES,
-  DEFAULT_CHAT_COLOR,
-  DEFAULT_CHAT_ROLE,
-  MAX_ACCOUNT_ROLE,
-  ROLE_CONTENT,
-  ROLE_GML,
-  ROLE_PROGRAMMER,
-  ROLE_QA,
-  ROLEMASK_VIEW,
-  SESSION_BASE_ROLE_MASK,
-  buildPersistedAccountRoleRecord,
-  composeSessionRoleMask,
-  getChatRoleProfile,
-  normalizeRoleValue,
-  roleToString,
-  stripChatClassificationBits,
-  withChatColor,
+    CHAT_ROLE_PROFILES,
+    DEFAULT_CHAT_COLOR,
+    DEFAULT_CHAT_ROLE,
+    MAX_ACCOUNT_ROLE,
+    ROLE_CONTENT,
+    ROLE_GML,
+    ROLE_PROGRAMMER,
+    ROLE_QA,
+    ROLEMASK_VIEW,
+    SESSION_BASE_ROLE_MASK,
+    buildPersistedAccountRoleRecord,
+    composeSessionRoleMask,
+    getChatRoleProfile,
+    normalizeRoleValue,
+    roleToString,
+    stripChatClassificationBits,
+    withChatColor,
 };
+//# sourceMappingURL=accountRoleProfiles.js.map

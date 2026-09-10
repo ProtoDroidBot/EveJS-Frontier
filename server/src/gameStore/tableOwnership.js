@@ -1,5 +1,5 @@
 "use strict";
-
+Object.defineProperty(exports, "__esModule", { value: true });
 /**
  * Phase 0 — gameStore table ownership map (curated source of truth).
  *
@@ -37,79 +37,73 @@
  * repository layer (0.C, adopted by ~33 owner modules). The remaining planned
  * consumer is frozen-view / in-place-mutation detection (0.B), still open.
  */
-
 const TIERS = Object.freeze({ RUNTIME: "runtime", STATIC: "static" });
 const CONFIDENCE = Object.freeze({
-  SCANNER: "scanner",
-  INFERRED: "inferred",
-  REVIEW: "review",
+    SCANNER: "scanner",
+    INFERRED: "inferred",
+    REVIEW: "review",
 });
-
 const TABLE_OWNERSHIP = {};
-
 function define(tables, { tier, domain = null, confidence, note = null }) {
-  for (const table of tables) {
-    if (TABLE_OWNERSHIP[table]) {
-      throw new Error(`tableOwnership: duplicate classification for "${table}"`);
+    for (const table of tables) {
+        if (TABLE_OWNERSHIP[table]) {
+            throw new Error(`tableOwnership: duplicate classification for "${table}"`);
+        }
+        TABLE_OWNERSHIP[table] = { table, tier, domain, confidence, note };
     }
-    TABLE_OWNERSHIP[table] = { table, tier, domain, confidence, note };
-  }
 }
-
 // ── Formerly-shared seams, now single-writer ─────────────────────────
 // These four were multi-writer aggregates; the Phase 0 reroute (6d8a05d0)
 // funneled every writer through one owner API, so each is single-writer today
 // (domain != "shared"). Documented individually because each remains a Phase 3
 // transaction boundary — especially `items`, the 0.E item-custody seam.
 TABLE_OWNERSHIP.characters = {
-  table: "characters",
-  tier: TIERS.RUNTIME,
-  domain: "service:character",
-  confidence: CONFIDENCE.SCANNER,
-  note: "Multi-domain aggregate, but funneled through characterState's owner API (writeCharacterRecord/removeCharacterRecord). As of the Phase 0 reroute (6d8a05d0) ONLY the character domain writes this table; skills/structure/inventory/legacy-npc now call the owner API. Single-writer achieved.",
+    table: "characters",
+    tier: TIERS.RUNTIME,
+    domain: "service:character",
+    confidence: CONFIDENCE.SCANNER,
+    note: "Multi-domain aggregate, but funneled through characterState's owner API (writeCharacterRecord/removeCharacterRecord). As of the Phase 0 reroute (6d8a05d0) ONLY the character domain writes this table; skills/structure/inventory/legacy-npc now call the owner API. Single-writer achieved.",
 };
 TABLE_OWNERSHIP.items = {
-  table: "items",
-  tier: TIERS.RUNTIME,
-  domain: "service:inventory",
-  confidence: CONFIDENCE.SCANNER,
-  note: "Sole table-writer is itemStore.js (the items owner). Other domains (dogma, space, market) mutate items only through itemStore's CRUD + custody API (createSpaceItemForCharacter / updateInventoryItem / removeInventoryItem / moveItemToLocation / moveShipToSpace). The item-custody boundary (Phase 0 / 0.E).",
+    table: "items",
+    tier: TIERS.RUNTIME,
+    domain: "service:inventory",
+    confidence: CONFIDENCE.SCANNER,
+    note: "Sole table-writer is itemStore.js (the items owner). Other domains (dogma, space, market) mutate items only through itemStore's CRUD + custody API (createSpaceItemForCharacter / updateInventoryItem / removeInventoryItem / moveItemToLocation / moveShipToSpace). The item-custody boundary (Phase 0 / 0.E).",
 };
 TABLE_OWNERSHIP.skills = {
-  table: "skills",
-  tier: TIERS.RUNTIME,
-  domain: "service:skills",
-  confidence: CONFIDENCE.SCANNER,
-  note: "Owned by skillState (sole table-writer). Other domains delete skills records via skillState.removeSkillsRecord (Phase 0 reroute). Single-writer achieved.",
+    table: "skills",
+    tier: TIERS.RUNTIME,
+    domain: "service:skills",
+    confidence: CONFIDENCE.SCANNER,
+    note: "Owned by skillState (sole table-writer). Other domains delete skills records via skillState.removeSkillsRecord (Phase 0 reroute). Single-writer achieved.",
 };
 TABLE_OWNERSHIP.accounts = {
-  table: "accounts",
-  tier: TIERS.RUNTIME,
-  domain: "service:login",
-  confidence: CONFIDENCE.SCANNER,
-  note: "Login/auth account records, owned by services/login/accountStore (sole writer). The TCP handshake and chat admin write via accountStore; userService reads. Single swap point for a future relational accounts table. Single-writer achieved.",
+    table: "accounts",
+    tier: TIERS.RUNTIME,
+    domain: "service:login",
+    confidence: CONFIDENCE.SCANNER,
+    note: "Login/auth account records, owned by services/login/accountStore (sole writer). The TCP handshake and chat admin write via accountStore; userService reads. Single swap point for a future relational accounts table. Single-writer achieved.",
 };
-
 // ── Runtime · in-space (must travel with a sol node) ─────────────────
 define(["npcControlState"], {
-  tier: TIERS.RUNTIME,
-  domain: "in-space",
-  confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME,
+    domain: "in-space",
+    confidence: CONFIDENCE.SCANNER,
 });
 define(["frontierLandscapeCustomSites"], {
-  tier: TIERS.RUNTIME,
-  domain: "in-space",
-  confidence: CONFIDENCE.SCANNER,
-  note: "Persistent Frontier landscape anchors authored through the landscape GM command.",
+    tier: TIERS.RUNTIME,
+    domain: "in-space",
+    confidence: CONFIDENCE.SCANNER,
+    note: "Persistent Frontier landscape anchors authored through the landscape GM command.",
 });
 define(["frontierRiftSites"], {
-  tier: TIERS.RUNTIME,
-  domain: "in-space",
-  confidence: CONFIDENCE.SCANNER,
-  note: "Persistent Frontier Crude Rift anchors authored through the Rift GM command.",
+    tier: TIERS.RUNTIME,
+    domain: "in-space",
+    confidence: CONFIDENCE.SCANNER,
+    note: "Persistent Frontier Crude Rift anchors authored through the Rift GM command.",
 });
-define(
-  [
+define([
     "npcEntities",
     "npcModules",
     "npcRuntimeState",
@@ -118,145 +112,138 @@ define(
     "npcWrecks",
     "npcWreckItems",
     "npcSpawnSites",
-  ],
-  {
+], {
     tier: TIERS.RUNTIME,
     domain: "in-space",
     confidence: CONFIDENCE.INFERRED,
     note: "NPC runtime, written via space/npc/nativeNpcStore.js param-helper.",
-  },
-);
-define(["authoredSpaceProps"], {
-  tier: TIERS.STATIC,
-  domain: "sde",
-  confidence: CONFIDENCE.INFERRED,
-  note: "Static authored scenery — per-system JSON (Jita.json, Perimeter.json, …) under gameStore/data/authoredSpaceProps/, loaded directly via fs by space/authoredSpaceProps.js, NOT the gameStore API. Removed from SQLITE_TABLES 2026-06-25 (vestigial; no writer).",
 });
-
+define(["authoredSpaceProps"], {
+    tier: TIERS.STATIC,
+    domain: "sde",
+    confidence: CONFIDENCE.INFERRED,
+    note: "Static authored scenery — per-system JSON (Jita.json, Perimeter.json, …) under gameStore/data/authoredSpaceProps/, loaded directly via fs by space/authoredSpaceProps.js, NOT the gameStore API. Removed from SQLITE_TABLES 2026-06-25 (vestigial; no writer).",
+});
 // ── Runtime · single-service domains (scanner-attributed) ────────────
 define(["accessGroups", "characterEnergyState", "characterNotes"], {
-  tier: TIERS.RUNTIME, domain: "service:character", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:character", confidence: CONFIDENCE.SCANNER,
 });
 define(["characterExpertSystems", "corpSkillPlans", "skillPlans", "skillQueues", "skillTradingState"], {
-  tier: TIERS.RUNTIME, domain: "service:skills", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:skills", confidence: CONFIDENCE.SCANNER,
 });
 define(["calendarEvents", "calendarResponses"], {
-  tier: TIERS.RUNTIME, domain: "service:calendar", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:calendar", confidence: CONFIDENCE.SCANNER,
 });
 define(["contractRuntime"], {
-  tier: TIERS.RUNTIME, domain: "service:contracts", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:contracts", confidence: CONFIDENCE.SCANNER,
 });
 define(["corporationBills"], {
-  tier: TIERS.RUNTIME, domain: "service:account", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:account", confidence: CONFIDENCE.SCANNER,
 });
 define(["corporationGoals", "corporationVotes", "lpWallets"], {
-  tier: TIERS.RUNTIME, domain: "service:corporation", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:corporation", confidence: CONFIDENCE.SCANNER,
 });
 define(["dailyGoals"], {
-  tier: TIERS.RUNTIME, domain: "service:dailyGoals", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:dailyGoals", confidence: CONFIDENCE.SCANNER,
 });
 define(["dungeonRuntimeState"], {
-  tier: TIERS.RUNTIME, domain: "service:dungeon", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:dungeon", confidence: CONFIDENCE.SCANNER,
 });
 define(["evermarkEntitlements"], {
-  tier: TIERS.RUNTIME, domain: "service:evermarks", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:evermarks", confidence: CONFIDENCE.SCANNER,
 });
 define(["identityState"], {
-  tier: TIERS.RUNTIME, domain: "service:_shared", confidence: CONFIDENCE.SCANNER,
-  note: "Identity allocator (services/_shared/identityAllocator.js).",
+    tier: TIERS.RUNTIME, domain: "service:_shared", confidence: CONFIDENCE.SCANNER,
+    note: "Identity allocator (services/_shared/identityAllocator.js).",
 });
 define(["insuranceContracts"], {
-  tier: TIERS.RUNTIME, domain: "service:insurance", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:insurance", confidence: CONFIDENCE.SCANNER,
 });
 define(["killmails"], {
-  tier: TIERS.RUNTIME, domain: "service:killmail", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:killmail", confidence: CONFIDENCE.SCANNER,
 });
 define(["killRights", "pendingNpcBounties", "playerBounties"], {
-  tier: TIERS.RUNTIME, domain: "service:bounty", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:bounty", confidence: CONFIDENCE.SCANNER,
 });
 define(["mail"], {
-  tier: TIERS.RUNTIME, domain: "service:mail", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:mail", confidence: CONFIDENCE.SCANNER,
 });
 define(["mapTelemetry", "solarSystemInterferenceState"], {
-  tier: TIERS.RUNTIME, domain: "service:map", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:map", confidence: CONFIDENCE.SCANNER,
 });
 define(["marketEscrow", "marketRuntime"], {
-  tier: TIERS.RUNTIME, domain: "service:market", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:market", confidence: CONFIDENCE.SCANNER,
 });
 define(["miningLedger", "miningRuntimeState"], {
-  tier: TIERS.RUNTIME, domain: "service:mining", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:mining", confidence: CONFIDENCE.SCANNER,
 });
 define(["missionRuntimeState"], {
-  tier: TIERS.RUNTIME, domain: "service:agent", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:agent", confidence: CONFIDENCE.SCANNER,
 });
 define(["moduleGroupingState"], {
-  tier: TIERS.RUNTIME, domain: "service:moduleGrouping", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:moduleGrouping", confidence: CONFIDENCE.SCANNER,
 });
 define(["moonExtractions", "structureAssetSafety", "structurePaintwork", "structureProfiles", "structureTetherRestrictions"], {
-  tier: TIERS.RUNTIME, domain: "service:structure", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:structure", confidence: CONFIDENCE.SCANNER,
 });
 define(["newEdenStoreRuntime", "newEdenStore"], {
-  tier: TIERS.RUNTIME, domain: "service:newEdenStore", confidence: CONFIDENCE.SCANNER,
-  note: "newEdenStore is runtime (written by storeState via AUTHORITY_TABLE), SQLite-backed as of the 2026-06-25 backfill.",
+    tier: TIERS.RUNTIME, domain: "service:newEdenStore", confidence: CONFIDENCE.SCANNER,
+    note: "newEdenStore is runtime (written by storeState via AUTHORITY_TABLE), SQLite-backed as of the 2026-06-25 backfill.",
 });
 define(["notifications"], {
-  tier: TIERS.RUNTIME, domain: "service:notifications", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:notifications", confidence: CONFIDENCE.SCANNER,
 });
 define(["chatState", "chatStaticContracts", "chatBacklog"], {
-  tier: TIERS.RUNTIME, domain: "service:chat", confidence: CONFIDENCE.INFERRED,
-  note: "Owned by _secondary/chat/chatStore.js; migrated from _secondary/data/chat JSON/JSONL sidecars.",
+    tier: TIERS.RUNTIME, domain: "service:chat", confidence: CONFIDENCE.INFERRED,
+    note: "Owned by _secondary/chat/chatStore.js; migrated from _secondary/data/chat JSON/JSONL sidecars.",
 });
 define(["overviewSharedPresets"], {
-  tier: TIERS.RUNTIME, domain: "service:overview", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:overview", confidence: CONFIDENCE.SCANNER,
 });
 define(["planetOrbitalState", "planetRuntimeState"], {
-  tier: TIERS.RUNTIME, domain: "service:planet", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:planet", confidence: CONFIDENCE.SCANNER,
 });
 define(["probeRuntimeState", "wormholeRuntimeState"], {
-  tier: TIERS.RUNTIME, domain: "service:exploration", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:exploration", confidence: CONFIDENCE.SCANNER,
 });
 define(["raffles", "rafflesRuntime"], {
-  tier: TIERS.RUNTIME, domain: "service:raffles", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:raffles", confidence: CONFIDENCE.SCANNER,
 });
 define(["sharedSettings"], {
-  tier: TIERS.RUNTIME, domain: "service:settings", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:settings", confidence: CONFIDENCE.SCANNER,
 });
 define(["shipCosmetics", "shipDirt", "shipKillCounters", "shipLogoFittings"], {
-  tier: TIERS.RUNTIME, domain: "service:ship", confidence: CONFIDENCE.SCANNER,
+    tier: TIERS.RUNTIME, domain: "service:ship", confidence: CONFIDENCE.SCANNER,
 });
-
 // ── Runtime · single-service domains (inferred via param-helper) ─────
 define(["corporationRuntime", "corporations", "alliances"], {
-  tier: TIERS.RUNTIME, domain: "service:corporation", confidence: CONFIDENCE.INFERRED,
-  note: "Written via corporationState/corporationRuntimeState param-helpers; all SQLite-backed (corporations migrated 2026-06-25).",
+    tier: TIERS.RUNTIME, domain: "service:corporation", confidence: CONFIDENCE.INFERRED,
+    note: "Written via corporationState/corporationRuntimeState param-helpers; all SQLite-backed (corporations migrated 2026-06-25).",
 });
 define(["bookmarks", "bookmarkFolders", "bookmarkGroups", "bookmarkKnownFolders", "bookmarkSubfolders", "bookmarkRuntimeState", "sharedBookmarkFolders"], {
-  tier: TIERS.RUNTIME, domain: "service:bookmark", confidence: CONFIDENCE.INFERRED,
-  note: "Written via services/bookmark/bookmarkRuntimeStore.js (table constants forwarded through a wrapper).",
+    tier: TIERS.RUNTIME, domain: "service:bookmark", confidence: CONFIDENCE.INFERRED,
+    note: "Written via services/bookmark/bookmarkRuntimeStore.js (table constants forwarded through a wrapper).",
 });
 define(["industryJobs", "industryRuntime", "industryBlueprintState", "industryFacilityState"], {
-  tier: TIERS.RUNTIME, domain: "service:industry", confidence: CONFIDENCE.INFERRED,
-  note: "Written via industryRuntimeState/industryFacilityState param-helpers.",
+    tier: TIERS.RUNTIME, domain: "service:industry", confidence: CONFIDENCE.INFERRED,
+    note: "Written via industryRuntimeState/industryFacilityState param-helpers.",
 });
 define(["reprocessingFacilityState"], {
-  tier: TIERS.RUNTIME, domain: "service:reprocessing", confidence: CONFIDENCE.INFERRED,
+    tier: TIERS.RUNTIME, domain: "service:reprocessing", confidence: CONFIDENCE.INFERRED,
 });
 define(["sovereignty"], {
-  tier: TIERS.RUNTIME, domain: "service:sovereignty", confidence: CONFIDENCE.INFERRED,
+    tier: TIERS.RUNTIME, domain: "service:sovereignty", confidence: CONFIDENCE.INFERRED,
 });
 define(["structures"], {
-  tier: TIERS.RUNTIME, domain: "service:structure", confidence: CONFIDENCE.INFERRED,
+    tier: TIERS.RUNTIME, domain: "service:structure", confidence: CONFIDENCE.INFERRED,
 });
-
 // ── Runtime · domain not yet attributed (needs review) ───────────────
 define(["savedFittings"], {
-  tier: TIERS.RUNTIME, domain: "secondary:fitting", confidence: CONFIDENCE.SCANNER,
-  note: "Owned by _secondary/fitting/fittingStore.js (writes SAVED_FITTINGS_TABLE). Also touched cross-cuttingly by character deletion and player transfer.",
+    tier: TIERS.RUNTIME, domain: "secondary:fitting", confidence: CONFIDENCE.SCANNER,
+    note: "Owned by _secondary/fitting/fittingStore.js (writes SAVED_FITTINGS_TABLE). Also touched cross-cuttingly by character deletion and player transfer.",
 });
-
 // ── Static · read-only SDE / reference data ──────────────────────────
-define(
-  [
+define([
     "agentAuthority", "asteroidBelts", "asteroidFieldStyles", "asteroidTypesBySolarSystemID",
     "capitalNpcAuthority", "celestials", "characterCreationBloodlines", "characterCreationRaces",
     "characterCreationSchools", "clientEntityStandings", "clientTypeLists", "dbuffCollections",
@@ -274,50 +261,47 @@ define(
     "stargates", "starterShipFittings", "stationGraphicLocators", "stationStandingsRestrictions",
     "stationTypes", "stations", "structureGraphicLocators", "structureTypes",
     "trigDrifterSpawnAuthority", "typeDogma",
-  ],
-  { tier: TIERS.STATIC, domain: "sde", confidence: CONFIDENCE.INFERRED,
-    note: "Treated as read-only reference (not in any runtime-persisted set)." },
-);
-
+], { tier: TIERS.STATIC, domain: "sde", confidence: CONFIDENCE.INFERRED,
+    note: "Treated as read-only reference (not in any runtime-persisted set)." });
 // ── Query API ────────────────────────────────────────────────────────
 function getTableOwnership(table) {
-  return Object.prototype.hasOwnProperty.call(TABLE_OWNERSHIP, table)
-    ? TABLE_OWNERSHIP[table]
-    : null;
+    return Object.prototype.hasOwnProperty.call(TABLE_OWNERSHIP, table)
+        ? TABLE_OWNERSHIP[table]
+        : null;
 }
 function isClassified(table) {
-  return getTableOwnership(table) !== null;
+    return getTableOwnership(table) !== null;
 }
 function isRuntimeTable(table) {
-  const entry = getTableOwnership(table);
-  return entry !== null && entry.tier === TIERS.RUNTIME;
+    const entry = getTableOwnership(table);
+    return entry !== null && entry.tier === TIERS.RUNTIME;
 }
 function listTables() {
-  return Object.keys(TABLE_OWNERSHIP).sort();
+    return Object.keys(TABLE_OWNERSHIP).sort();
 }
 function listByDomain(domain) {
-  return listTables().filter((t) => TABLE_OWNERSHIP[t].domain === domain);
+    return listTables().filter((t) => TABLE_OWNERSHIP[t].domain === domain);
 }
 function listInSpaceTables() {
-  return listByDomain("in-space");
+    return listByDomain("in-space");
 }
 function listSharedSeams() {
-  return listByDomain("shared");
+    return listByDomain("shared");
 }
 function listForReview() {
-  return listTables().filter((t) => TABLE_OWNERSHIP[t].confidence === CONFIDENCE.REVIEW);
+    return listTables().filter((t) => TABLE_OWNERSHIP[t].confidence === CONFIDENCE.REVIEW);
 }
-
 module.exports = {
-  TIERS,
-  CONFIDENCE,
-  TABLE_OWNERSHIP,
-  getTableOwnership,
-  isClassified,
-  isRuntimeTable,
-  listTables,
-  listByDomain,
-  listInSpaceTables,
-  listSharedSeams,
-  listForReview,
+    TIERS,
+    CONFIDENCE,
+    TABLE_OWNERSHIP,
+    getTableOwnership,
+    isClassified,
+    isRuntimeTable,
+    listTables,
+    listByDomain,
+    listInSpaceTables,
+    listSharedSeams,
+    listForReview,
 };
+//# sourceMappingURL=tableOwnership.js.map

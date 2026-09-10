@@ -1,18 +1,19 @@
-# The runtime image only needs these application trees. Keeping the context
+# The build needs these application and TypeScript source trees. Keeping the context
 # explicit prevents large local caches, logs, generated data, and test stores
 # from being sent to the Linux Docker builder.
 **
 !Dockerfile
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.browser.json
 !evejs.config.local.json
 !server/
 !server/**
 !tools/
-!tools/DatabaseCreator/
-!tools/DatabaseCreator/**
-!tools/market-seed/
-!tools/market-seed/**
-!tools/market-seederv2/
-!tools/market-seederv2/**
+!tools/**
+!scripts/
+!scripts/**
 !externalservices/
 !externalservices/market-server/
 !externalservices/market-server/**
@@ -23,6 +24,25 @@
 **/node_modules/**
 **/target
 **/target/**
+**/__pycache__
+**/*.py[cod]
+tools/ClientCodeGrabber/Latest
+tools/ClientCodeGrabber/Latest/**
+tools/ClientCodeGrabberV2
+tools/ClientCodeGrabberV2/**
+tools/ConfigEditor/assets
+tools/ConfigEditor/assets/**
+tools/DataSync/source_json
+tools/DataSync/source_json/**
+tools/PlayerConnect
+tools/PlayerConnect/**
+tools/PlayerConnect-v2
+tools/PlayerConnect-v2/**
+# JavaScript is generated from the TypeScript sources inside the builder.
+**/*.js
+**/*.mjs
+**/*.js.map
+**/*.mjs.map
 server/logs
 server/logs/**
 server/tests

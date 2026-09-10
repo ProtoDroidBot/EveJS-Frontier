@@ -70,6 +70,13 @@ if [[ ! -d "$STATIC_ROOT" ]]; then
   exit 1
 fi
 
+if [[ ! -f "${REPO_ROOT}/node_modules/typescript/bin/tsc" ]]; then
+  echo "[evejs-frontier] Installing the TypeScript build dependencies ..."
+  npm --prefix "$REPO_ROOT" ci --include=dev
+fi
+echo "[evejs-frontier] Compiling TypeScript ..."
+npm --prefix "$REPO_ROOT" run build
+
 if [[ "$RESET_RUNTIME" == true && -e "$RUNTIME_ROOT" ]]; then
   if [[ ! -f "$RUNTIME_MARKER" ]]; then
     echo "[evejs-frontier] Refusing to reset an unrecognized runtime: $RUNTIME_ROOT" >&2
@@ -122,4 +129,4 @@ exec env \
   EVEJS_MARKET_DAEMON_ENABLED="false" \
   EVEJS_SKIP_NPC_STARTUP="1" \
   EVEJS_LOG_LEVEL="$LOG_LEVEL" \
-  node server/index.js
+  node --enable-source-maps server/index.js

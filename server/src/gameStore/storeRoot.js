@@ -1,3 +1,4 @@
+"use strict";
 /**
  * GAMESTORE ROOT RESOLUTION:
  *
@@ -19,57 +20,50 @@
  * and what puts uploaded portraits inside the Docker volume instead of the
  * container's ephemeral /app layer.
  */
-
+Object.defineProperty(exports, "__esModule", { value: true });
 const fs = require("fs");
 const path = require("path");
-
 const SOURCE_DATA_DIR = path.join(__dirname, "data");
 const LOCAL_DATABASE_ROOT = path.resolve(__dirname, "../../..", "_local", "gameStore");
 const LOCAL_DATA_DIR = path.join(LOCAL_DATABASE_ROOT, "data");
 const RUNTIME_IMAGES_DIR_NAME = "images";
-
 // Resolution is stable for a given EVEJS_GAMESTORE_DATA_DIR, and callers on the
 // image-serving path ask per request, so memoise on the env value rather than
 // re-running the existsSync probes every time.
 let cachedEnvKey = null;
 let cachedDataDir = null;
-
 function resolveDataDir() {
-  const envKey = String(process.env.EVEJS_GAMESTORE_DATA_DIR || "");
-  if (cachedDataDir !== null && cachedEnvKey === envKey) {
-    return cachedDataDir;
-  }
-
-  let dataDir;
-  if (envKey) {
-    dataDir = path.resolve(envKey);
-  } else if (
-    fs.existsSync(path.join(LOCAL_DATABASE_ROOT, "manifest.json")) ||
-    fs.existsSync(LOCAL_DATA_DIR)
-  ) {
-    dataDir = LOCAL_DATA_DIR;
-  } else {
-    dataDir = SOURCE_DATA_DIR;
-  }
-
-  cachedEnvKey = envKey;
-  cachedDataDir = dataDir;
-  return dataDir;
+    const envKey = String(process.env.EVEJS_GAMESTORE_DATA_DIR || "");
+    if (cachedDataDir !== null && cachedEnvKey === envKey) {
+        return cachedDataDir;
+    }
+    let dataDir;
+    if (envKey) {
+        dataDir = path.resolve(envKey);
+    }
+    else if (fs.existsSync(path.join(LOCAL_DATABASE_ROOT, "manifest.json")) ||
+        fs.existsSync(LOCAL_DATA_DIR)) {
+        dataDir = LOCAL_DATA_DIR;
+    }
+    else {
+        dataDir = SOURCE_DATA_DIR;
+    }
+    cachedEnvKey = envKey;
+    cachedDataDir = dataDir;
+    return dataDir;
 }
-
 function resolveStoreRoot() {
-  return path.resolve(resolveDataDir(), "..");
+    return path.resolve(resolveDataDir(), "..");
 }
-
 function resolveRuntimeImagesDir() {
-  return path.join(resolveStoreRoot(), RUNTIME_IMAGES_DIR_NAME);
+    return path.join(resolveStoreRoot(), RUNTIME_IMAGES_DIR_NAME);
 }
-
 module.exports = {
-  LOCAL_DATABASE_ROOT,
-  LOCAL_DATA_DIR,
-  SOURCE_DATA_DIR,
-  resolveDataDir,
-  resolveRuntimeImagesDir,
-  resolveStoreRoot,
+    LOCAL_DATABASE_ROOT,
+    LOCAL_DATA_DIR,
+    SOURCE_DATA_DIR,
+    resolveDataDir,
+    resolveRuntimeImagesDir,
+    resolveStoreRoot,
 };
+//# sourceMappingURL=storeRoot.js.map

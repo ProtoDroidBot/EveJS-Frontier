@@ -122,6 +122,7 @@ run_market() {
 run_server() {
   cd /app/server
   exec node \
+    --enable-source-maps \
     --report-on-fatalerror \
     --report-uncaught-exception \
     --report-dir=./logs/node-reports \
@@ -157,6 +158,7 @@ run_all() {
   fi
 
   (cd /app/server && exec node \
+    --enable-source-maps \
     --report-on-fatalerror \
     --report-uncaught-exception \
     --report-dir=./logs/node-reports \

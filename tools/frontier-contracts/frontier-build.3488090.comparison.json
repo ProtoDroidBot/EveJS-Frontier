@@ -1,0 +1,163 @@
+{
+  "format": "evejs-frontier-build-comparison-v1",
+  "baselineBuild": 3474408,
+  "candidateBuild": 3488090,
+  "source": {
+    "appName": "FRONTIER",
+    "build": 3488090,
+    "sync": 3488090,
+    "version": "20.04",
+    "branch": "//frontier/cycle-6",
+    "codename": "cycle-6",
+    "region": "ccp",
+    "codeArchiveBytes": 118947841,
+    "codeArchiveSha256": "704d4d43508e3941003f7375c58d1a556c89a88d1c908e7aa983df2e55b6770d",
+    "resourceIndexSha256": "94fcb8198f7353e35f9a0e1750d3bd54079fb798830680bb91bf19254d1ff4e5"
+  },
+  "handshake": {
+    "machoNetVersion": 489,
+    "birthday": 170472,
+    "machoNetModule": "eve/common/script/net/eveMachoNetVersion.pyc",
+    "machoNetModuleSha256": "569675bb06334ca1db69c92e1170aaa73bd2813abea3ed8043a6130ce4f7ccb2",
+    "gpsModule": "carbon/common/script/net/GPS.pyc",
+    "gpsModuleSha256": "9f53bf3814f0280add603574043e6767ee2c32953ca5b3a2cb8df49a6e63b317",
+    "assessment": "The version/cycle, MachoNet version 489, and GPSTransport HANDSHAKE_SECRET_KEY 170472 are unchanged from the recorded 3474408 profile. Client build/sync advanced to 3488090."
+  },
+  "staticData": {
+    "baseline": {
+      "systems": 24026,
+      "landscapeSites": 113253,
+      "types": 32623,
+      "stargates": 7072,
+      "evidence": "tools/frontier-contracts/frontier-build.3474408.comparison.json"
+    },
+    "candidateInputValidation": {
+      "indexedResourcesVerified": 33,
+      "mapObjectsSha256": "f7c3b2533a3f15683750df59331ed303beb2576c6eb504402123d72d242d6a1f",
+      "mapObjectsReadOnlyCounts": {
+        "celestials": 678045,
+        "npcStations": 103
+      },
+      "riftSource": {
+        "dungeonsSha256": "4ac74329eb56fc4d839acf2cfe12162320bcf9a4a99e6671e4f714cacaa44609",
+        "landscapeSha256": "0a56d7fcc866022ecaab649d39be23014e9cd480c191bd12d30bc68cbfd30b33"
+      }
+    },
+    "candidate": {
+      "systems": 24026,
+      "landscapeSites": 113253,
+      "types": 32626,
+      "stargates": 7072,
+      "totalRecords": 1148579,
+      "outputFiles": 35,
+      "snapshotOutputsIdentity": {
+        "algorithm": "sha256(JSON.stringify(sorted output name -> { records, sha256 }))",
+        "sha256": "050dcf794b610e9e54085874b114502d278e07707ec338690e6427f5de881965"
+      },
+      "manifest": "_local/frontier-sde/3488090/frontier-extraction-manifest.json"
+    },
+    "knownCountDelta": {
+      "systems": 0,
+      "landscapeSites": 0,
+      "types": 3,
+      "stargates": 0
+    },
+    "candidateSemanticAuthority": {
+      "rift14001EntryTypeID": 92395,
+      "rift14001TriggerCount": 4,
+      "rift14008EntryTypeID": 92415,
+      "rift14008TriggerCount": 4,
+      "fringeTallyport": {
+        "itemID": 900202923,
+        "solarSystemID": 30010146,
+        "typeID": 92480,
+        "dungeonID": 14026
+      },
+      "relay90184ConstructionSite": 91717,
+      "relaySite91717HasAssemblyConstruction": true
+    },
+    "snapshotExtracted": true,
+    "snapshotValidated": true,
+    "riftAuthorityValidated": true,
+    "databaseValidation": {
+      "build": 3488090,
+      "systems": 24026,
+      "celestials": 670973,
+      "landscapeSites": 113253,
+      "stargates": 7072,
+      "bootstrapStationID": 64000001,
+      "bootstrapSolarSystemID": 30000004,
+      "report": "_local/frontier-gameStore/3488090/frontier-database-validation.json"
+    },
+    "extractionRuntime": "Official portable Windows Python 3.12.3 x64 with the installed client FSD loaders, executed through the existing GE-Proton11-6 and Steam Runtime 4 in a disposable Wine prefix. Client paths were appended after Python's own standard library to prevent a ctypes conflict. No client or existing game prefix was launched.",
+    "limit": "The build-3474408 JSONL snapshot is absent locally, so identities of the three additional type rows and row-level static-data changes cannot be established from the recorded count/hash evidence alone. Raw SQLite celestial counts are not interchangeable with generated celestial counts."
+  },
+  "contracts": {
+    "baseline": {
+      "descriptorFiles": 163,
+      "failedDescriptors": 0,
+      "protoMembers": 163,
+      "clientModules": 239,
+      "descriptorSetSha256": "5485215de6d5cf605e936d8e5c8aa11e0b72b4e89ccef96ff45579cca9fbf381",
+      "evidence": "tools/frontier-contracts/frontier-build.3474408.comparison.json",
+      "descriptorArtifactAvailable": false,
+      "moduleInventoryArtifactAvailable": false
+    },
+    "candidate": {
+      "descriptorFiles": 166,
+      "failedDescriptors": 0,
+      "protoMembers": 166,
+      "clientModules": 238,
+      "descriptorSetSha256": "c0f6e31a7a818775315b777dbea0ec941e2dd1487779ddbbccb9ebc6bfd2128d",
+      "descriptorJsonSha256": "d827ae732a95a1ac6d6136e08948919f9388abfe08a0c279da0ad030cc877f8e",
+      "contractIndexSha256": "40b34aa38449bb22bbd8aeb4c9646b6c529c763527d0c6a5a7cd3f27d4c425f7",
+      "clientModuleInventorySha256": "ec4da7b0b30647432acbf98c6d78819bc74e209d2f68d76664020b43bff88c6e",
+      "manifest": "_local/frontier-contracts/3488090/frontier-contract-manifest.json",
+      "extractionRuntime": "CPython 3.12.3 on Linux with the archive's pure-Python protobuf 3.17.3; descriptor constants are decoded without importing game modules"
+    },
+    "knownCountDelta": {
+      "descriptorFiles": 3,
+      "protoMembers": 3,
+      "clientModules": -1
+    },
+    "assessment": "The descriptor-set hash and inventory counts differ from the recorded 3474408 evidence. The baseline descriptor and inventory files are absent locally, so the exact added/removed modules and field-level changes cannot be established from that evidence. Count differences do not prove that existing server contracts remain compatible."
+  },
+  "nativePatch": {
+    "profile": "tools/frontier-client/blue-pyd.3488090.patch.json",
+    "sourceSha256": "a7c2789f7a00f19cfd0e3603397f26377f69937ad32ef1611c7308bc36c45c5c",
+    "targetSha256": "2dcfd00d4b84534abecf7f4cb3be09209fb2bac85377066cb8e18fe32131de82",
+    "cachePath": "5b/5baa6098ac19f0c6_df59905ebc312a29c5e28e4fddc246a0",
+    "installedPairPatchedAndVerified": true,
+    "originalPairBackedUp": true,
+    "otherProtectedClientHashesUnchanged": true,
+    "scope": "Native module and exact cache copy only; no manifest, code archive, certificates, executable, index, or boot-configuration changes. Full staging is a separate operation."
+  },
+  "offlineValidation": {
+    "date": "2026-09-04",
+    "node": "24.19.0",
+    "python": "3.12.3",
+    "typescriptBuildAndTypecheckPassed": true,
+    "npmTests": { "passed": 44, "failed": 0, "windowsOnlySkipped": 3 },
+    "pythonClientTests": { "passed": 30, "failed": 0, "skipped": 0 },
+    "frontierServerTests": {
+      "passed": 220,
+      "failed": 0,
+      "skipped": 0,
+      "baseline": "_local/frontier-gameStore/3488090",
+      "isolation": "Attested disposable copy; no persistent runtime initialized"
+    },
+    "actualGatewayContracts": {
+      "roots": 4,
+      "messageDefinitionsIncludingSharedTypesPerRoot": 83,
+      "fields": 132,
+      "missingMessages": 0,
+      "conflictingFields": 0,
+      "optionalClientOnlyFields": 0,
+      "test": "server/tests/frontierActualGatewayContracts.test.ts"
+    }
+  },
+  "serverContractAssessment": {
+    "status": "offline-port-validated-live-validation-incomplete",
+    "acceptanceBoundary": "Static/database validation, exact binary/bytecode checks, gateway schema comparisons, and automated server regressions passed. Full native Windows staging and a live rendered-space smoke test remain unverified; no gameplay validation is claimed."
+  }
+}

@@ -1,0 +1,248 @@
+{
+  "format": "evejs-frontier-build-comparison-v1",
+  "baselineBuild": 3488090,
+  "candidateBuild": 3502403,
+  "source": {
+    "appName": "FRONTIER",
+    "build": 3502403,
+    "sync": 3502403,
+    "version": "20.04",
+    "branch": "//frontier/cycle-6",
+    "codename": "cycle-6",
+    "region": "ccp",
+    "codeArchiveBytes": 118947728,
+    "codeArchiveSha256": "11b6175ba2e9d6294fbe26debe4a7ab8e83833fa0ddd01190a57b254aebcc619",
+    "resourceIndexSha256": "8f2082d7ab94bf9c757d76f3a4d1384967b0c2e68a358916a49371c1fa613a87"
+  },
+  "handshake": {
+    "machoNetVersion": 489,
+    "birthday": 170472,
+    "machoNetModule": "eve/common/script/net/eveMachoNetVersion.pyc",
+    "machoNetModuleSha256": "882931ca6ef09f4ab3bbd33d5297940ae403bda7770cf9677469f1d096af47b0",
+    "gpsModule": "carbon/common/script/net/GPS.pyc",
+    "gpsModuleSha256": "4457916e3c31202e83646eafe413592b945b3ab3c6432f12a507ac1e8a2f006f",
+    "assessment": "Frontier version 20.04, cycle 6, MachoNet version 489, and GPSTransport HANDSHAKE_SECRET_KEY 170472 are unchanged from build 3488090. Client build and sync advanced to 3502403."
+  },
+  "codeArchiveComparison": {
+    "baselineMembers": 11432,
+    "candidateMembers": 11432,
+    "addedMembers": 0,
+    "removedMembers": 0,
+    "headerOnlyPycChanges": 11431,
+    "payloadChanges": [
+      {
+        "member": "frontier/industry/client/ui/page.pyc",
+        "assessment": "Client-only industry facility layout changed; no RPC, protobuf, handshake, or transport code changed."
+      }
+    ],
+    "assessment": "The archive has the same member set as build 3488090. All Python payloads except one client UI module are identical after excluding the 16-byte pyc headers."
+  },
+  "staticData": {
+    "baseline": {
+      "systems": 24026,
+      "landscapeSites": 113253,
+      "types": 32626,
+      "stargates": 7072,
+      "totalRecords": 1148579,
+      "outputFiles": 35,
+      "snapshotOutputsIdentity": {
+        "algorithm": "sha256(JSON.stringify(sorted output name -> { records, sha256 }))",
+        "sha256": "050dcf794b610e9e54085874b114502d278e07707ec338690e6427f5de881965"
+      },
+      "evidence": "tools/frontier-contracts/frontier-build.3488090.comparison.json"
+    },
+    "candidateInputValidation": {
+      "indexedResourcesVerified": 33,
+      "resourceIndexEntries": 47861,
+      "mapObjectsSha256": "12b84375f3147e33ccf5ed32a8cef17ac5aad7d6d1cabcba1c85cdb494b1504c",
+      "mapObjectsReadOnlyCounts": {
+        "celestials": 678045,
+        "npcStations": 103
+      },
+      "jumps": {
+        "sourceMd5": "d253f18eacc0a2d257bf6117120f15cd",
+        "records": 3536,
+        "reassignedJumpIDs": 337,
+        "semanticGraphMatchesBaseline": true
+      },
+      "localization": {
+        "language": "en-us",
+        "messages": 252684,
+        "sourceMd5": "4ce54740db7b119fd6590037c231ce2b"
+      },
+      "riftSource": {
+        "dungeonsSha256": "4ac74329eb56fc4d839acf2cfe12162320bcf9a4a99e6671e4f714cacaa44609",
+        "landscapeSha256": "0a56d7fcc866022ecaab649d39be23014e9cd480c191bd12d30bc68cbfd30b33"
+      }
+    },
+    "candidate": {
+      "systems": 24026,
+      "landscapeSites": 113253,
+      "types": 32626,
+      "stargates": 7072,
+      "totalRecords": 1148579,
+      "outputFiles": 35,
+      "snapshotOutputsIdentity": {
+        "algorithm": "sha256(JSON.stringify(sorted output name -> { records, sha256 }))",
+        "sha256": "95da338a6ff66846d66a02cda12dd4f13fc4e1e0264389b521badbe2c7ce1129"
+      },
+      "manifest": "_local/frontier-sde/3502403/frontier-extraction-manifest.json"
+    },
+    "knownCountDelta": {
+      "systems": 0,
+      "landscapeSites": 0,
+      "types": 0,
+      "stargates": 0,
+      "totalRecords": 0,
+      "outputFiles": 0
+    },
+    "outputComparison": {
+      "exactOutputFiles": 33,
+      "metadataOnlyFiles": [
+        "_sde.jsonl"
+      ],
+      "semanticallyEquivalentFiles": [
+        "mapJumps.jsonl"
+      ],
+      "assessment": "Thirty-three of 35 output files are byte-identical to build 3488090. _sde.jsonl differs only by selected build metadata. mapJumps.jsonl preserves the same 3,536-edge graph and stargate identities while 337 jumpID values are reassigned."
+    },
+    "candidateSemanticAuthority": {
+      "rift14001EntryTypeID": 92395,
+      "rift14001TriggerCount": 4,
+      "rift14008EntryTypeID": 92415,
+      "rift14008TriggerCount": 4,
+      "fringeTallyport": {
+        "itemID": 900202923,
+        "solarSystemID": 30010146,
+        "typeID": 92480,
+        "dungeonID": 14026
+      },
+      "relay90184ConstructionSite": 91717,
+      "relaySite91717HasAssemblyConstruction": true
+    },
+    "snapshotExtracted": true,
+    "snapshotValidated": true,
+    "riftAuthorityValidated": true,
+    "databaseValidation": {
+      "build": 3502403,
+      "systems": 24026,
+      "celestials": 670973,
+      "itemTypes": 32625,
+      "stations": 103,
+      "stargates": 7072,
+      "lagrangePoints": 415650,
+      "landscapeSites": 113253,
+      "frontierDungeonTemplates": 326,
+      "landscapeDungeonTemplates": 73,
+      "landscapeEcosystems": 20,
+      "creationHardpointTypes": 3,
+      "creationModules": 39,
+      "creationParts": 15,
+      "creationTemplates": 3,
+      "bootstrapStationID": 64000001,
+      "bootstrapSolarSystemID": 30000004,
+      "report": "_local/frontier-gameStore/3502403/frontier-database-validation.json"
+    },
+    "assessment": "The validated build-3502403 snapshot and generated database retain the build-3488090 counts and Frontier Rift, Tallyport, and Relay authority. Build-numbered data remains required even though the only exported differences are build metadata and jumpID reassignment."
+  },
+  "contracts": {
+    "baseline": {
+      "descriptorFiles": 166,
+      "failedDescriptors": 0,
+      "protoMembers": 166,
+      "clientModules": 238,
+      "descriptorSetSha256": "c0f6e31a7a818775315b777dbea0ec941e2dd1487779ddbbccb9ebc6bfd2128d",
+      "descriptorJsonSha256": "d827ae732a95a1ac6d6136e08948919f9388abfe08a0c279da0ad030cc877f8e",
+      "contractIndexSha256": "40b34aa38449bb22bbd8aeb4c9646b6c529c763527d0c6a5a7cd3f27d4c425f7",
+      "clientModuleInventorySha256": "ec4da7b0b30647432acbf98c6d78819bc74e209d2f68d76664020b43bff88c6e",
+      "evidence": "tools/frontier-contracts/frontier-build.3488090.comparison.json"
+    },
+    "candidate": {
+      "descriptorFiles": 166,
+      "failedDescriptors": 0,
+      "protoMembers": 166,
+      "clientModules": 238,
+      "descriptorSetSha256": "c0f6e31a7a818775315b777dbea0ec941e2dd1487779ddbbccb9ebc6bfd2128d",
+      "descriptorJsonSha256": "d827ae732a95a1ac6d6136e08948919f9388abfe08a0c279da0ad030cc877f8e",
+      "contractIndexSha256": "f37ab93f7252a7b050d50ed147f7ea8a5f8f0d0cd2d5659f56c68397b05a0db9",
+      "clientModuleInventorySha256": "f9b256cf3de36d0ada74caed3d565a16dd8ba492dac59136538f157cc46da110",
+      "manifest": "_local/frontier-contracts/3502403/frontier-contract-manifest.json"
+    },
+    "knownCountDelta": {
+      "descriptorFiles": 0,
+      "failedDescriptors": 0,
+      "protoMembers": 0,
+      "clientModules": 0
+    },
+    "artifactEquality": {
+      "publicDescriptorPbExact": true,
+      "publicDescriptorJsonExact": true,
+      "contractIndexExceptBuildMetadata": true,
+      "clientModuleInventoryExceptBuildMetadata": true
+    },
+    "assessment": "The public descriptor PB and JSON artifacts are byte-identical to build 3488090. The compact contract index and client-module inventory differ only in their selected-build metadata. No client contract or selected module-surface change was found."
+  },
+  "nativePatch": {
+    "profile": "tools/frontier-client/blue-pyd.3502403.patch.json",
+    "sourceSha256": "4ad88b947517e2f4f5d29c098fa78ed0f9d4d458db22096260a3e70e165a9cc0",
+    "targetSha256": "2dcfd00d4b84534abecf7f4cb3be09209fb2bac85377066cb8e18fe32131de82",
+    "cachePath": "5b/5baa6098ac19f0c6_82cd35d6e53a59df73e4f82c847013c2",
+    "sourcePairChecked": true,
+    "targetDerivationVerified": true,
+    "temporaryPairPatchAndRestoreVerified": true,
+    "installedPairPatchedAndVerified": false,
+    "clientUnmodified": true,
+    "scope": "The installed native module and exact indexed cache copy were checked in the source state. Target bytes were derived and verified without patching the installed client."
+  },
+  "offlineValidation": {
+    "date": "2026-09-09",
+    "node": "24.13.0",
+    "python": "3.12.3",
+    "staticExtractionRuntime": "Windows CPython 3.12.14 with the installed native FSD loaders through GE-Proton11-6 in a disposable Wine prefix; no game executable or existing client prefix was launched",
+    "typescriptBuildPassed": true,
+    "typescriptTypecheckPassed": true,
+    "focusedRepositoryTests": {
+      "passed": 44,
+      "failed": 0,
+      "windowsOnlySkipped": 3
+    },
+    "clientDiscoveryPassed": true,
+    "nativeSourcePairCheckPassed": true,
+    "staticSnapshotValidated": true,
+    "generatedDatabaseValidated": true,
+    "pythonClientTests": {
+      "passed": 30,
+      "failed": 0,
+      "skipped": 0,
+      "actualArchiveRoundTripInTemporaryCopy": true
+    },
+    "fullArchiveTemporaryPatch": {
+      "patchedStateVerified": true,
+      "zipEntries": 11437,
+      "uniqueNames": 11432,
+      "duplicateEntriesPreserved": 5,
+      "firstBadMember": null,
+      "secondPassByteIdentical": true
+    },
+    "frontierServerTests": {
+      "passed": 220,
+      "failed": 0,
+      "skipped": 0,
+      "baseline": "_local/frontier-gameStore/3502403",
+      "isolation": "Attested disposable copy; no persistent runtime initialized"
+    },
+    "actualGatewayContracts": {
+      "roots": 4,
+      "messageDefinitionsIncludingSharedTypesPerRoot": 83,
+      "fields": 132,
+      "missingMessages": 0,
+      "conflictingFields": 0,
+      "optionalClientOnlyFields": 0,
+      "test": "server/tests/frontierActualGatewayContracts.test.ts"
+    }
+  },
+  "serverContractAssessment": {
+    "status": "offline-port-validated-live-validation-incomplete",
+    "acceptanceBoundary": "Static and database validation, exact native source/target derivation, exact bytecode profiles, contract equivalence, and automated server regressions passed. The installed client was not modified, and no live client/server gameplay session was run for build 3502403."
+  }
+}

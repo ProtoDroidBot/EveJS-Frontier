@@ -89,6 +89,9 @@ function Invoke-FrontierDiscovery {
 
     $node = Get-FrontierNodePath
     $script = Join-Path $RepoRoot 'tools\frontier-static\discover-frontier-client.mjs'
+    if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+        throw "Compiled Frontier tools are missing. Run npm ci --include=dev and npm run build in $RepoRoot first."
+    }
     $arguments = @($script, '--json')
     if ($SourceRoot) {
         $arguments += @('--client-root', [IO.Path]::GetFullPath($SourceRoot))

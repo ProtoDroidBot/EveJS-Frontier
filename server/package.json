@@ -4,7 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node --report-on-fatalerror --report-uncaught-exception --report-dir=./logs/node-reports --max-old-space-size=8192 .",
+    "build": "npm --prefix .. run build",
+    "typecheck": "npm --prefix .. run typecheck",
+    "prestart": "npm run build",
+    "start": "node --enable-source-maps --report-on-fatalerror --report-uncaught-exception --report-dir=./logs/node-reports --max-old-space-size=8192 .",
     "db:migrate": "node src/gameStore/migrateJsonToSqlite.js",
     "db:migrate-legacy": "node src/gameStore/migrateLegacyNewDatabase.js",
     "images:migrate": "node src/gameStore/migrateRuntimeImages.js",
@@ -17,6 +20,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@mysten/sui": "^2.30.0",
     "better-sqlite3": "^12.11.1",
     "express": "^5.2.1",
     "net": "^1.0.2",
@@ -25,5 +29,8 @@
     "protobufjs": "^8.0.1",
     "ws": "^8.21.1",
     "yaml": "^2.8.1"
+  },
+  "engines": {
+    "node": ">=24.11.0"
   }
 }

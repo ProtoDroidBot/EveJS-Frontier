@@ -6,6 +6,11 @@ binary patch recipes.
 
 ## Frontier Windows tools
 
+The current candidate is build `3502403`; see
+[FRONTIER_BUILD_3502403.md](FRONTIER_BUILD_3502403.md). The `3474408` examples
+and profile below are retained as historical reference. Use `3502403` in
+commands, output directories, and the exact-build profile for the new client.
+
 The Windows Frontier entry points live at the repository root, while their
 strict shared implementation lives under `tools\frontier-client` and
 `tools\frontier-static`.
@@ -20,9 +25,9 @@ npm run frontier:contracts -- --client-root 'C:\CCP\EVE Frontier\stillness' --bu
 npm run frontier:database -- --snapshot '_local\frontier-sde\3474408'
 ```
 
-`tools\frontier-static\lib\frontier-client-discovery.mjs` implements the
+`tools\frontier-static\lib\frontier-client-discovery.mts` implements the
 platform-neutral client rules used by discovery, extraction, contracts, and
-Windows staging. `frontier-python.mjs` first probes exact external Python 3.12
+Windows staging. `frontier-python.mts` first probes exact external Python 3.12
 on Windows, then uses the minimal `frontier-python-runner-windows.c` fallback
 only if native client loaders require the embedded `python312.dll`.
 

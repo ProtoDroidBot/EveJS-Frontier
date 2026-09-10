@@ -1,86 +1,66 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 const destiny = require("../index.js");
-
 function tagUpdatesRequireExistingVisibility(updates) {
-  return updates.map((update) => ({
-    ...update,
-    requireExistingVisibility: true,
-  }));
+    return updates.map((update) => ({
+        ...update,
+        requireExistingVisibility: true,
+    }));
 }
-
 function tagUpdatesFreshAcquireLifecycleGroup(updates) {
-  return updates.map((update) => ({
-    ...update,
-    freshAcquireLifecycleGroup: true,
-  }));
+    return updates.map((update) => ({
+        ...update,
+        freshAcquireLifecycleGroup: true,
+    }));
 }
-
 function tagUpdatesMissileLifecycleGroup(updates) {
-  return updates.map((update) => ({
-    ...update,
-    missileLifecycleGroup: true,
-  }));
+    return updates.map((update) => ({
+        ...update,
+        missileLifecycleGroup: true,
+    }));
 }
-
 function tagUpdatesOwnerMissileLifecycleGroup(updates) {
-  return updates.map((update) => ({
-    ...update,
-    ownerMissileLifecycleGroup: true,
-  }));
+    return updates.map((update) => ({
+        ...update,
+        ownerMissileLifecycleGroup: true,
+    }));
 }
-
-function buildDirectedMovementUpdates(
-  entity,
-  commandDirection,
-  speedFractionChanged,
-  movementStamp,
-) {
-  const updates = [
-    {
-      stamp: movementStamp,
-      payload: destiny.buildGotoDirectionPayload(entity.itemID, commandDirection),
-    },
-  ];
-  if (speedFractionChanged) {
-    updates.push({
-      stamp: updates[0].stamp,
-      payload: destiny.buildSetSpeedFractionPayload(
-        entity.itemID,
-        entity.speedFraction,
-      ),
-    });
-  }
-  return updates;
+function buildDirectedMovementUpdates(entity, commandDirection, speedFractionChanged, movementStamp) {
+    const updates = [
+        {
+            stamp: movementStamp,
+            payload: destiny.buildGotoDirectionPayload(entity.itemID, commandDirection),
+        },
+    ];
+    if (speedFractionChanged) {
+        updates.push({
+            stamp: updates[0].stamp,
+            payload: destiny.buildSetSpeedFractionPayload(entity.itemID, entity.speedFraction),
+        });
+    }
+    return updates;
 }
-
-function buildPointMovementUpdates(
-  entity,
-  point,
-  speedFractionChanged,
-  movementStamp,
-) {
-  const updates = [
-    {
-      stamp: movementStamp,
-      payload: destiny.buildGotoPointPayload(entity.itemID, point),
-    },
-  ];
-  if (speedFractionChanged) {
-    updates.push({
-      stamp: updates[0].stamp,
-      payload: destiny.buildSetSpeedFractionPayload(
-        entity.itemID,
-        entity.speedFraction,
-      ),
-    });
-  }
-  return updates;
+function buildPointMovementUpdates(entity, point, speedFractionChanged, movementStamp) {
+    const updates = [
+        {
+            stamp: movementStamp,
+            payload: destiny.buildGotoPointPayload(entity.itemID, point),
+        },
+    ];
+    if (speedFractionChanged) {
+        updates.push({
+            stamp: updates[0].stamp,
+            payload: destiny.buildSetSpeedFractionPayload(entity.itemID, entity.speedFraction),
+        });
+    }
+    return updates;
 }
-
 module.exports = {
-  tagUpdatesRequireExistingVisibility,
-  tagUpdatesFreshAcquireLifecycleGroup,
-  tagUpdatesMissileLifecycleGroup,
-  tagUpdatesOwnerMissileLifecycleGroup,
-  buildDirectedMovementUpdates,
-  buildPointMovementUpdates,
+    tagUpdatesRequireExistingVisibility,
+    tagUpdatesFreshAcquireLifecycleGroup,
+    tagUpdatesMissileLifecycleGroup,
+    tagUpdatesOwnerMissileLifecycleGroup,
+    buildDirectedMovementUpdates,
+    buildPointMovementUpdates,
 };
+//# sourceMappingURL=dispatchUtils.js.map

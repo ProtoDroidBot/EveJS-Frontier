@@ -16,7 +16,7 @@ import zipfile
 
 
 MODULE_NAME = "menucheckers/celestialCheckers.pyc"
-DEFAULT_CLIENT_BUILD = 3474408
+DEFAULT_CLIENT_BUILD = 3502403
 BUILD_PROFILES = {
     3450341: {
         "source_member_sha256": "cbdd5ede870cc365456144fe1ddade1994f4c01ece2f6e10db40dadd0854e6e2",
@@ -48,6 +48,18 @@ BUILD_PROFILES = {
         "source_code_sha256": "3696be40c2b62a568d262b82a8a1cbb80234664a426ab2ca4805c3ff8004d9e3",
         "patched_member_sha256": "b003c61fd16a3cfebd115c03b8987249e7252321f756036e620a507d94a0e1e3",
         "patched_code_sha256": "0160fb89777202192db3da212dfaa72bb6cff741c726b0392af6a438cb901a41",
+    },
+    3488090: {
+        "source_member_sha256": "1d931e54856b3a18781d259c66ac1efaaff1c4fd13168b79f7eff31eb870133b",
+        "source_code_sha256": "e245683a5b71af8aca437f0937fe5859cf75fb8b09229298d0822024d8ece149",
+        "patched_member_sha256": "1466760e5a26bff5ef5d0ea9dc2b1ab164f9ddb95f7bc89d8a836f8628d5db7f",
+        "patched_code_sha256": "3c796da8d97279f550f96c045427f1e9c834181a482c92407e4322cf57b7c742",
+    },
+    3502403: {
+        "source_member_sha256": "d59078c9f211bc4550d8646161143579d1246c19c1679a56d5a54a6a44fe6106",
+        "source_code_sha256": "e245683a5b71af8aca437f0937fe5859cf75fb8b09229298d0822024d8ece149",
+        "patched_member_sha256": "00c2453b7fb4e5bd1a1547aa1d3d5d4de7caf353f8ab6e76e334fba0ef16bfeb",
+        "patched_code_sha256": "3c796da8d97279f550f96c045427f1e9c834181a482c92407e4322cf57b7c742",
     },
 }
 

@@ -35,19 +35,22 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist "%EVEJS_REPO_ROOT%\server\index.js" (
+if not exist "%EVEJS_REPO_ROOT%\server\index.ts" (
   echo   [ERROR] Server not found at %EVEJS_REPO_ROOT%\server
   pause
   exit /b 1
 )
 
+call "%EVEJS_REPO_ROOT%\tools\BuildTypeScript.bat"
+if errorlevel 1 exit /b 1
+
+call :EnsureServerDependencies
+if errorlevel 1 exit /b 1
+
 set "EVEJS_LOCAL_DATABASE_ROOT=%EVEJS_REPO_ROOT%\_local\gameStore"
 set "EVEJS_GAMESTORE_DATA_DIR=%EVEJS_LOCAL_DATABASE_ROOT%\data"
 call :MigrateLegacyData
 call :EnsureLocalDatabase
-if errorlevel 1 exit /b 1
-
-call :EnsureServerDependencies
 if errorlevel 1 exit /b 1
 
 echo   Are you also playing on this machine?

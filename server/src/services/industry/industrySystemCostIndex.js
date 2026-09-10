@@ -1,20 +1,18 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
-
 const config = require(path.join(__dirname, "../../config"));
-
 function toFloat(value, fallback = 0) {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : fallback;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
 }
-
 function clampCostIndex(value) {
-  const numeric = toFloat(value, 0);
-  if (!(numeric > 0)) {
-    return 0;
-  }
-  return numeric > 1 ? 1 : numeric;
+    const numeric = toFloat(value, 0);
+    if (!(numeric > 0)) {
+        return 0;
+    }
+    return numeric > 1 ? 1 : numeric;
 }
-
 /**
  * Option A static approximation of EVE's industry system cost index.
  *
@@ -32,10 +30,10 @@ function clampCostIndex(value) {
  * See doc/PARITY_FEATURE_ROADMAP.md for the parity notes.
  */
 function resolveSystemCostIndex(solarSystemID, activityID) {
-  return clampCostIndex(config.industrySystemCostIndex);
+    return clampCostIndex(config.industrySystemCostIndex);
 }
-
 module.exports = {
-  clampCostIndex,
-  resolveSystemCostIndex,
+    clampCostIndex,
+    resolveSystemCostIndex,
 };
+//# sourceMappingURL=industrySystemCostIndex.js.map

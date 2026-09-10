@@ -37,6 +37,9 @@ if exist "%MANIFEST%" if not "%EVEJS_DATABASE_CREATOR_FORCE%"=="1" (
   exit /b 0
 )
 
+call "%EVEJS_REPO_ROOT%\tools\BuildTypeScript.bat"
+if errorlevel 1 exit /b 1
+
 if not exist "%DOWNLOAD_DIR%" mkdir "%DOWNLOAD_DIR%" >nul 2>&1
 if not exist "%SDE_ZIP%" (
   echo   Downloading CCP public SDE JSONL...

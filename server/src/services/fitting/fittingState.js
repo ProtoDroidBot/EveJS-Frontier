@@ -1,25 +1,21 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
-
-const {
-  OWNER_SCOPE,
-  getOwnerFittings,
-} = require(path.join(__dirname, "../../_secondary/fitting/fittingStore"));
-
+const { OWNER_SCOPE, getOwnerFittings, } = require(path.join(__dirname, "../../_secondary/fitting/fittingStore"));
 function ensureCharacterFittings(charId) {
-  return {
-    success: true,
-    data: getOwnerFittings(charId, {
-      createIfMissing: true,
-      ownerScope: OWNER_SCOPE.CHARACTER,
-    }),
-  };
+    return {
+        success: true,
+        data: getOwnerFittings(charId, {
+            createIfMissing: true,
+            ownerScope: OWNER_SCOPE.CHARACTER,
+        }),
+    };
 }
-
 function getCharacterFittings(charId) {
-  return ensureCharacterFittings(charId).data || {};
+    return ensureCharacterFittings(charId).data || {};
 }
-
 module.exports = {
-  getCharacterFittings,
-  ensureCharacterFittings,
+    getCharacterFittings,
+    ensureCharacterFittings,
 };
+//# sourceMappingURL=fittingState.js.map

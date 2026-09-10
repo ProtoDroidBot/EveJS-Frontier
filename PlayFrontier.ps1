@@ -2,7 +2,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidatePattern('^\d+$')] [string]$Build = '3474408',
+    [ValidatePattern('^\d+$')] [string]$Build = '3502403',
     [string]$StagedRoot,
     [ValidateSet('127.0.0.1')] [string]$ServerHost = '127.0.0.1',
     [ValidatePattern('^[A-Za-z0-9._-]+$')] [string]$SettingsProfile = 'EveJSFrontier',
@@ -65,6 +65,7 @@ function Set-LaunchArgument {
 
 Set-LaunchArgument '/noconsole' '/noconsole'
 Set-LaunchArgument '/server:' "/server:$ServerHost"
+Set-LaunchArgument '/tenant=' '/tenant=dev'
 Set-LaunchArgument '/settingsprofile=' "/settingsprofile=$SettingsProfile"
 Set-LaunchArgument '/language=' '/language=en'
 Set-LaunchArgument '/cryptoPack=' '/cryptoPack=Placebo'

@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+$')]
-    [string]$Build = '3474408',
+    [string]$Build = '3502403',
 
     [ValidatePattern('^\d+(?:\.\d+)*$')]
     [string]$ClientVersion = '20.04',
@@ -443,7 +443,7 @@ function Get-NodePath {
 
 function Assert-ServerDependencies {
     if (-not (Test-Path -LiteralPath $ServerEntry -PathType Leaf)) {
-        throw "Server entry point is missing: $ServerEntry"
+        throw "Compiled server entry point is missing: $ServerEntry. Run npm ci --include=dev and npm run build in $RepoRoot."
     }
     $sqliteModule = Join-Path $RepoRoot 'server\node_modules\better-sqlite3'
     if (-not (Test-Path -LiteralPath $sqliteModule -PathType Container)) {
@@ -673,6 +673,7 @@ if ($ownedProcessState.State -eq 'stale') {
 }
 
 $NodePath = Get-NodePath
+& (Join-Path $RepoRoot 'tools\BuildTypeScript.ps1')
 Assert-ServerDependencies
 Assert-ListenerPortsAvailable
 $ServerEnvironment = Get-ServerEnvironment
@@ -698,7 +699,7 @@ if ($Background) {
     try {
         $process = Invoke-WithChildEnvironment -Environment $ServerEnvironment -Action {
             Start-Process -FilePath $NodePath `
-                -ArgumentList @($quotedServerEntry) `
+                -ArgumentList @('--enable-source-maps', $quotedServerEntry) `
                 -WorkingDirectory $RepoRoot `
                 -WindowStyle Hidden `
                 -RedirectStandardOutput $stdoutLog `
@@ -757,7 +758,7 @@ Write-Host '[evejs-frontier] Running in the foreground; press Ctrl+C to stop.'
 $exitCode = 1
 try {
     Invoke-WithChildEnvironment -Environment $ServerEnvironment -Action {
-        & $NodePath $ServerEntry
+        & $NodePath --enable-source-maps $ServerEntry
         $script:exitCode = $LASTEXITCODE
     }
 }

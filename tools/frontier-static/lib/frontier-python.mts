@@ -1,0 +1,417 @@
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+export interface PythonRunner {
+  kind: string;
+  command: string;
+  argsPrefix: string[];
+  env: NodeJS.ProcessEnv;
+  description: string;
+}
+
+interface PythonCandidate {
+  command: string;
+  prefixArgs: string[];
+  source: string;
+}
+
+interface PythonProbeFailure {
+  command?: never;
+  failures: string[];
+}
+
+const LIB_DIR = path.dirname(fileURLToPath(import.meta.url));
+const STATIC_DIR = path.resolve(LIB_DIR, "..");
+const REPO_ROOT = path.resolve(STATIC_DIR, "../..");
+
+const WINDOWS_PROBE = [
+  "import importlib, os, sys",
+  "assert sys.version_info[:2] == (3, 12), sys.version",
+  "_evejs_dll_dir = os.add_dll_directory(sys.argv[1])",
+  "[importlib.import_module(name) for name in sys.argv[2:]]",
+  "print('evejs-frontier-python312-ok')",
+].join("; ");
+
+const WINDOWS_RUN_SCRIPT = [
+  "import os, runpy, sys",
+  "_evejs_dll_dir = os.add_dll_directory(sys.argv[1])",
+  "_evejs_script = sys.argv[2]",
+  "sys.argv = sys.argv[2:]",
+  "runpy.run_path(_evejs_script, run_name='__main__')",
+].join("; ");
+
+function commandResult(command: string, args: string[], options: Omit<SpawnSyncOptionsWithStringEncoding, "encoding"> = {}) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    ...options,
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    const detail = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+    throw new Error(
+      `${command} failed with status ${result.status}${detail ? `:\n${detail}` : ""}`,
+    );
+  }
+  return result;
+}
+
+function frontierPythonPath(buildRoot: string): string {
+  return [
+    path.join(buildRoot, "code.ccp"),
+    path.join(buildRoot, "bin64"),
+  ].join(path.delimiter);
+}
+
+function pythonEnvironment(buildRoot: string): NodeJS.ProcessEnv {
+  const bin64 = path.join(buildRoot, "bin64");
+  return {
+    ...process.env,
+    PATH: `${bin64}${path.delimiter}${process.env.PATH || ""}`,
+    PYTHONPATH: frontierPythonPath(buildRoot),
+    PYTHONUTF8: "1",
+  };
+}
+
+function windowsPythonCandidates(): PythonCandidate[] {
+  const candidates = [
+    process.env.EVEJS_FRONTIER_PYTHON312 && {
+      command: process.env.EVEJS_FRONTIER_PYTHON312,
+      prefixArgs: [],
+      source: "EVEJS_FRONTIER_PYTHON312",
+    },
+    {
+      command: path.join(
+        REPO_ROOT,
+        "_local",
+        "frontier-python312",
+        "Scripts",
+        "python.exe",
+      ),
+      prefixArgs: [],
+      source: "repository Python 3.12 environment",
+    },
+    { command: "py.exe", prefixArgs: ["-3.12"], source: "Python launcher" },
+    { command: "python3.12.exe", prefixArgs: [], source: "python3.12.exe" },
+    { command: "python.exe", prefixArgs: [], source: "python.exe" },
+  ].filter((candidate): candidate is PythonCandidate => Boolean(candidate));
+  const seen = new Set();
+  return candidates.filter((candidate) => {
+    const key = `${candidate.command}\0${candidate.prefixArgs.join("\0")}`.toLowerCase();
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function probeWindowsPython(buildRoot: string, requiredImports: string[]): PythonRunner | PythonProbeFailure {
+  const bin64 = path.join(buildRoot, "bin64");
+  const environment = pythonEnvironment(buildRoot);
+  const failures = [];
+  for (const candidate of windowsPythonCandidates()) {
+    const result = spawnSync(
+      candidate.command,
+      [
+        ...candidate.prefixArgs,
+        "-c",
+        WINDOWS_PROBE,
+        bin64,
+        ...requiredImports,
+      ],
+      {
+        encoding: "utf8",
+        env: environment,
+        maxBuffer: 16 * 1024 * 1024,
+      },
+    );
+    if (
+      !result.error &&
+      result.status === 0 &&
+      result.stdout.includes("evejs-frontier-python312-ok")
+    ) {
+      return {
+        kind: "external-python312",
+        command: candidate.command,
+        argsPrefix: [
+          ...candidate.prefixArgs,
+          "-c",
+          WINDOWS_RUN_SCRIPT,
+          bin64,
+        ],
+        env: environment,
+        description: candidate.source,
+      };
+    }
+    const detail = result.error?.message || result.stderr?.trim() || result.stdout?.trim();
+    failures.push(`${candidate.source}: ${detail || `exit ${result.status}`}`);
+  }
+  return { failures };
+}
+
+// Contract descriptors are constants in Python 3.12 bytecode and do not need
+// the game's native FSD loaders. Keep this opt-in so a Windows client on Linux
+// cannot accidentally be used for static-data extraction with native Python.
+function probePortablePython(buildRoot: string, requiredImports: string[]): PythonRunner {
+  const environment = {
+    ...process.env,
+    PYTHONPATH: path.join(buildRoot, "code.ccp"),
+    PYTHONUTF8: "1",
+    PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: "python",
+  };
+  const probe = [
+    "import importlib, sys",
+    "assert sys.version_info[:2] == (3, 12), sys.version",
+    "[importlib.import_module(name) for name in sys.argv[1:]]",
+    "print('evejs-frontier-python312-ok')",
+  ].join("; ");
+  const candidates = [...new Set([
+    process.env.EVEJS_FRONTIER_PYTHON312,
+    "python3.12",
+    "python3",
+  ].filter((candidate): candidate is string => Boolean(candidate)))];
+  const failures = [];
+  for (const command of candidates) {
+    const result = spawnSync(command, ["-c", probe, ...requiredImports], {
+      encoding: "utf8",
+      env: environment,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    if (!result.error && result.status === 0 &&
+        result.stdout.includes("evejs-frontier-python312-ok")) {
+      return {
+        kind: "external-python312-portable",
+        command,
+        argsPrefix: [],
+        env: environment,
+        description: "external Python 3.12 with pure-Python client dependencies",
+      };
+    }
+    const detail = result.error?.message || result.stderr?.trim() || result.stdout?.trim();
+    failures.push(`${command}: ${detail || `exit ${result.status}`}`);
+  }
+  throw new Error(`No usable external Python 3.12 for portable contract export.\n${failures.join("\n")}`);
+}
+
+function winePath(filePath: string): string {
+  return path.posix.isAbsolute(filePath)
+    ? `Z:${filePath.replaceAll("/", "\\")}`
+    : filePath;
+}
+
+function probeWinePython(buildRoot: string, requiredImports: string[]): PythonRunner {
+  const command = process.env.EVEJS_FRONTIER_WINE;
+  const python = process.env.EVEJS_FRONTIER_PYTHON312;
+  if (!command || !python) {
+    throw new Error("Wine extraction requires EVEJS_FRONTIER_WINE and EVEJS_FRONTIER_PYTHON312");
+  }
+  const bin64 = winePath(path.join(buildRoot, "bin64"));
+  // Embeddable Python's ._pth file ignores PYTHONPATH. Set the two client
+  // import locations explicitly, while retaining its own standard library.
+  const setup = [
+    "import importlib, os, sys",
+    "assert sys.version_info[:2] == (3, 12), sys.version",
+    "_evejs_dll_dir = os.add_dll_directory(sys.argv[1])",
+    "sys.path.extend([os.path.join(os.path.dirname(sys.argv[1]), 'code.ccp'), sys.argv[1]])",
+  ];
+  const result = commandResult(command, [
+    python,
+    "-c",
+    [...setup,
+      "[importlib.import_module(name) for name in sys.argv[2:]]",
+      "print('evejs-frontier-python312-ok')"].join("; "),
+    bin64,
+    ...requiredImports,
+  ]);
+  if (!result.stdout.includes("evejs-frontier-python312-ok")) {
+    throw new Error("Wine Python probe exited without the expected Python 3.12 success marker");
+  }
+  return {
+    kind: "external-python312-wine",
+    command,
+    argsPrefix: [
+      python,
+      "-c",
+      [...setup, "import runpy", "_evejs_script = sys.argv[2]",
+        "sys.argv = sys.argv[2:]",
+        "runpy.run_path(_evejs_script, run_name='__main__')"].join("; "),
+      bin64,
+    ],
+    env: { ...process.env },
+    description: "explicit Windows Python 3.12 under Wine",
+  };
+}
+
+function locateMacClang(): string {
+  const result = spawnSync("xcrun", ["--find", "clang"], { encoding: "utf8" });
+  if (!result.error && result.status === 0 && result.stdout.trim()) {
+    return result.stdout.trim();
+  }
+  return "clang";
+}
+
+function compileMacRunner(buildRoot: string, toolsRoot: string): PythonRunner {
+  const libDir = path.join(buildRoot, "bin64");
+  const libPython = path.join(libDir, "libpython3.12.dylib");
+  if (!fs.existsSync(libPython)) {
+    throw new Error(`Frontier embedded Python library not found: ${libPython}`);
+  }
+  const sdkResult = commandResult("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
+  const sdkPath = sdkResult.stdout.trim();
+  if (!sdkPath) {
+    throw new Error("xcrun did not return a macOS SDK path");
+  }
+
+  fs.mkdirSync(toolsRoot, { recursive: true });
+  const sourcePath = path.join(STATIC_DIR, "frontier-python-runner.c");
+  const runnerPath = path.join(toolsRoot, "frontier-python312-runner");
+  const needsBuild = !fs.existsSync(runnerPath) ||
+    fs.statSync(runnerPath).mtimeMs < fs.statSync(sourcePath).mtimeMs ||
+    fs.statSync(runnerPath).mtimeMs < fs.statSync(libPython).mtimeMs;
+  if (needsBuild) {
+    commandResult(locateMacClang(), [
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-isysroot",
+      sdkPath,
+      sourcePath,
+      "-L",
+      libDir,
+      "-lpython3.12",
+      `-Wl,-rpath,${libDir}`,
+      "-o",
+      runnerPath,
+    ]);
+    fs.chmodSync(runnerPath, 0o755);
+  }
+  return {
+    kind: "embedded-python312-macos",
+    command: runnerPath,
+    argsPrefix: [],
+    env: {
+      ...process.env,
+      PYTHONPATH: frontierPythonPath(buildRoot),
+    },
+    description: "client embedded libpython3.12.dylib",
+  };
+}
+
+function findWindowsCompiler(): string | null {
+  const requested = process.env.CC;
+  const candidates = requested
+    ? [requested]
+    : ["cl.exe", "clang-cl.exe", "clang.exe"];
+  for (const candidate of candidates) {
+    const result = spawnSync(candidate, [], { encoding: "utf8" });
+    if (!result.error) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function compileWindowsRunner(buildRoot: string, toolsRoot: string): PythonRunner {
+  const pythonDll = path.join(buildRoot, "bin64", "python312.dll");
+  if (!fs.existsSync(pythonDll)) {
+    throw new Error(`Frontier embedded Python DLL not found: ${pythonDll}`);
+  }
+  fs.mkdirSync(toolsRoot, { recursive: true });
+  const sourcePath = path.join(STATIC_DIR, "frontier-python-runner-windows.c");
+  const runnerPath = path.join(toolsRoot, "frontier-python312-runner.exe");
+  const needsBuild = !fs.existsSync(runnerPath) ||
+    fs.statSync(runnerPath).mtimeMs < fs.statSync(sourcePath).mtimeMs ||
+    fs.statSync(runnerPath).mtimeMs < fs.statSync(pythonDll).mtimeMs;
+  if (needsBuild) {
+    const compiler = findWindowsCompiler();
+    if (!compiler) {
+      throw new Error(
+        "No usable external Python 3.12 was found and the embedded-Python " +
+          "fallback requires MSVC or clang on PATH.",
+      );
+    }
+    const compilerName = path.basename(compiler).toLowerCase();
+    const args = compilerName === "cl.exe" || compilerName === "clang-cl.exe"
+      ? [
+          "/nologo",
+          "/W4",
+          "/O2",
+          sourcePath,
+          `/Fe:${runnerPath}`,
+          `/Fo:${path.join(toolsRoot, "frontier-python312-runner.obj")}`,
+        ]
+      : ["-std=c11", "-Wall", "-Wextra", "-O2", sourcePath, "-o", runnerPath];
+    commandResult(compiler, args, { cwd: toolsRoot });
+  }
+  return {
+    kind: "embedded-python312-windows",
+    command: runnerPath,
+    argsPrefix: [pythonDll],
+    env: pythonEnvironment(buildRoot),
+    description: "client embedded python312.dll",
+  };
+}
+
+function resolveFrontierPython(
+  buildRoot,
+  toolsRoot,
+  {
+    platform = process.platform,
+    requiredImports = ["typesLoader"],
+    allowPurePython = false,
+  }: Record<string, any> = {},
+) {
+  if (platform === "win32") {
+    const probe = probeWindowsPython(buildRoot, requiredImports);
+    if (probe.command) {
+      return probe as PythonRunner;
+    }
+    try {
+      return compileWindowsRunner(buildRoot, toolsRoot);
+    } catch (error) {
+      const failures = (probe as PythonProbeFailure).failures;
+      const details = failures.length > 0
+        ? `\nPython probes:\n${failures.join("\n")}`
+        : "";
+      throw new Error(`${error.message}${details}`);
+    }
+  }
+  if (platform === "darwin") {
+    return compileMacRunner(buildRoot, toolsRoot);
+  }
+  if (platform === "linux" && allowPurePython) {
+    return probePortablePython(buildRoot, requiredImports);
+  }
+  if (platform === "linux" && process.env.EVEJS_FRONTIER_WINE) {
+    return probeWinePython(buildRoot, requiredImports);
+  }
+  throw new Error(`Frontier embedded-Python execution is unsupported on ${platform}`);
+}
+
+function buildPythonInvocation(runner: PythonRunner, scriptPath: string, args: string[] = []) {
+  const scriptArgs = [scriptPath, ...args];
+  return {
+    command: runner.command,
+    args: [
+      ...runner.argsPrefix,
+      ...(runner.kind === "external-python312-wine"
+        ? scriptArgs.map(winePath)
+        : scriptArgs),
+    ],
+    env: runner.env,
+  };
+}
+
+export {
+  buildPythonInvocation,
+  compileMacRunner,
+  compileWindowsRunner,
+  frontierPythonPath,
+  probeWindowsPython,
+  resolveFrontierPython,
+};
