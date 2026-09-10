@@ -1,5 +1,10 @@
 import assert = require("node:assert/strict");
+import fs = require("node:fs");
+import os = require("node:os");
+import path = require("node:path");
 import { test } from "node:test";
+
+import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 
 import {
   SUI_CHARACTER_ADMIN_ACL_ID,
@@ -11,10 +16,339 @@ import {
   deriveSuiCharacterObjectId,
   prepareSuiCharacterIdentity,
   provisionSuiCharacter,
+  readSyncedSuiWorldConfig,
+  resolveAdminSigner,
+  resolveSuiCharacterWorld,
 } from "../src/services/frontier/suiCharacterProvisioning";
 
 const PLAYER_PROFILE_ID =
   "0xf3c1cf351092c2d12d8675650f1e1d15ad2569c7fcbd14ecb0f92a69996bf0e7";
+
+const SYNCED_PACKAGE_ID = `0x${"1".repeat(64)}`;
+const SYNCED_OBJECT_REGISTRY_ID = `0x${"2".repeat(64)}`;
+const SYNCED_ADMIN_ACL_ID = `0x${"3".repeat(64)}`;
+const ENV_PACKAGE_ID = `0x${"4".repeat(64)}`;
+const ENV_OBJECT_REGISTRY_ID = `0x${"5".repeat(64)}`;
+const ENV_ADMIN_ACL_ID = `0x${"6".repeat(64)}`;
+const OVERRIDE_PACKAGE_ID = `0x${"7".repeat(64)}`;
+const OVERRIDE_OBJECT_REGISTRY_ID = `0x${"8".repeat(64)}`;
+const OVERRIDE_ADMIN_ACL_ID = `0x${"9".repeat(64)}`;
+
+function signerFixture(fill: number): Ed25519Keypair {
+  return Ed25519Keypair.fromSecretKey(new Uint8Array(32).fill(fill));
+}
+
+const SYNCED_ADMIN_SIGNER = signerFixture(1);
+const ENV_ADMIN_SIGNER = signerFixture(2);
+const OVERRIDE_ADMIN_SIGNER = signerFixture(3);
+const UPDATED_ADMIN_SIGNER = signerFixture(4);
+
+function syncedWorldConfig(overrides: Record<string, any> = {}): Record<string, any> {
+  return {
+    format: "evejs-frontier-world-sync-v1",
+    schemaVersion: 1,
+    state: "ready",
+    build: 3502403,
+    network: "localnet",
+    chainId: "a1b2c3d4",
+    world: {
+      packageId: SYNCED_PACKAGE_ID,
+      objectRegistryId: SYNCED_OBJECT_REGISTRY_ID,
+      adminAclId: SYNCED_ADMIN_ACL_ID,
+    },
+    adminPrivateKey: SYNCED_ADMIN_SIGNER.getSecretKey(),
+    ...overrides,
+  };
+}
+
+function createSyncedWorldFixture(t: any): {
+  configPath: string;
+  env: NodeJS.ProcessEnv;
+} {
+  const fixtureDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "evejs-sui-world-config-"),
+  );
+  t.after(() => fs.rmSync(fixtureDirectory, { force: true, recursive: true }));
+  const configPath = path.join(fixtureDirectory, "world.private.json");
+  return {
+    configPath,
+    env: {
+      EVEJS_CLIENT_BUILD: "3502403",
+      EVEJS_SUI_WORLD_CONFIG_PATH: configPath,
+    },
+  };
+}
+
+function writeSyncedWorldConfig(
+  configPath: string,
+  value: Record<string, any>,
+): void {
+  fs.writeFileSync(configPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+test("Frontier consumes a validated private world-sync config", (t) => {
+  const { configPath, env } = createSyncedWorldFixture(t);
+  writeSyncedWorldConfig(configPath, syncedWorldConfig());
+
+  assert.deepEqual(readSyncedSuiWorldConfig(env), {
+    path: configPath,
+    build: 3502403,
+    network: "localnet",
+    chainId: "a1b2c3d4",
+    packageId: SYNCED_PACKAGE_ID,
+    objectRegistryId: SYNCED_OBJECT_REGISTRY_ID,
+    adminAclId: SYNCED_ADMIN_ACL_ID,
+    adminPrivateKey: SYNCED_ADMIN_SIGNER.getSecretKey(),
+  });
+  assert.deepEqual(resolveSuiCharacterWorld({}, env), {
+    packageId: SYNCED_PACKAGE_ID,
+    objectRegistryId: SYNCED_OBJECT_REGISTRY_ID,
+    adminAclId: SYNCED_ADMIN_ACL_ID,
+    tenant: "dev",
+    tribeId: 100,
+  });
+  assert.equal(
+    resolveAdminSigner({ env }).toSuiAddress(),
+    SYNCED_ADMIN_SIGNER.toSuiAddress(),
+  );
+});
+
+test("Frontier rejects stale or malformed private world-sync configs", (t) => {
+  const { configPath, env } = createSyncedWorldFixture(t);
+  const invalidConfigs: Array<[string, Record<string, any>]> = [
+    ["format", syncedWorldConfig({ format: "another-format" })],
+    ["schema version", syncedWorldConfig({ schemaVersion: "1" })],
+    ["state", syncedWorldConfig({ state: "starting" })],
+    ["build", syncedWorldConfig({ build: 3502402 })],
+    ["network", syncedWorldConfig({ network: "testnet" })],
+    ["chain ID", syncedWorldConfig({ chainId: "not-a-chain" })],
+    [
+      "package ID",
+      syncedWorldConfig({
+        world: {
+          packageId: "0x1",
+          objectRegistryId: SYNCED_OBJECT_REGISTRY_ID,
+          adminAclId: SYNCED_ADMIN_ACL_ID,
+        },
+      }),
+    ],
+    [
+      "ObjectRegistry ID",
+      syncedWorldConfig({
+        world: {
+          packageId: SYNCED_PACKAGE_ID,
+          objectRegistryId: `0x${"A".repeat(64)}`,
+          adminAclId: SYNCED_ADMIN_ACL_ID,
+        },
+      }),
+    ],
+    [
+      "AdminACL ID",
+      syncedWorldConfig({
+        world: {
+          packageId: SYNCED_PACKAGE_ID,
+          objectRegistryId: SYNCED_OBJECT_REGISTRY_ID,
+          adminAclId: "not-an-address",
+        },
+      }),
+    ],
+    ["admin private key", syncedWorldConfig({ adminPrivateKey: "   " })],
+    [
+      "encoded admin private key",
+      syncedWorldConfig({ adminPrivateKey: "suiprivkey1not-valid" }),
+    ],
+  ];
+
+  for (const [label, value] of invalidConfigs) {
+    writeSyncedWorldConfig(configPath, value);
+    assert.throws(
+      () => readSyncedSuiWorldConfig(env),
+      SuiCharacterProvisioningError,
+      label,
+    );
+  }
+
+  fs.writeFileSync(configPath, "{not-json", "utf8");
+  assert.throws(
+    () => readSyncedSuiWorldConfig(env),
+    SuiCharacterProvisioningError,
+    "JSON",
+  );
+  writeSyncedWorldConfig(configPath, syncedWorldConfig());
+  assert.throws(
+    () => readSyncedSuiWorldConfig({ EVEJS_SUI_WORLD_CONFIG_PATH: configPath }),
+    SuiCharacterProvisioningError,
+    "missing EVEJS_CLIENT_BUILD",
+  );
+});
+
+test("Frontier gives explicit and environment Sui settings precedence over synced values", (t) => {
+  const { configPath, env } = createSyncedWorldFixture(t);
+  writeSyncedWorldConfig(configPath, syncedWorldConfig());
+  Object.assign(env, {
+    EVEJS_SUI_WORLD_PACKAGE_ID: ENV_PACKAGE_ID,
+    EVEJS_SUI_OBJECT_REGISTRY_ID: ENV_OBJECT_REGISTRY_ID,
+    EVEJS_SUI_ADMIN_ACL_ID: ENV_ADMIN_ACL_ID,
+    EVEJS_SUI_ADMIN_PRIVATE_KEY: ENV_ADMIN_SIGNER.getSecretKey(),
+  });
+
+  assert.deepEqual(resolveSuiCharacterWorld({}, env), {
+    packageId: ENV_PACKAGE_ID,
+    objectRegistryId: ENV_OBJECT_REGISTRY_ID,
+    adminAclId: ENV_ADMIN_ACL_ID,
+    tenant: "dev",
+    tribeId: 100,
+  });
+  assert.deepEqual(
+    resolveSuiCharacterWorld(
+      {
+        packageId: OVERRIDE_PACKAGE_ID,
+        objectRegistryId: OVERRIDE_OBJECT_REGISTRY_ID,
+        adminAclId: OVERRIDE_ADMIN_ACL_ID,
+      },
+      env,
+    ),
+    {
+      packageId: OVERRIDE_PACKAGE_ID,
+      objectRegistryId: OVERRIDE_OBJECT_REGISTRY_ID,
+      adminAclId: OVERRIDE_ADMIN_ACL_ID,
+      tenant: "dev",
+      tribeId: 100,
+    },
+  );
+  assert.equal(
+    resolveAdminSigner({ env }).toSuiAddress(),
+    ENV_ADMIN_SIGNER.toSuiAddress(),
+  );
+  assert.equal(
+    resolveAdminSigner({
+      env,
+      adminPrivateKey: OVERRIDE_ADMIN_SIGNER.getSecretKey(),
+    }).toSuiAddress(),
+    OVERRIDE_ADMIN_SIGNER.toSuiAddress(),
+  );
+});
+
+test("Frontier skips an inactive sync file when complete higher-priority Sui settings exist", (t) => {
+  const { configPath, env } = createSyncedWorldFixture(t);
+  writeSyncedWorldConfig(configPath, syncedWorldConfig({ state: "down" }));
+  assert.throws(
+    () => readSyncedSuiWorldConfig(env),
+    SuiCharacterProvisioningError,
+  );
+
+  assert.deepEqual(
+    resolveSuiCharacterWorld(
+      {
+        packageId: OVERRIDE_PACKAGE_ID,
+        objectRegistryId: OVERRIDE_OBJECT_REGISTRY_ID,
+        adminAclId: OVERRIDE_ADMIN_ACL_ID,
+      },
+      env,
+    ),
+    {
+      packageId: OVERRIDE_PACKAGE_ID,
+      objectRegistryId: OVERRIDE_OBJECT_REGISTRY_ID,
+      adminAclId: OVERRIDE_ADMIN_ACL_ID,
+      tenant: "dev",
+      tribeId: 100,
+    },
+  );
+  assert.equal(
+    resolveAdminSigner({
+      env,
+      adminPrivateKey: OVERRIDE_ADMIN_SIGNER.getSecretKey(),
+    }).toSuiAddress(),
+    OVERRIDE_ADMIN_SIGNER.toSuiAddress(),
+  );
+
+  Object.assign(env, {
+    EVEJS_SUI_WORLD_PACKAGE_ID: ENV_PACKAGE_ID,
+    EVEJS_SUI_OBJECT_REGISTRY_ID: ENV_OBJECT_REGISTRY_ID,
+    EVEJS_SUI_ADMIN_ACL_ID: ENV_ADMIN_ACL_ID,
+    EVEJS_SUI_ADMIN_PRIVATE_KEY: ENV_ADMIN_SIGNER.getSecretKey(),
+  });
+  assert.deepEqual(resolveSuiCharacterWorld({}, env), {
+    packageId: ENV_PACKAGE_ID,
+    objectRegistryId: ENV_OBJECT_REGISTRY_ID,
+    adminAclId: ENV_ADMIN_ACL_ID,
+    tenant: "dev",
+    tribeId: 100,
+  });
+  assert.equal(
+    resolveAdminSigner({ env }).toSuiAddress(),
+    ENV_ADMIN_SIGNER.toSuiAddress(),
+  );
+});
+
+test("Frontier re-reads the private world-sync config for every resolution", (t) => {
+  const { configPath, env } = createSyncedWorldFixture(t);
+  writeSyncedWorldConfig(configPath, syncedWorldConfig());
+  assert.equal(resolveSuiCharacterWorld({}, env).packageId, SYNCED_PACKAGE_ID);
+
+  const updatedConfig = syncedWorldConfig({
+    world: {
+      packageId: ENV_PACKAGE_ID,
+      objectRegistryId: ENV_OBJECT_REGISTRY_ID,
+      adminAclId: ENV_ADMIN_ACL_ID,
+    },
+    adminPrivateKey: UPDATED_ADMIN_SIGNER.getSecretKey(),
+  });
+  writeSyncedWorldConfig(configPath, updatedConfig);
+  assert.deepEqual(resolveSuiCharacterWorld({}, env), {
+    packageId: ENV_PACKAGE_ID,
+    objectRegistryId: ENV_OBJECT_REGISTRY_ID,
+    adminAclId: ENV_ADMIN_ACL_ID,
+    tenant: "dev",
+    tribeId: 100,
+  });
+
+  writeSyncedWorldConfig(configPath, syncedWorldConfig());
+  assert.equal(
+    resolveAdminSigner({ env }).toSuiAddress(),
+    SYNCED_ADMIN_SIGNER.toSuiAddress(),
+  );
+  writeSyncedWorldConfig(configPath, updatedConfig);
+  assert.equal(
+    resolveAdminSigner({ env }).toSuiAddress(),
+    UPDATED_ADMIN_SIGNER.toSuiAddress(),
+  );
+});
+
+test("Frontier aborts submission when the synchronized world changes during precheck", async (t) => {
+  const { configPath, env } = createSyncedWorldFixture(t);
+  writeSyncedWorldConfig(configPath, syncedWorldConfig());
+  let submissionCount = 0;
+  const client = {
+    async getObject() {
+      writeSyncedWorldConfig(
+        configPath,
+        syncedWorldConfig({ chainId: "deadbeef" }),
+      );
+      const missing: any = new Error("not found");
+      missing.reason = "notFound";
+      throw missing;
+    },
+    async listOwnedObjects() {
+      return { objects: [], hasNextPage: false, cursor: null };
+    },
+    async signAndExecuteTransaction() {
+      submissionCount++;
+      throw new Error("must not submit with a stale world snapshot");
+    },
+  };
+
+  await assert.rejects(
+    provisionSuiCharacter(
+      { accountId: 1, gameCharacterId: 90000001, characterName: "Snapshot" },
+      { client, env, reconciliationDelaysMs: [] },
+    ),
+    (error: any) =>
+      error instanceof SuiCharacterProvisioningError &&
+      error.code === "WORLD_CONFIGURATION_CHANGED",
+  );
+  assert.equal(submissionCount, 0);
+});
 
 test("Frontier derives the same local-dev Sui wallet and Character ID as build 3502403", () => {
   assert.equal(

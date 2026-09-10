@@ -24,11 +24,12 @@ const SUI_CHARACTER_ADMIN_ACL_ID =
   "0x646024fff6f40c20cbc078d70d80ccdc6ef25cbb7fb3115b4cad2b11533e96b0";
 const SUI_CHARACTER_TENANT = "dev";
 const SUI_CHARACTER_TRIBE_ID = 100;
+const SUI_WORLD_SYNC_FORMAT = "evejs-frontier-world-sync-v1";
+const SUI_WORLD_SYNC_SCHEMA_VERSION = 1;
 
 const DEFAULT_WORLD_CONTRACTS_DIRECTORY = path.resolve(
   __dirname,
   "../../../../..",
-  "ef-code",
   "3502403",
   "world-contracts",
 );
@@ -52,6 +53,17 @@ type SuiCharacterWorld = {
   tribeId: number;
 };
 
+type SuiWorldSyncConfig = {
+  path: string;
+  build: number;
+  network: typeof SUI_GRPC_NETWORK;
+  chainId: string;
+  packageId: string;
+  objectRegistryId: string;
+  adminAclId: string;
+  adminPrivateKey: string;
+};
+
 type SuiCharacterIdentity = SuiCharacterWorld & {
   accountId: number;
   gameCharacterId: number;
@@ -66,6 +78,22 @@ type SuiCharacterProvisioningResult = SuiCharacterIdentity & {
   playerProfileObjectId: string;
   transactionDigest: string;
   recovered: boolean;
+};
+
+type SuiCharacterProvisioningOptions = {
+  client?: SuiCharacterClient;
+  world?: Partial<SuiCharacterWorld>;
+  env?: NodeJS.ProcessEnv;
+  adminSigner?: any;
+  adminPrivateKey?: string;
+  worldContractsDirectory?: string;
+  reconciliationDelaysMs?: number[];
+};
+
+type SuiCharacterProvisioningSnapshot = {
+  options: SuiCharacterProvisioningOptions;
+  sourceEnv: NodeJS.ProcessEnv;
+  syncedConfig: SuiWorldSyncConfig | null;
 };
 
 class SuiCharacterProvisioningError extends Error {
@@ -156,26 +184,208 @@ function normalizeTenant(value: unknown): string {
   return tenant;
 }
 
+function readSyncedSuiWorldConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): SuiWorldSyncConfig | null {
+  const configuredPath = String(env.EVEJS_SUI_WORLD_CONFIG_PATH || "").trim();
+  if (!configuredPath) {
+    return null;
+  }
+  const configPath = path.resolve(configuredPath);
+  let config: any;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch (cause) {
+    throw new SuiCharacterProvisioningError(
+      "INVALID_WORLD_CONFIGURATION",
+      `Synchronized Sui world config could not be read: ${configPath}`,
+      { cause },
+    );
+  }
+
+  const invalid = (detail: string): never => {
+    throw new SuiCharacterProvisioningError(
+      "INVALID_WORLD_CONFIGURATION",
+      `Synchronized Sui world config ${detail}: ${configPath}`,
+    );
+  };
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    return invalid("must be a JSON object");
+  }
+  if (config.format !== SUI_WORLD_SYNC_FORMAT) {
+    return invalid("has an unsupported format");
+  }
+  if (config.schemaVersion !== SUI_WORLD_SYNC_SCHEMA_VERSION) {
+    return invalid("has an unsupported schema version");
+  }
+  if (config.state !== "ready") {
+    return invalid(`is not ready (state ${JSON.stringify(config.state)})`);
+  }
+  if (config.network !== SUI_GRPC_NETWORK) {
+    return invalid(`targets a network other than ${SUI_GRPC_NETWORK}`);
+  }
+
+  const expectedBuildText = String(env.EVEJS_CLIENT_BUILD || "").trim();
+  if (!/^\d+$/.test(expectedBuildText)) {
+    return invalid("requires a valid EVEJS_CLIENT_BUILD");
+  }
+  const expectedBuild = Number(expectedBuildText);
+  if (!Number.isSafeInteger(expectedBuild) || expectedBuild <= 0) {
+    return invalid("requires a valid EVEJS_CLIENT_BUILD");
+  }
+  if (
+    typeof config.build !== "number" ||
+    !Number.isSafeInteger(config.build) ||
+    config.build <= 0 ||
+    config.build !== expectedBuild
+  ) {
+    return invalid(`does not match Frontier build ${expectedBuild}`);
+  }
+  if (!config.world || typeof config.world !== "object" || Array.isArray(config.world)) {
+    return invalid("has no world identity");
+  }
+  const chainId = typeof config.chainId === "string"
+    ? config.chainId.trim()
+    : "";
+  if (!/^[0-9a-f]+$/.test(chainId)) {
+    return invalid("contains an invalid chain ID");
+  }
+
+  const syncedAddress = (value: unknown, label: string): string => {
+    const rawValue = typeof value === "string" ? value.trim() : "";
+    if (!/^0x[0-9a-f]{64}$/.test(rawValue)) {
+      return invalid(`contains an invalid ${label}`);
+    }
+    return normalizeSuiAddress(rawValue);
+  };
+  const adminPrivateKey = typeof config.adminPrivateKey === "string"
+    ? config.adminPrivateKey.trim()
+    : "";
+  if (!adminPrivateKey || /[\u0000-\u001f\u007f]/.test(adminPrivateKey)) {
+    return invalid("contains an invalid admin private key");
+  }
+  try {
+    Ed25519Keypair.fromSecretKey(adminPrivateKey);
+  } catch {
+    return invalid("contains an invalid Ed25519 admin private key");
+  }
+
+  return {
+    path: configPath,
+    build: config.build,
+    network: SUI_GRPC_NETWORK,
+    chainId,
+    packageId: syncedAddress(config.world.packageId, "world package ID"),
+    objectRegistryId: syncedAddress(
+      config.world.objectRegistryId,
+      "ObjectRegistry ID",
+    ),
+    adminAclId: syncedAddress(config.world.adminAclId, "AdminACL ID"),
+    adminPrivateKey,
+  };
+}
+
+function snapshotSuiCharacterProvisioningOptions(
+  options: SuiCharacterProvisioningOptions,
+): SuiCharacterProvisioningSnapshot {
+  const sourceEnv = options.env || process.env;
+  const world = options.world || {};
+  const needsSyncedWorld = !(
+    (world.packageId || sourceEnv.EVEJS_SUI_WORLD_PACKAGE_ID) &&
+    (world.objectRegistryId || sourceEnv.EVEJS_SUI_OBJECT_REGISTRY_ID) &&
+    (world.adminAclId || sourceEnv.EVEJS_SUI_ADMIN_ACL_ID)
+  );
+  const hasExplicitSigner = Boolean(
+    options.adminSigner ||
+      options.adminPrivateKey ||
+      sourceEnv.EVEJS_SUI_ADMIN_PRIVATE_KEY ||
+      sourceEnv.ADMIN_PRIVATE_KEY
+  );
+  const syncedConfig = needsSyncedWorld || !hasExplicitSigner
+    ? readSyncedSuiWorldConfig(sourceEnv)
+    : null;
+  const snapshotEnv: NodeJS.ProcessEnv = { ...sourceEnv };
+  delete snapshotEnv.EVEJS_SUI_WORLD_CONFIG_PATH;
+
+  if (syncedConfig) {
+    if (!world.packageId && !snapshotEnv.EVEJS_SUI_WORLD_PACKAGE_ID) {
+      snapshotEnv.EVEJS_SUI_WORLD_PACKAGE_ID = syncedConfig.packageId;
+    }
+    if (
+      !world.objectRegistryId &&
+      !snapshotEnv.EVEJS_SUI_OBJECT_REGISTRY_ID
+    ) {
+      snapshotEnv.EVEJS_SUI_OBJECT_REGISTRY_ID = syncedConfig.objectRegistryId;
+    }
+    if (!world.adminAclId && !snapshotEnv.EVEJS_SUI_ADMIN_ACL_ID) {
+      snapshotEnv.EVEJS_SUI_ADMIN_ACL_ID = syncedConfig.adminAclId;
+    }
+    if (!hasExplicitSigner) {
+      snapshotEnv.EVEJS_SUI_ADMIN_PRIVATE_KEY = syncedConfig.adminPrivateKey;
+    }
+  }
+
+  return {
+    options: { ...options, env: snapshotEnv },
+    sourceEnv,
+    syncedConfig,
+  };
+}
+
+function assertSuiProvisioningSnapshotCurrent(
+  snapshot: SuiCharacterProvisioningSnapshot,
+): void {
+  const expected = snapshot.syncedConfig;
+  if (!expected) {
+    return;
+  }
+  const current = readSyncedSuiWorldConfig(snapshot.sourceEnv);
+  if (
+    !current ||
+    current.build !== expected.build ||
+    current.network !== expected.network ||
+    current.chainId !== expected.chainId ||
+    current.packageId !== expected.packageId ||
+    current.objectRegistryId !== expected.objectRegistryId ||
+    current.adminAclId !== expected.adminAclId ||
+    current.adminPrivateKey !== expected.adminPrivateKey
+  ) {
+    throw new SuiCharacterProvisioningError(
+      "WORLD_CONFIGURATION_CHANGED",
+      "The synchronized Sui world changed during Character provisioning; retry the operation",
+    );
+  }
+}
+
 function resolveSuiCharacterWorld(
   overrides: Partial<SuiCharacterWorld> = {},
   env: NodeJS.ProcessEnv = process.env,
 ): SuiCharacterWorld {
+  const explicitPackageId = overrides.packageId || env.EVEJS_SUI_WORLD_PACKAGE_ID;
+  const explicitObjectRegistryId =
+    overrides.objectRegistryId || env.EVEJS_SUI_OBJECT_REGISTRY_ID;
+  const explicitAdminAclId = overrides.adminAclId || env.EVEJS_SUI_ADMIN_ACL_ID;
+  const syncedConfig = explicitPackageId &&
+      explicitObjectRegistryId &&
+      explicitAdminAclId
+    ? null
+    : readSyncedSuiWorldConfig(env);
   return {
     packageId: normalizeRequiredAddress(
-      overrides.packageId ||
-        env.EVEJS_SUI_WORLD_PACKAGE_ID ||
+      explicitPackageId ||
+        syncedConfig?.packageId ||
         SUI_CHARACTER_WORLD_PACKAGE_ID,
       "Sui world package ID",
     ),
     objectRegistryId: normalizeRequiredAddress(
-      overrides.objectRegistryId ||
-        env.EVEJS_SUI_OBJECT_REGISTRY_ID ||
+      explicitObjectRegistryId ||
+        syncedConfig?.objectRegistryId ||
         SUI_CHARACTER_OBJECT_REGISTRY_ID,
       "Sui ObjectRegistry ID",
     ),
     adminAclId: normalizeRequiredAddress(
-      overrides.adminAclId ||
-        env.EVEJS_SUI_ADMIN_ACL_ID ||
+      explicitAdminAclId ||
+        syncedConfig?.adminAclId ||
         SUI_CHARACTER_ADMIN_ACL_ID,
       "Sui AdminACL ID",
     ),
@@ -345,15 +555,18 @@ function resolveAdminSigner(options: {
     return options.adminSigner;
   }
   const env = options.env || process.env;
+  const explicitPrivateKey = options.adminPrivateKey ||
+    env.EVEJS_SUI_ADMIN_PRIVATE_KEY ||
+    env.ADMIN_PRIVATE_KEY;
+  const syncedConfig = explicitPrivateKey ? null : readSyncedSuiWorldConfig(env);
   const worldContractsDirectory = path.resolve(
     options.worldContractsDirectory ||
       env.EVEJS_SUI_WORLD_CONTRACTS_DIR ||
       DEFAULT_WORLD_CONTRACTS_DIRECTORY,
   );
   const privateKey = String(
-    options.adminPrivateKey ||
-      env.EVEJS_SUI_ADMIN_PRIVATE_KEY ||
-      env.ADMIN_PRIVATE_KEY ||
+    explicitPrivateKey ||
+      syncedConfig?.adminPrivateKey ||
       readDotEnvValue(path.join(worldContractsDirectory, ".env"), "ADMIN_PRIVATE_KEY") ||
       "",
   ).trim();
@@ -596,49 +809,44 @@ async function provisionSuiCharacter(
     characterName: unknown;
     identity?: SuiCharacterIdentity;
   },
-  options: {
-    client?: SuiCharacterClient;
-    world?: Partial<SuiCharacterWorld>;
-    env?: NodeJS.ProcessEnv;
-    adminSigner?: any;
-    adminPrivateKey?: string;
-    worldContractsDirectory?: string;
-    reconciliationDelaysMs?: number[];
-  } = {},
+  options: SuiCharacterProvisioningOptions = {},
 ): Promise<SuiCharacterProvisioningResult> {
-  const identity = prepareSuiCharacterIdentity(input, options);
-  if (input.identity) {
-    const suppliedIdentity = input.identity;
-    const identityMatches =
-      suppliedIdentity.accountId === identity.accountId &&
-      suppliedIdentity.gameCharacterId === identity.gameCharacterId &&
-      suppliedIdentity.characterName === identity.characterName &&
-      suppliedIdentity.tenant === identity.tenant &&
-      suppliedIdentity.tribeId === identity.tribeId &&
-      sameSuiAddress(suppliedIdentity.packageId, identity.packageId) &&
-      sameSuiAddress(
-        suppliedIdentity.objectRegistryId,
-        identity.objectRegistryId,
-      ) &&
-      sameSuiAddress(suppliedIdentity.adminAclId, identity.adminAclId) &&
-      sameSuiAddress(suppliedIdentity.walletAddress, identity.walletAddress) &&
-      sameSuiAddress(
-        suppliedIdentity.characterObjectId,
-        identity.characterObjectId,
-      );
-    if (!identityMatches) {
-      throw new SuiCharacterProvisioningError(
-        "INVALID_PREPARED_IDENTITY",
-        "Prepared Sui Character identity does not match its creation request",
-      );
-    }
-  }
   const client = options.client || (suiGrpcClient as unknown as SuiCharacterClient);
   const reconciliationDelaysMs = Array.isArray(options.reconciliationDelaysMs)
     ? options.reconciliationDelaysMs
     : [0, 150, 500, 1000];
 
   return serializeAdminSubmission(async () => {
+    const snapshot = snapshotSuiCharacterProvisioningOptions(options);
+    const operationOptions = snapshot.options;
+    const identity = prepareSuiCharacterIdentity(input, operationOptions);
+    if (input.identity) {
+      const suppliedIdentity = input.identity;
+      const identityMatches =
+        suppliedIdentity.accountId === identity.accountId &&
+        suppliedIdentity.gameCharacterId === identity.gameCharacterId &&
+        suppliedIdentity.characterName === identity.characterName &&
+        suppliedIdentity.tenant === identity.tenant &&
+        suppliedIdentity.tribeId === identity.tribeId &&
+        sameSuiAddress(suppliedIdentity.packageId, identity.packageId) &&
+        sameSuiAddress(
+          suppliedIdentity.objectRegistryId,
+          identity.objectRegistryId,
+        ) &&
+        sameSuiAddress(suppliedIdentity.adminAclId, identity.adminAclId) &&
+        sameSuiAddress(suppliedIdentity.walletAddress, identity.walletAddress) &&
+        sameSuiAddress(
+          suppliedIdentity.characterObjectId,
+          identity.characterObjectId,
+        );
+      if (!identityMatches) {
+        throw new SuiCharacterProvisioningError(
+          "INVALID_PREPARED_IDENTITY",
+          "Prepared Sui Character identity does not match its creation request",
+        );
+      }
+    }
+
     let existing: SuiCharacterProvisioningResult | null;
     try {
       existing = await findExistingSuiCharacter(client, identity);
@@ -653,10 +861,12 @@ async function provisionSuiCharacter(
       );
     }
     if (existing) {
+      assertSuiProvisioningSnapshotCurrent(snapshot);
       return existing;
     }
 
-    const signer = resolveAdminSigner(options);
+    assertSuiProvisioningSnapshotCurrent(snapshot);
+    const signer = resolveAdminSigner(operationOptions);
     const transaction = createSuiCharacterTransaction(identity);
     let executionResult: any;
     try {
@@ -727,6 +937,8 @@ async function provisionSuiCharacter(
 
 export {
   DEFAULT_WORLD_CONTRACTS_DIRECTORY,
+  SUI_WORLD_SYNC_FORMAT,
+  SUI_WORLD_SYNC_SCHEMA_VERSION,
   SUI_CHARACTER_ADMIN_ACL_ID,
   SUI_CHARACTER_OBJECT_REGISTRY_ID,
   SUI_CHARACTER_TENANT,
@@ -739,8 +951,11 @@ export {
   findExistingSuiCharacter,
   prepareSuiCharacterIdentity,
   provisionSuiCharacter,
+  readSyncedSuiWorldConfig,
+  resolveAdminSigner,
   resolveSuiCharacterWorld,
   type SuiCharacterIdentity,
   type SuiCharacterProvisioningResult,
   type SuiCharacterWorld,
+  type SuiWorldSyncConfig,
 };

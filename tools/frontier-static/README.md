@@ -146,9 +146,14 @@ future resource, event, and POI providers.
 
 ## Windows Python fallback
 
-The Windows resolver sets `PYTHONPATH` to `<build>\code.ccp;<build>\bin64` and
-adds `<build>\bin64` to DLL lookup before probing CPython 3.12. The pinned
-environment used by the setup workflow is `_local\frontier-python312`.
+The Windows resolver keeps external CPython's own standard library first, adds
+`<build>\bin64` to DLL lookup, and then appends `<build>\code.ccp` and
+`<build>\bin64` to its module search path. This prevents the client's bundled
+standard-library and extension modules, such as `ctypes` and `_ctypes`, from
+shadowing modules that must match the external interpreter. The pinned
+environment used by the setup workflow is `_local\frontier-python312`. The
+embedded-Python fallback continues to use the client-first `PYTHONPATH`
+required by the client's `python312.dll`.
 
 If required imports still fail, `frontier-python-runner-windows.c` can be
 compiled with Visual Studio 2022 Build Tools and the Windows SDK. The runner

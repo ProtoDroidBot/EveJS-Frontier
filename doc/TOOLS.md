@@ -62,6 +62,9 @@ closed.
 - `PatchFrontierClientTrust.ps1` applies the transaction or runs `-Check`.
 - `StartFrontierServer.ps1` initializes/reuses the isolated runtime and starts
   loopback-only services with the market disabled.
+- `FrontierWorld.ps1` manages the efctl Docker localnet and synchronizes its
+  deployment identity for EveJS; see
+  [FRONTIER_WORLD_SYNC.md](FRONTIER_WORLD_SYNC.md).
 - `PlayFrontier.ps1` checks and launches only the staged client.
 - `CaptureFrontierSession.ps1` captures a launcher session without printing
   credentials and restricts the session-file ACL.

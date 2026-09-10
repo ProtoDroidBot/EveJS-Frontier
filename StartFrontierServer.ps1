@@ -65,6 +65,21 @@ $StaticRoot = [IO.Path]::GetFullPath(
     (Join-Path $RepoRoot (Join-Path '_local\frontier-sde' $Build))
 )
 $ServerEntry = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'server\index.js'))
+$DefaultSuiWorldConfigPath = [IO.Path]::GetFullPath(
+    (Join-Path $RepoRoot (Join-Path '_local\frontier-world' (Join-Path $Build 'world.private.json')))
+)
+$configuredSuiWorldPath = [string]$env:EVEJS_SUI_WORLD_CONFIG_PATH
+if ([string]::IsNullOrWhiteSpace($configuredSuiWorldPath)) {
+    $SuiWorldConfigPath = $DefaultSuiWorldConfigPath
+}
+elseif ([IO.Path]::IsPathFullyQualified($configuredSuiWorldPath)) {
+    $SuiWorldConfigPath = [IO.Path]::GetFullPath($configuredSuiWorldPath)
+}
+else {
+    $SuiWorldConfigPath = [IO.Path]::GetFullPath(
+        (Join-Path $RepoRoot $configuredSuiWorldPath)
+    )
+}
 
 function Test-SamePath {
     param(
@@ -551,6 +566,7 @@ function Get-ServerEnvironment {
         EVEJS_PROJECT_CODENAME = $Codename
         EVEJS_PROJECT_REGION = $Region
         EVEJS_PROJECT_VERSION = $ProjectVersion
+        EVEJS_SUI_WORLD_CONFIG_PATH = $SuiWorldConfigPath
         EVEJS_GAME_SERVER_BIND_HOST = '127.0.0.1'
         EVEJS_GAME_SERVER_HOST = '127.0.0.1'
         EVEJS_SERVER_PORT = '26000'
@@ -601,6 +617,25 @@ function Show-FrontierStatus {
     Write-Output "[evejs-frontier] Build: $Build"
     Write-Output "[evejs-frontier] Generated data: $(if (Test-Path -LiteralPath $GeneratedData -PathType Container) { 'present' } else { 'missing' })"
     Write-Output "[evejs-frontier] Static snapshot: $(if (Test-Path -LiteralPath $StaticRoot -PathType Container) { 'present' } else { 'missing' })"
+    if (-not (Test-Path -LiteralPath $SuiWorldConfigPath -PathType Leaf)) {
+        Write-Output "[evejs-frontier] Sui world sync: missing ($SuiWorldConfigPath)"
+    }
+    else {
+        try {
+            $suiWorldConfig = Get-Content -LiteralPath $SuiWorldConfigPath -Raw |
+                ConvertFrom-Json
+            $suiWorldState = [string]$suiWorldConfig.state
+            $suiWorldBuild = [string]$suiWorldConfig.build
+            $suiWorldNetwork = [string]$suiWorldConfig.network
+            Write-Output (
+                "[evejs-frontier] Sui world sync: $suiWorldState " +
+                "build=$suiWorldBuild network=$suiWorldNetwork ($SuiWorldConfigPath)"
+            )
+        }
+        catch {
+            Write-Output "[evejs-frontier] Sui world sync: invalid ($SuiWorldConfigPath)"
+        }
+    }
     if (-not (Test-Path -LiteralPath $RuntimeRoot)) {
         Write-Output "[evejs-frontier] Runtime: not initialized ($RuntimeRoot)"
         Write-Output '[evejs-frontier] Background process: not running'
@@ -685,6 +720,7 @@ Write-Host '[evejs-frontier] HTTP/bridge: 127.0.0.1:26102'
 Write-Host '[evejs-frontier] Secure public gateway: 127.0.0.1:26103'
 Write-Host '[evejs-frontier] XMPP: 127.0.0.1:5222'
 Write-Host '[evejs-frontier] Monitor: 127.0.0.1:26401'
+Write-Host "[evejs-frontier] Sui world config: $SuiWorldConfigPath"
 Write-Host (
     "[evejs-frontier] Profile: Frontier $ClientVersion build $Build, " +
     "MachoNet $MachoVersion, Placebo"

@@ -262,16 +262,24 @@ already has a different `sui_signer_key_pair_v1` saved in its settings, clear or
 replace that setting before creating the character so its active wallet matches
 the account-derived address recorded by EveJS.
 
-The default package is
-`0x2aa4f4bac8c506f389b69e2e761804904854d9b61dfd9ac3f93b9d9cb07f0a00`
-with tenant `dev` and tribe `100`. The signer is read from
-`EVEJS_SUI_ADMIN_PRIVATE_KEY`, `ADMIN_PRIVATE_KEY`, or the adjacent
-`ef-code/3502403/world-contracts/.env`. Deployment IDs and that directory can
-be overridden with `EVEJS_SUI_WORLD_PACKAGE_ID`,
-`EVEJS_SUI_OBJECT_REGISTRY_ID`, `EVEJS_SUI_ADMIN_ACL_ID`,
-`EVEJS_SUI_TRIBE_ID`, and `EVEJS_SUI_WORLD_CONTRACTS_DIR`. The Frontier
-launchers pin the client tenant to `dev`, and MachoNet advertises `localnet` so
-the in-game signer uses the Docker-published Sui endpoint at `127.0.0.1:9000`.
+The package and shared-object IDs change whenever the disposable localnet is
+regenerated. Before starting the native Frontier server, bring up and synchronize
+the efctl-managed world from PowerShell 7:
+
+```powershell
+npm run frontier:world -- up
+```
+
+This validates the live chain and writes a current-user-only config under
+`_local/frontier-world/3502403`; `StartFrontierServer.ps1` passes that config to
+EveJS. Use `npm run frontier:world -- status` or `down` for the other lifecycle
+operations. See [Frontier world sync](doc/FRONTIER_WORLD_SYNC.md) for the full
+workflow and alternate workspace options. Explicit
+`EVEJS_SUI_WORLD_PACKAGE_ID`, `EVEJS_SUI_OBJECT_REGISTRY_ID`,
+`EVEJS_SUI_ADMIN_ACL_ID`, and `EVEJS_SUI_ADMIN_PRIVATE_KEY` values take
+precedence over the synchronized values. The Frontier launchers pin the client
+tenant to `dev`, and MachoNet advertises `localnet` so the in-game signer uses
+the Docker-published Sui endpoint at `127.0.0.1:9000`.
 Set
 `EVEJS_SUI_CHARACTER_PROVISIONING_ENABLED=false` only when intentionally
 running isolated tests without a disposable chain.

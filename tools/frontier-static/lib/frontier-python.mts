@@ -26,17 +26,26 @@ const LIB_DIR = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = path.resolve(LIB_DIR, "..");
 const REPO_ROOT = path.resolve(STATIC_DIR, "../..");
 
+function windowsExternalPythonSetup(): string[] {
+  return [
+    "import importlib, os, sys",
+    "assert sys.version_info[:2] == (3, 12), sys.version",
+    "_evejs_bin64 = sys.argv[1]",
+    "_evejs_dll_dir = os.add_dll_directory(_evejs_bin64)",
+    "sys.path.extend([os.path.join(os.path.dirname(_evejs_bin64), 'code.ccp'), _evejs_bin64])",
+    "import ctypes",
+  ];
+}
+
 const WINDOWS_PROBE = [
-  "import importlib, os, sys",
-  "assert sys.version_info[:2] == (3, 12), sys.version",
-  "_evejs_dll_dir = os.add_dll_directory(sys.argv[1])",
+  ...windowsExternalPythonSetup(),
   "[importlib.import_module(name) for name in sys.argv[2:]]",
   "print('evejs-frontier-python312-ok')",
 ].join("; ");
 
 const WINDOWS_RUN_SCRIPT = [
-  "import os, runpy, sys",
-  "_evejs_dll_dir = os.add_dll_directory(sys.argv[1])",
+  ...windowsExternalPythonSetup(),
+  "import runpy",
   "_evejs_script = sys.argv[2]",
   "sys.argv = sys.argv[2:]",
   "runpy.run_path(_evejs_script, run_name='__main__')",
@@ -77,6 +86,16 @@ function pythonEnvironment(buildRoot: string): NodeJS.ProcessEnv {
   };
 }
 
+function windowsExternalPythonEnvironment(buildRoot: string): NodeJS.ProcessEnv {
+  const environment = pythonEnvironment(buildRoot);
+  for (const key of Object.keys(environment)) {
+    if (key.toUpperCase() === "PYTHONPATH") {
+      delete environment[key];
+    }
+  }
+  return environment;
+}
+
 function windowsPythonCandidates(): PythonCandidate[] {
   const candidates = [
     process.env.EVEJS_FRONTIER_PYTHON312 && {
@@ -112,7 +131,7 @@ function windowsPythonCandidates(): PythonCandidate[] {
 
 function probeWindowsPython(buildRoot: string, requiredImports: string[]): PythonRunner | PythonProbeFailure {
   const bin64 = path.join(buildRoot, "bin64");
-  const environment = pythonEnvironment(buildRoot);
+  const environment = windowsExternalPythonEnvironment(buildRoot);
   const failures = [];
   for (const candidate of windowsPythonCandidates()) {
     const result = spawnSync(
@@ -414,4 +433,6 @@ export {
   frontierPythonPath,
   probeWindowsPython,
   resolveFrontierPython,
+  windowsExternalPythonEnvironment,
+  windowsExternalPythonSetup,
 };

@@ -3,7 +3,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildPythonInvocation, resolveFrontierPython } from "../lib/frontier-python.mjs";
+import {
+  buildPythonInvocation,
+  resolveFrontierPython,
+  windowsExternalPythonEnvironment,
+  windowsExternalPythonSetup,
+} from "../lib/frontier-python.mjs";
 
 import {
   isInventoryMember,
@@ -65,6 +70,21 @@ test("Linux static extraction still requires native client loaders", () => {
       process.env.EVEJS_FRONTIER_WINE = configuredWine;
     }
   }
+});
+
+test("external Windows Python keeps its standard library ahead of client modules", () => {
+  const buildRoot = path.join("C:", "Frontier", "stillness");
+  const environment = windowsExternalPythonEnvironment(buildRoot);
+  assert.equal(
+    Object.keys(environment).some((key) => key.toUpperCase() === "PYTHONPATH"),
+    false,
+  );
+
+  const setup = windowsExternalPythonSetup();
+  const appendIndex = setup.findIndex((line) => line.includes("sys.path.extend"));
+  const ctypesIndex = setup.indexOf("import ctypes");
+  assert.notEqual(appendIndex, -1);
+  assert.ok(ctypesIndex > appendIndex);
 });
 
 test("explicit Wine runner maps POSIX script and output paths to drive Z", () => {

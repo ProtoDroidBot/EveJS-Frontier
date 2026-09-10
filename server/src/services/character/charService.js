@@ -479,14 +479,6 @@ class CharService extends BaseService {
         const record = pendingCharacter.record;
         const resumeOptions = {
             ...this.suiCharacterProvisioningOptions,
-            world: {
-                ...(this.suiCharacterProvisioningOptions.world || {}),
-                packageId: record.suiWorldPackageId,
-                objectRegistryId: record.suiWorldObjectRegistryId,
-                adminAclId: record.suiWorldAdminAclId,
-                tenant: record.suiTenant,
-                tribeId: record.suiTribeId,
-            },
         };
         let identity;
         try {
@@ -495,8 +487,16 @@ class CharService extends BaseService {
                 gameCharacterId: characterID,
                 characterName: record.characterName,
             }, resumeOptions);
-            if (String(record.suiWalletAddress || "").toLowerCase() !==
-                identity.walletAddress.toLowerCase() ||
+            if (String(record.suiWorldPackageId || "").toLowerCase() !==
+                identity.packageId.toLowerCase() ||
+                String(record.suiWorldObjectRegistryId || "").toLowerCase() !==
+                    identity.objectRegistryId.toLowerCase() ||
+                String(record.suiWorldAdminAclId || "").toLowerCase() !==
+                    identity.adminAclId.toLowerCase() ||
+                String(record.suiTenant || "").toLowerCase() !== identity.tenant ||
+                Number(record.suiTribeId) !== identity.tribeId ||
+                String(record.suiWalletAddress || "").toLowerCase() !==
+                    identity.walletAddress.toLowerCase() ||
                 String(record.suiCharacterObjectId || "").toLowerCase() !==
                     identity.characterObjectId.toLowerCase()) {
                 throw new SuiCharacterProvisioningError("PENDING_IDENTITY_MISMATCH", "Stored pending Sui identity does not match its deterministic identity", { ambiguous: true });
