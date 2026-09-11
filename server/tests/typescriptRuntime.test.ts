@@ -10,6 +10,27 @@ const { createRuntimeContext } = require("../src/runtimeContext");
 const { loadSecondaryServices } = require("../src/secondaryServiceLoader");
 const sqliteStore = require("../src/gameStore/sqliteStore");
 const { _createControllerForTests } = require("../src/gameStore/persistenceWorker");
+const {
+  installProcessLifecycleLogging,
+} = require("../src/utils/processLifecycle");
+
+test("process lifecycle logging avoids Node's deprecated multipleResolves event", () => {
+  const subscribedEvents: string[] = [];
+  const processRef: Record<string | symbol, any> = {
+    on(eventName: string) {
+      subscribedEvents.push(eventName);
+    },
+  };
+  installProcessLifecycleLogging({
+    processRef,
+    signals: ["SIGTERM"],
+    logger: {},
+  });
+
+  assert.equal(subscribedEvents.includes("multipleResolves"), false);
+  assert.equal(subscribedEvents.includes("unhandledRejection"), true);
+  assert.equal(subscribedEvents.includes("uncaughtExceptionMonitor"), true);
+});
 
 test("compiled packet framing preserves Frontier and legacy wire byte order", () => {
   const payload = Buffer.alloc(258, 0xab);

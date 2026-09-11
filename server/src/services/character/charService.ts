@@ -677,12 +677,58 @@ class CharService extends BaseService {
       !["0", "false", "no", "off"].includes(envSetting);
   }
 
+  _buildSuiCharacterProvisioningOptions(characterID) {
+    const baseOptions = {
+      ...this.suiCharacterProvisioningOptions,
+    };
+    const existingPreparedHook =
+      typeof baseOptions.onTransactionPrepared === "function"
+        ? baseOptions.onTransactionPrepared
+        : null;
+    return {
+      ...baseOptions,
+      onTransactionPrepared: async (details) => {
+        const transactionDigest = details && details.transactionDigest;
+        const digest = String(transactionDigest || "").trim();
+        if (!digest) {
+          throw new Error("Prepared Sui transaction has no digest");
+        }
+        const transactionBytesBase64 = String(
+          (details && details.transactionBytesBase64) || "",
+        ).trim();
+        const transactionSignature = String(
+          (details && details.transactionSignature) || "",
+        ).trim();
+        const chainId = String((details && details.chainId) || "").trim();
+        if (existingPreparedHook) {
+          await existingPreparedHook({ ...details });
+        }
+        const pendingWrite = updateCharacterRecord(characterID, (current) => ({
+          ...current,
+          suiTransactionDigest: digest,
+          suiSubmissionState: "submitting",
+          ...(transactionBytesBase64
+            ? { suiPreparedTransactionBytesBase64: transactionBytesBase64 }
+            : {}),
+          ...(transactionSignature
+            ? { suiPreparedTransactionSignature: transactionSignature }
+            : {}),
+          ...(chainId ? { suiChainId: chainId } : {}),
+        }));
+        const pendingFlush = pendingWrite.success
+          ? repo.flushTablesSync(["characters", "items"])
+          : { success: false };
+        if (!pendingWrite.success || !pendingFlush.success) {
+          throw new Error("Prepared Sui transaction digest could not be persisted");
+        }
+      },
+    };
+  }
+
   _resumePendingSuiCharacter(pendingCharacter) {
     const characterID = Number(pendingCharacter.characterID);
     const record = pendingCharacter.record;
-    const resumeOptions = {
-      ...this.suiCharacterProvisioningOptions,
-    };
+    const resumeOptions = this._buildSuiCharacterProvisioningOptions(characterID);
     let identity;
     try {
       identity = prepareSuiCharacterIdentity(
@@ -735,6 +781,11 @@ class CharService extends BaseService {
             gameCharacterId: identity.gameCharacterId,
             characterName: identity.characterName,
             identity,
+            transactionDigest: record.suiTransactionDigest,
+            transactionBytesBase64:
+              record.suiPreparedTransactionBytesBase64,
+            transactionSignature: record.suiPreparedTransactionSignature,
+            chainId: record.suiChainId,
           },
           resumeOptions,
         ),
@@ -754,8 +805,12 @@ class CharService extends BaseService {
             suiWorldAdminAclId: suiResult.adminAclId,
             suiTenant: suiResult.tenant,
             suiTribeId: suiResult.tribeId,
+            suiChainId: suiResult.chainId || current.suiChainId || null,
             suiProvisioningStatus: "confirmed",
             suiProvisioningRecovered: true,
+            suiSubmissionState: "confirmed",
+            suiPreparedTransactionBytesBase64: null,
+            suiPreparedTransactionSignature: null,
           }));
           if (!bindingWrite.success) {
             log.warn(
@@ -787,6 +842,33 @@ class CharService extends BaseService {
           return characterID;
         },
         (error) => {
+          const isAmbiguous = Boolean(error && error.ambiguous === true);
+          const errorCode =
+            error && typeof error.code === "string" ? error.code : "UNKNOWN";
+          const currentPendingRecord =
+            getCharacterRecord(characterID) || record;
+          const storedDigest = String(
+            currentPendingRecord.suiTransactionDigest || "",
+          ).trim();
+          const failedDigest = String(
+            (error && error.transactionDigest) || "",
+          ).trim();
+          const isDigestConfirmedFailure =
+            !isAmbiguous &&
+            errorCode === "TRANSACTION_FAILED" &&
+            Boolean(storedDigest) &&
+            failedDigest === storedDigest;
+          if (isDigestConfirmedFailure) {
+            const rollback = rollbackNewCharacterBootstrap(characterID);
+            log.warn(
+              `[CharService] Pending Sui Character failed definitively char=${characterID} ` +
+                `code=${errorCode} rollback=${rollback.success}`,
+            );
+            throwWrappedUserError("CustomInfo", {
+              info:
+                "The pending Sui Character transaction failed and was rolled back. Please create the character again.",
+            });
+          }
           updateCharacterRecord(characterID, (current) => ({
             ...current,
             suiTransactionDigest:
@@ -794,11 +876,15 @@ class CharService extends BaseService {
                 ? error.transactionDigest
                 : current.suiTransactionDigest,
             suiProvisioningStatus: "reconciliation-required",
+            suiSubmissionState:
+              error && error.transactionDigest
+                ? "submitting"
+                : current.suiSubmissionState,
           }));
           repo.flushTablesSync(["characters", "items"]);
           log.warn(
             `[CharService] Pending Sui Character remains unresolved char=${characterID} ` +
-              `code=${error && error.code ? error.code : "UNKNOWN"}`,
+              `code=${errorCode}`,
           );
           throwWrappedUserError("CustomInfo", {
             info:
@@ -1448,12 +1534,16 @@ class CharService extends BaseService {
       suiCharacterObjectId: suiIdentity.characterObjectId,
       suiPlayerProfileObjectId: null,
       suiTransactionDigest: null,
+      suiPreparedTransactionBytesBase64: null,
+      suiPreparedTransactionSignature: null,
+      suiChainId: null,
       suiWorldPackageId: suiIdentity.packageId,
       suiWorldObjectRegistryId: suiIdentity.objectRegistryId,
       suiWorldAdminAclId: suiIdentity.adminAclId,
       suiTenant: suiIdentity.tenant,
       suiTribeId: suiIdentity.tribeId,
       suiProvisioningStatus: "pending",
+      suiSubmissionState: "preparing",
     }));
     const pendingFlush = pendingWrite.success
       ? repo.flushTablesSync(["characters", "items"])
@@ -1468,6 +1558,8 @@ class CharService extends BaseService {
       });
     }
 
+    const suiProvisioningOptions =
+      this._buildSuiCharacterProvisioningOptions(newCharId);
     return Promise.resolve()
       .then(() =>
         this.suiCharacterProvisioner(
@@ -1477,7 +1569,7 @@ class CharService extends BaseService {
             characterName,
             identity: suiIdentity,
           },
-          this.suiCharacterProvisioningOptions,
+          suiProvisioningOptions,
         ),
       )
       .then(
@@ -1495,8 +1587,12 @@ class CharService extends BaseService {
             suiWorldAdminAclId: suiResult.adminAclId,
             suiTenant: suiResult.tenant,
             suiTribeId: suiResult.tribeId,
+            suiChainId: suiResult.chainId || record.suiChainId || null,
             suiProvisioningStatus: "confirmed",
             suiProvisioningRecovered: suiResult.recovered === true,
+            suiSubmissionState: "confirmed",
+            suiPreparedTransactionBytesBase64: null,
+            suiPreparedTransactionSignature: null,
           }));
           if (!bindingWrite.success) {
             log.warn(
@@ -1528,6 +1624,10 @@ class CharService extends BaseService {
                   ? error.transactionDigest
                   : record.suiTransactionDigest,
               suiProvisioningStatus: "reconciliation-required",
+              suiSubmissionState:
+                error && error.transactionDigest
+                  ? "submitting"
+                  : record.suiSubmissionState,
             }));
             repo.flushTablesSync(["characters", "items"]);
             log.warn(

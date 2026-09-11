@@ -195,14 +195,6 @@ function installProcessLifecycleLogging(options: Record<string, any> = {}) {
         { logPath: lifecycleLogPath },
       );
     },
-    multipleResolves: (type, _promise, value) => {
-      emitLifecycleLog(
-        logger,
-        "WRN",
-        `[ProcessLifecycle] multipleResolves app=${appName} type=${type} detail=${formatValue(value)} snapshot=${formatSnapshot(processRef)}`,
-        { logPath: lifecycleLogPath },
-      );
-    },
     unhandledRejection: (reason) => {
       const reportPath = writeDiagnosticReport(
         processRef,
@@ -265,7 +257,6 @@ function installProcessLifecycleLogging(options: Record<string, any> = {}) {
 
   if (typeof processRef.on === "function") {
     processRef.on("warning", handlers.warning);
-    processRef.on("multipleResolves", handlers.multipleResolves);
     processRef.on("unhandledRejection", handlers.unhandledRejection);
     processRef.on(
       "uncaughtExceptionMonitor",

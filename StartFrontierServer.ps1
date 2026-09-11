@@ -456,6 +456,104 @@ function Get-NodePath {
     return [IO.Path]::GetFullPath($nodeCommand.Source)
 }
 
+function Test-SuiWorldSyncRequired {
+    $enabled = [string]$env:EVEJS_SUI_CHARACTER_PROVISIONING_ENABLED
+    if (-not [string]::IsNullOrWhiteSpace($enabled) -and
+        @('0', 'false', 'no', 'off') -contains $enabled.Trim().ToLowerInvariant()) {
+        return $false
+    }
+
+    $hasExplicitWorld =
+        -not [string]::IsNullOrWhiteSpace([string]$env:EVEJS_SUI_WORLD_PACKAGE_ID) -and
+        -not [string]::IsNullOrWhiteSpace([string]$env:EVEJS_SUI_OBJECT_REGISTRY_ID) -and
+        -not [string]::IsNullOrWhiteSpace([string]$env:EVEJS_SUI_ADMIN_ACL_ID)
+    $hasExplicitSigner =
+        -not [string]::IsNullOrWhiteSpace([string]$env:EVEJS_SUI_ADMIN_PRIVATE_KEY) -or
+        -not [string]::IsNullOrWhiteSpace([string]$env:ADMIN_PRIVATE_KEY)
+    return -not ($hasExplicitWorld -and $hasExplicitSigner)
+}
+
+function Assert-SuiWorldSyncCurrent {
+    if (-not (Test-SuiWorldSyncRequired) -or
+        -not (Test-Path -LiteralPath $SuiWorldConfigPath -PathType Leaf)) {
+        return
+    }
+
+    $remedy = ".\FrontierWorld.ps1 sync -Build $Build"
+    try {
+        $config = Get-Content -LiteralPath $SuiWorldConfigPath -Raw |
+            ConvertFrom-Json
+    }
+    catch {
+        throw "Synchronized Sui world config is unreadable. Run: $remedy"
+    }
+    if ([string]$config.format -ne 'evejs-frontier-world-sync-v1' -or
+        [int]$config.schemaVersion -ne 1 -or
+        [string]$config.state -ne 'ready' -or
+        [string]$config.build -ne $Build -or
+        [string]$config.network -ne 'localnet') {
+        throw "Synchronized Sui world config is not ready for build $Build. Run: $remedy"
+    }
+
+    $sourceWorkspace = if ($null -ne $config.PSObject.Properties['sourceWorkspace']) {
+        [string]$config.sourceWorkspace
+    }
+    else { '' }
+    $artifacts = if ($null -ne $config.PSObject.Properties['artifacts']) {
+        $config.artifacts
+    }
+    else { $null }
+    $deploymentHash = if ($null -ne $artifacts -and
+        $null -ne $artifacts.PSObject.Properties['deploymentSha256']) {
+        [string]$artifacts.deploymentSha256
+    }
+    else { '' }
+    $publicationHash = if ($null -ne $artifacts -and
+        $null -ne $artifacts.PSObject.Properties['publicationSha256']) {
+        [string]$artifacts.publicationSha256
+    }
+    else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($sourceWorkspace) -and
+        -not [string]::IsNullOrWhiteSpace($deploymentHash) -and
+        -not [string]::IsNullOrWhiteSpace($publicationHash)) {
+        $deploymentPath = Join-Path $sourceWorkspace 'world-contracts\deployments\localnet\extracted-object-ids.json'
+        $publicationPath = Join-Path $sourceWorkspace 'world-contracts\contracts\world\Pub.localnet.toml'
+        try {
+            $currentDeploymentHash = (Get-FileHash -LiteralPath $deploymentPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $currentPublicationHash = (Get-FileHash -LiteralPath $publicationPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        catch {
+            throw "Synchronized Sui world artifacts are unavailable. Run: $remedy"
+        }
+        if ($currentDeploymentHash -cne $deploymentHash.ToLowerInvariant() -or
+            $currentPublicationHash -cne $publicationHash.ToLowerInvariant()) {
+            throw "Synchronized Sui world config is stale relative to its deployment artifacts. Run: $remedy"
+        }
+    }
+
+    try {
+        $response = Invoke-RestMethod `
+            -Uri 'http://127.0.0.1:9000' `
+            -Method Post `
+            -ContentType 'application/json' `
+            -TimeoutSec 5 `
+            -Body '{"jsonrpc":"2.0","id":1,"method":"sui_getChainIdentifier","params":[]}'
+    }
+    catch {
+        throw "The local Sui RPC could not be checked against the synchronized world. Run: $remedy"
+    }
+    $configuredChainId = ([string]$config.chainId).Trim().ToLowerInvariant()
+    $liveChainId = ([string]$response.result).Trim().ToLowerInvariant()
+    if ($configuredChainId -notmatch '^[0-9a-f]+$' -or
+        $liveChainId -notmatch '^[0-9a-f]+$' -or
+        $configuredChainId -cne $liveChainId) {
+        throw (
+            "Synchronized Sui world is stale: config chain '$configuredChainId', " +
+            "localhost:9000 chain '$liveChainId'. Run: $remedy"
+        )
+    }
+}
+
 function Assert-ServerDependencies {
     if (-not (Test-Path -LiteralPath $ServerEntry -PathType Leaf)) {
         throw "Compiled server entry point is missing: $ServerEntry. Run npm ci --include=dev and npm run build in $RepoRoot."
@@ -681,6 +779,7 @@ if ($DryRun) {
         Write-Output "[evejs-frontier] Dry run: would initialize $RuntimeRoot"
     }
     if (-not $InitializeOnly) {
+        Assert-SuiWorldSyncCurrent
         [void](Get-NodePath)
         Assert-ServerDependencies
         Write-Output "[evejs-frontier] Dry run: would start build $Build $(if ($Background) { 'in the background' } else { 'in the foreground' })"
@@ -697,6 +796,8 @@ if ($InitializeOnly) {
     Write-Output "[evejs-frontier] Runtime initialization check complete: $RuntimeRoot"
     return
 }
+
+Assert-SuiWorldSyncCurrent
 
 $ownedProcessState = Get-OwnedProcessState
 if ($ownedProcessState.State -eq 'running') {

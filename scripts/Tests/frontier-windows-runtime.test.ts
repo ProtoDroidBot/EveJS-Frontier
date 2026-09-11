@@ -109,6 +109,85 @@ function runScript(script, args) {
   );
 }
 
+test(
+  "Frontier server dry-run rejects a stale synchronized Sui deployment",
+  { skip: !canRunPowerShell },
+  (t) => {
+    const fixtureRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "evejs frontier stale world "),
+    );
+    t.after(() => fs.rmSync(fixtureRoot, { force: true, recursive: true }));
+    const startScript = path.join(fixtureRoot, "StartFrontierServer.ps1");
+    fs.copyFileSync(path.join(REPO_ROOT, "StartFrontierServer.ps1"), startScript);
+
+    const build = "9994411";
+    const generatedRoot = path.join(
+      fixtureRoot,
+      "_local",
+      "frontier-gameStore",
+      build,
+    );
+    fs.mkdirSync(path.join(generatedRoot, "data"), { recursive: true });
+    fs.writeFileSync(path.join(generatedRoot, "manifest.json"), "{}\n");
+    fs.mkdirSync(
+      path.join(fixtureRoot, "_local", "frontier-sde", build),
+      { recursive: true },
+    );
+
+    const sourceWorkspace = path.join(fixtureRoot, "source");
+    const deploymentPath = path.join(
+      sourceWorkspace,
+      "world-contracts",
+      "deployments",
+      "localnet",
+      "extracted-object-ids.json",
+    );
+    const publicationPath = path.join(
+      sourceWorkspace,
+      "world-contracts",
+      "contracts",
+      "world",
+      "Pub.localnet.toml",
+    );
+    fs.mkdirSync(path.dirname(deploymentPath), { recursive: true });
+    fs.mkdirSync(path.dirname(publicationPath), { recursive: true });
+    fs.writeFileSync(deploymentPath, "{}\n");
+    fs.writeFileSync(publicationPath, "published-at = \"test\"\n");
+
+    const configPath = path.join(
+      fixtureRoot,
+      "_local",
+      "frontier-world",
+      build,
+      "world.private.json",
+    );
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      `${JSON.stringify({
+        format: "evejs-frontier-world-sync-v1",
+        schemaVersion: 1,
+        state: "ready",
+        build: Number(build),
+        network: "localnet",
+        chainId: "a1b2c3d4",
+        sourceWorkspace,
+        artifacts: {
+          deploymentSha256: "0".repeat(64),
+          publicationSha256: "0".repeat(64),
+        },
+      })}\n`,
+    );
+
+    const result = runScript(startScript, ["-Build", build, "-DryRun"]);
+    assert.notEqual(result.status, 0);
+    assert.match(
+      `${result.stderr}\n${result.stdout}`,
+      /stale.*FrontierWorld\.ps1 sync/is,
+    );
+  },
+);
+
 function listen(server, port = 0) {
   return new Promise<void>((resolve, reject) => {
     server.once("error", reject);

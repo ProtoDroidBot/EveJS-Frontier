@@ -4,10 +4,12 @@ import path = require("node:path");
 
 import { bcs } from "@mysten/sui/bcs";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
-import { Transaction } from "@mysten/sui/transactions";
+import { Transaction, TransactionDataBuilder } from "@mysten/sui/transactions";
 import {
   deriveObjectID,
+  fromBase58,
   normalizeSuiAddress,
+  toHex,
 } from "@mysten/sui/utils";
 
 import {
@@ -26,6 +28,11 @@ const SUI_CHARACTER_TENANT = "dev";
 const SUI_CHARACTER_TRIBE_ID = 100;
 const SUI_WORLD_SYNC_FORMAT = "evejs-frontier-world-sync-v1";
 const SUI_WORLD_SYNC_SCHEMA_VERSION = 1;
+const SUI_CHARACTER_TRANSACTION_INCLUDE = Object.freeze({
+  effects: true,
+  events: true,
+  objectTypes: true,
+});
 
 const DEFAULT_WORLD_CONTRACTS_DIRECTORY = path.resolve(
   __dirname,
@@ -41,8 +48,16 @@ const TenantItemId = bcs.struct("TenantItemId", {
 
 type SuiCharacterClient = {
   getObject: (options: Record<string, any>) => Promise<any>;
+  getObjects?: (options: Record<string, any>) => Promise<any>;
+  getTransaction?: (options: Record<string, any>) => Promise<any>;
+  getChainIdentifier?: (options?: Record<string, any>) => Promise<any>;
   listOwnedObjects: (options: Record<string, any>) => Promise<any>;
+  executeTransaction?: (options: Record<string, any>) => Promise<any>;
   signAndExecuteTransaction: (options: Record<string, any>) => Promise<any>;
+  core?: unknown;
+  ledgerService?: {
+    getServiceInfo: (options: Record<string, any>) => Promise<any> | any;
+  };
 };
 
 type SuiCharacterWorld = {
@@ -62,6 +77,9 @@ type SuiWorldSyncConfig = {
   objectRegistryId: string;
   adminAclId: string;
   adminPrivateKey: string;
+  sourceWorkspace?: string;
+  deploymentSha256?: string;
+  publicationSha256?: string;
 };
 
 type SuiCharacterIdentity = SuiCharacterWorld & {
@@ -88,6 +106,13 @@ type SuiCharacterProvisioningOptions = {
   adminPrivateKey?: string;
   worldContractsDirectory?: string;
   reconciliationDelaysMs?: number[];
+  transactionFactory?: (identity: SuiCharacterIdentity) => Transaction;
+  onTransactionPrepared?: (details: {
+    transactionDigest: string;
+    transactionBytesBase64?: string;
+    transactionSignature?: string;
+    chainId?: string | null;
+  }) => void | Promise<void>;
 };
 
 type SuiCharacterProvisioningSnapshot = {
@@ -184,6 +209,10 @@ function normalizeTenant(value: unknown): string {
   return tenant;
 }
 
+function readSha256(filePath: string): string {
+  return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
 function readSyncedSuiWorldConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): SuiWorldSyncConfig | null {
@@ -251,6 +280,66 @@ function readSyncedSuiWorldConfig(
     return invalid("contains an invalid chain ID");
   }
 
+  const sourceWorkspace = typeof config.sourceWorkspace === "string"
+    ? config.sourceWorkspace.trim()
+    : "";
+  const artifacts = config.artifacts && typeof config.artifacts === "object"
+    ? config.artifacts
+    : null;
+  const deploymentSha256 = typeof artifacts?.deploymentSha256 === "string"
+    ? artifacts.deploymentSha256.trim().toLowerCase()
+    : "";
+  const publicationSha256 = typeof artifacts?.publicationSha256 === "string"
+    ? artifacts.publicationSha256.trim().toLowerCase()
+    : "";
+  const hasArtifactSnapshot = Boolean(
+    sourceWorkspace || deploymentSha256 || publicationSha256,
+  );
+  if (
+    hasArtifactSnapshot &&
+    (!sourceWorkspace ||
+      !/^[0-9a-f]{64}$/.test(deploymentSha256) ||
+      !/^[0-9a-f]{64}$/.test(publicationSha256))
+  ) {
+    return invalid("contains incomplete deployment artifact metadata");
+  }
+  if (hasArtifactSnapshot) {
+    const deploymentPath = path.join(
+      path.resolve(sourceWorkspace),
+      "world-contracts",
+      "deployments",
+      "localnet",
+      "extracted-object-ids.json",
+    );
+    const publicationPath = path.join(
+      path.resolve(sourceWorkspace),
+      "world-contracts",
+      "contracts",
+      "world",
+      "Pub.localnet.toml",
+    );
+    let currentDeploymentSha256: string;
+    let currentPublicationSha256: string;
+    try {
+      currentDeploymentSha256 = readSha256(deploymentPath);
+      currentPublicationSha256 = readSha256(publicationPath);
+    } catch (cause) {
+      throw new SuiCharacterProvisioningError(
+        "INVALID_WORLD_CONFIGURATION",
+        `Synchronized Sui world deployment artifacts could not be read; run FrontierWorld.ps1 sync: ${configPath}`,
+        { cause },
+      );
+    }
+    if (
+      currentDeploymentSha256 !== deploymentSha256 ||
+      currentPublicationSha256 !== publicationSha256
+    ) {
+      return invalid(
+        "is stale relative to its deployment artifacts; run FrontierWorld.ps1 sync",
+      );
+    }
+  }
+
   const syncedAddress = (value: unknown, label: string): string => {
     const rawValue = typeof value === "string" ? value.trim() : "";
     if (!/^0x[0-9a-f]{64}$/.test(rawValue)) {
@@ -282,6 +371,13 @@ function readSyncedSuiWorldConfig(
     ),
     adminAclId: syncedAddress(config.world.adminAclId, "AdminACL ID"),
     adminPrivateKey,
+    ...(hasArtifactSnapshot
+      ? {
+          sourceWorkspace: path.resolve(sourceWorkspace),
+          deploymentSha256,
+          publicationSha256,
+        }
+      : {}),
   };
 }
 
@@ -588,12 +684,170 @@ function resolveAdminSigner(options: {
 }
 
 function isObjectNotFoundError(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    const candidate = current as any;
+    if (
+      candidate.reason === "notFound" ||
+      candidate.code === "notExists" ||
+      candidate.code === "NOT_FOUND" ||
+      /\bobject\s+0x[0-9a-f]+\s+not found\b/i.test(
+        String(candidate.message || ""),
+      )
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
+}
+
+function isTransactionNotFoundError(error: unknown): boolean {
   return Boolean(
     error &&
       typeof error === "object" &&
-      ((error as any).reason === "notFound" ||
-        (error as any).code === "notExists"),
+      (error as any).reason === "notFound" &&
+      typeof (error as any).digest === "string",
   );
+}
+
+function normalizeSuiChainIdentifier(value: unknown): string {
+  const rawValue = String(value || "").trim();
+  if (/^[0-9a-fA-F]{8,}$/.test(rawValue)) {
+    return rawValue.slice(0, 8).toLowerCase();
+  }
+  try {
+    const bytes = fromBase58(rawValue);
+    if (bytes.length === 32) {
+      return toHex(bytes.slice(0, 4)).toLowerCase();
+    }
+  } catch {
+    // Report an invalid live response through the provisioning precheck below.
+  }
+  return "";
+}
+
+async function readLiveSuiChainIdentifier(
+  client: SuiCharacterClient,
+): Promise<string | null> {
+  if (
+    client.ledgerService &&
+    typeof client.ledgerService.getServiceInfo === "function"
+  ) {
+    const result = await client.ledgerService.getServiceInfo({});
+    return normalizeSuiChainIdentifier(
+      result && result.response ? result.response.chainId : null,
+    );
+  }
+  if (typeof client.getChainIdentifier === "function") {
+    const result = await client.getChainIdentifier();
+    return normalizeSuiChainIdentifier(result && result.chainIdentifier);
+  }
+  return null;
+}
+
+async function assertLiveSuiChain(
+  client: SuiCharacterClient,
+  snapshot: SuiCharacterProvisioningSnapshot,
+  recordedChainId: unknown = null,
+): Promise<string | null> {
+  let liveChainId: string | null;
+  try {
+    liveChainId = await readLiveSuiChainIdentifier(client);
+  } catch (cause) {
+    throw new SuiCharacterProvisioningError(
+      "PRECHECK_FAILED",
+      "The local Sui chain identity could not be verified before Character creation",
+      { cause },
+    );
+  }
+  if (liveChainId === "") {
+    throw new SuiCharacterProvisioningError(
+      "PRECHECK_FAILED",
+      "The local Sui node returned an invalid chain identity",
+    );
+  }
+  const expectedChainId = normalizeSuiChainIdentifier(
+    recordedChainId || snapshot.syncedConfig?.chainId,
+  );
+  if (expectedChainId && liveChainId && liveChainId !== expectedChainId) {
+    throw new SuiCharacterProvisioningError(
+      "WORLD_CHAIN_MISMATCH",
+      `The pending or synchronized Sui world targets chain ${expectedChainId}, but the live localnet is ${liveChainId}; run FrontierWorld.ps1 sync`,
+    );
+  }
+  return liveChainId;
+}
+
+async function assertLiveSuiWorldObjects(
+  client: SuiCharacterClient,
+  identity: SuiCharacterIdentity,
+): Promise<void> {
+  if (typeof client.getObjects !== "function") {
+    return;
+  }
+
+  const expectedObjects = [
+    {
+      objectId: identity.packageId,
+      type: "package",
+      shared: false,
+      label: "world package",
+    },
+    {
+      objectId: identity.objectRegistryId,
+      type: `${identity.packageId}::object_registry::ObjectRegistry`,
+      shared: true,
+      label: "ObjectRegistry",
+    },
+    {
+      objectId: identity.adminAclId,
+      type: `${identity.packageId}::access::AdminACL`,
+      shared: true,
+      label: "AdminACL",
+    },
+  ];
+  let response: any;
+  try {
+    response = await client.getObjects({
+      objectIds: expectedObjects.map(({ objectId }) => objectId),
+    });
+  } catch (cause) {
+    throw new SuiCharacterProvisioningError(
+      "PRECHECK_FAILED",
+      "The synchronized Sui world objects could not be verified before Character creation",
+      { cause },
+    );
+  }
+  const objects = Array.isArray(response && response.objects)
+    ? response.objects
+    : [];
+  for (let index = 0; index < expectedObjects.length; index++) {
+    const expected = expectedObjects[index];
+    const object = objects[index];
+    if (object instanceof Error && !isObjectNotFoundError(object)) {
+      throw new SuiCharacterProvisioningError(
+        "PRECHECK_FAILED",
+        `The configured Sui ${expected.label} could not be verified before Character creation`,
+        { cause: object },
+      );
+    }
+    if (
+      !object ||
+      isObjectNotFoundError(object) ||
+      object.type !== expected.type ||
+      (expected.shared && (!object.owner || object.owner.$kind !== "Shared"))
+    ) {
+      const cause = object instanceof Error ? object : undefined;
+      throw new SuiCharacterProvisioningError(
+        "WORLD_CONFIGURATION_STALE",
+        `The configured Sui ${expected.label} ${expected.objectId} is unavailable or does not match the synchronized world; run FrontierWorld.ps1 sync`,
+        { cause },
+      );
+    }
+  }
 }
 
 function sameSuiAddress(left: unknown, right: unknown): boolean {
@@ -710,25 +964,67 @@ async function reconcileSubmittedSuiCharacter(
   client: SuiCharacterClient,
   identity: SuiCharacterIdentity,
   delaysMs: number[] = [0, 150, 500, 1000],
+  transactionDigest: string | null = null,
 ): Promise<{
   result: SuiCharacterProvisioningResult | null;
   lastError: unknown;
+  definitiveError: SuiCharacterProvisioningError | null;
 }> {
   let lastError: unknown = null;
   for (const rawDelayMs of delaysMs) {
     const delayMs = Math.max(0, Math.min(5000, Number(rawDelayMs) || 0));
     await waitForReconciliationDelay(delayMs);
+    if (transactionDigest && typeof client.getTransaction === "function") {
+      try {
+        const transactionResult = await client.getTransaction({
+          digest: transactionDigest,
+          include: SUI_CHARACTER_TRANSACTION_INCLUDE,
+        });
+        try {
+          return {
+            result: parseSuccessfulTransaction(transactionResult, identity),
+            lastError: null,
+            definitiveError: null,
+          };
+        } catch (error) {
+          if (
+            error instanceof SuiCharacterProvisioningError &&
+            error.code === "TRANSACTION_FAILED"
+          ) {
+            return {
+              result: null,
+              lastError: null,
+              definitiveError: error,
+            };
+          }
+          lastError = error;
+        }
+      } catch (error) {
+        if (!isTransactionNotFoundError(error)) {
+          lastError = error;
+        }
+      }
+    }
     try {
       const result = await findExistingSuiCharacter(client, identity);
       if (result) {
-        return { result, lastError: null };
+        return {
+          result: {
+            ...result,
+            transactionDigest: transactionDigest || result.transactionDigest,
+          },
+          lastError: null,
+          definitiveError: null,
+        };
       }
-      lastError = null;
+      if (!transactionDigest) {
+        lastError = null;
+      }
     } catch (error) {
       lastError = error;
     }
   }
-  return { result: null, lastError };
+  return { result: null, lastError, definitiveError: null };
 }
 
 function parseSuccessfulTransaction(
@@ -755,7 +1051,21 @@ function parseSuccessfulTransaction(
     );
   }
   const transaction = result.Transaction;
-  if (!transaction.status || transaction.status.success !== true) {
+  if (
+    !transaction ||
+    !transaction.status ||
+    typeof transaction.status.success !== "boolean"
+  ) {
+    throw new SuiCharacterProvisioningError(
+      "TRANSACTION_STATUS_UNKNOWN",
+      "Sui Character transaction returned an incomplete status",
+      {
+        ambiguous: true,
+        transactionDigest: transaction && transaction.digest,
+      },
+    );
+  }
+  if (transaction.status.success === false) {
     throw new SuiCharacterProvisioningError(
       "TRANSACTION_FAILED",
       "Sui Character transaction did not report a successful status",
@@ -802,12 +1112,148 @@ function parseSuccessfulTransaction(
   };
 }
 
+function readPreparedTransactionSubmission(
+  input: {
+    transactionBytesBase64?: unknown;
+    transactionSignature?: unknown;
+  },
+  transactionDigest: string,
+): { transactionBytes: Uint8Array; signature: string } | null {
+  const transactionBytesBase64 = String(
+    input.transactionBytesBase64 || "",
+  ).trim();
+  const signature = String(input.transactionSignature || "").trim();
+  if (!transactionBytesBase64 && !signature) {
+    return null;
+  }
+  try {
+    const decodedBytes = Buffer.from(transactionBytesBase64, "base64");
+    if (
+      !decodedBytes.length ||
+      decodedBytes.toString("base64") !== transactionBytesBase64 ||
+      !signature ||
+      TransactionDataBuilder.getDigestFromBytes(decodedBytes) !==
+        transactionDigest
+    ) {
+      throw new Error("Prepared transaction journal does not match its digest");
+    }
+    return { transactionBytes: new Uint8Array(decodedBytes), signature };
+  } catch (cause) {
+    throw new SuiCharacterProvisioningError(
+      "PENDING_TRANSACTION_INVALID",
+      "The pending Sui Character transaction journal is incomplete or corrupt",
+      { ambiguous: true, cause, transactionDigest },
+    );
+  }
+}
+
+async function executePreparedSuiCharacterTransaction(
+  client: SuiCharacterClient,
+  identity: SuiCharacterIdentity,
+  prepared: { transactionBytes: Uint8Array; signature: string },
+  transactionDigest: string,
+  reconciliationDelaysMs: number[],
+): Promise<SuiCharacterProvisioningResult> {
+  if (typeof client.executeTransaction !== "function") {
+    throw new SuiCharacterProvisioningError(
+      "PENDING_TRANSACTION_REPLAY_UNAVAILABLE",
+      "The pending Sui Character transaction cannot be replayed by this Sui client",
+      { ambiguous: true, transactionDigest },
+    );
+  }
+
+  let executionResult: any;
+  try {
+    executionResult = await client.executeTransaction({
+      transaction: prepared.transactionBytes,
+      signatures: [prepared.signature],
+      include: SUI_CHARACTER_TRANSACTION_INCLUDE,
+    });
+  } catch (executionError) {
+    const reconciliation = await reconcileSubmittedSuiCharacter(
+      client,
+      identity,
+      reconciliationDelaysMs,
+      transactionDigest,
+    );
+    if (reconciliation.result) {
+      return reconciliation.result;
+    }
+    if (reconciliation.definitiveError) {
+      throw reconciliation.definitiveError;
+    }
+    throw new SuiCharacterProvisioningError(
+      "TRANSACTION_STATUS_UNKNOWN",
+      "The Sui Character transaction may have committed, but its status could not be reconciled",
+      {
+        ambiguous: true,
+        cause: reconciliation.lastError || executionError,
+        transactionDigest,
+      },
+    );
+  }
+
+  try {
+    return parseSuccessfulTransaction(executionResult, identity);
+  } catch (error) {
+    const resultError = error instanceof SuiCharacterProvisioningError
+      ? error
+      : new SuiCharacterProvisioningError(
+          "TRANSACTION_STATUS_UNKNOWN",
+          "The Sui Character transaction returned an unreadable result",
+          {
+            ambiguous: true,
+            cause: error,
+            transactionDigest,
+          },
+        );
+    if (resultError.code === "TRANSACTION_FAILED") {
+      throw resultError;
+    }
+    const reconciliation = await reconcileSubmittedSuiCharacter(
+      client,
+      identity,
+      reconciliationDelaysMs,
+      resultError.transactionDigest || transactionDigest,
+    );
+    if (reconciliation.result) {
+      const successfulTransaction = executionResult && executionResult.Transaction;
+      return {
+        ...reconciliation.result,
+        transactionDigest:
+          (successfulTransaction && successfulTransaction.digest) ||
+          reconciliation.result.transactionDigest,
+      };
+    }
+    if (reconciliation.definitiveError) {
+      throw reconciliation.definitiveError;
+    }
+    if (resultError.ambiguous !== true && !reconciliation.lastError) {
+      throw resultError;
+    }
+    throw new SuiCharacterProvisioningError(
+      "TRANSACTION_STATUS_UNKNOWN",
+      "The Sui Character transaction status could not be reconciled",
+      {
+        ambiguous: true,
+        cause: reconciliation.lastError || resultError,
+        transactionDigest:
+          resultError.transactionDigest || transactionDigest,
+      },
+    );
+  }
+}
+
 async function provisionSuiCharacter(
   input: {
     accountId: unknown;
     gameCharacterId: unknown;
     characterName: unknown;
     identity?: SuiCharacterIdentity;
+    transactionDigest?: unknown;
+    transactionBytesBase64?: unknown;
+    transactionSignature?: unknown;
+    chainId?: unknown;
   },
   options: SuiCharacterProvisioningOptions = {},
 ): Promise<SuiCharacterProvisioningResult> {
@@ -847,6 +1293,80 @@ async function provisionSuiCharacter(
       }
     }
 
+    const pendingTransactionDigest = String(
+      input.transactionDigest || "",
+    ).trim();
+    const recordedChainId = String(input.chainId || "").trim();
+    if (recordedChainId && !normalizeSuiChainIdentifier(recordedChainId)) {
+      throw new SuiCharacterProvisioningError(
+        "PENDING_TRANSACTION_INVALID",
+        "The pending Sui Character transaction has an invalid recorded chain identity",
+        {
+          ambiguous: Boolean(pendingTransactionDigest),
+          transactionDigest: pendingTransactionDigest || null,
+        },
+      );
+    }
+
+    assertSuiProvisioningSnapshotCurrent(snapshot);
+    const liveChainId = await assertLiveSuiChain(
+      client,
+      snapshot,
+      pendingTransactionDigest ? recordedChainId : null,
+    );
+    assertSuiProvisioningSnapshotCurrent(snapshot);
+
+    if (pendingTransactionDigest) {
+      const reconciliation = await reconcileSubmittedSuiCharacter(
+        client,
+        identity,
+        reconciliationDelaysMs,
+        pendingTransactionDigest,
+      );
+      if (reconciliation.result) {
+        return reconciliation.result;
+      }
+      if (reconciliation.definitiveError) {
+        throw reconciliation.definitiveError;
+      }
+      const prepared = readPreparedTransactionSubmission(
+        input,
+        pendingTransactionDigest,
+      );
+      if (prepared) {
+        if (!recordedChainId || !liveChainId) {
+          throw new SuiCharacterProvisioningError(
+            "PENDING_TRANSACTION_CHAIN_UNKNOWN",
+            "The pending Sui Character transaction cannot be replayed without a verified chain identity",
+            {
+              ambiguous: true,
+              transactionDigest: pendingTransactionDigest,
+            },
+          );
+        }
+        assertSuiProvisioningSnapshotCurrent(snapshot);
+        return executePreparedSuiCharacterTransaction(
+          client,
+          identity,
+          prepared,
+          pendingTransactionDigest,
+          reconciliationDelaysMs,
+        );
+      }
+      throw new SuiCharacterProvisioningError(
+        "TRANSACTION_STATUS_UNKNOWN",
+        "The pending Sui Character transaction status could not be reconciled",
+        {
+          ambiguous: true,
+          cause: reconciliation.lastError,
+          transactionDigest: pendingTransactionDigest,
+        },
+      );
+    }
+
+    await assertLiveSuiWorldObjects(client, identity);
+    assertSuiProvisioningSnapshotCurrent(snapshot);
+
     let existing: SuiCharacterProvisioningResult | null;
     try {
       existing = await findExistingSuiCharacter(client, identity);
@@ -867,26 +1387,91 @@ async function provisionSuiCharacter(
 
     assertSuiProvisioningSnapshotCurrent(snapshot);
     const signer = resolveAdminSigner(operationOptions);
-    const transaction = createSuiCharacterTransaction(identity);
+    const transaction = operationOptions.transactionFactory
+      ? operationOptions.transactionFactory(identity)
+      : createSuiCharacterTransaction(identity);
+    if (typeof client.executeTransaction === "function") {
+      let transactionBytes: Uint8Array;
+      let signature: string;
+      let preparedTransactionDigest: string;
+      try {
+        transaction.setSenderIfNotSet(signer.toSuiAddress());
+        transactionBytes = await transaction.build({ client: client as any });
+        const signedTransaction = await signer.signTransaction(transactionBytes);
+        if (!signedTransaction || typeof signedTransaction.signature !== "string") {
+          throw new Error("The Sui admin signer returned no transaction signature");
+        }
+        preparedTransactionDigest =
+          TransactionDataBuilder.getDigestFromBytes(transactionBytes);
+        signature = signedTransaction.signature;
+      } catch (cause) {
+        throw new SuiCharacterProvisioningError(
+          "TRANSACTION_NOT_SUBMITTED",
+          isObjectNotFoundError(cause)
+            ? "The Sui Character transaction was not submitted because a configured world object was not found; run FrontierWorld.ps1 sync"
+            : "The Sui Character transaction could not be prepared and was not submitted",
+          { cause },
+        );
+      }
+
+      assertSuiProvisioningSnapshotCurrent(snapshot);
+      if (typeof operationOptions.onTransactionPrepared === "function") {
+        try {
+          await operationOptions.onTransactionPrepared({
+            transactionDigest: preparedTransactionDigest,
+            transactionBytesBase64: Buffer.from(transactionBytes).toString("base64"),
+            transactionSignature: signature,
+            chainId: liveChainId,
+          });
+        } catch (cause) {
+          throw new SuiCharacterProvisioningError(
+            "TRANSACTION_NOT_SUBMITTED",
+            "The prepared Sui Character transaction could not be recorded and was not submitted",
+            { cause, transactionDigest: preparedTransactionDigest },
+          );
+        }
+      }
+
+      return executePreparedSuiCharacterTransaction(
+        client,
+        identity,
+        { transactionBytes, signature },
+        preparedTransactionDigest,
+        reconciliationDelaysMs,
+      );
+    }
+
     let executionResult: any;
     try {
       executionResult = await client.signAndExecuteTransaction({
         transaction,
         signer,
-        include: {
-          effects: true,
-          events: true,
-          objectTypes: true,
-        },
+        include: SUI_CHARACTER_TRANSACTION_INCLUDE,
       });
     } catch (executionError) {
+      if (
+        (isObjectNotFoundError(executionError) ||
+          (executionError as any)?.constructor?.name === "SimulationError")
+      ) {
+        throw new SuiCharacterProvisioningError(
+          "TRANSACTION_NOT_SUBMITTED",
+          isObjectNotFoundError(executionError)
+            ? "The Sui Character transaction was not submitted because a configured world object was not found; run FrontierWorld.ps1 sync"
+            : "The Sui Character transaction failed during preparation and was not submitted",
+          { cause: executionError },
+        );
+      }
       const reconciliation = await reconcileSubmittedSuiCharacter(
         client,
         identity,
         reconciliationDelaysMs,
+        null,
       );
       if (reconciliation.result) {
         return reconciliation.result;
+      }
+      if (reconciliation.definitiveError) {
+        throw reconciliation.definitiveError;
       }
       throw new SuiCharacterProvisioningError(
         "TRANSACTION_STATUS_UNKNOWN",
@@ -901,13 +1486,33 @@ async function provisionSuiCharacter(
     try {
       return parseSuccessfulTransaction(executionResult, identity);
     } catch (error) {
-      if (!(error instanceof SuiCharacterProvisioningError)) {
-        throw error;
+      const returnedDigest = String(
+        (executionResult && executionResult.Transaction &&
+          executionResult.Transaction.digest) ||
+          (executionResult && executionResult.FailedTransaction &&
+            executionResult.FailedTransaction.digest) ||
+          "",
+      ).trim();
+      const resultError = error instanceof SuiCharacterProvisioningError
+        ? error
+        : new SuiCharacterProvisioningError(
+            "TRANSACTION_STATUS_UNKNOWN",
+            "The Sui Character transaction returned an unreadable result",
+            {
+              ambiguous: true,
+              cause: error,
+              transactionDigest: returnedDigest || null,
+            },
+          );
+      if (resultError.code === "TRANSACTION_FAILED") {
+        throw resultError;
       }
+      const knownDigest = resultError.transactionDigest || returnedDigest || null;
       const reconciliation = await reconcileSubmittedSuiCharacter(
         client,
         identity,
         reconciliationDelaysMs,
+        knownDigest,
       );
       if (reconciliation.result) {
         const successfulTransaction = executionResult && executionResult.Transaction;
@@ -918,17 +1523,20 @@ async function provisionSuiCharacter(
             reconciliation.result.transactionDigest,
         };
       }
+      if (reconciliation.definitiveError) {
+        throw reconciliation.definitiveError;
+      }
 
-      if (error.ambiguous !== true && !reconciliation.lastError) {
-        throw error;
+      if (resultError.ambiguous !== true && !reconciliation.lastError) {
+        throw resultError;
       }
       throw new SuiCharacterProvisioningError(
         "TRANSACTION_STATUS_UNKNOWN",
         "The Sui Character transaction status could not be reconciled",
         {
           ambiguous: true,
-          cause: reconciliation.lastError || error,
-          transactionDigest: error.transactionDigest,
+          cause: reconciliation.lastError || resultError,
+          transactionDigest: knownDigest,
         },
       );
     }

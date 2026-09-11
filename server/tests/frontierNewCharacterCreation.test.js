@@ -260,4 +260,97 @@ test("selecting after an ambiguous Sui submission resumes the same Frontier char
         config.clientCompatibilityProfile = previousProfile;
     }
 });
+test("a prepared digest is journaled and a confirmed failed retry rolls back the pending character", async () => {
+    const userid = 990000007;
+    const previousProfile = config.clientCompatibilityProfile;
+    const digest = "test-prepared-sui-digest";
+    const transactionBytesBase64 = "AQID";
+    const transactionSignature = "test-prepared-signature";
+    const chainId = "a1b2c3d4";
+    let attempts = 0;
+    const service = new CharService({
+        suiCharacterProvisioner: async (input, options) => {
+            attempts += 1;
+            if (attempts === 1) {
+                await options.onTransactionPrepared({
+                    transactionDigest: digest,
+                    transactionBytesBase64,
+                    transactionSignature,
+                    chainId,
+                });
+                throw new SuiCharacterProvisioningError("TRANSACTION_STATUS_UNKNOWN", "mock ambiguous submission", { ambiguous: true, transactionDigest: digest });
+            }
+            assert.equal(input.transactionDigest, digest);
+            throw new SuiCharacterProvisioningError("TRANSACTION_FAILED", "mock digest-confirmed failure", { transactionDigest: digest });
+        },
+    });
+    const session = {
+        userid,
+        sendNotification() { },
+        sendSessionChange() { },
+    };
+    const itemIDsBefore = new Set(Object.values(getAllItems()).map((item) => Number(item.itemID)));
+    const characterIDsBefore = new Set(listCharacterIDs());
+    config.clientCompatibilityProfile = "frontier";
+    try {
+        await assert.rejects(service.Handle_CreateCharacterInSpace(["Sui Retry Test", 1], session));
+        const characterID = listCharacterIDs().find((candidateID) => !characterIDsBefore.has(candidateID));
+        assert.ok(characterID);
+        const pending = getCharacterRecord(characterID);
+        assert.equal(pending.suiTransactionDigest, digest);
+        assert.equal(pending.suiPreparedTransactionBytesBase64, transactionBytesBase64);
+        assert.equal(pending.suiPreparedTransactionSignature, transactionSignature);
+        assert.equal(pending.suiChainId, chainId);
+        assert.equal(pending.suiSubmissionState, "submitting");
+        assert.equal(pending.suiProvisioningStatus, "reconciliation-required");
+        await assert.rejects(service.Handle_SelectCharacterID([characterID], session, null));
+        assert.equal(attempts, 2);
+        assert.equal(getCharacterRecord(characterID), null);
+        assert.equal(service.Handle_GetNumCharacters([], session), 0);
+        assert.deepEqual(new Set(Object.values(getAllItems()).map((item) => Number(item.itemID))), itemIDsBefore);
+    }
+    finally {
+        config.clientCompatibilityProfile = previousProfile;
+    }
+});
+test("a transient retry precheck failure preserves the pending character", async () => {
+    const userid = 990000008;
+    const previousProfile = config.clientCompatibilityProfile;
+    const digest = "test-pending-precheck-digest";
+    let attempts = 0;
+    const service = new CharService({
+        suiCharacterProvisioner: async (input, options) => {
+            attempts += 1;
+            if (attempts === 1) {
+                await options.onTransactionPrepared({ transactionDigest: digest });
+                throw new SuiCharacterProvisioningError("TRANSACTION_STATUS_UNKNOWN", "mock ambiguous submission", { ambiguous: true, transactionDigest: digest });
+            }
+            assert.equal(input.transactionDigest, digest);
+            throw new SuiCharacterProvisioningError("PRECHECK_FAILED", "mock temporary Sui outage");
+        },
+    });
+    const session = {
+        userid,
+        sendNotification() { },
+        sendSessionChange() { },
+    };
+    const characterIDsBefore = new Set(listCharacterIDs());
+    config.clientCompatibilityProfile = "frontier";
+    try {
+        await assert.rejects(service.Handle_CreateCharacterInSpace(["Sui Hold Test", 1], session));
+        const characterID = listCharacterIDs().find((candidateID) => !characterIDsBefore.has(candidateID));
+        assert.ok(characterID);
+        const itemCountAfterSubmission = Object.keys(getAllItems()).length;
+        await assert.rejects(service.Handle_SelectCharacterID([characterID], session, null));
+        const pending = getCharacterRecord(characterID);
+        assert.ok(pending);
+        assert.equal(attempts, 2);
+        assert.equal(pending.suiTransactionDigest, digest);
+        assert.equal(pending.suiProvisioningStatus, "reconciliation-required");
+        assert.equal(Object.keys(getAllItems()).length, itemCountAfterSubmission);
+    }
+    finally {
+        config.clientCompatibilityProfile = previousProfile;
+    }
+});
 //# sourceMappingURL=frontierNewCharacterCreation.test.js.map
