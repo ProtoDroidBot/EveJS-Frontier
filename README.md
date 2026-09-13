@@ -289,6 +289,24 @@ Inspect the local world in
 When EveJS itself runs in Docker, `localhost` is that EveJS container; connect
 it to the Sui container's network or provide an explicit host route.
 
+### Frontier Smart Assembly dApp
+
+Completed Smart Assemblies automatically mirror to Sui Localnet while the native
+Frontier server runs. See [automatic assembly synchronization](doc/FRONTIER_ASSEMBLY_SYNC.md)
+for supported state, retry behavior, and contract constraints.
+
+The server advertises `smart_assembly_base_dapp_url` through MachoNet global
+config with a default of `http://localhost:5173`. To use another base URL, set
+`smartAssemblyBaseDappUrl` in `evejs.config.local.json` or set the environment
+variable `EVEJS_SMART_ASSEMBLY_BASE_DAPP_URL` before starting the server.
+
+Use an HTTP(S) base URL without a query string or fragment. Trailing slashes
+are removed; the client appends `/client/root/`, `/client/behaviour/`, or
+`/client/networknode/monitor/` plus its assembly and tenant query parameters.
+Run the dApp separately at that address and restart the server and game client
+after changing the setting, since the Smart Assembly service caches the URL
+on startup.
+
 ## Localhost only
 
 > **EVE.js is a localhost-only project. Run the server and EVE client on the same computer.** It is not hardened for a LAN, the public Internet, port forwarding, shared hosting, or untrusted users.

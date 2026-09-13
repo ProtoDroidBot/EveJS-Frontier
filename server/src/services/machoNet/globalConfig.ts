@@ -85,6 +85,13 @@ function normalizeCountryCode(
 function buildGlobalConfigEntries(runtimeConfig = getRuntimeConfig()) {
   const baseEntries = [
     ["imageserverurl", runtimeConfig.imageServerUrl],
+    // SmartAssemblySvc appends its own /client/... path to this base URL.
+    [
+      "smart_assembly_base_dapp_url",
+      String(runtimeConfig.smartAssemblyBaseDappUrl || config.smartAssemblyBaseDappUrl)
+        .trim()
+        .replace(/\/+$/, ""),
+    ],
     ["defaultPortraitSaveSize", 1024],
     [
       "air_npe_enabled",

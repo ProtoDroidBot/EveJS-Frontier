@@ -208,5 +208,11 @@ catch (err) {
     log.spacer();
 }
 // Start the TCP server with the service manager
+try {
+    require("./src/services/frontier/suiAssemblySync").startSuiAssemblySync();
+}
+catch (err) {
+    log.err(`[SuiAssemblySync] Failed to start: ${err.message}`);
+}
 startTCPServer(serviceManager);
 //# sourceMappingURL=index.js.map

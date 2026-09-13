@@ -17,7 +17,8 @@
     "test:isolated-helper": "node --test server/tests/isolatedGameStore.test.js",
     "pretest": "npm run build",
     "test": "npm run test:frontier-static && npm run test:frontier-runners && npm run test:isolated-helper && npm run test:typescript-runtime",
-    "test:typescript-runtime": "node --test server/tests/typescriptRuntime.test.js server/tests/frontierSuiGrpcClient.test.js server/tests/frontierSuiCharacterProvisioning.test.js"
+    "test:typescript-runtime": "node --test server/tests/typescriptRuntime.test.js server/tests/frontierSuiGrpcClient.test.js server/tests/frontierSuiCharacterProvisioning.test.js && npm run test:frontier-sui-assemblies",
+    "test:frontier-sui-assemblies": "node --test server/tests/frontierSuiAssembly*.test.js"
   },
   "dependencies": {
     "@mysten/sui": "^2.30.0",
