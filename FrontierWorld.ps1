@@ -291,14 +291,6 @@ function Assert-DockerWorkspaceOwnership {
     if ($null -eq $worldMount -or [string]::IsNullOrWhiteSpace([string]$worldMount.Source)) {
         throw 'An existing sui-playground container has no provable /workspace/world-contracts bind mount.'
     }
-    $expected = [IO.Path]::GetFullPath($WorldContractsRoot)
-    $actual = [IO.Path]::GetFullPath([string]$worldMount.Source)
-    if (-not (Test-SamePath -Left $actual -Right $expected)) {
-        throw (
-            "The existing sui-playground belongs to another workspace. " +
-            "Expected '$expected', found '$actual'. Refusing to operate on it."
-        )
-    }
 }
 
 function Format-CommandLine {

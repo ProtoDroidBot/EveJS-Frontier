@@ -28281,7 +28281,11 @@ class SolarSystemScene {
                         const Cmax = entity.capacitorCapacity;
                         const tauSeconds = entity.capacitorRechargeRate / 1000;
                         const previousChargeAmount = Cmax * capRatio;
-                        const rechargedRatio = advancePassiveRechargeRatio(capRatio, deltaSeconds, tauSeconds);
+                        // Imported EVE recharge durations were converted to units per second.
+                        const rechargeModel = (resolveItemByTypeID(entity.typeID) || {}).capacitorRechargeModel;
+                        const rechargedRatio = rechargeModel === "frontier-linear"
+                            ? Math.min(1, capRatio + (entity.capacitorRechargeRate * Math.max(0, deltaSeconds) / Cmax))
+                            : advancePassiveRechargeRatio(capRatio, deltaSeconds, tauSeconds);
                         const newRatio = settlePassiveRechargeRatio(rechargedRatio, Cmax);
                         if (newRatio !== capRatio) {
                             setEntityCapacitorRatio(entity, newRatio);

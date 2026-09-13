@@ -15,5 +15,12 @@
     "sourceMap": true
   },
   "include": ["server/**/*.ts", "tools/**/*.ts", "tools/**/*.mts", "scripts/**/*.ts", "docker/**/*.ts"],
-  "exclude": ["node_modules", "**/node_modules", "**/target", "_local", "tools/NewEdenStoreEditor/public"]
+  "exclude": [
+  "node_modules",
+  "**/node_modules",
+  "**/target",
+  "_local",
+  "tools/NewEdenStoreEditor/public",
+  "tools/EveOnlineImporter/bundles"
+]
 }

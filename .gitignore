@@ -22,9 +22,9 @@ server/tidi_probe.log
 /server/src/logs
 /tools/DataSync/source_json
 /target
-*.js.map
 *.js
 *.mjs
+*.map
 
 # Generated per-install TLS certificates and private keys.
 # Created by tools/ClientSETUP/scripts/Install-EvEJSCerts.ps1.
@@ -65,3 +65,11 @@ server/tidi_probe.log
 /docker/*.js
 /docker/*.js.map
 *.tsbuildinfo
+
+# Ignore ElysianFSD / SerenityImporter tools until further notice
+/tools/Elysian*
+/tools/.elysian*
+/tools/Serenity*
+/tools/Launch-*
+/tools/EveOnlineImporter*
+tools/FRONTIER-COMPATIBILITY.md
