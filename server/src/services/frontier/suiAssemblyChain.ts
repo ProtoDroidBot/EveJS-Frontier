@@ -350,12 +350,60 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
     await execute(`fuel:${typeId}:efficiency`, tx);
   }
 
-  async function syncStatus(assembly: AssemblySnapshot): Promise<void> {
+  /** Read the authoritative energy table without modifying deployed game balance. */
+  async function readEnergyRequirements(): Promise<Array<{ typeID: number; energyRequired: number }>> {
+    const response = await client.getObject({ id: world.energyConfigId, options: { showContent: true } });
+    if (response.error || response.data?.content?.dataType !== "moveObject") throw new Error("Cannot read EnergyConfig");
+    const config = response.data.content.fields as any;
+    const table = suiAssemblyFields(config.assembly_energy);
+    const tableId = objectId(table?.id);
+    if (!tableId) throw new Error("EnergyConfig assembly energy table ID is missing");
+    const requirements = new Map<number, number>();
+    const cursors = new Set<string>();
+    let cursor: string | null = null;
+    do {
+      const page = await client.getDynamicFields({ parentId: tableId, cursor, limit: 50 });
+      const values = await Promise.all(page.data.map(async entry => {
+        if (entry.name.type !== "u64") throw new Error("EnergyConfig contains a non-u64 assembly type");
+        const typeID = Number(entry.name.value);
+        if (!Number.isSafeInteger(typeID) || typeID <= 0) throw new Error("EnergyConfig contains an invalid assembly type");
+        const result = await client.getDynamicFieldObject({ parentId: tableId, name: entry.name });
+        const fields = result.data?.content?.dataType === "moveObject" ? result.data.content.fields as any : null;
+        const energyRequired = fields && Number(fields.value);
+        if (result.error || !fields || String(fields.name) !== String(entry.name.value) ||
+            !Number.isSafeInteger(energyRequired) || energyRequired < 0) {
+          throw new Error(`Cannot read energy requirement for assembly type ${typeID}`);
+        }
+        return { typeID, energyRequired };
+      }));
+      for (const entry of values) {
+        if (requirements.has(entry.typeID)) throw new Error("EnergyConfig contains duplicate assembly types");
+        requirements.set(entry.typeID, entry.energyRequired);
+      }
+      cursor = page.hasNextPage ? page.nextCursor : null;
+      if (page.hasNextPage && (!cursor || cursors.has(cursor))) throw new Error("EnergyConfig pagination did not advance");
+      if (cursor) cursors.add(cursor);
+    } while (cursor);
+    if (table.size !== undefined && BigInt(table.size) !== BigInt(requirements.size)) {
+      throw new Error("EnergyConfig changed during reading; retry the current table");
+    }
+    if (response.data.version) {
+      const latest = await client.getObject({ id: world.energyConfigId });
+      if (latest.error || latest.data?.version !== response.data.version) {
+        throw new Error("EnergyConfig changed during reading; retry the current table");
+      }
+    }
+    return [...requirements].map(([typeID, energyRequired]) => ({ typeID, energyRequired }))
+      .sort((a, b) => a.typeID - b.typeID);
+  }
+
+  /** Construct only the allowlisted status calls; wallet sponsorship reuses this builder. */
+  async function buildStatusTransaction(assembly: AssemblySnapshot) {
     if (assembly.kind === "network_node") options.assertFuelSnapshotCurrent?.(assembly);
     const state = await readAssembly(assembly);
     if (!state) throw new Error(`Assembly ${assembly.itemId} must be anchored before status sync`);
     const desiredOnline = assembly.status === 2;
-    if (state.online === desiredOnline) return;
+    if (state.online === desiredOnline) return null;
     const tx = new Transaction();
     let connected: SuiAssemblyChainObject[] = [];
     if (assembly.kind === "network_node" && !desiredOnline) {
@@ -420,7 +468,13 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
       }
     });
     if (assembly.kind === "network_node") options.assertFuelSnapshotCurrent?.(assembly);
-    await execute(`assembly:${assembly.itemId}:${desiredOnline ? "online" : "offline"}`, tx, assembly.ownerId,
+    return { transaction: tx, connectedAssemblyIds: connected.map(item => item.id) };
+  }
+
+  async function syncStatus(assembly: AssemblySnapshot): Promise<void> {
+    const built = await buildStatusTransaction(assembly);
+    if (!built) return;
+    await execute(`assembly:${assembly.itemId}:${assembly.status === 2 ? "online" : "offline"}`, built.transaction, assembly.ownerId,
       assembly.kind === "network_node" ? () => options.assertFuelSnapshotCurrent?.(assembly) : undefined);
   }
 
@@ -471,7 +525,7 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
     await execute(`assembly:${assembly.itemId}:unanchor`, tx);
   }
 
-  return { deriveId, readAssembly, readObject, ensureAssembly, syncMetadata, configureFuelEfficiency,
-    syncFuel, syncStatus, removeAssembly, withCaps };
+  return { deriveId, readAssembly, readObject, ensureAssembly, syncMetadata, configureFuelEfficiency, readEnergyRequirements,
+    syncFuel, syncStatus, buildStatusTransaction, removeAssembly, withCaps };
 }
 export type SuiAssemblyChain = ReturnType<typeof createSuiAssemblyChain>;

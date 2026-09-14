@@ -8,9 +8,44 @@ import { createSuiAssemblyChain, suiAssemblyFields, suiAssemblyOption } from "./
 import { createSuiAssemblyContents } from "./suiAssemblyContents";
 import { createAssemblyTransactionExecutor } from "./suiAssemblyTransactions";
 import { registerSuiStorageSyncBridge, type SuiStorageSyncRequest } from "./suiStorageSync";
+import { createSponsoredAssemblyAdmin, registerSuiAssemblyAdminBridge } from "./suiAssemblyAdmin";
+import { clearAssemblyEnergyConfig, setAssemblyEnergyConfig } from "./networkNodeEnergyConfig";
 import {
   readSyncedSuiWorldConfig, prepareSuiCharacterIdentity, createSuiCharacterTransaction,
 } from "./suiCharacterProvisioning";
+
+let trackedNetworkNodeBinding: ((itemId: string) => string | null) | null = null;
+type EnergyMutationRunner = <T>(operation: () => T | Promise<T>) => Promise<T>;
+let energyMutationRunner: EnergyMutationRunner | null = null;
+/** Existing Move links cannot be detached without deleting their Network Node. */
+export function getTrackedSuiAssemblyNetworkNodeID(itemId: string | number): string | null {
+  return trackedNetworkNodeBinding?.(String(itemId)) ?? null;
+}
+
+export async function runSuiAssemblyEnergyMutation<T>(operation: () => T | Promise<T>): Promise<T> {
+  if (!energyMutationRunner) throw Object.assign(new Error("Assembly synchronization is unavailable"), { code: "DEPLOYMENT_UNAVAILABLE" });
+  return energyMutationRunner(operation);
+}
+
+/** Connection writes share the queue with captured snapshots and anchor journals. */
+export function createSuiAssemblyEnergyMutationRunner(options: {
+  runExclusive: <T>(operation: () => Promise<T>) => Promise<T>;
+  getContext: () => any;
+  hasPrepared: () => boolean;
+}): EnergyMutationRunner {
+  return operation => options.runExclusive(async () => {
+    const context = options.getContext();
+    if (!context || context.synced?.network !== "localnet") {
+      throw Object.assign(new Error("Assembly deployment is unavailable"), { code: "DEPLOYMENT_UNAVAILABLE" });
+    }
+    if (options.hasPrepared() || context.executor?.hasPending()) {
+      throw Object.assign(new Error("An assembly transaction is awaiting completion"), { code: "SPONSOR_BUSY" });
+    }
+    try { await context.assertCurrent(); }
+    catch (error) { throw Object.assign(new Error("Assembly deployment changed", { cause: error }), { code: "DEPLOYMENT_UNAVAILABLE" }); }
+    return operation();
+  });
+}
 
 function atomicJson(file: string, value: unknown) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -262,6 +297,11 @@ export function startSuiAssemblySync() {
   fs.writeFileSync(lockPath, String(process.pid), { flag: "wx", mode: 0o600 });
   let context: any = null;
   let lastSummary = "";
+  trackedNetworkNodeBinding = itemId => {
+    const current = readSyncedSuiWorldConfig(env);
+    if (!context || !current || current.chainId !== context.synced.chainId || current.packageId !== context.synced.packageId) return null;
+    return context.state.assemblies[itemId]?.networkNodeId ?? null;
+  };
 
   function currentSnapshotInput(): SuiAssemblySnapshotInput {
     return {
@@ -332,6 +372,7 @@ export function startSuiAssemblySync() {
       client, chainId: synced.chainId, packageId: synced.packageId, adminSigner, getSigner, assertCurrent,
       journalPath: path.join(root, `${synced.chainId}-${synced.packageId}.transactions.json`),
       onCommitted: (digest, label) => log.info(`[SuiAssemblySync] ${label}: ${digest}`),
+      reconcileSponsored: async metadata => { deploymentRuntime.reconcileSponsoredAssemblyState(metadata); },
     });
     let snapshotItemIds = new Set<string>();
     let snapshotNodeStatuses = new Map<string, number>();
@@ -353,12 +394,12 @@ export function startSuiAssemblySync() {
         }
       },
     });
-    async function getCharacter(ownerId: number) {
+    async function getCharacter(ownerId: number, allowCreate = true) {
       const local = localCharacter(ownerId);
       if (!local) throw new Error(`Local Character ${ownerId} is missing`);
       const identity = prepareSuiCharacterIdentity(local, { world: { ...world, tenant: "dev", tribeId: 100 } });
       let response = await client.getObject({ id: identity.characterObjectId, options: { showContent: true, showOwner: true } });
-      if (response.error?.code === "notExists") {
+      if (allowCreate && response.error?.code === "notExists") {
         await executor.execute(`create Character ${ownerId}`, createSuiCharacterTransaction(identity));
         response = await client.getObject({ id: identity.characterObjectId, options: { showContent: true, showOwner: true } });
       }
@@ -383,7 +424,13 @@ export function startSuiAssemblySync() {
     });
     await assertCurrent();
     return {
-      synced, chain, contents, executor, state, assertCurrent, getCharacter,
+      synced, world, chain, contents, executor, state, assertCurrent, getCharacter,
+      async simulateSponsored(bytes: string) {
+        const result = await client.dryRunTransactionBlock({ transactionBlock: Buffer.from(bytes, "base64") });
+        if (result.effects?.status?.status !== "success") {
+          throw Object.assign(new Error("Assembly state changed or the sponsored transaction cannot execute"), { code: "ASSEMBLY_STATE_CHANGED" });
+        }
+      },
       fuelEfficiencies: new Map(require("./networkNodeFuelRuntime").getNetworkNodeFuelConfig().map((entry: any) => [entry.typeID, entry.efficiency])),
       setCharacters(rows: any[]) { characters = new Map(rows.map(character => [character.gameCharacterId, character])); },
       setSnapshotItemIds(ids: Set<string>, assemblies: any[]) {
@@ -397,10 +444,26 @@ export function startSuiAssemblySync() {
     report: (message) => log.warn(`[SuiAssemblySync] ${message}`),
     async reconcile() {
       const synced = readSyncedSuiWorldConfig(env);
-      if (!synced) throw new Error("Run FrontierWorld.ps1 sync to enable automatic Smart Assembly synchronization");
+      if (!synced) {
+        clearAssemblyEnergyConfig();
+        throw new Error("Run FrontierWorld.ps1 sync to enable automatic Smart Assembly synchronization");
+      }
       if (!context || context.synced.chainId !== synced.chainId || context.synced.packageId !== synced.packageId) {
+        clearAssemblyEnergyConfig();
         context = await makeContext(synced, { characters: [] });
       }
+      // Recover and apply any confirmed owner operation BEFORE capturing the
+      // mirror snapshot, otherwise stale local status would undo the wallet action.
+      await context.executor.recover();
+      if (sponsoredAdmin.hasPrepared()) return;
+      // Replace the shared cache only after a complete successful read. A
+      // transient RPC failure preserves the last valid table for this world.
+      await context.assertCurrent();
+      const energyRequirements = await context.chain.readEnergyRequirements();
+      await context.assertCurrent();
+      setAssemblyEnergyConfig(energyRequirements, {
+        energyConfigID: context.world.energyConfigId, chainId: synced.chainId,
+      });
       networkNodeFuelRuntime.settleAllNetworkNodeFuel(Date.now());
       const snapshotInput = currentSnapshotInput();
       let rawItems = snapshotInput.items;
@@ -422,9 +485,35 @@ export function startSuiAssemblySync() {
       }
     },
   });
+  const sponsoredAdmin = createSponsoredAssemblyAdmin({
+    runExclusive: worker.runExclusive,
+    getContext: () => context,
+    getSnapshot: () => buildSuiAssemblySnapshot(currentSnapshotInput()),
+    validateAccess(request, assembly) {
+      const identity = request.assertAuthenticated();
+      if (assembly.ownerId !== request.characterID || identity.characterID !== request.characterID || identity.walletAddress !== request.walletAddress) {
+        throw Object.assign(new Error("Assembly owner differs from the active wallet"), { code: "ACCESS_DENIED" });
+      }
+      const session = identity.session;
+      const system = Number(session.solarsystemid2 || session._space?.systemID || session.solarsystemid || session.locationid);
+      if (system !== assembly.solarSystemId) throw Object.assign(new Error("Assembly is in another system"), { code: "ASSEMBLY_NOT_IN_CURRENT_SYSTEM" });
+      if (request.action === "online") {
+        const item = itemStore.findItemById(request.assemblyID);
+        if (!item) throw Object.assign(new Error("Assembly was removed"), { code: "ASSEMBLY_NOT_FOUND" });
+        const energy = require("./networkNodeEnergyRuntime").validateAssemblyOnline(item);
+        if (!energy.success) throw Object.assign(new Error("Assembly cannot receive energy"), { code: energy.errorMsg });
+      }
+    },
+  });
+  const unregisterAdmin = registerSuiAssemblyAdminBridge(sponsoredAdmin);
+  energyMutationRunner = createSuiAssemblyEnergyMutationRunner({
+    runExclusive: worker.runExclusive, getContext: () => context,
+    hasPrepared: () => sponsoredAdmin.hasPrepared(),
+  });
   async function readStorageStatus(request: SuiStorageSyncRequest): Promise<any> {
     return worker.runExclusive(async () => {
       if (!context) throw new Error(worker.getLastError() || "Sui assembly synchronization is starting");
+      if (sponsoredAdmin.hasPrepared()) throw new Error("An assembly owner is signing a sponsored transaction; retry shortly");
       await context.assertCurrent();
       const snapshot = buildSuiAssemblySnapshot(currentSnapshotInput());
       const assembly = snapshot.assemblies.find(a => a.itemId === String(request.storageUnitID) && a.kind === "storage_unit");
@@ -452,5 +541,11 @@ export function startSuiAssemblySync() {
   });
   worker.start();
   log.info("[SuiAssemblySync] Automatic Localnet synchronization enabled (5 second scan)");
-  return { ...worker, stop() { unregisterStorageSync(); return worker.stop(); } };
+  return { ...worker, stop() {
+    unregisterStorageSync(); unregisterAdmin(); trackedNetworkNodeBinding = null;
+    energyMutationRunner = null;
+    const stopped = worker.stop();
+    clearAssemblyEnergyConfig();
+    return stopped.finally(() => clearAssemblyEnergyConfig());
+  } };
 }

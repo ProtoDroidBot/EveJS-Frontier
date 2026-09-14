@@ -1032,6 +1032,11 @@ function startServer(runtimeContext) {
   const { mountSmartStorageEndpoints } = require("./smartStorageEndpoints");
   mountSmartStorageEndpoints(app);
 
+  const { mountSmartAssemblyAdminEndpoints } = require("./smartAssemblyAdminEndpoints");
+  mountSmartAssemblyAdminEndpoints(app);
+  const { mountSmartAssemblyEnergyEndpoints } = require("./smartAssemblyEnergyEndpoints");
+  mountSmartAssemblyEnergyEndpoints(app);
+
   app.all(/.*/, (req, res) => {
     if (PROXY_FORWARD_UPSTREAM_URL) {
       const upstreamTargetUrl = buildForwardTargetUrl(

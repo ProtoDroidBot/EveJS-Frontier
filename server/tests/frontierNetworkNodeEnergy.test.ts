@@ -1,0 +1,204 @@
+"use strict";
+
+const assert = require("node:assert/strict");
+const test = require("node:test");
+const reference = require("../src/services/_shared/referenceData");
+const originalRows = reference.readStaticRows;
+const COMPONENTS = [88092, 77917, 88082, 92404, 88086].map(typeID => ({
+  typeID, smartDeployable: { createOnChain: 1, constructionCost: { 34: 1 } },
+  ...(typeID === 88092 ? { smartAnchor: { maxEnergyCapacity: 1000 } } : {}),
+}));
+test.mock.method(reference, "readStaticRows", table => table === reference.TABLE.SPACE_COMPONENTS_BY_TYPE ? COMPONENTS : originalRows(table));
+const itemStore = require("../src/services/inventory/itemStore");
+const config = require("../src/services/frontier/networkNodeEnergyConfig");
+const energy = require("../src/services/frontier/networkNodeEnergyRuntime");
+const deployment = require("../src/services/frontier/deploymentRuntime");
+const fuel = require("../src/services/frontier/networkNodeFuelRuntime");
+const sync = require("../src/services/frontier/suiAssemblySync");
+const NOW = 1700000000000;
+const OWNER = 140000003;
+const SYSTEM = 30000004;
+const SESSION = { characterID: OWNER, solarsystemid2: SYSTEM };
+const SIGNATURE = Buffer.alloc(66, 7).toString("base64");
+let items = new Map<number, any>();
+
+function assembly(itemID, typeID = 88092, options: Record<string, any> = {}) {
+  const { ownerID = OWNER, systemID = SYSTEM, status = typeID === 88092 ? 2 : 1,
+    x = 0, y = 0, z = 0, quantity = 100, binding, ...rest } = options;
+  const item = { itemID, typeID, itemName: `Assembly ${itemID}`, ownerID, locationID: systemID,
+    spaceState: { position: { x, y, z } },
+    customInfo: JSON.stringify({
+      evejsFrontierConstruction: { assemblyTypeID: typeID, assemblyStatus: status, ownerID, solarSystemID: systemID },
+      ...(typeID === 88092 ? { evejsFrontierNetworkNodeFuel: { typeID: 88335, quantity, burnUpdatedAtMs: NOW } } : {}),
+      ...(binding ? { [energy.ENERGY_INFO_KEY]: binding } : {}),
+    }), ...rest };
+  items.set(itemID, item);
+  return item;
+}
+function state(id) { return deployment.readConstructionState(items.get(id)).assemblyStatus; }
+function updateStatus(id, status) {
+  const item = items.get(id);
+  const info = JSON.parse(item.customInfo);
+  info.evejsFrontierConstruction.assemblyStatus = status;
+  items.set(id, { ...item, customInfo: JSON.stringify(info) });
+}
+function status(id = 1) {
+  const result = energy.getNetworkNodeEnergyStatus(OWNER, id);
+  assert.equal(result.success, true, result.errorMsg);
+  return result.data;
+}
+test.beforeEach(t => {
+  items = new Map();
+  t.mock.method(Date, "now", () => NOW);
+  t.mock.method(itemStore, "getAllItems", () => Object.fromEntries(items));
+  t.mock.method(itemStore, "findItemById", id => items.get(Number(id)) || null);
+  t.mock.method(itemStore, "updateInventoryItem", (id, updater) => {
+    const previousData = items.get(Number(id));
+    if (!previousData) return { success: false, errorMsg: "ITEM_NOT_FOUND" };
+    const data = typeof updater === "function" ? updater(structuredClone(previousData)) : updater;
+    items.set(Number(id), data);
+    return { success: true, data, previousData };
+  });
+  if (sync.getTrackedSuiAssemblyNetworkNodeID) t.mock.method(sync, "getTrackedSuiAssemblyNetworkNodeID", () => null);
+  config.setAssemblyEnergyConfig([{ typeID: 77917, energyRequired: 500 }, { typeID: 88082, energyRequired: 50 }, { typeID: 92404, energyRequired: 40 }], { energyConfigID: "0x1" });
+  deployment._testing.clearBuildDefinitionCache();
+  deployment._testing.clearPendingAssemblyTransitions();
+});
+test.afterEach(() => config.clearAssemblyEnergyConfig());
+
+test("connects completed owned assemblies within the inclusive 3D 80 km radius", () => {
+  assembly(1);
+  assembly(2, 88082, { x: 80000 });
+  assembly(3, 88082, { z: 80000.01 });
+  assembly(4, 88082, { ownerID: OWNER + 1 });
+  assembly(5, 88082, { systemID: SYSTEM + 1 });
+  assembly(6, 88082, { status: 5 });
+  assembly(7, 88082, { spaceState: {} });
+  assembly(8, 88082, { x: 60000, y: 60000 });
+  assert.deepEqual(status().connectedAssemblies.map(row => row.itemID), [2]);
+  assert.equal(energy.connectAssembly(SESSION, 3, 1).errorMsg, "NETWORK_NODE_OUT_OF_RANGE");
+  assert.equal(energy.connectAssembly(SESSION, 4, 1).errorMsg, "ASSEMBLY_ACCESS_DENIED");
+  assert.equal(energy.connectAssembly(SESSION, 6, 1).errorMsg, "ASSEMBLY_NOT_FOUND");
+});
+
+test("uses deployed per-type costs, accounts once while online, and releases offline", () => {
+  assembly(1); assembly(2, 77917, { status: 2 }); assembly(3, 88082, { status: 2 });
+  assembly(4, 92404); assembly(5, 88086, { status: 2 });
+  assert.equal(status().energyUsed, 550);
+  assert.equal(status().energyUsed, 550);
+  assert.equal(status().energyAvailable, 450);
+  assert.equal(status().connectedAssemblies.find(row => row.itemID === 5).energyRequired, 0);
+  updateStatus(2, 1);
+  assert.equal(status().energyUsed, 50);
+  assert.equal(fuel.readNetworkNodeFuelState(items.get(1)).quantity, 100);
+});
+
+test("online prepare and commit enforce capacity including competing prepared transactions", () => {
+  assembly(1); assembly(2, 77917, { status: 2 }); assembly(3, 77917); assembly(4, 77917);
+  const a = deployment.beginAssemblyStateTransition(SESSION, 3, 2);
+  const b = deployment.beginAssemblyStateTransition(SESSION, 4, 2);
+  assert.equal(a.success, true, a.errorMsg); assert.equal(b.success, true, b.errorMsg);
+  const committed = deployment.commitAssemblyStateTransition(SESSION, 3, a.data.transactionUUID, SIGNATURE, 2);
+  assert.equal(committed.success, true, committed.errorMsg);
+  assert.equal(status().energyUsed, 1000);
+  const rejected = deployment.commitAssemblyStateTransition(SESSION, 4, b.data.transactionUUID, SIGNATURE, 2);
+  assert.equal(rejected.errorMsg, "NETWORK_NODE_ENERGY_EXCEEDED");
+  assert.equal(state(4), 1);
+  assert.equal(energy.validateAssemblyOnline(items.get(3)).success, true, "idempotent online excludes its own draw");
+});
+
+test("online commit rechecks radius and node fuel after preparation", () => {
+  assembly(1); assembly(2, 88082);
+  const pending = deployment.beginAssemblyStateTransition(SESSION, 2, 2);
+  assert.equal(pending.success, true, pending.errorMsg);
+  items.get(2).spaceState.position.x = 80001;
+  assert.equal(deployment.commitAssemblyStateTransition(SESSION, 2, pending.data.transactionUUID, SIGNATURE, 2).errorMsg,
+    "NETWORK_NODE_CONNECTION_REQUIRED");
+  items.get(2).spaceState.position.x = 0;
+  const next = deployment.beginAssemblyStateTransition(SESSION, 2, 2);
+  assembly(1, 88092, { quantity: 0 });
+  assert.equal(deployment.commitAssemblyStateTransition(SESSION, 2, next.data.transactionUUID, SIGNATURE, 2).errorMsg, "NETWORK_NODE_OFFLINE");
+});
+
+test("node fuel exhaustion cascades offline to consumers including zero-cost assemblies", () => {
+  assembly(1, 88092, { quantity: 1 }); assembly(2, 88082, { status: 2 }); assembly(3, 88086, { status: 2 });
+  fuel.settleAllNetworkNodeFuel(NOW + 300000);
+  assert.equal(state(1), 1); assert.equal(state(2), 1); assert.equal(state(3), 1);
+  assert.equal(status().energyUsed, 0); assert.equal(status().energyAvailable, 0);
+});
+
+test("manual node offline cascades without a chain worker and does not auto-online dependents", () => {
+  assembly(1); assembly(2, 88082, { status: 2 });
+  deployment.offlineAssemblyForFuelDepletion(1);
+  assert.equal(state(2), 1);
+  updateStatus(1, 2); energy.reconcileNetworkNodeEnergy();
+  assert.equal(state(2), 1);
+});
+
+test("topology uses nearest node once, persists through reload, and never charges both grids", () => {
+  assembly(1, 88092, { x: 1000 }); assembly(2, 88092, { x: -1000 }); assembly(3, 88082, { status: 2 });
+  assert.equal(status(1).energyUsed, 50); assert.equal(status(2).energyUsed, 0);
+  items.get(2).spaceState.position.x = 0;
+  const file = require.resolve("../src/services/frontier/networkNodeEnergyRuntime");
+  const cached = require.cache[file];
+  try {
+    delete require.cache[file];
+    const reloaded = require(file);
+    assert.equal(reloaded.getAssemblyEnergyState(3).networkNodeID, 1);
+  } finally { require.cache[file] = cached; }
+});
+
+test("disconnect persists, explicit reconnect restores membership, online changes are rejected", () => {
+  assembly(1); assembly(2, 88082);
+  assert.equal(energy.disconnectAssembly(SESSION, 2, 1).success, true);
+  energy.reconcileNetworkNodeEnergy();
+  assert.equal(status().connectedAssemblies.length, 0);
+  assert.equal(energy.validateAssemblyOnline(items.get(2)).errorMsg, "NETWORK_NODE_CONNECTION_REQUIRED");
+  assert.equal(energy.connectAssembly(SESSION, 2, 1).success, true);
+  updateStatus(2, 2);
+  assert.equal(energy.disconnectAssembly(SESSION, 2, 1).errorMsg, "ASSEMBLY_MUST_BE_OFFLINE");
+  assert.equal(status().energyUsed, 50);
+});
+
+test("verified blockchain connections cannot detach or migrate to a different grid", t => {
+  assembly(1); assembly(2, 88092, { x: 1000 }); assembly(3, 88082);
+  t.mock.method(sync, "getTrackedSuiAssemblyNetworkNodeID", id => Number(id) === 3 ? "2" : null);
+  assert.equal(status(1).connectedAssemblies.length, 0);
+  const connected = status(2).connectedAssemblies[0];
+  assert.equal(connected.canDisconnect, false);
+  assert.match(connected.disconnectReason, /blockchain/);
+  assert.equal(energy.disconnectAssembly(SESSION, 3, 2).errorMsg, "NETWORK_NODE_BINDING_LOCKED");
+  assert.equal(energy.connectAssembly(SESSION, 3, 1).errorMsg, "NETWORK_NODE_BINDING_LOCKED");
+  assert.equal(energy.getAssemblyEnergyState(3).networkNodeID, 2);
+});
+
+test("connection writes require the owner in the node's solar system", () => {
+  assembly(1); assembly(2, 88082);
+  assert.equal(energy.disconnectAssembly({ ...SESSION, characterID: OWNER + 1 }, 2, 1).errorMsg, "ASSEMBLY_ACCESS_DENIED");
+  assert.equal(energy.disconnectAssembly({ ...SESSION, solarsystemid2: SYSTEM + 1 }, 2, 1).errorMsg, "ASSEMBLY_NOT_IN_CURRENT_SYSTEM");
+  assert.equal(energy.getNetworkNodeEnergyStatus(0, 1).errorMsg, "ACCESS_DENIED");
+  assert.equal(status().connectedAssemblies.length, 1);
+});
+
+test("a removed node or out-of-radius connection cannot leave an assembly powered", () => {
+  assembly(1); assembly(2, 88082, { status: 2 }); status();
+  items.delete(1); energy.reconcileNetworkNodeEnergy(); assert.equal(state(2), 1);
+  assembly(1); updateStatus(2, 2); status();
+  items.get(2).spaceState.position.x = 80001;
+  energy.reconcileNetworkNodeEnergy(); assert.equal(state(2), 1);
+});
+
+test("a refreshed blockchain table updates accounting and sheds overload deterministically", () => {
+  assembly(1); assembly(2, 77917, { status: 2 }); assembly(3, 77917, { status: 2 });
+  assert.equal(status().energyUsed, 1000);
+  config.setAssemblyEnergyConfig([{ typeID: 77917, energyRequired: 600 }]);
+  assert.equal(status().energyUsed, 600); assert.equal(state(2), 2); assert.equal(state(3), 1);
+});
+
+test("unavailable configuration blocks online without silently substituting free energy", () => {
+  assembly(1); assembly(2, 88082); config.clearAssemblyEnergyConfig();
+  assert.equal(energy.validateAssemblyOnline(items.get(2)).errorMsg, "NETWORK_NODE_ENERGY_CONFIG_UNAVAILABLE");
+  assert.equal(energy.getNetworkNodeEnergyStatus(OWNER, 1).errorMsg, "NETWORK_NODE_ENERGY_CONFIG_UNAVAILABLE");
+  assert.throws(() => config.setAssemblyEnergyConfig([{ typeID: 1, energyRequired: -1 }]), /Invalid/);
+  assert.equal(config.isAssemblyEnergyConfigLoaded(), false);
+});

@@ -1,16 +1,18 @@
 import assert = require("node:assert/strict");
 import { test } from "node:test";
 import { buildSuiAssemblySnapshot, SuiAssemblySnapshotInput } from "../src/services/frontier/suiAssemblySnapshot";
+import { clearAssemblyEnergyConfig, setAssemblyEnergyConfig } from "../src/services/frontier/networkNodeEnergyConfig";
 
 const OWNER = 140000005;
 function assembly(itemID: string | number, typeID = 88092, options: Record<string, any> = {}) {
-  const { status = 1, ownerID = OWNER, system = 30000004, position = { x: 0, y: 0, z: 0 }, destinationGateID = 0, fuel, ...rest } = options;
+  const { status = 1, ownerID = OWNER, system = 30000004, position = { x: 0, y: 0, z: 0 }, destinationGateID = 0, fuel, energy, ...rest } = options;
   return {
     itemID, typeID, ownerID, locationID: system, itemName: `Assembly ${itemID}`,
     spaceState: { position },
     customInfo: JSON.stringify({
       evejsFrontierConstruction: { assemblyTypeID: typeID, assemblyStatus: status, ownerID, solarSystemID: system, destinationGateID },
       ...(fuel === undefined ? {} : { evejsFrontierNetworkNodeFuel: fuel }),
+      ...(energy === undefined ? {} : { evejsFrontierEnergy: energy }),
     }),
     ...rest,
   };
@@ -104,20 +106,46 @@ test("preserves verified bindings when a nearer node appears and never silently 
   assert.equal(wrongOwner.errors[0].code, "INVALID_NETWORK_NODE_BINDING");
 });
 
-test("rejects ambiguous or missing nodes and invalid owners instead of inventing bindings", () => {
+test("breaks equal-distance ties by item ID and rejects missing nodes and invalid owners", () => {
   const tied = buildSuiAssemblySnapshot(fixture([
     assembly(1, 88092, { position: { x: -1, y: 0, z: 0 } }),
     assembly(2, 88092, { position: { x: 1, y: 0, z: 0 } }),
     assembly(3, 92279),
   ]));
-  assert.deepEqual(tied.errors.map((row) => row.code), ["AMBIGUOUS_NETWORK_NODE"]);
-  assert.equal(tied.assemblies.length, 2);
+  assert.deepEqual(tied.errors, []);
+  assert.equal(tied.assemblies.find(row => row.itemId === "3")?.networkNodeId, "1");
   const missing = buildSuiAssemblySnapshot(fixture([assembly(3, 90184)]));
   assert.equal(missing.errors[0].code, "MISSING_NETWORK_NODE");
   assert.deepEqual(missing.characters, []);
   const owner = buildSuiAssemblySnapshot(fixture([assembly(1, 88092, { ownerID: 99 })]));
   assert.equal(owner.errors[0].code, "MISSING_OWNER");
   assert.equal(owner.assemblies.length, 0);
+});
+
+test("energy bindings honor the node radius, explicit choice and persistent chain constraints", () => {
+  const source = fixture([
+    assembly(1), assembly(2, 88092, { position: { x: 79_000, y: 0, z: 0 } }),
+    assembly(3, 90184, { energy: { networkNodeID: 2, autoConnect: false } }),
+    assembly(4, 90184, { energy: { networkNodeID: 0, autoConnect: false } }),
+    assembly(5, 90184, { position: { x: -80_000, y: 0, z: 0 } }),
+    assembly(6, 90184, { position: { x: -80_001, y: 0, z: 0 } }),
+  ]);
+  const result = buildSuiAssemblySnapshot(source);
+  assert.equal(result.assemblies.find(row => row.itemId === "3")?.networkNodeId, "2");
+  assert.equal(result.assemblies.some(row => row.itemId === "4"), false);
+  assert.equal(result.assemblies.find(row => row.itemId === "5")?.networkNodeId, "1");
+  assert.deepEqual(result.errors.map(row => [row.itemId, row.code]), [["6", "MISSING_NETWORK_NODE"]]);
+  const locked = buildSuiAssemblySnapshot({ ...source, networkNodeBindings: { "3": "1", "4": "1", "6": "1" } });
+  assert.deepEqual(locked.errors.map(row => row.code), ["NETWORK_NODE_BINDING_LOCKED", "NETWORK_NODE_BINDING_LOCKED", "NETWORK_NODE_OUT_OF_RANGE"]);
+});
+
+test("snapshots use the current chain energy table including zero for unconfigured types", () => {
+  try {
+    setAssemblyEnergyConfig([{ typeID: 90184, energyRequired: 1 }]);
+    const result = buildSuiAssemblySnapshot(fixture([assembly(1), assembly(2, 90184), assembly(3, 92279)]));
+    assert.equal(result.assemblies.find(row => row.itemId === "2")?.energyRequired, 1);
+    assert.equal(result.assemblies.find(row => row.itemId === "3")?.energyRequired, 0);
+  } finally { clearAssemblyEnergyConfig(); }
 });
 
 test("does not manufacture fuel or online dependency state", () => {

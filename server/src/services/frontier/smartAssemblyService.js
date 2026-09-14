@@ -7,7 +7,11 @@ const log = require("../../utils/logger");
 const ASSEMBLY_STATUS_OFFLINE = 1;
 const ASSEMBLY_STATUS_ONLINE = 2;
 const ERROR_MESSAGES = Object.freeze({
+    NETWORK_NODE_CONNECTION_REQUIRED: "Connect this assembly to a Network Node within 80 km before bringing it online.",
+    NETWORK_NODE_OFFLINE: "The connected Network Node must be online and fueled.",
+    NETWORK_NODE_ENERGY_EXCEEDED: "The Network Node does not have enough available energy for this assembly.",
     NETWORK_NODE_FUEL_REQUIRED: "Deposit fuel in this Network Node before bringing it online.",
+    NETWORK_NODE_ENERGY_CONFIG_UNAVAILABLE: "Energy requirements are still synchronizing. Try again shortly.",
     ASSEMBLY_ACCESS_DENIED: "You do not own this assembly.",
     ASSEMBLY_NOT_CHAIN_ANCHORED: "This assembly does not require a chain state transition.",
     ASSEMBLY_NOT_FOUND: "The assembly is no longer available.",

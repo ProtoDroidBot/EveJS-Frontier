@@ -8,6 +8,7 @@ type PendingTransaction = {
   digest: string;
   bytes: string;
   signatures: string[];
+  sponsored?: Record<string, any>;
 };
 type Journal = {
   version: 1;
@@ -16,6 +17,7 @@ type Journal = {
   pending?: PendingTransaction;
   lastTransaction?: { label: string; digest: string; status: string };
   confirmedGas?: SuiObjectRef;
+  sponsoredReceipts?: Array<{ metadata: Record<string, any>; digest: string; bytes: string; status: string }>;
   rejectedTransactions?: Array<PendingTransaction & {
     conflictingDigest: string;
     objectId: string;
@@ -54,6 +56,8 @@ export function createAssemblyTransactionExecutor(options: {
   getSigner: (ownerId: number) => any;
   assertCurrent: () => Promise<void>;
   onCommitted?: (digest: string, label: string) => void;
+  /** Persist confirmed wallet changes locally before the journal unlocks the mirror. */
+  reconcileSponsored?: (metadata: Record<string, any>, digest: string) => Promise<void>;
 }) {
   let journal: Journal = { version: 1, chainId: options.chainId, packageId: options.packageId };
   if (fs.existsSync(options.journalPath)) {
@@ -81,7 +85,7 @@ export function createAssemblyTransactionExecutor(options: {
       return { ...gas.reference, version: String(gas.reference.version) };
     }
   }
-  function finish(result: SuiTransactionBlockResponse, pending: PendingTransaction) {
+  async function finish(result: SuiTransactionBlockResponse, pending: PendingTransaction) {
     if (result?.digest !== pending.digest || !result?.effects?.status?.status ||
         (result.effects.transactionDigest && result.effects.transactionDigest !== pending.digest)) {
       throw new Error(`Assembly transaction ${pending.digest} has no definitive effects; retry pending`);
@@ -90,10 +94,17 @@ export function createAssemblyTransactionExecutor(options: {
     if (status !== "success" && status !== "failure") {
       throw new Error(`Assembly transaction ${pending.digest} returned an unknown status`);
     }
+    if (status === "success" && pending.sponsored) {
+      if (!options.reconcileSponsored) throw new Error("Sponsored transaction reconciliation is unavailable");
+      await options.reconcileSponsored(pending.sponsored, pending.digest);
+    }
     save({
       ...journal, pending: undefined,
       lastTransaction: { label: pending.label, digest: pending.digest, status },
       confirmedGas: confirmedGas(result),
+      sponsoredReceipts: pending.sponsored ? [...(journal.sponsoredReceipts || []).slice(-999), {
+        metadata: pending.sponsored, digest: pending.digest, bytes: pending.bytes, status,
+      }] : journal.sponsoredReceipts,
     });
     if (status === "failure") {
       throw new Error(`${pending.label}: ${result.effects.status.error || "Move transaction failed"}`);
@@ -247,5 +258,46 @@ export function createAssemblyTransactionExecutor(options: {
     save({ ...journal, pending }); // Must succeed before sending anything to the chain.
     return recover();
   }
-  return { execute, recover, hasPending: () => Boolean(journal.pending) };
+  async function prepareSponsored(transaction: any, sender: string) {
+    if (journal.pending) throw new Error("Another assembly transaction is pending");
+    await options.assertCurrent();
+    transaction.setSender(sender);
+    transaction.setGasOwner(options.adminSigner.toSuiAddress());
+    transaction.setGasBudget(GAS_BUDGET);
+    const gas = await gasForBuild();
+    if (gas) transaction.setGasPayment([gas]);
+    const bytes = await transaction.build({ client: options.client });
+    await options.assertCurrent();
+    return { bytes: Buffer.from(bytes).toString("base64"), digest: TransactionDataBuilder.getDigestFromBytes(bytes),
+      sponsorAddress: options.adminSigner.toSuiAddress() };
+  }
+  /** Called only with server-prepared bytes and a verified owner signature. */
+  async function executeSponsored(metadata: Record<string, any>, encodedBytes: string, signature: string, assertSnapshotCurrent: () => void) {
+    if (journal.pending) throw new Error("Another assembly transaction is pending");
+    await options.assertCurrent();
+    const bytes = Buffer.from(encodedBytes, "base64");
+    const transaction = TransactionDataBuilder.fromBytes(bytes);
+    if (transaction.sender !== metadata.walletAddress || transaction.gasData.owner !== options.adminSigner.toSuiAddress()) {
+      throw new Error("Sponsored transaction signer mismatch");
+    }
+    const sponsorSignature = (await options.adminSigner.signTransaction(bytes)).signature;
+    await options.assertCurrent();
+    assertSnapshotCurrent();
+    save({ ...journal, pending: {
+      label: `sponsored:${metadata.transactionUUID}`, digest: TransactionDataBuilder.getDigestFromBytes(bytes),
+      bytes: encodedBytes, signatures: metadata.walletAddress === options.adminSigner.toSuiAddress()
+        ? [signature] : [signature, sponsorSignature], sponsored: metadata,
+    } });
+    return recover();
+  }
+  function getSponsored(transactionUUID: string) {
+    if (journal.pending?.sponsored?.transactionUUID === transactionUUID) return {
+      metadata: journal.pending.sponsored, digest: journal.pending.digest, bytes: journal.pending.bytes, status: "pending",
+    };
+    const receipt = journal.sponsoredReceipts?.find(value => value.metadata.transactionUUID === transactionUUID);
+    if (receipt) return receipt;
+    const rejected = journal.rejectedTransactions?.find(value => value.sponsored?.transactionUUID === transactionUUID);
+    if (rejected) return { metadata: rejected.sponsored!, digest: rejected.digest, bytes: rejected.bytes, status: "failure" };
+  }
+  return { execute, recover, prepareSponsored, executeSponsored, getSponsored, hasPending: () => Boolean(journal.pending) };
 }

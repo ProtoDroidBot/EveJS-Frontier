@@ -162,7 +162,7 @@ function defaultDependencies() {
 }
 
 /** Dependency injection keeps HTTP/security tests independent of the game store. */
-export function createSmartStorageApi(overrides?: Record<string, any>) {
+export function createSmartStorageApi(overrides?: Record<string, any>, authOptions: { scope?: string; description?: string } = {}) {
   const dependencies: Record<string, any> = overrides || defaultDependencies();
   const now = dependencies.now || Date.now;
   const challenges = new Map<string, any>();
@@ -218,6 +218,7 @@ export function createSmartStorageApi(overrides?: Record<string, any>) {
     finally { if (timer) clearTimeout(timer); }
   }
   return {
+    authenticate,
     async challenge(body: any) {
       prune();
       const address = walletAddress(body?.walletAddress);
@@ -225,7 +226,7 @@ export function createSmartStorageApi(overrides?: Record<string, any>) {
       if (challenges.size >= MAX_AUTH_ENTRIES) return failed("TOO_MANY_REQUESTS");
       const challengeId = randomUUID();
       const expiresAt = now() + AUTH_TTL_MS;
-      const message = `EveJS Smart Storage wallet connection\nWallet: ${address}\nNonce: ${challengeId}\nExpires: ${expiresAt}\nThis signature authorizes access to your active in-game character's storage. This transaction is not submitted.`;
+      const message = `EveJS ${authOptions.scope || "Smart Storage"} wallet connection\nWallet: ${address}\nNonce: ${challengeId}\nExpires: ${expiresAt}\n${authOptions.description || "This signature authorizes access to your active in-game character's storage."} This transaction is not submitted.`;
       const transactionData = buildStorageAuthTransaction(address, message);
       challenges.set(challengeId, { address, message, transactionData, expiresAt });
       return { success: true, data: { challengeId, message, transactionData, expiresAt } };

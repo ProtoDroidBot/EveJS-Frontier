@@ -464,3 +464,152 @@ test("a system offline transition publishes fuel consumed before the transition 
   settle(node, START_MS + HOUR_MS);
   assert.equal(notices.length, 1, "the same transition and later offline tick do not repeat the notice");
 });
+
+function createSponsoredStorage(node) {
+  const positionedNode = itemStore.updateInventoryItem(node.itemID, item => ({
+    ...item, spaceState: { ...item.spaceState, position: { x: 0, y: 0, z: 0 } },
+  }));
+  assert.equal(positionedNode.success, true, positionedNode.errorMsg);
+  const storage = grantOne(SOLAR_SYSTEM_ID, 0, 77917, 1, { individualItems: true, singleton: 1 });
+  const updated = itemStore.updateInventoryItem(storage.itemID, (item) => ({
+    ...item,
+    spaceState: { ...item.spaceState, position: { x: 100, y: 0, z: 0 } },
+    customInfo: JSON.stringify({
+      evejsFrontierConstruction: {
+        assemblyStatus: deployment.ASSEMBLY_STATUS_ONLINE,
+        assemblyTypeID: item.typeID, completedAtMs: 1, createdAtMs: 1,
+        ownerID: OWNER_ID, solarSystemID: SOLAR_SYSTEM_ID,
+      },
+      evejsFrontierEnergy: { networkNodeID: node.itemID, autoConnect: false },
+    }),
+  }));
+  assert.equal(updated.success, true, updated.errorMsg);
+  return updated.data;
+}
+
+function sponsoredConfirmation(items, targetStatus = deployment.ASSEMBLY_STATUS_OFFLINE) {
+  return {
+    transactionUUID: require("node:crypto").randomUUID(),
+    affected: items.map(item => ({
+      assemblyID: Number(item.itemID), ownerID: Number(item.ownerID), typeID: Number(item.typeID), targetStatus,
+    })),
+  };
+}
+
+test("confirmed sponsored node offline accounts accrued fuel and cascades to the confirmed connected storage", (t) => {
+  const setTime = clock(t);
+  const node = createNode();
+  const storage = createSponsoredStorage(node);
+  const confirmation = sponsoredConfirmation([node, storage]);
+  const offlineAt = START_MS + HOUR_MS + 150000;
+  setTime(offlineAt);
+  deployment.reconcileSponsoredAssemblyState(confirmation);
+
+  assert.equal(readFuel(node).quantity, 88);
+  assert.equal(readFuel(node).burnRemainderMs, 150000);
+  assert.equal(readFuel(node).burnUpdatedAtMs, offlineAt);
+  for (const item of [node, storage]) {
+    const saved = itemStore.findItemById(item.itemID);
+    assert.equal(deployment.readConstructionState(saved).assemblyStatus, deployment.ASSEMBLY_STATUS_OFFLINE);
+    assert.equal(JSON.parse(saved.customInfo).evejsSponsoredAssemblyTransaction, confirmation.transactionUUID);
+  }
+  assert.deepEqual(JSON.parse(itemStore.findItemById(storage.itemID).customInfo).evejsFrontierEnergy,
+    { networkNodeID: node.itemID, autoConnect: false }, "the confirmed state change retains the connection");
+  assert.equal(settle(node, START_MS + 10 * HOUR_MS).consumedQuantity, 0);
+  assert.equal(readFuel(node).quantity, 88, "offline time does not consume additional fuel");
+  const resumeAt = START_MS + 10 * HOUR_MS;
+  setTime(resumeAt);
+  setStatus(node, deployment.ASSEMBLY_STATUS_ONLINE);
+  assert.equal(settle(node, resumeAt + 149999).consumedQuantity, 0);
+  assert.equal(settle(node, resumeAt + 150000).consumedQuantity, 1, "the saved partial interval survives the sponsored transition");
+});
+
+test("sponsored confirmation UUID persisted in the game store makes runtime reload and retry idempotent", (t) => {
+  const setTime = clock(t);
+  const node = createNode();
+  const confirmation = sponsoredConfirmation([node]);
+  setTime(START_MS + D1_UNIT_MS + 150000);
+  deployment.reconcileSponsoredAssemblyState(confirmation);
+  const afterCommit = itemStore.findItemById(node.itemID).customInfo;
+  assert.equal(JSON.parse(afterCommit).evejsSponsoredAssemblyTransaction, confirmation.transactionUUID);
+  const modulePath = require.resolve("../src/services/frontier/deploymentRuntime");
+  const cachedModule = require.cache[modulePath];
+  const update = itemStore.updateInventoryItem;
+  const updates: number[] = [];
+  const updateMock = t.mock.method(itemStore, "updateInventoryItem", (...args) => {
+    updates.push(Number(args[0]));
+    return update(...args);
+  });
+  try {
+    delete require.cache[modulePath];
+    const reloaded = require(modulePath);
+    setTime(START_MS + 2 * HOUR_MS);
+    reloaded.reconcileSponsoredAssemblyState(confirmation);
+    reloaded.reconcileSponsoredAssemblyState(confirmation);
+    assert.equal(itemStore.findItemById(node.itemID).customInfo, afterCommit);
+    assert.deepEqual(updates, [], "retry recognizes the saved UUID without another item update");
+    assert.equal(readFuel(node).quantity, 99);
+    assert.equal(readFuel(node).burnRemainderMs, 150000);
+  } finally {
+    updateMock.mock.restore();
+    require.cache[modulePath] = cachedModule;
+  }
+});
+
+test("partially saved sponsored cascade resumes without overriding a later local transition on a saved item", (t) => {
+  const setTime = clock(t);
+  const node = createNode();
+  const storage = createSponsoredStorage(node);
+  const confirmation = sponsoredConfirmation([node, storage]);
+  setTime(START_MS + D1_UNIT_MS + 150000);
+  const update = itemStore.updateInventoryItem;
+  const failure = t.mock.method(itemStore, "updateInventoryItem", (...args) => {
+    if (Number(args[0]) === storage.itemID) return { success: false, errorMsg: "WRITE_ERROR" };
+    return update(...args);
+  });
+  assert.throws(() => deployment.reconcileSponsoredAssemblyState(confirmation), /Cannot save confirmed assembly/);
+  failure.mock.restore();
+  assert.equal(deployment.readConstructionState(itemStore.findItemById(node.itemID)).assemblyStatus, deployment.ASSEMBLY_STATUS_OFFLINE);
+  assert.equal(JSON.parse(itemStore.findItemById(node.itemID).customInfo).evejsSponsoredAssemblyTransaction, confirmation.transactionUUID);
+  assert.equal(deployment.readConstructionState(itemStore.findItemById(storage.itemID)).assemblyStatus, deployment.ASSEMBLY_STATUS_ONLINE);
+  assert.equal(JSON.parse(itemStore.findItemById(storage.itemID).customInfo).evejsSponsoredAssemblyTransaction, undefined);
+
+  setTime(START_MS + 2 * HOUR_MS);
+  setStatus(node, deployment.ASSEMBLY_STATUS_ONLINE);
+  const laterNodeState = itemStore.findItemById(node.itemID).customInfo;
+  deployment.reconcileSponsoredAssemblyState(confirmation);
+  assert.equal(itemStore.findItemById(node.itemID).customInfo, laterNodeState,
+    "recovery preserves an unrelated later local transition on the already-saved node");
+  assert.equal(deployment.readConstructionState(itemStore.findItemById(node.itemID)).assemblyStatus, deployment.ASSEMBLY_STATUS_ONLINE);
+  assert.equal(deployment.readConstructionState(itemStore.findItemById(storage.itemID)).assemblyStatus, deployment.ASSEMBLY_STATUS_OFFLINE);
+  assert.equal(JSON.parse(itemStore.findItemById(storage.itemID).customInfo).evejsSponsoredAssemblyTransaction, confirmation.transactionUUID);
+  assert.equal(readFuel(node).quantity, 99, "recovery does not settle or charge the saved node again");
+});
+
+test("sponsored reconciliation rejects changed local assembly identity before saving state", (t) => {
+  clock(t);
+  for (const patch of [{ ownerID: OWNER_ID + 1 }, { typeID: 77917 }, { customInfo: "{}" }]) {
+    const node = createNode();
+    const confirmation = sponsoredConfirmation([node]);
+    const changed = itemStore.updateInventoryItem(node.itemID, item => ({ ...item, ...patch }));
+    assert.equal(changed.success, true, changed.errorMsg);
+    const before = itemStore.findItemById(node.itemID);
+    assert.throws(() => deployment.reconcileSponsoredAssemblyState(confirmation), /no longer matches its local identity/);
+    assert.deepEqual(itemStore.findItemById(node.itemID), before);
+    assert.equal(JSON.parse(before.customInfo).evejsSponsoredAssemblyTransaction, undefined);
+  }
+});
+
+test("sponsored reconciliation rejects missing assemblies and a changed identity even on a previously saved UUID", (t) => {
+  clock(t);
+  const node = createNode();
+  const confirmation = sponsoredConfirmation([node]);
+  deployment.reconcileSponsoredAssemblyState(confirmation);
+  const changed = itemStore.updateInventoryItem(node.itemID, item => ({ ...item, ownerID: OWNER_ID + 1 }));
+  assert.equal(changed.success, true, changed.errorMsg);
+  assert.throws(() => deployment.reconcileSponsoredAssemblyState(confirmation), /no longer matches its local identity/);
+  const missing = sponsoredConfirmation([node]);
+  missing.affected[0].assemblyID = Number.MAX_SAFE_INTEGER;
+  assert.equal(itemStore.findItemById(missing.affected[0].assemblyID), null);
+  assert.throws(() => deployment.reconcileSponsoredAssemblyState(missing), /no longer matches its local identity/);
+});

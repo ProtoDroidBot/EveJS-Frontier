@@ -5,6 +5,7 @@ const test = require("node:test");
 const { MAX_ACCOUNT_ROLE, SESSION_BASE_ROLE_MASK, } = require("../src/services/account/accountRoleProfiles");
 const deploymentRuntime = require("../src/services/frontier/deploymentRuntime");
 const networkNodeFuelRuntime = require("../src/services/frontier/networkNodeFuelRuntime");
+const networkNodeEnergyConfig = require("../src/services/frontier/networkNodeEnergyConfig");
 const sessionRegistry = require("../src/services/chat/sessionRegistry");
 const { COMMAND_USAGE, executeFrontierAssemblyCommand, parseItemID, tokenizeArguments, } = require("../src/services/frontier/assemblyChatCommands");
 const { AVAILABLE_SLASH_COMMANDS, executeChatCommand, } = require("../src/services/chat/chatCommands");
@@ -208,6 +209,7 @@ test("admin runtime spawns hidden assemblies and refuses to delete their content
     let spawnedItemID = 0;
     let childItemID = 0;
     let networkNodeItemID = 0;
+    let powerNodeItemID = 0;
     const ownerNotifications = [];
     const ownerSession = {
         ...session,
@@ -232,6 +234,16 @@ test("admin runtime spawns hidden assemblies and refuses to delete their content
         const denied = deploymentRuntime.adminSpawnAssembly(buildSession({ accountRole: "0", sendNotification() { } }), 92404, { x: 500, y: 200, z: 300 });
         assert.equal(denied.success, false);
         assert.equal(denied.errorMsg, "ASSEMBLY_ADMIN_ACCESS_DENIED");
+        networkNodeEnergyConfig.setAssemblyEnergyConfig([{ typeID: 92404, energyRequired: 40 }]);
+        const powerNode = deploymentRuntime.adminSpawnAssembly(session, 88092, { x: 700, y: 200, z: 300 }, { assemblyStatus: 1 });
+        assert.equal(powerNode.success, true, powerNode.errorMsg);
+        powerNodeItemID = powerNode.data.item.itemID;
+        assert.equal(networkNodeFuelRuntime.writeNetworkNodeFuelState(powerNodeItemID, {
+            quantity: 25,
+            typeID: 77818,
+            updatedAtMs: Date.now(),
+        }).success, true);
+        assert.equal(deploymentRuntime.adminSetAssemblyState(session, powerNodeItemID, 2).success, true);
         const spawned = deploymentRuntime.adminSpawnAssembly(session, 92404, { x: 500, y: 200, z: 300 });
         assert.equal(spawned.success, true);
         spawnedItemID = spawned.data.item.itemID;
@@ -303,6 +315,10 @@ test("admin runtime spawns hidden assemblies and refuses to delete their content
         if (networkNodeItemID && findItemById(networkNodeItemID)) {
             removeInventoryItem(networkNodeItemID, { removeContents: true });
         }
+        if (powerNodeItemID && findItemById(powerNodeItemID)) {
+            removeInventoryItem(powerNodeItemID, { removeContents: true });
+        }
+        networkNodeEnergyConfig.clearAssemblyEnergyConfig();
         updateInventoryItem(ship.itemID, () => originalShip);
         deploymentRuntime._testing.clearPendingAssemblyTransitions();
         deploymentRuntime._testing.clearCompletionTimers();

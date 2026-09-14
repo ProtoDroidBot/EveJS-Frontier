@@ -76,7 +76,7 @@ function createAssemblyGateGatewayService() {
                 return GET_METADATA_RESPONSE;
             }
             if (requestTypeName === GET_ENERGY_CONFIG_REQUEST) {
-                return GET_ENERGY_CONFIG_RESPONSE;
+                return null;
             }
             return requestTypeName === GET_ALL_OWNED_REQUEST
                 ? GET_ALL_OWNED_RESPONSE
@@ -102,15 +102,24 @@ function createAssemblyGateGatewayService() {
                 };
             }
             if (requestTypeName === GET_ENERGY_CONFIG_REQUEST) {
-                // The extracted build-3455996 client treats missing assembly types as
-                // zero-energy entries. No authoritative energy-balance table is part
-                // of the public descriptor, so return the exact successful wire shape
-                // without inventing values that could incorrectly gate base building.
+                const { isAssemblyEnergyConfigLoaded } = require("../../../services/frontier/networkNodeEnergyConfig");
+                if (!isAssemblyEnergyConfigLoaded()) {
+                    return {
+                        statusCode: 503,
+                        statusMessage: "Energy requirements are still synchronizing. Try again shortly.",
+                        responseTypeName: GET_ENERGY_CONFIG_RESPONSE,
+                        responsePayloadBuffer: Buffer.alloc(0),
+                    };
+                }
+                const { getAssemblyEnergyConfig } = require("../../../services/frontier/networkNodeEnergyRuntime");
                 return {
                     statusCode: 200,
                     statusMessage: "",
                     responseTypeName: GET_ENERGY_CONFIG_RESPONSE,
-                    responsePayloadBuffer: encodePayload(types.getEnergyConfigResponse, { energy_requirements: [] }),
+                    responsePayloadBuffer: encodePayload(types.getEnergyConfigResponse, { energy_requirements: getAssemblyEnergyConfig().map((entry) => ({
+                            assembly_type: entry.typeID,
+                            energy_required: entry.energyRequired,
+                        })) }),
                 };
             }
             if (requestTypeName === GET_METADATA_REQUEST) {

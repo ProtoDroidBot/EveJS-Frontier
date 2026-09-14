@@ -18,6 +18,14 @@ const {
   createAssemblyGateGatewayService,
 } = require("../src/_secondary/express/gatewayServices/assemblyGateGatewayService");
 const CHARACTER_ID = 140000005;
+const energyConfig = require("../src/services/frontier/networkNodeEnergyConfig");
+const CONFIG_ENTRIES = [
+  { typeID: 88064, energyRequired: 200 },
+  { typeID: 88067, energyRequired: 100 },
+  { typeID: 88092, energyRequired: 0 },
+];
+
+test.afterEach(() => energyConfig.clearAssemblyEnergyConfig());
 
 function requestEnvelope(payloadBuffer = Buffer.alloc(0), characterID = CHARACTER_ID) {
   return {
@@ -54,14 +62,19 @@ test("assembly energy protobuf matches the build-3455996 descriptor", () => {
   ]);
 });
 
-test("assembly gateway returns a successful energy configuration", () => {
+test("assembly gateway returns the loaded nonzero energy configuration", (t) => {
+  energyConfig.setAssemblyEnergyConfig(CONFIG_ENTRIES);
+  const runtime = require("../src/services/frontier/networkNodeEnergyRuntime");
+  // Gateway serialization is independent of which client static tables are
+  // present in the disposable game store used by this contract test.
+  t.mock.method(runtime, "getAssemblyEnergyConfig", energyConfig.getConfiguredAssemblyEnergyRequirements);
   const types = getAssemblyGateProtoTypes();
   const service = createAssemblyGateGatewayService();
 
   assert.ok(service.handledRequestTypes.includes(GET_ENERGY_CONFIG_REQUEST));
   assert.equal(
     service.getEmptySuccessResponseType(GET_ENERGY_CONFIG_REQUEST),
-    GET_ENERGY_CONFIG_RESPONSE,
+    null,
   );
 
   const response = service.handleRequest(
@@ -76,7 +89,21 @@ test("assembly gateway returns a successful energy configuration", () => {
   assert.equal(response.statusCode, 200);
   assert.equal(response.statusMessage, "");
   assert.equal(response.responseTypeName, GET_ENERGY_CONFIG_RESPONSE);
-  assert.deepEqual(decoded.energy_requirements, []);
+  assert.deepEqual(decoded.energy_requirements, CONFIG_ENTRIES.map((entry) => ({
+    assembly_type: entry.typeID,
+    energy_required: entry.energyRequired,
+  })));
+  assert.ok(decoded.energy_requirements.some((entry) => entry.energy_required > 0));
+});
+
+test("assembly gateway does not let the client cache an unavailable energy configuration", () => {
+  energyConfig.clearAssemblyEnergyConfig();
+  const service = createAssemblyGateGatewayService();
+  const response = service.handleRequest(GET_ENERGY_CONFIG_REQUEST, requestEnvelope());
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.responseTypeName, GET_ENERGY_CONFIG_RESPONSE);
+  assert.equal(response.responsePayloadBuffer.length, 0);
+  assert.equal(service.getEmptySuccessResponseType(GET_ENERGY_CONFIG_REQUEST), null);
 });
 
 test("assembly energy configuration requires an active character", () => {

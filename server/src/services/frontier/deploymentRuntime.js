@@ -536,6 +536,7 @@ function consumePlacementMaterials(characterID, shipItemID, constructionCost) {
     return { success: true, changes, consumed };
 }
 function syncChanges(session, changes) {
+    require("./networkNodeEnergyRuntime").reconcileNetworkNodeEnergy();
     for (const change of Array.isArray(changes) ? changes : []) {
         if (toInt(change.item?.typeID) !== NETWORK_NODE_ASSEMBLY_TYPE_ID || !change.previousData)
             continue;
@@ -695,6 +696,11 @@ function beginAssemblyStateTransition(session, itemID, targetStatus) {
     if (numericTargetStatus === ASSEMBLY_STATUS_ONLINE && !hasNetworkNodeFuelForOnline(validation.item)) {
         return { success: false, errorMsg: "NETWORK_NODE_FUEL_REQUIRED" };
     }
+    if (numericTargetStatus === ASSEMBLY_STATUS_ONLINE) {
+        const energy = require("./networkNodeEnergyRuntime").validateAssemblyOnline(validation.item);
+        if (!energy.success)
+            return energy;
+    }
     if (numericTargetStatus === ASSEMBLY_STATUS_ONLINE &&
         isSmartGateDefinition(validation.definition) &&
         validation.state.targetSolarSystemID <= 0) {
@@ -789,6 +795,41 @@ function offlineAssemblyForFuelDepletion(itemID) {
     }
     return result;
 }
+/** Internal chain-confirmation hook. The executor retains its journal until every affected item is saved. */
+function reconcileSponsoredAssemblyState(metadata) {
+    if (!metadata || !Array.isArray(metadata.affected) || !metadata.transactionUUID) {
+        throw new Error("Sponsored assembly confirmation metadata is invalid");
+    }
+    for (const affected of metadata.affected) {
+        const item = itemStore.findItemById(affected.assemblyID);
+        const state = readConstructionState(item);
+        if (!item || !state || Number(item.ownerID) !== affected.ownerID || Number(item.typeID) !== affected.typeID ||
+            ![ASSEMBLY_STATUS_OFFLINE, ASSEMBLY_STATUS_ONLINE].includes(affected.targetStatus)) {
+            throw new Error(`Confirmed assembly ${affected.assemblyID} no longer matches its local identity`);
+        }
+        const info = parseCustomInfo(item.customInfo);
+        // A recovery can resume after any saved item without reapplying an older status.
+        if (info.evejsSponsoredAssemblyTransaction === metadata.transactionUUID)
+            continue;
+        const result = itemStore.updateInventoryItem(affected.assemblyID, currentItem => {
+            const updated = parseCustomInfo(writeConstructionState(currentItem, { ...readConstructionState(currentItem), assemblyStatus: affected.targetStatus }));
+            updated.evejsSponsoredAssemblyTransaction = metadata.transactionUUID;
+            return { ...currentItem, customInfo: JSON.stringify(updated) };
+        });
+        if (!result.success || !result.data)
+            throw new Error(`Cannot save confirmed assembly ${affected.assemblyID}`);
+        // Presentation errors must not undo an authoritative, confirmed state change.
+        try {
+            const session = findAssemblyOwnerSession(null, affected.ownerID);
+            refreshAssemblyStatePresentation(session, result.data, readConstructionState(result.data));
+            syncChanges(session, [{ item: result.data, previousData: result.previousData }]);
+            clearPendingAssemblyTransitionsForItem(affected.assemblyID);
+        }
+        catch (error) {
+            log.warn(`[FrontierDeployment] Confirmed sponsored assembly presentation: ${error.message}`);
+        }
+    }
+}
 function commitAssemblyStateTransition(session, itemID, transactionUUID, signature, targetStatus) {
     const numericItemID = toInt(itemID, 0);
     const numericTargetStatus = toInt(targetStatus, 0);
@@ -814,6 +855,11 @@ function commitAssemblyStateTransition(session, itemID, transactionUUID, signatu
     }
     if (numericTargetStatus === ASSEMBLY_STATUS_ONLINE && !hasNetworkNodeFuelForOnline(validation.item)) {
         return { success: false, errorMsg: "NETWORK_NODE_FUEL_REQUIRED" };
+    }
+    if (numericTargetStatus === ASSEMBLY_STATUS_ONLINE) {
+        const energy = require("./networkNodeEnergyRuntime").validateAssemblyOnline(validation.item);
+        if (!energy.success)
+            return energy;
     }
     if (validation.state.assemblyStatus === numericTargetStatus) {
         return {
@@ -1754,6 +1800,11 @@ function adminSetAssemblyState(session, itemID, targetStatus) {
     if (numericTargetStatus === ASSEMBLY_STATUS_ONLINE && !hasNetworkNodeFuelForOnline(item)) {
         return { success: false, errorMsg: "NETWORK_NODE_FUEL_REQUIRED" };
     }
+    if (numericTargetStatus === ASSEMBLY_STATUS_ONLINE) {
+        const energy = require("./networkNodeEnergyRuntime").validateAssemblyOnline(item);
+        if (!energy.success)
+            return energy;
+    }
     if (state.assemblyStatus === numericTargetStatus) {
         return {
             success: true,
@@ -2266,6 +2317,7 @@ module.exports = {
     refreshAssemblyStatePresentation,
     offlineAssemblyForFuelDepletion,
     notifyAssemblyFuelDepleted,
+    reconcileSponsoredAssemblyState,
     // Shared with the Network Node fuel runtime, which reuses the assembly
     // transition transaction/signature conventions and construction state.
     buildAssemblyTransitionTransactionData,

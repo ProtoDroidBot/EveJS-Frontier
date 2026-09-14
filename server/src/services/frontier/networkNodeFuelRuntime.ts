@@ -275,6 +275,7 @@ function settleAllNetworkNodeFuel(nowMs = Date.now()) {
     const result = settleNetworkNodeFuel(item.itemID, nowMs);
     if (!result.success) throw new Error(`Network Node ${item.itemID} fuel: ${result.errorMsg}`);
   }
+  require("./networkNodeEnergyRuntime").reconcileNetworkNodeEnergy();
 }
 
 function startNetworkNodeFuelBurn() {

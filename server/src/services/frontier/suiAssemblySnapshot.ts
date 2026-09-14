@@ -1,4 +1,5 @@
 /** Pure normalization of EveJS state; never opens a store or submits a transaction. */
+import { getAssemblyEnergyRequirements, NETWORK_NODE_RADIUS_METERS } from "./networkNodeEnergyConfig";
 export const SUI_ASSEMBLY_VOLUME_SCALE = "1000000";
 // Move compares volume * quantity with capacity without prescribing units. Both
 // are encoded in micro-m³ here to preserve the client's fractional m³ volumes.
@@ -24,6 +25,7 @@ export interface AssemblySnapshot {
   solarSystemId: number;
   position: { x: number; y: number; z: number };
   networkNodeId: string | null;
+  energyRequired?: number;
   destinationGateId: string | null;
   gateDistanceMeters: string | null;
   gateMaxDistanceMeters: string | null;
@@ -137,6 +139,8 @@ export function buildSuiAssemblySnapshot(input: SuiAssemblySnapshotInput): SuiAs
     itemId, code: error.code || "INVALID_ASSEMBLY", message: error.message || String(error),
   });
   const components = index(input.components, ["typeID", "_key"], "types");
+  const energyRequirements = new Map(getAssemblyEnergyRequirements([...components].map(([typeID, row]) =>
+    ({ ...row, typeID: Number(typeID) }))).map(entry => [entry.typeID, entry.energyRequired]));
   const itemTypes = index(input.itemTypes, ["typeID", "_key"], "types");
   const characterRows = index(input.characters, ["gameCharacterId", "characterID", "characterId", "_key"]);
   const systems = index(input.solarSystems, ["solarSystemID", "_key"], "solarSystems");
@@ -156,6 +160,7 @@ export function buildSuiAssemblySnapshot(input: SuiAssemblySnapshotInput): SuiAs
   const volume = (value: any, label: string, positive = true) => decimal(value, label, BigInt(SUI_ASSEMBLY_VOLUME_SCALE), positive);
   const items = entries(input.items);
   const candidates = new Map<string, AssemblySnapshot>();
+  const localBindings = new Map<string, { nodeId: string | null; autoConnect: boolean }>();
   const duplicateIds = new Set<string>();
   for (const [key, item] of items) {
     let itemId: string | null = null;
@@ -184,6 +189,14 @@ export function buildSuiAssemblySnapshot(input: SuiAssemblySnapshotInput): SuiAs
       const solarSystemId = integer(state.solarSystemID ?? item.locationID, "Assembly solar system ID", U32_MAX);
       if (item.locationID !== undefined && integer(item.locationID, "Item solar system ID", U32_MAX) !== solarSystemId) fail("SYSTEM_MISMATCH", "Item and construction solar systems differ");
       const kind: AssemblySnapshot["kind"] = component.smartAnchor ? "network_node" : component.smartGate ? "gate" : component.smartStorageUnit ? "storage_unit" : component.smartTurret ? "turret" : "assembly";
+      const energy = info.evejsFrontierEnergy;
+      if (energy !== undefined) {
+        if (!record(energy)) fail("INVALID_NETWORK_NODE_BINDING", "Local energy grid binding is invalid");
+        localBindings.set(itemId, {
+          nodeId: energy.networkNodeID == null || Number(energy.networkNodeID) === 0 ? null : id(energy.networkNodeID, "Local Network Node ID"),
+          autoConnect: energy.autoConnect !== false,
+        });
+      }
       const name = item.itemName || itemTypes.get(String(typeId))?.name;
       if (typeof name !== "string" || !name.trim()) fail("INVALID_NAME", "Assembly has no name");
       const assembly: AssemblySnapshot = {
@@ -195,6 +208,7 @@ export function buildSuiAssemblySnapshot(input: SuiAssemblySnapshotInput): SuiAs
         fuel: { typeId: 0, quantity: 0, unitVolume: "0" },
         fuelCapacity: "0", burnRateMs: "0", maxEnergy: "0", storageCapacity: "0", inventory: [],
       };
+      if (kind !== "network_node") assembly.energyRequired = energyRequirements.get(typeId) ?? 0;
       if (kind === "network_node") {
         assembly.fuelCapacity = volume(component.smartAnchor.fuelMaxCapacity, "Fuel capacity");
         assembly.burnRateMs = decimal(component.smartAnchor.fuelBurnRateInSeconds, "Fuel burn interval", 1000n);
@@ -260,8 +274,21 @@ export function buildSuiAssemblySnapshot(input: SuiAssemblySnapshotInput): SuiAs
     try {
       if (assembly.kind !== "network_node") {
         let selected: AssemblySnapshot;
-        if (input.networkNodeBindings && Object.prototype.hasOwnProperty.call(input.networkNodeBindings, assembly.itemId)) {
-          const boundId = id(input.networkNodeBindings[assembly.itemId], "Bound Network Node ID");
+        const localBinding = localBindings.get(assembly.itemId);
+        const verifiedBinding = input.networkNodeBindings && Object.prototype.hasOwnProperty.call(input.networkNodeBindings, assembly.itemId)
+          ? id(input.networkNodeBindings[assembly.itemId], "Bound Network Node ID") : null;
+        if (verifiedBinding && localBinding && ((localBinding.nodeId && localBinding.nodeId !== verifiedBinding) ||
+            (!localBinding.nodeId && !localBinding.autoConnect))) {
+          fail("NETWORK_NODE_BINDING_LOCKED", "The deployed contract does not support detaching this assembly from its existing Network Node");
+        }
+        if (!verifiedBinding && localBinding && !localBinding.nodeId && !localBinding.autoConnect) {
+          if (assembly.status === 2) fail("DISCONNECTED_NETWORK_NODE", "An online assembly requires an energy grid connection");
+          // Offline disconnected creations remain local until attached to a node.
+          candidates.delete(assembly.itemId);
+          continue;
+        }
+        const boundId = verifiedBinding ?? localBinding?.nodeId;
+        if (boundId) {
           const bound = candidates.get(boundId);
           if (!bound) fail("MISSING_NETWORK_NODE", `Previously bound Network Node ${boundId} is missing or cannot be normalized`);
           if (bound.kind !== "network_node" || bound.ownerId !== assembly.ownerId || bound.solarSystemId !== assembly.solarSystemId) fail("INVALID_NETWORK_NODE_BINDING", `Previously bound Network Node ${boundId} no longer matches the assembly owner and system`);
@@ -269,12 +296,13 @@ export function buildSuiAssemblySnapshot(input: SuiAssemblySnapshotInput): SuiAs
         } else {
           const nearest = [...candidates.values()].filter((node) => node.kind === "network_node" && node.ownerId === assembly.ownerId && node.solarSystemId === assembly.solarSystemId)
             .map((node) => ({ node, distance: Math.hypot(node.position.x - assembly.position.x, node.position.y - assembly.position.y, node.position.z - assembly.position.z) }))
+            .filter(candidate => Number.isFinite(candidate.distance) && candidate.distance <= NETWORK_NODE_RADIUS_METERS)
             .sort((a, b) => a.distance - b.distance || compareIds(a.node.itemId, b.node.itemId));
-          if (!nearest.length) fail("MISSING_NETWORK_NODE", "No completed owned Network Node exists in this solar system");
-          if (!Number.isFinite(nearest[0].distance)) fail("INVALID_POSITION", "Network Node distance cannot be represented");
-          if (nearest[1] && Math.abs(nearest[1].distance - nearest[0].distance) <= Math.max(1, nearest[0].distance) * Number.EPSILON * 8) fail("AMBIGUOUS_NETWORK_NODE", "Multiple owned Network Nodes are equally near this assembly");
+          if (!nearest.length) fail("MISSING_NETWORK_NODE", "No completed owned Network Node exists within 80 km");
           selected = nearest[0].node;
         }
+        const distance = Math.hypot(selected.position.x - assembly.position.x, selected.position.y - assembly.position.y, selected.position.z - assembly.position.z);
+        if (!Number.isFinite(distance) || distance > NETWORK_NODE_RADIUS_METERS) fail("NETWORK_NODE_OUT_OF_RANGE", "Bound Network Node is outside its 80 km energy radius");
         if (assembly.status === 2 && selected.status !== 2) fail("OFFLINE_NETWORK_NODE", "An online assembly requires its owned Network Node online");
         assembly.networkNodeId = selected.itemId;
       }
