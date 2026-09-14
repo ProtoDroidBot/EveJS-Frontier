@@ -5,7 +5,7 @@ const itemStore = require("../inventory/itemStore");
 const { findItemById } = itemStore;
 const runtime = require("./industryRuntime");
 const blueprints = require("./industryBlueprints");
-const { publishIndustryItemsChanged, publishIndustryProductionResult } = require("./industryNotifications");
+const { publishIndustryItemsChanged, publishIndustryProductionResult, publishIndustryBlueprintChanged } = require("./industryNotifications");
 const { settleIndustryProduction, trackIndustryProduction } = require("./industryProductionWorker");
 const { throwWrappedObject } = require("../../common/machoErrors");
 
@@ -204,6 +204,7 @@ class IndustryService extends BaseService {
   Handle_load_blueprint(args, session) {
     settleOwnedFacility(session, args?.[0]);
     const blueprint = requireSuccess(runtime.loadBlueprint(session, args?.[0], args?.[1]));
+    publishIndustryBlueprintChanged(session, args?.[0]);
     return blueprintDict(blueprint);
   }
 

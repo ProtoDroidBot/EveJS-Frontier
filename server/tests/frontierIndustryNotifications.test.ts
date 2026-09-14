@@ -1,9 +1,48 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
+  publishIndustryBlueprintChanged,
   publishIndustryItemsChanged,
   _testing: { getIndustryNoticeTypes },
 } = require("../src/services/frontier/industryNotifications");
+
+test("blueprint changes invalidate every owner transport and both gateway item snapshots", () => {
+  const events = [];
+  const notices = [];
+  const session = { characterID: 140000001, sendNotification: (...args) => events.push(["current", ...args]) };
+  const other = { charid: 140000001, sendNotification: (...args) => events.push(["other", ...args]) };
+  const stranger = { characterID: 140000002, sendNotification: () => assert.fail("another owner's recipe") };
+  assert.equal(publishIndustryBlueprintChanged(session, 998840000138, {
+    sessionRegistry: { getSessions: () => [session, other, stranger] },
+    publishGatewayNotice: (...args) => notices.push(args),
+  }), true);
+  assert.deepEqual(events, [
+    ["current", "OnFrontierIndustryBlueprintChanged", "clientID", [998840000138]],
+    ["other", "OnFrontierIndustryBlueprintChanged", "clientID", [998840000138]],
+  ]);
+  assert.equal(notices.length, 2);
+  for (const [index, side] of ["inputs", "outputs"].entries()) {
+    const type = getIndustryNoticeTypes()[side];
+    assert.equal(notices[index][0], `eve_public.industry.api.${type.name}`);
+    assert.deepEqual(notices[index][2], { character: session.characterID });
+    assert.deepEqual(type.toObject(type.decode(notices[index][1]), { longs: Number, defaults: true }),
+      { facility: { sequential: 998840000138 }, items: [] });
+  }
+});
+
+test("blueprint notification failure preserves a committed selection and continues other deliveries", () => {
+  const calls = [];
+  const failing = { charid: 1, sendNotification: () => { throw new Error("closed transport"); } };
+  const healthy = { characterID: 1, sendNotification: (...args) => calls.push(args) };
+  const options = { sessionRegistry: { getSessions: () => [failing, healthy] },
+    publishGatewayNotice: () => { throw new Error("closed gateway"); } };
+  assert.equal(publishIndustryBlueprintChanged(failing, 123, options), true);
+  assert.deepEqual(calls, [["OnFrontierIndustryBlueprintChanged", "clientID", [123]]]);
+  assert.equal(publishIndustryBlueprintChanged({}, 123, options), false);
+  assert.equal(publishIndustryBlueprintChanged(failing, 0, options), false);
+  assert.equal(publishIndustryBlueprintChanged(failing, 1.5, options), false);
+  assert.equal(calls.length, 1);
+});
 
 test("industry input notices use the client wire contract and full type totals", () => {
   const calls = [];

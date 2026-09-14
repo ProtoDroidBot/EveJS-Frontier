@@ -37,13 +37,31 @@ class UpgradeTests(unittest.TestCase):
                 f"original_kind = {kind!r}\n", name, "exec"))
             self.originals[name] = original
             self.profiles[name] = (kind, hashlib.sha256(original).hexdigest())
-            if kind == "panel":
+            if kind in {"panel", "service", "assembly_window"}:
                 self.previous[name] = original
             else:
                 self.previous[name] = patcher.patched_member(original, kind)
                 previous_hashes[kind] = hashlib.sha256(self.previous[name]).hexdigest()
         self.context.enter_context(mock.patch.object(patcher, "PROFILES", self.profiles))
         self.context.enter_context(mock.patch.object(patcher, "PREVIOUS_WRAPPER_SHA256", previous_hashes))
+        self.adapter.write_text("def _evejs_install_industry_storage(namespace, kind):\n namespace['version'] = 1.5\n", encoding="utf-8")
+        self.previous_panel = {}
+        panel_hashes = {}
+        for name, (kind, _) in self.profiles.items():
+            member = self.originals[name] if kind in {"service", "assembly_window"} else patcher.patched_member(self.originals[name], kind)
+            self.previous_panel[name] = member
+            if kind not in {"service", "assembly_window"}:
+                panel_hashes[kind] = hashlib.sha256(member).hexdigest()
+        self.context.enter_context(mock.patch.object(patcher, "PREVIOUS_PANEL_WRAPPER_SHA256", panel_hashes))
+        self.adapter.write_text("def _evejs_install_industry_storage(namespace, kind):\n namespace['version'] = 1.75\n", encoding="utf-8")
+        self.previous_blueprint = {}
+        blueprint_hashes = {}
+        for name, (kind, _) in self.profiles.items():
+            member = self.originals[name] if kind == "assembly_window" else patcher.patched_member(self.originals[name], kind)
+            self.previous_blueprint[name] = member
+            if kind != "assembly_window":
+                blueprint_hashes[kind] = hashlib.sha256(member).hexdigest()
+        self.context.enter_context(mock.patch.object(patcher, "PREVIOUS_BLUEPRINT_WRAPPER_SHA256", blueprint_hashes))
         self.adapter.write_text("def _evejs_install_industry_storage(namespace, kind):\n namespace['version'] = 2\n", encoding="utf-8")
 
     def archive(self, members=None):
@@ -101,6 +119,19 @@ class UpgradeTests(unittest.TestCase):
                     patcher.patch_archive(archive)
                 self.assertEqual(archive.read_bytes(), before)
 
+    def test_previous_four_wrappers_and_native_service_upgrade_but_mixed_generations_do_not(self):
+        archive = self.archive(self.previous_panel)
+        self.assertEqual(patcher.inspect_archive(archive)[0], "outdated")
+        patcher.patch_archive(archive)
+        self.assertEqual(patcher.inspect_archive(archive)[0], "patched")
+        first = next(iter(self.profiles))
+        mixed = self.archive({**self.previous_panel, first: self.previous[first]})
+        before = mixed.read_bytes()
+        self.assertEqual(patcher.inspect_archive(mixed)[0], "partial")
+        with self.assertRaisesRegex(patcher.IndustryStoragePatchError, "partially installed"):
+            patcher.patch_archive(mixed)
+        self.assertEqual(mixed.read_bytes(), before)
+
     def test_allowlisted_wrapper_still_requires_exact_embedded_original(self):
         name, (kind, expected) = next(iter(self.profiles.items()))
         wrapper = marshal.loads(self.previous[name][16:])
@@ -109,6 +140,22 @@ class UpgradeTests(unittest.TestCase):
         with mock.patch.dict(patcher.PREVIOUS_WRAPPER_SHA256, {kind: hashlib.sha256(invalid).hexdigest()}):
             with self.assertRaises(patcher.IndustryStoragePatchError):
                 patcher.inspect_member(invalid, kind, expected)
+
+    def test_previous_five_wrappers_and_native_window_upgrade_without_mixing_releases(self):
+        archive = self.archive(self.previous_blueprint)
+        self.assertEqual(patcher.inspect_archive(archive)[0], "outdated")
+        patcher.patch_archive(archive)
+        self.assertEqual(patcher.inspect_archive(archive)[0], "patched")
+        once = archive.read_bytes()
+        patcher.patch_archive(archive)
+        self.assertEqual(archive.read_bytes(), once)
+        first = next(iter(self.profiles))
+        mixed = self.archive({**self.previous_blueprint, first: self.previous_panel[first]})
+        before = mixed.read_bytes()
+        self.assertEqual(patcher.inspect_archive(mixed)[0], "partial")
+        with self.assertRaisesRegex(patcher.IndustryStoragePatchError, "partially installed"):
+            patcher.patch_archive(mixed)
+        self.assertEqual(mixed.read_bytes(), before)
 
     def test_mixed_installations_fail_without_changing_archive(self):
         name, (kind, _) = next(iter(self.profiles.items()))

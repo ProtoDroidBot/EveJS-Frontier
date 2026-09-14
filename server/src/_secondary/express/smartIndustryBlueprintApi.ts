@@ -46,11 +46,7 @@ export function createIndustryBlueprintOperations(dependencies: Dependencies) {
   const load = dependencies.loadBlueprint || ((...args) => runtime().loadBlueprint(...args));
   const empty = dependencies.emptyActiveBlueprint || ((...args) => runtime().emptyActiveBlueprint(...args));
   const notifyBlueprint = dependencies.publishBlueprint || ((session, facilityID) => {
-    const { publishIndustryItemsChanged } = require("../../services/frontier/industryNotifications");
-    // This client build has no blueprint-change notice. Invalidate both item
-    // snapshots; the native details request and dApp status read load the recipe.
-    publishIndustryItemsChanged(session, facilityID, "inputs", {});
-    publishIndustryItemsChanged(session, facilityID, "outputs", {});
+    require("../../services/frontier/industryNotifications").publishIndustryBlueprintChanged(session, facilityID);
   });
   const notifyTransfer = dependencies.publishTransfer || ((session, result) =>
     require("../../services/frontier/industryService").publishIndustryTransferResult(session, result));

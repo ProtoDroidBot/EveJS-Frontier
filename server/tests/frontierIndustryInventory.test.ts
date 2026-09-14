@@ -703,7 +703,12 @@ test("blueprint RPC load persists the authored recipe and rejects reloads withou
   assert.equal(blueprints.getSelectedBlueprint(persisted).blueprint_id, 1026);
   assert.deepEqual(JSON.parse(persisted.customInfo).evejsFrontierConstruction, construction);
   assert.equal(JSON.parse(persisted.customInfo).unrelated, "retained");
-  assert.equal(notice.mock.callCount(), 0, "the successful load RPC initializes the empty client cache");
+  assert.deepEqual(notice.mock.calls.map(call => call.arguments[0]), [
+    "eve_public.industry.api.InputItemsChangeNotice", "eve_public.industry.api.OutputItemsChangeNotice",
+  ], "a successful load refreshes the empty inventories in every owner view");
+  assert.deepEqual(f.notifications.filter(([name]) => name === "OnFrontierIndustryBlueprintChanged"), [
+    ["OnFrontierIndustryBlueprintChanged", "clientID", [f.facility.itemID]],
+  ], "native loads also invalidate recipes cached by other owner views");
 
   const stack = f.cargo(77803, 45);
   service.Handle_deposit_input_items([f.facility.itemID, { [stack.itemID]: 15 }], f.session);

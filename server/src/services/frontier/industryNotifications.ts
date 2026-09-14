@@ -149,6 +149,36 @@ function publishIndustryProductionResult(result, session = null, options: Record
   for (const event of events) publishIndustryProductionChanged(target, facility.itemID, event, options);
 }
 
+// A recipe change also invalidates slot controllers and run duration. The
+// retail gateway item notices only update quantities, so the client adapter
+// listens for this event and reloads the complete authoritative facility.
+function publishIndustryBlueprintChanged(session, facilityID, options: Record<string, any> = {}) {
+  const characterID = Number(session && (session.characterID || session.charid));
+  const numericFacilityID = Number(facilityID);
+  if (!Number.isSafeInteger(characterID) || characterID <= 0 ||
+      !Number.isSafeInteger(numericFacilityID) || numericFacilityID <= 0) return false;
+  const sessions = new Set<any>(session ? [session] : []);
+  try {
+    const registry = options.sessionRegistry || require("../chat/sessionRegistry");
+    for (const connected of registry.getSessions()) sessions.add(connected);
+  } catch (error) { log.warn(`[industry] Blueprint owner sessions unavailable: ${error.message}`); }
+  for (const connected of sessions) {
+    if (Number(connected?.characterID || connected?.charid) !== characterID ||
+        typeof connected.sendNotification !== "function") continue;
+    try {
+      connected.sendNotification("OnFrontierIndustryBlueprintChanged", "clientID", [numericFacilityID]);
+    } catch (error) {
+      log.warn(`[industry] Blueprint notification failed for facility=${numericFacilityID}: ${error.message}`);
+    }
+  }
+  // Selection is allowed only with both inventories empty. Preserve the
+  // replacement snapshots for clients using the original gateway listeners.
+  for (const side of ["inputs", "outputs"]) {
+    publishIndustryItemsChanged(session, numericFacilityID, side, {}, options);
+  }
+  return true;
+}
+
 function publishIndustryItemsChanged(
   session,
   facilityID,
@@ -202,6 +232,7 @@ function publishIndustryItemsChanged(
 }
 
 module.exports = {
+  publishIndustryBlueprintChanged,
   publishIndustryItemsChanged,
   publishIndustryProductionChanged,
   publishIndustryProductionResult,

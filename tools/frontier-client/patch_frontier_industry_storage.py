@@ -20,6 +20,8 @@ PROFILES = {
     "frontier/industry/client/facility.pyc": ("facility", "af9fcccdd843b3ceb3276f235cef7de588cfa25ff1d1223d072c8fc6d3d69abe"),
     "frontier/smart_assemblies/client/storage/smart_storage_inventory.pyc": ("storage", "51c2936c149ce051a1c5c5a183a4d6a86d743832834438bf968363e9a4a3e4ce"),
     "frontier/industry/client/ui/active_blueprint_panel.pyc": ("panel", "51ee3c0ef8afd74c4247a9dac9e9c9e69611962dd451282e7ddadd4aaa36ffbd"),
+    "frontier/industry/client/industry_svc.pyc": ("service", "6a75a99b60098ab4434cc9e4739e6193a301d5096d1d209a9728d4c4eb5bc40d"),
+    "frontier/smart_assemblies/client/window/window.pyc": ("assembly_window", "a99b1764101b4ce954cb141c170094ddb044a2980d5d97ebda0702cb793d5f35"),
 }
 # Exact installed V1 wrappers, verified against the former adapter and their
 # embedded retail originals before the Production-panel fix. No arbitrary
@@ -28,6 +30,22 @@ PREVIOUS_WRAPPER_SHA256 = {
     "controller": "9bb1686f3c4e387ae0a46e45e6b75ef8945ad035c07debc618d261fe513c39cc",
     "facility": "8d86965fe00a6eb446b829df00f833fe5402d9f04b3743649db997bbade27706",
     "storage": "8215f10de2066199a8e49af13d8a69c730167d238d331e142a33171e251c396e",
+}
+# Exact four-member Production/SSU release, before blueprint synchronization.
+PREVIOUS_PANEL_WRAPPER_SHA256 = {
+    "controller": "193fb5cfaf559f365964ef13d1047689d48805fe2e9b4871a1cbba56b90b36c9",
+    "facility": "b50e1d2a8dac24f52997af9c08cc6c2eef71317ba76402343b25ac796a0d01e4",
+    "storage": "b00595dc1999b9a36b7ba806207381cbb7acbc6581fb7069da61c7d4ee57c13e",
+    "panel": "9bec6f40df1a55737ab5c8dfa2279f2d7a2132e3e92a25f76199c1f26ff62f5c",
+}
+# Exact five-member blueprint synchronization release, before preserving ROOT
+# when the native client opens an already-active Industry assembly again.
+PREVIOUS_BLUEPRINT_WRAPPER_SHA256 = {
+    "controller": "3e8be805c8e713d22c7b4df084d8f225ee5d186fd28eba9da475494d88c3a142",
+    "facility": "e3d3c322c03dc52f1942d5abfd0c356f94932e0dbd2ecb389fd6c80b5535d6eb",
+    "storage": "0475a28310b7f16a1b1c468905709299b4ce28c4c4de13f4bb70400a7276a8a0",
+    "panel": "ba2b8f3992be4cb1e6b5829f069928d0b4e7d9059cd3064693e88a4bbc81fcdc",
+    "service": "f6db984fb49f12b0db3f050d3bb173d106f866dd75573eed16b3074fa6d68204",
 }
 SOURCE_SENTINEL = b"EVEJS_INDUSTRY_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_INDUSTRY_ADAPTER_CODE_V1"
@@ -58,7 +76,8 @@ def inspect_member(member, kind, expected):
     digest = hashlib.sha256(member).hexdigest()
     if digest == expected:
         return "source", member
-    previous = digest == PREVIOUS_WRAPPER_SHA256.get(kind)
+    previous = digest in (PREVIOUS_WRAPPER_SHA256.get(kind), PREVIOUS_PANEL_WRAPPER_SHA256.get(kind),
+                          PREVIOUS_BLUEPRINT_WRAPPER_SHA256.get(kind))
     try:
         wrapper = marshal.loads(member[16:])
         if not isinstance(wrapper, types.CodeType):
@@ -80,19 +99,21 @@ def inspect_archive(archive, build=BUILD):
         raise IndustryStoragePatchError(f"No Industry storage adapter is available for build {build}")
     states = {}
     originals = {}
+    digests = {}
     with zipfile.ZipFile(archive) as source:
         for name, (kind, expected) in PROFILES.items():
             entries = [entry for entry in source.infolist() if entry.filename == name]
             if len(entries) != 1:
                 raise IndustryStoragePatchError(f"Expected exactly one {name}")
-            states[name], originals[name] = inspect_member(source.read(entries[0]), kind, expected)
+            member = source.read(entries[0])
+            digests[name] = hashlib.sha256(member).hexdigest()
+            states[name], originals[name] = inspect_member(member, kind, expected)
     unique = set(states.values())
-    previous_states = {
-        name: "outdated" if kind in PREVIOUS_WRAPPER_SHA256 else "source"
-        for name, (kind, _) in PROFILES.items()
-    }
-    if states == previous_states:
-        return "outdated", states, originals
+    for generation in (PREVIOUS_WRAPPER_SHA256, PREVIOUS_PANEL_WRAPPER_SHA256, PREVIOUS_BLUEPRINT_WRAPPER_SHA256):
+        if digests == {name: generation.get(kind, expected) for name, (kind, expected) in PROFILES.items()}:
+            return "outdated", states, originals
+    if "outdated" in unique:
+        return "partial", states, originals
     return next(iter(unique)) if len(unique) == 1 else "partial", states, originals
 
 
