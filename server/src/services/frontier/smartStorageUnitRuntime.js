@@ -712,6 +712,7 @@ function executeStorageTransactionWithChainState(options) {
 }
 module.exports = {
     SMART_STORAGE_FLAG,
+    getShipCargoCapacity,
     executeStorageTransaction: executeStorageTransactionWithChainState,
     getStorageInventory: options => withAuthoritativeStorageState(options, getStorageInventory),
     getStorageTransaction,
