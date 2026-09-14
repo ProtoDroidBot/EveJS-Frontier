@@ -17,6 +17,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   ASSEMBLY_NOT_IN_CURRENT_SYSTEM: "You must be in the assembly's solar system.",
   ASSEMBLY_UNDER_CONSTRUCTION: "Construction must finish before connecting this assembly.",
   ASSEMBLY_ACTIVATING: "Wait for the assembly's anchoring or onlining timer to finish.",
+  ASSEMBLY_STATE_UNAVAILABLE: "The Network Node's blockchain state could not be verified. Please try again.",
+  ASSEMBLY_STATE_PENDING: "The Network Node's state change is awaiting blockchain confirmation. Please try again.",
   ASSEMBLY_OUT_OF_RANGE: "The assembly is outside this Network Node's radius.",
   ASSEMBLY_ALREADY_CONNECTED: "This assembly is already connected to a Network Node.",
   ASSEMBLY_NOT_CONNECTED: "This assembly is not connected to that Network Node.",
@@ -29,6 +31,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   NETWORK_NODE_CAPACITY_EXCEEDED: "The Network Node has insufficient available energy for this assembly.",
   NETWORK_NODE_ENERGY_EXCEEDED: "The Network Node has insufficient available energy for this assembly.",
   NETWORK_NODE_ENERGY_CONFIG_UNAVAILABLE: "Energy requirements are still synchronizing. Try again shortly.",
+  NETWORK_NODE_ENERGY_STATE_UNAVAILABLE: "The Network Node's blockchain energy usage could not be verified. Please try again.",
   NETWORK_NODE_BINDING_LOCKED: "This assembly's existing chain connection cannot be changed.",
   NETWORK_NODE_CONNECTION_MISMATCH: "This assembly is connected to a different Network Node.",
   INSUFFICIENT_ENERGY: "The Network Node has insufficient available energy for this assembly.",
@@ -57,6 +60,8 @@ export function createSmartAssemblyEnergyApi(overrides: Record<string, any> = {}
     description: "This signature authorizes viewing and connecting or disconnecting assemblies you own in your active in-game character's energy grid.",
   });
   const runtime = () => overrides.runtime || require("../../services/frontier/networkNodeEnergyRuntime");
+  const runWithState = overrides.runWithState || (overrides.runtime ? (_nodeID, operation) => operation() :
+    (nodeID, operation) => require("../../services/frontier/suiAssemblyState").runWithSuiAssemblyState(nodeID, operation));
   const runMutation = overrides.runMutation || (overrides.runtime ? operation => operation() :
     operation => require("../../services/frontier/suiAssemblySync").runSuiAssemblyEnergyMutation(operation));
 
@@ -95,9 +100,14 @@ export function createSmartAssemblyEnergyApi(overrides: Record<string, any> = {}
     const context = resolve(authorization, rawID);
     if (!context.success) return context;
     try {
-      const result = await runtime().getNetworkNodeEnergyStatus(context.data.characterID, context.data.networkNodeID);
+      const result = await runWithState(context.data.networkNodeID, () => {
+        const current = resolve(authorization, rawID);
+        if (!current.success) return current;
+        if (current.data.characterID !== context.data.characterID || current.data.walletAddress !== context.data.walletAddress) return failed("ACCESS_DENIED");
+        return runtime().getNetworkNodeEnergyStatus(current.data.characterID, current.data.networkNodeID);
+      });
       return result?.success ? result : failed(result?.errorMsg);
-    } catch { return failed("ENERGY_REQUEST_FAILED"); }
+    } catch (error: any) { return failed(error?.code || "ENERGY_REQUEST_FAILED"); }
   }
 
   return {
@@ -145,7 +155,7 @@ export function mountSmartAssemblyEnergyEndpoints(app: any, options: Record<stri
   const route = (handler: (api: ReturnType<typeof createSmartAssemblyEnergyApi>, req: any) => Promise<any>) => async (req: any, res: any) => {
     try {
       const result = await handler(getApi(), req);
-      const code = result.success ? 200 : ["NETWORK_NODE_ENERGY_CONFIG_UNAVAILABLE", "DEPLOYMENT_UNAVAILABLE"].includes(result.errorMsg) ? 503
+      const code = result.success ? 200 : ["NETWORK_NODE_ENERGY_CONFIG_UNAVAILABLE", "NETWORK_NODE_ENERGY_STATE_UNAVAILABLE", "ASSEMBLY_STATE_UNAVAILABLE", "DEPLOYMENT_UNAVAILABLE"].includes(result.errorMsg) ? 503
         : result.errorMsg === "TOO_MANY_REQUESTS" ? 429
         : /^(AUTH_|INVALID_SIGNATURE$|CHARACTER_NOT_ONLINE$|MULTIPLE_ACTIVE)/.test(result.errorMsg) ? 401
           : /^(ACCESS_DENIED|ASSEMBLY_ACCESS_DENIED|ASSEMBLY_NOT_OWNED|ASSEMBLY_NOT_IN_CURRENT_SYSTEM)$/.test(result.errorMsg) ? 403

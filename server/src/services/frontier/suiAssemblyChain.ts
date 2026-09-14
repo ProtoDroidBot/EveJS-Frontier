@@ -45,6 +45,12 @@ export type SuiAssemblyFuelState = {
   unitVolume: string;
   observedAtMs: number;
 };
+export type SuiAssemblyEnergyState = {
+  maxEnergy: number;
+  currentEnergyProduction: number;
+  energyUsed: number;
+  observedAtMs: number;
+};
 
 const STRUCT_NAMES = {
   network_node: "NetworkNode", gate: "Gate", storage_unit: "StorageUnit",
@@ -323,6 +329,22 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
       throw new Error(`Network node ${assembly.itemId} has invalid chain fuel`);
     }
     return { typeID, quantity, unitVolume: String(unitVolume), observedAtMs: Date.now() };
+  }
+
+  /** Reservations are held by the node; current type costs cannot reconstruct them. */
+  async function readEnergyState(assembly: AssemblySnapshot, existing?: SuiAssemblyChainObject): Promise<SuiAssemblyEnergyState> {
+    if (assembly.kind !== "network_node") throw new Error(`Assembly ${assembly.itemId} is not a Network Node`);
+    const state = existing ?? await readAssembly(assembly);
+    if (!state) throw new Error(`Network node ${assembly.itemId} must be anchored before reading energy`);
+    if (state.kind !== "network_node") throw new Error(`Assembly ${assembly.itemId} chain object is not a Network Node`);
+    const energy = suiAssemblyFields(state.fields.energy_source);
+    const maxEnergy = localFuelInteger(energy?.max_energy_production, "Chain maximum energy production");
+    const currentEnergyProduction = localFuelInteger(energy?.current_energy_production, "Chain current energy production");
+    const energyUsed = localFuelInteger(energy?.total_reserved_energy, "Chain reserved energy");
+    if (maxEnergy === 0 || currentEnergyProduction > maxEnergy || energyUsed > maxEnergy) {
+      throw new Error(`Network node ${assembly.itemId} has invalid chain energy`);
+    }
+    return { maxEnergy, currentEnergyProduction, energyUsed, observedAtMs: Date.now() };
   }
 
   async function syncFuelIntent(assembly: AssemblySnapshot): Promise<void> {
@@ -616,6 +638,6 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
   }
 
   return { deriveId, readAssembly, readObject, ensureAssembly, syncMetadata, configureFuelEfficiency, readEnergyRequirements,
-    readFuelState, syncFuel, syncStatus, buildStatusTransaction, removeAssembly, withCaps };
+    readFuelState, readEnergyState, syncFuel, syncStatus, buildStatusTransaction, removeAssembly, withCaps };
 }
 export type SuiAssemblyChain = ReturnType<typeof createSuiAssemblyChain>;

@@ -64,7 +64,97 @@ test.beforeEach(t => {
   deployment._testing.clearBuildDefinitionCache();
   deployment._testing.clearPendingAssemblyTransitions();
 });
-test.afterEach(() => config.clearAssemblyEnergyConfig());
+test.afterEach(() => { config.clearAssemblyEnergyConfig(); energy.clearSuiNetworkNodeEnergy(); });
+
+function useChainEnergy(t, observation = { maxEnergy: 1000, currentEnergyProduction: 1000, energyUsed: 750, observedAtMs: NOW }) {
+  t.after(require("../src/services/frontier/suiAssemblyState").registerSuiAssemblyStateRunner(async (_id, operation) => operation()));
+  t.mock.method(fuel, "settleNetworkNodeFuel", () => {});
+  energy.projectSuiNetworkNodeEnergy(1, observation);
+}
+
+test("confirmed node reservations override local assembly sums and later type-cost changes", t => {
+  assembly(1); assembly(2, 77917, { status: 2 }); assembly(3, 88082);
+  useChainEnergy(t);
+  assert.equal(status().energyUsed, 750, "includes chain reservations absent from the local assembly sum");
+  assert.equal(status().energyAvailable, 250);
+  config.setAssemblyEnergyConfig([{ typeID: 77917, energyRequired: 900 }, { typeID: 88082, energyRequired: 50 }]);
+  assert.equal(status().energyUsed, 750, "changing type costs does not rewrite existing chain reservations");
+  assert.equal(status().energyAvailable, 250);
+  assert.equal(state(2), 2, "a read must not offline confirmed consumers based on the new cost");
+  updateStatus(2, 1);
+  assert.equal(status().energyUsed, 750, "a local offline value does not release chain energy");
+  energy.projectSuiNetworkNodeEnergy(1, { maxEnergy: 1000, currentEnergyProduction: 1000, energyUsed: 200, observedAtMs: NOW + 1 });
+  assert.equal(status().energyUsed, 200);
+  assert.equal(status().energyAvailable, 800);
+});
+
+test("online checks use confirmed available production and do not double charge an online consumer", t => {
+  assembly(1); assembly(2, 77917); assembly(3, 88082, { status: 2 });
+  useChainEnergy(t);
+  assert.equal(energy.validateAssemblyOnline(items.get(2)).errorMsg, "NETWORK_NODE_ENERGY_EXCEEDED");
+  assert.equal(energy.validateAssemblyOnline(items.get(3)).success, true);
+  energy.projectSuiNetworkNodeEnergy(1, { maxEnergy: 1000, currentEnergyProduction: 600, energyUsed: 150, observedAtMs: NOW });
+  assert.equal(status().maxEnergy, 1000);
+  assert.equal(status().energyAvailable, 450, "available energy uses production, not maximum capacity");
+  assert.equal(energy.validateAssemblyOnline(items.get(2)).errorMsg, "NETWORK_NODE_ENERGY_EXCEEDED");
+  energy.projectSuiNetworkNodeEnergy(1, { maxEnergy: 1000, currentEnergyProduction: 1000, energyUsed: 500, observedAtMs: NOW });
+  assert.equal(energy.validateAssemblyOnline(items.get(2)).success, true, "exact capacity is allowed");
+});
+
+test("pending local online requests cannot claim energy has already been reserved", t => {
+  assembly(1); const item = assembly(2, 77917, { status: 2 });
+  item.customInfo = JSON.stringify({ ...JSON.parse(item.customInfo), evejsSuiAssemblyStatusIntent: { id: "pending", targetStatus: 2 } });
+  useChainEnergy(t);
+  assert.equal(energy.validateAssemblyOnline(item).errorMsg, "NETWORK_NODE_ENERGY_EXCEEDED");
+  assert.equal(status().energyUsed, 750);
+});
+
+test("competing native commits hold pending demand without changing displayed chain reservations", t => {
+  assembly(1); assembly(2, 77917); assembly(3, 77917);
+  config.setAssemblyEnergyConfig([{ typeID: 77917, energyRequired: 200 }]);
+  useChainEnergy(t);
+  const first = deployment.beginAssemblyStateTransition(SESSION, 2, 2);
+  const second = deployment.beginAssemblyStateTransition(SESSION, 3, 2);
+  assert.equal(first.success, true);
+  assert.equal(second.success, true, "pending signatures alone do not hold capacity");
+  assert.equal(deployment.commitAssemblyStateTransition(SESSION, 2, first.data.transactionUUID, SIGNATURE, 2).success, true);
+  assert.equal(status().energyUsed, 750, "the queued online intent has not reserved chain energy yet");
+  assert.equal(status().energyAvailable, 250);
+  assert.equal(deployment.commitAssemblyStateTransition(SESSION, 3, second.data.transactionUUID, SIGNATURE, 2).errorMsg,
+    "NETWORK_NODE_ENERGY_EXCEEDED");
+  assert.equal(state(3), 1);
+});
+
+test("connection writes succeed while chain totals await refresh", t => {
+  assembly(1); assembly(2, 88082);
+  useChainEnergy(t);
+  energy.clearSuiNetworkNodeEnergy();
+  assert.equal(energy.disconnectAssembly(SESSION, 2, 1).success, true);
+  assert.equal(JSON.parse(items.get(2).customInfo)[energy.ENERGY_INFO_KEY].networkNodeID, 0);
+  assert.equal(energy.connectAssembly(SESSION, 2, 1).success, true);
+  assert.equal(JSON.parse(items.get(2).customInfo)[energy.ENERGY_INFO_KEY].networkNodeID, 1);
+});
+
+test("confirmed production stops power even when local node status and fuel still say online", t => {
+  assembly(1); assembly(2, 88082); assembly(3, 88086);
+  useChainEnergy(t, { maxEnergy: 1000, currentEnergyProduction: 0, energyUsed: 0, observedAtMs: NOW });
+  assert.equal(status().online, false);
+  assert.equal(status().energyUsed, 0);
+  assert.equal(status().energyAvailable, 0);
+  assert.equal(energy.validateAssemblyOnline(items.get(2)).errorMsg, "NETWORK_NODE_OFFLINE");
+  assert.equal(energy.validateAssemblyOnline(items.get(3)).errorMsg, "NETWORK_NODE_OFFLINE", "zero-cost assemblies still need production");
+});
+
+test("missing, cleared, or changed-identity observations cannot fall back to local totals", t => {
+  assembly(1); assembly(2, 88082);
+  useChainEnergy(t);
+  energy.clearSuiNetworkNodeEnergy();
+  assert.equal(energy.getNetworkNodeEnergyStatus(OWNER, 1).errorMsg, "NETWORK_NODE_ENERGY_STATE_UNAVAILABLE");
+  assert.equal(energy.validateAssemblyOnline(items.get(2)).errorMsg, "NETWORK_NODE_ENERGY_STATE_UNAVAILABLE");
+  energy.projectSuiNetworkNodeEnergy(1, { maxEnergy: 1000, currentEnergyProduction: 1000, energyUsed: 0, observedAtMs: NOW });
+  items.get(1).spaceState.position.x = 10;
+  assert.equal(energy.getNetworkNodeEnergyStatus(OWNER, 1).errorMsg, "NETWORK_NODE_ENERGY_STATE_UNAVAILABLE");
+});
 
 test("activation blocks node power, online requests, and connection changes", () => {
   const markPending = id => {

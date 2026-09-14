@@ -6,7 +6,7 @@ import {
   registerSuiAssemblyStateRunner,
   runWithSuiAssemblyState,
 } from "../src/services/frontier/suiAssemblyState";
-import { buildSuiAssemblyIdentitySnapshot } from "../src/services/frontier/suiAssemblySync";
+import { buildSuiAssemblyIdentitySnapshot, refreshSuiAssemblyChainStates } from "../src/services/frontier/suiAssemblySync";
 import { buildSuiAssemblySnapshot, type SuiAssemblySnapshotInput } from "../src/services/frontier/suiAssemblySnapshot";
 
 test("assembly state access remains synchronous when chain synchronization is disabled", () => {
@@ -220,4 +220,123 @@ test("identity snapshots preserve persisted bindings when custom info is already
   assert.equal(identities.assemblies.find(assembly => assembly.itemId === "4")?.networkNodeId, "1");
   assert.ok(identities.assemblies.every(assembly => assembly.status === 1));
   assert.deepEqual(input, original);
+});
+
+function chainRefreshFixture() {
+  const input = mismatchedStatusInput();
+  const objects = new Map<string, any>(["1", "2", "3", "4"].map(itemId => [itemId, { itemId, online: true }]));
+  const intents = new Map<string, { id: string; targetStatus: 1 | 2 }>();
+  const fuel = { typeID: 88335, quantity: 73, unitVolume: "280000", observedAtMs: 1234 };
+  const energy = { maxEnergy: 1000, currentEnergyProduction: 1000, energyUsed: 725, observedAtMs: 1234 };
+  const reads: string[] = [];
+  const cleared: string[] = [];
+  const fuelReads: any[] = [];
+  const energyReads: any[] = [];
+  const projectedFuel: any[] = [];
+  const projectedEnergy: any[] = [];
+  const projectedStatus: any[] = [];
+  const context = {
+    async assertCurrent() {},
+    getStatusIntent: assembly => intents.get(assembly.itemId) ?? null,
+    clearEnergy: assembly => { cleared.push(assembly.itemId); },
+    chain: {
+      async readAssembly(assembly) { reads.push(assembly.itemId); return objects.get(assembly.itemId) ?? null; },
+      async readFuelState(assembly, state) { fuelReads.push({ assembly, state }); return fuel; },
+      async readEnergyState(assembly, state) { energyReads.push({ assembly, state }); return energy; },
+    },
+    projectFuel: (assembly, state) => { projectedFuel.push({ itemId: assembly.itemId, state }); },
+    projectEnergy: (assembly, state) => { projectedEnergy.push({ itemId: assembly.itemId, state }); },
+    projectStatus: (assembly, status, intentID) => { projectedStatus.push({ itemId: assembly.itemId, status, intentID }); return true; },
+  };
+  return { input, objects, intents, fuel, energy, reads, cleared, fuelReads, energyReads,
+    projectedFuel, projectedEnergy, projectedStatus, context };
+}
+
+test("chain refresh imports energy and fuel from the same verified node object", async () => {
+  const f = chainRefreshFixture();
+  await refreshSuiAssemblyChainStates(f.context, () => f.input, 1);
+  assert.deepEqual(f.reads, ["1"], "Refreshing one node must not depend on child transitions or other grids");
+  assert.deepEqual(f.cleared, ["1"]);
+  assert.equal(f.fuelReads.length, 1);
+  assert.equal(f.energyReads.length, 1);
+  assert.strictEqual(f.fuelReads[0].state, f.objects.get("1"));
+  assert.strictEqual(f.energyReads[0].state, f.fuelReads[0].state);
+  assert.strictEqual(f.energyReads[0].assembly, f.fuelReads[0].assembly);
+  assert.deepEqual(f.projectedFuel, [{ itemId: "1", state: f.fuel }]);
+  assert.deepEqual(f.projectedEnergy, [{ itemId: "1", state: f.energy }]);
+  assert.deepEqual(f.projectedStatus, [
+    { itemId: "1", status: 2, intentID: null },
+  ]);
+});
+
+test("requested node refresh tolerates unanchored children while a requested child must exist", async () => {
+  const f = chainRefreshFixture();
+  f.objects.delete("3");
+  await refreshSuiAssemblyChainStates(f.context, () => f.input, 1);
+  assert.deepEqual(f.reads, ["1"]);
+  assert.deepEqual(f.projectedStatus.map(entry => entry.itemId), ["1"]);
+  assert.equal(f.projectedEnergy.length, 1);
+  await assert.rejects(refreshSuiAssemblyChainStates(f.context, () => f.input, 3), /not anchored on the current chain/);
+
+  const missingNode = chainRefreshFixture();
+  missingNode.objects.delete("1");
+  await assert.rejects(refreshSuiAssemblyChainStates(missingNode.context, () => missingNode.input, 1), /not anchored on the current chain/);
+  assert.deepEqual(missingNode.cleared, ["1"]);
+  assert.deepEqual(missingNode.projectedEnergy, []);
+});
+
+test("pending child transitions do not block fresh node counters or fuel access", async () => {
+  const f = chainRefreshFixture();
+  f.intents.set("3", { id: "pending-child-offline", targetStatus: 1 });
+  await refreshSuiAssemblyChainStates(f.context, () => f.input, 1);
+  assert.deepEqual(f.reads, ["1"]);
+  assert.deepEqual(f.projectedEnergy, [{ itemId: "1", state: f.energy }]);
+  assert.equal(f.projectedFuel.length, 1);
+  await assert.rejects(refreshSuiAssemblyChainStates(f.context, () => f.input, 3), { code: "ASSEMBLY_STATE_PENDING" });
+});
+
+test("unavailable or malformed chain energy leaves the old observation cleared and projects no partial node state", async () => {
+  for (const message of ["Chain energy source is missing", "Chain reserved energy is not a valid u64"]) {
+    const f = chainRefreshFixture();
+    const failure = new Error(message);
+    f.context.chain.readEnergyState = async () => { throw failure; };
+    await assert.rejects(refreshSuiAssemblyChainStates(f.context, () => f.input, 1), error => error === failure);
+    assert.deepEqual(f.cleared, ["1"]);
+    assert.deepEqual(f.projectedFuel, [], "Fuel must not be projected before the complete node read succeeds");
+    assert.deepEqual(f.projectedEnergy, []);
+    assert.deepEqual(f.projectedStatus, []);
+  }
+});
+
+test("chain energy is not projected when the local node identity changes during its read", async () => {
+  const f = chainRefreshFixture();
+  f.context.chain.readEnergyState = async () => {
+    const node = Object.values(f.input.items).find(item => item.itemID === 1);
+    node.spaceState.position.x = 10;
+    return f.energy;
+  };
+  await assert.rejects(refreshSuiAssemblyChainStates(f.context, () => f.input, 1), /changed during chain state verification/);
+  assert.deepEqual(f.cleared, ["1"]);
+  assert.deepEqual(f.projectedFuel, []);
+  assert.deepEqual(f.projectedEnergy, []);
+  assert.deepEqual(f.projectedStatus, []);
+});
+
+test("pending local status keeps confirmed chain counters while requested refresh reports pending", async () => {
+  const f = chainRefreshFixture();
+  const intent = { id: "pending-offline", targetStatus: 1 as const };
+  f.intents.set("1", intent);
+  await assert.rejects(refreshSuiAssemblyChainStates(f.context, () => f.input, 1), { code: "ASSEMBLY_STATE_PENDING" });
+  assert.deepEqual(f.projectedEnergy, [{ itemId: "1", state: f.energy }]);
+  assert.equal(f.projectedEnergy[0].state.energyUsed, 725);
+  assert.equal(f.projectedEnergy[0].state.currentEnergyProduction, 1000);
+  assert.deepEqual(f.projectedStatus, [], "The pending offline request must not be acknowledged as an online observation");
+  assert.strictEqual(f.intents.get("1"), intent);
+
+  const scan = chainRefreshFixture();
+  scan.intents.set("1", intent);
+  await refreshSuiAssemblyChainStates(scan.context, () => scan.input);
+  assert.deepEqual(scan.projectedEnergy.map(entry => entry.itemId), ["1", "2"]);
+  assert.deepEqual(scan.projectedStatus.map(entry => entry.itemId), ["2", "3", "4"]);
+  assert.strictEqual(scan.intents.get("1"), intent, "A background scan must preserve an unconfirmed lifecycle request");
 });

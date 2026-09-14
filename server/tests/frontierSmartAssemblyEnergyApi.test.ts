@@ -94,6 +94,68 @@ test("queued grid changes reauthenticate after waiting for chain synchronization
   assert.equal(state.calls.length, 0);
 });
 
+test("grid status waits for fresh blockchain state before calculating usage", async () => {
+  let resume: (() => void) | undefined;
+  const refreshed: number[] = [];
+  const { api, grid, state, login } = fixture({ runWithState: (nodeID, operation) => new Promise(resolve => {
+    refreshed.push(nodeID);
+    resume = () => resolve(operation());
+  }) });
+  const token = await login();
+  const pending = api.status(token, 50);
+  assert.deepEqual(refreshed, [50]);
+  assert.equal(state.calls.length, 0);
+  grid.energyUsed = 600;
+  grid.energyAvailable = 400;
+  resume!();
+  assert.deepEqual(await pending, { success: true, data: grid });
+  assert.deepEqual(state.calls, [{ action: "status", characterID: 140000001, networkNodeID: 50 }]);
+});
+
+test("queued grid status reauthenticates after waiting for blockchain state", async () => {
+  let resume: (() => void) | undefined;
+  const { api, state, login } = fixture({ runWithState: (_nodeID, operation) => new Promise(resolve => {
+    resume = () => resolve(operation());
+  }) });
+  const token = await login();
+  const pending = api.status(token, 50);
+  state.sessions = [];
+  resume!();
+  assert.equal((await pending as any).errorMsg, "CHARACTER_NOT_ONLINE");
+  assert.equal(state.calls.length, 0);
+});
+
+test("queued grid status rejects a changed character or wallet", async () => {
+  for (const change of [{ characterID: 140000002 }, { walletAddress: "another-wallet" }]) {
+    let identity = { characterID: 140000001, walletAddress: "original-wallet" };
+    let resume: (() => void) | undefined;
+    const { api, state } = fixture({
+      auth: { authenticate: () => ({ success: true, data: identity }) },
+      runWithState: (_nodeID, operation) => new Promise(resolve => { resume = () => resolve(operation()); }),
+    });
+    const pending = api.status("token", 50);
+    identity = { ...identity, ...change };
+    resume!();
+    assert.equal((await pending as any).errorMsg, "ACCESS_DENIED");
+    assert.equal(state.calls.length, 0);
+  }
+});
+
+test("grid status fails closed when blockchain state cannot be refreshed", async () => {
+  for (const code of ["ASSEMBLY_STATE_UNAVAILABLE", "ASSEMBLY_STATE_PENDING", "NETWORK_NODE_ENERGY_STATE_UNAVAILABLE"]) {
+    const { api, state, login } = fixture({ runWithState: async () => {
+      throw Object.assign(new Error("private-chain-detail"), { code });
+    } });
+    const token = await login();
+    const result: any = await api.status(token, 50);
+    assert.equal(result.success, false);
+    assert.equal(result.errorMsg, code);
+    assert.match(result.message, /blockchain/);
+    assert.equal(JSON.stringify(result).includes("private-chain-detail"), false);
+    assert.equal(state.calls.length, 0);
+  }
+});
+
 test("grid API rejects malformed IDs and missing authentication before invoking runtime", async () => {
   const { api, state, login } = fixture();
   const token = await login();
@@ -147,10 +209,17 @@ test("mounted grid routes enforce origins and authentication and do not cache gr
     assert.equal(connected.headers.get("cache-control"), "no-store");
     const disconnected = await fetch(`${base}/50/disconnect`, request);
     assert.equal(disconnected.status, 200);
-    state.error = "NETWORK_NODE_ENERGY_CONFIG_UNAVAILABLE";
-    const unavailable = await fetch(`${base}/50/status`, request);
-    assert.equal(unavailable.status, 503);
-    assert.equal((await unavailable.json() as any).errorMsg, "NETWORK_NODE_ENERGY_CONFIG_UNAVAILABLE");
+    for (const [error, status] of [
+      ["NETWORK_NODE_ENERGY_CONFIG_UNAVAILABLE", 503],
+      ["NETWORK_NODE_ENERGY_STATE_UNAVAILABLE", 503],
+      ["ASSEMBLY_STATE_UNAVAILABLE", 503],
+      ["ASSEMBLY_STATE_PENDING", 409],
+    ] as const) {
+      state.error = error;
+      const unavailable = await fetch(`${base}/50/status`, request);
+      assert.equal(unavailable.status, status);
+      assert.equal((await unavailable.json() as any).errorMsg, error);
+    }
     state.error = null;
     const blocked = await fetch(`${base}/50/status`, { ...request, headers: { ...headers, Origin: "https://untrusted.invalid" } });
     assert.equal(blocked.status, 403);

@@ -211,6 +211,46 @@ export function buildSuiAssemblyIdentitySnapshot(input: SuiAssemblySnapshotInput
   return buildSuiAssemblySnapshot({ ...input, items });
 }
 
+/** Import confirmed counters with status, using the same verified node object. */
+export async function refreshSuiAssemblyChainStates(context: any, currentSnapshotInput: () => SuiAssemblySnapshotInput, assemblyID?: number) {
+  await context.assertCurrent();
+  const identities = buildSuiAssemblyIdentitySnapshot(currentSnapshotInput());
+  let assemblies = identities.assemblies;
+  const requested = assemblyID === undefined ? null : assemblies.find(a => a.itemId === String(assemblyID));
+  if (assemblyID !== undefined) {
+    if (!requested) throw new Error("Assembly is not available for chain state verification");
+    // This runner also serves fuel reads/transfers. Unrelated child requests
+    // must not block the node; the full worker scan refreshes those children.
+    assemblies = assemblies.filter(a => a.itemId === requested.itemId || a.itemId === requested.networkNodeId);
+  }
+  for (const assembly of assemblies) {
+    if (assembly.kind === "network_node") context.clearEnergy(assembly);
+    const intent = context.getStatusIntent(assembly);
+    const state = await context.chain.readAssembly(assembly);
+    if (!state) {
+      if (assemblyID !== undefined) {
+        throw new Error("Assembly is not anchored on the current chain");
+      }
+      continue;
+    }
+    const fuel = assembly.kind === "network_node" ? await context.chain.readFuelState(assembly, state) : null;
+    const energy = assembly.kind === "network_node" ? await context.chain.readEnergyState(assembly, state) : null;
+    await context.assertCurrent();
+    const latest = buildSuiAssemblyIdentitySnapshot(currentSnapshotInput()).assemblies.find(a => a.itemId === assembly.itemId);
+    if (JSON.stringify(latest) !== JSON.stringify(assembly)) throw new Error("Assembly changed during chain state verification");
+    if (fuel) context.projectFuel(assembly, fuel);
+    if (energy) context.projectEnergy(assembly, energy);
+    const status = state.online ? 2 : 1;
+    if (intent && intent.targetStatus !== status) {
+      if (assemblyID !== undefined) throw Object.assign(new Error("Assembly state transition is pending"), { code: "ASSEMBLY_STATE_PENDING" });
+      continue;
+    }
+    if (!context.projectStatus(assembly, status, intent?.id ?? null)) {
+      throw Object.assign(new Error("Assembly state transition changed during verification"), { code: "ASSEMBLY_STATE_PENDING" });
+    }
+  }
+}
+
 /** Mirror game contents while changing chain status only for explicit lifecycle requests. */
 export async function reconcileSuiAssemblies(snapshot: any, context: any, localItemIds: Set<string>) {
   await context.assertCurrent();
@@ -389,6 +429,7 @@ export function startSuiAssemblySync() {
   const itemStore = require("../inventory/itemStore");
   const networkNodeFuelRuntime = require("./networkNodeFuelRuntime");
   const deploymentRuntime = require("./deploymentRuntime");
+  const energyRuntime = require("./networkNodeEnergyRuntime");
   const characterState = require("../character/characterState");
   const { TABLE, readStaticRows } = require("../_shared/referenceData");
   const log = require("../../utils/logger");
@@ -489,6 +530,9 @@ export function startSuiAssemblySync() {
       onCommitted: (digest, label) => log.info(`[SuiAssemblySync] ${label}: ${digest}`),
       reconcileSponsored: async metadata => { deploymentRuntime.reconcileSponsoredAssemblyState(metadata); },
       reconcileCommitted: async label => {
+        // A confirmed lifecycle transaction may have reserved or released energy.
+        // Until it is reread, the previous observation cannot authorize new use.
+        energyRuntime.clearSuiNetworkNodeEnergy();
         const match = /^assembly:(\d+):fuel:([^:]+)$/.exec(label);
         if (match) networkNodeFuelRuntime.acknowledgeSuiNetworkNodeFuel(Number(match[1]), match[2]);
       },
@@ -563,6 +607,12 @@ export function startSuiAssemblySync() {
       },
       projectFuel(assembly: any, fuel: any) {
         return networkNodeFuelRuntime.projectSuiNetworkNodeFuel(Number(assembly.itemId), fuel, deploymentKey);
+      },
+      projectEnergy(assembly: any, energy: any) {
+        energyRuntime.projectSuiNetworkNodeEnergy(Number(assembly.itemId), energy);
+      },
+      clearEnergy(assembly: any) {
+        energyRuntime.clearSuiNetworkNodeEnergy(Number(assembly.itemId));
       },
       async syncFuel(assembly: any) {
         const item = itemStore.findItemById(Number(assembly.itemId));
@@ -658,35 +708,7 @@ export function startSuiAssemblySync() {
   }
 
   async function refreshChainStates(assemblyID?: number) {
-    await context.assertCurrent();
-    const identities = buildSuiAssemblyIdentitySnapshot(currentSnapshotInput());
-    let assemblies = identities.assemblies;
-    if (assemblyID !== undefined) {
-      const requested = assemblies.find(a => a.itemId === String(assemblyID));
-      if (!requested) throw new Error("Assembly is not available for chain state verification");
-      assemblies = assemblies.filter(a => a.itemId === requested.itemId || a.itemId === requested.networkNodeId);
-    }
-    for (const assembly of assemblies) {
-      const intent = context.getStatusIntent(assembly);
-      const state = await context.chain.readAssembly(assembly);
-      if (!state) {
-        if (assemblyID !== undefined) throw new Error("Assembly is not anchored on the current chain");
-        continue;
-      }
-      const fuel = assembly.kind === "network_node" ? await context.chain.readFuelState(assembly, state) : null;
-      await context.assertCurrent();
-      const latest = buildSuiAssemblyIdentitySnapshot(currentSnapshotInput()).assemblies.find(a => a.itemId === assembly.itemId);
-      if (JSON.stringify(latest) !== JSON.stringify(assembly)) throw new Error("Assembly changed during chain state verification");
-      if (fuel) context.projectFuel(assembly, fuel);
-      const status = state.online ? 2 : 1;
-      if (intent && intent.targetStatus !== status) {
-        if (assemblyID !== undefined) throw Object.assign(new Error("Assembly state transition is pending"), { code: "ASSEMBLY_STATE_PENDING" });
-        continue;
-      }
-      if (!context.projectStatus(assembly, status, intent?.id ?? null)) {
-        throw Object.assign(new Error("Assembly state transition changed during verification"), { code: "ASSEMBLY_STATE_PENDING" });
-      }
-    }
+    await refreshSuiAssemblyChainStates(context, currentSnapshotInput, assemblyID);
   }
   const worker = createAssemblySyncWorker({
     report: (message) => log.warn(`[SuiAssemblySync] ${message}`),
@@ -694,10 +716,13 @@ export function startSuiAssemblySync() {
       const synced = readSyncedSuiWorldConfig(env);
       if (!synced) {
         clearAssemblyEnergyConfig();
+        energyRuntime.clearSuiNetworkNodeEnergy();
         throw new Error("Run FrontierWorld.ps1 sync to enable automatic Smart Assembly synchronization");
       }
-      if (!context || context.synced.chainId !== synced.chainId || context.synced.packageId !== synced.packageId) {
+      if (!context || context.synced.chainId !== synced.chainId || context.synced.packageId !== synced.packageId ||
+          context.synced.objectRegistryId !== synced.objectRegistryId) {
         clearAssemblyEnergyConfig();
+        energyRuntime.clearSuiNetworkNodeEnergy();
         context = await makeContext(synced, { characters: [] });
       }
       // Recover and apply any confirmed owner operation BEFORE capturing the
@@ -728,6 +753,9 @@ export function startSuiAssemblySync() {
       const localItemIds = new Set<string>(Object.values<any>(rawItems).map(item => String(item.itemID)));
       context.setSnapshotItemIds(localItemIds, snapshot.assemblies);
       await reconcileSuiAssemblies(snapshot, context, localItemIds);
+      // Online/offline, fuel exhaustion and temporary storage operations can all
+      // change reservations during this pass. Publish the resulting chain totals.
+      await refreshChainStates();
       const summary = JSON.stringify(snapshot.assemblies);
       if (summary !== lastSummary) {
         if (snapshot.assemblies.length) log.info(`[SuiAssemblySync] ${snapshot.assemblies.length} assemblies synchronized on ${synced.chainId}`);
@@ -817,6 +845,7 @@ export function startSuiAssemblySync() {
     energyMutationRunner = null;
     const stopped = worker.stop();
     clearAssemblyEnergyConfig();
-    return stopped.finally(() => clearAssemblyEnergyConfig());
+    energyRuntime.clearSuiNetworkNodeEnergy();
+    return stopped.finally(() => { clearAssemblyEnergyConfig(); energyRuntime.clearSuiNetworkNodeEnergy(); });
   } };
 }

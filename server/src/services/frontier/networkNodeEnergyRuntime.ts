@@ -1,5 +1,7 @@
 "use strict";
 
+import type { SuiAssemblyEnergyState } from "./suiAssemblyChain";
+
 const itemStore = require("../inventory/itemStore");
 const { readStaticRows, TABLE } = require("../_shared/referenceData");
 const { NETWORK_NODE_RADIUS_METERS, NETWORK_NODE_TYPE_ID, DEFAULT_NETWORK_NODE_MAX_ENERGY,
@@ -7,6 +9,27 @@ const { NETWORK_NODE_RADIUS_METERS, NETWORK_NODE_TYPE_ID, DEFAULT_NETWORK_NODE_M
   getAssemblyEnergyConfigSource } = require("./networkNodeEnergyConfig");
 const ENERGY_INFO_KEY = "evejsFrontierEnergy";
 let reconciling = false;
+// Observations are scoped to the running deployment and refreshed by its worker.
+// Do not persist them across restarts, where the active chain may have changed.
+const chainEnergy = new Map<number, { identity: string; state: SuiAssemblyEnergyState }>();
+
+function energyIdentity(item) {
+  return JSON.stringify([item.itemID, item.typeID, item.ownerID, item.locationID, item.spaceState?.position]);
+}
+function projectSuiNetworkNodeEnergy(itemID, state: SuiAssemblyEnergyState) {
+  const item = itemStore.findItemById(Number(itemID));
+  if (!item || Number(item.typeID) !== NETWORK_NODE_TYPE_ID) throw new Error(`Network Node ${itemID} is unavailable`);
+  chainEnergy.set(Number(itemID), { identity: energyIdentity(item), state: { ...state } });
+}
+function clearSuiNetworkNodeEnergy(itemID?: number) {
+  if (itemID === undefined) chainEnergy.clear();
+  else chainEnergy.delete(Number(itemID));
+}
+function readSuiNetworkNodeEnergy(item) {
+  if (!item || !require("./suiAssemblyState").isSuiAssemblyStateAuthoritative()) return null;
+  const observation = chainEnergy.get(Number(item.itemID));
+  return observation?.identity === energyIdentity(item) ? observation.state : null;
+}
 
 function deployment() { return require("./deploymentRuntime"); }
 function info(item) {
@@ -65,6 +88,9 @@ function snapshot() {
   return { items, nodes, bindings, costs };
 }
 function nodeOnline(node) {
+  if (require("./suiAssemblyState").isSuiAssemblyStateAuthoritative()) {
+    return !deployment().isAssemblyActivationPending(node) && (readSuiNetworkNodeEnergy(node)?.currentEnergyProduction ?? 0) > 0;
+  }
   return deployment().readConstructionState(node)?.assemblyStatus === 2 &&
     !deployment().isAssemblyActivationPending(node) &&
     (require("./networkNodeFuelRuntime").readSuiNetworkNodeFuel(node) ||
@@ -120,8 +146,24 @@ function validateAssemblyOnline(item) {
   const nodeID = view.bindings.get(Number(item.itemID));
   if (!nodeID) return { success: false as const, errorMsg: "NETWORK_NODE_CONNECTION_REQUIRED" };
   const node = view.nodes.find(node => Number(node.itemID) === nodeID);
+  const observed = readSuiNetworkNodeEnergy(node);
+  if (require("./suiAssemblyState").isSuiAssemblyStateAuthoritative() && !observed) {
+    return { success: false as const, errorMsg: "NETWORK_NODE_ENERGY_STATE_UNAVAILABLE" };
+  }
   if (!nodeOnline(node)) return { success: false as const, errorMsg: "NETWORK_NODE_OFFLINE" };
-  if (energyUsed(view, nodeID, Number(item.itemID)) + view.costs.get(Number(item.typeID)) > getNetworkNodeEnergyCapacity(node.typeID)) {
+  // A confirmed online assembly already has its reservation. Pending local
+  // transitions do not prove that the chain has reserved or released anything.
+  if (observed && deployment().readConstructionState(item).assemblyStatus === 2 &&
+      !require("./suiAssemblyState").readSuiAssemblyStatusIntent(item)) return { success: true as const };
+  // Native commits can queue online requests before the worker submits them.
+  // Hold their cost for admission only; the displayed total stays chain-derived.
+  const pendingEnergy = observed ? view.items.reduce((total, candidate) => total + (
+    Number(candidate.itemID) !== Number(item.itemID) && view.bindings.get(Number(candidate.itemID)) === nodeID &&
+    require("./suiAssemblyState").readSuiAssemblyStatusIntent(candidate)?.targetStatus === 2
+      ? view.costs.get(Number(candidate.typeID)) : 0), 0) : 0;
+  const available = observed ? Math.max(0, observed.currentEnergyProduction - observed.energyUsed - pendingEnergy)
+    : getNetworkNodeEnergyCapacity(node.typeID) - energyUsed(view, nodeID, Number(item.itemID));
+  if (view.costs.get(Number(item.typeID)) > available) {
     return { success: false as const, errorMsg: "NETWORK_NODE_ENERGY_EXCEEDED" };
   }
   return { success: true as const };
@@ -150,8 +192,13 @@ function getNetworkNodeEnergyStatus(characterID, nodeID) {
   reconcileNetworkNodeEnergy();
   const view = snapshot();
   const node = view.nodes.find(item => Number(item.itemID) === Number(nodeID));
-  const maxEnergy = getNetworkNodeEnergyCapacity(node.typeID);
-  const used = energyUsed(view, Number(nodeID));
+  const observed = readSuiNetworkNodeEnergy(node);
+  if (require("./suiAssemblyState").isSuiAssemblyStateAuthoritative() && !observed) {
+    return { success: false as const, errorMsg: "NETWORK_NODE_ENERGY_STATE_UNAVAILABLE" };
+  }
+  const maxEnergy = observed?.maxEnergy ?? getNetworkNodeEnergyCapacity(node.typeID);
+  const production = observed?.currentEnergyProduction ?? (nodeOnline(node) ? maxEnergy : 0);
+  const used = observed?.energyUsed ?? energyUsed(view, Number(nodeID));
   const entry = item => ({ itemID: Number(item.itemID), typeID: Number(item.typeID),
     name: item.itemName || itemStore.getItemMetadata(item.typeID)?.name || `Assembly ${item.itemID}`,
     assemblyStatus: deployment().readConstructionState(item).assemblyStatus,
@@ -163,7 +210,7 @@ function getNetworkNodeEnergyStatus(characterID, nodeID) {
     energyUsed: deployment().readConstructionState(item).assemblyStatus === 2 ? view.costs.get(Number(item.typeID)) : 0,
   });
   return { success: true as const, data: { networkNodeID: Number(nodeID), radiusMeters: NETWORK_NODE_RADIUS_METERS,
-    maxEnergy, energyUsed: used, energyAvailable: nodeOnline(node) ? Math.max(0, maxEnergy - used) : 0,
+    maxEnergy, energyUsed: used, energyAvailable: Math.max(0, production - used),
     online: nodeOnline(node), energyConfigSource: getAssemblyEnergyConfigSource(),
     connectedAssemblies: view.items.filter(item => view.bindings.get(Number(item.itemID)) === Number(nodeID)).map(entry),
     nearbyAssemblies: view.items.filter(item => Number(item.typeID) !== NETWORK_NODE_TYPE_ID && eligible(item, node) &&
@@ -194,10 +241,13 @@ function changeConnection(session, assemblyID, nodeID, connect) {
   }
   const result = writeBinding(item, connect ? Number(nodeID) : 0, false);
   if (!result.success) return result;
-  return getNetworkNodeEnergyStatus(Number(access.node.ownerID), Number(nodeID));
+  // The API reads fresh chain state after leaving the mutation queue. A missing
+  // observation must not turn this successful write into an apparent failure.
+  return { success: true as const };
 }
 
 module.exports = { ENERGY_INFO_KEY, getAssemblyEnergyConfig, getNetworkNodeEnergyCapacity,
+  projectSuiNetworkNodeEnergy, clearSuiNetworkNodeEnergy,
   getAssemblyEnergyState, getNetworkNodeEnergyStatus, validateAssemblyOnline, reconcileNetworkNodeEnergy,
   connectAssembly: (session, assemblyID, nodeID) => changeConnection(session, assemblyID, nodeID, true),
   disconnectAssembly: (session, assemblyID, nodeID) => changeConnection(session, assemblyID, nodeID, false),

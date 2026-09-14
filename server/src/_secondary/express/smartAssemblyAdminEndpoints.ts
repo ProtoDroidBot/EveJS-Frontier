@@ -23,6 +23,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   ASSEMBLY_ALREADY_OFFLINE: "The assembly is already offline.",
   ASSEMBLY_STATE_CHANGED: "The assembly changed while this transaction was prepared. Refresh and try again.",
   NETWORK_NODE_ENERGY_CONFIG_UNAVAILABLE: "The Network Node energy configuration has not synchronized yet.",
+  NETWORK_NODE_ENERGY_STATE_UNAVAILABLE: "The Network Node's energy usage is still synchronizing. Try again shortly.",
   NETWORK_NODE_CONNECTION_REQUIRED: "Connect this assembly to a Network Node first.",
   NETWORK_NODE_OFFLINE: "Bring the connected Network Node online first.",
   NETWORK_NODE_ENERGY_EXCEEDED: "The connected Network Node does not have enough energy available.",
