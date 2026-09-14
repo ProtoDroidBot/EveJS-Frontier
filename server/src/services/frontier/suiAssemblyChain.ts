@@ -34,8 +34,16 @@ export type SuiAssemblyChainOptions = {
   tenant: string;
   execute: (label: string, tx: Transaction, ownerId?: number, assertSnapshotCurrent?: () => void) => Promise<unknown>;
   deriveId?: (itemId: string) => string;
+  /** Existing nodes use chain fuel; only explicit inventory transfer intents mutate it. */
+  fuelAuthority?: boolean;
   /** Reject a stale local fuel snapshot before it can replenish a newer burn. */
   assertFuelSnapshotCurrent?: (assembly: AssemblySnapshot) => void;
+};
+export type SuiAssemblyFuelState = {
+  typeID: number;
+  quantity: number;
+  unitVolume: string;
+  observedAtMs: number;
 };
 
 const STRUCT_NAMES = {
@@ -43,6 +51,21 @@ const STRUCT_NAMES = {
   turret: "Turret", assembly: "Assembly", character: "Character",
 } as const;
 const TenantItemId = bcs.struct("TenantItemId", { id: bcs.u64(), tenant: bcs.string() });
+const U64_MAX = (1n << 64n) - 1n;
+
+function fuelU64(value: unknown, label: string): bigint {
+  if ((typeof value !== "string" || !/^\d+$/.test(value)) &&
+      (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) &&
+      typeof value !== "bigint") throw new Error(`${label} is not a valid u64`);
+  const integer = BigInt(value as string | number | bigint);
+  if (integer < 0n || integer > U64_MAX) throw new Error(`${label} is not a valid u64`);
+  return integer;
+}
+function localFuelInteger(value: unknown, label: string): number {
+  const integer = fuelU64(value, label);
+  if (integer > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error(`${label} is outside the local integer range`);
+  return Number(integer);
+}
 
 /** Move JSON-RPC nests struct values in `fields`; options contain a single vec. */
 export function suiAssemblyFields(value: any): any {
@@ -287,8 +310,69 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
     return state;
   }
 
+  /** Read confirmed fuel without consuming it again through a separate local clock. */
+  async function readFuelState(assembly: AssemblySnapshot, existing?: SuiAssemblyChainObject): Promise<SuiAssemblyFuelState> {
+    if (assembly.kind !== "network_node") throw new Error(`Assembly ${assembly.itemId} is not a Network Node`);
+    const state = existing ?? await readAssembly(assembly);
+    if (!state) throw new Error(`Network node ${assembly.itemId} must be anchored before reading fuel`);
+    const fuel = suiAssemblyFields(state.fields.fuel);
+    const quantity = localFuelInteger(fuel?.quantity, "Chain fuel quantity");
+    const typeID = localFuelInteger(suiAssemblyOption(fuel?.type_id) ?? 0, "Chain fuel type");
+    const unitVolume = fuelU64(suiAssemblyOption(fuel?.unit_volume) ?? 0, "Chain fuel unit volume");
+    if (quantity > 0 && (typeID === 0 || unitVolume === 0n)) {
+      throw new Error(`Network node ${assembly.itemId} has invalid chain fuel`);
+    }
+    return { typeID, quantity, unitVolume: String(unitVolume), observedAtMs: Date.now() };
+  }
+
+  async function syncFuelIntent(assembly: AssemblySnapshot): Promise<void> {
+    const intent = assembly.fuelIntent;
+    if (!intent) return;
+    if (typeof intent.id !== "string" || !intent.id || !Number.isSafeInteger(intent.quantityDelta) ||
+        intent.quantityDelta === 0 || !Number.isSafeInteger(intent.typeID) || intent.typeID <= 0) {
+      throw new Error(`Network node ${assembly.itemId} has an invalid fuel transfer intent`);
+    }
+    options.assertFuelSnapshotCurrent?.(assembly);
+    const state = await readAssembly(assembly);
+    if (!state) throw new Error(`Network node ${assembly.itemId} must be anchored before fuel sync`);
+    const fuel = suiAssemblyFields(state.fields.fuel);
+    const current = fuelU64(fuel?.quantity, "Chain fuel quantity");
+    const currentType = fuelU64(suiAssemblyOption(fuel?.type_id) ?? 0, "Chain fuel type");
+    const delta = BigInt(intent.quantityDelta);
+    if (current > 0n && currentType !== BigInt(intent.typeID)) {
+      throw new Error(`Network node ${assembly.itemId} chain fuel type differs from the transfer intent`);
+    }
+    if (current + delta < 0n) throw new Error(`Network node ${assembly.itemId} has insufficient chain fuel for withdrawal`);
+    let volume = 0n;
+    if (delta > 0n) {
+      volume = fuelU64(assembly.fuel.unitVolume, "Fuel transfer unit volume");
+      if (volume === 0n) throw new Error(`Network node ${assembly.itemId} has invalid fuel transfer volume`);
+      if (current > 0n && fuelU64(suiAssemblyOption(fuel?.unit_volume) ?? 0, "Chain fuel unit volume") !== volume) {
+        throw new Error(`Network node ${assembly.itemId} chain fuel unit volume differs from the transfer intent`);
+      }
+      const capacity = fuelU64(fuel?.max_capacity, "Chain fuel capacity");
+      if (current + delta > U64_MAX || (current + delta) * volume > capacity) {
+        throw new Error(`Network node ${assembly.itemId} fuel transfer exceeds chain capacity`);
+      }
+    }
+    const tx = new Transaction();
+    await withCaps(tx, assembly.ownerId, [state], ([cap]) => {
+      if (delta > 0n) tx.moveCall({ target: `${world.packageId}::network_node::deposit_fuel`, arguments: [
+        tx.object(state.id), tx.object(world.adminAclId), cap, tx.pure.u64(intent.typeID),
+        tx.pure.u64(volume), tx.pure.u64(delta), tx.object("0x6"),
+      ] });
+      else tx.moveCall({ target: `${world.packageId}::network_node::withdraw_fuel`, arguments: [
+        tx.object(state.id), tx.object(world.adminAclId), cap, tx.pure.u64(intent.typeID), tx.pure.u64(-delta),
+      ] });
+    });
+    options.assertFuelSnapshotCurrent?.(assembly);
+    await execute(`assembly:${assembly.itemId}:fuel:${intent.id}`, tx, assembly.ownerId,
+      () => options.assertFuelSnapshotCurrent?.(assembly));
+  }
+
   async function syncFuel(assembly: AssemblySnapshot): Promise<void> {
     if (assembly.kind !== "network_node") return;
+    if (options.fuelAuthority) return syncFuelIntent(assembly);
     options.assertFuelSnapshotCurrent?.(assembly);
     const state = await readAssembly(assembly);
     if (!state) throw new Error(`Network node ${assembly.itemId} must be anchored before fuel sync`);
@@ -323,10 +407,8 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
   }
 
   async function configureFuelEfficiency(typeId: number, efficiency: number): Promise<void> {
-    // The deployed legacy contract rejects efficiencies below 10. Server fuel
-    // settlement owns actual consumption (Unstable = 15/h at 8%); this fallback
-    // only lets the contract stop its unused native clock during offline().
-    // Never call update_fuel alongside the server's mirrored withdrawals.
+    // The deployed legacy contract rejects efficiencies below 10. This fallback
+    // supplies absent defaults; authoritative existing chain rates stay intact.
     const contractEfficiency = typeId === 77818 && efficiency === 8 ? 10 : efficiency;
     if (!Number.isSafeInteger(typeId) || typeId <= 0 || !Number.isInteger(contractEfficiency) || contractEfficiency < 10 || contractEfficiency > 100) {
       throw new Error(`Fuel ${typeId} efficiency ${efficiency} cannot be represented by the deployed contract (10–100 percent)`);
@@ -342,6 +424,11 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
       throw new Error(`Cannot read efficiency for fuel ${typeId}`);
     }
     const fields = entry.data?.content?.dataType === "moveObject" ? entry.data.content.fields as any : null;
+    if (options.fuelAuthority && fields) {
+      const current = fuelU64(fields.value, `Fuel ${typeId} efficiency`);
+      if (current === 0n || current > 100n) throw new Error(`Fuel ${typeId} chain efficiency is outside the valid range`);
+      return;
+    }
     if (fields && String(fields.value) === String(contractEfficiency)) return;
     const tx = new Transaction();
     tx.moveCall({ target: `${world.packageId}::fuel::set_fuel_efficiency`, arguments: [
@@ -415,15 +502,19 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
         connected.push(target);
       }
     }
-    if (assembly.kind === "network_node" && desiredOnline &&
+    if (!options.fuelAuthority && assembly.kind === "network_node" && desiredOnline &&
       (BigInt(assembly.fuel.quantity) <= 0n || assembly.fuel.typeId <= 0)) {
       throw new Error(`Network node ${assembly.itemId} is locally online without available fuel; cannot mirror online state`);
     }
     if (assembly.kind === "network_node" && desiredOnline) {
       const fuel = suiAssemblyFields(state.fields.fuel);
-      if (BigInt(fuel.quantity) !== BigInt(assembly.fuel.quantity) ||
+      if (options.fuelAuthority && (fuelU64(fuel?.quantity, "Chain fuel quantity") === 0n ||
+          fuelU64(suiAssemblyOption(fuel?.type_id) ?? 0, "Chain fuel type") === 0n)) {
+        throw new Error(`Network node ${assembly.itemId} has no available chain fuel`);
+      }
+      if (!options.fuelAuthority && (BigInt(fuel.quantity) !== BigInt(assembly.fuel.quantity) ||
           String(suiAssemblyOption(fuel.type_id)) !== String(assembly.fuel.typeId) ||
-          String(suiAssemblyOption(fuel.unit_volume)) !== String(assembly.fuel.unitVolume)) {
+          String(suiAssemblyOption(fuel.unit_volume)) !== String(assembly.fuel.unitVolume))) {
         throw new Error(`Network node ${assembly.itemId} fuel must be synchronized before bringing it online`);
       }
     }
@@ -431,20 +522,17 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
       if (assembly.kind === "network_node") {
         if (desiredOnline) {
           tx.moveCall({ target: `${world.packageId}::network_node::online`, arguments: [tx.object(state.id), cap, tx.object("0x6")] });
-          // Starting the contract burn clock consumes one unit. Replace that one unit
-          // in the same transaction so the chain reflects the local fuel quantity.
-          tx.moveCall({ target: `${world.packageId}::network_node::deposit_fuel`, arguments: [
+          // Legacy local-authority mode replaces the native startup charge.
+          if (!options.fuelAuthority) tx.moveCall({ target: `${world.packageId}::network_node::deposit_fuel`, arguments: [
             tx.object(state.id), tx.object(world.adminAclId), cap, tx.pure.u64(assembly.fuel.typeId),
             tx.pure.u64(assembly.fuel.unitVolume), tx.pure.u64(1), tx.object("0x6"),
           ] });
         } else {
-          // offline() calls the legacy native burn update. Temporarily empty the
-          // tank so it cannot charge elapsed time already settled by the server,
-          // then restore only the server remainder in this same atomic PTB.
-          // Move retains type_id at zero quantity, so stopping still has its type.
+          // Native offline settles elapsed fuel. Only legacy local-authority mode
+          // empties and restores the tank to avoid charging its local burn twice.
           const fuel = suiAssemblyFields(state.fields.fuel);
           const currentQuantity = BigInt(fuel.quantity);
-          if (currentQuantity > 0n) tx.moveCall({ target: `${world.packageId}::network_node::withdraw_fuel`, arguments: [
+          if (!options.fuelAuthority && currentQuantity > 0n) tx.moveCall({ target: `${world.packageId}::network_node::withdraw_fuel`, arguments: [
             tx.object(state.id), tx.object(world.adminAclId), cap,
             tx.pure.u64(suiAssemblyOption(fuel.type_id)), tx.pure.u64(currentQuantity),
           ] });
@@ -456,7 +544,7 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
               arguments: [tx.object(item.id), hotPotato, tx.object(state.id), tx.object(world.energyConfigId)] });
           }
           tx.moveCall({ target: `${world.packageId}::network_node::destroy_offline_assemblies`, arguments: [hotPotato] });
-          if (assembly.fuel.quantity > 0) tx.moveCall({ target: `${world.packageId}::network_node::deposit_fuel`, arguments: [
+          if (!options.fuelAuthority && assembly.fuel.quantity > 0) tx.moveCall({ target: `${world.packageId}::network_node::deposit_fuel`, arguments: [
             tx.object(state.id), tx.object(world.adminAclId), cap, tx.pure.u64(assembly.fuel.typeId),
             tx.pure.u64(assembly.fuel.unitVolume), tx.pure.u64(assembly.fuel.quantity), tx.object("0x6"),
           ] });
@@ -471,11 +559,13 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
     return { transaction: tx, connectedAssemblyIds: connected.map(item => item.id) };
   }
 
-  async function syncStatus(assembly: AssemblySnapshot): Promise<void> {
+  async function syncStatus(assembly: AssemblySnapshot, assertStatusCurrent?: () => void): Promise<void> {
+    assertStatusCurrent?.();
     const built = await buildStatusTransaction(assembly);
     if (!built) return;
+    assertStatusCurrent?.();
     await execute(`assembly:${assembly.itemId}:${assembly.status === 2 ? "online" : "offline"}`, built.transaction, assembly.ownerId,
-      assembly.kind === "network_node" ? () => options.assertFuelSnapshotCurrent?.(assembly) : undefined);
+      () => { assertStatusCurrent?.(); if (assembly.kind === "network_node") options.assertFuelSnapshotCurrent?.(assembly); });
   }
 
   /** Only call for a previously confirmed mirror which has disappeared locally. */
@@ -526,6 +616,6 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
   }
 
   return { deriveId, readAssembly, readObject, ensureAssembly, syncMetadata, configureFuelEfficiency, readEnergyRequirements,
-    syncFuel, syncStatus, buildStatusTransaction, removeAssembly, withCaps };
+    readFuelState, syncFuel, syncStatus, buildStatusTransaction, removeAssembly, withCaps };
 }
 export type SuiAssemblyChain = ReturnType<typeof createSuiAssemblyChain>;

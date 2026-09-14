@@ -66,6 +66,28 @@ test.beforeEach(t => {
 });
 test.afterEach(() => config.clearAssemblyEnergyConfig());
 
+test("activation blocks node power, online requests, and connection changes", () => {
+  const markPending = id => {
+    const item = items.get(id);
+    const info = JSON.parse(item.customInfo);
+    info.evejsFrontierConstruction.activationCompleteAtMs = NOW - 1;
+    items.set(id, { ...item, customInfo: JSON.stringify(info) });
+  };
+  assembly(1); assembly(2, 77917);
+  markPending(1);
+  assert.equal(energy.getNetworkNodeEnergyStatus(OWNER, 1).errorMsg, "ASSEMBLY_ACTIVATING");
+  assert.equal(energy.validateAssemblyOnline(items.get(2)).errorMsg, "NETWORK_NODE_OFFLINE");
+  assert.equal(energy.connectAssembly(SESSION, 2, 1).errorMsg, "ASSEMBLY_ACTIVATING");
+  assert.equal(energy.getAssemblyEnergyState(2).energyUsed, 0);
+  assembly(1);
+  markPending(2);
+  assert.equal(energy.validateAssemblyOnline(items.get(2)).errorMsg, "ASSEMBLY_ACTIVATING");
+  assert.equal(energy.connectAssembly(SESSION, 2, 1).errorMsg, "ASSEMBLY_ACTIVATING");
+  assert.equal(energy.disconnectAssembly(SESSION, 2, 1).errorMsg, "ASSEMBLY_ACTIVATING");
+  assembly(2, 77917);
+  assert.equal(energy.validateAssemblyOnline(items.get(2)).success, true);
+});
+
 test("connects completed owned assemblies within the inclusive 3D 80 km radius", () => {
   assembly(1);
   assembly(2, 88082, { x: 80000 });

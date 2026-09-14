@@ -35,8 +35,11 @@ const ERROR_RESULTS = Object.freeze({
     INVALID_ASSEMBLY_ID: [400, "Invalid Smart Storage Unit identifier."],
     ASSEMBLY_NOT_FOUND: [404, "That Smart Storage Unit no longer exists."],
     ASSEMBLY_UNDER_CONSTRUCTION: [409, "That Smart Storage Unit is still under construction."],
+    ASSEMBLY_ACTIVATING: [409, "Wait for the Smart Storage Unit's onlining timer to finish."],
     ASSEMBLY_UNAVAILABLE: [409, "That Smart Storage Unit is unavailable."],
     ASSEMBLY_OFFLINE: [409, "That Smart Storage Unit is offline."],
+    ASSEMBLY_STATE_UNAVAILABLE: [503, "The Smart Storage Unit's blockchain state could not be verified. Please try again."],
+    ASSEMBLY_STATE_PENDING: [409, "The Smart Storage Unit's state change is awaiting blockchain confirmation. Please try again."],
     ASSEMBLY_NOT_IN_CURRENT_SYSTEM: [403, "That Smart Storage Unit is not in your current system."],
     ASSEMBLY_OUT_OF_RANGE: [403, "Move within 5 km of the Smart Storage Unit."],
     INVALID_QUANTITY: [400, "Select a positive quantity."],
@@ -177,14 +180,15 @@ function createAssemblyStorageUnitGatewayService(context) {
             }),
         };
     }
-    function handleGetInventory(characterID, requestEnvelope) {
+    async function handleGetInventory(characterID, requestEnvelope) {
         const request = decodeRequest(types.GetInventoryRequest, requestEnvelope);
         if (!request) {
             return buildErrorResult(GET_INVENTORY_RESPONSE, "INVALID_ASSEMBLY_ID");
         }
         const storageUnitID = toNumber(request.storage_unit && request.storage_unit.sequential);
-        const result = smartStorageUnitRuntime.getStorageInventory({
+        const result = await smartStorageUnitRuntime.getStorageInventory({
             access: resolveLiveAccess(characterID, storageUnitID),
+            resolveAccess: () => resolveLiveAccess(characterID, storageUnitID),
             characterID,
             inventoryOwnerID: toNumber(request.inventory_owner && request.inventory_owner.sequential),
             storageUnitID,
@@ -201,14 +205,15 @@ function createAssemblyStorageUnitGatewayService(context) {
             }),
         };
     }
-    function handlePrepareDeposit(characterID, requestEnvelope) {
+    async function handlePrepareDeposit(characterID, requestEnvelope) {
         const request = decodeRequest(types.PrepareDepositItemsRequest, requestEnvelope);
         if (!request) {
             return buildErrorResult(PREPARE_DEPOSIT_ITEMS_RESPONSE, "INVALID_QUANTITY");
         }
         const storageUnitID = toNumber(request.destination_container && request.destination_container.sequential);
-        const result = smartStorageUnitRuntime.prepareStorageDeposit({
+        const result = await smartStorageUnitRuntime.prepareStorageDeposit({
             access: resolveLiveAccess(characterID, storageUnitID),
+            resolveAccess: () => resolveLiveAccess(characterID, storageUnitID),
             characterID,
             sourceLocationID: toNumber(request.source_container &&
                 request.source_container.item &&
@@ -227,14 +232,15 @@ function createAssemblyStorageUnitGatewayService(context) {
         }
         return buildPrepareResult(PREPARE_DEPOSIT_ITEMS_RESPONSE, types.PrepareDepositItemsResponse, result.data);
     }
-    function handlePrepareWithdraw(characterID, requestEnvelope) {
+    async function handlePrepareWithdraw(characterID, requestEnvelope) {
         const request = decodeRequest(types.PrepareWithdrawItemsRequest, requestEnvelope);
         if (!request) {
             return buildErrorResult(PREPARE_WITHDRAW_ITEMS_RESPONSE, "INVALID_QUANTITY");
         }
         const storageUnitID = toNumber(request.source_container && request.source_container.sequential);
-        const result = smartStorageUnitRuntime.prepareStorageWithdraw({
+        const result = await smartStorageUnitRuntime.prepareStorageWithdraw({
             access: resolveLiveAccess(characterID, storageUnitID),
+            resolveAccess: () => resolveLiveAccess(characterID, storageUnitID),
             characterID,
             destinationFlagID: request.generic_location && request.generic_location.flag
                 ? toNumber(request.generic_location.flag.value)
@@ -254,7 +260,7 @@ function createAssemblyStorageUnitGatewayService(context) {
         }
         return buildPrepareResult(PREPARE_WITHDRAW_ITEMS_RESPONSE, types.PrepareWithdrawItemsResponse, result.data);
     }
-    function handleExecute(characterID, requestEnvelope, action, requestType, responseTypeName, noticeTypeName, noticeMessageType) {
+    async function handleExecute(characterID, requestEnvelope, action, requestType, responseTypeName, noticeTypeName, noticeMessageType) {
         const request = decodeRequest(requestType, requestEnvelope);
         const transactionUUID = uuidBufferToString(bufferFromBytes(request &&
             request.prepared_transaction &&
@@ -262,7 +268,7 @@ function createAssemblyStorageUnitGatewayService(context) {
         if (!request || !transactionUUID) {
             return buildErrorResult(responseTypeName, "TRANSACTION_NOT_FOUND");
         }
-        const result = smartStorageUnitRuntime.executeStorageTransaction({
+        const result = await smartStorageUnitRuntime.executeStorageTransaction({
             action,
             characterID,
             resolveAccess: (storageUnitID) => resolveLiveAccess(characterID, storageUnitID),

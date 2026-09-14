@@ -16,6 +16,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   ASSEMBLY_NOT_FOUND: "That assembly no longer exists.",
   ASSEMBLY_NOT_IN_CURRENT_SYSTEM: "You must be in the assembly's solar system.",
   ASSEMBLY_UNDER_CONSTRUCTION: "Construction must finish before connecting this assembly.",
+  ASSEMBLY_ACTIVATING: "Wait for the assembly's anchoring or onlining timer to finish.",
   ASSEMBLY_OUT_OF_RANGE: "The assembly is outside this Network Node's radius.",
   ASSEMBLY_ALREADY_CONNECTED: "This assembly is already connected to a Network Node.",
   ASSEMBLY_NOT_CONNECTED: "This assembly is not connected to that Network Node.",

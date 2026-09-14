@@ -95,6 +95,80 @@ test("unconfirmed retries replay identical signed bytes", async t => {
   assert.deepEqual(calls[0].signature, calls[1].signature);
 });
 
+test("failed fuel acknowledgement remains pending and recovers idempotently without rebuilding or resubmitting", async t => {
+  const f = fixture(t);
+  const label = "assembly:9988400000137:fuel:intent-1";
+  const acknowledged = new Set<string>();
+  let reconciliations = 0;
+  let builds = 0;
+  let committed = 0;
+  f.transaction.build = async () => { builds++; return f.bytes; };
+  const options = {
+    ...f.options,
+    async reconcileCommitted(committedLabel: string, digest: string) {
+      const journal = JSON.parse(fs.readFileSync(f.options.journalPath, "utf8"));
+      assert.equal(journal.pending.label, label);
+      assert.equal(journal.pending.digest, f.digest);
+      assert.equal(journal.lastTransaction, undefined);
+      assert.equal(committedLabel, label);
+      assert.equal(digest, f.digest);
+      acknowledged.add(`${committedLabel}:${digest}`);
+      if (++reconciliations === 1) throw new Error("fuel acknowledgement interrupted");
+    },
+    onCommitted: () => { committed++; },
+  };
+  const first = createAssemblyTransactionExecutor(options);
+  await assert.rejects(first.execute(label, f.transaction), /fuel acknowledgement interrupted/);
+  assert.equal(first.hasPending(), true);
+  const pending = JSON.parse(fs.readFileSync(f.options.journalPath, "utf8")).pending;
+  assert.equal(pending.label, label);
+  assert.equal(pending.digest, f.digest);
+  assert.equal(committed, 0);
+  options.client.getTransactionBlock = async () => f.success;
+  options.client.executeTransactionBlock = async () => assert.fail("confirmed fuel transaction must not be resubmitted");
+  const restarted = createAssemblyTransactionExecutor(options);
+  await assert.rejects(restarted.execute("another fuel intent", f.transaction), /Recovered a pending assembly transaction/);
+  assert.equal(restarted.hasPending(), false);
+  assert.equal(reconciliations, 2);
+  assert.equal(acknowledged.size, 1);
+  assert.equal(builds, 1);
+  assert.equal(f.submissions(), 1);
+  assert.equal(committed, 1);
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.options.journalPath, "utf8")).lastTransaction,
+    { label, digest: f.digest, status: "success" });
+});
+
+test("committed reconciliation follows sponsored reconciliation before clearing the journal", async t => {
+  const f = fixture(t);
+  const sponsored = { transactionUUID: "wallet-fuel-intent" };
+  const label = `sponsored:${sponsored.transactionUUID}`;
+  fs.writeFileSync(f.options.journalPath, JSON.stringify({ version: 1, chainId: "local", packageId: "world",
+    pending: { label, digest: f.digest, bytes: Buffer.from(f.bytes).toString("base64"),
+      signatures: ["player-signature", "admin-signature"], sponsored },
+  }));
+  f.options.client.getTransactionBlock = async () => f.success;
+  const reconciled: string[] = [];
+  const executor = createAssemblyTransactionExecutor({
+    ...f.options,
+    async reconcileSponsored(metadata, digest) {
+      assert.deepEqual(metadata, sponsored);
+      assert.equal(digest, f.digest);
+      reconciled.push("sponsored");
+    },
+    async reconcileCommitted(committedLabel, digest) {
+      assert.deepEqual(reconciled, ["sponsored"]);
+      assert.equal(committedLabel, label);
+      assert.equal(digest, f.digest);
+      assert.equal(JSON.parse(fs.readFileSync(f.options.journalPath, "utf8")).pending.digest, f.digest);
+      reconciled.push("committed");
+    },
+  });
+  await executor.recover();
+  assert.deepEqual(reconciled, ["sponsored", "committed"]);
+  assert.equal(executor.hasPending(), false);
+  assert.equal(f.submissions(), 0);
+});
+
 test("changed deployment blocks submission and corrupt journals fail closed", async t => {
   const f = fixture(t);
   f.options.assertCurrent = async () => { throw new Error("chain changed"); };
@@ -117,7 +191,9 @@ test("definitive failure clears pending state and reports the Move error", async
   const failure = { digest: f.digest, effects: { status: { status: "failure", error: "NoFuel" } } };
   f.options.client.executeTransactionBlock = async () => failure;
   f.options.client.waitForTransaction = async () => failure;
-  const executor = createAssemblyTransactionExecutor(f.options);
+  const executor = createAssemblyTransactionExecutor({ ...f.options,
+    reconcileCommitted: async () => assert.fail("failed transactions must not acknowledge a committed intent"),
+  });
   await assert.rejects(executor.execute("online", f.transaction), /NoFuel/);
   assert.equal(executor.hasPending(), false);
 });

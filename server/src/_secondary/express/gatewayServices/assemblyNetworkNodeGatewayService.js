@@ -14,6 +14,7 @@ const path = require("path");
 const { bufferFromBytes, encodePayload, getActiveCharacterID, uuidBufferToString, uuidStringToBuffer, } = require("./gatewayServiceHelpers");
 const { getNetworkNodeProtoTypes, } = require("./assemblyNetworkNodeProto");
 const networkNodeFuelRuntime = require(path.join(__dirname, "../../../services/frontier/networkNodeFuelRuntime"));
+const { runWithSuiAssemblyState } = require(path.join(__dirname, "../../../services/frontier/suiAssemblyState"));
 const sessionRegistry = require(path.join(__dirname, "../../../services/chat/sessionRegistry"));
 const { emitItemsChangedBatchForSession, } = require(path.join(__dirname, "../../../services/character/characterState"));
 const API_PACKAGE = "eve_public.assembly.networknode.api";
@@ -45,6 +46,9 @@ const ERROR_RESULTS = Object.freeze({
     INVALID_ASSEMBLY_ID: [400, "Invalid Network Node identifier."],
     ASSEMBLY_NOT_FOUND: [404, "That Network Node no longer exists."],
     ASSEMBLY_NOT_OWNED: [403, "You do not own that Network Node."],
+    ASSEMBLY_ACTIVATING: [409, "Wait for the Network Node's anchoring timer to finish."],
+    ASSEMBLY_STATE_UNAVAILABLE: [503, "The Network Node's blockchain state could not be verified. Please try again."],
+    ASSEMBLY_STATE_PENDING: [409, "The Network Node's state change is awaiting blockchain confirmation. Please try again."],
     ASSEMBLY_UNDER_CONSTRUCTION: [
         409,
         "That Network Node is still under construction.",
@@ -109,6 +113,17 @@ function buildFuelItemAttributes(fuelStatus) {
             ? Number(fuelStatus.unitVolume) * toNumber(fuelStatus.quantity)
             : 0,
     };
+}
+function withFreshFuelState(networkNodeID, responseTypeName, operation) {
+    const unavailable = (error) => buildErrorResult(responseTypeName, error?.code === "ASSEMBLY_STATE_PENDING"
+        ? "ASSEMBLY_STATE_PENDING" : "ASSEMBLY_STATE_UNAVAILABLE");
+    try {
+        const result = runWithSuiAssemblyState(networkNodeID, operation);
+        return result instanceof Promise ? result.catch(unavailable) : result;
+    }
+    catch (error) {
+        return unavailable(error);
+    }
 }
 function createAssemblyNetworkNodeGatewayService(context) {
     const types = getNetworkNodeProtoTypes();
@@ -236,23 +251,40 @@ function createAssemblyNetworkNodeGatewayService(context) {
         if (!request) {
             return buildErrorResult(responseTypeName, "TRANSACTION_NOT_FOUND");
         }
-        const result = networkNodeFuelRuntime.executeNetworkNodeFuelTransaction({
+        const transaction = {
             action,
             characterID,
             transactionUUID: uuidBufferToString(bufferFromBytes(request.prepared_transaction_uuid)),
             signature: String(request.signature || ""),
-        });
-        if (!result.success) {
-            return buildErrorResult(responseTypeName, result.errorMsg, result.params);
-        }
-        syncInventoryChangesToCharacter(characterID, result.data.changes);
-        publishFuelChangedNotice({ ...result.data, characterID });
-        return {
-            statusCode: 200,
-            statusMessage: "",
-            responseTypeName,
-            responsePayloadBuffer: Buffer.alloc(0),
         };
+        const execute = () => {
+            const result = networkNodeFuelRuntime.executeNetworkNodeFuelTransaction(transaction);
+            if (!result.success) {
+                return buildErrorResult(responseTypeName, result.errorMsg, result.params);
+            }
+            syncInventoryChangesToCharacter(characterID, result.data.changes);
+            publishFuelChangedNotice({ ...result.data, characterID });
+            return {
+                statusCode: 200,
+                statusMessage: "",
+                responseTypeName,
+                responsePayloadBuffer: Buffer.alloc(0),
+            };
+        };
+        const networkNodeID = networkNodeFuelRuntime.getPendingNetworkNodeFuelTransactionNodeID(transaction);
+        // Missing, expired or mismatched transactions retain their ordinary typed
+        // errors. A valid transaction must revalidate fuel after refreshing Sui.
+        return networkNodeID > 0
+            ? withFreshFuelState(networkNodeID, responseTypeName, execute)
+            : execute();
+    }
+    function handleNodeRequest(characterID, requestEnvelope, requestType, responseTypeName, handler) {
+        const request = decodeRequest(requestType, requestEnvelope);
+        const networkNodeID = toNumber(request?.network_node?.sequential);
+        if (!request || !Number.isSafeInteger(networkNodeID) || networkNodeID <= 0) {
+            return buildErrorResult(responseTypeName, "INVALID_ASSEMBLY_ID");
+        }
+        return withFreshFuelState(networkNodeID, responseTypeName, () => handler(characterID, requestEnvelope));
     }
     return {
         name: "assembly-networknode",
@@ -279,11 +311,11 @@ function createAssemblyNetworkNodeGatewayService(context) {
                 case GET_FUEL_CONFIG_REQUEST:
                     return handleGetFuelConfig();
                 case GET_FUEL_REQUEST:
-                    return handleGetFuel(characterID, requestEnvelope);
+                    return handleNodeRequest(characterID, requestEnvelope, types.GetFuelRequest, GET_FUEL_RESPONSE, handleGetFuel);
                 case PREPARE_DEPOSIT_FUEL_REQUEST:
-                    return handlePrepareDeposit(characterID, requestEnvelope);
+                    return handleNodeRequest(characterID, requestEnvelope, types.PrepareDepositFuelRequest, PREPARE_DEPOSIT_FUEL_RESPONSE, handlePrepareDeposit);
                 case PREPARE_WITHDRAW_FUEL_REQUEST:
-                    return handlePrepareWithdraw(characterID, requestEnvelope);
+                    return handleNodeRequest(characterID, requestEnvelope, types.PrepareWithdrawFuelRequest, PREPARE_WITHDRAW_FUEL_RESPONSE, handlePrepareWithdraw);
                 case EXECUTE_DEPOSIT_FUEL_REQUEST:
                     return handleExecute(characterID, requestEnvelope, "networknode-fuel-deposit", types.ExecuteDepositFuelRequest, EXECUTE_DEPOSIT_FUEL_RESPONSE);
                 case EXECUTE_WITHDRAW_FUEL_REQUEST:

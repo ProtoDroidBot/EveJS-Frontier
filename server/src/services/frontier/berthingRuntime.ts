@@ -319,8 +319,9 @@ function validateBerthingRequest(session, hostAssemblyID, dependencies: Record<s
 
   const constructionState = readConstructionState(hostItem);
   if (
-    constructionState &&
-    constructionState.assemblyStatus === deploymentRuntime.ASSEMBLY_STATUS_UNDER_CONSTRUCTION
+    (constructionState &&
+      constructionState.assemblyStatus === deploymentRuntime.ASSEMBLY_STATUS_UNDER_CONSTRUCTION) ||
+    deploymentRuntime.isAssemblyActivationPending(hostItem)
   ) {
     return { success: false as const, errorMsg: "BERTHING_HOST_NOT_OPERATIONAL" };
   }

@@ -34,6 +34,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   ASSEMBLY_NOT_IN_CURRENT_SYSTEM: "The Smart Storage Unit is not in your current system.",
   ASSEMBLY_OUT_OF_RANGE: "Move within 5 km of the Smart Storage Unit.",
   ASSEMBLY_OFFLINE: "The Smart Storage Unit must be online to transfer items.",
+  ASSEMBLY_ACTIVATING: "Wait for the Smart Storage Unit's onlining timer to finish.",
+  ASSEMBLY_STATE_UNAVAILABLE: "The Smart Storage Unit's blockchain state could not be verified. Please try again.",
+  ASSEMBLY_STATE_PENDING: "The Smart Storage Unit's state change is awaiting blockchain confirmation. Please try again.",
   ASSEMBLY_NOT_FOUND: "That Smart Storage Unit no longer exists.",
   INVALID_ASSEMBLY_ID: "Select a valid in-game Smart Storage Unit.",
   INVALID_QUANTITY: "Select one or more stacks with positive whole quantities.",
@@ -194,7 +197,12 @@ export function createSmartStorageApi(overrides?: Record<string, any>, authOptio
     if (identity.success === false) return identity;
     const storageUnitID = positiveID(rawID);
     if (!storageUnitID) return failed("INVALID_ASSEMBLY_ID");
-    return { success: true as const, data: { ...identity.data, storageUnitID, access: dependencies.resolveAccess(identity.data.session, storageUnitID) } };
+    const resolveAccess = () => {
+      const current = authenticate(authorization);
+      if (current.success === false || current.data.characterID !== identity.data.characterID) return { authorized: false };
+      return dependencies.resolveAccess(current.data.session, storageUnitID);
+    };
+    return { success: true as const, data: { ...identity.data, storageUnitID, access: resolveAccess(), resolveAccess } };
   }
   function readInventory(context: any) {
     return dependencies.runtime.getStorageInventory({ ...context, inventoryOwnerID: context.characterID });
@@ -256,15 +264,17 @@ export function createSmartStorageApi(overrides?: Record<string, any>, authOptio
       if (current.success === false) return current;
       const inventory = await readInventory(current.data);
       if (!inventory.success) return failed(inventory.errorMsg, inventory.params);
+      const latest = accessContext(authorization, id);
+      if (latest.success === false) return latest;
       if (JSON.stringify(result.data) !== JSON.stringify(inventory.data) && chain.status === "synced") {
         chain = { ...chain, status: "pending", ...(chain.chain ? { chain: {
           ...chain.chain, synchronized: false,
           partitions: chain.chain.partitions.map((partition: any) => ({ ...partition, synchronized: false })),
         } } : {}) };
       }
-      const cargo = dependencies.readCargo(current.data.characterID, current.data.access);
+      const cargo = dependencies.readCargo(latest.data.characterID, latest.data.access);
       if (!cargo) return failed("ACCESS_DENIED");
-      return { success: true, data: { ...inventory.data, characterID: current.data.characterID, cargo, deployment: readDeployment(current.data.storageUnitID), chain } };
+      return { success: true, data: { ...inventory.data, characterID: latest.data.characterID, cargo, deployment: readDeployment(latest.data.storageUnitID), chain } };
     },
     async prepare(authorization: unknown, id: unknown, body: any) {
       const resolved = accessContext(authorization, id);
@@ -279,6 +289,7 @@ export function createSmartStorageApi(overrides?: Record<string, any>, authOptio
       const method = body.direction === "deposit" ? dependencies.runtime.prepareStorageDeposit : dependencies.runtime.prepareStorageWithdraw;
       const result = await method({
         characterID: context.characterID, storageUnitID: context.storageUnitID, walletAddress: context.walletAddress, access: context.access, deployment,
+        resolveAccess: context.resolveAccess,
         sourceLocationID: context.access.activeShipID, sourceFlagID: CARGO_FLAG,
         destinationLocationID: context.access.activeShipID, destinationFlagID: CARGO_FLAG,
         stacks: body.stacks.map((stack: any) => body.direction === "deposit"
@@ -304,12 +315,17 @@ export function createSmartStorageApi(overrides?: Record<string, any>, authOptio
       const result = await dependencies.runtime.executeStorageTransaction({
         action, characterID: context.characterID, storageUnitID: context.storageUnitID,
         transactionUUID: body.transactionUUID, signature: body.signature, signatureVerified: true, walletAddress: context.walletAddress,
-        resolveAccess: () => current.data.access,
+        resolveAccess: current.data.resolveAccess,
       });
       if (!result.success) return failed(result.errorMsg, result.params);
       let notificationError: string | undefined;
-      if (!result.data.replayed) try { dependencies.notify(current.data.session, result.data); }
-      catch { notificationError = "The transfer is saved. Refresh the in-game inventory to see the new contents."; }
+      if (!result.data.replayed) {
+        const recipient = authenticate(authorization);
+        try {
+          if (recipient.success === false) throw new Error("The character session ended after the transfer committed.");
+          dependencies.notify(recipient.data.session, result.data);
+        } catch { notificationError = "The transfer is saved. Refresh the in-game inventory to see the new contents."; }
+      }
       return { success: true, data: {
         action, characterID: context.characterID, storageUnitID: context.storageUnitID,
         gameCommitted: true, replayed: result.data.replayed === true,
@@ -348,6 +364,7 @@ export function mountSmartStorageEndpoints(app: any, options: Record<string, any
     try {
       const result = await handler(getApi(), req);
       const code = result.success ? 200 : result.errorMsg === "TOO_MANY_REQUESTS" ? 429
+        : result.errorMsg === "ASSEMBLY_STATE_UNAVAILABLE" ? 503
         : /^AUTH_|INVALID_SIGNATURE|CHARACTER_NOT_ONLINE|MULTIPLE_ACTIVE/.test(result.errorMsg) ? 401
           : /ACCESS_DENIED|OUT_OF_RANGE|NOT_IN_CURRENT_SYSTEM/.test(result.errorMsg) ? 403
             : /NOT_FOUND/.test(result.errorMsg) ? 404 : /INVALID_/.test(result.errorMsg) ? 400 : 409;

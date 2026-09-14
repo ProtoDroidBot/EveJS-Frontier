@@ -23,6 +23,7 @@ const {
   buildShipResourceState,
 } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const creationRuntime = require(path.join(__dirname, "./creationRuntime"));
+const { runWithSuiAssemblyState } = require("./suiAssemblyState");
 const {
   TABLE,
   readStaticRows,
@@ -32,6 +33,7 @@ const {
   ASSEMBLY_STATUS_ONLINE,
   ASSEMBLY_STATUS_UNDER_CONSTRUCTION,
   buildAssemblyTransitionTransactionData,
+  isAssemblyActivationPending,
   isValidAssemblyTransitionSignature,
   readConstructionState,
 } = require(path.join(__dirname, "./deploymentRuntime"));
@@ -175,7 +177,11 @@ function validateStorageUnit(characterID, storageUnitID, options: Record<string,
   if (state.assemblyStatus === ASSEMBLY_STATUS_UNDER_CONSTRUCTION) {
     return { errorMsg: "ASSEMBLY_UNDER_CONSTRUCTION" };
   }
+  if (isAssemblyActivationPending(item)) {
+    return { errorMsg: "ASSEMBLY_ACTIVATING" };
+  }
   if (
+    options.refreshingStatus !== true &&
     state.assemblyStatus !== ASSEMBLY_STATUS_OFFLINE &&
     state.assemblyStatus !== ASSEMBLY_STATUS_ONLINE
   ) {
@@ -203,6 +209,34 @@ function validateStorageUnit(characterID, storageUnitID, options: Record<string,
       : component.personalCapacity,
     isAssemblyOwner,
   };
+}
+
+/** Keep the chain read and the inventory operation on the assembly worker queue. */
+function withAuthoritativeStorageState(options, operation) {
+  const currentOptions = () => ({
+    ...options,
+    access: typeof options.resolveAccess === "function"
+      ? options.resolveAccess(options.storageUnitID)
+      : options.access,
+  });
+  const unavailable = (error) => ({
+    success: false as const,
+    errorMsg: error?.code === "ASSEMBLY_STATE_PENDING"
+      ? "ASSEMBLY_STATE_PENDING" : "ASSEMBLY_STATE_UNAVAILABLE",
+  });
+  try {
+    const current = currentOptions();
+    // Check identity and proximity before contacting the chain, without using
+    // a stale completed assembly status to reject the operation.
+    const validation = validateStorageUnit(current.characterID, current.storageUnitID, {
+      access: current.access, refreshingStatus: true,
+    });
+    if (validation.errorMsg) return { success: false as const, errorMsg: validation.errorMsg };
+    const result = runWithSuiAssemblyState(toInt(current.storageUnitID), () => operation(currentOptions()));
+    return result instanceof Promise ? result.catch(unavailable) : result;
+  } catch (error) {
+    return unavailable(error);
+  }
 }
 
 function listStoredRows(characterID, storageUnitID) {
@@ -858,13 +892,31 @@ function getStorageTransaction({ characterID, storageUnitID, transactionUUID }: 
   } };
 }
 
+function executeStorageTransactionWithChainState(options) {
+  pruneTransactions();
+  const uuid = String(options.transactionUUID || "").trim().toLowerCase();
+  const transaction = pendingTransactions.get(uuid);
+  // Replays and invalid authorizations never need a chain read. The local
+  // executor repeats these checks after waiting, including expiry and replay,
+  // so concurrent requests cannot move the same items twice.
+  if (!transaction || transaction.action !== options.action ||
+      transaction.characterID !== toInt(options.characterID, 0) ||
+      (options.storageUnitID !== undefined && transaction.storageUnitID !== toInt(options.storageUnitID, 0)) ||
+      (transaction.walletAddress && (transaction.walletAddress !== options.walletAddress || options.signatureVerified !== true)) ||
+      !isValidAssemblyTransitionSignature(options.signature)) {
+    return executeStorageTransaction(options);
+  }
+  return withAuthoritativeStorageState({ ...options, storageUnitID: transaction.storageUnitID },
+    current => executeStorageTransaction(current));
+}
+
 module.exports = {
   SMART_STORAGE_FLAG,
-  executeStorageTransaction,
-  getStorageInventory,
+  executeStorageTransaction: executeStorageTransactionWithChainState,
+  getStorageInventory: options => withAuthoritativeStorageState(options, getStorageInventory),
   getStorageTransaction,
-  prepareStorageDeposit,
-  prepareStorageWithdraw,
+  prepareStorageDeposit: options => withAuthoritativeStorageState(options, prepareStorageDeposit),
+  prepareStorageWithdraw: options => withAuthoritativeStorageState(options, prepareStorageWithdraw),
   _testing: {
     aggregateStoredRows,
     clearStorageComponentCache() {

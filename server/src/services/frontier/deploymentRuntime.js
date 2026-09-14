@@ -14,6 +14,8 @@ const CONSTRUCTION_SITE_LIMIT = 25;
 const PORTABLE_BUILD_RADIUS_METERS = 2_500;
 const NETWORK_NODE_BUILD_RADIUS_METERS = 80_000;
 const NETWORK_NODE_ASSEMBLY_TYPE_ID = 88_092;
+// Client type list 939 (Portable Assemblies) in build 3502403.
+const PORTABLE_ASSEMBLY_TYPE_IDS = new Set([87_160, 87_161, 87_162, 87_566]);
 const SLINGSHOT_GATE_TYPE_IDS = new Set([95_627, 95_677]);
 const ITEM_FLAG_CARGO_HOLD = 5;
 const ASSEMBLY_TRANSITION_TTL_MS = 2 * 60 * 1000;
@@ -24,6 +26,7 @@ const SMART_GATE_ACTIVATION_UNFUELED = 1;
 const SMART_GATE_ACTIVATION_TRAVERSABLE = 2;
 const SMART_GATE_ARRIVAL_CLEARANCE_METERS = 10_000;
 const completionTimers = new Map();
+const activationTimers = new Map();
 const pendingAssemblyTransitions = new Map();
 let buildDefinitionsByTypeID = null;
 let solarSystemsByID = null;
@@ -229,6 +232,7 @@ function readConstructionState(item) {
         return null;
     }
     return {
+        activationCompleteAtMs: Math.max(0, toInt(state.activationCompleteAtMs, 0)),
         assemblyStatus: toInt(state.assemblyStatus, ASSEMBLY_STATUS_UNDER_CONSTRUCTION),
         assemblyTypeID: toInt(state.assemblyTypeID, 0),
         completeAtMs: toInt(state.completeAtMs, 0),
@@ -243,7 +247,12 @@ function readConstructionState(item) {
         targetSolarSystemID: toInt(state.targetSolarSystemID, 0),
     };
 }
-function writeConstructionState(item, state) {
+function isAssemblyActivationPending(item) {
+    // Keep operations blocked until the persisted transition has completed, even
+    // if the callback is delayed or the item has just been loaded after restart.
+    return (readConstructionState(item)?.activationCompleteAtMs || 0) > 0;
+}
+function writeConstructionState(item, state, recordIntent = true) {
     const info = parseCustomInfo(item && item.customInfo);
     if (toInt(item?.typeID) === NETWORK_NODE_ASSEMBLY_TYPE_ID && info.evejsFrontierNetworkNodeFuel) {
         const { state: fuel } = require("./networkNodeFuelRuntime").calculateNetworkNodeFuelBurn(item);
@@ -252,8 +261,12 @@ function writeConstructionState(item, state) {
         else {
             delete info.evejsFrontierNetworkNodeFuel;
         }
-        if (fuel.quantity === 0 && state.assemblyStatus === ASSEMBLY_STATUS_ONLINE)
+        if (fuel.quantity === 0 && state.assemblyStatus === ASSEMBLY_STATUS_ONLINE &&
+            !require("./networkNodeFuelRuntime").readSuiNetworkNodeFuel(item))
             state = { ...state, assemblyStatus: ASSEMBLY_STATUS_OFFLINE };
+    }
+    if (recordIntent && Number(info[CONSTRUCTION_INFO_KEY]?.assemblyStatus) !== Number(state.assemblyStatus)) {
+        require("./suiAssemblyState").recordSuiAssemblyStatusIntent(info, state.assemblyStatus);
     }
     info[CONSTRUCTION_INFO_KEY] = {
         ...state,
@@ -373,6 +386,7 @@ function buildAssemblyRecord(item, state = readConstructionState(item)) {
     const metadata = itemStore.getItemMetadata(state.assemblyTypeID);
     const position = normalizeWorldVector(item.spaceState && item.spaceState.position);
     return {
+        activationCompleteAtMs: state.activationCompleteAtMs,
         assemblyStatus: state.assemblyStatus,
         assemblyTypeID: state.assemblyTypeID,
         completeAtMs: state.completeAtMs,
@@ -435,7 +449,7 @@ function getSmartGateActivationState(state) {
     if (!state) {
         return SMART_GATE_ACTIVATION_RUINED;
     }
-    return state.assemblyStatus === ASSEMBLY_STATUS_ONLINE
+    return state.assemblyStatus === ASSEMBLY_STATUS_ONLINE && !(state.activationCompleteAtMs > 0)
         ? SMART_GATE_ACTIVATION_TRAVERSABLE
         : SMART_GATE_ACTIVATION_UNFUELED;
 }
@@ -455,7 +469,8 @@ function getSessionShipEntity(session, shipItem) {
     return getSpaceRuntime().getEntity(session, shipItem.itemID);
 }
 function isCompletedNetworkNodeBuildAnchorState(state) {
-    return Boolean(state && state.assemblyStatus !== ASSEMBLY_STATUS_UNDER_CONSTRUCTION);
+    return Boolean(state && state.assemblyStatus !== ASSEMBLY_STATUS_UNDER_CONSTRUCTION &&
+        !(state.activationCompleteAtMs > 0));
 }
 function listCompletedNetworkNodeBuildAnchors(session, characterID, solarSystemID) {
     const anchors = [];
@@ -480,14 +495,31 @@ function listCompletedNetworkNodeBuildAnchors(session, characterID, solarSystemI
     }
     return anchors;
 }
+function isInOwnedNetworkNodeBuildZone(session, characterID, solarSystemID, shipPosition) {
+    // The build UI selects its direct-field/depot mode from the nearest node to
+    // the ship, including other owners' nodes, before checking zone ownership.
+    let closestNode = null;
+    let closestDistance = Number.POSITIVE_INFINITY;
+    for (const item of itemStore.listSystemSpaceItems(solarSystemID)) {
+        if (toInt(item.typeID, 0) !== NETWORK_NODE_ASSEMBLY_TYPE_ID)
+            continue;
+        const entity = getSpaceRuntime().getEntity(session, item.itemID);
+        const distance = vectorDistance(shipPosition, entity?.position || item.spaceState?.position);
+        if (distance <= NETWORK_NODE_BUILD_RADIUS_METERS && distance < closestDistance) {
+            closestNode = item;
+            closestDistance = distance;
+        }
+    }
+    return closestNode !== null && toInt(closestNode.ownerID, 0) === characterID;
+}
 function getItemQuantity(item) {
     return toInt(item && item.singleton, 0) === 1
         ? 1
         : Math.max(0, toInt(item && (item.stacksize ?? item.quantity), 0));
 }
-function aggregateContainerItems(ownerID, locationID) {
+function aggregateContainerItems(ownerID, locationID, flagID = null) {
     const quantities = {};
-    for (const item of itemStore.listContainerItems(ownerID, locationID, null)) {
+    for (const item of itemStore.listContainerItems(ownerID, locationID, flagID)) {
         const typeID = toInt(item && item.typeID, 0);
         if (typeID <= 0) {
             continue;
@@ -499,28 +531,59 @@ function aggregateContainerItems(ownerID, locationID) {
 function hasRequiredMaterials(cost, deposited) {
     return Object.entries(cost).every(([typeID, required]) => (toInt(deposited[typeID], 0) >= toInt(required, 0)));
 }
-function restorePlacementMaterials(characterID, shipItemID, quantities) {
-    const entries = Object.entries(normalizeQuantityMap(quantities)).map(([typeID, quantity]) => ({
-        itemType: itemStore.getItemMetadata(toInt(typeID, 0)),
-        quantity,
-    }));
-    return itemStore.grantItemsToCharacterLocation(characterID, shipItemID, ITEM_FLAG_CARGO_HOLD, entries);
+function restorePlacementMaterials(characterID, consumed) {
+    const changes = [];
+    let errorMsg = null;
+    for (const { locationID, flagID, typeID, quantity } of consumed) {
+        const result = itemStore.grantItemsToCharacterLocation(characterID, locationID, flagID, [{ itemType: itemStore.getItemMetadata(typeID), quantity }]);
+        changes.push(...((result.data && result.data.changes) || []));
+        if (!result.success) {
+            errorMsg = result.errorMsg || "PLACEMENT_MATERIAL_REFUND_FAILED";
+            log.error(`[FrontierDeployment] Placement material refund failed char=${characterID} ` +
+                `location=${locationID} flag=${flagID} type=${typeID} quantity=${quantity} reason=${errorMsg}`);
+        }
+    }
+    return { success: errorMsg === null, errorMsg, data: { changes } };
 }
 function consumePlacementMaterials(characterID, shipItemID, constructionCost) {
-    const available = aggregateContainerItems(characterID, shipItemID);
-    if (!hasRequiredMaterials(constructionCost, available)) {
-        return {
-            success: false,
-            errorMsg: "INSUFFICIENT_PLACEMENT_MATERIALS",
-            changes: [],
-        };
+    // The build RPC has no source inventory argument. Use the deploying ship's
+    // cargo, then the player's own inventory; fitted and remote items cannot pay.
+    const sources = [
+        { locationID: shipItemID, flagID: ITEM_FLAG_CARGO_HOLD },
+        { locationID: characterID, flagID: itemStore.ITEM_FLAGS.HANGAR },
+    ].map((source) => ({
+        ...source,
+        available: aggregateContainerItems(characterID, source.locationID, source.flagID),
+    }));
+    const plan = [];
+    for (const [typeID, quantity] of Object.entries(constructionCost)) {
+        let outstanding = quantity;
+        for (const source of sources) {
+            const take = Math.min(outstanding, source.available[typeID] || 0);
+            if (take > 0) {
+                plan.push({
+                    locationID: source.locationID,
+                    flagID: source.flagID,
+                    typeID: toInt(typeID, 0),
+                    quantity: take,
+                });
+                outstanding -= take;
+            }
+        }
+        if (outstanding > 0) {
+            return {
+                success: false,
+                errorMsg: "INSUFFICIENT_PLACEMENT_MATERIALS",
+                changes: [],
+            };
+        }
     }
     const changes = [];
-    const consumed = {};
-    for (const [typeID, quantity] of Object.entries(constructionCost)) {
-        const takeResult = itemStore.takeItemTypeFromCharacterLocation(characterID, shipItemID, null, toInt(typeID, 0), quantity);
+    const consumed = [];
+    for (const source of plan) {
+        const takeResult = itemStore.takeItemTypeFromCharacterLocation(characterID, source.locationID, source.flagID, source.typeID, source.quantity);
         if (!takeResult.success) {
-            const restoreResult = restorePlacementMaterials(characterID, shipItemID, consumed);
+            const restoreResult = restorePlacementMaterials(characterID, consumed);
             return {
                 ...takeResult,
                 changes: [
@@ -530,7 +593,7 @@ function consumePlacementMaterials(characterID, shipItemID, constructionCost) {
                 rollbackError: restoreResult.success ? null : restoreResult.errorMsg,
             };
         }
-        consumed[typeID] = quantity;
+        consumed.push(source);
         changes.push(...((takeResult.data && takeResult.data.changes) || []));
     }
     return { success: true, changes, consumed };
@@ -548,7 +611,20 @@ function syncChanges(session, changes) {
     if (!session || !Array.isArray(changes) || changes.length === 0) {
         return;
     }
-    getCharacterState().emitItemsChangedBatchForSession(session, changes);
+    // Each inventory row needs its own previous-value dictionary. In particular,
+    // exhausted stacks have item=null and must be sent as removals from the old
+    // container, otherwise the client keeps displaying materials already spent.
+    for (const change of changes) {
+        if (!change)
+            continue;
+        const previous = change.previousData || change.previousState || {};
+        const item = change.removed
+            ? itemStore.buildRemovedItemNotificationState(change.previousData || change.item)
+            : change.item;
+        if (item) {
+            getCharacterState().emitItemsChangedForSession(session, item, previous);
+        }
+    }
 }
 function notifyAssemblyAdded(session, itemID, solarSystemID) {
     if (!session || typeof session.sendNotification !== "function") {
@@ -578,16 +654,78 @@ function scheduleConstruction(itemID, session = null) {
         completionTimers.has(numericItemID)) {
         return false;
     }
-    const delayMs = Math.max(0, state.completeAtMs - Date.now());
+    // Older saves kept the activation countdown on the depot. Convert it now;
+    // completeConstruction carries its existing deadline onto the assembly.
     const timer = setTimeout(() => {
         completionTimers.delete(numericItemID);
         completeConstruction(numericItemID, { session });
-    }, Math.min(delayMs, 0x7fffffff));
+    }, 0);
     if (typeof timer.unref === "function") {
         timer.unref();
     }
     completionTimers.set(numericItemID, timer);
     return true;
+}
+function clearActivationTimer(itemID) {
+    const numericItemID = toInt(itemID, 0);
+    const timer = activationTimers.get(numericItemID);
+    if (timer)
+        clearTimeout(timer);
+    activationTimers.delete(numericItemID);
+}
+function scheduleAssemblyActivation(itemID, session = null, retryDelayMs = 0) {
+    const numericItemID = toInt(itemID, 0);
+    const item = itemStore.findItemById(numericItemID);
+    if (!isAssemblyActivationPending(item) || activationTimers.has(numericItemID)) {
+        return false;
+    }
+    const state = readConstructionState(item);
+    const delayMs = Math.max(retryDelayMs, state.activationCompleteAtMs - Date.now());
+    const timer = setTimeout(() => {
+        activationTimers.delete(numericItemID);
+        completeAssemblyActivation(numericItemID, { session });
+    }, Math.min(delayMs, 0x7fffffff));
+    if (typeof timer.unref === "function")
+        timer.unref();
+    activationTimers.set(numericItemID, timer);
+    return true;
+}
+function completeAssemblyActivation(itemID, options = {}) {
+    clearActivationTimer(itemID);
+    const item = itemStore.findItemById(itemID);
+    const state = readConstructionState(item);
+    if (!item || !state) {
+        return { success: false, errorMsg: "ASSEMBLY_NOT_FOUND" };
+    }
+    if (!isAssemblyActivationPending(item)) {
+        return { success: true, data: { item, alreadyComplete: true } };
+    }
+    if (state.activationCompleteAtMs > Date.now()) {
+        scheduleAssemblyActivation(itemID, options.session || null);
+        return { success: true, data: { item, pending: true } };
+    }
+    const definition = getBuildDefinition(state.assemblyTypeID);
+    if (!definition)
+        return { success: false, errorMsg: "ASSEMBLY_TYPE_NOT_SUPPORTED" };
+    const updateResult = itemStore.updateInventoryItem(itemID, currentItem => ({
+        ...currentItem,
+        customInfo: writeConstructionState(currentItem, {
+            ...state,
+            activationCompleteAtMs: 0,
+            // Chain assemblies still require their ordinary online transaction,
+            // including fuel and energy checks, after anchoring has finished.
+            assemblyStatus: definition.createOnChain ? ASSEMBLY_STATUS_OFFLINE : ASSEMBLY_STATUS_ONLINE,
+        }),
+    }));
+    if (!updateResult.success || !updateResult.data) {
+        log.warn(`[FrontierDeployment] Activation completion will retry item=${itemID} reason=${updateResult.errorMsg || "ASSEMBLY_STATE_UPDATE_FAILED"}`);
+        scheduleAssemblyActivation(itemID, options.session || null, 1000);
+        return updateResult;
+    }
+    const session = findAssemblyOwnerSession(options.session, item.ownerID);
+    const presentation = refreshAssemblyStatePresentation(session, updateResult.data, readConstructionState(updateResult.data));
+    syncChanges(session, [{ item: updateResult.data, previousData: updateResult.previousData }]);
+    return { success: true, data: { item: updateResult.data, presentation } };
 }
 function validateOwnedConstructionItem(session, itemID) {
     const characterID = getCharacterID(session);
@@ -614,6 +752,9 @@ function validateOwnedChainAssembly(session, itemID) {
     if (state.assemblyStatus === ASSEMBLY_STATUS_UNDER_CONSTRUCTION) {
         return { success: false, errorMsg: "ASSEMBLY_UNDER_CONSTRUCTION" };
     }
+    if (isAssemblyActivationPending(item)) {
+        return { success: false, errorMsg: "ASSEMBLY_ACTIVATING" };
+    }
     if (getSolarSystemID(session) !== state.solarSystemID) {
         return { success: false, errorMsg: "ASSEMBLY_NOT_IN_CURRENT_SYSTEM" };
     }
@@ -635,6 +776,9 @@ function validateOwnedSmartGateForCharacter(characterID, itemID) {
     if (state.assemblyStatus === ASSEMBLY_STATUS_UNDER_CONSTRUCTION) {
         return { success: false, errorMsg: "ASSEMBLY_UNDER_CONSTRUCTION" };
     }
+    if (isAssemblyActivationPending(item)) {
+        return { success: false, errorMsg: "ASSEMBLY_ACTIVATING" };
+    }
     const definition = getBuildDefinition(state.assemblyTypeID);
     if (!isSmartGateDefinition(definition)) {
         return { success: false, errorMsg: "ASSEMBLY_NOT_SMART_GATE" };
@@ -649,6 +793,9 @@ function validateSmartGate(itemID) {
     }
     if (state.assemblyStatus === ASSEMBLY_STATUS_UNDER_CONSTRUCTION) {
         return { success: false, errorMsg: "ASSEMBLY_UNDER_CONSTRUCTION" };
+    }
+    if (isAssemblyActivationPending(item)) {
+        return { success: false, errorMsg: "ASSEMBLY_ACTIVATING" };
     }
     const definition = getBuildDefinition(state.assemblyTypeID);
     if (!isSmartGateDefinition(definition)) {
@@ -811,8 +958,12 @@ function reconcileSponsoredAssemblyState(metadata) {
         // A recovery can resume after any saved item without reapplying an older status.
         if (info.evejsSponsoredAssemblyTransaction === metadata.transactionUUID)
             continue;
+        if (affected.targetStatus === ASSEMBLY_STATUS_ONLINE && isAssemblyActivationPending(item)) {
+            throw Object.assign(new Error("Assembly activation is still in progress"), { code: "ASSEMBLY_ACTIVATING" });
+        }
         const result = itemStore.updateInventoryItem(affected.assemblyID, currentItem => {
-            const updated = parseCustomInfo(writeConstructionState(currentItem, { ...readConstructionState(currentItem), assemblyStatus: affected.targetStatus }));
+            const updated = parseCustomInfo(writeConstructionState(currentItem, { ...readConstructionState(currentItem), assemblyStatus: affected.targetStatus }, false));
+            delete updated.evejsSuiAssemblyStatusIntent;
             updated.evejsSponsoredAssemblyTransaction = metadata.transactionUUID;
             return { ...currentItem, customInfo: JSON.stringify(updated) };
         });
@@ -829,6 +980,69 @@ function reconcileSponsoredAssemblyState(metadata) {
             log.warn(`[FrontierDeployment] Confirmed sponsored assembly presentation: ${error.message}`);
         }
     }
+}
+/** Retain initialization across a crash after anchoring but before the requested status. */
+function recordInitialSuiAssemblyState(assembly) {
+    const item = itemStore.findItemById(Number(assembly.itemId));
+    const state = readConstructionState(item);
+    if (!item || Number(item.ownerID) !== assembly.ownerId || Number(item.typeID) !== assembly.typeId ||
+        state?.assemblyStatus !== assembly.status)
+        throw new Error("Assembly changed before its initial chain state was recorded");
+    const runtime = require("./suiAssemblyState");
+    const existing = runtime.readSuiAssemblyStatusIntent(item);
+    if (existing)
+        return existing;
+    const result = itemStore.updateInventoryItem(item.itemID, currentItem => {
+        const info = parseCustomInfo(currentItem.customInfo);
+        runtime.recordSuiAssemblyStatusIntent(info, assembly.status);
+        return { ...currentItem, customInfo: JSON.stringify(info) };
+    });
+    if (!result.success)
+        throw new Error("Could not persist the initial assembly state request");
+    return runtime.readSuiAssemblyStatusIntent(result.data);
+}
+/** Project a verified chain read without turning that observation into a new request. */
+function reconcileSuiAssemblyState(assembly, targetStatus, expectedIntentID = null) {
+    const item = itemStore.findItemById(Number(assembly.itemId));
+    const state = readConstructionState(item);
+    if (!item || !state || Number(item.ownerID) !== assembly.ownerId || Number(item.typeID) !== assembly.typeId ||
+        ![ASSEMBLY_STATUS_OFFLINE, ASSEMBLY_STATUS_ONLINE].includes(state.assemblyStatus) ||
+        ![ASSEMBLY_STATUS_OFFLINE, ASSEMBLY_STATUS_ONLINE].includes(targetStatus)) {
+        throw new Error(`Assembly ${assembly.itemId} changed identity during its chain state read`);
+    }
+    const intent = require("./suiAssemblyState").readSuiAssemblyStatusIntent(item);
+    if (targetStatus === ASSEMBLY_STATUS_ONLINE && isAssemblyActivationPending(item))
+        return false;
+    if ((intent?.id ?? null) !== expectedIntentID || (intent && intent.targetStatus !== targetStatus))
+        return false;
+    if (state.assemblyStatus === targetStatus && !intent)
+        return true;
+    const result = itemStore.updateInventoryItem(item.itemID, currentItem => {
+        const info = parseCustomInfo(currentItem.customInfo);
+        if (Number(item.typeID) === NETWORK_NODE_ASSEMBLY_TYPE_ID && state.assemblyStatus !== targetStatus) {
+            const fuel = require("./networkNodeFuelRuntime").calculateNetworkNodeFuelBurn(currentItem).state;
+            if (fuel.quantity > 0 || fuel.burnRemainderMs > 0)
+                info.evejsFrontierNetworkNodeFuel = { ...fuel, burnUpdatedAtMs: Date.now() };
+            else
+                delete info.evejsFrontierNetworkNodeFuel;
+        }
+        // Status is already confirmed. Local fuel settlement must not rewrite it.
+        info[CONSTRUCTION_INFO_KEY] = { ...info[CONSTRUCTION_INFO_KEY], assemblyStatus: targetStatus };
+        delete info.evejsSuiAssemblyStatusIntent;
+        return { ...currentItem, customInfo: JSON.stringify(info) };
+    });
+    if (!result.success || !result.data)
+        throw new Error(`Cannot save chain assembly ${assembly.itemId}`);
+    try {
+        const session = findAssemblyOwnerSession(null, item.ownerID);
+        refreshAssemblyStatePresentation(session, result.data, readConstructionState(result.data));
+        syncChanges(session, [{ item: result.data, previousData: result.previousData }]);
+        clearPendingAssemblyTransitionsForItem(item.itemID);
+    }
+    catch (error) {
+        log.warn(`[FrontierDeployment] Chain assembly presentation: ${error.message}`);
+    }
+    return true;
 }
 function commitAssemblyStateTransition(session, itemID, transactionUUID, signature, targetStatus) {
     const numericItemID = toInt(itemID, 0);
@@ -1284,7 +1498,7 @@ function placeDirectAssembly({ characterID, definition, deploymentDistance, dunR
     }
     const assemblyMetadata = itemStore.getItemMetadata(definition.assemblyTypeID);
     if (!assemblyMetadata || toInt(assemblyMetadata.typeID, 0) <= 0) {
-        const restoreResult = restorePlacementMaterials(characterID, shipItem.itemID, materialResult.consumed);
+        const restoreResult = restorePlacementMaterials(characterID, materialResult.consumed);
         syncChanges(session, [
             ...materialResult.changes,
             ...((restoreResult.data && restoreResult.data.changes) || []),
@@ -1293,7 +1507,9 @@ function placeDirectAssembly({ characterID, definition, deploymentDistance, dunR
     }
     const nowMs = Date.now();
     const state = {
-        assemblyStatus: ASSEMBLY_STATUS_OFFLINE,
+        activationCompleteAtMs: definition.durationSeconds > 0 ? nowMs + definition.durationSeconds * 1000 : 0,
+        assemblyStatus: definition.durationSeconds > 0 || definition.createOnChain
+            ? ASSEMBLY_STATUS_OFFLINE : ASSEMBLY_STATUS_ONLINE,
         assemblyTypeID: definition.assemblyTypeID,
         completeAtMs: 0,
         completedAtMs: nowMs,
@@ -1311,7 +1527,7 @@ function placeDirectAssembly({ characterID, definition, deploymentDistance, dunR
         position,
     });
     if (!createResult.success || !createResult.data) {
-        const restoreResult = restorePlacementMaterials(characterID, shipItem.itemID, materialResult.consumed);
+        const restoreResult = restorePlacementMaterials(characterID, materialResult.consumed);
         syncChanges(session, [
             ...materialResult.changes,
             ...((restoreResult.data && restoreResult.data.changes) || []),
@@ -1323,13 +1539,14 @@ function placeDirectAssembly({ characterID, definition, deploymentDistance, dunR
     const assemblyItem = createResult.data;
     const spawnResult = getSpaceRuntime().spawnDynamicInventoryEntity(solarSystemID, assemblyItem.itemID, { broadcast: true });
     if (!spawnResult.success) {
+        clearActivationTimer(assemblyItem.itemID);
         getSpaceRuntime().removeDynamicEntity(solarSystemID, assemblyItem.itemID, {
             broadcast: true,
         });
         const removeResult = itemStore.removeInventoryItem(assemblyItem.itemID, {
             removeContents: true,
         });
-        const restoreResult = restorePlacementMaterials(characterID, shipItem.itemID, materialResult.consumed);
+        const restoreResult = restorePlacementMaterials(characterID, materialResult.consumed);
         syncChanges(session, [
             ...materialResult.changes,
             ...((removeResult.data && removeResult.data.changes) || []),
@@ -1342,10 +1559,11 @@ function placeDirectAssembly({ characterID, definition, deploymentDistance, dunR
         ...(createResult.changes || []),
     ]);
     notifyAssemblyAdded(session, assemblyItem.itemID, solarSystemID);
+    scheduleAssemblyActivation(assemblyItem.itemID, session);
     log.info(`[FrontierDeployment] Assembly placed char=${characterID} ` +
         `item=${assemblyItem.itemID} type=${definition.assemblyTypeID} ` +
         `system=${solarSystemID} distance=${deploymentDistance.toFixed(1)} ` +
-        `frame=${positionFrame} status=offline`);
+        `frame=${positionFrame} activationSeconds=${definition.durationSeconds}`);
     return {
         success: true,
         data: {
@@ -1404,7 +1622,10 @@ function buildDeployable(session, assemblyTypeID, rawPosition, rawRotation) {
             },
         };
     }
-    if (definition.constructionSiteTypeID <= 0) {
+    const directFieldPlacement = PORTABLE_ASSEMBLY_TYPE_IDS.has(definition.assemblyTypeID) &&
+        !isInOwnedNetworkNodeBuildZone(session, characterID, solarSystemID, shipEntity.position);
+    if (definition.assemblyTypeID === NETWORK_NODE_ASSEMBLY_TYPE_ID ||
+        definition.constructionSiteTypeID <= 0 || directFieldPlacement) {
         return placeDirectAssembly({
             characterID,
             definition,
@@ -1523,21 +1744,12 @@ function depositItems(session, itemID, inventoryID, rawQuantities) {
     }
     syncChanges(session, changes);
     const depositedAfter = aggregateContainerItems(characterID, item.itemID);
-    if (hasRequiredMaterials(state.constructionCost, depositedAfter) && state.completeAtMs <= 0) {
-        const completeAtMs = Date.now() + state.durationSeconds * 1000;
-        const updateResult = itemStore.updateInventoryItem(item.itemID, (currentItem) => ({
-            ...currentItem,
-            customInfo: writeConstructionState(currentItem, {
-                ...state,
-                completeAtMs,
-            }),
-        }));
-        if (!updateResult.success) {
-            return updateResult;
-        }
-        scheduleConstruction(item.itemID, session);
-        log.info(`[FrontierDeployment] Construction started item=${item.itemID} ` +
-            `assemblyType=${state.assemblyTypeID} completesIn=${state.durationSeconds}s`);
+    if (hasRequiredMaterials(state.constructionCost, depositedAfter)) {
+        // The activate duration belongs to the finished assembly. The depot is
+        // replaced as soon as it has its materials so the actual model shows it.
+        const result = completeConstruction(item.itemID, { force: true, session });
+        if (!result.success)
+            return result;
     }
     return { success: true, data: depositedAfter };
 }
@@ -1555,9 +1767,10 @@ function completeConstruction(itemID, options = {}) {
     if (!hasRequiredMaterials(state.constructionCost, deposited)) {
         return { success: false, errorMsg: "CONSTRUCTION_MATERIALS_INCOMPLETE" };
     }
-    if (!options.force && state.completeAtMs > Date.now()) {
-        scheduleConstruction(item.itemID, options.session || null);
-        return { success: true, data: { item, pending: true } };
+    const assemblyMetadata = itemStore.getItemMetadata(state.assemblyTypeID);
+    const definition = getBuildDefinition(state.assemblyTypeID);
+    if (!assemblyMetadata || !definition) {
+        return { success: false, errorMsg: "ASSEMBLY_TYPE_NOT_FOUND" };
     }
     const materialChanges = [];
     for (const [typeID, quantity] of Object.entries(state.constructionCost)) {
@@ -1571,19 +1784,23 @@ function completeConstruction(itemID, options = {}) {
     spaceRuntime.removeDynamicEntity(state.solarSystemID, item.itemID, {
         broadcast: true,
     });
-    const assemblyMetadata = itemStore.getItemMetadata(state.assemblyTypeID);
-    const definition = getBuildDefinition(state.assemblyTypeID);
-    const completedAssemblyStatus = definition && definition.createOnChain
+    const durationSeconds = definition.durationSeconds;
+    const completedAtMs = Date.now();
+    const activationCompleteAtMs = state.completeAtMs > 0
+        ? (state.completeAtMs > completedAtMs ? state.completeAtMs : 0)
+        : (durationSeconds > 0 ? completedAtMs + durationSeconds * 1000 : 0);
+    const completedAssemblyStatus = activationCompleteAtMs > 0 || definition.createOnChain
         ? ASSEMBLY_STATUS_OFFLINE
         : ASSEMBLY_STATUS_ONLINE;
-    const completedAtMs = Date.now();
     const updateResult = itemStore.updateInventoryItem(item.itemID, (currentItem) => ({
         ...currentItem,
         customInfo: writeConstructionState(currentItem, {
             ...state,
+            activationCompleteAtMs,
             assemblyStatus: completedAssemblyStatus,
             completeAtMs: 0,
             completedAtMs,
+            durationSeconds,
         }),
         itemName: assemblyMetadata.name || currentItem.itemName,
         typeID: state.assemblyTypeID,
@@ -1591,11 +1808,12 @@ function completeConstruction(itemID, options = {}) {
     if (!updateResult.success) {
         return updateResult;
     }
+    scheduleAssemblyActivation(item.itemID, options.session || null);
     const spawnResult = spaceRuntime.spawnDynamicInventoryEntity(state.solarSystemID, item.itemID, { broadcast: true });
     if (!spawnResult.success) {
         log.warn(`[FrontierDeployment] Completed item ${item.itemID} persisted but could not be presented: ${spawnResult.errorMsg}`);
     }
-    syncChanges(options.session, [
+    syncChanges(findAssemblyOwnerSession(options.session, item.ownerID), [
         ...materialChanges,
         { item: updateResult.data, previousData: updateResult.previousData },
     ]);
@@ -1727,6 +1945,7 @@ function adminSpawnAssembly(session, assemblyTypeID, rawPosition, options = {}) 
     const nowMs = Date.now();
     const state = {
         assemblyStatus: requestedStatus,
+        activationCompleteAtMs: 0,
         assemblyTypeID: numericTypeID,
         completeAtMs: 0,
         completedAtMs: nowMs,
@@ -1796,6 +2015,9 @@ function adminSetAssemblyState(session, itemID, targetStatus) {
     }
     if (state.assemblyStatus === ASSEMBLY_STATUS_UNDER_CONSTRUCTION) {
         return { success: false, errorMsg: "ASSEMBLY_UNDER_CONSTRUCTION" };
+    }
+    if (isAssemblyActivationPending(item)) {
+        return { success: false, errorMsg: "ASSEMBLY_ACTIVATING" };
     }
     if (numericTargetStatus === ASSEMBLY_STATUS_ONLINE && !hasNetworkNodeFuelForOnline(item)) {
         return { success: false, errorMsg: "NETWORK_NODE_FUEL_REQUIRED" };
@@ -2162,6 +2384,7 @@ function adminRemoveAssembly(session, itemID) {
         return { ...removeResult, rollbackError };
     }
     clearCompletionTimer(numericItemID);
+    clearActivationTimer(numericItemID);
     clearPendingAssemblyTransitionsForItem(numericItemID);
     syncAdminChanges(session, item.ownerID, removeResult.data && removeResult.data.changes);
     log.info(`[FrontierDeployment] Admin removed assembly char=${getCharacterID(session)} ` +
@@ -2187,12 +2410,14 @@ function hydrateConstructionEntityFromInventoryItem(entity, item) {
         }
         return entity;
     }
-    const isActive = state.assemblyStatus !== ASSEMBLY_STATUS_UNDER_CONSTRUCTION;
+    const isActive = !isAssemblyActivationPending(item);
     entity.component_activate = [
         isActive,
-        isActive || state.completeAtMs <= 0 ? null : state.completeAtMs,
+        isActive ? null : state.activationCompleteAtMs,
     ];
     entity.activate_comp_durationSeconds = state.durationSeconds;
+    if (!isActive)
+        scheduleAssemblyActivation(item.itemID);
     const definition = getBuildDefinition(state.assemblyTypeID);
     if (isSmartGateDefinition(definition)) {
         entity.activationState = getSmartGateActivationState(state);
@@ -2217,6 +2442,7 @@ function listMyAssemblies(session) {
         if (!state) {
             continue;
         }
+        scheduleAssemblyActivation(item.itemID, session);
         if (state.assemblyStatus === ASSEMBLY_STATUS_UNDER_CONSTRUCTION &&
             state.completeAtMs > 0) {
             scheduleConstruction(item.itemID, session);
@@ -2304,6 +2530,9 @@ module.exports = {
     commitGateUnlinkTransition,
     commitAssemblyStateTransition,
     completeConstruction,
+    completeAssemblyActivation,
+    scheduleAssemblyActivation,
+    isAssemblyActivationPending,
     depositItems,
     getDepositedItemsByType,
     getAssemblyRecord,
@@ -2318,6 +2547,8 @@ module.exports = {
     offlineAssemblyForFuelDepletion,
     notifyAssemblyFuelDepleted,
     reconcileSponsoredAssemblyState,
+    reconcileSuiAssemblyState,
+    recordInitialSuiAssemblyState,
     // Shared with the Network Node fuel runtime, which reuses the assembly
     // transition transaction/signature conventions and construction state.
     buildAssemblyTransitionTransactionData,
@@ -2348,6 +2579,9 @@ module.exports = {
                 clearTimeout(timer);
             }
             completionTimers.clear();
+            for (const timer of activationTimers.values())
+                clearTimeout(timer);
+            activationTimers.clear();
         },
         clearPendingAssemblyTransitions() {
             pendingAssemblyTransitions.clear();

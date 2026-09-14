@@ -7,6 +7,7 @@ const itemStore = require("../src/services/inventory/itemStore");
 const smartStorageUnitRuntime = require(
   "../src/services/frontier/smartStorageUnitRuntime",
 );
+const { registerSuiAssemblyStateRunner } = require("../src/services/frontier/suiAssemblyState");
 const {
   getStorageUnitProtoTypes,
 } = require(
@@ -90,6 +91,37 @@ function createAccess(ship, overrides: Record<string, any> = {}) {
   };
 }
 
+function chainStateFixture(t, initialStatus = 2) {
+  const chain = { status: initialStatus, reads: 0, error: null as any, beforeRead: null as (() => void) | null };
+  t.after(registerSuiAssemblyStateRunner(async (assemblyID, operation) => {
+    await Promise.resolve();
+    chain.reads++;
+    chain.beforeRead?.();
+    if (chain.error) throw chain.error;
+    // The real worker verifies identity and persists its fresh chain projection
+    // before invoking the synchronous inventory operation on its queue.
+    const result = itemStore.updateInventoryItem(assemblyID, current => {
+      const info = JSON.parse(current.customInfo);
+      info.evejsFrontierConstruction.assemblyStatus = chain.status;
+      return { ...current, customInfo: JSON.stringify(info) };
+    });
+    assert.equal(result.success, true);
+    return operation();
+  }));
+  return chain;
+}
+
+function depositFixture(localStatus = 2) {
+  const unit = createStorageUnit(OWNER_ID, localStatus);
+  const ship = createShip();
+  const stack = grantOne(OWNER_ID, ship.itemID, CARGO_FLAG, MATERIAL_TYPE_ID, 40);
+  return { unit, ship, stack, options: {
+    access: createAccess(ship), characterID: OWNER_ID,
+    sourceFlagID: CARGO_FLAG, sourceLocationID: ship.itemID,
+    stacks: [{ itemID: stack.itemID, quantity: 10 }], storageUnitID: unit.itemID,
+  } };
+}
+
 function makeEnvelope(type, payload, characterID = OWNER_ID) {
   return {
     payload: {
@@ -126,6 +158,148 @@ function totalAt(ownerID, locationID, flagID, typeID) {
 test.beforeEach(() => {
   smartStorageUnitRuntime._testing.clearTransactions();
   smartStorageUnitRuntime._testing.clearStorageComponentCache();
+});
+
+test("activation blocks storage before chain refresh and rechecks a signed transfer", async t => {
+  const { unit, ship, options } = depositFixture();
+  const chain = chainStateFixture(t);
+  const prepared = await smartStorageUnitRuntime.prepareStorageDeposit(options);
+  assert.equal(prepared.success, true);
+  const readsBefore = chain.reads;
+  const setActivation = completeAtMs => itemStore.updateInventoryItem(unit.itemID, current => {
+    const info = JSON.parse(current.customInfo);
+    info.evejsFrontierConstruction.activationCompleteAtMs = completeAtMs;
+    return { ...current, customInfo: JSON.stringify(info) };
+  });
+  // A delayed callback must not make the assembly usable just because its deadline elapsed.
+  assert.equal(setActivation(Date.now() - 1).success, true);
+  assert.equal((await smartStorageUnitRuntime.getStorageInventory(options)).errorMsg, "ASSEMBLY_ACTIVATING");
+  assert.equal((await smartStorageUnitRuntime.prepareStorageDeposit(options)).errorMsg, "ASSEMBLY_ACTIVATING");
+  const execute = { access: options.access, characterID: OWNER_ID,
+    action: "storageunit-deposit", signature: VALID_SIGNATURE,
+    transactionUUID: prepared.data.transactionUUID };
+  assert.equal((await smartStorageUnitRuntime.executeStorageTransaction(execute)).errorMsg, "ASSEMBLY_ACTIVATING");
+  assert.equal(chain.reads, readsBefore);
+  assert.equal(totalAt(OWNER_ID, ship.itemID, CARGO_FLAG, MATERIAL_TYPE_ID), 40);
+  assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 0);
+  assert.equal(setActivation(0).success, true);
+  assert.equal((await smartStorageUnitRuntime.executeStorageTransaction(execute)).success, true);
+  assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 10);
+});
+
+test("gateway deposit uses online chain status over stale offline local state and commits once", async t => {
+  const { unit, ship, stack, options } = depositFixture(1);
+  const chain = chainStateFixture(t, 2);
+  const types = getStorageUnitProtoTypes();
+  const notices: any[] = [];
+  const service = buildService(options.access, notices);
+  const prepare = await service.handleRequest(PREPARE_DEPOSIT_ITEMS_REQUEST,
+    makeEnvelope(types.PrepareDepositItemsRequest, {
+      destination_container: { sequential: unit.itemID },
+      source_container: { item: { sequential: ship.itemID }, flag: { value: CARGO_FLAG } },
+      stacks: [{ item: { sequential: stack.itemID }, quantity: 10 }],
+    }));
+  assert.equal(prepare.statusCode, 200, prepare.statusMessage);
+  const prepared = types.PrepareDepositItemsResponse.decode(prepare.responsePayloadBuffer);
+  const request = makeEnvelope(types.ExecuteDepositItemsRequest, {
+    prepared_transaction: prepared.prepared_transaction, signature: VALID_SIGNATURE,
+  });
+  const results = await Promise.all([
+    service.handleRequest(EXECUTE_DEPOSIT_ITEMS_REQUEST, request),
+    service.handleRequest(EXECUTE_DEPOSIT_ITEMS_REQUEST, request),
+  ]);
+  assert.ok(results.every(result => result.statusCode === 200));
+  assert.ok(chain.reads >= 2, "prepare and execute each verify chain state");
+  assert.equal(notices.length, 1);
+  assert.equal(totalAt(OWNER_ID, ship.itemID, CARGO_FLAG, MATERIAL_TYPE_ID), 30);
+  assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 10);
+});
+
+test("offline chain state rejects stale online deposits and withdrawals", async t => {
+  const { unit, ship, options } = depositFixture();
+  chainStateFixture(t, 1);
+  grantOne(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID, 10);
+  assert.equal((await smartStorageUnitRuntime.prepareStorageDeposit(options)).errorMsg, "ASSEMBLY_OFFLINE");
+  assert.equal((await smartStorageUnitRuntime.prepareStorageWithdraw({
+    access: options.access, characterID: OWNER_ID, storageUnitID: unit.itemID,
+    destinationLocationID: ship.itemID, destinationFlagID: CARGO_FLAG,
+    stacks: [{ typeID: MATERIAL_TYPE_ID, quantity: 5 }],
+  })).errorMsg, "ASSEMBLY_OFFLINE");
+  const inventory = await smartStorageUnitRuntime.getStorageInventory({
+    ...options, inventoryOwnerID: OWNER_ID,
+  });
+  assert.equal(inventory.success, true, "offline inventory remains readable");
+  assert.equal(inventory.data.items[0].quantity, 10);
+  assert.equal(totalAt(OWNER_ID, ship.itemID, CARGO_FLAG, MATERIAL_TYPE_ID), 40);
+});
+
+test("execute rechecks chain state after signing and can retry without losing items", async t => {
+  const { unit, ship, options } = depositFixture();
+  const chain = chainStateFixture(t);
+  const prepared = await smartStorageUnitRuntime.prepareStorageDeposit(options);
+  assert.equal(prepared.success, true);
+  const execute = { access: options.access, characterID: OWNER_ID,
+    action: "storageunit-deposit", signature: VALID_SIGNATURE,
+    transactionUUID: prepared.data.transactionUUID };
+  chain.status = 1;
+  assert.equal((await smartStorageUnitRuntime.executeStorageTransaction(execute)).errorMsg, "ASSEMBLY_OFFLINE");
+  assert.equal(totalAt(OWNER_ID, ship.itemID, CARGO_FLAG, MATERIAL_TYPE_ID), 40);
+  assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 0);
+  chain.status = 2;
+  assert.equal((await smartStorageUnitRuntime.executeStorageTransaction(execute)).success, true);
+  assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 10);
+});
+
+test("chain verification failures and pending transitions leave cargo untouched", async t => {
+  const { unit, ship, options } = depositFixture();
+  const chain = chainStateFixture(t);
+  const prepared = await smartStorageUnitRuntime.prepareStorageDeposit(options);
+  for (const code of ["RPC_UNAVAILABLE", "CHAIN_ASSEMBLY_TOMBSTONE", "ASSEMBLY_STATE_PENDING"]) {
+    chain.error = Object.assign(new Error(code), { code });
+    const expected = code === "ASSEMBLY_STATE_PENDING" ? code : "ASSEMBLY_STATE_UNAVAILABLE";
+    assert.equal((await smartStorageUnitRuntime.prepareStorageDeposit(options)).errorMsg, expected);
+    assert.equal((await smartStorageUnitRuntime.executeStorageTransaction({
+      access: options.access, characterID: OWNER_ID, action: "storageunit-deposit",
+      signature: VALID_SIGNATURE, transactionUUID: prepared.data.transactionUUID,
+    })).errorMsg, expected);
+  }
+  assert.equal(totalAt(OWNER_ID, ship.itemID, CARGO_FLAG, MATERIAL_TYPE_ID), 40);
+  assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 0);
+});
+
+test("storage access is checked before chain reads and after asynchronous refresh", async t => {
+  const { options } = depositFixture();
+  const chain = chainStateFixture(t);
+  assert.equal((await smartStorageUnitRuntime.prepareStorageDeposit({
+    ...options, access: { ...options.access, inRange: false },
+  })).errorMsg, "ASSEMBLY_OUT_OF_RANGE");
+  assert.equal(chain.reads, 0);
+  let access = options.access;
+  chain.beforeRead = () => { access = { ...access, inRange: false }; };
+  assert.equal((await smartStorageUnitRuntime.prepareStorageDeposit({
+    ...options, resolveAccess: () => access,
+  })).errorMsg, "ASSEMBLY_OUT_OF_RANGE");
+  assert.equal(chain.reads, 1);
+});
+
+test("withdrawal refreshes stale offline storage before prepare and execute", async t => {
+  const { unit, ship, options } = depositFixture(1);
+  const chain = chainStateFixture(t);
+  grantOne(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID, 10);
+  const prepared = await smartStorageUnitRuntime.prepareStorageWithdraw({
+    access: options.access, characterID: OWNER_ID, storageUnitID: unit.itemID,
+    destinationLocationID: ship.itemID, destinationFlagID: CARGO_FLAG,
+    stacks: [{ typeID: MATERIAL_TYPE_ID, quantity: 5 }],
+  });
+  assert.equal(prepared.success, true, prepared.errorMsg);
+  const executed = await smartStorageUnitRuntime.executeStorageTransaction({
+    access: options.access, characterID: OWNER_ID, action: "storageunit-withdraw",
+    signature: VALID_SIGNATURE, transactionUUID: prepared.data.transactionUUID,
+  });
+  assert.equal(executed.success, true, executed.errorMsg);
+  assert.equal(chain.reads, 2);
+  assert.equal(totalAt(OWNER_ID, ship.itemID, CARGO_FLAG, MATERIAL_TYPE_ID), 45);
+  assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 5);
 });
 
 test("storageunit proto mirrors nested prepared transaction and destination oneof", () => {
@@ -479,7 +653,7 @@ test("atomic batch move leaves every source untouched when any staged move fails
   assert.equal(totalAt(OWNER_ID, destination.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 0);
 });
 
-test("gateway deposit/withdraw round trip publishes exactly-once character notices", () => {
+test("gateway deposit/withdraw round trip publishes exactly-once character notices", async () => {
   const types = getStorageUnitProtoTypes();
   const unit = createStorageUnit();
   const ship = createShip();
@@ -488,7 +662,7 @@ test("gateway deposit/withdraw round trip publishes exactly-once character notic
   const notices: any[] = [];
   const service = buildService(access, notices);
 
-  const emptyResult = service.handleRequest(
+  const emptyResult = await service.handleRequest(
     GET_INVENTORY_REQUEST,
     makeEnvelope(types.GetInventoryRequest, {
       inventory_owner: { sequential: OWNER_ID },
@@ -501,7 +675,7 @@ test("gateway deposit/withdraw round trip publishes exactly-once character notic
     0,
   );
 
-  const prepareResult = service.handleRequest(
+  const prepareResult = await service.handleRequest(
     PREPARE_DEPOSIT_ITEMS_REQUEST,
     makeEnvelope(types.PrepareDepositItemsRequest, {
       destination_container: { sequential: unit.itemID },
@@ -530,7 +704,7 @@ test("gateway deposit/withdraw round trip publishes exactly-once character notic
     prepared_transaction: prepared.prepared_transaction,
     signature: VALID_SIGNATURE,
   };
-  const execute = service.handleRequest(
+  const execute = await service.handleRequest(
     EXECUTE_DEPOSIT_ITEMS_REQUEST,
     makeEnvelope(types.ExecuteDepositItemsRequest, executePayload),
   );
@@ -547,14 +721,14 @@ test("gateway deposit/withdraw round trip publishes exactly-once character notic
     MATERIAL_TYPE_ID,
   );
 
-  const replay = service.handleRequest(
+  const replay = await service.handleRequest(
     EXECUTE_DEPOSIT_ITEMS_REQUEST,
     makeEnvelope(types.ExecuteDepositItemsRequest, executePayload),
   );
   assert.equal(replay.statusCode, 200);
   assert.equal(notices.length, 1, "retry must not publish a second notice");
 
-  const inventoryResult = service.handleRequest(
+  const inventoryResult = await service.handleRequest(
     GET_INVENTORY_REQUEST,
     makeEnvelope(types.GetInventoryRequest, {
       inventory_owner: { sequential: OWNER_ID },
@@ -567,7 +741,7 @@ test("gateway deposit/withdraw round trip publishes exactly-once character notic
   assert.equal(inventory.items.length, 1);
   assert.equal(Number(inventory.items[0].attributes.quantity), 25);
 
-  const withdrawPrepareResult = service.handleRequest(
+  const withdrawPrepareResult = await service.handleRequest(
     PREPARE_WITHDRAW_ITEMS_REQUEST,
     makeEnvelope(types.PrepareWithdrawItemsRequest, {
       generic_location: {
@@ -586,7 +760,7 @@ test("gateway deposit/withdraw round trip publishes exactly-once character notic
   const withdrawPrepared = types.PrepareWithdrawItemsResponse.decode(
     withdrawPrepareResult.responsePayloadBuffer,
   );
-  const withdrawExecute = service.handleRequest(
+  const withdrawExecute = await service.handleRequest(
     EXECUTE_WITHDRAW_ITEMS_REQUEST,
     makeEnvelope(types.ExecuteWithdrawItemsRequest, {
       prepared_transaction: withdrawPrepared.prepared_transaction,
@@ -614,14 +788,14 @@ test("gateway deposit/withdraw round trip publishes exactly-once character notic
   }
 });
 
-test("gateway rejects unauthenticated, spoofed owner, invalid signature, and stale UUID", () => {
+test("gateway rejects unauthenticated, spoofed owner, invalid signature, and stale UUID", async () => {
   const types = getStorageUnitProtoTypes();
   const unit = createStorageUnit();
   const ship = createShip();
   const stack = grantOne(OWNER_ID, ship.itemID, CARGO_FLAG, MATERIAL_TYPE_ID, 5);
   const service = buildService(createAccess(ship));
 
-  const unauthenticated = service.handleRequest(GET_INVENTORY_REQUEST, {
+  const unauthenticated = await service.handleRequest(GET_INVENTORY_REQUEST, {
     authoritative_context: {},
     payload: {
       value: Buffer.from(types.GetInventoryRequest.encode(
@@ -634,7 +808,7 @@ test("gateway rejects unauthenticated, spoofed owner, invalid signature, and sta
   });
   assert.equal(unauthenticated.statusCode, 403);
 
-  const spoofed = service.handleRequest(
+  const spoofed = await service.handleRequest(
     GET_INVENTORY_REQUEST,
     makeEnvelope(types.GetInventoryRequest, {
       inventory_owner: { sequential: VISITOR_ID },
@@ -643,7 +817,7 @@ test("gateway rejects unauthenticated, spoofed owner, invalid signature, and sta
   );
   assert.equal(spoofed.statusCode, 403);
 
-  const prepare = service.handleRequest(
+  const prepare = await service.handleRequest(
     PREPARE_DEPOSIT_ITEMS_REQUEST,
     makeEnvelope(types.PrepareDepositItemsRequest, {
       destination_container: { sequential: unit.itemID },
@@ -657,7 +831,7 @@ test("gateway rejects unauthenticated, spoofed owner, invalid signature, and sta
   const prepared = types.PrepareDepositItemsResponse.decode(
     prepare.responsePayloadBuffer,
   );
-  const badSignature = service.handleRequest(
+  const badSignature = await service.handleRequest(
     EXECUTE_DEPOSIT_ITEMS_REQUEST,
     makeEnvelope(types.ExecuteDepositItemsRequest, {
       prepared_transaction: prepared.prepared_transaction,
@@ -667,7 +841,7 @@ test("gateway rejects unauthenticated, spoofed owner, invalid signature, and sta
   assert.equal(badSignature.statusCode, 403);
   assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 0);
 
-  const stale = service.handleRequest(
+  const stale = await service.handleRequest(
     EXECUTE_DEPOSIT_ITEMS_REQUEST,
     makeEnvelope(types.ExecuteDepositItemsRequest, {
       prepared_transaction: { uuid: Buffer.alloc(16, 2) },

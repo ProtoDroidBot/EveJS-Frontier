@@ -1810,51 +1810,54 @@ function buildGatewayResponseForRequest(frameBuffer) {
             responsePayloadBuffer: buildPlexBalanceResponsePayload(requestEnvelope),
         };
     }
+    function recoverFailedRequest(error) {
+        const emptySuccessResponseType = getEmptySuccessResponseType(requestTypeName);
+        if (emptySuccessResponseType) {
+            log.warn(`[PublicGatewayLocal] Degraded failed gateway request type=${requestTypeName || "<unknown>"} ` +
+                `to empty success responseType=${emptySuccessResponseType} ` +
+                `correlation=${context.correlation}: ${error.message}`);
+            return {
+                statusCode: 200,
+                statusMessage: "",
+                responseTypeName: emptySuccessResponseType,
+                responsePayloadBuffer: EMPTY_PAYLOAD,
+            };
+        }
+        log.warn(`[PublicGatewayLocal] Gateway service request failed type=${requestTypeName || "<unknown>"} ` +
+            `correlation=${context.correlation}: ${error.message}`);
+        return {
+            statusCode: 500,
+            statusMessage: error.message || "local gateway handler failed",
+            responseTypeName: null,
+            responsePayloadBuffer: null,
+        };
+    }
+    function encodeResult(resolved) {
+        if (!resolved) {
+            logUnknownRequest(context);
+            resolved = {
+                statusCode: 404,
+                statusMessage: `EveJS Elysian local gateway has no handler for ${requestTypeName || "unknown request"}`,
+                responseTypeName: null,
+                responsePayloadBuffer: null,
+            };
+        }
+        const durationMs = Number(process.hrtime.bigint() - startedAt) / 1000000;
+        const responseBuffer = encodeResponseEnvelope(requestEnvelope, resolved.statusCode, resolved.statusMessage, resolved.responseTypeName, resolved.responsePayloadBuffer);
+        logGatewaySummary(context, { ...resolved, durationMs });
+        return responseBuffer;
+    }
     if (!result) {
         try {
             result = gatewayServiceRegistry.handleRequest(requestTypeName, requestEnvelope);
         }
         catch (error) {
-            const emptySuccessResponseType = getEmptySuccessResponseType(requestTypeName);
-            if (emptySuccessResponseType) {
-                log.warn(`[PublicGatewayLocal] Degraded failed gateway request type=${requestTypeName || "<unknown>"} ` +
-                    `to empty success responseType=${emptySuccessResponseType} ` +
-                    `correlation=${context.correlation}: ${error.message}`);
-                result = {
-                    statusCode: 200,
-                    statusMessage: "",
-                    responseTypeName: emptySuccessResponseType,
-                    responsePayloadBuffer: EMPTY_PAYLOAD,
-                };
-            }
-            else {
-                log.warn(`[PublicGatewayLocal] Gateway service request failed type=${requestTypeName || "<unknown>"} ` +
-                    `correlation=${context.correlation}: ${error.message}`);
-                result = {
-                    statusCode: 500,
-                    statusMessage: error.message || "local gateway handler failed",
-                    responseTypeName: null,
-                    responsePayloadBuffer: null,
-                };
-            }
+            result = recoverFailedRequest(error);
         }
     }
-    if (!result) {
-        logUnknownRequest(context);
-        result = {
-            statusCode: 404,
-            statusMessage: `EveJS Elysian local gateway has no handler for ${requestTypeName || "unknown request"}`,
-            responseTypeName: null,
-            responsePayloadBuffer: null,
-        };
-    }
-    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1000000;
-    const responseBuffer = encodeResponseEnvelope(requestEnvelope, result.statusCode, result.statusMessage, result.responseTypeName, result.responsePayloadBuffer);
-    logGatewaySummary(context, {
-        ...result,
-        durationMs,
-    });
-    return responseBuffer;
+    return result && typeof result.then === "function"
+        ? Promise.resolve(result).catch(recoverFailedRequest).then(encodeResult)
+        : encodeResult(result);
 }
 function finalizeGrpcStream(stream) {
     if (stream.destroyed || stream.closed) {
@@ -1880,12 +1883,25 @@ function handleUnaryPing(stream, label) {
 }
 function handleRequestsSendStream(stream) {
     initializeGrpcStream(stream);
+    let pendingResponses = Promise.resolve();
     const parseChunk = createGrpcFrameParser((payload) => {
-        const responseBuffer = buildGatewayResponseForRequest(payload);
-        stream.write(createGrpcFrame(responseBuffer));
+        // Serialize requests and keep a half-closed stream open while chain reads
+        // finish, so every prepared/committed transfer receives its actual result.
+        pendingResponses = pendingResponses.then(async () => {
+            if (stream.destroyed || stream.closed)
+                return;
+            const responseBuffer = await buildGatewayResponseForRequest(payload);
+            if (!stream.destroyed && !stream.closed) {
+                stream.write(createGrpcFrame(responseBuffer));
+            }
+        }).catch((error) => {
+            log.warn(`[PublicGatewayLocal] Requests.Send request error: ${error.message}`);
+            stream[GRPC_TRAILERS_PROPERTY] = { "grpc-status": "13" };
+            finalizeGrpcStream(stream);
+        });
     });
     stream.on("data", parseChunk);
-    stream.on("end", () => finalizeGrpcStream(stream));
+    stream.on("end", () => { void pendingResponses.then(() => finalizeGrpcStream(stream)); });
     stream.on("error", (error) => {
         log.warn(`[PublicGatewayLocal] Requests.Send error: ${error.message}`);
     });

@@ -66,7 +66,9 @@ function snapshot() {
 }
 function nodeOnline(node) {
   return deployment().readConstructionState(node)?.assemblyStatus === 2 &&
-    require("./networkNodeFuelRuntime").calculateNetworkNodeFuelBurn(node).state.quantity > 0;
+    !deployment().isAssemblyActivationPending(node) &&
+    (require("./networkNodeFuelRuntime").readSuiNetworkNodeFuel(node) ||
+      require("./networkNodeFuelRuntime").calculateNetworkNodeFuelBurn(node).state.quantity > 0);
 }
 function energyUsed(view, nodeID, excludedID = 0) {
   return view.items.reduce((total, item) => total + (Number(item.itemID) !== excludedID &&
@@ -81,8 +83,13 @@ function writeBinding(item, networkNodeID, autoConnect) {
   }));
 }
 
-/** Repair persisted topology and enforce power loss even when Sui sync is disabled. */
+/** Local-only fallback; the chain worker owns projection and explicit power-loss requests. */
 function reconcileNetworkNodeEnergy() {
+  // Notifications and energy reads must not turn a confirmed chain observation
+  // into an offline request based on a graph that has not been refreshed yet.
+  // Explicit connection writes remain available; the worker resolves initial
+  // bindings and cascades fuel exhaustion through confirmed chain transitions.
+  if (require("./suiAssemblyState").isSuiAssemblyStateAuthoritative()) return;
   if (reconciling) return;
   reconciling = true;
   try {
@@ -106,6 +113,7 @@ function reconcileNetworkNodeEnergy() {
 
 /** Called at prepare and commit; pending operations never reserve or double-charge energy. */
 function validateAssemblyOnline(item) {
+  if (deployment().isAssemblyActivationPending(item)) return { success: false as const, errorMsg: "ASSEMBLY_ACTIVATING" };
   const view = snapshot();
   if (Number(item.typeID) === NETWORK_NODE_TYPE_ID || !view.costs.has(Number(item.typeID))) return { success: true as const };
   if (!isAssemblyEnergyConfigLoaded()) return { success: false as const, errorMsg: "NETWORK_NODE_ENERGY_CONFIG_UNAVAILABLE" };
@@ -131,6 +139,7 @@ function validateNode(characterID, nodeID) {
   const node = itemStore.findItemById(positiveID(nodeID));
   if (!node || Number(node.typeID) !== NETWORK_NODE_TYPE_ID || !completed(node)) return { success: false as const, errorMsg: "ASSEMBLY_NOT_FOUND" };
   if (Number(node.ownerID) !== Number(characterID)) return { success: false as const, errorMsg: "ASSEMBLY_ACCESS_DENIED" };
+  if (deployment().isAssemblyActivationPending(node)) return { success: false as const, errorMsg: "ASSEMBLY_ACTIVATING" };
   return { success: true as const, node };
 }
 function getNetworkNodeEnergyStatus(characterID, nodeID) {
@@ -171,6 +180,7 @@ function changeConnection(session, assemblyID, nodeID, connect) {
   const item = view.items.find(item => Number(item.itemID) === positiveID(assemblyID) && Number(item.typeID) !== NETWORK_NODE_TYPE_ID);
   if (!item) return { success: false as const, errorMsg: "ASSEMBLY_NOT_FOUND" };
   if (Number(item.ownerID) !== Number(access.node.ownerID)) return { success: false as const, errorMsg: "ASSEMBLY_ACCESS_DENIED" };
+  if (deployment().isAssemblyActivationPending(item)) return { success: false as const, errorMsg: "ASSEMBLY_ACTIVATING" };
   const boundID = view.bindings.get(Number(item.itemID)) || 0;
   const chainNodeID = trackedNodeID(item.itemID);
   if (chainNodeID && (!connect || chainNodeID !== Number(nodeID))) {

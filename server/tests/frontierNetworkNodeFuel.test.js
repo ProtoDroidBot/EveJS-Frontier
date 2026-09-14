@@ -10,6 +10,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const itemStore = require("../src/services/inventory/itemStore");
 const networkNodeFuelRuntime = require("../src/services/frontier/networkNodeFuelRuntime");
+const { registerSuiAssemblyStateRunner } = require("../src/services/frontier/suiAssemblyState");
 const { getNetworkNodeProtoTypes, } = require("../src/_secondary/express/gatewayServices/assemblyNetworkNodeProto");
 const { EXECUTE_DEPOSIT_FUEL_REQUEST, EXECUTE_WITHDRAW_FUEL_REQUEST, FUEL_CHANGED_NOTICE, GET_FUEL_CONFIG_REQUEST, GET_FUEL_REQUEST, PREPARE_DEPOSIT_FUEL_REQUEST, PREPARE_WITHDRAW_FUEL_REQUEST, createAssemblyNetworkNodeGatewayService, } = require("../src/_secondary/express/gatewayServices/assemblyNetworkNodeGatewayService");
 const { uuidBufferToString, uuidStringToBuffer, } = require("../src/_secondary/express/gatewayServices/gatewayServiceHelpers");
@@ -87,6 +88,35 @@ function buildService(noticeSink = null) {
 }
 test.beforeEach(() => {
     networkNodeFuelRuntime._testing.clearPendingFuelTransactions();
+});
+test("anchoring blocks fuel access and burn until activation completes", () => {
+    const node = createTestNetworkNode();
+    const { container, stack } = createFuelSource();
+    const now = Date.now();
+    const pending = itemStore.updateInventoryItem(node.itemID, current => {
+        const info = JSON.parse(current.customInfo);
+        info.evejsFrontierConstruction.activationCompleteAtMs = now - 1;
+        info.evejsFrontierNetworkNodeFuel = {
+            typeID: FUEL_UNSTABLE, quantity: 10, burnUpdatedAtMs: now - 6000000,
+        };
+        return { ...current, customInfo: JSON.stringify(info) };
+    });
+    assert.equal(pending.success, true);
+    assert.equal(networkNodeFuelRuntime.calculateNetworkNodeFuelBurn(pending.data, now).consumedQuantity, 0);
+    assert.equal(networkNodeFuelRuntime.getNetworkNodeFuelStatus(OWNER_ID, node.itemID).errorMsg, "ASSEMBLY_ACTIVATING");
+    const options = { characterID: OWNER_ID, networkNodeID: node.itemID,
+        sourceItemID: container.itemID, sourceFlagID: CARGO_FLAG,
+        items: [{ itemID: stack.itemID, quantity: 1 }] };
+    assert.equal(networkNodeFuelRuntime.prepareNetworkNodeFuelDeposit(options).errorMsg, "ASSEMBLY_ACTIVATING");
+    assert.equal(stackQuantity(stack.itemID), 1500);
+    const cleared = itemStore.updateInventoryItem(node.itemID, current => {
+        const info = JSON.parse(current.customInfo);
+        info.evejsFrontierConstruction.activationCompleteAtMs = 0;
+        info.evejsFrontierConstruction.assemblyStatus = 1;
+        return { ...current, customInfo: JSON.stringify(info) };
+    });
+    assert.equal(cleared.success, true);
+    assert.equal(networkNodeFuelRuntime.prepareNetworkNodeFuelDeposit(options).success, true);
 });
 test("networknode proto: request/response round trips", () => {
     const types = getNetworkNodeProtoTypes();
@@ -574,5 +604,145 @@ test("gateway service: unauthenticated and error mappings", () => {
     assert.equal(staleExecute.statusCode, 404);
     assert.match(staleExecute.statusMessage, /expired/u);
     assert.equal(service.handleRequest("eve_public.other.Request", makeEnvelope(types.GetFuelRequest, {})), null, "unrelated request types must pass through");
+});
+function createChainGuardedFuelRequest(operation) {
+    const types = getNetworkNodeProtoTypes();
+    const notices = [];
+    const service = buildService(notices);
+    const node = createTestNetworkNode();
+    const { container, stack } = createFuelSource();
+    const writeFuel = (quantity) => {
+        const result = networkNodeFuelRuntime.writeNetworkNodeFuelState(node.itemID, {
+            typeID: FUEL_UNSTABLE, quantity,
+        });
+        assert.equal(result.success, true, result.errorMsg);
+    };
+    writeFuel(100);
+    let requestTypeName;
+    let requestType;
+    let payload;
+    if (operation === "get") {
+        requestTypeName = GET_FUEL_REQUEST;
+        requestType = types.GetFuelRequest;
+        payload = { network_node: { sequential: node.itemID } };
+    }
+    else {
+        const deposit = operation.endsWith("deposit");
+        const prepareRequestTypeName = deposit ? PREPARE_DEPOSIT_FUEL_REQUEST : PREPARE_WITHDRAW_FUEL_REQUEST;
+        const prepareRequestType = deposit ? types.PrepareDepositFuelRequest : types.PrepareWithdrawFuelRequest;
+        payload = deposit ? {
+            network_node: { sequential: node.itemID },
+            source: { item: { sequential: container.itemID }, flag: { value: CARGO_FLAG } },
+            items: [{ id: { sequential: stack.itemID }, quantity: 10 }],
+        } : {
+            network_node: { sequential: node.itemID },
+            fuel_type: { sequential: FUEL_UNSTABLE }, quantity: 10,
+            destination: { item: { sequential: container.itemID }, flag: { value: CARGO_FLAG } },
+        };
+        requestTypeName = prepareRequestTypeName;
+        requestType = prepareRequestType;
+        if (operation.startsWith("execute")) {
+            const prepared = service.handleRequest(prepareRequestTypeName, makeEnvelope(prepareRequestType, payload));
+            assert.equal(prepared.statusCode, 200, prepared.statusMessage);
+            const responseType = deposit ? types.PrepareDepositFuelResponse : types.PrepareWithdrawFuelResponse;
+            const decoded = responseType.decode(prepared.responsePayloadBuffer);
+            requestTypeName = deposit ? EXECUTE_DEPOSIT_FUEL_REQUEST : EXECUTE_WITHDRAW_FUEL_REQUEST;
+            requestType = deposit ? types.ExecuteDepositFuelRequest : types.ExecuteWithdrawFuelRequest;
+            payload = { prepared_transaction_uuid: decoded.prepared_transaction_uuid, signature: VALID_SIGNATURE };
+        }
+    }
+    return {
+        node, stack, notices, writeFuel,
+        invoke: () => service.handleRequest(requestTypeName, makeEnvelope(requestType, payload)),
+        quantity: () => networkNodeFuelRuntime.readNetworkNodeFuelState(itemStore.findItemById(node.itemID)).quantity,
+    };
+}
+const CHAIN_GUARDED_FUEL_OPERATIONS = ["get", "prepare-deposit", "prepare-withdraw", "execute-deposit", "execute-withdraw"];
+for (const operation of CHAIN_GUARDED_FUEL_OPERATIONS) {
+    test(`gateway ${operation} waits for blockchain fuel before validating`, async (t) => {
+        const fixture = createChainGuardedFuelRequest(operation);
+        let release;
+        const refreshed = new Promise((resolve) => { release = resolve; });
+        let requestedID;
+        const pendingBefore = networkNodeFuelRuntime._testing.getPendingFuelTransactions().size;
+        t.after(registerSuiAssemblyStateRunner(async (assemblyID, perform) => {
+            requestedID = assemblyID;
+            await refreshed;
+            fixture.writeFuel(operation.endsWith("deposit") ? 3571 : 7);
+            return perform();
+        }));
+        const response = fixture.invoke();
+        assert.ok(response instanceof Promise);
+        assert.equal(requestedID, fixture.node.itemID);
+        assert.equal(fixture.quantity(), 100, "No fuel operation may run before the refresh");
+        assert.equal(stackQuantity(fixture.stack.itemID), 1500);
+        assert.equal(networkNodeFuelRuntime._testing.getPendingFuelTransactions().size, pendingBefore);
+        assert.equal(fixture.notices.length, 0);
+        release();
+        const result = await response;
+        if (operation === "get") {
+            assert.equal(result.statusCode, 200);
+            const fuel = getNetworkNodeProtoTypes().GetFuelResponse.decode(result.responsePayloadBuffer).fuel;
+            assert.equal(Number(fuel.quantity), 7, "GetFuel must return the refreshed quantity");
+        }
+        else {
+            assert.equal(result.statusCode, 409);
+            assert.match(result.statusMessage, operation.endsWith("deposit") ? /reserve/ : /does not hold/);
+        }
+        assert.equal(stackQuantity(fixture.stack.itemID), 1500, "Rejected requests must not transfer inventory");
+        assert.equal(networkNodeFuelRuntime._testing.getPendingFuelTransactions().size, pendingBefore);
+        assert.equal(fixture.notices.length, 0, "Rejected requests must not publish a commit notice");
+    });
+    test(`gateway ${operation} fails closed on unavailable or pending blockchain state`, async () => {
+        for (const code of [undefined, "ASSEMBLY_STATE_UNAVAILABLE", "ASSEMBLY_STATE_PENDING"]) {
+            const fixture = createChainGuardedFuelRequest(operation);
+            const pendingBefore = networkNodeFuelRuntime._testing.getPendingFuelTransactions().size;
+            const unregister = registerSuiAssemblyStateRunner(async () => {
+                throw Object.assign(new Error("Sui refresh failed"), { code });
+            });
+            try {
+                const result = await fixture.invoke();
+                assert.equal(result.statusCode, code === "ASSEMBLY_STATE_PENDING" ? 409 : 503);
+                assert.match(result.statusMessage, /blockchain/);
+                assert.equal(fixture.quantity(), 100);
+                assert.equal(stackQuantity(fixture.stack.itemID), 1500);
+                assert.equal(networkNodeFuelRuntime._testing.getPendingFuelTransactions().size, pendingBefore);
+                assert.equal(fixture.notices.length, 0);
+            }
+            finally {
+                unregister();
+            }
+        }
+    });
+}
+for (const operation of ["execute-deposit", "execute-withdraw"]) {
+    test(`gateway ${operation} publishes exactly once after a successful blockchain refresh`, async (t) => {
+        const fixture = createChainGuardedFuelRequest(operation);
+        const deposit = operation.endsWith("deposit");
+        let refreshes = 0;
+        t.after(registerSuiAssemblyStateRunner(async (assemblyID, perform) => {
+            refreshes++;
+            assert.equal(assemblyID, fixture.node.itemID);
+            fixture.writeFuel(80);
+            return perform();
+        }));
+        const result = await fixture.invoke();
+        assert.equal(result.statusCode, 200, result.statusMessage);
+        assert.equal(fixture.quantity(), deposit ? 90 : 70);
+        assert.equal(fixture.notices.length, 1);
+        const notice = getNetworkNodeProtoTypes().FuelChangedNotice.decode(fixture.notices[0].payloadBuffer);
+        assert.equal(Number(notice.fuel.quantity), deposit ? 90 : 70);
+        assert.equal((await fixture.invoke()).statusCode, 404, "A repeated execute must not commit again");
+        assert.equal(refreshes, 1, "An already consumed transaction must not request another refresh");
+        assert.equal(fixture.quantity(), deposit ? 90 : 70);
+        assert.equal(fixture.notices.length, 1);
+    });
+}
+test("gateway returns a typed failure when the blockchain runner throws synchronously", (t) => {
+    const fixture = createChainGuardedFuelRequest("get");
+    t.after(registerSuiAssemblyStateRunner(() => { throw new Error("Worker stopped"); }));
+    const result = fixture.invoke();
+    assert.equal(result.statusCode, 503);
+    assert.match(result.statusMessage, /blockchain/);
 });
 //# sourceMappingURL=frontierNetworkNodeFuel.test.js.map

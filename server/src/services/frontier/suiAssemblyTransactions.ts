@@ -58,6 +58,8 @@ export function createAssemblyTransactionExecutor(options: {
   onCommitted?: (digest: string, label: string) => void;
   /** Persist confirmed wallet changes locally before the journal unlocks the mirror. */
   reconcileSponsored?: (metadata: Record<string, any>, digest: string) => Promise<void>;
+  /** Idempotently persist confirmed intent changes before clearing the pending transaction. */
+  reconcileCommitted?: (label: string, digest: string) => Promise<void>;
 }) {
   let journal: Journal = { version: 1, chainId: options.chainId, packageId: options.packageId };
   if (fs.existsSync(options.journalPath)) {
@@ -98,6 +100,7 @@ export function createAssemblyTransactionExecutor(options: {
       if (!options.reconcileSponsored) throw new Error("Sponsored transaction reconciliation is unavailable");
       await options.reconcileSponsored(pending.sponsored, pending.digest);
     }
+    if (status === "success") await options.reconcileCommitted?.(pending.label, pending.digest);
     save({
       ...journal, pending: undefined,
       lastTransaction: { label: pending.label, digest: pending.digest, status },

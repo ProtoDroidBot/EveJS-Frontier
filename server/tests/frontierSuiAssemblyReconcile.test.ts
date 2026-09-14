@@ -25,11 +25,15 @@ function fixture(options: {
   tracked?: AssemblySnapshot[];
   inventoryChanges?: boolean;
   chainFuelQuantity?: number;
+  statusAuthority?: boolean;
+  chainStatuses?: Record<string, number>;
+  intents?: Record<string, { id: string; targetStatus: number }>;
   hook?: (event: string, state: { pending: boolean }) => void;
 } = {}) {
   const events: string[] = [];
   const control = { pending: false };
-  const statuses = new Map<string, number>();
+  const statuses = new Map<string, number>(Object.entries(options.chainStatuses || {}));
+  const intents = { ...options.intents };
   const calls = new Map<string, any[]>();
   const record = (event: string, argument?: any) => {
     events.push(event);
@@ -37,6 +41,14 @@ function fixture(options: {
     options.hook?.(event, control);
   };
   const context: any = {
+    statusAuthority: options.statusAuthority,
+    getStatusIntent: (a: AssemblySnapshot) => intents[a.itemId] ?? null,
+    projectStatus: (a: AssemblySnapshot, status: number, intentID: string | null) => {
+      record(`project:${a.itemId}:${status}`, a);
+      if ((intents[a.itemId]?.id ?? null) !== intentID) return false;
+      delete intents[a.itemId];
+      return true;
+    },
     state: { assemblies: Object.fromEntries((options.tracked ?? []).map(a => [a.itemId, a])) },
     fuelEfficiencies: new Map([[88335, 10]]),
     assertCurrent: async () => record("assertCurrent"),
@@ -48,12 +60,16 @@ function fixture(options: {
     chain: {
       readAssembly: async (a: AssemblySnapshot) => {
         record(`read:${a.itemId}`, a);
-        return { fields: { fuel: { fields: {
+        if (options.statusAuthority && !statuses.has(a.itemId)) return null;
+        return { online: statuses.get(a.itemId) === 2, fields: { fuel: { fields: {
           quantity: String(options.chainFuelQuantity ?? a.fuel.quantity),
           type_id: { vec: [String(a.fuel.typeId)] }, unit_volume: { vec: [a.fuel.unitVolume] },
         } } } };
       },
-      ensureAssembly: async (a: AssemblySnapshot) => record(`ensure:${a.itemId}`, a),
+      ensureAssembly: async (a: AssemblySnapshot) => {
+        record(`ensure:${a.itemId}`, a);
+        if (options.statusAuthority && !statuses.has(a.itemId)) statuses.set(a.itemId, 1);
+      },
       configureFuelEfficiency: async (type: number, efficiency: number) => record(`efficiency:${type}:${efficiency}`),
       syncFuel: async (a: AssemblySnapshot) => record(`fuel:${a.itemId}:${a.fuel.quantity}`, a),
       syncStatus: async (a: AssemblySnapshot) => {
@@ -71,8 +87,221 @@ function fixture(options: {
       syncInventory: async (a: AssemblySnapshot) => record(`inventory:${a.itemId}`, a),
     },
   };
-  return { context, events, control, statuses, calls };
+  return { context, events, control, statuses, calls, intents };
 }
+
+test("chain authority preserves existing online status without a local status request", async () => {
+  const n = node();
+  const s = storage();
+  const f = fixture({ statusAuthority: true, chainStatuses: { [n.itemId]: 2, [s.itemId]: 2 } });
+  await reconcileSuiAssemblies(snapshot([n, s]), f.context, new Set([n.itemId, s.itemId]));
+  assert.equal(f.events.some(event => event.startsWith("status:")), false);
+  assert.equal(f.statuses.get(s.itemId), 2);
+});
+
+test("chain authority initializes newly anchored state and confirms explicit status requests", async () => {
+  const n = node({ status: 2 });
+  const s = storage({ status: 2 });
+  const f = fixture({ statusAuthority: true, chainStatuses: { [n.itemId]: 1 },
+    intents: { [n.itemId]: { id: "requested-online", targetStatus: 2 } } });
+  await reconcileSuiAssemblies(snapshot([n, s]), f.context, new Set([n.itemId, s.itemId]));
+  assert.equal(f.statuses.get(n.itemId), 2);
+  assert.equal(f.statuses.get(s.itemId), 2);
+  assert.deepEqual(f.intents, {});
+  assert.ok(f.events.indexOf(`status:${n.itemId}:2`) < f.events.indexOf(`project:${n.itemId}:2`));
+});
+
+test("fuel authority initializes a new node's fuel intent before anchoring and applies it once", async () => {
+  const n = node();
+  const f = fixture({ statusAuthority: true });
+  const transfers: number[] = [];
+  f.context.fuelAuthority = true;
+  f.context.initializeFuel = (assembly: any) => {
+    f.events.push(`initializeFuel:${assembly.itemId}`);
+    assembly.fuelIntent = { id: "initial-fuel", typeID: assembly.fuel.typeId, quantityDelta: assembly.fuel.quantity };
+  };
+  f.context.syncFuel = async (assembly: any) => {
+    f.events.push(`authorityFuel:${assembly.itemId}`);
+    if (assembly.fuelIntent) {
+      transfers.push(assembly.fuelIntent.quantityDelta);
+      delete assembly.fuelIntent;
+    }
+  };
+  f.context.chain.syncFuel = async () => assert.fail("fuel authority must use the context synchronization hook");
+  await reconcileSuiAssemblies(snapshot([n]), f.context, new Set([n.itemId]));
+  assert.deepEqual(transfers, [50]);
+  assert.equal(f.events.filter(event => event === `initializeFuel:${n.itemId}`).length, 1);
+  assert.ok(f.events.indexOf(`initializeFuel:${n.itemId}`) < f.events.indexOf(`ensure:${n.itemId}`));
+  assert.ok(f.events.indexOf(`ensure:${n.itemId}`) < f.events.indexOf(`authorityFuel:${n.itemId}`));
+  assert.equal(f.events.filter(event => event === `authorityFuel:${n.itemId}`).length, 2);
+});
+
+test("fuel authority projects an existing node's blockchain fuel without mirroring its stale local quantity", async () => {
+  const n = node();
+  const f = fixture({ statusAuthority: true, chainStatuses: { [n.itemId]: 1 }, chainFuelQuantity: 7 });
+  const observedLocalQuantities: number[] = [];
+  f.context.fuelAuthority = true;
+  f.context.initializeFuel = () => assert.fail("an existing chain node must not initialize another fuel deposit");
+  f.context.chain.syncFuel = async () => assert.fail("the local absolute quantity must not be mirrored to the chain");
+  f.context.syncFuel = async (assembly: any) => {
+    observedLocalQuantities.push(assembly.fuel.quantity);
+    assembly.fuel = { ...assembly.fuel, quantity: 7 };
+  };
+  await reconcileSuiAssemblies(snapshot([n]), f.context, new Set([n.itemId]));
+  assert.deepEqual(observedLocalQuantities, [50, 7]);
+  assert.equal(n.fuel.quantity, 7);
+  assert.equal(f.context.state.assemblies[n.itemId].fuel.quantity, 7);
+  assert.equal(f.events.some(event => event.startsWith("status:")), false);
+});
+
+for (const quantityDelta of [8, -8]) {
+  test(`fuel authority applies a ${quantityDelta > 0 ? "deposit" : "withdrawal"} before explicit offline and refreshes the resulting native burn`, async () => {
+    const n = node({ fuel: { typeId: 88335, quantity: 50 + quantityDelta, unitVolume: "280000" } });
+    let chainQuantity = 50;
+    let pendingDelta: number | null = quantityDelta;
+    const transfers: number[] = [];
+    const projected: number[] = [];
+    const f = fixture({ statusAuthority: true, chainStatuses: { [n.itemId]: 2 },
+      intents: { [n.itemId]: { id: "requested-offline", targetStatus: 1 } }, hook(event) {
+        if (event === `status:${n.itemId}:1`) {
+          assert.deepEqual(transfers, [quantityDelta], "the transfer must commit before offline settles native burn");
+          assert.equal(pendingDelta, null);
+          chainQuantity -= 3;
+        }
+      } });
+    f.context.fuelAuthority = true;
+    f.context.chain.syncFuel = async () => assert.fail("fuel authority must not mirror the old absolute quantity");
+    f.context.syncFuel = async (assembly: any) => {
+      f.events.push(`authorityFuel:${assembly.itemId}`);
+      if (pendingDelta !== null) {
+        transfers.push(pendingDelta);
+        chainQuantity += pendingDelta;
+        pendingDelta = null;
+      }
+      assembly.fuel = { ...assembly.fuel, quantity: chainQuantity };
+      projected.push(chainQuantity);
+    };
+    await reconcileSuiAssemblies(snapshot([n]), f.context, new Set([n.itemId]));
+    assert.deepEqual(transfers, [quantityDelta]);
+    assert.deepEqual(projected, [50 + quantityDelta, 47 + quantityDelta]);
+    assert.ok(f.events.indexOf(`authorityFuel:${n.itemId}`) < f.events.indexOf(`status:${n.itemId}:1`));
+    assert.ok(f.events.lastIndexOf(`authorityFuel:${n.itemId}`) > f.events.indexOf(`status:${n.itemId}:1`));
+    assert.equal(n.fuel.quantity, 47 + quantityDelta);
+    assert.equal(f.statuses.get(n.itemId), 1);
+    assert.deepEqual(f.intents, {});
+  });
+}
+
+test("fuel authority refreshes fuel after going online without reapplying its acknowledged intent", async () => {
+  const n = node({ status: 2, fuel: { typeId: 88335, quantity: 30, unitVolume: "280000" } });
+  let chainQuantity = 20;
+  let pendingDelta: number | null = 10;
+  const transfers: number[] = [];
+  const projected: number[] = [];
+  const f = fixture({ statusAuthority: true, chainStatuses: { [n.itemId]: 1 },
+    intents: { [n.itemId]: { id: "requested-online", targetStatus: 2 } }, hook(event) {
+      if (event === `status:${n.itemId}:2`) {
+        assert.equal(chainQuantity, 30, "the deposit must fund the node before it goes online");
+        chainQuantity -= 2;
+      }
+    } });
+  f.context.fuelAuthority = true;
+  f.context.chain.syncFuel = async () => assert.fail("fuel authority must not replenish a stale snapshot");
+  f.context.syncFuel = async (assembly: any) => {
+    f.events.push(`authorityFuel:${assembly.itemId}`);
+    if (pendingDelta !== null) {
+      transfers.push(pendingDelta);
+      chainQuantity += pendingDelta;
+      pendingDelta = null;
+    }
+    assembly.fuel = { ...assembly.fuel, quantity: chainQuantity };
+    projected.push(chainQuantity);
+  };
+  await reconcileSuiAssemblies(snapshot([n]), f.context, new Set([n.itemId]));
+  assert.deepEqual(transfers, [10]);
+  assert.deepEqual(projected, [30, 28]);
+  assert.ok(f.events.indexOf(`authorityFuel:${n.itemId}`) < f.events.indexOf(`status:${n.itemId}:2`));
+  assert.ok(f.events.lastIndexOf(`authorityFuel:${n.itemId}`) > f.events.indexOf(`status:${n.itemId}:2`));
+  assert.equal(n.fuel.quantity, 28);
+  assert.equal(f.statuses.get(n.itemId), 2);
+  assert.deepEqual(f.intents, {});
+});
+
+test("chain authority journals temporary online states before inventory transactions and clears after restoration", async () => {
+  const n = node();
+  const s = storage();
+  const f = fixture({ statusAuthority: true, inventoryChanges: true, chainStatuses: { [n.itemId]: 1, [s.itemId]: 1 }, hook(event) {
+    if (event === `status:${n.itemId}:2` || event === `inventory:${s.itemId}`) {
+      assert.deepEqual(f.context.state.temporaryStatuses, { [n.itemId]: 1, [s.itemId]: 1 });
+    }
+  } });
+  await reconcileSuiAssemblies(snapshot([n, s]), f.context, new Set([n.itemId, s.itemId]));
+  assert.equal(f.statuses.get(n.itemId), 1);
+  assert.equal(f.statuses.get(s.itemId), 1);
+  assert.deepEqual(f.context.state.temporaryStatuses, {});
+});
+
+test("inventory mirroring preserves fresh online chain status despite an older offline snapshot", async () => {
+  const n = node();
+  const s = storage();
+  const f = fixture({ statusAuthority: true, inventoryChanges: true, chainStatuses: { [n.itemId]: 2, [s.itemId]: 2 } });
+  await reconcileSuiAssemblies(snapshot([n, s]), f.context, new Set([n.itemId, s.itemId]));
+  assert.equal(f.statuses.get(n.itemId), 2);
+  assert.equal(f.statuses.get(s.itemId), 2);
+  assert.equal(f.events.some(event => event.startsWith("status:") && event.endsWith(":1")), false);
+  assert.deepEqual(f.context.state.temporaryStatuses, {});
+});
+
+test("inventory mirroring restores fresh offline chain status despite an older online snapshot", async () => {
+  const n = node({ status: 2 });
+  const s = storage({ status: 2 });
+  const f = fixture({ statusAuthority: true, inventoryChanges: true, chainStatuses: { [n.itemId]: 1, [s.itemId]: 1 } });
+  await reconcileSuiAssemblies(snapshot([n, s]), f.context, new Set([n.itemId, s.itemId]));
+  assert.equal(f.statuses.get(n.itemId), 1);
+  assert.equal(f.statuses.get(s.itemId), 1);
+  assert.ok(f.events.includes(`project:${s.itemId}:1`));
+  assert.deepEqual(f.context.state.temporaryStatuses, {});
+});
+
+test("chain authority retains temporary restoration after an uncertain inventory transaction", async () => {
+  const n = node();
+  const s = storage();
+  const f = fixture({ statusAuthority: true, inventoryChanges: true, chainStatuses: { [n.itemId]: 1, [s.itemId]: 1 }, hook(event, state) {
+    if (event === `inventory:${s.itemId}`) { state.pending = true; throw new Error("unknown inventory outcome"); }
+  } });
+  await assert.rejects(reconcileSuiAssemblies(snapshot([n, s]), f.context, new Set([n.itemId, s.itemId])), /unknown inventory outcome/);
+  assert.deepEqual(f.context.state.temporaryStatuses, { [n.itemId]: 1, [s.itemId]: 1 });
+});
+
+test("chain authority leaves a newer status request intact when confirmation projection races", async () => {
+  const n = node({ status: 2 });
+  const f = fixture({ statusAuthority: true, chainStatuses: { [n.itemId]: 1 },
+    intents: { [n.itemId]: { id: "online", targetStatus: 2 } }, hook(event) {
+      if (event === `project:${n.itemId}:2`) f.intents[n.itemId] = { id: "newer-offline", targetStatus: 1 };
+    } });
+  await assert.rejects(reconcileSuiAssemblies(snapshot([n]), f.context, new Set([n.itemId])), /status request changed/);
+  assert.equal(f.intents[n.itemId].id, "newer-offline");
+});
+
+test("chain authority retires removed nodes without projecting into missing local inventory", async () => {
+  const n = node();
+  const f = fixture({ statusAuthority: true, tracked: [n], chainStatuses: { [n.itemId]: 2 } });
+  f.context.projectStatus = () => assert.fail("Removed assemblies have no local item to project");
+  await reconcileSuiAssemblies(snapshot([]), f.context, new Set());
+  assert.ok(f.events.includes(`remove:${n.itemId}`));
+});
+
+test("retiring storage retains offline recovery even when its tracked snapshot was online", async () => {
+  const n = node({ status: 2 });
+  const s = storage({ status: 2 });
+  const f = fixture({ statusAuthority: true, tracked: [n, s], inventoryChanges: true,
+    chainStatuses: { [n.itemId]: 2, [s.itemId]: 1 }, hook(event, state) {
+      if (event === `inventory:${s.itemId}`) { state.pending = true; throw new Error("unknown retirement outcome"); }
+    } });
+  await assert.rejects(reconcileSuiAssemblies(snapshot([n]), f.context, new Set([n.itemId])), /unknown retirement outcome/);
+  assert.equal(f.context.state.temporaryStatuses[s.itemId], 1);
+  assert.ok(f.context.state.assemblies[s.itemId]);
+});
 
 test("reconciliation recovers first, anchors dependencies and funds nodes before online status", async () => {
   const n = node({ status: 2 });

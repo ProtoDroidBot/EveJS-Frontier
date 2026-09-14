@@ -248,8 +248,9 @@ function validateBerthingRequest(session, hostAssemblyID, dependencies = {}) {
         return { success: false, errorMsg: "BERTHING_HOST_NOT_OPERATIONAL" };
     }
     const constructionState = readConstructionState(hostItem);
-    if (constructionState &&
-        constructionState.assemblyStatus === deploymentRuntime.ASSEMBLY_STATUS_UNDER_CONSTRUCTION) {
+    if ((constructionState &&
+        constructionState.assemblyStatus === deploymentRuntime.ASSEMBLY_STATUS_UNDER_CONSTRUCTION) ||
+        deploymentRuntime.isAssemblyActivationPending(hostItem)) {
         return { success: false, errorMsg: "BERTHING_HOST_NOT_OPERATIONAL" };
     }
     if (toInt(hostItem.locationID, 0) !== solarSystemID ||

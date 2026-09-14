@@ -28,6 +28,7 @@ const STATUS_LABELS = Object.freeze({
 });
 
 const ERROR_MESSAGES = Object.freeze({
+  ASSEMBLY_ACTIVATING: "Wait for this assembly's anchoring or onlining timer to finish.",
   NETWORK_NODE_FUEL_REQUIRED: "Deposit fuel in this Network Node before bringing it online.",
   ASSEMBLY_ADMIN_ACCESS_DENIED:
     "Assembly mutations require an elevated GM account role.",

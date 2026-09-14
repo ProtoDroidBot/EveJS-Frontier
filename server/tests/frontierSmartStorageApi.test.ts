@@ -249,3 +249,94 @@ test("mounted HTTP routes reject untrusted origins and require bearer auth", asy
     assert.equal((await unauthenticated.json() as any).errorMsg, "AUTH_REQUIRED");
   } finally { server.close(); await once(server, "close"); }
 });
+
+test("storage access callbacks recheck authentication after asynchronous assembly reads", async () => {
+  for (const operation of ["inventory", "prepare", "execute"]) {
+    const { api, state, dependencies, login, signedTransfer } = fixture();
+    const authorization = await login();
+    const transfer = operation === "execute" ? await signedTransfer(authorization) : null;
+    const method = operation === "inventory" ? "getStorageInventory"
+      : operation === "prepare" ? "prepareStorageDeposit" : "executeStorageTransaction";
+    dependencies.runtime[method] = async (input: any) => {
+      assert.equal(input.resolveAccess().authorized, true);
+      await Promise.resolve();
+      state.sessions = [];
+      assert.equal(input.resolveAccess().authorized, false);
+      return { success: false, errorMsg: "ACCESS_DENIED" };
+    };
+    const result: any = operation === "inventory" ? await api.inventory(authorization, 50)
+      : operation === "prepare" ? await api.prepare(authorization, 50, {
+        direction: "deposit", expectedAssemblyObjectID: "0x3", stacks: [{ itemID: 11, quantity: 1 }],
+      }) : await api.execute(authorization, 50, transfer);
+    assert.equal(result.errorMsg, "ACCESS_DENIED", operation);
+    assert.equal(state.commits, 0);
+  }
+});
+
+test("HTTP reports unavailable and pending blockchain assembly states as retryable failures", async () => {
+  const express = require("express");
+  const { api, dependencies, login } = fixture();
+  const authorization = await login();
+  const app = express();
+  mountSmartStorageEndpoints(app, { api });
+  const server = app.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const url = `http://127.0.0.1:${server.address().port}/evejs/storage/50/inventory`;
+  try {
+    for (const [errorMsg, expectedStatus] of [["ASSEMBLY_STATE_UNAVAILABLE", 503], ["ASSEMBLY_STATE_PENDING", 409]] as const) {
+      dependencies.runtime.getStorageInventory = async () => ({ success: false, errorMsg });
+      const response = await fetch(url, { headers: { Authorization: authorization } });
+      const result: any = await response.json();
+      assert.equal(response.status, expectedStatus);
+      assert.equal(result.errorMsg, errorMsg);
+      assert.match(result.message, /blockchain.*try again/i);
+    }
+  } finally { server.close(); await once(server, "close"); }
+});
+
+test("inventory returns the current ship cargo after its final asynchronous assembly read", async () => {
+  const { api, dependencies, login } = fixture();
+  const authorization = await login();
+  let shipID = 77;
+  let reads = 0;
+  const readInventory = dependencies.runtime.getStorageInventory;
+  const resolveAccess = dependencies.resolveAccess;
+  dependencies.resolveAccess = () => ({ ...resolveAccess(), activeShipID: shipID });
+  dependencies.readCargo = (_characterID: number, access: any) => ({ shipID: access.activeShipID, capacity: 500, usedVolume: 0, items: [] });
+  dependencies.runtime.getStorageInventory = async (input: any) => {
+    await Promise.resolve();
+    if (++reads === 2) shipID = 88;
+    return readInventory({ ...input, access: input.resolveAccess() });
+  };
+  const result: any = await api.inventory(authorization, 50);
+  assert.equal(result.success, true);
+  assert.equal(result.data.cargo.shipID, 88);
+});
+
+test("completed asynchronous transfers notify the current session and stay successful after logout", async () => {
+  for (const loggedOut of [false, true]) {
+    const { api, dependencies, state, login, signedTransfer } = fixture();
+    const authorization = await login();
+    const body = await signedTransfer(authorization);
+    const execute = dependencies.runtime.executeStorageTransaction;
+    const newSession = { characterID: 140000001, reconnected: true };
+    dependencies.runtime.executeStorageTransaction = async (input: any) => {
+      await Promise.resolve();
+      state.sessions = [newSession];
+      const result = execute(input);
+      if (loggedOut) state.sessions = [];
+      return result;
+    };
+    const result: any = await api.execute(authorization, 50, body);
+    assert.equal(result.success, true);
+    assert.equal(result.data.gameCommitted, true);
+    assert.equal(state.commits, 1);
+    if (loggedOut) {
+      assert.equal(state.notifications.length, 0);
+      assert.match(result.data.notificationError, /transfer is saved/i);
+    } else {
+      assert.equal(state.notifications.length, 1);
+      assert.equal(state.notifications[0][0], newSession);
+    }
+  }
+});

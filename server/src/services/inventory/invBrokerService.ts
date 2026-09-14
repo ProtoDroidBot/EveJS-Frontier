@@ -2745,6 +2745,10 @@ class InvBrokerService extends BaseService {
       const accessError = this._getSpaceContainerScopeAccessError(
         session,
         containerID,
+      ) || (
+        require("../frontier/deploymentRuntime").isAssemblyActivationPending(
+          findItemById(this._normalizeInventoryId(containerID, 0)),
+        ) ? "ASSEMBLY_ACTIVATING" : null
       );
       if (accessError) {
         return {
@@ -2895,7 +2899,12 @@ class InvBrokerService extends BaseService {
     });
   }
 
-  _throwSpaceContainerScopeAccessError() {
+  _throwSpaceContainerScopeAccessError(errorMsg = null) {
+    if (errorMsg === "ASSEMBLY_ACTIVATING") {
+      throwWrappedUserError("CustomNotify", {
+        notify: "Wait for this structure's anchoring or onlining timer to finish before transferring cargo.",
+      });
+    }
     throwWrappedUserError("FakeItemNotFound");
   }
 
@@ -7760,7 +7769,7 @@ class InvBrokerService extends BaseService {
       log.debug(
         `[InvBroker] Add rejected itemID=${itemID} spaceContainer=${spaceContainerScopeAccess.containerID} error=${spaceContainerScopeAccess.errorMsg}`,
       );
-      this._throwSpaceContainerScopeAccessError();
+      this._throwSpaceContainerScopeAccessError(spaceContainerScopeAccess.errorMsg);
     }
     const shipRecord = this._getShipInventoryRecord(session, boundContext);
     const fitHostRecord = shipRecord || this._getStructureFitHostRecord(
@@ -8235,7 +8244,7 @@ class InvBrokerService extends BaseService {
         if (movedCount > 0) {
           continue;
         }
-        this._throwSpaceContainerScopeAccessError();
+        this._throwSpaceContainerScopeAccessError(spaceContainerScopeAccess.errorMsg);
       }
       const fittingServiceAccess = this._validateInSpaceFittingServiceAccess(
         session,

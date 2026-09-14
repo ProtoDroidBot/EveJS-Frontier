@@ -1885,7 +1885,7 @@ class InvBrokerService extends BaseService {
     }
     _validateSpaceContainerScopeTransferAccess(session, sourceContainerID, destinationContainerID) {
         for (const containerID of [sourceContainerID, destinationContainerID]) {
-            const accessError = this._getSpaceContainerScopeAccessError(session, containerID);
+            const accessError = this._getSpaceContainerScopeAccessError(session, containerID) || (require("../frontier/deploymentRuntime").isAssemblyActivationPending(findItemById(this._normalizeInventoryId(containerID, 0))) ? "ASSEMBLY_ACTIVATING" : null);
             if (accessError) {
                 return {
                     success: false,
@@ -1980,7 +1980,12 @@ class InvBrokerService extends BaseService {
             notify: notifyByError[errorMsg] || "Unable to access this Mobile Depot.",
         });
     }
-    _throwSpaceContainerScopeAccessError() {
+    _throwSpaceContainerScopeAccessError(errorMsg = null) {
+        if (errorMsg === "ASSEMBLY_ACTIVATING") {
+            throwWrappedUserError("CustomNotify", {
+                notify: "Wait for this structure's anchoring or onlining timer to finish before transferring cargo.",
+            });
+        }
         throwWrappedUserError("FakeItemNotFound");
     }
     _isActiveShipCloaked(session, shipID = 0) {
@@ -5300,7 +5305,7 @@ class InvBrokerService extends BaseService {
         const spaceContainerScopeAccess = this._validateSpaceContainerScopeTransferAccess(session, sourceLocationID, destination.locationID);
         if (!spaceContainerScopeAccess.success) {
             log.debug(`[InvBroker] Add rejected itemID=${itemID} spaceContainer=${spaceContainerScopeAccess.containerID} error=${spaceContainerScopeAccess.errorMsg}`);
-            this._throwSpaceContainerScopeAccessError();
+            this._throwSpaceContainerScopeAccessError(spaceContainerScopeAccess.errorMsg);
         }
         const shipRecord = this._getShipInventoryRecord(session, boundContext);
         const fitHostRecord = shipRecord || this._getStructureFitHostRecord(session, boundContext && boundContext.inventoryID);
@@ -5555,7 +5560,7 @@ class InvBrokerService extends BaseService {
                 if (movedCount > 0) {
                     continue;
                 }
-                this._throwSpaceContainerScopeAccessError();
+                this._throwSpaceContainerScopeAccessError(spaceContainerScopeAccess.errorMsg);
             }
             const fittingServiceAccess = this._validateInSpaceFittingServiceAccess(session, shipRecord, item, destination);
             if (!fittingServiceAccess.success) {

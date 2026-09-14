@@ -24,6 +24,7 @@ function snapshot(overrides: Partial<AssemblySnapshot> = {}): AssemblySnapshot {
 }
 function fixture(assembly = snapshot(), options: {
   online?: boolean; quantity?: number; applyFuelTransactions?: boolean;
+  fuelAuthority?: boolean;
   assertFuelSnapshotCurrent?: (assembly: AssemblySnapshot) => void;
 } = {}) {
   const id = address(assembly.itemId);
@@ -60,6 +61,7 @@ function fixture(assembly = snapshot(), options: {
       : { error: { code: "dynamicFieldNotFound" } },
   };
   const chain = createSuiAssemblyChain({ client, world, tenant: "dev", deriveId: address,
+    fuelAuthority: options.fuelAuthority,
     assertFuelSnapshotCurrent: options.assertFuelSnapshotCurrent,
     execute: async (label, tx, ownerId) => {
       const data = tx.getData();
@@ -74,7 +76,7 @@ function fixture(assembly = snapshot(), options: {
         if (call.function === "withdraw_fuel") fields.fuel.fields.quantity = String(BigInt(fields.fuel.fields.quantity) - integer(call.arguments[4]));
         if (call.function === "deposit_fuel") fields.fuel.fields.quantity = String(BigInt(fields.fuel.fields.quantity) + integer(call.arguments[5]));
         if (call.function === "offline") {
-          assert.equal(fields.fuel.fields.quantity, "0", "Native offline burn must see an empty tank");
+          if (!options.fuelAuthority) assert.equal(fields.fuel.fields.quantity, "0", "Native offline burn must see an empty tank");
           fields.status.fields.status.variant = "OFFLINE";
         }
       }
@@ -222,4 +224,121 @@ test("a fuel change during transaction construction prevents a stale replenishme
   } });
   await assert.rejects(f.chain.syncFuel(f.assembly), /fuel changed/);
   assert.equal(f.executions.length, 0);
+});
+
+test("authoritative fuel reads the confirmed reserve without clock or efficiency dependencies", async () => {
+  const f = fixture(snapshot(), { quantity: 37, fuelAuthority: true });
+  f.objects.delete(world.fuelConfigId);
+  f.fields.fuel.fields.is_burning = true;
+  f.fields.fuel.fields.burn_start_time = "1";
+  const observed = await f.chain.readFuelState(f.assembly);
+  assert.equal(observed.quantity, 37, "reading an old burn clock must not charge consumption again");
+  assert.equal(observed.typeID, f.assembly.fuel.typeId);
+  assert.equal(observed.unitVolume, "280000");
+  assert.ok(Number.isSafeInteger(observed.observedAtMs));
+  assert.equal(f.executions.length, 0);
+});
+
+test("authoritative fuel refuses malformed and unsafe on-chain reserves", async () => {
+  for (const quantity of ["1.5", "-1", "9007199254740992", "18446744073709551616"]) {
+    const f = fixture(snapshot(), { fuelAuthority: true });
+    f.fields.fuel.fields.quantity = quantity;
+    await assert.rejects(f.chain.readFuelState(f.assembly), /valid u64|local integer range/);
+  }
+  const f = fixture(snapshot(), { fuelAuthority: true });
+  f.fields.fuel.fields.type_id.vec = [];
+  await assert.rejects(f.chain.readFuelState(f.assembly), /invalid chain fuel/);
+  f.fields.fuel.fields.quantity = "0";
+  f.fields.fuel.fields.unit_volume.vec = [];
+  const empty = await f.chain.readFuelState(f.assembly);
+  assert.equal(empty.quantity, 0);
+  assert.equal(empty.typeID, 0);
+});
+
+test("chain fuel differences do not create transfers without an explicit intent", async () => {
+  const f = fixture(snapshot(), { quantity: 37, fuelAuthority: true });
+  await f.chain.syncFuel(f.assembly);
+  assert.equal(f.fields.fuel.fields.quantity, "37");
+  assert.equal(f.executions.length, 0);
+});
+
+function fuelTransfer(quantityDelta: number, typeID = 78499) {
+  return { ...snapshot(), fuelIntent: { id: "transfer-test", typeID, quantityDelta } };
+}
+
+test("explicit deposits preserve outside chain changes and transfer only the requested delta", async () => {
+  const assembly = fuelTransfer(10);
+  const f = fixture(assembly, { quantity: 37, fuelAuthority: true, applyFuelTransactions: true });
+  await f.chain.syncFuel(assembly);
+  assert.equal(f.fields.fuel.fields.quantity, "47");
+  assert.equal(f.executions[0].label, `assembly:${assembly.itemId}:fuel:transfer-test`);
+  assert.deepEqual(f.executions[0].tx.commands.map((c: any) => c.MoveCall?.function), [
+    "borrow_owner_cap", "deposit_fuel", "return_owner_cap",
+  ]);
+});
+
+test("explicit withdrawals preserve outside chain changes even when the local reserve is empty", async () => {
+  const assembly = { ...fuelTransfer(-10), fuel: { typeId: 0, quantity: 0, unitVolume: "0" } };
+  const f = fixture(assembly, { quantity: 37, fuelAuthority: true, applyFuelTransactions: true });
+  f.fields.fuel.fields.type_id.vec = ["78499"];
+  f.fields.fuel.fields.unit_volume.vec = ["280000"];
+  await f.chain.syncFuel(assembly);
+  assert.equal(f.fields.fuel.fields.quantity, "27");
+  assert.deepEqual(f.executions[0].tx.commands.map((c: any) => c.MoveCall?.function), [
+    "borrow_owner_cap", "withdraw_fuel", "return_owner_cap",
+  ]);
+});
+
+test("fuel intents reject insufficient reserves, mismatched types, and chain capacity overflow", async () => {
+  const withdrawing = fuelTransfer(-40);
+  const f = fixture(withdrawing, { quantity: 37, fuelAuthority: true });
+  await assert.rejects(f.chain.syncFuel(withdrawing), /insufficient chain fuel/);
+  await assert.rejects(f.chain.syncFuel(fuelTransfer(10, 88335)), /chain fuel type differs/);
+  f.fields.fuel.fields.quantity = "17857";
+  await assert.rejects(f.chain.syncFuel(fuelTransfer(1)), /exceeds chain capacity/);
+  assert.equal(f.executions.length, 0);
+});
+
+test("chain-authoritative startup consumes native fuel without replenishing the startup unit", async () => {
+  const f = fixture(snapshot({ status: 2 }), { quantity: 37, fuelAuthority: true });
+  await f.chain.syncStatus(f.assembly);
+  assert.deepEqual(f.executions[0].tx.commands.map((c: any) => c.MoveCall?.function), [
+    "borrow_owner_cap", "online", "return_owner_cap",
+  ]);
+  const empty = fixture(snapshot({ status: 2 }), { quantity: 0, fuelAuthority: true });
+  await assert.rejects(empty.chain.syncStatus(empty.assembly), /no available chain fuel/);
+  assert.equal(empty.executions.length, 0);
+});
+
+test("chain-authoritative offline lets the contract settle its own reserve", async () => {
+  const f = fixture(snapshot(), { online: true, quantity: 37, fuelAuthority: true });
+  await f.chain.syncStatus(f.assembly);
+  assert.deepEqual(f.executions[0].tx.commands.map((c: any) => c.MoveCall?.function), [
+    "borrow_owner_cap", "offline", "destroy_offline_assemblies", "return_owner_cap",
+  ]);
+});
+
+test("authoritative fuel preserves a configured chain efficiency and only fills missing defaults", async () => {
+  const f = fixture(snapshot(), { fuelAuthority: true });
+  f.efficiencies.set("77818", 25);
+  await f.chain.configureFuelEfficiency(77818, 8);
+  assert.equal(f.efficiencies.get("77818"), 25);
+  assert.equal(f.executions.length, 0);
+  await f.chain.configureFuelEfficiency(88335, 10);
+  assert.equal(f.efficiencies.get("88335"), 10);
+  assert.equal(f.executions.length, 1);
+  f.efficiencies.set("88335", 0);
+  await assert.rejects(f.chain.configureFuelEfficiency(88335, 10), /chain efficiency is outside the valid range/);
+  assert.equal(f.executions.length, 1, "an invalid chain observation must not silently replace the rate");
+});
+
+test("retirement drains only the freshly observed reserve using an explicit intent", async () => {
+  const f = fixture(snapshot(), { quantity: 37, fuelAuthority: true, applyFuelTransactions: true });
+  const fuel = await f.chain.readFuelState(f.assembly);
+  await f.chain.syncFuel({ ...f.assembly, fuelIntent: { id: "retire", typeID: fuel.typeID, quantityDelta: -fuel.quantity } });
+  assert.equal(f.fields.fuel.fields.quantity, "0");
+  assert.equal(f.executions[0].label, `assembly:${f.assembly.itemId}:fuel:retire`);
+  assert.deepEqual(f.executions[0].tx.commands.map((c: any) => c.MoveCall?.function), [
+    "borrow_owner_cap", "withdraw_fuel", "return_owner_cap",
+  ]);
 });

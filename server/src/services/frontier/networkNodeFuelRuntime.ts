@@ -35,7 +35,9 @@ type ValidationResult<T> =
  * Online fuel burns one unit per (3,000s * efficiency / 100): Unstable
  * 15/hour, D2 8/hour, D1 12/hour. Persisted accounting preserves partial
  * online intervals through refueling, offline cycles and server restarts.
- * The assembly sync worker mirrors the resulting reserve onto Sui.
+ * This local accounting is only used until a node has a confirmed Sui fuel
+ * observation. Chain-backed nodes use confirmed quantities and explicit
+ * transfer intents, so local ticks cannot replenish or double-burn chain fuel.
  */
 
 const crypto = require("crypto");
@@ -50,6 +52,7 @@ const {
   ASSEMBLY_STATUS_OFFLINE,
   ASSEMBLY_STATUS_ONLINE,
   buildAssemblyTransitionTransactionData,
+  isAssemblyActivationPending,
   isValidAssemblyTransitionSignature,
   readConstructionState,
 } = require(path.join(__dirname, "./deploymentRuntime"));
@@ -60,6 +63,7 @@ const { readStaticRows, TABLE } = require(path.join(
 
 const NETWORK_NODE_TYPE_ID = 88092;
 const FUEL_INFO_KEY = "evejsFrontierNetworkNodeFuel";
+const SUI_FUEL_INFO_KEY = "evejsSuiNetworkNodeFuel";
 const FUEL_TRANSACTION_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_FUEL_MAX_CAPACITY_VOLUME = 1000;
 const DEFAULT_FUEL_BURN_RATE_SECONDS = 3000;
@@ -84,6 +88,94 @@ function toInt(value, fallback = 0) {
 function toFiniteNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function wholeFuelQuantity(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0 || numeric > Number.MAX_SAFE_INTEGER) {
+    throw new Error("Network Node fuel quantity is outside the local range");
+  }
+  return Math.floor(numeric);
+}
+
+function readSuiNetworkNodeFuel(item) {
+  return parseCustomInfo(item?.customInfo)[SUI_FUEL_INFO_KEY] ?? null;
+}
+
+function readSuiNetworkNodeFuelIntent(item) {
+  return readSuiNetworkNodeFuel(item)?.pending ?? null;
+}
+
+function projectedSuiFuel(observation) {
+  // A conflicting pending transfer must not freeze observation of newer chain
+  // fuel. Retain the intent for retry, expose confirmed fuel and block transfers.
+  const pending = suiFuelTransferConflicts(observation) ? null : observation.pending;
+  const quantity = wholeFuelQuantity(observation.quantity + (pending?.quantityDelta ?? 0));
+  return { typeID: quantity > 0 ? pending?.typeID ?? observation.typeID : 0, quantity,
+    updatedAtMs: observation.observedAtMs, burnUpdatedAtMs: observation.observedAtMs,
+    burnRemainderMs: 0, burnTypeID: pending?.typeID ?? observation.typeID };
+}
+
+function suiFuelTransferConflicts(observation) {
+  const pending = observation?.pending;
+  return Boolean(pending && ((observation.quantity > 0 && observation.typeID !== pending.typeID) ||
+    observation.quantity + pending.quantityDelta < 0 ||
+    (pending.quantityDelta > 0 && (observation.quantity + pending.quantityDelta) * resolveFuelTypeVolume(pending.typeID) >
+      getNetworkNodeFuelAttributes().fuelMaxCapacityVolume + CAPACITY_VOLUME_EPSILON)));
+}
+
+/** Import chain quantities without discarding transfers not yet acknowledged. */
+function projectSuiNetworkNodeFuel(itemID, observation, deploymentKey) {
+  const quantity = wholeFuelQuantity(observation.quantity);
+  const typeID = toInt(observation.typeID);
+  if (quantity > 0 && !isAcceptedNetworkNodeFuelType(typeID)) throw new Error(`Unsupported chain fuel ${typeID}`);
+  const result = itemStore.updateInventoryItem(itemID, currentItem => {
+    const info = parseCustomInfo(currentItem.customInfo);
+    const previous = info[SUI_FUEL_INFO_KEY];
+    if (previous?.pending && previous.deploymentKey !== deploymentKey) {
+      throw new Error("Pending Network Node fuel belongs to a different chain deployment");
+    }
+    const next = { ...observation, typeID, quantity, deploymentKey, pending: previous?.pending };
+    info[SUI_FUEL_INFO_KEY] = next;
+    info[FUEL_INFO_KEY] = projectedSuiFuel(next);
+    return { ...currentItem, customInfo: JSON.stringify(info) };
+  });
+  if (!result.success) throw new Error(`Cannot save Network Node ${itemID} chain fuel: ${result.errorMsg}`);
+  const before = readNetworkNodeFuelState(result.previousData);
+  const after = readNetworkNodeFuelState(result.data);
+  if (before.quantity !== after.quantity || before.typeID !== after.typeID) publishFuelChanged(result.data);
+  return result.data;
+}
+
+/** Only a node absent from the chain can seed its initial reserve. */
+function initializeSuiNetworkNodeFuel(itemID, deploymentKey) {
+  const item = itemStore.findItemById(itemID);
+  if (readSuiNetworkNodeFuel(item)) return readSuiNetworkNodeFuelIntent(item);
+  const fuel = readNetworkNodeFuelState(item);
+  const result = itemStore.updateInventoryItem(itemID, currentItem => {
+    const info = parseCustomInfo(currentItem.customInfo);
+    info[SUI_FUEL_INFO_KEY] = { deploymentKey, quantity: 0, typeID: 0, observedAtMs: Date.now(),
+      pending: fuel.quantity > 0 ? { id: crypto.randomUUID(), typeID: fuel.typeID, quantityDelta: fuel.quantity } : undefined };
+    return { ...currentItem, customInfo: JSON.stringify(info) };
+  });
+  if (!result.success) throw new Error(`Cannot initialize Network Node ${itemID} chain fuel`);
+  return readSuiNetworkNodeFuelIntent(result.data);
+}
+
+/** Called before the transaction journal unlocks, and safe to repeat on recovery. */
+function acknowledgeSuiNetworkNodeFuel(itemID, intentID) {
+  const item = itemStore.findItemById(itemID);
+  if (!item || readSuiNetworkNodeFuelIntent(item)?.id !== intentID) return;
+  const result = itemStore.updateInventoryItem(itemID, currentItem => {
+    const info = parseCustomInfo(currentItem.customInfo);
+    const observation = info[SUI_FUEL_INFO_KEY];
+    if (observation?.pending?.id !== intentID) return currentItem;
+    const fuel = projectedSuiFuel(observation);
+    info[SUI_FUEL_INFO_KEY] = { ...observation, quantity: fuel.quantity, typeID: fuel.typeID, pending: undefined };
+    info[FUEL_INFO_KEY] = fuel;
+    return { ...currentItem, customInfo: JSON.stringify(info) };
+  });
+  if (!result.success) throw new Error(`Cannot acknowledge Network Node ${itemID} fuel transfer`);
 }
 
 function parseCustomInfo(customInfo) {
@@ -152,11 +244,12 @@ function resolveFuelTypeVolume(typeID) {
 
 function readNetworkNodeFuelState(item) {
   const info = parseCustomInfo(item && item.customInfo);
+  if (info[SUI_FUEL_INFO_KEY]) return projectedSuiFuel(info[SUI_FUEL_INFO_KEY]);
   const raw = info[FUEL_INFO_KEY];
   const state = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   return {
     typeID: toInt(state.typeID, 0),
-    quantity: Math.max(0, toInt(state.quantity, 0)),
+    quantity: Math.max(0, Math.floor(toFiniteNumber(state.quantity, 0))),
     updatedAtMs: toInt(state.updatedAtMs, 0),
     burnUpdatedAtMs: Math.max(0, toInt(state.burnUpdatedAtMs, 0)),
     burnRemainderMs: Math.max(0, toInt(state.burnRemainderMs, 0)),
@@ -167,6 +260,14 @@ function readNetworkNodeFuelState(item) {
 function writeNetworkNodeFuelState(itemID, state) {
   return itemStore.updateInventoryItem(itemID, (currentItem) => {
     const info = parseCustomInfo(currentItem.customInfo);
+    const observation = info[SUI_FUEL_INFO_KEY];
+    if (observation) {
+      const quantity = wholeFuelQuantity(state.quantity);
+      const quantityDelta = quantity - observation.quantity;
+      observation.pending = quantityDelta ? { id: crypto.randomUUID(), typeID: toInt(state.typeID), quantityDelta } : undefined;
+      info[FUEL_INFO_KEY] = projectedSuiFuel(observation);
+      return { ...currentItem, customInfo: JSON.stringify(info) };
+    }
     if (toInt(state && state.quantity, 0) > 0 || toInt(state?.burnRemainderMs) > 0) {
       const quantity = Math.max(0, toInt(state.quantity));
       const typeID = quantity > 0 ? toInt(state.typeID) : 0;
@@ -197,12 +298,14 @@ function writeNetworkNodeFuelState(itemID, state) {
 /** Pure accounting shared by ticks and status transitions inside a store update. */
 function calculateNetworkNodeFuelBurn(item, nowMs = Date.now()) {
   const state = readNetworkNodeFuelState(item);
+  if (readSuiNetworkNodeFuel(item)) return { state, consumedQuantity: 0 };
   const efficiency = NETWORK_NODE_FUEL_CONFIG.find(entry => entry.typeID === state.typeID)?.efficiency;
   if (!state.quantity || !efficiency) return { state, consumedQuantity: 0 };
   // Older reserves have no online-time history. Start now instead of charging
   // for time that may have been spent offline before this feature existed.
   const now = Math.max(state.burnUpdatedAtMs, toInt(nowMs, Date.now()));
-  const online = readConstructionState(item)?.assemblyStatus === ASSEMBLY_STATUS_ONLINE;
+  const online = readConstructionState(item)?.assemblyStatus === ASSEMBLY_STATUS_ONLINE &&
+    !isAssemblyActivationPending(item);
   const elapsed = online && state.burnUpdatedAtMs > 0 ? now - state.burnUpdatedAtMs : 0;
   const interval = Math.round(getNetworkNodeFuelAttributes().fuelBurnRateInSeconds * efficiency * 10);
   const total = state.burnRemainderMs + elapsed;
@@ -221,6 +324,11 @@ function calculateNetworkNodeFuelBurn(item, nowMs = Date.now()) {
 
 function publishFuelBurn(item, consumedQuantity) {
   if (!fuelNoticePublisher || consumedQuantity <= 0) return;
+  publishFuelChanged(item);
+}
+
+function publishFuelChanged(item) {
+  if (!fuelNoticePublisher) return;
   const fuel = readNetworkNodeFuelState(item);
   try {
     fuelNoticePublisher({
@@ -239,6 +347,7 @@ function settleNetworkNodeFuel(itemID, nowMs = Date.now()) {
   if (!item || toInt(item.typeID) !== NETWORK_NODE_TYPE_ID) {
     return { success: false as const, errorMsg: "ASSEMBLY_NOT_FOUND" };
   }
+  if (readSuiNetworkNodeFuel(item)) return { success: true as const, data: item, consumedQuantity: 0 };
   const calculated = calculateNetworkNodeFuelBurn(item, nowMs);
   const online = readConstructionState(item)?.assemblyStatus === ASSEMBLY_STATUS_ONLINE;
   if (!calculated.state.quantity && !calculated.consumedQuantity && !online) {
@@ -258,6 +367,7 @@ function settleNetworkNodeFuel(itemID, nowMs = Date.now()) {
     }
     if (calculated.state.quantity === 0 && online) {
       info.evejsFrontierConstruction.assemblyStatus = ASSEMBLY_STATUS_OFFLINE;
+      require("./suiAssemblyState").recordSuiAssemblyStatusIntent(info, ASSEMBLY_STATUS_OFFLINE);
     }
     return { ...currentItem, customInfo: JSON.stringify(info) };
   });
@@ -328,6 +438,9 @@ function validateFuelNetworkNode(characterID, networkNodeID): ValidationResult<{
   if (toInt(item.ownerID, 0) !== ownerID) {
     return { errorMsg: "ASSEMBLY_NOT_OWNED" };
   }
+  if (isAssemblyActivationPending(item)) {
+    return { errorMsg: "ASSEMBLY_ACTIVATING" };
+  }
   const settled = settleNetworkNodeFuel(nodeID);
   if (!settled.success) return { errorMsg: settled.errorMsg };
   item = settled.data;
@@ -374,6 +487,7 @@ function validateFuelDeposit({
   if (nodeResult.errorMsg) {
     return nodeResult as { errorMsg: string };
   }
+  if (suiFuelTransferConflicts(readSuiNetworkNodeFuel(nodeResult.item))) return { errorMsg: "ASSEMBLY_STATE_PENDING" };
   const normalizedItems = normalizeDepositItems(items);
   if (!normalizedItems) {
     return { errorMsg: "INVALID_QUANTITY" };
@@ -420,7 +534,9 @@ function validateFuelDeposit({
   }
 
   const fuelState = calculateNetworkNodeFuelBurn(nodeResult.item).state;
-  if (fuelState.quantity > 0 && fuelState.typeID !== fuelTypeID) {
+  const chainFuel = readSuiNetworkNodeFuel(nodeResult.item);
+  if ((fuelState.quantity > 0 && fuelState.typeID !== fuelTypeID) ||
+      (chainFuel?.quantity > 0 && chainFuel.typeID !== fuelTypeID)) {
     return { errorMsg: "MIXED_FUEL_TYPES" };
   }
 
@@ -466,6 +582,7 @@ function validateFuelWithdraw({
   if (nodeResult.errorMsg) {
     return nodeResult as { errorMsg: string };
   }
+  if (suiFuelTransferConflicts(readSuiNetworkNodeFuel(nodeResult.item))) return { errorMsg: "ASSEMBLY_STATE_PENDING" };
   const numericTypeID = toInt(fuelTypeID, 0);
   const numericQuantity = toInt(quantity, 0);
   if (numericQuantity <= 0) {
@@ -499,6 +616,13 @@ function prunePendingFuelTransactions(nowMs = Date.now()) {
       pendingFuelTransactions.delete(uuid);
     }
   }
+}
+
+function getPendingNetworkNodeFuelTransactionNodeID({ action, characterID, transactionUUID }) {
+  prunePendingFuelTransactions();
+  const transaction = pendingFuelTransactions.get(String(transactionUUID || "").trim().toLowerCase());
+  return transaction?.action === action && transaction.characterID === toInt(characterID)
+    ? transaction.networkNodeID : 0;
 }
 
 function createPendingFuelTransaction(action, characterID, networkNodeID, request) {
@@ -748,6 +872,13 @@ function getNetworkNodeFuelStatus(characterID, networkNodeID) {
 
 module.exports = {
   FUEL_INFO_KEY,
+  SUI_FUEL_INFO_KEY,
+  readSuiNetworkNodeFuel,
+  readSuiNetworkNodeFuelIntent,
+  projectSuiNetworkNodeFuel,
+  initializeSuiNetworkNodeFuel,
+  acknowledgeSuiNetworkNodeFuel,
+  getPendingNetworkNodeFuelTransactionNodeID,
   NETWORK_NODE_TYPE_ID,
   NETWORK_NODE_FUEL_CONFIG,
   calculateNetworkNodeFuelBurn,

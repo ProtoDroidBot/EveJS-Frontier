@@ -30,6 +30,7 @@ export interface AssemblySnapshot {
   gateDistanceMeters: string | null;
   gateMaxDistanceMeters: string | null;
   fuel: { typeId: number; quantity: number; unitVolume: string };
+  fuelIntent?: { id: string; typeID: number; quantityDelta: number };
   fuelCapacity: string;
   burnRateMs: string;
   maxEnergy: string;
@@ -226,7 +227,9 @@ export function buildSuiAssemblySnapshot(input: SuiAssemblySnapshotInput): SuiAs
             if (BigInt(assembly.fuel.unitVolume) * BigInt(quantity) > BigInt(assembly.fuelCapacity)) fail("FUEL_CAPACITY_EXCEEDED", "Fuel exceeds the authored volume capacity");
           }
         }
-        if (assembly.status === 2 && assembly.fuel.quantity === 0) fail("MISSING_FUEL", "An online Network Node requires fuel before chain synchronization");
+        const chainFuel = info.evejsSuiNetworkNodeFuel;
+        if (chainFuel?.pending) assembly.fuelIntent = { ...chainFuel.pending };
+        if (assembly.status === 2 && assembly.fuel.quantity === 0 && !chainFuel) fail("MISSING_FUEL", "An online Network Node requires fuel before chain synchronization");
       }
       if (kind === "gate") {
         assembly.gateMaxDistanceMeters = decimal(component.smartGate.range, "Gate range", METERS_PER_LIGHT_YEAR);

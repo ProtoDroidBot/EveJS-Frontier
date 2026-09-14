@@ -10,6 +10,7 @@ import { createAssemblyTransactionExecutor } from "./suiAssemblyTransactions";
 import { registerSuiStorageSyncBridge, type SuiStorageSyncRequest } from "./suiStorageSync";
 import { createSponsoredAssemblyAdmin, registerSuiAssemblyAdminBridge } from "./suiAssemblyAdmin";
 import { clearAssemblyEnergyConfig, setAssemblyEnergyConfig } from "./networkNodeEnergyConfig";
+import { registerSuiAssemblyStateRunner, readSuiAssemblyStatusIntent } from "./suiAssemblyState";
 import {
   readSyncedSuiWorldConfig, prepareSuiCharacterIdentity, createSuiCharacterTransaction,
 } from "./suiCharacterProvisioning";
@@ -150,12 +151,53 @@ export function findFuelDepletedAssemblyIds(input: SuiAssemblySnapshotInput): st
     a.networkNodeId !== null && exhausted.has(a.networkNodeId)).map(a => a.itemId);
 }
 
-/** Mirrors a consistent local snapshot; context owns the deployment-bound journal. */
+/** Identity validation must remain possible when cached node/child statuses disagree. */
+export function buildSuiAssemblyIdentitySnapshot(input: SuiAssemblySnapshotInput) {
+  const items = Object.fromEntries(Object.entries(input.items).map(([key, item]) => {
+    let info = item?.customInfo;
+    try { if (typeof info === "string") info = JSON.parse(info); } catch { return [key, item]; }
+    const state = info?.evejsFrontierConstruction;
+    if (!state || ![1, 2].includes(Number(state.assemblyStatus))) return [key, item];
+    return [key, { ...item, customInfo: { ...info, evejsFrontierConstruction: { ...state, assemblyStatus: 1 } } }];
+  }));
+  return buildSuiAssemblySnapshot({ ...input, items });
+}
+
+/** Mirror game contents while changing chain status only for explicit lifecycle requests. */
 export async function reconcileSuiAssemblies(snapshot: any, context: any, localItemIds: Set<string>) {
   await context.assertCurrent();
   await context.executor.recover();
   const failures = snapshot.errors.map((error: any) => error.message);
   const ready: any[] = [];
+  const statusRequests = new Map<string, string | null>();
+  const temporary = context.state.temporaryStatuses ??= {};
+  const syncFuel = (assembly: any) => context.syncFuel
+    ? context.syncFuel(assembly) : context.chain.syncFuel(assembly);
+  async function syncDesiredStatus(assembly: any) {
+    if (context.statusAuthority && !statusRequests.has(assembly.itemId) && temporary[assembly.itemId] === undefined) return;
+    if (context.statusAuthority && !statusRequests.has(assembly.itemId) && temporary[assembly.itemId] !== undefined) {
+      assembly = { ...assembly, status: temporary[assembly.itemId] };
+    }
+    const intentID = statusRequests.get(assembly.itemId) ?? null;
+    const assertCurrent = () => {
+      if (context.statusAuthority && (context.getStatusIntent(assembly)?.id ?? null) !== intentID) {
+        throw new Error(`Assembly ${assembly.itemId} status request changed during synchronization`);
+      }
+    };
+    assertCurrent();
+    await context.chain.syncStatus(assembly, assertCurrent);
+    if (context.statusAuthority) {
+      const confirmed = await context.chain.readAssembly(assembly);
+      if (!confirmed || confirmed.online !== (assembly.status === 2)) throw new Error(`Assembly ${assembly.itemId} status was not confirmed`);
+      await context.assertCurrent();
+      if (localItemIds.has(assembly.itemId) && !context.projectStatus(assembly, assembly.status, intentID)) {
+        throw new Error(`Assembly ${assembly.itemId} status request changed before confirmation was saved`);
+      }
+      statusRequests.delete(assembly.itemId);
+      delete temporary[assembly.itemId];
+      context.save();
+    }
+  }
   const attempt = async (label: string, action: () => Promise<unknown>) => {
     try { await action(); return true; }
     catch (error: any) {
@@ -175,6 +217,13 @@ export async function reconcileSuiAssemblies(snapshot: any, context: any, localI
         context.state.assemblies[assembly.itemId] = assembly;
         context.save();
       }
+      if (context.statusAuthority) {
+        let intent = context.getStatusIntent(assembly);
+        const existing = await context.chain.readAssembly(assembly);
+        if (!existing && !intent) intent = context.requestInitialStatus?.(assembly) ?? null;
+        if (!existing && assembly.kind === "network_node") context.initializeFuel?.(assembly);
+        if (intent || !existing) statusRequests.set(assembly.itemId, intent?.id ?? null);
+      }
       await context.chain.ensureAssembly(assembly);
     })) ready.push(assembly);
   }
@@ -191,6 +240,7 @@ export async function reconcileSuiAssemblies(snapshot: any, context: any, localI
         return;
       }
       removed.push(assembly);
+      if (context.statusAuthority) statusRequests.set(assembly.itemId, null);
       if (assembly.kind === "network_node") {
         const fuel = suiAssemblyFields(current.fields.fuel);
         const quantity = Number(fuel.quantity);
@@ -213,11 +263,12 @@ export async function reconcileSuiAssemblies(snapshot: any, context: any, localI
       }
       // Stop the node and its connected assemblies atomically before mirroring
       // an exhausted tank. The chain adapter neutralizes the legacy burn clock.
-      if (node.status === 1) await context.chain.syncStatus(node);
-      await context.chain.syncFuel(node);
+      if (node.status === 1 && !context.fuelAuthority) await syncDesiredStatus(node);
+      await syncFuel(node);
+      if (node.status === 1 && context.fuelAuthority) await syncDesiredStatus(node);
     })) {
       fuelReady.add(node.itemId);
-      if (node.status === 2 && nodes.includes(node)) await attempt(node.itemId, () => context.chain.syncStatus(node));
+      if (node.status === 2 && nodes.includes(node)) await attempt(node.itemId, () => syncDesiredStatus(node));
     }
   }
   await attempt("gate links", () => context.contents.syncGateLinks([
@@ -228,14 +279,29 @@ export async function reconcileSuiAssemblies(snapshot: any, context: any, localI
     const node = [...nodes, ...retirementNodes].find(n => n.itemId === assembly.networkNodeId);
     if (!node) throw new Error("Storage Network Node is not synchronized");
     if (!fuelReady.has(node.itemId)) throw new Error("Storage Network Node fuel is not synchronized");
-    await context.chain.syncStatus({ ...node, status: 2 });
-    await context.chain.syncStatus({ ...assembly, status: 2 });
+    const needOnline = new Set<string>([node.itemId, assembly.itemId]);
+    if (context.statusAuthority) {
+      // Save restoration before a temporary online transaction can commit.
+      // Restart recovery restores these states before importing chain observations.
+      // Read again immediately before this operation: an external owner action
+      // may have changed status since the beginning of the mirror pass.
+      for (const target of [node, assembly]) {
+        const current = await context.chain.readAssembly(target);
+        if (!current) throw new Error(`Assembly ${target.itemId} disappeared before inventory synchronization`);
+        if (current.online) needOnline.delete(target.itemId);
+        if (!current.online) temporary[target.itemId] ??= statusRequests.has(target.itemId) ? target.status : 1;
+      }
+      await context.assertCurrent();
+      context.save();
+    }
+    if (needOnline.has(node.itemId)) await context.chain.syncStatus({ ...node, status: 2 });
+    if (needOnline.has(assembly.itemId)) await context.chain.syncStatus({ ...assembly, status: 2 });
     await context.contents.syncInventory(assembly);
   }
   for (const assembly of ready.filter(a => a.kind !== "network_node")) {
     await attempt(assembly.itemId, async () => {
       try { await syncStorage(assembly); }
-      finally { if (!context.executor.hasPending()) await context.chain.syncStatus(assembly); }
+      finally { if (!context.executor.hasPending()) await syncDesiredStatus(assembly); }
     });
   }
   // Only remove verified identities this runtime tracked, never unrelated chain objects.
@@ -244,20 +310,21 @@ export async function reconcileSuiAssemblies(snapshot: any, context: any, localI
       if (assembly.kind === "network_node" && Object.values<any>(context.state.assemblies).some(a => a.networkNodeId === assembly.itemId)) {
         throw new Error("Dependent assemblies must finish removal before retiring their Network Node");
       }
-      try { if (assembly.kind === "storage_unit") await syncStorage({ ...assembly, inventory: [] }); }
+      try { if (assembly.kind === "storage_unit") await syncStorage({ ...assembly, status: 1, inventory: [] }); }
       finally { if (!context.executor.hasPending()) await context.chain.syncStatus({ ...assembly, status: 1 }); }
       if (assembly.kind === "network_node") {
-        await context.chain.syncFuel({ ...assembly, fuel: { typeId: 0, quantity: 0, unitVolume: "0" } });
+        await syncFuel({ ...assembly, fuel: { typeId: 0, quantity: 0, unitVolume: "0" } });
       }
       await context.chain.removeAssembly(assembly);
       delete context.state.assemblies[assembly.itemId];
+      delete temporary[assembly.itemId];
       context.save();
     });
   }
   for (const node of nodes) {
     if (fuelReady.has(node.itemId)) {
-      await attempt(node.itemId, () => context.chain.syncStatus(node));
-      await attempt(node.itemId, () => context.chain.syncFuel(node));
+      await attempt(node.itemId, () => syncDesiredStatus(node));
+      await attempt(node.itemId, () => syncFuel(node));
     }
   }
   context.state.updatedAt = new Date().toISOString();
@@ -373,10 +440,15 @@ export function startSuiAssemblySync() {
       journalPath: path.join(root, `${synced.chainId}-${synced.packageId}.transactions.json`),
       onCommitted: (digest, label) => log.info(`[SuiAssemblySync] ${label}: ${digest}`),
       reconcileSponsored: async metadata => { deploymentRuntime.reconcileSponsoredAssemblyState(metadata); },
+      reconcileCommitted: async label => {
+        const match = /^assembly:(\d+):fuel:([^:]+)$/.exec(label);
+        if (match) networkNodeFuelRuntime.acknowledgeSuiNetworkNodeFuel(Number(match[1]), match[2]);
+      },
     });
     let snapshotItemIds = new Set<string>();
     let snapshotNodeStatuses = new Map<string, number>();
-    const chain = createSuiAssemblyChain({ client, world, execute: executor.execute, tenant: "dev",
+    const deploymentKey = `${synced.chainId}:${synced.packageId}:${synced.objectRegistryId}`;
+    const chain = createSuiAssemblyChain({ client, world, execute: executor.execute, tenant: "dev", fuelAuthority: true,
       assertFuelSnapshotCurrent(assembly) {
         // Retiring nodes intentionally have no local item. Live snapshot nodes
         // must retain their quantity throughout asynchronous transaction builds.
@@ -388,6 +460,9 @@ export function startSuiAssemblySync() {
           throw new Error(`Network node ${assembly.itemId} state changed during synchronization; retry the current snapshot`);
         }
         const fuel = networkNodeFuelRuntime.readNetworkNodeFuelState(item);
+        if ((networkNodeFuelRuntime.readSuiNetworkNodeFuelIntent(item)?.id ?? null) !== (assembly.fuelIntent?.id ?? null)) {
+          throw new Error(`Network node ${assembly.itemId} fuel transfer changed during synchronization`);
+        }
         if (fuel.quantity !== assembly.fuel.quantity ||
             (fuel.quantity > 0 && fuel.typeID !== assembly.fuel.typeId)) {
           throw new Error(`Network node ${assembly.itemId} fuel changed during synchronization; retry the current snapshot`);
@@ -425,6 +500,46 @@ export function startSuiAssemblySync() {
     await assertCurrent();
     return {
       synced, world, chain, contents, executor, state, assertCurrent, getCharacter,
+      statusAuthority: true,
+      fuelAuthority: true,
+      initializeFuel(assembly: any) {
+        assembly.fuelIntent = networkNodeFuelRuntime.initializeSuiNetworkNodeFuel(Number(assembly.itemId), deploymentKey) ?? undefined;
+      },
+      projectFuel(assembly: any, fuel: any) {
+        return networkNodeFuelRuntime.projectSuiNetworkNodeFuel(Number(assembly.itemId), fuel, deploymentKey);
+      },
+      async syncFuel(assembly: any) {
+        const item = itemStore.findItemById(Number(assembly.itemId));
+        if (!item) {
+          // Retirement is an explicit removal, so drain the current chain reserve.
+          if (assembly.fuel.quantity !== 0) return;
+          const fuel = await chain.readFuelState(assembly);
+          if (fuel.quantity > 0) await chain.syncFuel({ ...assembly, fuelIntent: {
+            id: "retire", typeID: fuel.typeID, quantityDelta: -fuel.quantity,
+          } });
+          return;
+        }
+        assembly.fuelIntent = networkNodeFuelRuntime.readSuiNetworkNodeFuelIntent(item) ?? undefined;
+        await chain.syncFuel(assembly);
+        delete assembly.fuelIntent;
+        const fuel = await chain.readFuelState(assembly);
+        await assertCurrent();
+        const current = itemStore.findItemById(Number(assembly.itemId));
+        if (!current || Number(current.ownerID) !== assembly.ownerId || Number(current.typeID) !== assembly.typeId ||
+            Number(current.locationID) !== assembly.solarSystemId || networkNodeFuelRuntime.readSuiNetworkNodeFuelIntent(current)) {
+          throw new Error(`Network node ${assembly.itemId} changed before its confirmed fuel could be saved`);
+        }
+        const updated = networkNodeFuelRuntime.projectSuiNetworkNodeFuel(Number(assembly.itemId), fuel, deploymentKey);
+        const local = networkNodeFuelRuntime.readNetworkNodeFuelState(updated);
+        assembly.fuel = { typeId: local.typeID, quantity: local.quantity, unitVolume: local.quantity > 0 ? fuel.unitVolume : "0" };
+      },
+      requestInitialStatus(assembly: any) { return deploymentRuntime.recordInitialSuiAssemblyState(assembly); },
+      getStatusIntent(assembly: any) { return readSuiAssemblyStatusIntent(itemStore.findItemById(Number(assembly.itemId))); },
+      projectStatus(assembly: any, status: number, intentID: string | null = null) {
+        const applied = deploymentRuntime.reconcileSuiAssemblyState(assembly, status, intentID);
+        if (applied && assembly.kind === "network_node") snapshotNodeStatuses.set(assembly.itemId, status);
+        return applied;
+      },
       async simulateSponsored(bytes: string) {
         const result = await client.dryRunTransactionBlock({ transactionBlock: Buffer.from(bytes, "base64") });
         if (result.effects?.status?.status !== "success") {
@@ -439,6 +554,83 @@ export function startSuiAssemblySync() {
       },
       save() { atomicJson(statePath, state); },
     };
+  }
+
+  async function restoreTemporaryStatuses() {
+    const entries = Object.entries<number>(context.state.temporaryStatuses || {});
+    if (!entries.length) return;
+    const input = currentSnapshotInput();
+    const identities = buildSuiAssemblyIdentitySnapshot(input);
+    context.setSnapshotItemIds(new Set(Object.values<any>(input.items).map(item => String(item.itemID))),
+      buildSuiAssemblySnapshot(input).assemblies);
+    // Children first; restoring an offline node cascades to its children atomically.
+    const restores = entries.map(([itemId, status]) => {
+      const assembly = identities.assemblies.find(a => a.itemId === itemId) || context.state.assemblies[itemId];
+      if (!assembly) throw new Error(`Cannot recover temporary assembly status ${itemId}`);
+      const intent = context.getStatusIntent(assembly);
+      return { assembly: { ...assembly, status: intent?.targetStatus ?? status }, intent };
+    }).sort((a, b) => Number(a.assembly.kind === "network_node") - Number(b.assembly.kind === "network_node"));
+    for (const restoration of restores) {
+      const { intent } = restoration;
+      let assembly = restoration.assembly;
+      if (assembly.kind === "network_node" && !itemStore.findItemById(Number(assembly.itemId))) {
+        const state = await context.chain.readAssembly(assembly);
+        if (!state) {
+          delete context.state.temporaryStatuses[assembly.itemId];
+          context.save();
+          continue;
+        }
+        const fuel = suiAssemblyFields(state.fields.fuel);
+        const quantity = Number(fuel.quantity);
+        if (!Number.isSafeInteger(quantity) || quantity < 0) throw new Error("Retired node fuel quantity is outside the local range");
+        assembly = { ...assembly, fuel: { quantity, typeId: Number(suiAssemblyOption(fuel.type_id) ?? 0),
+          unitVolume: String(suiAssemblyOption(fuel.unit_volume) ?? 0) } };
+      }
+      const assertCurrent = () => {
+        if ((context.getStatusIntent(assembly)?.id ?? null) !== (intent?.id ?? null)) throw new Error("Assembly status request changed during recovery");
+      };
+      await context.chain.syncStatus(assembly, assertCurrent);
+      const confirmed = await context.chain.readAssembly(assembly);
+      if (!confirmed || confirmed.online !== (assembly.status === 2)) throw new Error("Temporary assembly status recovery was not confirmed");
+      await context.assertCurrent();
+      if (itemStore.findItemById(Number(assembly.itemId)) && !context.projectStatus(assembly, assembly.status, intent?.id ?? null)) {
+        throw new Error("Assembly status request changed before recovery was saved");
+      }
+      delete context.state.temporaryStatuses[assembly.itemId];
+      context.save();
+    }
+  }
+
+  async function refreshChainStates(assemblyID?: number) {
+    await context.assertCurrent();
+    const identities = buildSuiAssemblyIdentitySnapshot(currentSnapshotInput());
+    let assemblies = identities.assemblies;
+    if (assemblyID !== undefined) {
+      const requested = assemblies.find(a => a.itemId === String(assemblyID));
+      if (!requested) throw new Error("Assembly is not available for chain state verification");
+      assemblies = assemblies.filter(a => a.itemId === requested.itemId || a.itemId === requested.networkNodeId);
+    }
+    for (const assembly of assemblies) {
+      const intent = context.getStatusIntent(assembly);
+      const state = await context.chain.readAssembly(assembly);
+      if (!state) {
+        if (assemblyID !== undefined) throw new Error("Assembly is not anchored on the current chain");
+        continue;
+      }
+      const fuel = assembly.kind === "network_node" ? await context.chain.readFuelState(assembly, state) : null;
+      await context.assertCurrent();
+      const latest = buildSuiAssemblyIdentitySnapshot(currentSnapshotInput()).assemblies.find(a => a.itemId === assembly.itemId);
+      if (JSON.stringify(latest) !== JSON.stringify(assembly)) throw new Error("Assembly changed during chain state verification");
+      if (fuel) context.projectFuel(assembly, fuel);
+      const status = state.online ? 2 : 1;
+      if (intent && intent.targetStatus !== status) {
+        if (assemblyID !== undefined) throw Object.assign(new Error("Assembly state transition is pending"), { code: "ASSEMBLY_STATE_PENDING" });
+        continue;
+      }
+      if (!context.projectStatus(assembly, status, intent?.id ?? null)) {
+        throw Object.assign(new Error("Assembly state transition changed during verification"), { code: "ASSEMBLY_STATE_PENDING" });
+      }
+    }
   }
   const worker = createAssemblySyncWorker({
     report: (message) => log.warn(`[SuiAssemblySync] ${message}`),
@@ -456,6 +648,8 @@ export function startSuiAssemblySync() {
       // mirror snapshot, otherwise stale local status would undo the wallet action.
       await context.executor.recover();
       if (sponsoredAdmin.hasPrepared()) return;
+      await restoreTemporaryStatuses();
+      await refreshChainStates();
       // Replace the shared cache only after a complete successful read. A
       // transient RPC failure preserves the last valid table for this world.
       await context.assertCurrent();
@@ -506,6 +700,22 @@ export function startSuiAssemblySync() {
     },
   });
   const unregisterAdmin = registerSuiAssemblyAdminBridge(sponsoredAdmin);
+  const unregisterState = registerSuiAssemblyStateRunner((assemblyID, operation) => worker.runExclusive(async () => {
+    try {
+      if (!context) throw new Error(worker.getLastError() || "Assembly synchronization is starting");
+      if (sponsoredAdmin.hasPrepared()) throw Object.assign(new Error("Assembly owner transaction is pending"), { code: "ASSEMBLY_STATE_PENDING" });
+      await context.assertCurrent();
+      await context.executor.recover();
+      if (context.executor.hasPending()) throw Object.assign(new Error("Assembly transaction is pending"), { code: "ASSEMBLY_STATE_PENDING" });
+      await restoreTemporaryStatuses();
+      await refreshChainStates(assemblyID);
+    } catch (error: any) {
+      if (error.code === "ASSEMBLY_STATE_PENDING") throw error;
+      throw Object.assign(new Error("Assembly chain state is unavailable", { cause: error }), { code: "ASSEMBLY_STATE_UNAVAILABLE" });
+    }
+    // Inventory validation and mutation run without yielding after the fresh read.
+    return operation();
+  }));
   energyMutationRunner = createSuiAssemblyEnergyMutationRunner({
     runExclusive: worker.runExclusive, getContext: () => context,
     hasPrepared: () => sponsoredAdmin.hasPrepared(),
@@ -542,7 +752,7 @@ export function startSuiAssemblySync() {
   worker.start();
   log.info("[SuiAssemblySync] Automatic Localnet synchronization enabled (5 second scan)");
   return { ...worker, stop() {
-    unregisterStorageSync(); unregisterAdmin(); trackedNetworkNodeBinding = null;
+    unregisterStorageSync(); unregisterAdmin(); unregisterState(); trackedNetworkNodeBinding = null;
     energyMutationRunner = null;
     const stopped = worker.stop();
     clearAssemblyEnergyConfig();

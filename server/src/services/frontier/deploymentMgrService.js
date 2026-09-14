@@ -10,7 +10,7 @@ const ERROR_MESSAGES = Object.freeze({
     ASSEMBLY_TYPE_NOT_SUPPORTED: "This assembly cannot be deployed by the local Frontier server yet.",
     CONSTRUCTION_SITE_TYPE_NOT_FOUND: "The construction-depot type is absent from this client build.",
     DEPLOYMENT_TOO_FAR: "The construction site must be placed within range of your ship.",
-    INSUFFICIENT_PLACEMENT_MATERIALS: "The required placement materials are no longer in your ship cargo.",
+    INSUFFICIENT_PLACEMENT_MATERIALS: "You do not have the required placement materials in your ship cargo or personal inventory.",
     INVALID_DEPLOYMENT_PLACEMENT: "The client supplied an invalid construction-site position.",
     NOT_IN_SPACE: "You must be in space to place a construction site.",
     SHIP_NOT_IN_SPACE: "Your active ship is not available in the current ballpark.",

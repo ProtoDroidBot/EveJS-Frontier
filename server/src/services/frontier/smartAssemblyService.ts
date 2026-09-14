@@ -7,6 +7,7 @@ const ASSEMBLY_STATUS_OFFLINE = 1;
 const ASSEMBLY_STATUS_ONLINE = 2;
 
 const ERROR_MESSAGES = Object.freeze({
+  ASSEMBLY_ACTIVATING: "Wait for this assembly's anchoring or onlining timer to finish.",
   NETWORK_NODE_CONNECTION_REQUIRED: "Connect this assembly to a Network Node within 80 km before bringing it online.",
   NETWORK_NODE_OFFLINE: "The connected Network Node must be online and fueled.",
   NETWORK_NODE_ENERGY_EXCEEDED: "The Network Node does not have enough available energy for this assembly.",
