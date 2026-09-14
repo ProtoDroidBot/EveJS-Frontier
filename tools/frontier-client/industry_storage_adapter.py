@@ -1,8 +1,72 @@
 """Native build-3502403 inventory adapters embedded by the exact-bytecode patcher.
 
-The server authorizes and commits every move. SSU UI rows represent type totals
-and intentionally have no item ID; never invent a server inventory row ID here.
+The server authorizes and commits every move. SSU UI rows represent type totals;
+their optional item ID is only a representative identity for the grid. Transfers
+between SSUs therefore use the protobuf's type-and-quantity withdrawal contract.
 """
+
+
+def _evejs_sequential_id(value):
+    value = getattr(value, "sequential", value)
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _evejs_transfer_ssu_items(controller, source_id, destination_id, requested, rows):
+    import logging
+    from eveProto.generated.eve_public.assembly import assembly_pb2
+    from eveProto.generated.eve_public.assembly.storageunit.api import requests_pb2
+    from eveProto.generated.eve_public.inventory import generic_item_type_pb2
+    from eveProto.generated.eve_public.sponsoredtransaction.preparedtransaction import preparedtransaction_pb2
+    from frontier.proto_client.client import send_request
+    from frontier.smart_assemblies.common.models.inventory import InventoryItem
+
+    service = controller.smart_assembly_svc
+    service.sui_wallet.validate_wallet_address()
+    by_type = {getattr(row, "typeID", None): row for row in rows}
+    items = [InventoryItem(type_id=type_id,
+                           item_id=_evejs_sequential_id(getattr(by_type.get(type_id), "itemID", None)) or 0,
+                           quantity=quantity)
+             for type_id, quantity in sorted(requested.items())]
+    success = False
+    service.on_withdraw_items_started(source_id, items)
+    service.on_deposit_items_started(destination_id, items)
+    try:
+        prepare = requests_pb2.PrepareWithdrawItemsRequest(
+            source_container=assembly_pb2.Identifier(sequential=source_id),
+            another_assembly=assembly_pb2.Identifier(sequential=destination_id),
+        )
+        for type_id, quantity in sorted(requested.items()):
+            prepare.stacks.add(
+                item_type=generic_item_type_pb2.Identifier(sequential=type_id),
+                quantity=quantity,
+            )
+        response = send_request(service._messenger._public_gateway, prepare,
+                                requests_pb2.PrepareWithdrawItemsResponse)
+        if not response.success:
+            logging.getLogger(__name__).error("Prepare SSU transfer failed: %s", response.status_message)
+            return
+        transaction = response.data.prepared_transaction
+        data = response.data.prepared_transaction_attributes.bcs_data_b64_bytes
+        signature = service.sui_wallet.sign_transaction(data)
+        execute = requests_pb2.ExecuteWithdrawItemsRequest(
+            prepared_transaction=preparedtransaction_pb2.Identifier(uuid=transaction.uuid),
+            signature=signature,
+        )
+        response = send_request(service._messenger._public_gateway, execute,
+                                requests_pb2.ExecuteWithdrawItemsResponse)
+        success = response.success
+        if not success:
+            logging.getLogger(__name__).error("Execute SSU transfer failed: %s", response.status_message)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "SSU transfer failed from assembly %d to %d", source_id, destination_id)
+    finally:
+        service.on_withdraw_items_completed(source_id, success, items)
+        service.on_deposit_items_completed(destination_id, success, items)
 
 
 def _evejs_install_industry_storage(namespace, kind):
@@ -375,22 +439,113 @@ def _evejs_patch_industry_nearby(namespace):
 
 def _evejs_patch_industry_drop(namespace):
     inventory_type = namespace["SmartStorageUnitInventory"]
+    item_type = namespace.get("StorageInventoryItem")
+    if item_type is not None and not getattr(item_type, "_evejs_item_ids_installed", False):
+        original_init = item_type.__init__
+        original_getitem = item_type.__getitem__
+
+        def initialize(self, type_id, quantity, is_singleton, owner_id, flag_id,
+                       location_id, is_owner, item_id=None):
+            original_init(self, type_id, quantity, is_singleton, owner_id, flag_id,
+                          location_id, is_owner)
+            self.item.itemID = _evejs_sequential_id(item_id)
+
+        def getitem(self, index):
+            if index == namespace["appConst"].ixItemID:
+                return self.itemID
+            return original_getitem(self, index)
+
+        item_type.__init__ = initialize
+        item_type.__getitem__ = getitem
+        item_type._evejs_item_ids_installed = True
+
+        def get_items(self):
+            return [item_type(
+                item.type_id,
+                item.quantity,
+                item.is_singleton,
+                self.smart_storage_controller.assembly_owner_id,
+                self.locationFlag,
+                self.smart_storage_controller.assembly_id,
+                self.smart_storage_controller.is_owner,
+                item_id=getattr(item, "item_id", None),
+            ) for item in self.smart_storage_controller.items]
+
+        inventory_type._GetItems = get_items
+
     original = inventory_type.OnDropData
 
     def drop(self, nodes):
         nodes = list(nodes or [])
         industry = [node for node in nodes if getattr(node, "__guid__", None)
                     in ("IndustryItemDragData", "xtriui.EscrowInvItem") and callable(getattr(node, "on_add_item", None))]
-        if not industry:
+        if industry:
+            from eveexceptions import UserError
+            if len(industry) != len(nodes):
+                raise UserError("CannotAddToThatLocation")
+            if not self.smart_storage_controller.is_online():
+                raise UserError("SmartStorageOffline")
+            # Industry slot and escrow nodes already carry their correct withdrawal
+            # callback, including Shift quantity prompts and target-capacity checks.
+            for node in industry:
+                node.on_add_item(self)
+            return
+
+        items = [getattr(node, "item", None) for node in nodes]
+        storage_items = [item for item in items if item is not None and
+                         getattr(item, "flagID", None) == self.locationFlag]
+        if not storage_items:
             return original(self, nodes)
         from eveexceptions import UserError
-        if len(industry) != len(nodes):
+        if len(storage_items) != len(items):
             raise UserError("CannotAddToThatLocation")
         if not self.smart_storage_controller.is_online():
             raise UserError("SmartStorageOffline")
-        # Industry slot and escrow nodes already carry their correct withdrawal
-        # callback, including Shift quantity prompts and target-capacity checks.
-        for node in industry:
-            node.on_add_item(self)
+        source_ids = {getattr(item, "locationID", None) for item in storage_items}
+        destination_id = self.smart_storage_controller.assembly_id
+        if len(source_ids) != 1 or destination_id in source_ids:
+            raise UserError("CannotAddToThatLocation")
+        if any(getattr(item, "singleton", False) for item in storage_items):
+            raise UserError("SmartDeployableDoesNotAcceptSingleton", {"name": "Smart storage unit"})
+
+        requested = {}
+        for item in storage_items:
+            quantity = int(getattr(item, "stacksize", 0) or 0)
+            if quantity <= 0:
+                raise UserError("CannotAddToThatLocation")
+            requested[item.typeID] = requested.get(item.typeID, 0) + quantity
+        if len(storage_items) == 1:
+            item = storage_items[0]
+            quantity = requested[item.typeID]
+            unit_volume = float(namespace["GetItemVolume"](item)) / quantity
+            maximum = self.get_max_quantity(unit_volume, quantity)
+            if maximum < 1:
+                capacity = self.GetCapacity()
+                raise UserError("NotEnoughCargoSpace", {
+                    "available": capacity.capacity - capacity.used,
+                    "volume": namespace["GetItemVolume"](item),
+                })
+            if maximum < quantity or namespace["uicore"].uilib.Key(namespace["uiconst"].VK_SHIFT):
+                quantity = self.prompt_user_for_quantity_sd_resource(unit_volume, quantity)
+                if not quantity:
+                    return
+                requested[item.typeID] = quantity
+        else:
+            capacity = self.GetCapacity()
+            total_volume = sum(namespace["GetItemVolume"](item) for item in storage_items)
+            if capacity.capacity - capacity.used < total_volume:
+                raise UserError("NotEnoughCargoSpace", {
+                    "available": capacity.capacity - capacity.used,
+                    "volume": total_volume,
+                })
+
+        namespace["uthread"].new(
+            _evejs_transfer_ssu_items,
+            self.smart_storage_controller,
+            next(iter(source_ids)),
+            destination_id,
+            requested,
+            storage_items,
+        )
 
     inventory_type.OnDropData = drop

@@ -7,7 +7,10 @@ const itemStore = require("../src/services/inventory/itemStore");
 const smartStorageUnitRuntime = require(
   "../src/services/frontier/smartStorageUnitRuntime",
 );
-const { registerSuiAssemblyStateRunner } = require("../src/services/frontier/suiAssemblyState");
+const {
+  registerSuiAssemblyStateRunner,
+  registerSuiAssemblyStatesRunner,
+} = require("../src/services/frontier/suiAssemblyState");
 const {
   getStorageUnitProtoTypes,
 } = require(
@@ -610,6 +613,107 @@ test("withdraw rejects fitting flags without losing stored quantities", () => {
 
 });
 
+test("storage-to-storage withdrawal refreshes both assemblies and commits atomically", async t => {
+  const source = createStorageUnit();
+  const destination = createStorageUnit();
+  const ship = createShip();
+  grantOne(OWNER_ID, source.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID, 30);
+  const batches: number[][] = [];
+  t.after(registerSuiAssemblyStatesRunner(async (assemblyIDs, operation) => {
+    batches.push([...assemblyIDs]);
+    await Promise.resolve();
+    return operation();
+  }));
+  const resolveAccess = () => createAccess(ship);
+
+  const prepared = await smartStorageUnitRuntime.prepareStorageWithdraw({
+    access: resolveAccess(),
+    characterID: OWNER_ID,
+    destinationStorageUnitID: destination.itemID,
+    resolveAccess,
+    stacks: [{ typeID: MATERIAL_TYPE_ID, quantity: 12 }],
+    storageUnitID: source.itemID,
+  });
+  assert.equal(prepared.success, true, prepared.errorMsg);
+  assert.deepEqual(batches, [[source.itemID, destination.itemID]]);
+  const authorization = JSON.parse(prepared.data.authorizationMessage);
+  assert.equal(
+    authorization.request.destinationStorageUnitID,
+    destination.itemID,
+  );
+  assert.equal(totalAt(OWNER_ID, source.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 30);
+  assert.equal(totalAt(OWNER_ID, destination.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 0);
+
+  const executed = await smartStorageUnitRuntime.executeStorageTransaction({
+    action: "storageunit-withdraw",
+    characterID: OWNER_ID,
+    resolveAccess,
+    signature: VALID_SIGNATURE,
+    transactionUUID: prepared.data.transactionUUID,
+  });
+  assert.equal(executed.success, true, executed.errorMsg);
+  assert.deepEqual(batches, [
+    [source.itemID, destination.itemID],
+    [source.itemID, destination.itemID],
+  ]);
+  assert.equal(executed.data.destinationStorageUnitID, destination.itemID);
+  assert.equal(executed.data.noticeItems[0].quantity, 12);
+  assert.equal(executed.data.destinationNoticeItems[0].quantity, 12);
+  assert.equal(totalAt(OWNER_ID, source.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 18);
+  assert.equal(totalAt(OWNER_ID, destination.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 12);
+
+  const replayed = await smartStorageUnitRuntime.executeStorageTransaction({
+    action: "storageunit-withdraw",
+    characterID: OWNER_ID,
+    resolveAccess,
+    signature: VALID_SIGNATURE,
+    transactionUUID: prepared.data.transactionUUID,
+  });
+  assert.equal(replayed.success, true);
+  assert.equal(replayed.data.replayed, true);
+  assert.equal(totalAt(OWNER_ID, source.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 18);
+  assert.equal(totalAt(OWNER_ID, destination.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 12);
+});
+
+test("storage-to-storage withdrawal revalidates destination capacity before commit", () => {
+  const source = createStorageUnit();
+  const destination = createStorageUnit(VISITOR_ID);
+  const ship = createShip();
+  grantOne(OWNER_ID, source.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID, 10);
+  const options = {
+    access: createAccess(ship),
+    characterID: OWNER_ID,
+    destinationAccess: createAccess(ship),
+    destinationStorageUnitID: destination.itemID,
+    stacks: [{ typeID: MATERIAL_TYPE_ID, quantity: 2 }],
+    storageUnitID: source.itemID,
+  };
+  const prepared = smartStorageUnitRuntime.prepareStorageWithdraw(options);
+  assert.equal(prepared.success, true, prepared.errorMsg);
+  grantOne(
+    OWNER_ID,
+    destination.itemID,
+    STORAGE_FLAG,
+    MATERIAL_TYPE_ID,
+    9999999,
+  );
+
+  const executed = smartStorageUnitRuntime.executeStorageTransaction({
+    access: options.access,
+    action: "storageunit-withdraw",
+    characterID: OWNER_ID,
+    destinationAccess: options.destinationAccess,
+    signature: VALID_SIGNATURE,
+    transactionUUID: prepared.data.transactionUUID,
+  });
+  assert.equal(executed.errorMsg, "STORAGE_CAPACITY_EXCEEDED");
+  assert.equal(totalAt(OWNER_ID, source.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 10);
+  assert.equal(
+    totalAt(OWNER_ID, destination.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID),
+    9999999,
+  );
+});
+
 test("atomic batch move leaves every source untouched when any staged move fails", () => {
   const ship = createShip();
   const destination = createStorageUnit();
@@ -786,6 +890,66 @@ test("gateway deposit/withdraw round trip publishes exactly-once character notic
       "ordinary material must remain free of module state after a round trip",
     );
   }
+});
+
+test("gateway another_assembly withdrawal publishes source and destination notices", async () => {
+  const types = getStorageUnitProtoTypes();
+  const source = createStorageUnit();
+  const destination = createStorageUnit();
+  const ship = createShip();
+  grantOne(OWNER_ID, source.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID, 20);
+  const notices: any[] = [];
+  const service = buildService(createAccess(ship), notices);
+
+  const prepare = await service.handleRequest(
+    PREPARE_WITHDRAW_ITEMS_REQUEST,
+    makeEnvelope(types.PrepareWithdrawItemsRequest, {
+      another_assembly: { sequential: destination.itemID },
+      source_container: { sequential: source.itemID },
+      stacks: [{
+        item_type: { sequential: MATERIAL_TYPE_ID },
+        quantity: 7,
+      }],
+    }),
+  );
+  assert.equal(prepare.statusCode, 200, prepare.statusMessage);
+  const prepared = types.PrepareWithdrawItemsResponse.decode(
+    prepare.responsePayloadBuffer,
+  );
+  const executeEnvelope = makeEnvelope(types.ExecuteWithdrawItemsRequest, {
+    prepared_transaction: prepared.prepared_transaction,
+    signature: VALID_SIGNATURE,
+  });
+  const execute = await service.handleRequest(
+    EXECUTE_WITHDRAW_ITEMS_REQUEST,
+    executeEnvelope,
+  );
+  assert.equal(execute.statusCode, 200, execute.statusMessage);
+  assert.equal(totalAt(OWNER_ID, source.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 13);
+  assert.equal(totalAt(OWNER_ID, destination.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 7);
+  assert.deepEqual(
+    notices.map(notice => notice.noticeTypeName),
+    [INVENTORY_ITEM_WITHDRAWN_NOTICE, INVENTORY_ITEM_DEPOSITED_NOTICE],
+  );
+  const withdrawn = types.InventoryItemWithdrawnNotice.decode(
+    notices[0].payloadBuffer,
+  );
+  const deposited = types.InventoryItemDepositedNotice.decode(
+    notices[1].payloadBuffer,
+  );
+  assert.equal(Number(withdrawn.storage_unit.sequential), source.itemID);
+  assert.equal(Number(deposited.storage_unit.sequential), destination.itemID);
+  assert.equal(Number(withdrawn.item.attributes.quantity), 7);
+  assert.equal(Number(deposited.item.attributes.quantity), 7);
+
+  const replay = await service.handleRequest(
+    EXECUTE_WITHDRAW_ITEMS_REQUEST,
+    executeEnvelope,
+  );
+  assert.equal(replay.statusCode, 200, replay.statusMessage);
+  assert.equal(notices.length, 2);
+  assert.equal(totalAt(OWNER_ID, source.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 13);
+  assert.equal(totalAt(OWNER_ID, destination.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 7);
 });
 
 test("gateway rejects unauthenticated, spoofed owner, invalid signature, and stale UUID", async () => {

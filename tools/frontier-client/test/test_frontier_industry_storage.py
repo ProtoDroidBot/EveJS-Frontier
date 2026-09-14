@@ -143,6 +143,183 @@ class AdapterTests(unittest.TestCase):
             target.OnDropData([node, NS(item=row())])
         self.assertEqual(len(calls), 3)
 
+    def test_storage_rows_keep_representative_item_ids_and_ssu_drops_use_type_withdrawal(self):
+        calls = []
+
+        class StorageItem:
+            def __init__(self, type_id, quantity, is_singleton, owner_id, flag_id,
+                         location_id, is_owner):
+                self.item = NS(itemID=None, typeID=type_id, stacksize=quantity,
+                               singleton=is_singleton, ownerID=owner_id,
+                               flagID=flag_id, locationID=location_id)
+
+            @property
+            def itemID(self):
+                return self.item.itemID
+
+            @property
+            def typeID(self):
+                return self.item.typeID
+
+            @property
+            def stacksize(self):
+                return self.item.stacksize
+
+            @property
+            def singleton(self):
+                return self.item.singleton
+
+            @property
+            def flagID(self):
+                return self.item.flagID
+
+            @property
+            def locationID(self):
+                return self.item.locationID
+
+            def __getitem__(self, index):
+                return None
+
+        class Storage:
+            locationFlag = 66
+
+            def _GetItems(self):
+                return []
+
+            def OnDropData(self, nodes):
+                calls.append(("legacy", nodes))
+
+            def get_max_quantity(self, _, quantity):
+                return quantity
+
+            def GetCapacity(self):
+                return NS(capacity=1000, used=0)
+
+            def prompt_user_for_quantity_sd_resource(self, _, quantity):
+                return quantity
+
+        namespace = {
+            "SmartStorageUnitInventory": Storage,
+            "StorageInventoryItem": StorageItem,
+            "GetItemVolume": lambda item: item.stacksize,
+            "appConst": NS(ixItemID=0),
+            "uiconst": NS(VK_SHIFT=16),
+            "uicore": NS(uilib=NS(Key=lambda _: False)),
+            "uthread": NS(new=lambda function, *args: function(*args)),
+        }
+        adapter._evejs_install_industry_storage(namespace, "storage")
+        model = NS(type_id=34, quantity=8, is_singleton=False,
+                   item_id=NS(sequential=1234))
+        target = Storage()
+        target.smart_storage_controller = NS(
+            assembly_id=300,
+            assembly_owner_id=99,
+            is_online=lambda: True,
+            is_owner=True,
+            items=[model],
+        )
+        rendered = target._GetItems()
+        self.assertEqual(rendered[0].itemID, 1234)
+        self.assertEqual(rendered[0][namespace["appConst"].ixItemID], 1234)
+
+        source = StorageItem(34, 8, False, 99, 66, 200, True, item_id=1234)
+        with mock.patch.object(adapter, "_evejs_transfer_ssu_items",
+                               side_effect=lambda *args: calls.append(("transfer", args))):
+            target.OnDropData([NS(item=source)])
+        self.assertEqual(calls[0][0], "transfer")
+        _, arguments = calls[0]
+        self.assertEqual(arguments[1:4], (200, 300, {34: 8}))
+        self.assertEqual(arguments[4], [source])
+
+    def test_ssu_transfer_worker_populates_another_assembly_and_completes_both_sides(self):
+        requests = []
+        signals = []
+
+        class Identifier:
+            def __init__(self, sequential=None, uuid=None):
+                self.sequential = sequential
+                self.uuid = uuid
+
+        class StackList(list):
+            def add(self, **values):
+                self.append(NS(**values))
+
+        class Prepare:
+            def __init__(self, source_container, another_assembly):
+                self.source_container = source_container
+                self.another_assembly = another_assembly
+                self.stacks = StackList()
+
+        class Execute:
+            def __init__(self, prepared_transaction, signature):
+                self.prepared_transaction = prepared_transaction
+                self.signature = signature
+
+        class InventoryItem:
+            def __init__(self, **values):
+                self.__dict__.update(values)
+
+        def send_request(_, request, __):
+            requests.append(request)
+            if isinstance(request, Prepare):
+                return NS(success=True, data=NS(
+                    prepared_transaction=NS(uuid=b"uuid"),
+                    prepared_transaction_attributes=NS(bcs_data_b64_bytes="transaction"),
+                ))
+            return NS(success=True)
+
+        generated = {
+            "eveProto.generated.eve_public.assembly.assembly_pb2": {"Identifier": Identifier},
+            "eveProto.generated.eve_public.assembly.storageunit.api.requests_pb2": {
+                "PrepareWithdrawItemsRequest": Prepare,
+                "PrepareWithdrawItemsResponse": object,
+                "ExecuteWithdrawItemsRequest": Execute,
+                "ExecuteWithdrawItemsResponse": object,
+            },
+            "eveProto.generated.eve_public.inventory.generic_item_type_pb2": {"Identifier": Identifier},
+            "eveProto.generated.eve_public.sponsoredtransaction.preparedtransaction.preparedtransaction_pb2": {
+                "Identifier": Identifier,
+            },
+            "frontier.proto_client.client": {"send_request": send_request},
+            "frontier.smart_assemblies.common.models.inventory": {"InventoryItem": InventoryItem},
+        }
+        signal = lambda name: lambda assembly_id, *values: signals.append(
+            (name, assembly_id,
+             [(item.type_id, item.quantity) for item in values[-1]]))
+        service = NS(
+            _messenger=NS(_public_gateway=object()),
+            on_deposit_items_completed=signal("deposit-completed"),
+            on_deposit_items_started=signal("deposit-started"),
+            on_withdraw_items_completed=signal("withdraw-completed"),
+            on_withdraw_items_started=signal("withdraw-started"),
+            sui_wallet=NS(
+                sign_transaction=lambda value: "signed:" + value,
+                validate_wallet_address=lambda: None,
+            ),
+        )
+        controller = NS(smart_assembly_svc=service)
+        with fake_modules(generated):
+            adapter._evejs_transfer_ssu_items(
+                controller,
+                200,
+                300,
+                {34: 8},
+                [NS(typeID=34, itemID=NS(sequential=1234))],
+            )
+
+        self.assertEqual(requests[0].source_container.sequential, 200)
+        self.assertEqual(requests[0].another_assembly.sequential, 300)
+        self.assertEqual(requests[0].stacks[0].item_type.sequential, 34)
+        self.assertEqual(requests[0].stacks[0].quantity, 8)
+        self.assertEqual(requests[1].prepared_transaction.uuid, b"uuid")
+        self.assertEqual(requests[1].signature, "signed:transaction")
+        self.assertEqual([entry[:2] for entry in signals], [
+            ("withdraw-started", 200),
+            ("deposit-started", 300),
+            ("withdraw-completed", 200),
+            ("deposit-completed", 300),
+        ])
+
     def test_nearby_ssus_include_visitor_partitions_filter_range_and_reuse_controllers(self):
         created = []
         disconnected = []

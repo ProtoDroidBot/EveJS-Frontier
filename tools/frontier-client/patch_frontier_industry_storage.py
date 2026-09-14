@@ -47,6 +47,16 @@ PREVIOUS_BLUEPRINT_WRAPPER_SHA256 = {
     "panel": "ba2b8f3992be4cb1e6b5829f069928d0b4e7d9059cd3064693e88a4bbc81fcdc",
     "service": "f6db984fb49f12b0db3f050d3bb173d106f866dd75573eed16b3074fa6d68204",
 }
+# Exact six-member assembly-window release, before direct SSU-to-SSU transfers
+# and representative StorageInventoryItem identities were added.
+PREVIOUS_WINDOW_WRAPPER_SHA256 = {
+    "controller": "0aa58bb3f4281e3a2d26dbde9d62270ddd0b3a5c88f15bcb1b153fb5d716420b",
+    "facility": "10109fa11cb34e8650bcd4dac3ab1e644ce55817e8cefa0ec9dbfb1ad753bf1d",
+    "storage": "3cc189eeaa7798b95caae1393153660afb35b41521b014ffc561a5beb9857fe4",
+    "panel": "3cf945f9417b949602a863e6c82314272fd6dc2cf56a141d2aea7096d6859875",
+    "service": "fd7554eb2dde79f583389f3eec20224313907fcf70537b46e98e88aaf00b9775",
+    "assembly_window": "99ad0ac3f1a346e5bb83830640b8c3f4a711067cbe70429a95f5500517dfcd40",
+}
 SOURCE_SENTINEL = b"EVEJS_INDUSTRY_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_INDUSTRY_ADAPTER_CODE_V1"
 
@@ -77,7 +87,8 @@ def inspect_member(member, kind, expected):
     if digest == expected:
         return "source", member
     previous = digest in (PREVIOUS_WRAPPER_SHA256.get(kind), PREVIOUS_PANEL_WRAPPER_SHA256.get(kind),
-                          PREVIOUS_BLUEPRINT_WRAPPER_SHA256.get(kind))
+                          PREVIOUS_BLUEPRINT_WRAPPER_SHA256.get(kind),
+                          PREVIOUS_WINDOW_WRAPPER_SHA256.get(kind))
     try:
         wrapper = marshal.loads(member[16:])
         if not isinstance(wrapper, types.CodeType):
@@ -109,7 +120,8 @@ def inspect_archive(archive, build=BUILD):
             digests[name] = hashlib.sha256(member).hexdigest()
             states[name], originals[name] = inspect_member(member, kind, expected)
     unique = set(states.values())
-    for generation in (PREVIOUS_WRAPPER_SHA256, PREVIOUS_PANEL_WRAPPER_SHA256, PREVIOUS_BLUEPRINT_WRAPPER_SHA256):
+    for generation in (PREVIOUS_WRAPPER_SHA256, PREVIOUS_PANEL_WRAPPER_SHA256,
+                       PREVIOUS_BLUEPRINT_WRAPPER_SHA256, PREVIOUS_WINDOW_WRAPPER_SHA256):
         if digests == {name: generation.get(kind, expected) for name, (kind, expected) in PROFILES.items()}:
             return "outdated", states, originals
     if "outdated" in unique:

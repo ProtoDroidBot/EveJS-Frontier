@@ -75,7 +75,6 @@ const ERROR_RESULTS = Object.freeze({
   STORAGE_TYPE_QUANTITY_EXCEEDED: [409, "That item stack has reached the Smart Storage Unit's client-visible limit."],
   INVALID_DESTINATION: [400, "The withdrawal destination is not available."],
   SHIP_CARGO_CAPACITY_EXCEEDED: [409, "Your ship cargo hold does not have enough free capacity."],
-  UNSUPPORTED_DESTINATION: [400, "Direct storage-to-storage withdrawal is not supported yet."],
   INSUFFICIENT_STORED_ITEMS: [409, "The Smart Storage Unit no longer holds that quantity."],
   TRANSACTION_NOT_FOUND: [404, "The storage transaction has expired. Please try again."],
   TRANSACTION_MISMATCH: [409, "The storage transaction does not match."],
@@ -243,7 +242,10 @@ function createAssemblyStorageUnitGatewayService(context) {
     );
     const result = await smartStorageUnitRuntime.getStorageInventory({
       access: resolveLiveAccess(characterID, storageUnitID),
-      resolveAccess: () => resolveLiveAccess(characterID, storageUnitID),
+      resolveAccess: (candidateStorageUnitID) => resolveLiveAccess(
+        characterID,
+        candidateStorageUnitID,
+      ),
       characterID,
       inventoryOwnerID: toNumber(
         request.inventory_owner && request.inventory_owner.sequential,
@@ -273,7 +275,10 @@ function createAssemblyStorageUnitGatewayService(context) {
     );
     const result = await smartStorageUnitRuntime.prepareStorageDeposit({
       access: resolveLiveAccess(characterID, storageUnitID),
-      resolveAccess: () => resolveLiveAccess(characterID, storageUnitID),
+      resolveAccess: (candidateStorageUnitID) => resolveLiveAccess(
+        characterID,
+        candidateStorageUnitID,
+      ),
       characterID,
       sourceLocationID: toNumber(
         request.source_container &&
@@ -313,7 +318,10 @@ function createAssemblyStorageUnitGatewayService(context) {
     );
     const result = await smartStorageUnitRuntime.prepareStorageWithdraw({
       access: resolveLiveAccess(characterID, storageUnitID),
-      resolveAccess: () => resolveLiveAccess(characterID, storageUnitID),
+      resolveAccess: (candidateStorageUnitID) => resolveLiveAccess(
+        characterID,
+        candidateStorageUnitID,
+      ),
       characterID,
       destinationFlagID: request.generic_location && request.generic_location.flag
         ? toNumber(request.generic_location.flag.value)
@@ -382,6 +390,17 @@ function createAssemblyStorageUnitGatewayService(context) {
     if (result.data.replayed !== true) {
       syncInventoryChanges(characterID, result.data.changes);
       publishInventoryNotices(noticeTypeName, noticeMessageType, result.data);
+      if (toNumber(result.data.destinationStorageUnitID) > 0) {
+        publishInventoryNotices(
+          INVENTORY_ITEM_DEPOSITED_NOTICE,
+          types.InventoryItemDepositedNotice,
+          {
+            ...result.data,
+            noticeItems: result.data.destinationNoticeItems,
+            storageUnitID: result.data.destinationStorageUnitID,
+          },
+        );
+      }
     }
     return {
       statusCode: 200,

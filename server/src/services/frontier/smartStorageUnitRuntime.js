@@ -13,7 +13,7 @@ const path = require("path");
 const itemStore = require(path.join(__dirname, "../inventory/itemStore"));
 const { buildShipResourceState, } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const creationRuntime = require(path.join(__dirname, "./creationRuntime"));
-const { runWithSuiAssemblyState } = require("./suiAssemblyState");
+const { runWithSuiAssemblyState, runWithSuiAssemblyStates, } = require("./suiAssemblyState");
 const { TABLE, readStaticRows, } = require(path.join(__dirname, "../_shared/referenceData"));
 const { ASSEMBLY_STATUS_OFFLINE, ASSEMBLY_STATUS_ONLINE, ASSEMBLY_STATUS_UNDER_CONSTRUCTION, buildAssemblyTransitionTransactionData, isAssemblyActivationPending, isValidAssemblyTransitionSignature, readConstructionState, } = require(path.join(__dirname, "./deploymentRuntime"));
 const SMART_STORAGE_FLAG = 66;
@@ -131,11 +131,17 @@ function validateStorageUnit(characterID, storageUnitID, options = {}) {
 }
 /** Keep the chain read and the inventory operation on the assembly worker queue. */
 function withAuthoritativeStorageState(options, operation) {
+    const sourceStorageUnitID = toInt(options.storageUnitID, 0);
+    const destinationStorageUnitID = toInt(options.destinationStorageUnitID, 0);
+    const resolveAccess = (storageUnitID, fallback) => (typeof options.resolveAccess === "function"
+        ? options.resolveAccess(storageUnitID)
+        : fallback);
     const currentOptions = () => ({
         ...options,
-        access: typeof options.resolveAccess === "function"
-            ? options.resolveAccess(options.storageUnitID)
-            : options.access,
+        access: resolveAccess(sourceStorageUnitID, options.access),
+        ...(destinationStorageUnitID > 0 ? {
+            destinationAccess: resolveAccess(destinationStorageUnitID, options.destinationAccess || options.access),
+        } : {}),
     });
     const unavailable = (error) => ({
         success: false,
@@ -151,7 +157,21 @@ function withAuthoritativeStorageState(options, operation) {
         });
         if (validation.errorMsg)
             return { success: false, errorMsg: validation.errorMsg };
-        const result = runWithSuiAssemblyState(toInt(current.storageUnitID), () => operation(currentOptions()));
+        if (destinationStorageUnitID > 0) {
+            const destinationValidation = validateStorageUnit(current.characterID, destinationStorageUnitID, { access: current.destinationAccess, refreshingStatus: true });
+            if (destinationValidation.errorMsg) {
+                return {
+                    success: false,
+                    errorMsg: destinationValidation.errorMsg,
+                };
+            }
+        }
+        const assemblyIDs = [...new Set(destinationStorageUnitID > 0
+                ? [sourceStorageUnitID, destinationStorageUnitID]
+                : [sourceStorageUnitID])];
+        const result = assemblyIDs.length === 1
+            ? runWithSuiAssemblyState(assemblyIDs[0], () => operation(currentOptions()))
+            : runWithSuiAssemblyStates(assemblyIDs, () => operation(currentOptions()));
         return result instanceof Promise ? result.catch(unavailable) : result;
     }
     catch (error) {
@@ -361,14 +381,31 @@ function validateWithdraw(options) {
     if (!stacks || stacks.length === 0) {
         return { errorMsg: "INVALID_QUANTITY" };
     }
-    if (toInt(options.destinationStorageUnitID, 0) > 0) {
-        return { errorMsg: "UNSUPPORTED_DESTINATION" };
+    const destinationStorageUnitID = toInt(options.destinationStorageUnitID, 0);
+    if (destinationStorageUnitID === toInt(options.storageUnitID, 0)) {
+        return { errorMsg: "INVALID_DESTINATION" };
     }
-    const destinationLocationID = toInt(options.destinationLocationID, 0);
-    const destinationFlagID = toInt(options.destinationFlagID, -1);
-    const destination = validateGenericContainer(options.characterID, destinationLocationID, options.access, "INVALID_DESTINATION");
-    if (destination.errorMsg || destinationFlagID !== CARGO_HOLD_FLAG) {
-        return { errorMsg: destination.errorMsg || "INVALID_DESTINATION" };
+    const destinationUnit = destinationStorageUnitID > 0
+        ? validateStorageUnit(options.characterID, destinationStorageUnitID, {
+            access: options.destinationAccess,
+            requireOnline: true,
+        })
+        : null;
+    if (destinationUnit && destinationUnit.errorMsg) {
+        return destinationUnit;
+    }
+    const destinationLocationID = destinationStorageUnitID > 0
+        ? destinationStorageUnitID
+        : toInt(options.destinationLocationID, 0);
+    const destinationFlagID = destinationStorageUnitID > 0
+        ? SMART_STORAGE_FLAG
+        : toInt(options.destinationFlagID, -1);
+    const destination = destinationStorageUnitID > 0
+        ? null
+        : validateGenericContainer(options.characterID, destinationLocationID, options.access, "INVALID_DESTINATION");
+    if (destinationStorageUnitID <= 0 &&
+        (destination?.errorMsg || destinationFlagID !== CARGO_HOLD_FLAG)) {
+        return { errorMsg: destination?.errorMsg || "INVALID_DESTINATION" };
     }
     const storedRows = listStoredRows(options.characterID, options.storageUnitID);
     const rowsByTypeID = new Map();
@@ -404,11 +441,49 @@ function validateWithdraw(options) {
             };
         }
     }
-    const destinationCapacity = getShipCargoCapacity(options.characterID, destination.item);
+    const withdrawalVolume = moves.reduce((total, move) => total + (move.unitVolume * move.quantity), 0);
+    if (destinationStorageUnitID > 0) {
+        const destinationRows = listStoredRows(options.characterID, destinationStorageUnitID);
+        const destinationQuantityByTypeID = new Map(aggregateStoredRows(destinationRows).map((entry) => [
+            entry.typeID,
+            entry.quantity,
+        ]));
+        for (const stack of stacks) {
+            const nextQuantity = (destinationQuantityByTypeID.get(stack.typeID) || 0) + stack.quantity;
+            if (nextQuantity > UINT32_MAX) {
+                return {
+                    errorMsg: "STORAGE_TYPE_QUANTITY_EXCEEDED",
+                    params: { typeID: stack.typeID },
+                };
+            }
+            destinationQuantityByTypeID.set(stack.typeID, nextQuantity);
+        }
+        const destinationUsedVolume = getUsedVolume(destinationRows);
+        const destinationCapacity = destinationUnit.capacity;
+        if (destinationUsedVolume + withdrawalVolume >
+            destinationCapacity + CAPACITY_EPSILON) {
+            return {
+                errorMsg: "STORAGE_CAPACITY_EXCEEDED",
+                params: {
+                    capacity: destinationCapacity,
+                    freeVolume: Math.max(0, destinationCapacity - destinationUsedVolume),
+                },
+            };
+        }
+        return {
+            unit: unit,
+            destinationUnit: destinationUnit,
+            destinationLocationID,
+            destinationFlagID,
+            destinationStorageUnitID,
+            stacks,
+            moves,
+        };
+    }
+    const destinationCapacity = getShipCargoCapacity(options.characterID, destination?.item);
     const destinationUsedVolume = itemStore
         .listContainerItems(options.characterID, destinationLocationID, CARGO_HOLD_FLAG)
         .reduce((total, item) => total + (Math.max(0, itemStore.getInventoryItemUnitVolume(item)) * itemQuantity(item)), 0);
-    const withdrawalVolume = moves.reduce((total, move) => total + (move.unitVolume * move.quantity), 0);
     if (destinationCapacity <= 0 ||
         destinationUsedVolume + withdrawalVolume >
             destinationCapacity + CAPACITY_EPSILON) {
@@ -423,6 +498,7 @@ function validateWithdraw(options) {
         unit: unit,
         destinationLocationID,
         destinationFlagID,
+        destinationStorageUnitID: 0,
         stacks,
         moves,
     };
@@ -511,7 +587,7 @@ function prepareStorageWithdraw(options) {
         storageUnitID: toInt(options.storageUnitID, 0),
         destinationLocationID: validation.destinationLocationID,
         destinationFlagID: validation.destinationFlagID,
-        destinationStorageUnitID: 0,
+        destinationStorageUnitID: validation.destinationStorageUnitID,
         ...(options.deployment ? { deployment: options.deployment } : {}),
         stacks: validation.stacks,
     }, options.walletAddress);
@@ -572,8 +648,12 @@ function commitDeposit(transaction, access) {
         },
     };
 }
-function commitWithdraw(transaction, access) {
-    const validation = validateWithdraw({ ...transaction.request, access });
+function commitWithdraw(transaction, access, destinationAccess) {
+    const validation = validateWithdraw({
+        ...transaction.request,
+        access,
+        destinationAccess,
+    });
     if (validation.errorMsg) {
         return {
             success: false,
@@ -610,11 +690,15 @@ function commitWithdraw(transaction, access) {
             changes: moved.data.changes,
             characterID: transaction.characterID,
             noticeItems,
+            destinationNoticeItems: validation.destinationStorageUnitID > 0
+                ? noticeItems
+                : [],
+            destinationStorageUnitID: validation.destinationStorageUnitID,
             storageUnitID: transaction.storageUnitID,
         },
     };
 }
-function executeStorageTransaction({ action, characterID, transactionUUID, signature, access, resolveAccess, signatureVerified, walletAddress, storageUnitID, }) {
+function executeStorageTransaction({ action, characterID, transactionUUID, signature, access, resolveAccess, destinationAccess, signatureVerified, walletAddress, storageUnitID, }) {
     // Compatibility-only envelope check: the current local Frontier profile has
     // no trusted character-to-Sui-wallet binding or canonical BCS transaction
     // verifier. Session identity, proximity, ownership, UUID/TTL binding, and
@@ -657,9 +741,16 @@ function executeStorageTransaction({ action, characterID, transactionUUID, signa
     const executionAccess = typeof resolveAccess === "function"
         ? resolveAccess(transaction.storageUnitID)
         : access;
+    const destinationStorageUnitID = toInt(transaction.request.destinationStorageUnitID, 0);
+    const executionDestinationAccess = destinationStorageUnitID > 0
+        ? (destinationAccess ||
+            (typeof resolveAccess === "function"
+                ? resolveAccess(destinationStorageUnitID)
+                : access))
+        : undefined;
     const commit = transaction.action === "storageunit-deposit"
         ? commitDeposit(transaction, executionAccess)
-        : commitWithdraw(transaction, executionAccess);
+        : commitWithdraw(transaction, executionAccess, executionDestinationAccess);
     if (commit.success === true) {
         const expiresAtMs = Date.now() + COMPLETED_TRANSACTION_TTL_MS;
         pendingTransactions.delete(normalizedUUID);
@@ -708,7 +799,11 @@ function executeStorageTransactionWithChainState(options) {
         !isValidAssemblyTransitionSignature(options.signature)) {
         return executeStorageTransaction(options);
     }
-    return withAuthoritativeStorageState({ ...options, storageUnitID: transaction.storageUnitID }, current => executeStorageTransaction(current));
+    return withAuthoritativeStorageState({
+        ...options,
+        storageUnitID: transaction.storageUnitID,
+        destinationStorageUnitID: transaction.request.destinationStorageUnitID,
+    }, current => executeStorageTransaction(current));
 }
 module.exports = {
     validateStorageUnit,
