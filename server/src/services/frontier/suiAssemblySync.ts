@@ -7,6 +7,7 @@ import { buildSuiAssemblySnapshot, type SuiAssemblySnapshotInput } from "./suiAs
 import { createSuiAssemblyChain, suiAssemblyFields, suiAssemblyOption } from "./suiAssemblyChain";
 import { createSuiAssemblyContents } from "./suiAssemblyContents";
 import { createAssemblyTransactionExecutor } from "./suiAssemblyTransactions";
+import { registerSuiStorageSyncBridge, type SuiStorageSyncRequest } from "./suiStorageSync";
 import {
   readSyncedSuiWorldConfig, prepareSuiCharacterIdentity, createSuiCharacterTransaction,
 } from "./suiCharacterProvisioning";
@@ -28,12 +29,27 @@ export function createAssemblySyncWorker(options: {
 }) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = true;
+  let closing = false;
   let generation = 0;
   let running: Promise<void> | null = null;
+  let exclusiveTail: Promise<void> | null = null;
   let lastError = "";
+  function runExclusive<T>(action: () => Promise<T>): Promise<T> {
+    if (closing) return Promise.reject(new Error("Assembly synchronization worker is stopped"));
+    // Inventory status reads can resolve Character capabilities. Keep them on
+    // the same queue as reconciliation and its single durable transaction log.
+    // Invoke immediately when idle, but convert synchronous throws to rejected
+    // promises just like errors from actions already waiting in the queue.
+    const invoke = async () => action();
+    const next = exclusiveTail ? exclusiveTail.then(invoke, invoke) : invoke();
+    const settled = next.then(() => {}, () => {});
+    exclusiveTail = settled;
+    void settled.then(() => { if (exclusiveTail === settled) exclusiveTail = null; });
+    return next;
+  }
   async function runOnce() {
     if (running) return running;
-    running = (async () => {
+    running = runExclusive(async () => {
       try {
         await options.reconcile();
         if (lastError) options.report("Smart Assembly synchronization recovered");
@@ -43,7 +59,7 @@ export function createAssemblySyncWorker(options: {
         if (message !== lastError) options.report(message);
         lastError = message;
       }
-    })();
+    });
     try { await running; } finally { running = null; }
   }
   async function tick(token: number) {
@@ -54,9 +70,11 @@ export function createAssemblySyncWorker(options: {
     }
   }
   return {
-    start() { if (stopped) { stopped = false; void tick(++generation); } },
-    stop() { stopped = true; generation++; if (timer) clearTimeout(timer); return running ?? Promise.resolve(); },
+    start() { if (stopped) { closing = false; stopped = false; void tick(++generation); } },
+    stop() { closing = true; stopped = true; generation++; if (timer) clearTimeout(timer); return exclusiveTail ?? Promise.resolve(); },
     runOnce,
+    runExclusive,
+    getLastError() { return lastError; },
   };
 }
 
@@ -245,6 +263,24 @@ export function startSuiAssemblySync() {
   let context: any = null;
   let lastSummary = "";
 
+  function currentSnapshotInput(): SuiAssemblySnapshotInput {
+    return {
+      items: itemStore.getAllItems(),
+      characters: characterState.listCharacterIDs().map((id: number) => ({ ...characterState.getCharacterRecord(id), characterID: id })),
+      components: readStaticRows(TABLE.SPACE_COMPONENTS_BY_TYPE),
+      itemTypes: readStaticRows(TABLE.ITEM_TYPES), solarSystems: readStaticRows(TABLE.SOLAR_SYSTEMS),
+      networkNodeBindings: Object.fromEntries(Object.values<any>(context?.state.assemblies || {}).filter(a => a.networkNodeId).map(a => [a.itemId, a.networkNodeId])),
+    };
+  }
+
+  function inventoryFingerprint(assembly: any) {
+    return JSON.stringify(assembly && {
+      itemId: assembly.itemId, typeId: assembly.typeId, ownerId: assembly.ownerId,
+      status: assembly.status, networkNodeId: assembly.networkNodeId,
+      inventory: assembly.inventory,
+    });
+  }
+
   async function makeContext(synced: any, snapshot: any) {
     if (!synced.sourceWorkspace) throw new Error("Assembly synchronization requires FrontierWorld.ps1 sync deployment artifacts");
     const contracts = path.join(synced.sourceWorkspace, "world-contracts");
@@ -335,7 +371,16 @@ export function startSuiAssemblySync() {
       }
       return { id: identity.characterObjectId, address: identity.walletAddress, ownerCapId: fields.owner_cap_id };
     }
-    const contents = createSuiAssemblyContents({ client, world, chain, execute: executor.execute, serverSigner: adminSigner, getCharacter });
+    const contents = createSuiAssemblyContents({ client, world, chain, execute: executor.execute, serverSigner: adminSigner, getCharacter,
+      assertInventorySnapshotCurrent(assembly) {
+        const latest = buildSuiAssemblySnapshot(currentSnapshotInput()).assemblies.find(a => a.itemId === assembly.itemId);
+        // Retiring an already removed unit intentionally empties its partition.
+        if (!latest && !itemStore.findItemById(Number(assembly.itemId)) && assembly.inventory.length === 0) return;
+        if (inventoryFingerprint(latest) !== inventoryFingerprint(assembly)) {
+          throw new Error(`Storage ${assembly.itemId} inventory changed during synchronization; retry the current snapshot`);
+        }
+      },
+    });
     await assertCurrent();
     return {
       synced, chain, contents, executor, state, assertCurrent, getCharacter,
@@ -357,14 +402,8 @@ export function startSuiAssemblySync() {
         context = await makeContext(synced, { characters: [] });
       }
       networkNodeFuelRuntime.settleAllNetworkNodeFuel(Date.now());
-      let rawItems = itemStore.getAllItems();
-      const snapshotInput: SuiAssemblySnapshotInput = {
-        items: rawItems,
-        characters: characterState.listCharacterIDs().map((id: number) => ({ ...characterState.getCharacterRecord(id), characterID: id })),
-        components: readStaticRows(TABLE.SPACE_COMPONENTS_BY_TYPE),
-        itemTypes: readStaticRows(TABLE.ITEM_TYPES), solarSystems: readStaticRows(TABLE.SOLAR_SYSTEMS),
-        networkNodeBindings: Object.fromEntries(Object.values<any>(context.state.assemblies).filter(a => a.networkNodeId).map(a => [a.itemId, a.networkNodeId])),
-      };
+      const snapshotInput = currentSnapshotInput();
+      let rawItems = snapshotInput.items;
       const depletedDependents = findFuelDepletedAssemblyIds(snapshotInput);
       for (const itemId of depletedDependents) {
         const result = deploymentRuntime.offlineAssemblyForFuelDepletion(Number(itemId));
@@ -383,10 +422,35 @@ export function startSuiAssemblySync() {
       }
     },
   });
+  async function readStorageStatus(request: SuiStorageSyncRequest): Promise<any> {
+    return worker.runExclusive(async () => {
+      if (!context) throw new Error(worker.getLastError() || "Sui assembly synchronization is starting");
+      await context.assertCurrent();
+      const snapshot = buildSuiAssemblySnapshot(currentSnapshotInput());
+      const assembly = snapshot.assemblies.find(a => a.itemId === String(request.storageUnitID) && a.kind === "storage_unit");
+      if (!assembly) throw new Error("Smart Storage Unit is not available for chain synchronization");
+      const chain = await context.contents.getInventoryStatus(assembly, request.characterID);
+      const latest = buildSuiAssemblySnapshot(currentSnapshotInput()).assemblies.find(a => a.itemId === assembly.itemId);
+      const current = inventoryFingerprint(latest) === inventoryFingerprint(assembly);
+      const synchronized = current && chain.synchronized && !context.executor.hasPending();
+      return { ...request, status: synchronized ? "synced" : "pending", chain,
+        ...(synchronized ? {} : { error: worker.getLastError() || undefined }) };
+    });
+  }
+  const unregisterStorageSync = registerSuiStorageSyncBridge({
+    readStatus: readStorageStatus,
+    async flush(request) {
+      // If the first call joins an older scan, the second observes the newly
+      // committed game inventory. Both share the worker's serialized executor.
+      await worker.runOnce();
+      await worker.runOnce();
+      return readStorageStatus(request);
+    },
+  });
   process.once("exit", () => {
     try { if (fs.readFileSync(lockPath, "utf8") === String(process.pid)) fs.unlinkSync(lockPath); } catch { /* process is exiting */ }
   });
   worker.start();
   log.info("[SuiAssemblySync] Automatic Localnet synchronization enabled (5 second scan)");
-  return worker;
+  return { ...worker, stop() { unregisterStorageSync(); return worker.stop(); } };
 }

@@ -135,6 +135,122 @@ test("restart while the previous run is settling never forks the retry loop", as
   assert.equal(timeouts.pending().length, 1);
 });
 
+test("storage status reads and reconciliation share one exclusive queue in arrival order", async () => {
+  const readGate = deferred();
+  const writeGate = deferred();
+  const events: string[] = [];
+  const worker = createAssemblySyncWorker({
+    report: () => assert.fail("Serialization must not produce an error"),
+    async reconcile() { events.push("write:start"); await writeGate.promise; events.push("write:end"); },
+  });
+  const firstRead = worker.runExclusive(async () => {
+    events.push("first-read:start");
+    await readGate.promise;
+    events.push("first-read:end");
+    return "first inventory";
+  });
+  const write = worker.runOnce();
+  const secondRead = worker.runExclusive(async () => { events.push("second-read"); return "current inventory"; });
+  const joinedWrite = worker.runOnce();
+  await settle();
+  assert.deepEqual(events, ["first-read:start"]);
+  readGate.resolve();
+  assert.equal(await firstRead, "first inventory");
+  await settle();
+  assert.deepEqual(events, ["first-read:start", "first-read:end", "write:start"]);
+  writeGate.resolve();
+  await Promise.all([write, joinedWrite]);
+  assert.equal(await secondRead, "current inventory");
+  assert.deepEqual(events, ["first-read:start", "first-read:end", "write:start", "write:end", "second-read"]);
+  await worker.stop();
+});
+
+test("a failed status read rejects its caller without poisoning queued synchronization", async () => {
+  const readGate = deferred();
+  const events: string[] = [];
+  const errors: string[] = [];
+  const worker = createAssemblySyncWorker({
+    report: message => errors.push(message),
+    async reconcile() { events.push("write"); },
+  });
+  const failed = worker.runExclusive(async () => {
+    events.push("read");
+    await readGate.promise;
+    throw new Error("Character inventory unavailable");
+  });
+  const rejected = assert.rejects(failed, /Character inventory unavailable/);
+  const write = worker.runOnce();
+  const followingRead = worker.runExclusive(async () => { events.push("following-read"); return 7; });
+  readGate.resolve();
+  await Promise.all([rejected, write]);
+  assert.equal(await followingRead, 7);
+  assert.deepEqual(events, ["read", "write", "following-read"]);
+  assert.deepEqual(errors, []);
+  assert.equal(worker.getLastError(), "");
+  await worker.stop();
+});
+
+test("an idle synchronous action failure is a rejected promise and leaves the queue usable", async () => {
+  const worker = createAssemblySyncWorker({ report() {}, async reconcile() {} });
+  let failure: Promise<unknown>;
+  assert.doesNotThrow(() => {
+    failure = worker.runExclusive(() => { throw new Error("Synchronous status failure"); });
+  });
+  await assert.rejects(failure!, /Synchronous status failure/);
+  assert.equal(await worker.runExclusive(async () => "recovered"), "recovered");
+  await worker.stop();
+});
+
+test("shutdown drains already queued status reads and writes without scheduling a retry", async (t) => {
+  const timeouts = fakeTimeouts(t);
+  const firstGate = deferred();
+  const lastGate = deferred();
+  const events: string[] = [];
+  const worker = createAssemblySyncWorker({ report() {}, async reconcile() { events.push("write"); } });
+  const first = worker.runExclusive(async () => { events.push("first-read"); await firstGate.promise; });
+  worker.start();
+  const last = worker.runExclusive(async () => { events.push("last-read"); await lastGate.promise; });
+  let stopped = false;
+  const shutdown = worker.stop().then(() => { stopped = true; });
+  await settle();
+  assert.equal(stopped, false);
+  firstGate.resolve();
+  await first;
+  await settle();
+  assert.deepEqual(events, ["first-read", "write", "last-read"]);
+  assert.equal(stopped, false, "Shutdown must wait for the status read queued after reconciliation");
+  lastGate.resolve();
+  await Promise.all([last, shutdown]);
+  assert.equal(stopped, true);
+  assert.equal(timeouts.pending().length, 0);
+});
+
+test("shutdown prevents a multi-step storage flush from enqueuing another chain write", async () => {
+  const firstWrite = deferred();
+  let writes = 0;
+  let reads = 0;
+  const worker = createAssemblySyncWorker({
+    report() {},
+    async reconcile() { writes++; await firstWrite.promise; },
+  });
+  const flush = (async () => {
+    await worker.runOnce();
+    await worker.runOnce();
+    return worker.runExclusive(async () => { reads++; });
+  })();
+  const rejected = assert.rejects(flush, /worker is stopped/);
+  const shutdown = worker.stop();
+  firstWrite.resolve();
+  await Promise.all([shutdown, rejected]);
+  await settle();
+  assert.equal(writes, 1);
+  assert.equal(reads, 0);
+  await assert.rejects(worker.runExclusive(async () => { reads++; }), /worker is stopped/);
+  await assert.rejects(worker.runOnce(), /worker is stopped/);
+  assert.equal(writes, 1);
+  assert.equal(reads, 0);
+});
+
 function depletionInput(): SuiAssemblySnapshotInput {
   const item = (itemID: number, typeID: number, x: number, status: number, quantity = 0) => ({
     itemID, typeID, ownerID: 9001, locationID: 30000123, itemName: `Assembly ${itemID}`,

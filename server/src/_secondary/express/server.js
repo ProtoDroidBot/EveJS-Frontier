@@ -808,6 +808,8 @@ function startServer(runtimeContext) {
     const { mountPlayerConnectEndpoints } = require("./playerConnectEndpoints");
     mountPlayerConnectEndpoints(app);
     mountEvejsWebGatewayRoutes(app, runtimeContext);
+    const { mountSmartStorageEndpoints } = require("./smartStorageEndpoints");
+    mountSmartStorageEndpoints(app);
     app.all(/.*/, (req, res) => {
         if (PROXY_FORWARD_UPSTREAM_URL) {
             const upstreamTargetUrl = buildForwardTargetUrl(PROXY_FORWARD_UPSTREAM_URL, req.url);

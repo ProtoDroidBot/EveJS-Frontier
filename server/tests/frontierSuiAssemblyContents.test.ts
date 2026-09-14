@@ -45,12 +45,13 @@ function inventory(items: Array<{ typeId: number; quantity: number; volume: numb
   } } });
 }
 
-function fixture(assemblies: AssemblySnapshot[] = [snapshot()]) {
+function fixture(assemblies: AssemblySnapshot[] = [snapshot()], assertInventorySnapshotCurrent?: (snapshot: AssemblySnapshot) => void) {
   const objects = new Map<string, any>();
   const dynamic = new Map<string, any>();
   const chainObjects = new Map<string, any>();
   const executed: Array<{ label: string; transaction: Transaction; ownerId: number | undefined }> = [];
   const borrowed: Array<{ ownerId: number; refs: any[] }> = [];
+  let onRead: () => void = () => {};
   for (const assembly of assemblies) {
     const capId = id(String(BigInt(assembly.itemId) + 1000n));
     chainObjects.set(assembly.itemId, {
@@ -65,6 +66,7 @@ function fixture(assemblies: AssemblySnapshot[] = [snapshot()]) {
       return objects.get(objectId) || { error: { code: "notExists" } };
     },
     async getDynamicFieldObject({ name }: any) {
+      onRead();
       return dynamic.get(String(name.value)) || { error: { code: "dynamicFieldNotFound" } };
     },
   };
@@ -78,11 +80,16 @@ function fixture(assemblies: AssemblySnapshot[] = [snapshot()]) {
   };
   let onExecute: (label: string) => void = () => {};
   const contents = createSuiAssemblyContents({
-    client, chain, world, serverSigner: signer, now: () => 123_000,
+    client, chain, world, serverSigner: signer, now: () => 123_000, assertInventorySnapshotCurrent,
     getCharacter: async (ownerId) => ({ id: id(ownerId), address: id(ownerId + 500), ownerCapId: id(ownerId + 2000) }),
-    execute: async (label, transaction, ownerId) => { executed.push({ label, transaction, ownerId }); onExecute(label); },
+    execute: async (label, transaction, ownerId, assertSnapshotCurrent) => {
+      onExecute(label);
+      assertSnapshotCurrent?.();
+      executed.push({ label, transaction, ownerId });
+    },
   });
-  return { contents, chainObjects, objects, dynamic, executed, borrowed, setOnExecute(fn: typeof onExecute) { onExecute = fn; } };
+  return { contents, chainObjects, objects, dynamic, executed, borrowed,
+    setOnExecute(fn: typeof onExecute) { onExecute = fn; }, setOnRead(fn: typeof onRead) { onRead = fn; } };
 }
 
 function calls(transaction: Transaction): any[] {
@@ -228,4 +235,76 @@ test("unit volume changes replace the stored type and capacity failures submit n
   const overflow = fixture([excessive]);
   await assert.rejects(overflow.contents.syncInventory(excessive), /exceeds on-chain capacity/);
   assert.equal(overflow.executed.length, 0);
+});
+
+test("storage inventory status reports exact on-chain quantities and limits partitions to the caller", async () => {
+  const local = snapshot({ inventory: [
+    { ownerId: 1, itemId: "8", typeId: 10, quantity: 3, unitVolume: "2" },
+    { ownerId: 2, itemId: "9", typeId: 20, quantity: 4, unitVolume: "1" },
+  ] });
+  const f = fixture([local]);
+  f.dynamic.set(id(1100), inventory([{ typeId: 10, quantity: 2, volume: 2 }]));
+  f.chainObjects.get("100").fields.inventory_keys.push(id(2002));
+  f.dynamic.set(id(2002), inventory([{ typeId: 20, quantity: 4, volume: 1 }]));
+  f.objects.set(id(2002), move(`${packageId}::access::OwnerCap<${packageId}::character::Character>`, { authorized_object_id: id(2) }));
+  f.objects.set(id(2), move(`${packageId}::character::Character`, { key: { fields: { item_id: "2", tenant: "dev" } } }));
+  const owner = await f.contents.getInventoryStatus(local, 1);
+  assert.equal(owner.assemblyId, id(100));
+  assert.equal(owner.synchronized, false);
+  assert.equal(owner.partitions.length, 1);
+  assert.deepEqual(owner.partitions[0], {
+    characterId: 1, characterObjectId: id(1), inventoryKey: id(1100), isOwner: true,
+    maxCapacity: "1000", usedCapacity: "4", synchronized: false,
+    items: [{ itemId: "10010", typeId: "10", quantity: 2, unitVolume: "2" }],
+  });
+  const visitor = await f.contents.getInventoryStatus(local, 2);
+  assert.equal(visitor.synchronized, true);
+  assert.equal(visitor.partitions.length, 1);
+  assert.equal(visitor.partitions[0].inventoryKey, id(2002));
+  assert.equal(visitor.partitions[0].isOwner, false);
+  const firstVisit = await f.contents.getInventoryStatus(local, 3);
+  assert.equal(firstVisit.partitions[0].inventoryKey, id(2003));
+  assert.equal(firstVisit.partitions[0].maxCapacity, "1000");
+  assert.deepEqual(firstVisit.partitions[0].items, []);
+  assert.equal(firstVisit.synchronized, true);
+  assert.equal(f.executed.length, 0);
+});
+
+test("inventory changed during RPC reads cannot be reported as synchronized or submitted", async () => {
+  const local = snapshot({ inventory: [{ ownerId: 1, itemId: "8", typeId: 10, quantity: 3, unitVolume: "2" }] });
+  let current = true;
+  const f = fixture([local], () => { if (!current) throw new Error("Inventory snapshot changed"); });
+  f.setOnRead(() => { current = false; });
+  await assert.rejects(f.contents.syncInventory(local), /Inventory snapshot changed/);
+  current = true;
+  await assert.rejects(f.contents.getInventoryStatus(local, 1), /Inventory snapshot changed/);
+  assert.equal(f.executed.length, 0);
+});
+
+test("inventory changes during transaction building are rejected by the executor's final snapshot guard", async () => {
+  const local = snapshot({ inventory: [{ ownerId: 2, itemId: "8", typeId: 10, quantity: 3, unitVolume: "2" }] });
+  let current = true;
+  let checks = 0;
+  const f = fixture([local], checked => {
+    assert.equal(checked, local);
+    checks++;
+    if (!current) throw new Error("Inventory snapshot changed before journaling");
+  });
+  f.setOnExecute(() => { current = false; });
+  await assert.rejects(f.contents.syncInventory(local), /before journaling/);
+  assert.equal(checks, 3);
+  assert.equal(f.borrowed[0].ownerId, 2);
+  assert.equal(f.borrowed[0].refs[0].kind, "character");
+  assert.equal(f.executed.length, 0);
+});
+
+test("inventory status rejects unreadable or inconsistent chain contents instead of assuming an empty inventory", async () => {
+  const local = snapshot();
+  const f = fixture([local]);
+  f.dynamic.set(id(1100), { error: { code: "unavailable" } });
+  await assert.rejects(f.contents.getInventoryStatus(local, 1), /Cannot read storage inventory/);
+  const malformed = inventory([{ typeId: 10, quantity: 3, volume: 2 }]);
+  malformed.data.content.fields.value.fields.used_capacity = "0";
+  f.dynamic.set(id(1100), malformed);
+  await assert.rejects(f.contents.getInventoryStatus(local, 1), /Inconsistent Sui inventory used capacity/);
 });

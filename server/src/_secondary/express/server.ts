@@ -1029,6 +1029,9 @@ function startServer(runtimeContext) {
 
   mountEvejsWebGatewayRoutes(app, runtimeContext);
 
+  const { mountSmartStorageEndpoints } = require("./smartStorageEndpoints");
+  mountSmartStorageEndpoints(app);
+
   app.all(/.*/, (req, res) => {
     if (PROXY_FORWARD_UPSTREAM_URL) {
       const upstreamTargetUrl = buildForwardTargetUrl(

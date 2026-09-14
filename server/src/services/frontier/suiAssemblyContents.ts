@@ -18,13 +18,30 @@ type ContentsOptions = {
   };
   world: { packageId: string; adminAclId: string; gateConfigId: string; serverAddressRegistryId: string };
   chain: SuiAssemblyChain;
-  execute(label: string, transaction: Transaction, ownerId?: number): Promise<unknown>;
+  execute(label: string, transaction: Transaction, ownerId?: number, assertSnapshotCurrent?: () => void): Promise<unknown>;
   getCharacter(ownerId: number): Promise<SuiContentsCharacter>;
   serverSigner: Ed25519Keypair;
   now?: () => number;
+  /** Reject inventory changes made while chain reads or transaction builds await RPC. */
+  assertInventorySnapshotCurrent?: (snapshot: AssemblySnapshot) => void;
 };
 
 type InventoryItem = { itemId: string; typeId: string; quantity: number; unitVolume: string };
+export type SuiStorageInventoryStatus = {
+  assemblyId: string;
+  online: boolean;
+  synchronized: boolean;
+  partitions: Array<{
+    characterId: number;
+    characterObjectId: string;
+    inventoryKey: string;
+    isOwner: boolean;
+    maxCapacity: string;
+    usedCapacity: string;
+    items: InventoryItem[];
+    synchronized: boolean;
+  }>;
+};
 type InventoryPartition = {
   key: string;
   ownerId: number;
@@ -274,8 +291,40 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
     return state.partitions.some((partition) => partitionChanges(partition).length > 0);
   }
 
+  /** Verified on-chain quantities, optionally limited to the requesting character. */
+  async function getInventoryStatus(snapshot: AssemblySnapshot, characterId?: number): Promise<SuiStorageInventoryStatus> {
+    if (characterId !== undefined && (!Number.isSafeInteger(characterId) || characterId <= 0)) {
+      throw new Error("Storage inventory status requires a valid game character ID");
+    }
+    const state = await readInventory(snapshot);
+    let selected = state.partitions.filter(partition => characterId === undefined || partition.ownerId === characterId);
+    // A visitor gets an empty inventory on first deposit. Its capacity is the
+    // owner's capacity in the deployed contract, even before that field exists.
+    if (characterId !== undefined && selected.length === 0) {
+      const character = await getCharacter(characterId);
+      const owner = state.partitions.find(partition => partition.ownerId === snapshot.ownerId)!;
+      selected = [{
+        key: objectId(character.ownerCapId, "character owner cap"), ownerId: characterId, character,
+        capKind: "character", capObjectId: character.id, maxCapacity: owner.maxCapacity,
+        current: new Map(), desired: new Map(),
+      }];
+    }
+    const partitions = selected.map(partition => ({
+      characterId: partition.ownerId, characterObjectId: partition.character.id,
+      inventoryKey: partition.key, isOwner: partition.capKind === "storage_unit",
+      maxCapacity: partition.maxCapacity.toString(),
+      usedCapacity: [...partition.current.values()].reduce((total, item) => total + BigInt(item.unitVolume) * BigInt(item.quantity), 0n).toString(),
+      items: [...partition.current.values()].sort((a, b) => BigInt(a.typeId) < BigInt(b.typeId) ? -1 : BigInt(a.typeId) > BigInt(b.typeId) ? 1 : 0),
+      synchronized: partitionChanges(partition).length === 0,
+    }));
+    options.assertInventorySnapshotCurrent?.(snapshot);
+    return { assemblyId: state.assembly.id, online: state.assembly.online,
+      synchronized: partitions.every(partition => partition.synchronized), partitions };
+  }
+
   async function syncInventory(snapshot: AssemblySnapshot): Promise<void> {
     const state = await readInventory(snapshot);
+    options.assertInventorySnapshotCurrent?.(snapshot);
     // Validate all partitions before the first mutation, including capacity and supported ownership.
     const plans = state.partitions.map((partition) => ({ partition, changes: partitionChanges(partition) }));
     if (!plans.some((plan) => plan.changes.length)) return;
@@ -304,7 +353,10 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
             tx.moveCall({ target: target("storage_unit", change.mint ? "game_item_to_chain_inventory" : "chain_item_to_game_inventory"), typeArguments: [generic], arguments: args });
           }
         });
-        await execute(`inventory:${snapshot.itemId}:${partition.ownerId}:${offset}`, tx, partition.ownerId);
+        const assertSnapshotCurrent = options.assertInventorySnapshotCurrent
+          ? () => options.assertInventorySnapshotCurrent!(snapshot) : undefined;
+        assertSnapshotCurrent?.();
+        await execute(`inventory:${snapshot.itemId}:${partition.ownerId}:${offset}`, tx, partition.ownerId, assertSnapshotCurrent);
       }
     }
   }
@@ -379,5 +431,5 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
     }
   }
 
-  return { hasInventoryChanges, syncInventory, syncGateLinks };
+  return { hasInventoryChanges, getInventoryStatus, syncInventory, syncGateLinks };
 }

@@ -39,6 +39,7 @@ const {
 const SMART_STORAGE_FLAG = 66;
 const CARGO_HOLD_FLAG = 5;
 const STORAGE_TRANSACTION_TTL_MS = 2 * 60 * 1000;
+const COMPLETED_TRANSACTION_TTL_MS = 24 * 60 * 60 * 1000;
 const CAPACITY_EPSILON = 1e-6;
 const UINT32_MAX = 0xffffffff;
 
@@ -289,7 +290,10 @@ function getStorageInventory({ characterID, inventoryOwnerID, storageUnitID, acc
     data: {
       capacity: validation.capacity,
       isAssemblyOwner: validation.isAssemblyOwner,
-      items: aggregateStoredRows(rows),
+      items: aggregateStoredRows(rows).map(item => ({
+        ...item,
+        typeName: itemStore.getItemMetadata(item.typeID)?.name || `Type ${item.typeID}`,
+      })),
       storageUnitID: toInt(storageUnitID, 0),
       usedVolume: getUsedVolume(rows),
     },
@@ -551,26 +555,41 @@ function pruneTransactions(nowMs = Date.now()) {
   }
 }
 
-function createPendingTransaction(action, characterID, storageUnitID, request) {
+function createPendingTransaction(action, characterID, storageUnitID, request, walletAddress?) {
   pruneTransactions();
   const transactionUUID = crypto.randomUUID().toLowerCase();
-  const transactionData = buildAssemblyTransitionTransactionData({
+  const nowMs = Date.now();
+  const expiresAtMs = nowMs + STORAGE_TRANSACTION_TTL_MS;
+  const authorizationMessage = JSON.stringify({
+    domain: "evejs-smart-storage-v1", action, characterID, storageUnitID,
+    transactionUUID, expiresAtMs, request,
+  });
+  const snapshot = JSON.parse(buildAssemblyTransitionTransactionData({
     action,
     characterID,
     itemID: storageUnitID,
     transactionUUID,
-  });
-  const nowMs = Date.now();
+  }));
+  // The offline wallet authorization binds the quantities and destination too.
+  // Its synthetic gas object deliberately cannot be submitted to Sui.
+  snapshot.gasData.payment[0].objectId = `0x${crypto.createHash("sha256").update(authorizationMessage).digest("hex")}`;
+  if (walletAddress) {
+    snapshot.sender = walletAddress;
+    snapshot.gasData.owner = walletAddress;
+  }
+  const transactionData = JSON.stringify(snapshot);
   pendingTransactions.set(transactionUUID, {
     action,
     characterID: toInt(characterID, 0),
     storageUnitID: toInt(storageUnitID, 0),
     createdAtMs: nowMs,
-    expiresAtMs: nowMs + STORAGE_TRANSACTION_TTL_MS,
+    expiresAtMs,
     request: JSON.parse(JSON.stringify(request)),
     transactionData,
+    authorizationMessage,
+    walletAddress,
   });
-  return { transactionUUID, transactionData };
+  return { transactionUUID, transactionData, authorizationMessage, expiresAtMs };
 }
 
 function prepareStorageDeposit(options) {
@@ -591,11 +610,13 @@ function prepareStorageDeposit(options) {
       storageUnitID: toInt(options.storageUnitID, 0),
       sourceLocationID: validation.sourceLocationID,
       sourceFlagID: validation.sourceFlagID,
+      ...(options.deployment ? { deployment: options.deployment } : {}),
       stacks: validation.stacks.map(({ itemID, quantity }: Record<string, any>) => ({
         itemID,
         quantity,
       })),
     },
+    options.walletAddress,
   );
   return { success: true as const, data: prepared };
 }
@@ -619,8 +640,10 @@ function prepareStorageWithdraw(options) {
       destinationLocationID: validation.destinationLocationID,
       destinationFlagID: validation.destinationFlagID,
       destinationStorageUnitID: 0,
+      ...(options.deployment ? { deployment: options.deployment } : {}),
       stacks: validation.stacks,
     },
+    options.walletAddress,
   );
   return { success: true as const, data: prepared };
 }
@@ -744,6 +767,9 @@ function executeStorageTransaction({
   signature,
   access,
   resolveAccess,
+  signatureVerified,
+  walletAddress,
+  storageUnitID,
 }: Record<string, any>) {
   // Compatibility-only envelope check: the current local Frontier profile has
   // no trusted character-to-Sui-wallet binding or canonical BCS transaction
@@ -757,7 +783,9 @@ function executeStorageTransaction({
   if (completed) {
     if (
       completed.action !== action ||
-      completed.characterID !== toInt(characterID, 0)
+      completed.characterID !== toInt(characterID, 0) ||
+      (storageUnitID !== undefined && completed.storageUnitID !== toInt(storageUnitID, 0)) ||
+      (completed.walletAddress && (completed.walletAddress !== walletAddress || signatureVerified !== true))
     ) {
       return { success: false as const, errorMsg: "TRANSACTION_MISMATCH" };
     }
@@ -778,7 +806,9 @@ function executeStorageTransaction({
   }
   if (
     transaction.action !== action ||
-    transaction.characterID !== toInt(characterID, 0)
+    transaction.characterID !== toInt(characterID, 0) ||
+    (storageUnitID !== undefined && transaction.storageUnitID !== toInt(storageUnitID, 0)) ||
+    (transaction.walletAddress && (transaction.walletAddress !== walletAddress || signatureVerified !== true))
   ) {
     return { success: false as const, errorMsg: "TRANSACTION_MISMATCH" };
   }
@@ -794,11 +824,16 @@ function executeStorageTransaction({
     ? commitDeposit(transaction, executionAccess)
     : commitWithdraw(transaction, executionAccess);
   if (commit.success === true) {
-    const expiresAtMs = Date.now() + STORAGE_TRANSACTION_TTL_MS;
+    const expiresAtMs = Date.now() + COMPLETED_TRANSACTION_TTL_MS;
     pendingTransactions.delete(normalizedUUID);
     completedTransactions.set(normalizedUUID, {
       action: transaction.action,
       characterID: transaction.characterID,
+      storageUnitID: transaction.storageUnitID,
+      walletAddress: transaction.walletAddress,
+      transactionData: transaction.transactionData,
+      authorizationMessage: transaction.authorizationMessage,
+      deployment: transaction.request.deployment,
       data: commit.data,
       expiresAtMs,
     });
@@ -806,10 +841,28 @@ function executeStorageTransaction({
   return commit;
 }
 
+/** Read only the caller's prepared authorization; never expose another partition. */
+function getStorageTransaction({ characterID, storageUnitID, transactionUUID }: Record<string, any>) {
+  pruneTransactions();
+  const uuid = String(transactionUUID || "").trim().toLowerCase();
+  const transaction = pendingTransactions.get(uuid) || completedTransactions.get(uuid);
+  if (!transaction) return { success: false as const, errorMsg: "TRANSACTION_NOT_FOUND" };
+  if (transaction.characterID !== toInt(characterID, 0) || transaction.storageUnitID !== toInt(storageUnitID, 0)) {
+    return { success: false as const, errorMsg: "TRANSACTION_MISMATCH" };
+  }
+  return { success: true as const, data: {
+    action: transaction.action, transactionUUID: uuid,
+    transactionData: transaction.transactionData, authorizationMessage: transaction.authorizationMessage,
+    expiresAtMs: transaction.expiresAtMs, walletAddress: transaction.walletAddress,
+    deployment: transaction.request?.deployment || transaction.deployment,
+  } };
+}
+
 module.exports = {
   SMART_STORAGE_FLAG,
   executeStorageTransaction,
   getStorageInventory,
+  getStorageTransaction,
   prepareStorageDeposit,
   prepareStorageWithdraw,
   _testing: {

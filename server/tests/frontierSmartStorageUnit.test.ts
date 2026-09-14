@@ -269,6 +269,45 @@ test("deposit prepare is non-mutating; execute commits once and survives duplica
   assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 20);
 });
 
+test("dApp authorizations bind the wallet, unit, quantities and replay after prepare expiry", () => {
+  const unit = createStorageUnit();
+  const ship = createShip();
+  const stack = grantOne(OWNER_ID, ship.itemID, CARGO_FLAG, MATERIAL_TYPE_ID, 8);
+  const walletAddress = `0x${"a".repeat(64)}`;
+  const access = createAccess(ship);
+  const prepared = smartStorageUnitRuntime.prepareStorageDeposit({
+    access, characterID: OWNER_ID, storageUnitID: unit.itemID, walletAddress,
+    sourceLocationID: ship.itemID, sourceFlagID: CARGO_FLAG,
+    stacks: [{ itemID: stack.itemID, quantity: 3 }],
+  });
+  assert.equal(prepared.success, true);
+  const message = JSON.parse(prepared.data.authorizationMessage);
+  assert.deepEqual(message.request.stacks, [{ itemID: stack.itemID, quantity: 3 }]);
+  assert.equal(message.request.sourceLocationID, ship.itemID);
+  const transaction = JSON.parse(prepared.data.transactionData);
+  assert.equal(transaction.sender, walletAddress);
+  assert.equal(transaction.gasData.owner, walletAddress);
+  assert.equal(transaction.gasData.payment[0].objectId,
+    `0x${require("node:crypto").createHash("sha256").update(prepared.data.authorizationMessage).digest("hex")}`);
+  const request = { characterID: OWNER_ID, storageUnitID: unit.itemID, transactionUUID: prepared.data.transactionUUID };
+  assert.equal(smartStorageUnitRuntime.getStorageTransaction({ ...request, characterID: VISITOR_ID }).success, false);
+  assert.equal(smartStorageUnitRuntime.getStorageTransaction({ ...request, storageUnitID: unit.itemID + 1 }).success, false);
+  const execute = { ...request, action: "storageunit-deposit", access, signature: VALID_SIGNATURE, walletAddress };
+  assert.equal(smartStorageUnitRuntime.executeStorageTransaction(execute).success, false);
+  assert.equal(smartStorageUnitRuntime.executeStorageTransaction({ ...execute, signatureVerified: true, walletAddress: "0x1" }).success, false);
+  assert.equal(totalAt(OWNER_ID, ship.itemID, CARGO_FLAG, MATERIAL_TYPE_ID), 8);
+  assert.equal(smartStorageUnitRuntime.executeStorageTransaction({ ...execute, signatureVerified: true }).success, true);
+  assert.equal(smartStorageUnitRuntime.getStorageTransaction(request).data.transactionData, prepared.data.transactionData);
+  const realNow = Date.now;
+  try {
+    Date.now = () => prepared.data.expiresAtMs + 1;
+    const replay = smartStorageUnitRuntime.executeStorageTransaction({ ...execute, signatureVerified: true });
+    assert.equal(replay.data.replayed, true);
+    assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 3);
+    assert.equal(smartStorageUnitRuntime.executeStorageTransaction({ ...execute, signatureVerified: true, storageUnitID: unit.itemID + 1 }).success, false);
+  } finally { Date.now = realNow; }
+});
+
 test("mutations reject offline, out-of-range, singleton, and changed source state", () => {
   const offline = createStorageUnit(OWNER_ID, 1);
   const online = createStorageUnit();
