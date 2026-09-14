@@ -911,6 +911,8 @@ function executeStorageTransactionWithChainState(options) {
 }
 
 module.exports = {
+  validateStorageUnit,
+  getStorageComponent,
   SMART_STORAGE_FLAG,
   getShipCargoCapacity,
   executeStorageTransaction: executeStorageTransactionWithChainState,

@@ -5,6 +5,8 @@ const { canEntitiesInteractLocally } = require("../../space/destiny/identity/int
 const { readConstructionState, isAssemblyActivationPending,
   ASSEMBLY_STATUS_UNDER_CONSTRUCTION } = require("./deploymentRuntime");
 const inventoryAccess = require("./industryInventoryAccess");
+const { SMART_STORAGE_FLAG } = require("./smartStorageUnitRuntime");
+const { runWithSuiAssemblyStates } = require("./suiAssemblyState");
 
 // Server escrow partitions, deliberately separate from cargo, fittings and SSU
 // partitions. The Industry client displays type totals, never these row flags.
@@ -96,12 +98,33 @@ function parseQuantities(raw, allowAll = false) {
   return result;
 }
 function commit(context, moves, items, side) {
+  const storageMoves = moves.flatMap((move, index) => {
+    const source = itemStore.findItemById(move.itemID);
+    const entry = { index, typeID: Number(source?.typeID), quantity: move.quantity,
+      unitVolume: Math.max(0, itemStore.getInventoryItemUnitVolume(source)) };
+    return Number(source?.flagID) === SMART_STORAGE_FLAG
+      ? [{ ...entry, storageUnitID: Number(source.locationID), direction: "withdraw" }]
+      : move.destinationFlagID === SMART_STORAGE_FLAG
+        ? [{ ...entry, storageUnitID: move.destinationLocationID, direction: "deposit" }] : [];
+  });
   // One synchronous, atomic item-table mutation keeps both sides conserved,
   // including split stacks and failures partway through a multi-item request.
   const result = itemStore.moveItemsToLocations(moves);
   if (!result.success) return result;
+  const storageTransfers = new Map();
+  for (const move of storageMoves) {
+    const key = `${move.storageUnitID}:${move.direction}`;
+    if (!storageTransfers.has(key)) storageTransfers.set(key, {
+      storageUnitID: move.storageUnitID, direction: move.direction, items: {}, noticeItems: [],
+    });
+    const transfer = storageTransfers.get(key);
+    transfer.items[move.typeID] = (transfer.items[move.typeID] || 0) + move.quantity;
+    transfer.noticeItems.push({ itemID: result.data.moves[move.index].movedItemID,
+      typeID: move.typeID, quantity: move.quantity, unitVolume: move.unitVolume });
+  }
   return { success: true as const, data: {
-    facility: context.facility, side, items, changes: result.data.changes,
+    facility: context.facility, characterID: context.characterID, side, items,
+    changes: result.data.changes, storageTransfers: Array.from(storageTransfers.values()),
   } };
 }
 function depositInputItems(session, facilityID, rawItems) {
@@ -144,7 +167,7 @@ function withdrawItems(session, facilityID, rawItems, inventoryID, flagID, side 
   if (side !== "inputs" && side !== "outputs") return fail("INVALID_INVENTORY");
   const destination = inventoryAccess.resolveIndustryInventory(session, inventoryID, flagID);
   if (!destination.success) return fail("INVALID_DESTINATION");
-  const { item: destinationItem, capacity, flagID: destinationFlag } = destination.data;
+  const { item: destinationItem, flagID: destinationFlag } = destination.data;
   const requested = parseQuantities(rawItems);
   if (!requested) return fail("INVALID_QUANTITY");
   const rows = storedRows(facility, side === "inputs" ? INDUSTRY_INPUT_FLAG : INDUSTRY_OUTPUT_FLAG)
@@ -165,29 +188,224 @@ function withdrawItems(session, facilityID, rawItems, inventoryID, flagID, side 
     }
     if (remaining > 0) return fail("INSUFFICIENT_STORED_ITEMS");
   }
-  // Ownership controls which rows may move, but every row occupies capacity.
-  const usedVolume = itemStore.listContainerItems(null, destinationItem.itemID, destinationFlag)
-    .reduce((sum, item) => sum + Math.max(0, itemStore.getInventoryItemUnitVolume(item)) * itemQuantity(item), 0);
-  if (!Number.isFinite(volume) || !Number.isFinite(usedVolume) || !Number.isFinite(capacity) ||
-      capacity <= 0 || usedVolume + volume > capacity + 1e-6) {
-    return fail("SHIP_CARGO_CAPACITY_EXCEEDED");
-  }
+  const fits = validateWithdrawalCapacity(destination.data, requested, volume);
+  if (!fits.success) return fits;
   return commit(access.data, moves, Object.fromEntries(requested), side);
+}
+
+function validateWithdrawalCapacity(destination, requested, volume) {
+  // Ownership controls which rows may move; SSU capacity is per character,
+  // while other destination inventories count every owner's rows.
+  const destinationRows = itemStore.listContainerItems(destination.inventoryOwnerID ?? null,
+    destination.item.itemID, destination.flagID);
+  if (destination.maxTypeQuantity) {
+    const totals = aggregate(destinationRows);
+    for (const [typeID, quantity] of requested) {
+      const total = (totals[typeID] || 0) + quantity;
+      if (!Number.isSafeInteger(total) || total > destination.maxTypeQuantity) {
+        return fail("STORAGE_TYPE_QUANTITY_EXCEEDED");
+      }
+    }
+  }
+  const usedVolume = destinationRows
+    .reduce((sum, item) => sum + Math.max(0, itemStore.getInventoryItemUnitVolume(item)) * itemQuantity(item), 0);
+  if (!Number.isFinite(volume) || !Number.isFinite(usedVolume) || !Number.isFinite(destination.capacity) ||
+      destination.capacity <= 0 || usedVolume + volume > destination.capacity + 1e-6) {
+    return fail(destination.storageUnitID ? "STORAGE_CAPACITY_EXCEEDED" : "SHIP_CARGO_CAPACITY_EXCEEDED");
+  }
+  return { success: true as const };
+}
+
+function validateStoppedProduction(facility) {
+  const productionRuntime = require("./industryProduction");
+  if (productionRuntime.invalidStoredProduction(facility)) return fail("INVALID_PRODUCTION_STATE");
+  const production = productionRuntime.getProduction(facility);
+  if (production && production.state !== "STOPPED") return fail("PRODUCTION_ALREADY_RUNNING");
+  return { success: true as const };
+}
+
+function emptyActiveBlueprintItems(session, facilityID, storageUnitID) {
+  const access = validateFacility(session, facilityID);
+  if (!access.success) return access;
+  const { facility, characterID } = access.data;
+  const stopped = validateStoppedProduction(facility);
+  if (!stopped.success) return stopped;
+  const destination = inventoryAccess.resolveIndustryInventory(session, storageUnitID, SMART_STORAGE_FLAG);
+  if (!destination.success) return destination;
+  if (!destination.data.storageUnitID) return fail("INVALID_DESTINATION");
+  const moves = [];
+  const itemsBySide = { inputs: {}, outputs: {} };
+  const totals = new Map<number, number>();
+  let volume = 0;
+  for (const [side, flag] of [["inputs", INDUSTRY_INPUT_FLAG], ["outputs", INDUSTRY_OUTPUT_FLAG]] as const) {
+    // Read actual escrow rows, including types no longer in the current recipe.
+    // Unexpected owners or malformed stacks must block an all-items operation.
+    const rows = itemStore.listContainerItems(null, facility.itemID, flag)
+      .sort((left, right) => left.itemID - right.itemID);
+    for (const item of rows) {
+      if (Number(item.ownerID) !== characterID) return fail("ACCESS_DENIED");
+      const quantity = itemQuantity(item);
+      const typeID = positiveInteger(item.typeID);
+      if (!quantity || !typeID) return fail("INVALID_QUANTITY");
+      if (!inventoryAccess.isIndustryInventoryItemAllowed(destination.data, item)) return fail("INVALID_DESTINATION_TYPE");
+      const total = (totals.get(typeID) || 0) + quantity;
+      if (!Number.isSafeInteger(total)) return fail("STORAGE_TYPE_QUANTITY_EXCEEDED");
+      totals.set(typeID, total);
+      itemsBySide[side][typeID] = (itemsBySide[side][typeID] || 0) + quantity;
+      volume += Math.max(0, itemStore.getInventoryItemUnitVolume(item)) * quantity;
+      moves.push({ itemID: item.itemID, quantity,
+        destinationLocationID: destination.data.item.itemID, destinationFlagID: SMART_STORAGE_FLAG });
+    }
+  }
+  if (!moves.length) return fail("FACILITY_ALREADY_EMPTY");
+  // Inputs and outputs share one capacity check and one atomic item-table
+  // mutation. A failure can never leave only one side emptied.
+  const fits = validateWithdrawalCapacity(destination.data, totals, volume);
+  if (!fits.success) return fits;
+  const result = commit(access.data, moves, Object.fromEntries(totals), "all");
+  return result.success ? { ...result, data: { ...result.data, itemsBySide } } : result;
+}
+
+async function syncStorageTransfers(result) {
+  if (!result?.success || !result.data.storageTransfers?.length) return result;
+  const pending = { status: "pending", industryStatus: "pending", storageStatus: "pending" };
+  let timer;
+  // The inventory has committed. A delayed chain confirmation must never make
+  // the client retry that mutation; the synchronization worker keeps retrying.
+  const syncing = Promise.all(result.data.storageTransfers.map(async transfer => {
+    try {
+      const { syncIndustryStorageTransfer } = require("./suiIndustryStorageSync");
+      return { storageUnitID: transfer.storageUnitID, ...await syncIndustryStorageTransfer({
+        facilityID: result.data.facility.itemID, characterID: result.data.characterID,
+        storageUnitID: transfer.storageUnitID,
+      }) };
+    } catch { return { storageUnitID: transfer.storageUnitID, ...pending }; }
+  }));
+  try {
+    result.data.chainTransfers = await Promise.race([syncing, new Promise(resolve => {
+      timer = setTimeout(() => resolve(result.data.storageTransfers.map(transfer => ({
+        storageUnitID: transfer.storageUnitID, ...pending,
+      }))), 5000);
+    })]);
+    result.data.chain = result.data.chainTransfers[0];
+    result.data.gameCommitted = true;
+    return result;
+  } finally { clearTimeout(timer); }
+}
+
+function withStorageStates(session, facilityID, inventories, operation) {
+  const storageIDs = [...new Set(inventories.filter(inventory => inventory.flagID === SMART_STORAGE_FLAG)
+    .map(inventory => inventory.inventoryID))];
+  if (!storageIDs.length) return operation();
+  const access = validateFacility(session, facilityID);
+  if (!access.success) return access;
+  for (const inventory of inventories) {
+    const resolved = inventoryAccess.resolveIndustryInventory(session, inventory.inventoryID,
+      inventory.flagID, { refreshingStatus: true });
+    if (!resolved.success) return resolved;
+  }
+  const unavailable = error => fail(error?.code === "ASSEMBLY_STATE_PENDING"
+    ? "ASSEMBLY_STATE_PENDING" : "ASSEMBLY_STATE_UNAVAILABLE");
+  try {
+    const result = runWithSuiAssemblyStates([positiveInteger(facilityID), ...storageIDs], operation);
+    // The disabled-chain profile remains synchronous. Live chain operations
+    // refresh every involved assembly and commit once on the shared queue.
+    if (result instanceof Promise) return result.then(syncStorageTransfers, unavailable);
+    if (result.success && result.data.storageTransfers?.length) {
+      result.data.chain = { status: "disabled", industryStatus: "disabled", storageStatus: "disabled" };
+      result.data.gameCommitted = true;
+    }
+    return result;
+  } catch (error) { return unavailable(error); }
+}
+
+function depositInputItemsWithStorageState(session, facilityID, rawItems, options: Record<string, any> = {}) {
+  const requested = parseQuantities(rawItems, true);
+  if (!requested) return depositInputItems(session, facilityID, rawItems);
+  const inventories = Array.from(requested.keys()).map(itemID => {
+    const item = itemStore.findItemById(itemID);
+    return { itemID, inventoryID: Number(item?.locationID), flagID: Number(item?.flagID) };
+  });
+  if (options.storageUnitID && inventories.some(inventory =>
+    inventory.inventoryID !== positiveInteger(options.storageUnitID) || inventory.flagID !== SMART_STORAGE_FLAG)) {
+    return fail("INVALID_SOURCE");
+  }
+  return withStorageStates(session, facilityID, inventories, () => {
+    if (typeof options.assertAccess === "function") {
+      const allowed = options.assertAccess();
+      if (!allowed?.success) return allowed || fail("ACCESS_DENIED");
+    }
+    // Waiting for chain state must not silently redirect a source to a new SSU
+    // that was not part of the authoritative refresh.
+    if (inventories.some(inventory => {
+      const item = itemStore.findItemById(inventory.itemID);
+      return !item || Number(item.locationID) !== inventory.inventoryID || Number(item.flagID) !== inventory.flagID;
+    })) return fail("INVALID_SOURCE");
+    return depositInputItems(session, facilityID, rawItems);
+  });
+}
+
+// The native SSU inventory exposes aggregate type rows without real item IDs.
+// Resolve those quantities to this character's persisted partition before the
+// usual authoritative refresh and atomic transfer revalidation.
+function depositStorageInputItems(session, facilityID, storageUnitID, rawItems) {
+  const access = validateFacility(session, facilityID);
+  if (!access.success) return access;
+  if (!positiveInteger(storageUnitID)) return fail("INVALID_SOURCE");
+  const requested = parseQuantities(rawItems);
+  if (!requested || Array.from(requested.values()).some(quantity => quantity > 0xffffffff)) {
+    return fail("INVALID_QUANTITY");
+  }
+  const rows = itemStore.listContainerItems(access.data.characterID, positiveInteger(storageUnitID), SMART_STORAGE_FLAG)
+    .filter(item => !item.singleton).sort((left, right) => left.itemID - right.itemID);
+  const selected = new Map();
+  for (const [typeID, quantity] of requested) {
+    let remaining = quantity;
+    for (const item of rows) {
+      if (Number(item.typeID) !== typeID || !remaining) continue;
+      const take = Math.min(remaining, itemQuantity(item));
+      if (take) selected.set(item.itemID, take);
+      remaining -= take;
+    }
+    if (remaining) return fail("INSUFFICIENT_SOURCE_ITEMS");
+  }
+  return depositInputItemsWithStorageState(session, facilityID, selected, { storageUnitID });
+}
+
+function withdrawItemsWithStorageState(session, facilityID, rawItems, inventoryID, flagID, side = "inputs",
+  options: Record<string, any> = {}) {
+  return withStorageStates(session, facilityID, [{ inventoryID: positiveInteger(inventoryID), flagID: Number(flagID) }],
+    () => {
+      if (typeof options.assertAccess === "function") {
+        const allowed = options.assertAccess();
+        if (!allowed?.success) return allowed || fail("ACCESS_DENIED");
+      }
+      return withdrawItems(session, facilityID, rawItems, inventoryID, flagID, side);
+    });
+}
+function emptyActiveBlueprint(session, facilityID, storageUnitID, options: Record<string, any> = {}) {
+  if (!positiveInteger(storageUnitID)) return fail("INVALID_DESTINATION");
+  return withStorageStates(session, facilityID,
+    [{ inventoryID: positiveInteger(storageUnitID), flagID: SMART_STORAGE_FLAG }], () => {
+      if (typeof options.assertAccess === "function") {
+        const allowed = options.assertAccess();
+        if (!allowed?.success) return allowed || fail("ACCESS_DENIED");
+      }
+      return emptyActiveBlueprintItems(session, facilityID, storageUnitID);
+    });
 }
 function loadBlueprint(session, facilityID, blueprintID) {
   const access = validateFacility(session, facilityID);
   if (!access.success) return access;
   const { facility } = access.data;
-  const productionRuntime = require("./industryProduction");
-  if (productionRuntime.invalidStoredProduction(facility)) return fail("INVALID_PRODUCTION_STATE");
-  const production = productionRuntime.getProduction(facility);
-  if (production && production.state !== "STOPPED") return fail("PRODUCTION_ALREADY_RUNNING");
+  const stopped = validateStoppedProduction(facility);
+  if (!stopped.success) return stopped;
   const blueprint = blueprints.getBlueprintForFacility(facility.typeID, positiveInteger(blueprintID));
   if (!blueprint) return fail("BLUEPRINT_NOT_FOUND");
   const current = blueprints.getSelectedBlueprint(facility);
   if (current?.blueprint_id === blueprint.blueprint_id) return fail("BLUEPRINT_ALREADY_LOADED");
-  const items = getFacilityItems(facility);
-  if (Object.keys(items.inputs).length || Object.keys(items.outputs).length) return fail("FACILITY_CONTAINS_ITEMS");
+  if ([INDUSTRY_INPUT_FLAG, INDUSTRY_OUTPUT_FLAG].some(flag =>
+    itemStore.listContainerItems(null, facility.itemID, flag).length)) return fail("FACILITY_CONTAINS_ITEMS");
   const result = itemStore.updateInventoryItem(facility.itemID, item => ({
     ...item, customInfo: blueprints.withSelectedBlueprint(item, blueprint.blueprint_id),
   }));
@@ -195,7 +413,9 @@ function loadBlueprint(session, facilityID, blueprintID) {
 }
 module.exports = {
   INDUSTRY_INPUT_FLAG, INDUSTRY_OUTPUT_FLAG, canReadFacility, getItemSolarSystemID,
-  getFacilityItems, depositInputItems, withdrawItems, loadBlueprint,
+  getFacilityItems, depositInputItems: depositInputItemsWithStorageState,
+  depositStorageInputItems,
+  withdrawItems: withdrawItemsWithStorageState, emptyActiveBlueprint, loadBlueprint,
   validateFacility,
   getProduction: (...args) => require("./industryProduction").getProduction(...args),
   startProduction: (...args) => require("./industryProduction").startProduction(...args),

@@ -21,7 +21,11 @@ function fixture() {
       getSceneForSession: () => ({ getCommandTimeEntitySurfaceDistance: () => state.distance }),
     },
     "../../space/destiny/identity/interactionScope": { canEntitiesInteractLocally: () => state.visible },
-    "./smartStorageUnitRuntime": { getShipCargoCapacity: () => 1234 },
+    "./smartStorageUnitRuntime": {
+      SMART_STORAGE_FLAG: 66, getShipCargoCapacity: () => 1234,
+      validateStorageUnit: (_owner, id, options) => id !== 106 ? { errorMsg: "ASSEMBLY_NOT_FOUND" }
+        : !options.access.inRange ? { errorMsg: "ASSEMBLY_OUT_OF_RANGE" } : { capacity: 10000 },
+    },
     "../../_secondary/fitting/fittingRuntime": {
       getShipFittingSnapshot: () => ({ resourceState: { miningCapacity: state.miningCapacity } }),
     },
@@ -90,4 +94,25 @@ test("industry denies other owners, remote containers, nonactive ships and smart
   f.items.set(105, { ...f.container, itemID: 105, categoryID: 65 });
   assert.equal(f.api.resolveIndustryInventory(f.session, 105, 0).success, false);
   assert.equal(f.api.resolveIndustryInventory({ ...f.session, stationid: 60000001 }, 101, 5).success, false);
+});
+
+test("industry resolves only validated nearby SSU flag66 partitions and rejects singleton deposits", () => {
+  const f = fixture();
+  f.items.set(106, { ...f.container, itemID: 106, categoryID: 65, ownerID: 140000002 });
+  const result = f.api.resolveIndustryInventory(f.session, 106, 66);
+  assert.equal(result.success, true);
+  assert.equal(result.data.capacity, 10000);
+  assert.equal(result.data.inventoryOwnerID, f.session.characterID);
+  assert.equal(result.data.maxTypeQuantity, 0xffffffff);
+  assert.equal(f.api.isIndustryInventoryItemAllowed(result.data, { singleton: 0 }), true);
+  assert.equal(f.api.isIndustryInventoryItemAllowed(result.data, { singleton: 1 }), false);
+  assert.equal(f.api.resolveIndustryInventory(f.session, 102, 66).success, false);
+  assert.equal(f.api.resolveIndustryInventory(f.session, 106, 0).success, false);
+  f.state.distance = 5000;
+  assert.equal(f.api.resolveIndustryInventory(f.session, 106, 66).success, true);
+  f.state.distance = 5001;
+  assert.equal(f.api.resolveIndustryInventory(f.session, 106, 66).success, false);
+  f.state.distance = 100;
+  f.state.visible = false;
+  assert.equal(f.api.resolveIndustryInventory(f.session, 106, 66).success, false);
 });

@@ -446,6 +446,7 @@ const {
   advanceHistorySafeDestinyStamp,
   advanceNextDestinyStamp,
   clampDestinyStampToCeiling,
+  getDestinyStampForwardBoundaryDeltaMs,
   getDestinyStampForwardDistance,
   getCurrentDestinyStamp,
   getMovementStamp,
@@ -7675,6 +7676,12 @@ function canSessionReceiveEntityDependentDestinyUpdate(scene, session, entity) {
   }
   const entityKey = getEntityMapKey(entity && entity.itemID);
   if (entityKey === null) {
+    return false;
+  }
+  if (
+    typeof scene.isNativeBallReplacementPendingForSession === "function" &&
+    scene.isNativeBallReplacementPendingForSession(session, entity)
+  ) {
     return false;
   }
   if (getPendingVisibilityRemovalIDs(session).has(entityKey)) {
@@ -20419,6 +20426,7 @@ class SolarSystemScene {
   declare _dungeonUniversePendingSiteTeardowns: Map<any, any>;
   declare _activeDestinyDeliveryFlush: any;
   declare deferredInitialVisibilityEntityIDs: any;
+  declare pendingNativeBallReplacements: Map<any, any>;
 
   declare _activeNativeSubwarpPlan: any;
   declare _activeTickDeltaSeconds: any;
@@ -20460,6 +20468,7 @@ class SolarSystemScene {
     this.system = worldData.getSolarSystemByID(this.systemID);
     this.sessions = new Map();
     this.dynamicEntities = new Map();
+    this.pendingNativeBallReplacements = new Map();
     visibilityControlState.installDeferredInitialVisibilityQueue(this);
     this.dynamicEntityExpiryByID = new Map();
     this.dynamicEntityExpiryHeap = [];
@@ -24496,6 +24505,9 @@ class SolarSystemScene {
           simulationTimeMs: now,
         });
       }
+      return false;
+    }
+    if (this.isNativeBallReplacementPendingForSession(session, entity, now)) {
       return false;
     }
     if (entityIDsEqual(entity.itemID, session._space.shipID)) {
@@ -29689,6 +29701,9 @@ class SolarSystemScene {
     visibilityControlState.resetWarpDepartureVisibilityGrace(entity);
     forgetEntityFromNativeSubwarpPlans(this, entity);
     this.dynamicEntities.delete(entity.itemID);
+    if (this.pendingNativeBallReplacements.get(entity.itemID)?.entity === entity) {
+      this.pendingNativeBallReplacements.delete(entity.itemID);
+    }
     this.unindexDynamicEntityExpiry(entity.itemID);
     this.unindexCommandBurstExpiry(entity.itemID);
     visibilityControlState.unregisterDeferredInitialVisibilityEntity(
@@ -34556,6 +34571,7 @@ class SolarSystemScene {
     options: Record<string, any> = {},
   ) {
     const numericNow = toFiniteNumber(now, this.getCurrentSimTimeMs());
+    this.processPendingNativeBallReplacements(numericNow);
     const sessionOnlyUpdates = Array.isArray(options.sessionOnlyUpdates)
       ? options.sessionOnlyUpdates
       : [];
@@ -36836,6 +36852,133 @@ class SolarSystemScene {
     }
   }
 
+  isNativeBallReplacementPendingForSession(
+    session, entity, nowMs = this.getCurrentSimTimeMs(),
+  ) {
+    const replacement = this.pendingNativeBallReplacements?.get(entity.itemID);
+    if (!replacement || replacement.entity !== entity) return false;
+    const viewer = replacement.viewers.get(session);
+    return Boolean(
+      viewer && viewer.generation === session._space &&
+      (viewer.releaseAtMs === null || viewer.releaseAtMs > nowMs)
+    );
+  }
+
+  queueNativeBallReplacement(entity, excludedSession, nowMs) {
+    if (!entity) return;
+    const knownViewers = [...this.sessions.values()].filter((session) => (
+      session !== excludedSession && isReadyForDestiny(session) &&
+      (
+        isSceneVisibilityAcquisitionCommitted(session, entity.itemID) ||
+        visibilitySetHasEntityID(
+          getPendingVisibilityAcquisitionIDs(session), entity.itemID,
+        )
+      )
+    ));
+    if (knownViewers.length === 0) return;
+
+    // SpaceMgr releases models asynchronously. The replacement needs a fresh
+    // native ball, with removal accepted before its later visibility acquire.
+    const rawStamp = this.getCurrentDestinyStamp(nowMs);
+    entity.visibilitySuppressedUntilMs = Math.max(
+      toFiniteNumber(entity.visibilitySuppressedUntilMs, 0),
+      nowMs + getDestinyStampForwardBoundaryDeltaMs(
+        nowMs, rawStamp, advanceDestinyStamp(rawStamp, 2),
+      ),
+    );
+    this.pendingNativeBallReplacements.set(entity.itemID, {
+      entity,
+      viewers: new Map(knownViewers.map(session => [session, {
+        generation: session._space,
+        inFlight: false,
+        releaseAtMs: null,
+      }])),
+    });
+  }
+
+  acceptNativeBallReplacementRemoval(session, viewer, stamp) {
+    const nowMs = this.getCurrentSimTimeMs();
+    const sessionNowMs = this.getCurrentSessionSimTimeMs(session, nowMs);
+    const rawStamp = this.getCurrentDestinyStamp(nowMs);
+    const sessionStamp = this.getCurrentSessionDestinyStamp(session, nowMs);
+    const acceptedStamp = resolveOptionalDestinyStamp(stamp, sessionStamp);
+    viewer.inFlight = false;
+    viewer.releaseAtMs = Math.max(
+      nowMs + getDestinyStampForwardBoundaryDeltaMs(
+        nowMs, rawStamp, advanceDestinyStamp(rawStamp, 1),
+      ),
+      nowMs + getDestinyStampForwardBoundaryDeltaMs(
+        sessionNowMs, sessionStamp, advanceDestinyStamp(acceptedStamp, 1),
+      ),
+    );
+  }
+
+  processPendingNativeBallReplacements(nowMs = this.getCurrentSimTimeMs()) {
+    if (this.pendingNativeBallReplacements.size === 0) return;
+    const currentSessions = new Set(this.sessions.values());
+    for (const [entityID, replacement] of this.pendingNativeBallReplacements) {
+      const entity = replacement.entity;
+      if (this.getEntityByID(entityID) !== entity) {
+        this.pendingNativeBallReplacements.delete(entityID);
+        continue;
+      }
+      for (const [session, viewer] of replacement.viewers) {
+        if (
+          !currentSessions.has(session) || !isReadyForDestiny(session) ||
+          session._space !== viewer.generation ||
+          (viewer.releaseAtMs !== null && viewer.releaseAtMs <= nowMs)
+        ) {
+          replacement.viewers.delete(session);
+          continue;
+        }
+        if (viewer.releaseAtMs !== null || getPendingVisibilityRemovalIDs(session).has(entityID)) {
+          continue;
+        }
+        if (
+          !isSceneVisibilityAcquisitionCommitted(session, entityID) &&
+          !getPendingVisibilityAcquisitionIDs(session).has(entityID)
+        ) {
+          // A separate visibility reconciliation may have accepted removal
+          // after our attempt failed. Respect its committed absence and still
+          // give the client a later simulation tick to release the old model.
+          this.acceptNativeBallReplacementRemoval(
+            session, viewer, this.getLastSentDestinyStampForSession(session),
+          );
+          continue;
+        }
+        if (viewer.inFlight) continue;
+        const isCurrent = () => (
+          this.pendingNativeBallReplacements.get(entityID) === replacement &&
+          this.getEntityByID(entityID) === entity &&
+          replacement.viewers.get(session) === viewer &&
+          session._space === viewer.generation
+        );
+        viewer.inFlight = true;
+        try {
+          const result = this.sendRemoveBallsToSession(session, [entityID], {
+            nowMs,
+            onDeliveryCommit: (details) => {
+              if (!isCurrent()) return;
+              this.acceptNativeBallReplacementRemoval(
+                session, viewer, details && details.highestStamp,
+              );
+            },
+            onDeliveryRollback: () => {
+              if (isCurrent()) viewer.inFlight = false;
+            },
+          });
+          if (!result || result.delivered !== true) viewer.inFlight = false;
+        } catch (error) {
+          viewer.inFlight = false;
+          throw error;
+        }
+      }
+      if (replacement.viewers.size === 0) {
+        this.pendingNativeBallReplacements.delete(entityID);
+      }
+    }
+  }
+
   broadcastAddBalls(entities, excludedSession = null, options: Record<string, any> = {}) {
     if (entities.length === 0) {
       return [];
@@ -36844,6 +36987,13 @@ class SolarSystemScene {
     const refreshedEntities = refreshEntitiesForSlimPayload(entities);
     const rawSimTimeMs = this.getCurrentSimTimeMs();
     const deliveries: any[] = [];
+
+    if (options.replaceExisting === true) {
+      for (const entity of refreshedEntities) {
+        this.queueNativeBallReplacement(entity, excludedSession, rawSimTimeMs);
+      }
+      this.processPendingNativeBallReplacements(rawSimTimeMs);
+    }
 
     for (const session of this.sessions.values()) {
       if (session === excludedSession || !isReadyForDestiny(session)) {
@@ -36907,34 +37057,6 @@ class SolarSystemScene {
         initialStructureBundle:
           options.initialStructureBundle === true ? true : undefined,
       };
-      // A deliberate type replacement must reach clients that already know
-      // this ID. Frontier's ProcessBallAdd rebuilds their model/components
-      // from the new CR data without removing the native ball first. Preserve
-      // normal acquisition reservations for viewers seeing it for the first
-      // time, and leave ordinary duplicate-add suppression intact.
-      if (options.replaceExisting === true) {
-        const pendingAcquisitions = getPendingVisibilityAcquisitionIDs(session);
-        const pendingRemovals = getPendingVisibilityRemovalIDs(session);
-        const replacements = visibleEntities.filter((entity) => (
-          !visibilitySetHasEntityID(pendingRemovals, entity.itemID) &&
-          (
-            isSceneVisibilityAcquisitionCommitted(session, entity.itemID) ||
-            visibilitySetHasEntityID(pendingAcquisitions, entity.itemID)
-          )
-        ));
-        if (replacements.length > 0) {
-          const replacementResult = this.sendAddBallsToSession(session, replacements, {
-            ...addOptions,
-            visibilityAcquisition: false,
-          });
-          deliveries.push({ session, stamp: replacementResult.stamp, entities: replacements });
-          const replacementIDs = new Set(replacements.map(entity => entity.itemID));
-          for (let index = visibleEntities.length - 1; index >= 0; index -= 1) {
-            if (replacementIDs.has(visibleEntities[index].itemID)) visibleEntities.splice(index, 1);
-          }
-          if (visibleEntities.length === 0) continue;
-        }
-      }
       const sendResult = this.sendAddBallsToSession(
         session,
         visibleEntities,

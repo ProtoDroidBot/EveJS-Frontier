@@ -84,6 +84,18 @@ function fixture(t) {
   return {
     ship, facility, session, access, entities, selectedBlueprint, notifications,
     cargo: (typeID, quantity) => grant(OWNER_ID, ship.itemID, CARGO_FLAG, typeID, quantity),
+    storage(ownerID = OWNER_ID, assemblyStatus = 2) {
+      const unit = grant(ownerID, SYSTEM_ID, 0, 77917, 1, { individualItems: true, singleton: 1 });
+      const result = itemStore.updateInventoryItem(unit.itemID, current => ({ ...current,
+        customInfo: JSON.stringify({ evejsFrontierConstruction: {
+          assemblyStatus, assemblyTypeID: 77917, ownerID, solarSystemID: SYSTEM_ID,
+          createdAtMs: 1, completedAtMs: 1,
+        } }),
+      }));
+      assert.equal(result.success, true);
+      entities.set(unit.itemID, { itemID: unit.itemID, position: { x: 150, y: 0, z: 0 } });
+      return result.data;
+    },
     stored: (typeID, quantity, side = "inputs", ownerID = OWNER_ID) => grant(
       ownerID, facility.itemID,
       side === "outputs" ? INDUSTRY_OUTPUT_FLAG : INDUSTRY_INPUT_FLAG,
@@ -114,6 +126,290 @@ test("partial and full industry deposits subtract exactly the requested cargo an
   assert.deepEqual(industry.getFacilityItems(f.facility), {
     inputs: { [MATERIAL_A]: 40 }, outputs: {},
   });
+});
+
+test("SSU inputs and Industry inputs/outputs transfer atomically without routing through ship cargo", t => {
+  const f = fixture(t);
+  const storage = f.storage();
+  const stack = grant(OWNER_ID, storage.itemID, 66, MATERIAL_A, 40);
+  const deposited = f.deposit({ [stack.itemID]: 13 });
+  assert.equal(deposited.success, true, deposited.errorMsg);
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_A), 27);
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_INPUT_FLAG, MATERIAL_A), 13);
+  assert.equal(deposited.data.storageTransfers[0].direction, "withdraw");
+  assert.deepEqual(deposited.data.storageTransfers[0].items, { [MATERIAL_A]: 13 });
+  const withdrawn = f.withdraw({ [MATERIAL_A]: 5 }, "inputs", storage.itemID, 66);
+  assert.equal(withdrawn.success, true, withdrawn.errorMsg);
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_A), 32);
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_INPUT_FLAG, MATERIAL_A), 8);
+  assert.equal(withdrawn.data.storageTransfers[0].direction, "deposit");
+  f.stored(MATERIAL_A, 6, "outputs");
+  assert.equal(f.withdraw({ [MATERIAL_A]: 6 }, "outputs", storage.itemID, 66).success, true);
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_A), 38);
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_OUTPUT_FLAG, MATERIAL_A), 0);
+  assert.equal(totalAt(f.ship.itemID, CARGO_FLAG, MATERIAL_A), 0);
+});
+
+test("SSU visitor partitions preserve ownership and do not count other partitions toward capacity", t => {
+  const f = fixture(t);
+  const storage = f.storage(OTHER_OWNER_ID);
+  const access = require("../src/services/frontier/industryInventoryAccess")
+    .resolveIndustryInventory(f.session, storage.itemID, 66);
+  assert.equal(access.success, true, access.errorMsg);
+  const other = grant(OTHER_OWNER_ID, storage.itemID, 66, MATERIAL_A, Math.ceil(access.data.capacity / 0.1));
+  const own = grant(OWNER_ID, storage.itemID, 66, MATERIAL_A, 12);
+  assert.equal(f.deposit({ [other.itemID]: 1 }).success, false);
+  assert.equal(f.deposit({ [own.itemID]: 4 }).success, true);
+  assert.equal(f.withdraw({ [MATERIAL_A]: 3 }, "inputs", storage.itemID, 66).success, true);
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_A), 11);
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_A, OTHER_OWNER_ID), Math.ceil(access.data.capacity / 0.1));
+});
+
+test("SSU transfers reject offline, activating, remote and out-of-range storage without changing inventory", t => {
+  const f = fixture(t);
+  const storage = f.storage();
+  const stack = grant(OWNER_ID, storage.itemID, 66, MATERIAL_A, 12);
+  f.stored(MATERIAL_A, 5);
+  const reject = () => {
+    const before = snapshot([storage.itemID, f.facility.itemID]);
+    assert.equal(f.deposit({ [stack.itemID]: 1 }).success, false);
+    assert.equal(f.withdraw({ [MATERIAL_A]: 1 }, "inputs", storage.itemID, 66).success, false);
+    assert.deepEqual(snapshot([storage.itemID, f.facility.itemID]), before);
+  };
+  const setState = state => itemStore.updateInventoryItem(storage.itemID, current => ({ ...current,
+    customInfo: JSON.stringify({ evejsFrontierConstruction: {
+      assemblyStatus: 2, assemblyTypeID: 77917, solarSystemID: SYSTEM_ID, ownerID: OWNER_ID, ...state,
+    } }),
+  }));
+  for (const state of [{ assemblyStatus: 1 }, { assemblyStatus: ASSEMBLY_STATUS_UNDER_CONSTRUCTION },
+    { activationCompleteAtMs: Date.now() - 1 }, { solarSystemID: SYSTEM_ID + 1 }]) {
+    assert.equal(setState(state).success, true);
+    reject();
+  }
+  assert.equal(setState({}).success, true);
+  f.entities.delete(storage.itemID);
+  reject();
+  f.entities.set(storage.itemID, { itemID: storage.itemID, position: { x: 150, y: 0, z: 0 } });
+  f.access.distance = 5001;
+  reject();
+});
+
+test("SSU capacity and uint32 per-type ceilings reject complete withdrawal batches", t => {
+  const f = fixture(t);
+  const storage = f.storage();
+  const access = require("../src/services/frontier/industryInventoryAccess")
+    .resolveIndustryInventory(f.session, storage.itemID, 66);
+  grant(OWNER_ID, storage.itemID, 66, MATERIAL_A, Math.ceil(access.data.capacity / 0.1));
+  f.stored(MATERIAL_A, 5);
+  f.stored(MATERIAL_B, 5);
+  const before = snapshot([storage.itemID, f.facility.itemID]);
+  const overflow = f.withdraw({ [MATERIAL_A]: 1, [MATERIAL_B]: 1 }, "inputs", storage.itemID, 66);
+  assert.equal(overflow.errorMsg, "STORAGE_CAPACITY_EXCEEDED");
+  assert.deepEqual(snapshot([storage.itemID, f.facility.itemID]), before);
+  t.mock.method(itemStore, "getInventoryItemUnitVolume", () => 0);
+  const rows = itemStore.listContainerItems(OWNER_ID, storage.itemID, 66);
+  assert.equal(itemStore.updateInventoryItem(rows[0].itemID, item => ({ ...item,
+    stacksize: 0xffffffff, quantity: 0xffffffff,
+  })).success, true);
+  const atLimit = snapshot([storage.itemID, f.facility.itemID]);
+  const typeOverflow = f.withdraw({ [MATERIAL_A]: 1 }, "inputs", storage.itemID, 66);
+  assert.equal(typeOverflow.errorMsg, "STORAGE_TYPE_QUANTITY_EXCEEDED");
+  assert.deepEqual(snapshot([storage.itemID, f.facility.itemID]), atLimit);
+});
+
+test("SSU transfer rolls back all stacks when the atomic item-store mutation fails", t => {
+  const f = fixture(t);
+  const storage = f.storage();
+  const first = grant(OWNER_ID, storage.itemID, 66, MATERIAL_A, 12);
+  const second = grant(OWNER_ID, storage.itemID, 66, MATERIAL_B, 7);
+  const before = snapshot([storage.itemID, f.facility.itemID]);
+  const move = itemStore.moveItemsToLocations;
+  t.mock.method(itemStore, "moveItemsToLocations", requests => move([...requests, {
+    itemID: 999999999999, quantity: 1, destinationLocationID: f.facility.itemID,
+    destinationFlagID: INDUSTRY_INPUT_FLAG,
+  }]));
+  assert.equal(f.deposit({ [first.itemID]: 3, [second.itemID]: 2 }).success, false);
+  assert.deepEqual(snapshot([storage.itemID, f.facility.itemID]), before);
+});
+
+test("SSU transfers refresh both assemblies before commit and retain committed items if chain sync fails", async t => {
+  const f = fixture(t);
+  const storage = f.storage(OWNER_ID, 1);
+  const stack = grant(OWNER_ID, storage.itemID, 66, MATERIAL_A, 12);
+  const { registerSuiAssemblyStatesRunner } = require("../src/services/frontier/suiAssemblyState");
+  let locked = false;
+  t.after(registerSuiAssemblyStatesRunner(async (ids, operation) => {
+    assert.deepEqual(new Set(ids), new Set([f.facility.itemID, storage.itemID]));
+    await Promise.resolve();
+    assert.equal(itemStore.updateInventoryItem(storage.itemID, current => {
+      const info = JSON.parse(current.customInfo);
+      info.evejsFrontierConstruction.assemblyStatus = 2;
+      return { ...current, customInfo: JSON.stringify(info) };
+    }).success, true);
+    locked = true;
+    try { return operation(); } finally { locked = false; }
+  }));
+  const sync = t.mock.method(require("../src/services/frontier/suiIndustryStorageSync"),
+    "syncIndustryStorageTransfer", async request => {
+      assert.equal(locked, false, "chain synchronization must not reacquire the held lifecycle queue");
+      assert.equal(request.storageUnitID, storage.itemID);
+      assert.equal(totalAt(storage.itemID, 66, MATERIAL_A), 8);
+      throw new Error("RPC unavailable after commit");
+    });
+  const result = await f.deposit({ [stack.itemID]: 4 });
+  assert.equal(result.success, true, result.errorMsg);
+  assert.equal(result.data.gameCommitted, true);
+  assert.equal(result.data.chain.status, "pending");
+  assert.equal(sync.mock.callCount(), 1);
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_INPUT_FLAG, MATERIAL_A), 4);
+});
+
+test("SSU commit rechecks authorization and binds deposits to the source selected before the queue wait", async t => {
+  const f = fixture(t);
+  const storage = f.storage();
+  const stack = grant(OWNER_ID, storage.itemID, 66, MATERIAL_A, 12);
+  const { registerSuiAssemblyStatesRunner } = require("../src/services/frontier/suiAssemblyState");
+  let beforeCommit = () => {};
+  t.after(registerSuiAssemblyStatesRunner(async (_ids, operation) => {
+    await Promise.resolve();
+    beforeCommit();
+    return operation();
+  }));
+  let allowed = true;
+  beforeCommit = () => { allowed = false; };
+  const initial = snapshot([storage.itemID, f.facility.itemID]);
+  const revoked = await industry.depositInputItems(f.session, f.facility.itemID, { [stack.itemID]: 3 }, {
+    storageUnitID: storage.itemID,
+    assertAccess: () => allowed ? { success: true } : { success: false, errorMsg: "AUTH_EXPIRED" },
+  });
+  assert.equal(revoked.errorMsg, "AUTH_EXPIRED");
+  assert.deepEqual(snapshot([storage.itemID, f.facility.itemID]), initial);
+  beforeCommit = () => {
+    assert.equal(itemStore.moveItemToLocation(stack.itemID, f.ship.itemID, CARGO_FLAG, 12).success, true);
+  };
+  const movedSource = await industry.depositInputItems(f.session, f.facility.itemID, { [stack.itemID]: 3 }, {
+    storageUnitID: storage.itemID, assertAccess: () => ({ success: true }),
+  });
+  assert.equal(movedSource.errorMsg, "INVALID_SOURCE");
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_INPUT_FLAG, MATERIAL_A), 0);
+  assert.equal(totalAt(f.ship.itemID, CARGO_FLAG, MATERIAL_A), 12);
+  f.stored(MATERIAL_A, 3);
+  beforeCommit = () => {};
+  const revokedWithdraw = await industry.withdrawItems(f.session, f.facility.itemID, { [MATERIAL_A]: 2 },
+    storage.itemID, 66, "inputs", { assertAccess: () => ({ success: false, errorMsg: "AUTH_EXPIRED" }) });
+  assert.equal(revokedWithdraw.errorMsg, "AUTH_EXPIRED");
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_INPUT_FLAG, MATERIAL_A), 3);
+});
+
+test("Industry RPCs notify SSU and Industry clients for each committed direct transfer", t => {
+  const f = fixture(t);
+  const storage = f.storage();
+  const stack = grant(OWNER_ID, storage.itemID, 66, MATERIAL_A, 12);
+  const notice = t.mock.method(require("../src/_secondary/express/publicGatewayLocal"), "publishGatewayNotice", () => true);
+  const service = new IndustryService();
+  service.Handle_deposit_input_items([f.facility.itemID, { [stack.itemID]: 4 }], f.session);
+  service.Handle_withdraw_input_items([f.facility.itemID, { [MATERIAL_A]: 3 }, storage.itemID, 66], f.session);
+  const { getStorageUnitProtoTypes } = require("../src/_secondary/express/gatewayServices/assemblyStorageUnitProto");
+  for (const [name, quantity] of [["InventoryItemWithdrawnNotice", 4], ["InventoryItemDepositedNotice", 3]]) {
+    const call = notice.mock.calls.find(call => call.arguments[0].endsWith(`.${name}`));
+    assert.ok(call, `${name} published`);
+    const payload = getStorageUnitProtoTypes()[name].decode(call.arguments[1]);
+    assert.equal(Number(payload.storage_unit.sequential), storage.itemID);
+    assert.equal(Number(payload.character.sequential), OWNER_ID);
+    assert.equal(Number(payload.item.attributes.quantity), quantity);
+    assert.equal(Number(payload.item.attributes.identifier.sequential), MATERIAL_A);
+  }
+  assert.equal(f.notifications.filter(([name]) => name === "OnItemsChanged").length, 4);
+});
+
+test("Industry storage API integrates real inventory listing, transfers and exactly-once receipts", async t => {
+  const f = fixture(t);
+  const storage = f.storage(OTHER_OWNER_ID);
+  const offline = f.storage(OWNER_ID, 1);
+  const remote = f.storage();
+  f.entities.delete(remote.itemID);
+  const own = grant(OWNER_ID, storage.itemID, 66, MATERIAL_A, 4);
+  const second = grant(OWNER_ID, storage.itemID, 4, MATERIAL_A, 8);
+  assert.equal(itemStore.moveItemToLocation(second.itemID, storage.itemID, 66, 8).success, true);
+  const other = grant(OTHER_OWNER_ID, storage.itemID, 66, MATERIAL_A, 50);
+  const move = itemStore.moveItemsToLocations;
+  const mutations = t.mock.method(itemStore, "moveItemsToLocations", requests => move(requests));
+  t.mock.method(require("../src/_secondary/express/publicGatewayLocal"), "publishGatewayNotice", () => true);
+  const { createIndustryStorageOperations } = require("../src/_secondary/express/smartIndustryStorageApi");
+  const api = createIndustryStorageOperations({
+    resolve: () => ({ success: true, data: { characterID: OWNER_ID, walletAddress: "0x1",
+      session: f.session, facilityID: f.facility.itemID } }),
+    failed: errorMsg => ({ success: false, errorMsg }),
+  });
+  const listed = await api.storage("token", f.facility.itemID);
+  assert.equal(listed.success, true);
+  assert.deepEqual(listed.data.storageUnits.map(unit => unit.storageUnitID), [storage.itemID]);
+  const listedItems = listed.data.storageUnits[0].items;
+  assert.deepEqual(listedItems.map(item => item.itemID).sort(), [own.itemID, second.itemID].sort());
+  assert.equal(listedItems.some(item => item.itemID === other.itemID), false);
+  assert.equal(listed.data.storageUnits.some(unit => [offline.itemID, remote.itemID].includes(unit.storageUnitID)), false);
+  const request = { requestID: "11111111-1111-4111-8111-111111111111", storageUnitID: storage.itemID,
+    direction: "deposit", side: "inputs", typeID: MATERIAL_A, quantity: 7 };
+  const [first, duplicate] = await Promise.all([
+    api.transfer("token", f.facility.itemID, request), api.transfer("token", f.facility.itemID, request),
+  ]);
+  assert.equal(first.success, true, first.errorMsg);
+  assert.equal(first.data.gameCommitted, true);
+  assert.deepEqual(first.data.chain, { status: "disabled", industryStatus: "disabled", storageStatus: "disabled" });
+  assert.deepEqual(duplicate, first);
+  assert.equal(mutations.mock.callCount(), 1);
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_A), 5);
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_A, OTHER_OWNER_ID), 50);
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_INPUT_FLAG, MATERIAL_A), 7);
+  assert.equal((await api.transfer("token", f.facility.itemID, { ...request, quantity: 8 })).errorMsg,
+    "TRANSFER_REQUEST_CHANGED");
+  assert.equal(mutations.mock.callCount(), 1);
+
+  const { registerSuiAssemblyStatesRunner } = require("../src/services/frontier/suiAssemblyState");
+  t.after(registerSuiAssemblyStatesRunner(async (_ids, operation) => operation()));
+  const sync = t.mock.method(require("../src/services/frontier/suiIndustryStorageSync"),
+    "syncIndustryStorageTransfer", async () => ({ status: "pending", industryStatus: "synced", storageStatus: "pending" }));
+  const withdraw = { ...request, requestID: "22222222-2222-4222-8222-222222222222", direction: "withdraw", quantity: 3 };
+  const withdrawn = await api.transfer("token", f.facility.itemID, withdraw);
+  assert.equal(withdrawn.success, true, withdrawn.errorMsg);
+  assert.equal(withdrawn.data.gameCommitted, true);
+  assert.deepEqual(withdrawn.data.chain, { status: "pending", industryStatus: "synced", storageStatus: "pending" });
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_A), 8);
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_INPUT_FLAG, MATERIAL_A), 4);
+  assert.deepEqual(await api.transfer("token", f.facility.itemID, withdraw), withdrawn);
+  assert.equal(mutations.mock.callCount(), 2);
+  assert.equal(sync.mock.callCount(), 1);
+  assert.equal(totalAt(f.ship.itemID, CARGO_FLAG, MATERIAL_A), 0);
+});
+
+test("native type-based SSU deposit selects owned split stacks and rejects partial multi-type batches", t => {
+  const f = fixture(t);
+  const storage = f.storage(OTHER_OWNER_ID);
+  grant(OWNER_ID, storage.itemID, 66, MATERIAL_A, 4);
+  const second = grant(OWNER_ID, storage.itemID, 4, MATERIAL_A, 8);
+  assert.equal(itemStore.moveItemToLocation(second.itemID, storage.itemID, 66, 8).success, true);
+  grant(OWNER_ID, storage.itemID, 66, MATERIAL_B, 5);
+  grant(OTHER_OWNER_ID, storage.itemID, 66, MATERIAL_A, 20);
+  const before = snapshot([storage.itemID, f.facility.itemID]);
+  for (const request of [
+    { [MATERIAL_A]: 7, [MATERIAL_B]: 6 }, { [MATERIAL_A]: 13 }, { [MATERIAL_A]: null },
+    { [MATERIAL_A]: 0 }, { [MATERIAL_A]: 0x100000000 },
+    { type: "dict", entries: [[MATERIAL_A, 1], [MATERIAL_A, 2]] },
+  ]) {
+    assert.equal(industry.depositStorageInputItems(f.session, f.facility.itemID, storage.itemID, request).success, false);
+    assert.deepEqual(snapshot([storage.itemID, f.facility.itemID]), before);
+  }
+  t.mock.method(require("../src/_secondary/express/publicGatewayLocal"), "publishGatewayNotice", () => true);
+  const result = new IndustryService().Handle_deposit_storage_input_items([f.facility.itemID, storage.itemID,
+    { type: "dict", entries: [[MATERIAL_A, 7], [MATERIAL_B, 3]] }], f.session);
+  assert.deepEqual(result, [
+    { type: "dict", entries: [[MATERIAL_A, 7], [MATERIAL_B, 3]] }, { type: "dict", entries: [] },
+  ]);
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_A), 5);
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_B), 2);
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_A, OTHER_OWNER_ID), 20);
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_INPUT_FLAG, MATERIAL_A), 7);
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_INPUT_FLAG, MATERIAL_B), 3);
 });
 
 test("one deposit aggregates requested quantities across separate stacks of the same type", t => {
@@ -506,4 +802,199 @@ test("other owners' items occupy destination capacity without becoming withdrawa
     assert.equal(result.errorMsg, "SHIP_CARGO_CAPACITY_EXCEEDED");
     assert.deepEqual(snapshot([f.ship.itemID, f.facility.itemID, container.itemID]), before);
   }
+});
+
+test("empty active blueprint atomically moves both escrow inventories and publishes both client snapshots", t => {
+  const f = fixture(t);
+  const storage = f.storage();
+  f.stored(MATERIAL_A, 7);
+  f.stored(MATERIAL_A, 3);
+  f.stored(MATERIAL_A, 4, "outputs");
+  f.stored(MATERIAL_B, 2, "outputs");
+  // Stored rows outside the current recipe are still material that must move.
+  f.stored(77803, 6, "outputs");
+  grant(OWNER_ID, storage.itemID, 66, MATERIAL_A, 5);
+  const notice = t.mock.method(require("../src/_secondary/express/publicGatewayLocal"),
+    "publishGatewayNotice", () => true);
+  const move = t.mock.method(itemStore, "moveItemsToLocations");
+  const result = industry.emptyActiveBlueprint(f.session, f.facility.itemID, storage.itemID);
+  assert.equal(result.success, true, result.errorMsg);
+  assert.equal(move.mock.callCount(), 1, "all input and output rows share a single atomic move");
+  assert.equal(result.data.side, "all");
+  assert.deepEqual(result.data.itemsBySide, {
+    inputs: { [MATERIAL_A]: 10 }, outputs: { [MATERIAL_A]: 4, [MATERIAL_B]: 2, 77803: 6 },
+  });
+  assert.deepEqual(result.data.items, { [MATERIAL_A]: 14, [MATERIAL_B]: 2, 77803: 6 });
+  assert.equal(result.data.storageTransfers.length, 1);
+  assert.deepEqual(result.data.storageTransfers[0].items, result.data.items);
+  assert.deepEqual(industry.getFacilityItems(f.facility), { inputs: {}, outputs: {} });
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_A), 19);
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_B), 2);
+  assert.equal(totalAt(storage.itemID, 66, 77803), 6);
+  assert.equal(totalAt(f.ship.itemID, CARGO_FLAG, MATERIAL_A), 0);
+  IndustryService.publishIndustryTransferResult(f.session, result);
+  const { getIndustryNoticeTypes } = require("../src/services/frontier/industryNotifications")._testing;
+  for (const [side, name] of [["inputs", "InputItemsChangeNotice"], ["outputs", "OutputItemsChangeNotice"]]) {
+    const call = notice.mock.calls.find(call => call.arguments[0].endsWith(`.${name}`));
+    assert.ok(call, `${side} snapshot published`);
+    const payload = getIndustryNoticeTypes()[side].decode(call.arguments[1]);
+    assert.equal(payload.items.length, 0);
+  }
+  assert.equal(notice.mock.calls.filter(call => call.arguments[0].endsWith(".InventoryItemDepositedNotice")).length, 4);
+  const after = snapshot([f.facility.itemID, storage.itemID]);
+  assert.equal(industry.emptyActiveBlueprint(f.session, f.facility.itemID, storage.itemID).errorMsg,
+    "FACILITY_ALREADY_EMPTY");
+  assert.deepEqual(snapshot([f.facility.itemID, storage.itemID]), after);
+});
+
+test("empty active blueprint validates combined input/output capacity and per-type limits before any move", t => {
+  const f = fixture(t);
+  const storage = f.storage();
+  f.stored(MATERIAL_A, 4);
+  f.stored(MATERIAL_A, 4, "outputs");
+  const inventoryAccess = require("../src/services/frontier/industryInventoryAccess");
+  const resolve = inventoryAccess.resolveIndustryInventory;
+  let capacity = 6;
+  t.mock.method(inventoryAccess, "resolveIndustryInventory", (...args) => {
+    const result = resolve(...args);
+    return result.success ? { ...result, data: { ...result.data, capacity } } : result;
+  });
+  t.mock.method(itemStore, "getInventoryItemUnitVolume", () => 1);
+  const before = snapshot([f.facility.itemID, storage.itemID]);
+  assert.equal(industry.emptyActiveBlueprint(f.session, f.facility.itemID, storage.itemID).errorMsg,
+    "STORAGE_CAPACITY_EXCEEDED");
+  assert.deepEqual(snapshot([f.facility.itemID, storage.itemID]), before);
+  capacity = Number.MAX_SAFE_INTEGER;
+  grant(OWNER_ID, storage.itemID, 66, MATERIAL_A, 0xffffffff - 6);
+  const atLimit = snapshot([f.facility.itemID, storage.itemID]);
+  assert.equal(industry.emptyActiveBlueprint(f.session, f.facility.itemID, storage.itemID).errorMsg,
+    "STORAGE_TYPE_QUANTITY_EXCEEDED");
+  assert.deepEqual(snapshot([f.facility.itemID, storage.itemID]), atLimit);
+});
+
+test("empty active blueprint rolls back both inventories if an atomic store move fails", t => {
+  const f = fixture(t);
+  const storage = f.storage();
+  f.stored(MATERIAL_A, 4);
+  f.stored(MATERIAL_B, 5, "outputs");
+  const before = snapshot([f.facility.itemID, storage.itemID]);
+  const move = itemStore.moveItemsToLocations;
+  t.mock.method(itemStore, "moveItemsToLocations", requests => move([...requests, {
+    itemID: 999999999999, quantity: 1, destinationLocationID: storage.itemID, destinationFlagID: 66,
+  }]));
+  assert.equal(industry.emptyActiveBlueprint(f.session, f.facility.itemID, storage.itemID).success, false);
+  assert.deepEqual(snapshot([f.facility.itemID, storage.itemID]), before);
+});
+
+test("empty and switch reject running, discontinuing and corrupt production without changing materials or blueprint", t => {
+  const f = fixture(t);
+  const storage = f.storage();
+  f.stored(MATERIAL_A, 4);
+  f.stored(MATERIAL_B, 5, "outputs");
+  for (const state of ["RUNNING", "DISCONTINUING", "CORRUPT"]) {
+    const production = { version: 1, jobID: 1, state, requestedRuns: null,
+      completedRuns: 0, runStartedAtMs: 1, runEndAtMs: 100000, stopReason: null };
+    assert.equal(itemStore.updateInventoryItem(f.facility.itemID, current => ({ ...current,
+      customInfo: JSON.stringify({ [blueprints.INDUSTRY_INFO_KEY]: { production } }),
+    })).success, true);
+    const before = snapshot([SYSTEM_ID, f.facility.itemID, storage.itemID]);
+    const expected = state === "CORRUPT" ? "INVALID_PRODUCTION_STATE" : "PRODUCTION_ALREADY_RUNNING";
+    assert.equal(industry.emptyActiveBlueprint(f.session, f.facility.itemID, storage.itemID).errorMsg, expected);
+    assert.equal(industry.loadBlueprint(f.session, f.facility.itemID, 1027).errorMsg, expected);
+    assert.deepEqual(snapshot([SYSTEM_ID, f.facility.itemID, storage.itemID]), before);
+  }
+});
+
+test("empty revalidates authorization, production and destination after awaiting refreshed assembly states", async t => {
+  const f = fixture(t);
+  const storage = f.storage();
+  f.stored(MATERIAL_A, 4);
+  f.stored(MATERIAL_B, 5, "outputs");
+  const { registerSuiAssemblyStatesRunner } = require("../src/services/frontier/suiAssemblyState");
+  let beforeCommit = () => {};
+  t.after(registerSuiAssemblyStatesRunner(async (ids, operation) => {
+    assert.deepEqual(new Set(ids), new Set([f.facility.itemID, storage.itemID]));
+    await Promise.resolve();
+    beforeCommit();
+    return operation();
+  }));
+  const before = snapshot([f.facility.itemID, storage.itemID]);
+  let allowed = true;
+  beforeCommit = () => { allowed = false; };
+  const revoked = await industry.emptyActiveBlueprint(f.session, f.facility.itemID, storage.itemID, {
+    assertAccess: () => allowed ? { success: true } : { success: false, errorMsg: "BLUEPRINT_CHANGED" },
+  });
+  assert.equal(revoked.errorMsg, "BLUEPRINT_CHANGED");
+  assert.deepEqual(snapshot([f.facility.itemID, storage.itemID]), before);
+  beforeCommit = () => { f.entities.delete(storage.itemID); };
+  assert.equal((await industry.emptyActiveBlueprint(f.session, f.facility.itemID, storage.itemID)).success, false);
+  assert.deepEqual(snapshot([f.facility.itemID, storage.itemID]), before);
+  f.entities.set(storage.itemID, { itemID: storage.itemID, position: { x: 150, y: 0, z: 0 } });
+  beforeCommit = () => {
+    assert.equal(itemStore.updateInventoryItem(f.facility.itemID, current => ({ ...current,
+      customInfo: JSON.stringify({ [blueprints.INDUSTRY_INFO_KEY]: { production: {
+        version: 1, jobID: 1, state: "RUNNING", requestedRuns: null,
+        completedRuns: 0, runStartedAtMs: 1, runEndAtMs: 100000, stopReason: null,
+      } } }),
+    })).success, true);
+  };
+  assert.equal((await industry.emptyActiveBlueprint(f.session, f.facility.itemID, storage.itemID)).errorMsg,
+    "PRODUCTION_ALREADY_RUNNING");
+  assert.deepEqual(snapshot([f.facility.itemID, storage.itemID]), before);
+});
+
+test("empty preserves committed items when paired chain synchronization is unavailable", async t => {
+  const f = fixture(t);
+  const storage = f.storage();
+  f.stored(MATERIAL_A, 4);
+  f.stored(MATERIAL_B, 5, "outputs");
+  const { registerSuiAssemblyStatesRunner } = require("../src/services/frontier/suiAssemblyState");
+  t.after(registerSuiAssemblyStatesRunner(async (_ids, operation) => { await Promise.resolve(); return operation(); }));
+  const sync = t.mock.method(require("../src/services/frontier/suiIndustryStorageSync"),
+    "syncIndustryStorageTransfer", async () => {
+      assert.deepEqual(industry.getFacilityItems(f.facility), { inputs: {}, outputs: {} });
+      throw new Error("chain unavailable after commit");
+    });
+  const result = await industry.emptyActiveBlueprint(f.session, f.facility.itemID, storage.itemID);
+  assert.equal(result.success, true, result.errorMsg);
+  assert.equal(result.data.gameCommitted, true);
+  assert.equal(result.data.chain.status, "pending");
+  assert.equal(sync.mock.callCount(), 1);
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_A), 4);
+  assert.equal(totalAt(storage.itemID, 66, MATERIAL_B), 5);
+});
+
+test("empty never skips foreign material and switching remains blocked by every stored row", t => {
+  const f = fixture(t);
+  const storage = f.storage();
+  f.stored(MATERIAL_A, 4);
+  f.stored(MATERIAL_B, 5, "outputs", OTHER_OWNER_ID);
+  const before = snapshot([f.facility.itemID, storage.itemID]);
+  assert.equal(industry.emptyActiveBlueprint(f.session, f.facility.itemID, storage.itemID).errorMsg, "ACCESS_DENIED");
+  assert.equal(industry.loadBlueprint(f.session, f.facility.itemID, 1027).errorMsg, "FACILITY_CONTAINS_ITEMS");
+  assert.deepEqual(snapshot([f.facility.itemID, storage.itemID]), before);
+  assert.equal(f.withdraw({ [MATERIAL_A]: 4 }).success, true);
+  assert.deepEqual(industry.getFacilityItems(f.facility), { inputs: {}, outputs: {} });
+  assert.equal(industry.loadBlueprint(f.session, f.facility.itemID, 1027).errorMsg, "FACILITY_CONTAINS_ITEMS");
+});
+
+test("an emptied blueprint can be switched while preserving destination materials and unrelated metadata", t => {
+  const f = fixture(t);
+  f.selectedBlueprint.mock.restore();
+  const storage = f.storage();
+  assert.equal(itemStore.updateInventoryItem(f.facility.itemID, current => ({ ...current,
+    customInfo: JSON.stringify({ unrelated: "retained" }),
+  })).success, true);
+  assert.equal(industry.loadBlueprint(f.session, f.facility.itemID, 1026).success, true);
+  f.stored(77803, 4);
+  f.stored(MATERIAL_A, 5, "outputs");
+  assert.equal(industry.loadBlueprint(f.session, f.facility.itemID, 1027).errorMsg, "FACILITY_CONTAINS_ITEMS");
+  assert.equal(industry.emptyActiveBlueprint(f.session, f.facility.itemID, storage.itemID).success, true);
+  assert.equal(blueprints.getSelectedBlueprint(itemStore.findItemById(f.facility.itemID)).blueprint_id, 1026);
+  const storageBefore = snapshot([storage.itemID]);
+  const switched = industry.loadBlueprint(f.session, f.facility.itemID, 1027);
+  assert.equal(switched.success, true, switched.errorMsg);
+  assert.equal(blueprints.getSelectedBlueprint(itemStore.findItemById(f.facility.itemID)).blueprint_id, 1027);
+  assert.equal(JSON.parse(itemStore.findItemById(f.facility.itemID).customInfo).unrelated, "retained");
+  assert.deepEqual(snapshot([storage.itemID]), storageBefore);
 });

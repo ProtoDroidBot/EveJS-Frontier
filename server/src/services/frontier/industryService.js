@@ -68,6 +68,12 @@ const ERROR_REASONS = {
     INVALID_INPUT_TYPE: "IndustryInventoryError_InvalidType",
     INPUT_CAPACITY_EXCEEDED: "IndustryInventoryError_FullSlot",
     SHIP_CARGO_CAPACITY_EXCEEDED: "IndustryInventoryError_NotEnoughCapacity",
+    STORAGE_CAPACITY_EXCEEDED: "IndustryInventoryError_NotEnoughCapacity",
+    STORAGE_TYPE_QUANTITY_EXCEEDED: "IndustryInventoryError_FullSlot",
+    ASSEMBLY_OFFLINE: "IndustryError_FacilityOffline",
+    ASSEMBLY_UNAVAILABLE: "IndustryError_FacilityOffline",
+    ASSEMBLY_NOT_IN_CURRENT_SYSTEM: "IndustryInventoryError_NotSameLocation",
+    ASSEMBLY_OUT_OF_RANGE: "IndustryInventoryError_NotSameLocation",
     INSUFFICIENT_SOURCE_ITEMS: "IndustryInventoryError_NoItemsAvailable",
     INSUFFICIENT_STORED_ITEMS: "IndustryInventoryError_NoItemsAvailable",
     FACILITY_CONTAINS_ITEMS: "IndustryLoadError_ItemsPresent",
@@ -105,8 +111,10 @@ function finishProduction(session, result) {
         trackIndustryProduction(result.data.facility);
     return productionDict(requireSuccess(result).production);
 }
-function finishTransfer(session, result) {
-    const data = requireSuccess(result);
+function publishTransferNotifications(session, result) {
+    if (!result?.success || result.data?.replayed)
+        return;
+    const data = result.data;
     // Separate change dictionaries preserve each source remainder and each new
     // split row. A shared dictionary for the batch corrupts the client cache.
     const { emitItemsChangedForSession } = require("../character/characterState");
@@ -122,7 +130,43 @@ function finishTransfer(session, result) {
             log.warn(`[industry] Inventory notification failed: ${error.message}`);
         }
     }
-    publishIndustryItemsChanged(session, data.facility.itemID, data.side, runtime.getFacilityItems(data.facility)[data.side]);
+    const totals = runtime.getFacilityItems(data.facility);
+    for (const side of data.side === "all" ? ["inputs", "outputs"] : [data.side]) {
+        publishIndustryItemsChanged(session, data.facility.itemID, side, totals[side]);
+    }
+    for (const transfer of data.storageTransfers || []) {
+        try {
+            const { getStorageUnitProtoTypes } = require("../../_secondary/express/gatewayServices/assemblyStorageUnitProto");
+            const { encodePayload } = require("../../_secondary/express/gatewayServices/gatewayServiceHelpers");
+            const { publishGatewayNotice } = require("../../_secondary/express/publicGatewayLocal");
+            const name = transfer.direction === "deposit" ? "InventoryItemDepositedNotice" : "InventoryItemWithdrawnNotice";
+            for (const item of transfer.noticeItems || []) {
+                publishGatewayNotice(`eve_public.assembly.storageunit.api.${name}`, encodePayload(getStorageUnitProtoTypes()[name], {
+                    storage_unit: { sequential: transfer.storageUnitID }, character: { sequential: data.characterID },
+                    item: { identifier: { sequential: item.itemID }, attributes: {
+                            identifier: { sequential: item.typeID }, quantity: item.quantity, volume: item.unitVolume * item.quantity,
+                        } },
+                }), { character: data.characterID });
+            }
+        }
+        catch (error) {
+            log.warn(`[industry] Storage notification failed: ${error.message}`);
+        }
+    }
+}
+function publishIndustryTransferResult(session, result) {
+    try {
+        publishTransferNotifications(session, result);
+    }
+    catch (error) {
+        log.warn(`[industry] Transfer notification failed: ${error.message}`);
+    }
+}
+function finishTransfer(session, result) {
+    if (result instanceof Promise)
+        return result.then(current => finishTransfer(session, current));
+    const data = requireSuccess(result);
+    publishIndustryTransferResult(session, result);
     // Python tuple (moved type quantities, jettisoned quantities).
     return [quantityDict(data.items), buildDict([])];
 }
@@ -157,6 +201,10 @@ class IndustryService extends BaseService {
         settleOwnedFacility(session, args?.[0]);
         return finishTransfer(session, runtime.depositInputItems(session, args?.[0], args?.[1]));
     }
+    Handle_deposit_storage_input_items(args, session) {
+        settleOwnedFacility(session, args?.[0]);
+        return finishTransfer(session, runtime.depositStorageInputItems(session, args?.[0], args?.[1], args?.[2]));
+    }
     Handle_withdraw_input_items(args, session) {
         settleOwnedFacility(session, args?.[0]);
         return finishTransfer(session, runtime.withdrawItems(session, args?.[0], args?.[1], args?.[2], args?.[3], "inputs"));
@@ -176,6 +224,7 @@ class IndustryService extends BaseService {
     }
 }
 module.exports = IndustryService;
+module.exports.publishIndustryTransferResult = publishIndustryTransferResult;
 module.exports._testing = {
     FRONTIER_INDUSTRY_FACILITY_TYPE_IDS,
     buildIdleFacilityDetails: buildFacilityDetails,

@@ -711,6 +711,8 @@ function executeStorageTransactionWithChainState(options) {
     return withAuthoritativeStorageState({ ...options, storageUnitID: transaction.storageUnitID }, current => executeStorageTransaction(current));
 }
 module.exports = {
+    validateStorageUnit,
+    getStorageComponent,
     SMART_STORAGE_FLAG,
     getShipCargoCapacity,
     executeStorageTransaction: executeStorageTransactionWithChainState,

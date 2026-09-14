@@ -308,10 +308,10 @@ test("Industry API requires live ownership, rechecks auth and suppresses private
   assert.equal((await api.status("token", "5000000001") as any).errorMsg, "AUTH_EXPIRED");
 });
 
-test("Industry HTTP routes expose wallet auth and facility status/sync with origin protection", () => {
+test("Industry HTTP routes expose wallet auth and facility status/sync/start with origin protection", () => {
   const routes: string[] = []; const middlewares: any[] = [];
   mountSmartIndustryEndpoints({ use: (_path: string, callback: any) => middlewares.push(callback), post: (route: string) => routes.push(route) }, { api: {} });
-  assert.deepEqual(routes, ["/evejs/industry/auth/challenge", "/evejs/industry/auth/session", "/evejs/industry/:facilityID/status", "/evejs/industry/:facilityID/sync"]);
+  assert.deepEqual(routes, ["/evejs/industry/auth/challenge", "/evejs/industry/auth/session", "/evejs/industry/:facilityID/status", "/evejs/industry/:facilityID/sync", "/evejs/industry/:facilityID/start", "/evejs/industry/:facilityID/storage", "/evejs/industry/:facilityID/transfer", "/evejs/industry/:facilityID/storage-sync", "/evejs/industry/:facilityID/blueprints", "/evejs/industry/:facilityID/blueprint", "/evejs/industry/:facilityID/empty"]);
   let code: number; let next = false;
   const response = { set() {}, vary() {}, status(value: number) { code = value; return this; }, json() {} };
   middlewares[1]({ headers: { origin: "https://untrusted.invalid" } }, response, () => { next = true; });
@@ -339,4 +339,176 @@ test("Industry API exposes local and confirmed production and refuses old mirror
   assert.equal(legacy.data.chain.productionMirrored, false);
   assert.equal(legacy.data.chain.production, null);
   assert.deepEqual(legacy.data.production, running());
+});
+
+function startApiFixture(options: Record<string, any> = {}) {
+  const session = { characterID: 140001, shipid: 5000000002, solarsystemid2: 30002479 };
+  const state = { facility: facility(), live: true, owner: 140001, calls: [] as any[] };
+  const blueprint = require("../src/services/frontier/industryBlueprints").getBlueprintForFacility(87119, 1007);
+  const body = { blueprintID: "1007", blueprintHash: blueprint.content_hash, runs: "3", expectedJobID: null };
+  const api = createSmartIndustryApi({
+    auth: { authenticate: () => state.live
+      ? { success: true, data: { characterID: state.owner, walletAddress: address(state.owner), session } }
+      : { success: false, errorMsg: "AUTH_EXPIRED" } },
+    readFacility: () => structuredClone(state.facility),
+    validateFacility: (...args: any[]) => { state.calls.push(["validate", ...args]); return { success: true }; },
+    settleProduction: (...args: any[]) => { state.calls.push(["settle", ...args]); return { success: true }; },
+    startProduction: (...args: any[]) => {
+      state.calls.push(["start", ...args]);
+      const jobID = Number(state.facility.production?.job_id || 0) + 1;
+      state.facility.production = { ...running(), job_id: String(jobID), requested_runs: args[4] === null ? null : String(args[4]) };
+      state.facility.snapshot.inputs[0].quantity = String(Number(state.facility.snapshot.inputs[0].quantity) - 1);
+      return { success: true, data: { facility: { itemID: 5000000001 }, production: { version: 1,
+        jobID, state: "RUNNING", requestedRuns: args[4], completedRuns: 0,
+        runStartedAtMs: 1700000000000, runEndAtMs: 1700000012000, stopReason: null }, changes: [], events: [] } };
+    },
+    trackProduction: (...args: any[]) => state.calls.push(["track", ...args]),
+    publishProduction: (...args: any[]) => state.calls.push(["publish", ...args]),
+    readChain: async (request: any) => ({ ...request, status: "disabled" }),
+    flushChain: async (request: any) => { state.calls.push(["flush", request]); return { ...request, status: "pending" }; },
+    ...options,
+  });
+  return { api, state, session, body };
+}
+
+test("Industry API starts the authoritative job with a live session and refreshes server and chain state", async () => {
+  const f = startApiFixture();
+  const before = await f.api.status("token", "5000000001") as any;
+  assert.equal(before.data.blueprintHash, f.body.blueprintHash);
+  const result = await f.api.start("token", "5000000001", f.body) as any;
+  assert.equal(result.success, true);
+  assert.equal(result.data.gameCommitted, true);
+  assert.equal(result.data.startedJobID, "1");
+  assert.deepEqual(result.data.production, running());
+  assert.equal(result.data.facility.snapshot.inputs[0].quantity, "4");
+  assert.equal(result.data.chain.status, "pending");
+  assert.deepEqual(f.state.calls.map(call => call[0]), ["validate", "settle", "start", "track", "publish", "flush"]);
+  assert.deepEqual(f.state.calls[2].slice(1), [f.session, 5000000001, 1007, f.body.blueprintHash, 3]);
+  assert.equal(f.state.calls[4][2], f.session);
+});
+
+test("Industry start requires ownership, exact job intent, safe runs and a blueprint hash before mutation", async () => {
+  const cases = [
+    [null, "INVALID_REQUEST"],
+    [{ blueprintID: true }, "INVALID_BLUEPRINT_ID"], [{ blueprintID: "1e3" }, "INVALID_BLUEPRINT_ID"],
+    [{ blueprintHash: "wrong" }, "INVALID_BLUEPRINT_HASH"],
+    ...[undefined, 0, -1, "", "1.5", "1e3", " 3", true, {}, "9007199254740992"].map(runs => [{ runs }, "INVALID_RUN_COUNT"]),
+    ...[undefined, 0, {}, "9007199254740992"].map(expectedJobID => [{ expectedJobID }, "INVALID_JOB_ID"]),
+    [{ expectedJobID: "1" }, "PRODUCTION_CHANGED"],
+  ];
+  for (const [change, error] of cases) {
+    const f = startApiFixture();
+    const result = await f.api.start("token", "5000000001", change === null ? null : { ...f.body, ...change as any }) as any;
+    assert.equal(result.errorMsg, error, JSON.stringify(change));
+    assert.deepEqual(f.state.calls, []);
+  }
+  const f = startApiFixture();
+  f.state.owner++;
+  assert.equal((await f.api.start("token", "5000000001", f.body) as any).errorMsg, "ACCESS_DENIED");
+  f.state.live = false;
+  assert.equal((await f.api.start("token", "5000000001", f.body) as any).errorMsg, "AUTH_EXPIRED");
+  assert.deepEqual(f.state.calls, []);
+});
+
+test("Industry start respects runtime access and production errors without disclosing internal details", async () => {
+  for (const code of ["FACILITY_OUT_OF_RANGE", "FACILITY_NOT_IN_CURRENT_SYSTEM", "ASSEMBLY_ACTIVATING", "INVALID_SHIP"]) {
+    const f = startApiFixture({ validateFacility: () => ({ success: false, errorMsg: code }) });
+    assert.equal((await f.api.start("token", "5000000001", f.body) as any).errorMsg, code);
+    assert.deepEqual(f.state.calls, []);
+  }
+  for (const code of ["FACILITY_OFFLINE", "INVALID_BLUEPRINT_HASH", "BLUEPRINT_NOT_LOADED", "INSUFFICIENT_INPUTS", "OUTPUT_CAPACITY_EXCEEDED", "PRODUCTION_ALREADY_RUNNING", "PRIVATE_DATABASE_PATH"]) {
+    const f = startApiFixture({ startProduction: () => ({ success: false, errorMsg: code, params: "PRIVATE_DATABASE_PATH" }) });
+    const result = await f.api.start("token", "5000000001", f.body) as any;
+    assert.equal(result.errorMsg, code === "PRIVATE_DATABASE_PATH" ? "INDUSTRY_REQUEST_FAILED" : code);
+    assert.equal(JSON.stringify(result).includes("PRIVATE_DATABASE_PATH"), false);
+    assert.deepEqual(f.state.calls.map(call => call[0]), ["validate", "settle"]);
+  }
+});
+
+test("Industry start supports continuous runs and rejects replay even after the first job finishes", async () => {
+  const f = startApiFixture();
+  const body = { ...f.body, runs: null };
+  assert.equal((await f.api.start("token", "5000000001", body) as any).data.production.requested_runs, null);
+  assert.equal((await f.api.start("token", "5000000001", body) as any).errorMsg, "PRODUCTION_CHANGED");
+  f.state.facility.production = { ...running(), state: "STOPPED", completed_runs: "3", stop_reason: "COMPLETED" };
+  assert.equal((await f.api.start("token", "5000000001", body) as any).errorMsg, "PRODUCTION_CHANGED");
+  const next = await f.api.start("token", "5000000001", { ...body, expectedJobID: "1" }) as any;
+  assert.equal(next.data.startedJobID, "2");
+  assert.equal(f.state.calls.filter(call => call[0] === "start").length, 2);
+});
+
+test("Industry start remains committed when chain sync, notification or post-commit authentication fails", async () => {
+  for (const outcome of ["error", "timeout", "expired"]) {
+    const f = startApiFixture({
+      chainWaitMs: 1,
+      publishProduction: () => { throw new Error("PRIVATE_NOTIFICATION_ERROR"); },
+      flushChain: async () => {
+        if (outcome === "expired") f.state.live = false;
+        if (outcome === "timeout") return new Promise(() => {});
+        throw new Error("PRIVATE_CHAIN_ERROR");
+      },
+    });
+    const result = await f.api.start("token", "5000000001", f.body) as any;
+    assert.equal(result.success, true, outcome);
+    assert.equal(result.data.gameCommitted, true);
+    assert.equal(result.data.startedJobID, "1");
+    assert.deepEqual(result.data.production, running());
+    assert.equal(result.data.facility.snapshot.inputs[0].quantity, "4");
+    assert.equal(result.data.chain.status, outcome === "error" ? "error" : "pending");
+    assert.equal(JSON.stringify(result).includes("PRIVATE_"), false);
+    assert.equal(f.state.calls.filter(call => call[0] === "track").length, 1);
+  }
+});
+
+test("Industry start captures committed state when rereading fails and continues syncing after tracking fails", async () => {
+  let started = false;
+  let flushes = 0;
+  const f = startApiFixture({
+    readFacility: () => {
+      if (started) throw new Error("PRIVATE_READ_ERROR");
+      return structuredClone(f.state.facility);
+    },
+    trackProduction: () => { started = true; throw new Error("PRIVATE_TRACK_ERROR"); },
+  });
+  const result = await f.api.start("token", "5000000001", f.body) as any;
+  assert.equal(result.success, true);
+  assert.deepEqual(result.data.facility, f.state.facility);
+  assert.equal(result.data.startedJobID, "1");
+  assert.equal(JSON.stringify(result).includes("PRIVATE_"), false);
+
+  const tracked = startApiFixture({
+    trackProduction: () => { throw new Error("PRIVATE_TRACK_ERROR"); },
+    flushChain: async (request: any) => { flushes++; return { ...request, status: "pending" }; },
+  });
+  assert.equal((await tracked.api.start("token", "5000000001", tracked.body) as any).success, true);
+  assert.equal(flushes, 1);
+});
+
+test("concurrent Industry start requests commit one job while its chain synchronization is pending", async () => {
+  const f = startApiFixture({ chainWaitMs: 1, flushChain: () => new Promise(() => {}) });
+  const [first, duplicate] = await Promise.all([
+    f.api.start("token", "5000000001", f.body), f.api.start("token", "5000000001", f.body),
+  ]) as any[];
+  assert.equal(first.success, true);
+  assert.equal(duplicate.errorMsg, "PRODUCTION_CHANGED");
+  assert.equal(f.state.calls.filter(call => call[0] === "start").length, 1);
+});
+
+test("Industry HTTP start forwards body and maps access, invalid input and conflicts", async () => {
+  const routes = new Map<string, any>();
+  let errorMsg: string | null = null;
+  let received: any;
+  mountSmartIndustryEndpoints({ use() {}, post: (route: string, handler: any) => routes.set(route, handler) }, {
+    api: { start: async (...args: any[]) => { received = args; return errorMsg ? { success: false, errorMsg } : { success: true }; } },
+  });
+  const request = { headers: { authorization: "Bearer token" }, params: { facilityID: "5000000001" }, body: { runs: "3" } };
+  let code: number;
+  const response = { status(value: number) { code = value; return this; }, json() {} };
+  for (const [error, expected] of [[null, 200], ["AUTH_EXPIRED", 401], ["FACILITY_OUT_OF_RANGE", 403],
+    ["INVALID_RUN_COUNT", 400], ["PRODUCTION_CHANGED", 409], ["INSUFFICIENT_INPUTS", 409], ["INDUSTRY_REQUEST_FAILED", 500]]) {
+    errorMsg = error as string | null;
+    await routes.get("/evejs/industry/:facilityID/start")(request, response);
+    assert.equal(code, expected);
+    assert.deepEqual(received, ["Bearer token", "5000000001", request.body]);
+  }
 });

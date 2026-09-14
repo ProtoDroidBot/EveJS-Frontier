@@ -31,6 +31,7 @@ DEFAULT_GATEWAY_LEAF = (
 CERTIFICATE_VERIFIER = SCRIPT_DIR / "verify-frontier-certificates.mjs"
 DOCKING_PATCHER = SCRIPT_DIR / "patch_frontier_docking.py"
 FEATURE_PATCHER = SCRIPT_DIR / "patch_frontier_features.py"
+INDUSTRY_STORAGE_PATCHER = SCRIPT_DIR / "patch_frontier_industry_storage.py"
 PEM_CERTIFICATE_RE = re.compile(
     rb"-----BEGIN CERTIFICATE-----\s+([A-Za-z0-9+/=\r\n]+?)\s+"
     rb"-----END CERTIFICATE-----",
@@ -724,19 +725,36 @@ def code_patch_states(archive: Path, build: int) -> dict:
         raise FrontierWindowsError(f"Unexpected station-docking state: {docking}")
     if features not in {"source", "patched", "partial"}:
         raise FrontierWindowsError(f"Unexpected Frontier-feature state: {features}")
-    return {"docking": docking, "features": features}
+    states = {"docking": docking, "features": features}
+    if build == 3502403:
+        industry = run_python_patcher(INDUSTRY_STORAGE_PATCHER, archive, build, check=True)
+        if industry not in {"source", "patched", "outdated", "partial"}:
+            raise FrontierWindowsError(f"Unexpected Industry storage adapter state: {industry}")
+        states["industryStorage"] = industry
+    return states
+
+
+def expected_code_states(build: int, state: str) -> dict:
+    result = {"docking": state, "features": state}
+    if build == 3502403:
+        result["industryStorage"] = state
+    return result
 
 
 def patch_code_archive(archive: Path, build: int) -> dict:
     states = code_patch_states(archive, build)
     if states["features"] == "partial":
         raise FrontierWindowsError("code.ccp contains a partial Frontier feature patch.")
+    if states.get("industryStorage") == "partial":
+        raise FrontierWindowsError("code.ccp contains a partial Industry storage adapter.")
     if states["docking"] == "source":
         run_python_patcher(DOCKING_PATCHER, archive, build, check=False)
     if states["features"] == "source":
         run_python_patcher(FEATURE_PATCHER, archive, build, check=False)
+    if states.get("industryStorage") == "source":
+        run_python_patcher(INDUSTRY_STORAGE_PATCHER, archive, build, check=False)
     patched = code_patch_states(archive, build)
-    if patched != {"docking": "patched", "features": "patched"}:
+    if patched != expected_code_states(build, "patched"):
         raise FrontierWindowsError(f"code.ccp did not reach the exact patched state: {patched}")
     return patched
 
@@ -1079,7 +1097,7 @@ def verify_unpatched_stage_sources(
     if inspect_blue(paths["blue"], profile) != "source":
         raise FrontierWindowsError("Unpatched stage native blue is not the exact source.")
     source_code_states = code_patch_states(paths["code"], int(marker["build"]))
-    if source_code_states != {"docking": "source", "features": "source"}:
+    if source_code_states != expected_code_states(int(marker["build"]), "source"):
         raise FrontierWindowsError(
             f"Unpatched stage code.ccp is not the exact source: {source_code_states}"
         )
@@ -1312,6 +1330,8 @@ def check_stage(
     ca_path: Path = DEFAULT_CA,
     xmpp_leaf: Path = DEFAULT_XMPP_LEAF,
     gateway_leaf: Path = DEFAULT_GATEWAY_LEAF,
+    allow_industry_storage_source: bool = False,
+    allow_industry_storage_outdated: bool = False,
 ) -> dict:
     stage_root = stage_root.resolve()
     marker_path, marker = load_stage(stage_root)
@@ -1330,7 +1350,12 @@ def check_stage(
     if blue_state != "target":
         raise FrontierWindowsError(f"Native blue patch state is {blue_state}, not target.")
     code_states = code_patch_states(paths["code"], build)
-    if code_states != {"docking": "patched", "features": "patched"}:
+    expected_states = expected_code_states(build, "patched")
+    if allow_industry_storage_source and build == 3502403 and code_states.get("industryStorage") == "source":
+        expected_states["industryStorage"] = "source"
+    if allow_industry_storage_outdated and build == 3502403 and code_states.get("industryStorage") == "outdated":
+        expected_states["industryStorage"] = "outdated"
+    if code_states != expected_states:
         raise FrontierWindowsError(f"code.ccp patch state is not fully enabled: {code_states}")
     verify_placebo(paths["commonIni"])
     verify_start_ini(paths["startIni"], build)
@@ -1398,6 +1423,40 @@ def check_stage(
     }
 
 
+def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
+    """Upgrade a verified stage while preserving its earlier client patches."""
+    check_stage(stage_root, allow_industry_storage_source=True,
+                allow_industry_storage_outdated=True, **check_options)
+    marker_path, marker = load_stage(stage_root)
+    build = int(marker["build"])
+    paths = stage_paths(stage_root, marker)
+    states = code_patch_states(paths["code"], build)
+    if states.get("industryStorage") == "patched":
+        return check_stage(stage_root, **check_options)
+    if build != 3502403 or states.get("industryStorage") not in {"source", "outdated"}:
+        raise FrontierWindowsError("Stage cannot receive the Industry storage adapter")
+    _, profile = resolve_profile(build, str(marker["nativeBlue"]), check_options.get("profile_path"))
+    touched = [paths["code"], paths["manifest"], marker_path]
+    backup_root, original_hashes = backup_transaction_files(stage_root, touched)
+    # Recheck before entering rollback scope; a competing writer's newer state
+    # must never be overwritten by our backup if this operation did not write.
+    if any(sha256_file(path) != original_hashes[path.relative_to(stage_root).as_posix()] for path in touched):
+        raise FrontierWindowsError("Stage changed before the Industry storage upgrade")
+    try:
+        run_python_patcher(INDUSTRY_STORAGE_PATCHER, paths["code"], build, check=False)
+        refresh_manifest_atomic(paths["manifest"], stage_root, profile)
+        for path in touched[:2]:
+            marker["currentHashes"][path.relative_to(stage_root).as_posix()] = sha256_file(path)
+        marker["industryStoragePatchState"] = "patched"
+        marker["industryStoragePatchBackup"] = str(backup_root)
+        marker["preIndustryStorageHashes"] = original_hashes
+        write_json_atomic(marker_path, marker)
+        return check_stage(stage_root, **check_options)
+    except BaseException:
+        restore_transaction_files(stage_root, backup_root, touched, original_hashes)
+        raise
+
+
 def patch_stage(
     stage_root: Path,
     profile_path: Path | None = None,
@@ -1409,6 +1468,11 @@ def patch_stage(
     stage_root = stage_root.resolve()
     marker_path, marker = load_stage(stage_root)
     if marker.get("patchState") == "complete":
+        if int(marker["build"]) == 3502403:
+            return upgrade_industry_storage_stage(
+                stage_root, profile_path=profile_path, node_path=node_path,
+                ca_path=ca_path, xmpp_leaf=xmpp_leaf, gateway_leaf=gateway_leaf,
+            )
         return check_stage(
             stage_root,
             profile_path=profile_path,
@@ -1462,6 +1526,7 @@ def patch_stage(
                 "codeCcpPatchBuild": build,
                 "currentHashes": current_hashes,
                 "frontierFeaturePatchState": code_states["features"],
+                "industryStoragePatchState": code_states.get("industryStorage"),
                 "fileStates": {
                     "nativeBlue": "exact-target",
                     "codeCcp": "exact-patched",

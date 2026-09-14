@@ -59,9 +59,10 @@ function fixture(t) {
   deployment._testing.clearBuildDefinitionCache();
   deployment._testing.clearCompletionTimers();
   const scene = new spaceRuntime._testing.SolarSystemScene(SYSTEM_ID);
+  t.mock.method(scene, "getCurrentSimTimeMs", () => scene.simTimeMs);
   spaceRuntime.scenes.set(SYSTEM_ID, scene);
 
-  function makeViewer(characterID, x, initialStateSent = true) {
+  function makeViewer(characterID, x, initialStateSent = true, clockOffsetMs = 0) {
     const ship = grant(characterID, SYSTEM_ID, SHIP_TYPE_ID, 1, {
       individualItems: true,
       singleton: 1,
@@ -81,8 +82,9 @@ function fixture(t) {
         systemID: SYSTEM_ID,
         shipID: ship.itemID,
         initialStateSent,
+        clockOffsetMs,
         visibleDynamicEntityIDs: new Set(),
-        historyFloorDestinyStamp: Math.floor(START_MS / 1000) - 1,
+        historyFloorDestinyStamp: Math.floor((START_MS + clockOffsetMs) / 1000) - 1,
       },
       sendNotification(...args) { notifications.push(args); return true; },
     };
@@ -94,7 +96,7 @@ function fixture(t) {
   }
 
   const owner = makeViewer(OWNER_ID, 0);
-  const observer = makeViewer(OBSERVER_ID, 50);
+  const observer = makeViewer(OBSERVER_ID, 50, true, 1500);
   const freshViewer = makeViewer(FRESH_VIEWER_ID, 75, false);
   const farViewer = makeViewer(FAR_VIEWER_ID, 1e12);
   grant(OWNER_ID, owner.ship.itemID, MATERIAL_ID, 6);
@@ -116,7 +118,17 @@ function fixture(t) {
     if (previousScene) spaceRuntime.scenes.set(SYSTEM_ID, previousScene);
     else spaceRuntime.scenes.delete(SYSTEM_ID);
   });
-  return { scene, owner, observer, freshViewer, farViewer };
+  return {
+    scene, owner, observer, freshViewer, farViewer,
+    syncAt(simTimeMs, viewers = [owner, observer, freshViewer, farViewer]) {
+      scene.simTimeMs = simTimeMs;
+      scene.processPendingNativeBallReplacements(simTimeMs);
+      for (const { session } of viewers) {
+        scene.syncDynamicVisibilityForSession(session, simTimeMs);
+      }
+      scene.flushDirectDestinyNotificationBatchIfIdle();
+    },
+  };
 }
 
 function destinyUpdates(notifications) {
@@ -157,6 +169,29 @@ function containsTypeProjection(value, typeID) {
   return Object.values(value).some(entry => containsTypeProjection(entry, typeID));
 }
 
+function removalFor(viewer, itemID) {
+  return destinyUpdates(viewer.notifications).find(update => (
+    update.payload[0] === "RemoveBalls" &&
+    (update.payload[1][0].items || update.payload[1][0]).includes(itemID)
+  ));
+}
+
+function earliestRecreationTime(viewers, itemID) {
+  return Math.max(...viewers.map(viewer => {
+    const removal = removalFor(viewer, itemID);
+    assert.ok(removal, "the old native ball must be removed before its ID is reused");
+    return (removal.stamp + 1) * 1000 - viewer.session._space.clockOffsetMs;
+  }));
+}
+
+function recreationDeadline(scene, itemID) {
+  const replacement = scene.pendingNativeBallReplacements.get(itemID);
+  return Math.max(
+    scene.getEntityByID(itemID).visibilitySuppressedUntilMs,
+    ...[...replacement.viewers.values()].map(viewer => viewer.releaseAtMs),
+  );
+}
+
 test("final construction deposit replaces the visible site for its owner and nearby observers", t => {
   const f = fixture(t);
   const placed = deployment.buildDeployable(
@@ -195,6 +230,25 @@ test("final construction deposit replaces the visible site for its owner and nea
   assert.equal(f.scene.getEntityByID(siteID).typeID, ASSEMBLY_TYPE_ID);
   assert.equal(f.scene.getEntityByID(siteID).activate_comp_durationSeconds, DURATION_SECONDS);
 
+  const earliestAt = earliestRecreationTime([f.owner, f.observer], siteID);
+  const readyAt = recreationDeadline(f.scene, siteID);
+  assert.ok(Number.isFinite(readyAt) && readyAt >= earliestAt);
+  assert.ok(readyAt > f.scene.getCurrentSimTimeMs());
+  for (const viewer of [f.owner, f.observer, f.freshViewer]) {
+    assert.equal(addedItem(destinyUpdates(viewer.notifications), siteID), null,
+      "the completed assembly waits for the old object's native removal tick");
+    assert.equal(viewer.session._space.visibleDynamicEntityIDs.has(siteID), false);
+  }
+  // Wall time can advance independently under TiDi. It must not release the
+  // replacement before every observer has crossed its removal stamp.
+  t.mock.timers.tick(10_000);
+  f.syncAt(readyAt - 1);
+  f.scene.broadcastAddBalls([f.scene.getEntityByID(siteID)]);
+  for (const viewer of [f.owner, f.observer, f.freshViewer]) {
+    assert.equal(addedItem(destinyUpdates(viewer.notifications), siteID), null);
+  }
+  f.syncAt(readyAt);
+
   for (const viewer of [f.owner, f.observer, f.freshViewer]) {
     const updates = destinyUpdates(viewer.notifications);
     const completedItem = addedItem(updates, siteID);
@@ -204,8 +258,12 @@ test("final construction deposit replaces the visible site for its owner and nea
     assert.ok(completedItem.get("component_activate").items[1], "activation deadline is included");
     assert.equal(updates.find(update => containsTypeProjection(update.payload, ASSEMBLY_TYPE_ID)).payload[0],
       "AddBalls2", "full replacement precedes any CRData update with the new type");
-    assert.equal(updates.some(update => update.payload[0] === "RemoveBalls"), false,
-      "type replacement retains the Destiny ball so Frontier rebuilds its model and components");
+    const removal = removalFor(viewer, siteID);
+    if (removal) {
+      const addition = updates.find(update => addedItem([update], siteID));
+      assert.ok(addition.stamp > removal.stamp,
+        "a fresh native object is acquired strictly after the old object's removal stamp");
+    }
     assert.equal(viewer.session._space.visibleDynamicEntityIDs.has(siteID), true);
     viewer.notifications.length = 0;
   }
@@ -220,33 +278,137 @@ test("final construction deposit replaces the visible site for its owner and nea
   }
 });
 
-test("construction completion follows an initial acquisition queued in the same scene tick", t => {
+test("a rejected removal is retried after the initial delay without leaving a stale icon", t => {
   const f = fixture(t);
-  f.scene.beginTickDestinyPresentationBatch();
   const placed = deployment.buildDeployable(
     f.owner.session, ASSEMBLY_TYPE_ID, [100, 0, 0], [0, 0, 0],
   );
   assert.equal(placed.success, true, placed.errorMsg);
   const siteID = placed.data.item.itemID;
-  for (const viewer of [f.owner, f.observer]) {
-    assert.equal(viewer.session._space.visibleDynamicEntityIDs.has(siteID), false,
-      "visibility is committed only after the queued delivery succeeds");
-    assert.equal(getPendingVisibilityAcquisitionIDs(viewer.session).has(siteID), true);
-  }
-  const deposited = deployment.depositItems(
+  for (const viewer of [f.owner, f.observer]) viewer.notifications.length = 0;
+  const sendRemove = f.scene.sendRemoveBallsToSession;
+  let rejected = false;
+  t.mock.method(f.scene, "sendRemoveBallsToSession", (session, ids, options) => {
+    if (session === f.observer.session && !rejected) {
+      rejected = true;
+      return { delivered: false, removedIDs: [] };
+    }
+    return sendRemove.call(f.scene, session, ids, options);
+  });
+  assert.equal(deployment.depositItems(
     f.owner.session, siteID, f.owner.ship.itemID, { [MATERIAL_ID]: 6 },
-  );
-  assert.equal(deposited.success, true, deposited.errorMsg);
-  f.scene.flushTickDestinyPresentationBatch();
-  for (const viewer of [f.owner, f.observer]) {
-    const updates = destinyUpdates(viewer.notifications);
-    const additions = updates.filter(update => update.payload[0] === "AddBalls2")
-      .map(update => addedItem([update], siteID)).filter(Boolean);
-    assert.deepEqual(additions.map(item => item.get("typeID")), [SITE_TYPE_ID, ASSEMBLY_TYPE_ID],
-      "the completed assembly is not suppressed by the pending site acquisition");
-    assert.equal(updates.some(update => update.payload[0] === "RemoveBalls"), false);
-    assert.equal(viewer.session._space.visibleDynamicEntityIDs.has(siteID), true);
-    assert.equal(getPendingVisibilityAcquisitionIDs(viewer.session).has(siteID), false,
-      "the original acquisition reservation commits without leaving a pending token");
-  }
+  ).success, true);
+  assert.equal(removalFor(f.observer, siteID), undefined);
+  assert.equal(f.observer.session._space.visibleDynamicEntityIDs.has(siteID), true);
+  f.scene.broadcastSlimItemChanges([f.scene.getEntityByID(siteID)]);
+  assert.equal(destinyUpdates(f.observer.notifications).some(update => (
+    containsTypeProjection(update.payload, ASSEMBLY_TYPE_ID)
+  )), false, "new-type CRData cannot reach a viewer whose old object was not removed");
+
+  // The first reconciliation is deliberately after the original gate expired.
+  f.syncAt(START_MS + 5000);
+  assert.ok(removalFor(f.observer, siteID), "failed native removal retains its retry intent");
+  assert.equal(addedItem(destinyUpdates(f.observer.notifications), siteID), null,
+    "a retried removal still receives its own teardown interval");
+  assert.equal(addedItem(destinyUpdates(f.owner.notifications), siteID).get("typeID"), ASSEMBLY_TYPE_ID,
+    "a delayed observer does not block an already-released owner's replacement");
+  f.syncAt(START_MS + 10_000);
+  const updates = destinyUpdates(f.observer.notifications);
+  assert.equal(addedItem(updates, siteID).get("typeID"), ASSEMBLY_TYPE_ID);
+  assert.ok(updates.find(update => addedItem([update], siteID)).stamp > removalFor(f.observer, siteID).stamp);
+  assert.equal(f.scene.pendingNativeBallReplacements.has(siteID), false);
 });
+
+test("a delayed first removal does not hide an already recreated assembly from other viewers", t => {
+  const f = fixture(t);
+  const placed = deployment.buildDeployable(
+    f.owner.session, ASSEMBLY_TYPE_ID, [100, 0, 0], [0, 0, 0],
+  );
+  assert.equal(placed.success, true, placed.errorMsg);
+  const siteID = placed.data.item.itemID;
+  for (const viewer of [f.owner, f.observer]) viewer.notifications.length = 0;
+  const sendRemove = f.scene.sendRemoveBallsToSession;
+  let deferredRemoval: any = null;
+  let deferObserver = true;
+  t.mock.method(f.scene, "sendRemoveBallsToSession", (session, ids, options) => {
+    if (session === f.observer.session && deferObserver) {
+      deferredRemoval ||= { ids, options };
+      return { delivered: true, removedIDs: ids };
+    }
+    return sendRemove.call(f.scene, session, ids, options);
+  });
+  assert.equal(deployment.depositItems(
+    f.owner.session, siteID, f.owner.ship.itemID, { [MATERIAL_ID]: 6 },
+  ).success, true);
+  f.syncAt(START_MS + 3000, [f.owner]);
+  assert.equal(addedItem(destinyUpdates(f.owner.notifications), siteID).get("typeID"), ASSEMBLY_TYPE_ID);
+  assert.equal(addedItem(destinyUpdates(f.observer.notifications), siteID), null);
+  assert.equal(f.observer.session._space.visibleDynamicEntityIDs.has(siteID), true,
+    "the observer still holds the old object until its deferred removal commits");
+  f.owner.notifications.length = 0;
+
+  f.scene.simTimeMs = START_MS + 6000;
+  deferObserver = false;
+  const deliveredRemoval = sendRemove.call(f.scene, f.observer.session, deferredRemoval.ids, {
+    ...deferredRemoval.options, nowMs: f.scene.simTimeMs,
+  });
+  assert.equal(deliveredRemoval.delivered, true);
+  assert.ok(f.scene.pendingNativeBallReplacements.get(siteID).viewers.get(f.observer.session).releaseAtMs >
+    f.scene.simTimeMs, "the delayed first callback schedules the observer's teardown interval");
+  f.syncAt(START_MS + 6000);
+  assert.equal(removalFor(f.owner, siteID), undefined,
+    "another viewer's late first commit must not suppress the owner's new object");
+  assert.equal(f.owner.session._space.visibleDynamicEntityIDs.has(siteID), true);
+  assert.equal(addedItem(destinyUpdates(f.observer.notifications), siteID), null);
+  f.syncAt(START_MS + 10_000);
+  assert.equal(addedItem(destinyUpdates(f.observer.notifications), siteID).get("typeID"), ASSEMBLY_TYPE_ID);
+});
+
+for (const flushDelayMs of [0, 5000]) {
+  test(`construction completion recreates a queued site after a ${flushDelayMs}ms delivery delay`, t => {
+    const f = fixture(t);
+    f.scene.beginTickDestinyPresentationBatch();
+    const placed = deployment.buildDeployable(
+      f.owner.session, ASSEMBLY_TYPE_ID, [100, 0, 0], [0, 0, 0],
+    );
+    assert.equal(placed.success, true, placed.errorMsg);
+    const siteID = placed.data.item.itemID;
+    for (const viewer of [f.owner, f.observer]) {
+      assert.equal(viewer.session._space.visibleDynamicEntityIDs.has(siteID), false,
+        "visibility is committed only after the queued delivery succeeds");
+      assert.equal(getPendingVisibilityAcquisitionIDs(viewer.session).has(siteID), true);
+    }
+    const deposited = deployment.depositItems(
+      f.owner.session, siteID, f.owner.ship.itemID, { [MATERIAL_ID]: 6 },
+    );
+    assert.equal(deposited.success, true, deposited.errorMsg);
+    f.scene.simTimeMs += flushDelayMs;
+    f.scene.flushTickDestinyPresentationBatch();
+    const earliestAt = earliestRecreationTime([f.owner, f.observer], siteID);
+    const readyAt = recreationDeadline(f.scene, siteID);
+    assert.ok(Number.isFinite(readyAt) && readyAt >= earliestAt);
+    assert.ok(readyAt > f.scene.simTimeMs,
+      "even delayed delivery waits for a tick after the removal was actually accepted");
+    for (const viewer of [f.owner, f.observer]) {
+      const updates = destinyUpdates(viewer.notifications);
+      const additions = updates.filter(update => update.payload[0] === "AddBalls2")
+        .map(update => addedItem([update], siteID)).filter(Boolean);
+      assert.deepEqual(additions.map(item => item.get("typeID")), [SITE_TYPE_ID],
+        "the queued site is torn down before a replacement can be acquired");
+      assert.equal(viewer.session._space.visibleDynamicEntityIDs.has(siteID), false);
+      assert.equal(getPendingVisibilityAcquisitionIDs(viewer.session).has(siteID), false,
+        "the original acquisition reservation commits without leaving a pending token");
+    }
+    f.syncAt(readyAt - 1);
+    f.syncAt(readyAt);
+    for (const viewer of [f.owner, f.observer]) {
+      const updates = destinyUpdates(viewer.notifications);
+      const additions = updates.filter(update => update.payload[0] === "AddBalls2")
+        .map(update => ({ update, item: addedItem([update], siteID) })).filter(entry => entry.item);
+      assert.deepEqual(additions.map(entry => entry.item.get("typeID")), [SITE_TYPE_ID, ASSEMBLY_TYPE_ID]);
+      assert.ok(additions[1].update.stamp > removalFor(viewer, siteID).stamp);
+      assert.equal(viewer.session._space.visibleDynamicEntityIDs.has(siteID), true);
+      assert.equal(getPendingVisibilityAcquisitionIDs(viewer.session).has(siteID), false);
+    }
+  });
+}

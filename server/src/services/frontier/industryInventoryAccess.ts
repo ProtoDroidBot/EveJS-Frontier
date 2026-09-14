@@ -1,7 +1,7 @@
 const itemStore = require("../inventory/itemStore");
 const spaceRuntime = require("../../space/runtime");
 const { canEntitiesInteractLocally } = require("../../space/destiny/identity/interactionScope");
-const { getShipCargoCapacity } = require("./smartStorageUnitRuntime");
+const storage = require("./smartStorageUnitRuntime");
 const { getShipFittingSnapshot } = require("../../_secondary/fitting/fittingRuntime");
 const { getShipBaseAttributeValue } = require("../fitting/liveFittingState");
 const mining = require("../mining/miningInventory");
@@ -20,7 +20,7 @@ function integer(value) {
 }
 
 function getShipStorageCapacity(characterID, ship, flagID) {
-  if (flagID === ITEM_FLAGS.CARGO_HOLD) return getShipCargoCapacity(characterID, ship);
+  if (flagID === ITEM_FLAGS.CARGO_HOLD) return storage.getShipCargoCapacity(characterID, ship);
   if (flagID === ITEM_FLAGS.SHIP_HANGAR || flagID === ITEM_FLAGS.FLEET_HANGAR) {
     return Number(getShipBaseAttributeValue(ship.typeID,
       flagID === ITEM_FLAGS.SHIP_HANGAR ? "shipMaintenanceBayCapacity" : "fleetHangarCapacity"));
@@ -35,7 +35,7 @@ function getShipStorageCapacity(characterID, ship, flagID) {
   return specialHolds.getSpecialShipHoldCapacity(resources, ship.typeID, flagID, getShipBaseAttributeValue);
 }
 
-function resolveIndustryInventory(session, inventoryID, requestedFlagID) {
+function resolveIndustryInventory(session, inventoryID, requestedFlagID, options: Record<string, any> = {}) {
   const characterID = integer(session?.characterID || session?.charid);
   const systemID = integer(session?._space?.systemID || session?.solarsystemid2 || session?.solarsystemid);
   const shipID = integer(session?._space?.shipID || session?.shipid || session?.shipID);
@@ -46,15 +46,35 @@ function resolveIndustryInventory(session, inventoryID, requestedFlagID) {
   const ship = itemStore.findItemById(shipID);
   const item = itemID === shipID ? ship : itemStore.findItemById(itemID);
   if (!ship || Number(ship.ownerID) !== characterID || Number(ship.locationID) !== systemID ||
-      Number(ship.categoryID) !== 6 || !item || Number(item.ownerID) !== characterID) return fail("ACCESS_DENIED");
+      Number(ship.categoryID) !== 6 || !item) return fail("ACCESS_DENIED");
   if (Number(item.locationID) !== systemID) return fail("FACILITY_NOT_IN_CURRENT_SYSTEM");
+
+  if (itemID !== shipID && flagID === storage.SMART_STORAGE_FLAG) {
+    const shipEntity = spaceRuntime.getEntity(session, shipID);
+    const targetEntity = spaceRuntime.getEntity(session, itemID);
+    const scene = spaceRuntime.getSceneForSession(session);
+    const visible = shipEntity && targetEntity && canEntitiesInteractLocally(shipEntity, targetEntity);
+    const distance = visible ? scene?.getCommandTimeEntitySurfaceDistance?.(shipEntity, targetEntity) : Infinity;
+    const validation = storage.validateStorageUnit(characterID, itemID, {
+      access: { authorized: true, activeShipID: shipID, solarSystemID: systemID,
+        inRange: Number.isFinite(distance) && distance <= 5000 },
+      refreshingStatus: options.refreshingStatus === true,
+      requireOnline: options.refreshingStatus !== true,
+    });
+    if (validation.errorMsg) return fail(validation.errorMsg);
+    if (!Number.isFinite(validation.capacity) || validation.capacity <= 0) return fail("INVALID_INVENTORY");
+    // SSUs isolate each character's contents and capacity, including visitors.
+    return { success: true as const, data: { item, capacity: validation.capacity, flagID,
+      storageUnitID: itemID, inventoryOwnerID: characterID, maxTypeQuantity: 0xffffffff } };
+  }
+  if (Number(item.ownerID) !== characterID) return fail("ACCESS_DENIED");
 
   let capacity;
   if (itemID === shipID) {
     capacity = getShipStorageCapacity(characterID, item, flagID);
   } else {
     // Nearby containers expose their normal flag-0 contents. This explicit
-    // classifier excludes SSUs, industry escrow and arbitrary assembly bays.
+    // classifier excludes industry escrow and arbitrary assembly bays.
     const metadata = itemStore.getItemMetadata(item.typeID) || {};
     const typedItem = { ...metadata, ...item };
     const isDepot = Number(typedItem.groupID) === mobileDepots.GROUP_MOBILE_DEPOT;
@@ -78,6 +98,7 @@ function resolveIndustryInventory(session, inventoryID, requestedFlagID) {
 
 function isIndustryInventoryItemAllowed(inventory, item) {
   const flagID = inventory?.flagID;
+  if (inventory?.storageUnitID && flagID === storage.SMART_STORAGE_FLAG) return !item?.singleton;
   if (flagID === 0 || flagID === ITEM_FLAGS.CARGO_HOLD || flagID === ITEM_FLAGS.FLEET_HANGAR) return true;
   if (flagID === ITEM_FLAGS.SHIP_HANGAR) return Number(item?.categoryID) === 6;
   if (mining.MINING_SHIP_BAY_FLAGS.includes(flagID)) {

@@ -10,12 +10,13 @@ import { buildSuiIndustrySnapshot, industryFingerprint } from "./suiIndustrySnap
 import { createSuiIndustryChain } from "./suiIndustryChain";
 import { readSuiIndustryDeployment, assertSuiIndustryDeploymentCurrent } from "./suiIndustryDeployment";
 import { createSuiIndustrySyncWorkerBridge, registerSuiIndustrySyncBridge, reconcileSuiIndustryFacilities } from "./suiIndustrySync";
+import { registerSuiIndustryStorageSnapshotReader } from "./suiIndustryStorageSync";
 import { createAssemblyTransactionExecutor } from "./suiAssemblyTransactions";
 import { registerSuiStorageSyncBridge, type SuiStorageSyncRequest } from "./suiStorageSync";
 import { registerSuiGateSyncBridge, type SuiGateSyncBridge } from "./suiGateSync";
 import { createSponsoredAssemblyAdmin, registerSuiAssemblyAdminBridge } from "./suiAssemblyAdmin";
 import { clearAssemblyEnergyConfig, setAssemblyEnergyConfig } from "./networkNodeEnergyConfig";
-import { registerSuiAssemblyStateRunner, readSuiAssemblyStatusIntent } from "./suiAssemblyState";
+import { registerSuiAssemblyStatesRunner, readSuiAssemblyStatusIntent } from "./suiAssemblyState";
 import {
   readSyncedSuiWorldConfig, prepareSuiCharacterIdentity, createSuiCharacterTransaction,
 } from "./suiCharacterProvisioning";
@@ -809,7 +810,7 @@ export function startSuiAssemblySync() {
     },
   });
   const unregisterAdmin = registerSuiAssemblyAdminBridge(sponsoredAdmin);
-  const unregisterState = registerSuiAssemblyStateRunner((assemblyID, operation) => worker.runExclusive(async () => {
+  const unregisterState = registerSuiAssemblyStatesRunner((assemblyIDs, operation) => worker.runExclusive(async () => {
     try {
       if (!context) throw new Error(worker.getLastError() || "Assembly synchronization is starting");
       if (sponsoredAdmin.hasPrepared()) throw Object.assign(new Error("Assembly owner transaction is pending"), { code: "ASSEMBLY_STATE_PENDING" });
@@ -817,7 +818,7 @@ export function startSuiAssemblySync() {
       await context.executor.recover();
       if (context.executor.hasPending()) throw Object.assign(new Error("Assembly transaction is pending"), { code: "ASSEMBLY_STATE_PENDING" });
       await restoreTemporaryStatuses();
-      await refreshChainStates(assemblyID);
+      for (const assemblyID of assemblyIDs) await refreshChainStates(assemblyID);
     } catch (error: any) {
       if (error.code === "ASSEMBLY_STATE_PENDING") throw error;
       throw Object.assign(new Error("Assembly chain state is unavailable", { cause: error }), { code: "ASSEMBLY_STATE_UNAVAILABLE" });
@@ -868,13 +869,21 @@ export function startSuiAssemblySync() {
     },
     getLastError: worker.getLastError, hasPrepared: () => sponsoredAdmin.hasPrepared(),
   }));
+  const unregisterTransferSnapshot = registerSuiIndustryStorageSnapshotReader(request => {
+    const input = currentSnapshotInput();
+    const facility = buildSuiIndustrySnapshot(input.items).facilities.find(f => f.itemId === String(request.facilityID));
+    const storage = buildSuiAssemblySnapshot(input).assemblies.find(a => a.itemId === String(request.storageUnitID));
+    if (!facility || !storage) throw new Error("Transfer assemblies are not available");
+    return JSON.stringify([industryFingerprint(facility), inventoryFingerprint(storage),
+      context?.synced.chainId, context?.synced.packageId, context?.industryDeployment.fingerprint]);
+  });
   process.once("exit", () => {
     try { if (fs.readFileSync(lockPath, "utf8") === String(process.pid)) fs.unlinkSync(lockPath); } catch { /* process is exiting */ }
   });
   worker.start();
   log.info("[SuiAssemblySync] Automatic Localnet synchronization enabled (5 second scan)");
   return { ...worker, stop() {
-    unregisterStorageSync(); unregisterGateSync(); unregisterIndustrySync(); unregisterAdmin(); unregisterState(); trackedNetworkNodeBinding = null;
+    unregisterStorageSync(); unregisterGateSync(); unregisterIndustrySync(); unregisterTransferSnapshot(); unregisterAdmin(); unregisterState(); trackedNetworkNodeBinding = null;
     energyMutationRunner = null;
     const stopped = worker.stop();
     clearAssemblyEnergyConfig();

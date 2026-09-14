@@ -79,6 +79,62 @@ test("starting consumes exactly one run; outputs appear only at each deadline an
   assert.deepEqual(f.snapshot(), completed, "repeated completion never duplicates products");
 });
 
+test("the dApp start endpoint commits real escrow, notifies the game and tracks background production", async t => {
+  const f = fixture(t);
+  const { createSmartIndustryApi } = require("../src/_secondary/express/smartIndustryEndpoints");
+  const { createIndustryProductionWorker } = require("../src/services/frontier/industryProductionWorker");
+  const { publishIndustryProductionResult } = require("../src/services/frontier/industryNotifications");
+  const notices = [];
+  const inventoryChanges = [];
+  const publish = (result, session) => publishIndustryProductionResult(result, session, {
+    sessionRegistry: { getSessions: () => [f.session] }, itemStore, runtime: inventory,
+    emitItemsChangedForSession: (...args) => inventoryChanges.push(args),
+    publishGatewayNotice: (...args) => notices.push(args),
+  });
+  let nowMs = START;
+  const worker = createIndustryProductionWorker({ now: () => nowMs, publishResult: publish });
+  t.after(() => worker.stop());
+  const api = createSmartIndustryApi({
+    auth: { authenticate: () => ({ success: true, data: { characterID: OWNER, walletAddress: "0x1", session: f.session } }) },
+    startProduction: (session, id, blueprintID, hash, runs) => production.startProduction(session, id, blueprintID, hash, runs, { nowMs }),
+    settleProduction: worker.settle, trackProduction: worker.track, publishProduction: publish,
+    readChain: async request => ({ ...request, status: "disabled" }),
+    flushChain: async request => ({ ...request, status: "pending" }),
+  });
+  const initial = ok(await api.status("token", String(FACILITY)));
+  assert.equal(initial.blueprintHash, RECIPE.content_hash);
+  const body = { blueprintID: initial.facility.snapshot.blueprint_id, blueprintHash: initial.blueprintHash,
+    runs: "2", expectedJobID: null };
+  f.access.distance = 6000;
+  const untouched = f.snapshot();
+  assert.equal((await api.start("token", String(FACILITY), body)).errorMsg, "FACILITY_OUT_OF_RANGE");
+  assert.deepEqual(f.snapshot(), untouched);
+  f.access.distance = 100;
+  const started = ok(await api.start("token", String(FACILITY), body));
+  assert.equal(started.gameCommitted, true);
+  assert.equal(started.startedJobID, "1");
+  assert.equal(started.production.state, "RUNNING");
+  assert.equal(started.production.requested_runs, "2");
+  assert.deepEqual(f.items(), { inputs: { 77803: 90, 83894: 2 }, outputs: {} });
+  assert.ok(inventoryChanges.length >= 2);
+  assert.ok(inventoryChanges.every(change => change[0] === f.session));
+  assert.deepEqual(notices.map(notice => notice[0]), [
+    "eve_public.industry.api.InputItemsChangeNotice", "eve_public.industry.api.ProductionStartedNotice",
+  ]);
+  assert.ok(notices.every(notice => notice[2].character === OWNER));
+  const committed = f.snapshot();
+  assert.equal((await api.start("token", String(FACILITY), body)).errorMsg, "PRODUCTION_CHANGED");
+  assert.deepEqual(f.snapshot(), committed);
+  // The endpoint tracked the facility: no RPC or worker startup scan is needed.
+  nowMs = START + 6000;
+  worker.tick();
+  assert.equal(f.state().state, "STOPPED");
+  assert.equal(f.state().completedRuns, 2);
+  assert.deepEqual(f.items(), { inputs: { 77803: 45, 83894: 1 }, outputs: { 83895: 2 } });
+  assert.ok(notices.some(notice => notice[0] === "eve_public.industry.api.ProductionStoppedNotice"));
+  assert.equal((await api.start("token", String(FACILITY), body)).errorMsg, "PRODUCTION_CHANGED");
+});
+
 test("a delayed tick and a freshly loaded runtime recover multiple runs from persisted deadlines", t => {
   const f = fixture(t);
   ok(f.start());

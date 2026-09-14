@@ -1861,9 +1861,10 @@ function completeConstruction(itemID, options = {}) {
         return updateResult;
     }
     const spaceRuntime = getSpaceRuntime();
-    // Frontier's ProcessBallAdd replaces the model and components when an
-    // existing ball ID arrives with a new type. Keep that ball on the client;
-    // a RemoveBalls followed by AddBalls2 at the same stamp disrupts the swap.
+    // Rebuild the server entity without persisting its obsolete site fields.
+    // The replacement broadcast removes the client's old native ball before
+    // reacquiring this ID on a later simulation tick. Reusing the live ball
+    // races the site's asynchronous Release against the assembly model load.
     spaceRuntime.removeDynamicEntity(state.solarSystemID, item.itemID, {
         broadcast: false,
         persistSpaceState: false,
