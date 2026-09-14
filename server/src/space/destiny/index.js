@@ -10,7 +10,7 @@ const statePayloads = require(path.join(__dirname, "./stream/statePayloads"));
 const { buildPackagedActionPayload, } = require(path.join(__dirname, "./batching/packagedAction"));
 const { debugDescribeEntityBall, encodeEntityBall, } = require(path.join(__dirname, "./stream/ballEncoding"));
 const { buildPackedRow, } = require(path.join(__dirname, "./stream/primitives"));
-const { normalizeSlimItemObjectForProfile, } = require(path.join(__dirname, "./stream/statePayloadCompatibility"));
+const { isFrontierStatePayloadProfile, normalizeCrDataDictionaryForProfile, normalizeSlimItemObjectForProfile, } = require(path.join(__dirname, "./stream/statePayloadCompatibility"));
 const { BALL_FLAG, BALL_MODE, RUNTIME_UNANCHORED_STRUCTURE_HULL_KIND, } = require(path.join(__dirname, "./constants"));
 const SOL_ITEM_COLUMNS = [
     ["itemID", 0x14],
@@ -682,6 +682,14 @@ function buildSlimItemObject(entity, compatibilityProfile = config.clientCompati
         args: buildSlimItemDict(entity),
     }, compatibilityProfile);
 }
+function buildCrDataUpdate(entity, compatibilityProfile = config.clientCompatibilityProfile) {
+    if (!isFrontierStatePayloadProfile(compatibilityProfile))
+        return null;
+    const crData = normalizeCrDataDictionaryForProfile(buildSlimItemDict(entity), entity, compatibilityProfile);
+    // CRBaseObject rejects writes to itemID, even when its value is unchanged.
+    // The action identifies the existing ball separately from the changed data.
+    return { ...crData, entries: crData.entries.filter(([key]) => key !== "itemID") };
+}
 function buildDroneState(entities = []) {
     // V23.02 rejects util.Rowset here during remote SetState unmarshal.
     return buildRowset(DRONE_STATE_HEADERS, buildDroneStateRows(entities), CLIENT_ROWSET_NAME);
@@ -740,6 +748,7 @@ module.exports = {
     buildSetStatePayload,
     buildSlimItemDict,
     buildSlimItemObject,
+    buildCrDataUpdate,
     debugDescribeEntityBall,
     restampPayloadState: statePayloads.restampPayloadState,
 };

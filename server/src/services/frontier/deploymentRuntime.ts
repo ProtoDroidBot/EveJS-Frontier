@@ -2280,11 +2280,6 @@ function completeConstruction(itemID, options: Record<string, any> = {}) {
     materialChanges.push(...((takeResult.data && takeResult.data.changes) || []));
   }
 
-  const spaceRuntime = getSpaceRuntime();
-  spaceRuntime.removeDynamicEntity(state.solarSystemID, item.itemID, {
-    broadcast: true,
-  });
-
   const durationSeconds = definition.durationSeconds;
   const completedAtMs = Date.now();
   const activationCompleteAtMs = state.completeAtMs > 0
@@ -2310,11 +2305,19 @@ function completeConstruction(itemID, options: Record<string, any> = {}) {
     return updateResult;
   }
 
+  const spaceRuntime = getSpaceRuntime();
+  // Frontier's ProcessBallAdd replaces the model and components when an
+  // existing ball ID arrives with a new type. Keep that ball on the client;
+  // a RemoveBalls followed by AddBalls2 at the same stamp disrupts the swap.
+  spaceRuntime.removeDynamicEntity(state.solarSystemID, item.itemID, {
+    broadcast: false,
+    persistSpaceState: false,
+  });
   scheduleAssemblyActivation(item.itemID, options.session || null);
   const spawnResult = spaceRuntime.spawnDynamicInventoryEntity(
     state.solarSystemID,
     item.itemID,
-    { broadcast: true },
+    { broadcast: true, broadcastOptions: { replaceExisting: true } },
   );
   if (!spawnResult.success) {
     log.warn(
@@ -2934,6 +2937,14 @@ function adminRemoveAssembly(session, itemID) {
   }
   if (state.destinationGateID > 0) {
     return { success: false as const, errorMsg: "SMART_GATE_MUST_BE_UNLINKED" };
+  }
+  // A paid industry run can temporarily have no escrow rows. Its owed products
+  // still occupy the facility until the run completes and they are withdrawn.
+  const industryProduction = require("./industryProduction");
+  const production = industryProduction.getProduction(item);
+  if (industryProduction.invalidStoredProduction(item) ||
+      (production && production.state !== "STOPPED")) {
+    return { success: false as const, errorMsg: "ASSEMBLY_OCCUPIED" };
   }
   const inboundGate = listAssemblies().find(
     (candidate) => (

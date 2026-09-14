@@ -178,6 +178,10 @@ function loadBlueprint(session, facilityID, blueprintID) {
   const access = validateFacility(session, facilityID);
   if (!access.success) return access;
   const { facility } = access.data;
+  const productionRuntime = require("./industryProduction");
+  if (productionRuntime.invalidStoredProduction(facility)) return fail("INVALID_PRODUCTION_STATE");
+  const production = productionRuntime.getProduction(facility);
+  if (production && production.state !== "STOPPED") return fail("PRODUCTION_ALREADY_RUNNING");
   const blueprint = blueprints.getBlueprintForFacility(facility.typeID, positiveInteger(blueprintID));
   if (!blueprint) return fail("BLUEPRINT_NOT_FOUND");
   const current = blueprints.getSelectedBlueprint(facility);
@@ -192,4 +196,9 @@ function loadBlueprint(session, facilityID, blueprintID) {
 module.exports = {
   INDUSTRY_INPUT_FLAG, INDUSTRY_OUTPUT_FLAG, canReadFacility, getItemSolarSystemID,
   getFacilityItems, depositInputItems, withdrawItems, loadBlueprint,
+  validateFacility,
+  getProduction: (...args) => require("./industryProduction").getProduction(...args),
+  startProduction: (...args) => require("./industryProduction").startProduction(...args),
+  discontinueProduction: (...args) => require("./industryProduction").discontinueProduction(...args),
+  advanceProduction: (...args) => require("./industryProduction").advanceProduction(...args),
 };

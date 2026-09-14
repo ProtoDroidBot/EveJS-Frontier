@@ -177,8 +177,8 @@ function normalizeCrDataDictionaryForProfile(crData, entity, compatibilityProfil
  *   builds its slim items locally from CR data (frontier/crdata/
  *   cr_base_object.pyc). SetState already reflects that: this profile sends
  *   "crdata" instead of "slims".
- * Presentation refreshes therefore omit the slim-item object entirely for
- * this profile rather than renaming it. Legacy profiles are unchanged.
+ * Incremental metadata refreshes use OnCrDataChange with a filtered CR data
+ * dictionary. Wire SlimItems remain omitted; legacy profiles are unchanged.
  */
 function usesWireSlimItemObjects(compatibilityProfile) {
     return !isFrontierStatePayloadProfile(compatibilityProfile);

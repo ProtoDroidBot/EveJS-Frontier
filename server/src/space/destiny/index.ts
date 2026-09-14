@@ -29,6 +29,8 @@ const {
   buildPackedRow,
 } = require(path.join(__dirname, "./stream/primitives"));
 const {
+  isFrontierStatePayloadProfile,
+  normalizeCrDataDictionaryForProfile,
   normalizeSlimItemObjectForProfile,
 } = require(path.join(__dirname, "./stream/statePayloadCompatibility"));
 const {
@@ -806,6 +808,19 @@ function buildSlimItemObject(
   }, compatibilityProfile);
 }
 
+function buildCrDataUpdate(
+  entity,
+  compatibilityProfile = config.clientCompatibilityProfile,
+) {
+  if (!isFrontierStatePayloadProfile(compatibilityProfile)) return null;
+  const crData = normalizeCrDataDictionaryForProfile(
+    buildSlimItemDict(entity), entity, compatibilityProfile,
+  );
+  // CRBaseObject rejects writes to itemID, even when its value is unchanged.
+  // The action identifies the existing ball separately from the changed data.
+  return { ...crData, entries: crData.entries.filter(([key]) => key !== "itemID") };
+}
+
 function buildDroneState(entities: any[] = []) {
   // V23.02 rejects util.Rowset here during remote SetState unmarshal.
   return buildRowset(
@@ -897,6 +912,7 @@ module.exports = {
   buildSetStatePayload,
   buildSlimItemDict,
   buildSlimItemObject,
+  buildCrDataUpdate,
   debugDescribeEntityBall,
   restampPayloadState: statePayloads.restampPayloadState,
 };

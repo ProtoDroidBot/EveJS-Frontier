@@ -21,6 +21,7 @@ const PRIMARY_ENTITY_ARGUMENT_COUNTS = Object.freeze({
   GotoDirection: 4,
   GotoPoint: 4,
   LaunchMissile: 5,
+  OnCrDataChange: 2,
   OnDamageStateChange: 2,
   OnDbuffUpdated: 2,
   OnSlimItemChange: 2,

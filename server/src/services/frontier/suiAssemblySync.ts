@@ -6,6 +6,10 @@ import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { buildSuiAssemblySnapshot, type SuiAssemblySnapshotInput } from "./suiAssemblySnapshot";
 import { createSuiAssemblyChain, suiAssemblyFields, suiAssemblyOption } from "./suiAssemblyChain";
 import { createSuiAssemblyContents } from "./suiAssemblyContents";
+import { buildSuiIndustrySnapshot, industryFingerprint } from "./suiIndustrySnapshot";
+import { createSuiIndustryChain } from "./suiIndustryChain";
+import { readSuiIndustryDeployment, assertSuiIndustryDeploymentCurrent } from "./suiIndustryDeployment";
+import { createSuiIndustrySyncWorkerBridge, registerSuiIndustrySyncBridge, reconcileSuiIndustryFacilities } from "./suiIndustrySync";
 import { createAssemblyTransactionExecutor } from "./suiAssemblyTransactions";
 import { registerSuiStorageSyncBridge, type SuiStorageSyncRequest } from "./suiStorageSync";
 import { registerSuiGateSyncBridge, type SuiGateSyncBridge } from "./suiGateSync";
@@ -458,6 +462,7 @@ export function startSuiAssemblySync() {
     if (!context || !current || current.chainId !== context.synced.chainId || current.packageId !== context.synced.packageId) return null;
     return context.state.assemblies[itemId]?.networkNodeId ?? null;
   };
+  const industryEnv = () => ({ ...process.env, EVEJS_SUI_WORLD_CONFIG_PATH: env.EVEJS_SUI_WORLD_CONFIG_PATH });
 
   function currentSnapshotInput(): SuiAssemblySnapshotInput {
     return {
@@ -478,6 +483,7 @@ export function startSuiAssemblySync() {
   }
 
   async function makeContext(synced: any, snapshot: any) {
+    const industryDeployment = readSuiIndustryDeployment(synced, industryEnv());
     if (!synced.sourceWorkspace) throw new Error("Assembly synchronization requires FrontierWorld.ps1 sync deployment artifacts");
     const contracts = path.join(synced.sourceWorkspace, "world-contracts");
     const deployment = JSON.parse(fs.readFileSync(path.join(contracts, "deployments/localnet/extracted-object-ids.json"), "utf8"));
@@ -508,6 +514,7 @@ export function startSuiAssemblySync() {
           (await client.getChainIdentifier()).toLowerCase() !== synced.chainId) {
         throw new Error("Sui deployment changed; run FrontierWorld.ps1 sync before retrying assemblies");
       }
+      assertSuiIndustryDeploymentCurrent(industryDeployment, current, industryEnv());
     }
     function localCharacter(ownerId: number) {
       const current = characterState.getCharacterRecord(ownerId);
@@ -597,9 +604,19 @@ export function startSuiAssemblySync() {
         }
       },
     });
+    const industry = createSuiIndustryChain({ client, world, chain, tenant: "dev", execute: executor.execute,
+      industryPackageId: industryDeployment.industryPackageId,
+      industryTypeOrigin: industryDeployment.industryTypeOrigin,
+      assertSnapshotCurrent(facility) {
+        const latest = buildSuiIndustrySnapshot(itemStore.getAllItems()).facilities.find(f => f.itemId === facility.itemId);
+        if (industryFingerprint(latest) !== industryFingerprint(facility)) {
+          throw new Error(`Industry ${facility.itemId} changed during synchronization; retry the current snapshot`);
+        }
+      },
+    });
     await assertCurrent();
     return {
-      synced, world, chain, contents, executor, state, assertCurrent, getCharacter,
+      synced, world, chain, contents, industry, industryDeployment, executor, state, assertCurrent, getCharacter,
       statusAuthority: true,
       fuelAuthority: true,
       initializeFuel(assembly: any) {
@@ -719,8 +736,10 @@ export function startSuiAssemblySync() {
         energyRuntime.clearSuiNetworkNodeEnergy();
         throw new Error("Run FrontierWorld.ps1 sync to enable automatic Smart Assembly synchronization");
       }
+      const industryDeployment = readSuiIndustryDeployment(synced, industryEnv());
       if (!context || context.synced.chainId !== synced.chainId || context.synced.packageId !== synced.packageId ||
-          context.synced.objectRegistryId !== synced.objectRegistryId) {
+          context.synced.objectRegistryId !== synced.objectRegistryId || context.synced.adminAclId !== synced.adminAclId ||
+          context.industryDeployment.fingerprint !== industryDeployment.fingerprint) {
         clearAssemblyEnergyConfig();
         energyRuntime.clearSuiNetworkNodeEnergy();
         context = await makeContext(synced, { characters: [] });
@@ -756,6 +775,12 @@ export function startSuiAssemblySync() {
       // Online/offline, fuel exhaustion and temporary storage operations can all
       // change reservations during this pass. Publish the resulting chain totals.
       await refreshChainStates();
+      // Lifecycle reconciliation may have changed a facility's online status.
+      // Capture its latest inventory and recipe together, then use this worker's
+      // durable executor for the separately derived SmartIndustry object.
+      const industryInput = currentSnapshotInput();
+      await reconcileSuiIndustryFacilities(buildSuiIndustrySnapshot(industryInput.items),
+        buildSuiAssemblySnapshot(industryInput).assemblies, context);
       const summary = JSON.stringify(snapshot.assemblies);
       if (summary !== lastSummary) {
         if (snapshot.assemblies.length) log.info(`[SuiAssemblySync] ${snapshot.assemblies.length} assemblies synchronized on ${synced.chainId}`);
@@ -835,13 +860,21 @@ export function startSuiAssemblySync() {
     getContext: () => context, getSnapshot: () => buildSuiAssemblySnapshot(currentSnapshotInput()),
     getLastError: worker.getLastError, hasPrepared: () => sponsoredAdmin.hasPrepared(),
   }));
+  const unregisterIndustrySync = registerSuiIndustrySyncBridge(createSuiIndustrySyncWorkerBridge({
+    runExclusive: worker.runExclusive, runOnce: worker.runOnce, getContext: () => context,
+    getSnapshot: () => {
+      const input = currentSnapshotInput();
+      return { ...buildSuiIndustrySnapshot(input.items), assemblies: buildSuiAssemblySnapshot(input).assemblies };
+    },
+    getLastError: worker.getLastError, hasPrepared: () => sponsoredAdmin.hasPrepared(),
+  }));
   process.once("exit", () => {
     try { if (fs.readFileSync(lockPath, "utf8") === String(process.pid)) fs.unlinkSync(lockPath); } catch { /* process is exiting */ }
   });
   worker.start();
   log.info("[SuiAssemblySync] Automatic Localnet synchronization enabled (5 second scan)");
   return { ...worker, stop() {
-    unregisterStorageSync(); unregisterGateSync(); unregisterAdmin(); unregisterState(); trackedNetworkNodeBinding = null;
+    unregisterStorageSync(); unregisterGateSync(); unregisterIndustrySync(); unregisterAdmin(); unregisterState(); trackedNetworkNodeBinding = null;
     energyMutationRunner = null;
     const stopped = worker.stop();
     clearAssemblyEnergyConfig();

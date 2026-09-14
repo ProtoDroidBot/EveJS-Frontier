@@ -50,9 +50,16 @@ function getBlueprintForFacility(facilityTypeID, blueprintID) {
   };
   return {
     ...blueprint,
-    content_hash: crypto.createHash("sha256")
-      .update(JSON.stringify(blueprint), "utf8").digest("hex"),
+    content_hash: getBlueprintContentHash(blueprint),
   };
+}
+
+function getBlueprintContentHash(blueprint) {
+  const slots = side => Object.fromEntries(Object.entries<any>(blueprint[side]).map(([typeID, slot]) =>
+    [typeID, { max_storable_quantity: slot.max_storable_quantity,
+      quantity_per_run: slot.quantity_per_run, type_id: slot.type_id }]));
+  return crypto.createHash("sha256").update(JSON.stringify({ blueprint_id: blueprint.blueprint_id,
+    inputs: slots("inputs"), outputs: slots("outputs"), run_time: blueprint.run_time }), "utf8").digest("hex");
 }
 
 function parseCustomInfo(value) {
@@ -102,6 +109,8 @@ module.exports = {
   FRONTIER_INDUSTRY_FACILITY_TYPE_IDS,
   isIndustryFacilityType,
   getBlueprintForFacility,
+  getBlueprintContentHash,
   getSelectedBlueprint,
+  parseCustomInfo,
   withSelectedBlueprint,
 };

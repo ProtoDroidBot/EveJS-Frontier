@@ -16,9 +16,10 @@
     "test:frontier-windows": "node --test scripts/Tests/frontier-windows-client.test.js scripts/Tests/frontier-windows-runtime.test.js && _local\\frontier-python312\\Scripts\\python.exe -m unittest discover -s tools/frontier-client/test -p test_*.py",
     "test:isolated-helper": "node --test server/tests/isolatedGameStore.test.js",
     "pretest": "npm run build",
-    "test": "npm run test:frontier-static && npm run test:frontier-runners && npm run test:isolated-helper && npm run test:typescript-runtime",
+    "test": "npm run test:frontier-static && npm run test:frontier-runners && npm run test:isolated-helper && npm run test:typescript-runtime && npm run test:frontier-industry",
+    "test:frontier-industry": "node scripts/Tests/run-isolated-tests.js --test-concurrency=1 server/tests/frontierIndustryProduction.test.js server/tests/frontierIndustryProductionWorker.test.js server/tests/frontierIndustryBlueprints.test.js server/tests/frontierIndustryNotifications.test.js server/tests/frontierIndustryInventoryAccess.test.js",
     "test:typescript-runtime": "node --test server/tests/typescriptRuntime.test.js server/tests/frontierSuiGrpcClient.test.js server/tests/frontierSuiCharacterProvisioning.test.js && npm run test:frontier-sui-assemblies",
-    "test:frontier-sui-assemblies": "node --test server/tests/frontierSuiAssembly*.test.js server/tests/frontierSuiStorage*.test.js"
+    "test:frontier-sui-assemblies": "node --test server/tests/frontierSuiAssembly*.test.js server/tests/frontierSuiStorage*.test.js server/tests/frontierSuiIndustry*.test.js"
   },
   "dependencies": {
     "@mysten/sui": "^2.30.0",

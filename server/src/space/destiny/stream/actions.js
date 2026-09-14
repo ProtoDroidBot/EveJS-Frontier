@@ -257,6 +257,9 @@ function buildOnDamageStateChangePayload(entityID, damageState = null) {
 function buildOnSlimItemChangePayload(entityID, slimItem = null) {
     return ["OnSlimItemChange", [normalizeActionEntityID(entityID), slimItem || null]];
 }
+function buildOnCrDataChangePayload(entityID, crData) {
+    return ["OnCrDataChange", [normalizeActionEntityID(entityID), crData]];
+}
 function buildOnDbuffUpdatedPayload(entityID, dbuffState = []) {
     return [
         "OnDbuffUpdated",
@@ -289,6 +292,7 @@ module.exports = {
     buildGraphicInfoDict,
     buildLaunchMissilePayload,
     buildOnDamageStateChangePayload,
+    buildOnCrDataChangePayload,
     buildOnDbuffUpdatedPayload,
     buildOnDockingAcceptedPayload,
     buildOnSlimItemChangePayload,

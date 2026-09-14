@@ -215,6 +215,12 @@ catch (err) {
     log.err(`[NetworkNodeFuel] Failed to start: ${err.message}`);
 }
 try {
+    require("./src/services/frontier/industryProductionWorker").startIndustryProductionWorker();
+}
+catch (err) {
+    log.err(`[IndustryProduction] Failed to start: ${err.message}`);
+}
+try {
     require("./src/services/frontier/suiAssemblySync").startSuiAssemblySync();
 }
 catch (err) {

@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const { normalizeEntityID, } = require("../identity/entityID");
-const { buildCloakBallPayload, buildOnDamageStateChangePayload, buildOnDbuffUpdatedPayload, buildOnSlimItemChangePayload, buildOnSpecialFXPayload, buildSetBallMassPayload, buildSetMaxSpeedPayload, buildUncloakBallPayload, } = require("../stream/actions");
+const { buildCloakBallPayload, buildOnCrDataChangePayload, buildOnDamageStateChangePayload, buildOnDbuffUpdatedPayload, buildOnSlimItemChangePayload, buildOnSpecialFXPayload, buildSetBallMassPayload, buildSetMaxSpeedPayload, buildUncloakBallPayload, } = require("../stream/actions");
 function buildPresentationUpdate(stamp, payload) {
     return { stamp, payload };
 }
@@ -14,11 +14,12 @@ function buildDbuffPresentationUpdates(options = {}) {
 function buildDamageStatePresentationUpdates(options = {}) {
     return [buildPresentationUpdate(options.stamp, buildOnDamageStateChangePayload(options.entityID, options.damageState))];
 }
-// A null slim item means the active profile does not accept wire SlimItem
-// objects (see normalizeSlimItemObjectForProfile): emit no OnSlimItemChange
-// update at all rather than an empty one, so the surrounding bundle stays
-// unmarshallable-free.
+// Frontier updates existing balls through Park.OnCrDataChange; its client
+// derives SlimItems from CR data and cannot unmarshal a wire SlimItem object.
 function buildSlimItemPresentationUpdates(options = {}) {
+    if (options.crData) {
+        return [buildPresentationUpdate(options.stamp, buildOnCrDataChangePayload(options.entityID, options.crData))];
+    }
     if (!options.slimItem) {
         return [];
     }

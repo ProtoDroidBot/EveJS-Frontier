@@ -3234,6 +3234,69 @@ function removeInventoryItem(itemId, options: Record<string, any> = {}) {
   };
 }
 
+/** Commit a production transition together with its inventory effects. Staging
+ * uses a private table copy: a failed grant, consumption, or metadata write must
+ * never leave paid inputs or products without the matching durable job state. */
+function commitInventoryProduction(request) {
+  ensureMigrated();
+  const items = cloneValue(readItems());
+  const facility = normalizeInventoryItem(items[String(request?.facilityID)]);
+  if (!facility) return { success: false as const, errorMsg: "FACILITY_NOT_FOUND" };
+  if (JSON.stringify(facility.customInfo) !== JSON.stringify(request.expectedCustomInfo)) {
+    return { success: false as const, errorMsg: "PRODUCTION_STATE_CHANGED" };
+  }
+  const consumptions = request.consumptions || [];
+  const outputs = request.outputs || [];
+  if (!Array.isArray(consumptions) || !Array.isArray(outputs) ||
+      typeof request.customInfo !== "string" || !Number.isSafeInteger(request.inputFlag) ||
+      !Number.isSafeInteger(request.outputFlag) || request.inputFlag < 0 ||
+      request.outputFlag < 0 || request.inputFlag === request.outputFlag) {
+    return { success: false as const, errorMsg: "INVALID_PRODUCTION_STATE" };
+  }
+  const grants = outputs.map(output => ({ itemType: output.typeID, quantity: output.quantity }));
+  const invalidGrant = validateGrantEntries(grants);
+  if (invalidGrant) return invalidGrant;
+  const changes: any[] = [];
+  for (const consumption of consumptions) {
+    const item = normalizeInventoryItem(items[String(consumption.itemID)]);
+    const quantity = consumption.quantity;
+    if (!Number.isSafeInteger(quantity) || quantity <= 0 || !item || item.singleton ||
+        item.itemID === facility.itemID || item.ownerID !== facility.ownerID ||
+        item.locationID !== facility.itemID || item.flagID !== request.inputFlag ||
+        quantity > item.stacksize) {
+      return { success: false as const, errorMsg: "INSUFFICIENT_INPUTS" };
+    }
+    const previousData = cloneValue(item);
+    if (quantity === item.stacksize) {
+      delete items[String(item.itemID)];
+      changes.push({ removed: true, previousData, item: buildRemovedItemNotificationState(item) });
+    } else {
+      const updated = buildInventoryItem({ ...item, quantity: item.stacksize - quantity,
+        stacksize: item.stacksize - quantity, singleton: 0 });
+      items[String(item.itemID)] = updated;
+      changes.push({ removed: false, previousData, item: cloneValue(updated) });
+    }
+  }
+  const stackIndex = buildStackIndex(items);
+  for (const grant of grants) {
+    applyStackableGrant({ ownerID: facility.ownerID, locationID: facility.itemID,
+      flagID: request.outputFlag, metadata: resolveItemTypeReference(grant.itemType),
+      quantity: grant.quantity, options: { singleton: 0 }, items, stackIndex, changes,
+      createdItems: [], transientCreatedItemIDs: [] });
+  }
+  for (const change of changes) {
+    if (!change.previousData && change.previousState) change.previousData = change.previousState;
+  }
+  const updatedFacility = normalizeInventoryItem({ ...facility, customInfo: request.customInfo }, facility);
+  items[String(facility.itemID)] = updatedFacility;
+  changes.push({ previousData: cloneValue(facility), item: cloneValue(updatedFacility) });
+  if (!writeItems(items, { indexDelta: indexDeltaFromChanges(changes) })) {
+    return { success: false as const, errorMsg: "WRITE_ERROR" };
+  }
+  notifyInsuranceInventoryMutationChanges(changes, "commitInventoryProduction");
+  return { success: true as const, data: { facility: cloneValue(updatedFacility), changes } };
+}
+
 function consumeInventoryItemQuantity(itemId, quantity = 1, options: Record<string, any> = {}) {
   ensureMigrated();
   const numericItemId = toNumber(itemId, 0);
@@ -5012,6 +5075,7 @@ module.exports = {
   updateInventoryItem,
   removeInventoryItem,
   consumeInventoryItemQuantity,
+  commitInventoryProduction,
   pruneExpiredSpaceItems,
   moveItemToLocation,
   moveItemStacksToLocation,

@@ -21207,6 +21207,10 @@ class SolarSystemScene {
             .flatMap((entity) => buildSlimItemPresentationUpdates({
             stamp,
             entityID: entity.itemID,
+            crData: entity.kind === "deployable" &&
+                Object.prototype.hasOwnProperty.call(entity, "assembly_status")
+                ? destiny.buildCrDataUpdate(entity)
+                : null,
             slimItem: destiny.buildSlimItemObject(entity),
         }));
         if (updates.length === 0) {
@@ -26120,6 +26124,32 @@ class SolarSystemScene {
                 bypassTickPresentationBatch: options.bypassTickPresentationBatch === true,
                 initialStructureBundle: options.initialStructureBundle === true ? true : undefined,
             };
+            // A deliberate type replacement must reach clients that already know
+            // this ID. Frontier's ProcessBallAdd rebuilds their model/components
+            // from the new CR data without removing the native ball first. Preserve
+            // normal acquisition reservations for viewers seeing it for the first
+            // time, and leave ordinary duplicate-add suppression intact.
+            if (options.replaceExisting === true) {
+                const pendingAcquisitions = getPendingVisibilityAcquisitionIDs(session);
+                const pendingRemovals = getPendingVisibilityRemovalIDs(session);
+                const replacements = visibleEntities.filter((entity) => (!visibilitySetHasEntityID(pendingRemovals, entity.itemID) &&
+                    (isSceneVisibilityAcquisitionCommitted(session, entity.itemID) ||
+                        visibilitySetHasEntityID(pendingAcquisitions, entity.itemID))));
+                if (replacements.length > 0) {
+                    const replacementResult = this.sendAddBallsToSession(session, replacements, {
+                        ...addOptions,
+                        visibilityAcquisition: false,
+                    });
+                    deliveries.push({ session, stamp: replacementResult.stamp, entities: replacements });
+                    const replacementIDs = new Set(replacements.map(entity => entity.itemID));
+                    for (let index = visibleEntities.length - 1; index >= 0; index -= 1) {
+                        if (replacementIDs.has(visibleEntities[index].itemID))
+                            visibleEntities.splice(index, 1);
+                    }
+                    if (visibleEntities.length === 0)
+                        continue;
+                }
+            }
             const sendResult = this.sendAddBallsToSession(session, visibleEntities, addOptions);
             deliveries.push({
                 session,
