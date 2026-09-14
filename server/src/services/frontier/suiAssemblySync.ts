@@ -8,6 +8,7 @@ import { createSuiAssemblyChain, suiAssemblyFields, suiAssemblyOption } from "./
 import { createSuiAssemblyContents } from "./suiAssemblyContents";
 import { createAssemblyTransactionExecutor } from "./suiAssemblyTransactions";
 import { registerSuiStorageSyncBridge, type SuiStorageSyncRequest } from "./suiStorageSync";
+import { registerSuiGateSyncBridge, type SuiGateSyncBridge } from "./suiGateSync";
 import { createSponsoredAssemblyAdmin, registerSuiAssemblyAdminBridge } from "./suiAssemblyAdmin";
 import { clearAssemblyEnergyConfig, setAssemblyEnergyConfig } from "./networkNodeEnergyConfig";
 import { registerSuiAssemblyStateRunner, readSuiAssemblyStatusIntent } from "./suiAssemblyState";
@@ -46,6 +47,53 @@ export function createSuiAssemblyEnergyMutationRunner(options: {
     catch (error) { throw Object.assign(new Error("Assembly deployment changed", { cause: error }), { code: "DEPLOYMENT_UNAVAILABLE" }); }
     return operation();
   });
+}
+
+function gateFingerprint(assembly: any) {
+  return JSON.stringify(assembly && {
+    itemId: assembly.itemId, typeId: assembly.typeId, ownerId: assembly.ownerId,
+    status: assembly.status, solarSystemId: assembly.solarSystemId, position: assembly.position,
+    networkNodeId: assembly.networkNodeId, destinationGateId: assembly.destinationGateId,
+    gateDistanceMeters: assembly.gateDistanceMeters, gateMaxDistanceMeters: assembly.gateMaxDistanceMeters,
+  });
+}
+
+/** Gate reads and flushes share the existing journal and serialized worker. */
+export function createSuiGateSyncWorkerBridge(options: {
+  runExclusive: <T>(operation: () => Promise<T>) => Promise<T>;
+  runOnce: () => Promise<unknown>;
+  getContext: () => any;
+  getSnapshot: () => ReturnType<typeof buildSuiAssemblySnapshot>;
+  getLastError: () => string;
+  hasPrepared: () => boolean;
+}): SuiGateSyncBridge {
+  const readStatus: SuiGateSyncBridge["readStatus"] = request => options.runExclusive(async () => {
+    const context = options.getContext();
+    if (!context) throw new Error(options.getLastError() || "Sui assembly synchronization is starting");
+    if (options.hasPrepared()) throw new Error("An assembly owner is signing a sponsored transaction; retry shortly");
+    await context.assertCurrent();
+    const snapshot = options.getSnapshot();
+    const assembly = snapshot.assemblies.find(a => a.itemId === String(request.gateID) && a.kind === "gate");
+    if (!assembly || assembly.ownerId !== request.characterID) throw new Error("Owned Smart Gate is not available for chain synchronization");
+    const destination = snapshot.assemblies.find(a => a.itemId === assembly.destinationGateId && a.kind === "gate");
+    const chain = await context.contents.getGateStatus(assembly, destination);
+    await context.assertCurrent();
+    const latest = options.getSnapshot();
+    const current = [assembly, ...(destination ? [destination] : [])].every(expected =>
+      gateFingerprint(latest.assemblies.find(a => a.itemId === expected.itemId)) === gateFingerprint(expected));
+    const synchronized = current && chain.synchronized && !context.executor.hasPending();
+    return { ...request, ...chain, synchronized, status: synchronized ? "synced" : "pending",
+      ...(synchronized ? {} : { message: options.getLastError() || "Gate link is awaiting blockchain confirmation" }) };
+  });
+  return {
+    readStatus,
+    async flush(request) {
+      // Join an in-flight scan, then capture the caller's latest local pair.
+      await options.runOnce();
+      await options.runOnce();
+      return readStatus(request);
+    },
+  };
 }
 
 function atomicJson(file: string, value: unknown) {
@@ -488,6 +536,14 @@ export function startSuiAssemblySync() {
       return { id: identity.characterObjectId, address: identity.walletAddress, ownerCapId: fields.owner_cap_id };
     }
     const contents = createSuiAssemblyContents({ client, world, chain, execute: executor.execute, serverSigner: adminSigner, getCharacter,
+      assertGateSnapshotCurrent(assembly) {
+        const latest = buildSuiAssemblySnapshot(currentSnapshotInput()).assemblies.find(a => a.itemId === assembly.itemId);
+        // Retirement deliberately unlinks an item removed from the local store.
+        if (!latest && !itemStore.findItemById(Number(assembly.itemId)) && !assembly.destinationGateId) return;
+        if (gateFingerprint(latest) !== gateFingerprint(assembly)) {
+          throw new Error(`Gate ${assembly.itemId} changed during synchronization; retry the current snapshot`);
+        }
+      },
       assertInventorySnapshotCurrent(assembly) {
         const latest = buildSuiAssemblySnapshot(currentSnapshotInput()).assemblies.find(a => a.itemId === assembly.itemId);
         // Retiring an already removed unit intentionally empties its partition.
@@ -746,13 +802,18 @@ export function startSuiAssemblySync() {
       return readStorageStatus(request);
     },
   });
+  const unregisterGateSync = registerSuiGateSyncBridge(createSuiGateSyncWorkerBridge({
+    runExclusive: worker.runExclusive, runOnce: worker.runOnce,
+    getContext: () => context, getSnapshot: () => buildSuiAssemblySnapshot(currentSnapshotInput()),
+    getLastError: worker.getLastError, hasPrepared: () => sponsoredAdmin.hasPrepared(),
+  }));
   process.once("exit", () => {
     try { if (fs.readFileSync(lockPath, "utf8") === String(process.pid)) fs.unlinkSync(lockPath); } catch { /* process is exiting */ }
   });
   worker.start();
   log.info("[SuiAssemblySync] Automatic Localnet synchronization enabled (5 second scan)");
   return { ...worker, stop() {
-    unregisterStorageSync(); unregisterAdmin(); unregisterState(); trackedNetworkNodeBinding = null;
+    unregisterStorageSync(); unregisterGateSync(); unregisterAdmin(); unregisterState(); trackedNetworkNodeBinding = null;
     energyMutationRunner = null;
     const stopped = worker.stop();
     clearAssemblyEnergyConfig();

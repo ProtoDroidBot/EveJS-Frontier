@@ -45,7 +45,8 @@ function inventory(items: Array<{ typeId: number; quantity: number; volume: numb
   } } });
 }
 
-function fixture(assemblies: AssemblySnapshot[] = [snapshot()], assertInventorySnapshotCurrent?: (snapshot: AssemblySnapshot) => void) {
+function fixture(assemblies: AssemblySnapshot[] = [snapshot()], assertInventorySnapshotCurrent?: (snapshot: AssemblySnapshot) => void,
+  assertGateSnapshotCurrent?: (snapshot: AssemblySnapshot) => void) {
   const objects = new Map<string, any>();
   const dynamic = new Map<string, any>();
   const chainObjects = new Map<string, any>();
@@ -57,7 +58,7 @@ function fixture(assemblies: AssemblySnapshot[] = [snapshot()], assertInventoryS
     chainObjects.set(assembly.itemId, {
       id: id(assembly.itemId), kind: assembly.kind, ownerCapId: capId, online: assembly.status === 2,
       networkNodeId: id(50), locationHash: new Array(32).fill(Number(assembly.itemId) % 255),
-      fields: { inventory_keys: [capId], linked_gate_id: { fields: { vec: [] } } },
+      fields: { type_id: String(assembly.typeId), inventory_keys: [capId], linked_gate_id: { fields: { vec: [] } } },
     });
     dynamic.set(capId, inventory());
   }
@@ -80,7 +81,7 @@ function fixture(assemblies: AssemblySnapshot[] = [snapshot()], assertInventoryS
   };
   let onExecute: (label: string) => void = () => {};
   const contents = createSuiAssemblyContents({
-    client, chain, world, serverSigner: signer, now: () => 123_000, assertInventorySnapshotCurrent,
+    client, chain, world, serverSigner: signer, now: () => 123_000, assertInventorySnapshotCurrent, assertGateSnapshotCurrent,
     getCharacter: async (ownerId) => ({ id: id(ownerId), address: id(ownerId + 500), ownerCapId: id(ownerId + 2000) }),
     execute: async (label, transaction, ownerId, assertSnapshotCurrent) => {
       onExecute(label);
@@ -190,6 +191,7 @@ test("gate linking signs destination-to-source proof and repeats without mutatio
   assert.equal(proof.message.target_structure_id, id(100));
   assert.deepEqual(proof.message.source_location_hash, new Array(32).fill(101));
   assert.deepEqual(proof.message.target_location_hash, new Array(32).fill(100));
+  f.dynamic.set(String(a.typeId), move("u64", { value: "200" }));
   await f.contents.syncGateLinks([a, b]);
   assert.equal(f.executed.length, 1);
 });
@@ -218,6 +220,32 @@ test("unlink clears an old reciprocal pair once even when both gates are unlinke
   assert.equal(f.executed[0].ownerId, undefined);
 });
 
+test("a new selected partner replaces the stale reciprocal chain pair before linking", async () => {
+  const a = snapshot({ kind: "gate", itemId: "100", destinationGateId: "102", gateDistanceMeters: "80", gateMaxDistanceMeters: "100" });
+  const b = snapshot({ kind: "gate", itemId: "101" });
+  const c = snapshot({ ...a, itemId: "102", destinationGateId: "100" });
+  const f = fixture([a, b, c]);
+  f.chainObjects.get("100").fields.linked_gate_id.fields.vec = [id(101)];
+  f.chainObjects.get("101").fields.linked_gate_id.fields.vec = [id(100)];
+  f.objects.set(id(101), move(`${packageId}::gate::Gate`, f.chainObjects.get("101").fields));
+  f.objects.set(world.gateConfigId, move(`${packageId}::gate::GateConfig`, { max_distance_by_type: { fields: { id: { id: id(999) } } } }));
+  f.dynamic.set(String(a.typeId), move("u64", { value: "100" }));
+  f.setOnExecute(label => {
+    if (label.startsWith("gate-unlink:")) {
+      f.chainObjects.get("100").fields.linked_gate_id.fields.vec = [];
+      f.chainObjects.get("101").fields.linked_gate_id.fields.vec = [];
+    } else if (label.startsWith("gate-link:")) {
+      f.chainObjects.get("100").fields.linked_gate_id.fields.vec = [id(102)];
+      f.chainObjects.get("102").fields.linked_gate_id.fields.vec = [id(100)];
+    }
+  });
+  await f.contents.syncGateLinks([a, b, c]);
+  assert.deepEqual(f.executed.map(entry => entry.label), ["gate-unlink:100", "gate-link:100:102"]);
+  assert.equal((await f.contents.getGateStatus(a, c)).synchronized, true);
+  assert.equal((await f.contents.getGateStatus(c, a)).synchronized, true);
+  assert.deepEqual(f.chainObjects.get("101").fields.linked_gate_id.fields.vec, []);
+});
+
 test("unit volume changes replace the stored type and capacity failures submit nothing", async () => {
   const local = snapshot({ inventory: [{ ownerId: 1, itemId: "8", typeId: 10, quantity: 3, unitVolume: "5" }] });
   const f = fixture([local]);
@@ -235,6 +263,111 @@ test("unit volume changes replace the stored type and capacity failures submit n
   const overflow = fixture([excessive]);
   await assert.rejects(overflow.contents.syncInventory(excessive), /exceeds on-chain capacity/);
   assert.equal(overflow.executed.length, 0);
+});
+
+test("gate linking configures differing chain ranges from the client and accepts its exact boundary", async () => {
+  for (const maximum of ["80", "200"]) {
+    const a = snapshot({ kind: "gate", itemId: "100", destinationGateId: "101", gateDistanceMeters: "100", gateMaxDistanceMeters: "100" });
+    const b = snapshot({ ...a, itemId: "101", destinationGateId: "100" });
+    const f = fixture([a, b]);
+    f.objects.set(world.gateConfigId, move(`${packageId}::gate::GateConfig`, { max_distance_by_type: { fields: { id: { id: id(999) } } } }));
+    f.dynamic.set(String(a.typeId), move("u64", { value: maximum }));
+    await f.contents.syncGateLinks([a, b]);
+    assert.deepEqual(f.executed.map(entry => entry.label), ["gate-range:44", "gate-link:100:101"]);
+    const range = calls(f.executed[0].transaction)[0];
+    const input = f.executed[0].transaction.getData().inputs[range.arguments[3].Input] as any;
+    assert.equal(bcs.u64().parse(Buffer.from(input.Pure.bytes, "base64")), "100");
+  }
+});
+
+test("an out-of-range client link preserves the previous pair before any mutation", async () => {
+  const a = snapshot({ kind: "gate", itemId: "100", destinationGateId: "102", gateDistanceMeters: "101", gateMaxDistanceMeters: "100" });
+  const b = snapshot({ kind: "gate", itemId: "101" });
+  const c = snapshot({ ...a, itemId: "102", destinationGateId: "100" });
+  const f = fixture([a, b, c]);
+  f.chainObjects.get("100").fields.linked_gate_id.fields.vec = [id(101)];
+  f.chainObjects.get("101").fields.linked_gate_id.fields.vec = [id(100)];
+  f.objects.set(world.gateConfigId, move(`${packageId}::gate::GateConfig`, { max_distance_by_type: { fields: { id: { id: id(999) } } } }));
+  f.dynamic.set(String(a.typeId), move("u64", { value: "79" }));
+  await assert.rejects(f.contents.syncGateLinks([a, b, c]), /local link range/);
+  assert.equal(f.executed.length, 0);
+  assert.deepEqual(f.chainObjects.get("100").fields.linked_gate_id.fields.vec, [id(101)]);
+});
+
+test("a missing chain gate type range is initialized from its authored value only", async () => {
+  const a = snapshot({ kind: "gate", itemId: "100", destinationGateId: "101", gateDistanceMeters: "80", gateMaxDistanceMeters: "100" });
+  const b = snapshot({ ...a, itemId: "101", destinationGateId: "100" });
+  const f = fixture([a, b]);
+  f.objects.set(world.gateConfigId, move(`${packageId}::gate::GateConfig`, { max_distance_by_type: { fields: { id: { id: id(999) } } } }));
+  await f.contents.syncGateLinks([a, b]);
+  assert.deepEqual(f.executed.map(entry => entry.label), ["gate-range:44", "gate-link:100:101"]);
+  const range = calls(f.executed[0].transaction)[0];
+  const input = f.executed[0].transaction.getData().inputs[range.arguments[3].Input] as any;
+  assert.equal(bcs.u64().parse(Buffer.from(input.Pure.bytes, "base64")), "100");
+});
+
+test("gate status requires a reciprocal chain pair while retaining independent client and chain ranges", async () => {
+  const a = snapshot({ kind: "gate", itemId: "100", destinationGateId: "101", gateDistanceMeters: "80", gateMaxDistanceMeters: "100" });
+  const b = snapshot({ ...a, itemId: "101", destinationGateId: "100" });
+  const f = fixture([a, b]);
+  f.objects.set(world.gateConfigId, move(`${packageId}::gate::GateConfig`, { max_distance_by_type: { fields: { id: { id: id(999) } } } }));
+  f.dynamic.set(String(a.typeId), move("u64", { value: "200" }));
+  f.chainObjects.get("100").fields.linked_gate_id.fields.vec = [id(101)];
+  const incomplete = await f.contents.getGateStatus(a, b);
+  assert.equal(incomplete.synchronized, false);
+  assert.equal(incomplete.reciprocal, false);
+  f.chainObjects.get("101").fields.linked_gate_id.fields.vec = [id(100)];
+  const confirmed = await f.contents.getGateStatus(a, b);
+  assert.equal(confirmed.synchronized, true);
+  assert.equal(confirmed.maxDistanceMeters, "200");
+  assert.equal(confirmed.distanceMeters, "80");
+  assert.equal(confirmed.linkedGateObjectID, id(101));
+  f.chainObjects.get("101").fields.type_id = "45";
+  assert.equal((await f.contents.getGateStatus(a, b)).synchronized, false);
+  assert.equal(f.executed.length, 0);
+});
+
+test("gate linking rejects different types, owners and local out-of-range pairs before RPC mutation", async () => {
+  const a = snapshot({ kind: "gate", itemId: "100", destinationGateId: "101", gateDistanceMeters: "80", gateMaxDistanceMeters: "100" });
+  for (const [overrides, message] of [
+    [{ typeId: 45 }, /incompatible owner or type/],
+    [{ ownerId: 2 }, /incompatible owner or type/],
+    [{ gateMaxDistanceMeters: "79" }, /local link range/],
+    [{ gateDistanceMeters: "79" }, /inconsistent reciprocal distances/],
+  ] as const) {
+    const b = snapshot({ ...a, itemId: "101", destinationGateId: "100", ...overrides });
+    const f = fixture([a, b]);
+    await assert.rejects(f.contents.syncGateLinks([a, b]), message);
+    assert.equal(f.executed.length, 0);
+  }
+});
+
+test("gate status does not report an unanchored gate as synchronized", async () => {
+  const a = snapshot({ kind: "gate", itemId: "100" });
+  const f = fixture([a]);
+  f.objects.set(world.gateConfigId, move(`${packageId}::gate::GateConfig`, { max_distance_by_type: { fields: { id: { id: id(999) } } } }));
+  f.chainObjects.delete(a.itemId);
+  assert.deepEqual(await f.contents.getGateStatus(a), {
+    gateObjectID: id(100), linkedGateObjectID: null, online: false, reciprocal: true, synchronized: false,
+  });
+});
+
+test("gate snapshot guards reject stale reads and changes immediately before submission", async () => {
+  const a = snapshot({ kind: "gate", itemId: "100", destinationGateId: "101", gateDistanceMeters: "80", gateMaxDistanceMeters: "100" });
+  const b = snapshot({ ...a, itemId: "101", destinationGateId: "100" });
+  let current = true;
+  const f = fixture([a, b], undefined, () => { if (!current) throw new Error("Gate snapshot changed"); });
+  f.objects.set(world.gateConfigId, move(`${packageId}::gate::GateConfig`, { max_distance_by_type: { fields: { id: { id: id(999) } } } }));
+  f.dynamic.set(String(a.typeId), move("u64", { value: "100" }));
+  f.setOnRead(() => { current = false; });
+  await assert.rejects(f.contents.syncGateLinks([a, b]), /Gate snapshot changed/);
+  current = true;
+  await assert.rejects(f.contents.getGateStatus(a, b), /Gate snapshot changed/);
+  current = true;
+  f.setOnRead(() => {});
+  f.setOnExecute(() => { current = false; });
+  await assert.rejects(f.contents.syncGateLinks([a, b]), /Gate snapshot changed/);
+  assert.equal(f.executed.length, 0);
 });
 
 test("storage inventory status reports exact on-chain quantities and limits partitions to the caller", async () => {

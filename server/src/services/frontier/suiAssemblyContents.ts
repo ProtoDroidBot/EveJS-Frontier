@@ -24,6 +24,18 @@ type ContentsOptions = {
   now?: () => number;
   /** Reject inventory changes made while chain reads or transaction builds await RPC. */
   assertInventorySnapshotCurrent?: (snapshot: AssemblySnapshot) => void;
+  /** Reject relinking or moving gates while a proof or transaction awaits RPC. */
+  assertGateSnapshotCurrent?: (snapshot: AssemblySnapshot) => void;
+};
+
+export type SuiGateChainStatus = {
+  gateObjectID: string;
+  linkedGateObjectID: string | null;
+  maxDistanceMeters?: string;
+  distanceMeters?: string;
+  online: boolean;
+  reciprocal: boolean;
+  synchronized: boolean;
 };
 
 type InventoryItem = { itemId: string; typeId: string; quantity: number; unitVolume: string };
@@ -361,21 +373,64 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
     }
   }
 
-  async function ensureGateRange(snapshot: AssemblySnapshot): Promise<void> {
-    const maximum = uint(snapshot.gateMaxDistanceMeters, 64, "gate maximum distance");
-    if (maximum === 0n) throw new Error(`Gate ${snapshot.itemId} has no positive maximum range`);
+  async function readGateRange(typeId: number): Promise<bigint | null> {
     const config = moveObject(await client.getObject({ id: world.gateConfigId, options: { showContent: true } }), "gate configuration");
     const tableId = objectId(fields(config.fields.max_distance_by_type).id, "gate distance table");
-    const current = moveObject(await client.getDynamicFieldObject({ parentId: tableId, name: { type: "u64", value: String(snapshot.typeId) } }), "gate type distance", true);
-    if (current && uint(current.fields.value, 64, "gate type distance") === maximum) return;
+    const current = moveObject(await client.getDynamicFieldObject({ parentId: tableId, name: { type: "u64", value: String(typeId) } }), "gate type distance", true);
+    return current ? uint(current.fields.value, 64, "gate type distance") : null;
+  }
+
+  function assertGateCurrent(snapshots: AssemblySnapshot[]): void {
+    for (const snapshot of snapshots) options.assertGateSnapshotCurrent?.(snapshot);
+  }
+
+  /** A requested new link uses the client's authored type range on the linked world. */
+  async function ensureGateRange(snapshot: AssemblySnapshot, assertCurrent: () => void): Promise<void> {
+    const configured = await readGateRange(snapshot.typeId);
+    const maximum = uint(snapshot.gateMaxDistanceMeters, 64, "gate maximum distance");
+    if (maximum === 0n || uint(snapshot.gateDistanceMeters, 64, "gate distance") > maximum) {
+      throw new Error(`Gate ${snapshot.itemId} exceeds its authored link range`);
+    }
+    assertCurrent();
+    if (configured === maximum) return;
     const tx = new Transaction();
     tx.moveCall({ target: target("gate", "set_max_distance"), arguments: [tx.object(world.gateConfigId), tx.object(world.adminAclId), tx.pure.u64(snapshot.typeId), tx.pure.u64(maximum)] });
-    await execute(`gate-range:${snapshot.typeId}`, tx);
+    await execute(`gate-range:${snapshot.typeId}`, tx, undefined, assertCurrent);
+  }
+
+  async function getGateStatus(snapshot: AssemblySnapshot, destinationSnapshot?: AssemblySnapshot): Promise<SuiGateChainStatus> {
+    if (snapshot.kind !== "gate") throw new Error(`Assembly ${snapshot.itemId} is not a gate`);
+    const gate = await chain.readAssembly(snapshot);
+    const maximum = await readGateRange(snapshot.typeId);
+    const linkedGateObjectID = gate ? optionalId(gate.fields.linked_gate_id) : null;
+    const expected = snapshot.destinationGateId ? objectId(chain.deriveId(snapshot.destinationGateId), "expected gate ID") : null;
+    let reciprocal = linkedGateObjectID === null;
+    if (gate && linkedGateObjectID) {
+      const linked = destinationSnapshot && linkedGateObjectID === expected
+        ? await chain.readAssembly(destinationSnapshot) : null;
+      const content = linked ? { type: target("gate", "Gate"), fields: linked.fields }
+        : moveObject(await client.getObject({ id: linkedGateObjectID, options: { showContent: true } }), "linked destination gate", true);
+      reciprocal = !!content && content.type === target("gate", "Gate") &&
+        uint(content.fields.type_id, 64, "linked gate type") === BigInt(snapshot.typeId) &&
+        optionalId(content.fields.linked_gate_id) === objectId(gate.id, "gate ID");
+    }
+    const localReciprocal = !expected || !!destinationSnapshot && destinationSnapshot.kind === "gate" &&
+      destinationSnapshot.itemId === snapshot.destinationGateId && destinationSnapshot.destinationGateId === snapshot.itemId &&
+      destinationSnapshot.ownerId === snapshot.ownerId && destinationSnapshot.typeId === snapshot.typeId;
+    assertGateCurrent([snapshot, ...(destinationSnapshot ? [destinationSnapshot] : [])]);
+    return {
+      gateObjectID: objectId(gate?.id ?? chain.deriveId(snapshot.itemId), "gate ID"), linkedGateObjectID,
+      ...(maximum === null ? {} : { maxDistanceMeters: maximum.toString() }),
+      ...(snapshot.gateDistanceMeters === null ? {} : { distanceMeters: snapshot.gateDistanceMeters }),
+      online: !!gate?.online, reciprocal,
+      synchronized: !!gate && linkedGateObjectID === expected && reciprocal && localReciprocal,
+    };
   }
 
   async function syncGateLinks(snapshots: AssemblySnapshot[]): Promise<void> {
     const gates = snapshots.filter((snapshot) => snapshot.kind === "gate");
     const byItemId = new Map(gates.map((snapshot) => [snapshot.itemId, snapshot]));
+    if (byItemId.size !== gates.length) throw new Error("Duplicate gate identities in local snapshot");
     // Links are reciprocal game state. Reject transient half-written pairs before changing the chain.
     for (const gate of gates) {
       if (!gate.destinationGateId) continue;
@@ -383,7 +438,9 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
       if (!destination || destination.destinationGateId !== gate.itemId || destination.itemId === gate.itemId) throw new Error(`Gate ${gate.itemId} has a nonreciprocal local link`);
       if (destination.ownerId !== gate.ownerId || destination.typeId !== gate.typeId) throw new Error(`Gate ${gate.itemId} links incompatible owner or type`);
       if (uint(gate.gateDistanceMeters, 64, "gate distance") > uint(gate.gateMaxDistanceMeters, 64, "gate maximum distance")) throw new Error(`Gate ${gate.itemId} exceeds its local link range`);
+      if (gate.gateDistanceMeters !== destination.gateDistanceMeters) throw new Error(`Gate ${gate.itemId} has inconsistent reciprocal distances`);
     }
+    assertGateCurrent(gates);
     // Remove stale links first so rewiring A-B into A-C never attempts to link an occupied gate.
     for (const snapshot of gates) {
       const gate = await chain.readAssembly(snapshot);
@@ -395,7 +452,9 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
       if (other.type !== target("gate", "Gate") || optionalId(other.fields.linked_gate_id) !== gate.id) throw new Error(`Gate ${snapshot.itemId} has an inconsistent on-chain link`);
       const tx = new Transaction();
       tx.moveCall({ target: target("gate", "unlink_gates_by_admin"), arguments: [tx.object(gate.id), tx.object(actual), tx.object(world.adminAclId)] });
-      await execute(`gate-unlink:${snapshot.itemId}`, tx);
+      const assertCurrent = () => assertGateCurrent(gates);
+      assertCurrent();
+      await execute(`gate-unlink:${snapshot.itemId}`, tx, undefined, assertCurrent);
     }
     const processed = new Set<string>();
     for (const snapshot of gates) {
@@ -410,7 +469,8 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
         processed.add(snapshot.itemId); processed.add(destinationSnapshot.itemId); continue;
       }
       if (gateLink || destinationLink) throw new Error(`Gate ${snapshot.itemId} remains linked to an unexpected destination`);
-      await ensureGateRange(snapshot);
+      const assertCurrent = () => assertGateCurrent([snapshot, destinationSnapshot]);
+      await ensureGateRange(snapshot, assertCurrent);
       const character = await getCharacter(snapshot.ownerId);
       // Gate::link_gates verifies the SOURCE gate's Location as the proof TARGET.
       const proof = await createAssemblyLocationProof({
@@ -426,10 +486,11 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
           sourceCap, destinationCap, tx.pure.vector("u8", Array.from(proof)), tx.object("0x6"),
         ] });
       });
-      await execute(`gate-link:${snapshot.itemId}:${destinationSnapshot.itemId}`, tx, snapshot.ownerId);
+      assertCurrent();
+      await execute(`gate-link:${snapshot.itemId}:${destinationSnapshot.itemId}`, tx, snapshot.ownerId, assertCurrent);
       processed.add(snapshot.itemId); processed.add(destinationSnapshot.itemId);
     }
   }
 
-  return { hasInventoryChanges, getInventoryStatus, syncInventory, syncGateLinks };
+  return { hasInventoryChanges, getInventoryStatus, syncInventory, getGateStatus, syncGateLinks };
 }

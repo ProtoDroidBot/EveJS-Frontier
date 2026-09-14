@@ -516,13 +516,16 @@ function getSolarSystemRecord(solarSystemID) {
   return solarSystemsByID.get(toInt(solarSystemID, 0)) || null;
 }
 
-function getSolarSystemDistanceLightYears(leftSystemID, rightSystemID) {
+function getSolarSystemDistanceMeters(leftSystemID, rightSystemID) {
   const left = getSolarSystemRecord(leftSystemID);
   const right = getSolarSystemRecord(rightSystemID);
-  const distanceMeters = vectorDistance(
-    left && left.position,
-    right && right.position,
-  );
+  // Missing records must not be interpreted as coordinates at the origin.
+  if (!left?.position || !right?.position) return Number.POSITIVE_INFINITY;
+  return vectorDistance(left.position, right.position);
+}
+
+function getSolarSystemDistanceLightYears(leftSystemID, rightSystemID) {
+  const distanceMeters = getSolarSystemDistanceMeters(leftSystemID, rightSystemID);
   return Number.isFinite(distanceMeters)
     ? distanceMeters / METERS_PER_LIGHT_YEAR
     : Number.POSITIVE_INFINITY;
@@ -906,7 +909,10 @@ function validateOwnedChainAssembly(session, itemID) {
   return { success: true as const, characterID, definition, item, state };
 }
 
-function validateOwnedSmartGateForCharacter(characterID, itemID) {
+function validateOwnedSmartGateForCharacter(characterID, itemID, allowActivating = false) {
+  if (!Number.isSafeInteger(Number(itemID)) || Number(itemID) <= 0) {
+    return { success: false as const, errorMsg: "ASSEMBLY_NOT_FOUND" };
+  }
   const item = itemStore.findItemById(itemID);
   const state = readConstructionState(item);
   if (!item || !state) {
@@ -918,7 +924,7 @@ function validateOwnedSmartGateForCharacter(characterID, itemID) {
   if (state.assemblyStatus === ASSEMBLY_STATUS_UNDER_CONSTRUCTION) {
     return { success: false as const, errorMsg: "ASSEMBLY_UNDER_CONSTRUCTION" };
   }
-  if (isAssemblyActivationPending(item)) {
+  if (!allowActivating && isAssemblyActivationPending(item)) {
     return { success: false as const, errorMsg: "ASSEMBLY_ACTIVATING" };
   }
   const definition = getBuildDefinition(state.assemblyTypeID);
@@ -1292,8 +1298,8 @@ function commitAssemblyStateTransition(
   };
 }
 
-function validateGateLink(session, gateID, destinationGateID) {
-  const source = validateOwnedSmartGate(session, gateID);
+function validateGateLinkForCharacter(characterID, gateID, destinationGateID) {
+  const source = validateOwnedSmartGateForCharacter(characterID, gateID);
   if (source.success === false) {
     return source;
   }
@@ -1348,6 +1354,12 @@ function validateGateLink(session, gateID, destinationGateID) {
     };
   }
   return { success: true as const, destination, distanceLightYears, source };
+}
+
+function validateGateLink(session, gateID, destinationGateID) {
+  const source = validateOwnedSmartGate(session, gateID);
+  if (source.success === false) return source;
+  return validateGateLinkForCharacter(source.characterID, gateID, destinationGateID);
 }
 
 function prepareGateTransition(validation, action, destinationGateID = 0) {
@@ -1472,6 +1484,8 @@ function updateLinkedGatePair(session, validation) {
     { item: sourceUpdate.data, previousData: sourceUpdate.previousData },
     { item: destinationUpdate.data, previousData: destinationUpdate.previousData },
   ]);
+  clearPendingAssemblyTransitionsForItem(validation.source.item.itemID);
+  clearPendingAssemblyTransitionsForItem(validation.destination.item.itemID);
   return {
     success: true as const,
     data: {
@@ -1500,6 +1514,13 @@ function beginGateLinkTransition(session, gateID, destinationGateID) {
       `tx=${prepared.data.transactionUUID}`,
   );
   return prepared;
+}
+
+/** Owner-authorized mutation used by the API before blockchain reconciliation. */
+function linkSmartGates(session, sourceGateID, destinationGateID) {
+  const validation = validateGateLink(session, sourceGateID, destinationGateID);
+  if (validation.success === false) return validation;
+  return updateLinkedGatePair(session, validation);
 }
 
 function commitGateLinkTransition(
@@ -1715,6 +1736,11 @@ function validateGateUnlink(session, gateID) {
     source.characterID,
     source.state.destinationGateID,
   );
+  // An activating or inaccessible partner must not be left pointing at an
+  // unlinked source. Only a missing partner can be cleaned up independently.
+  if (destination.success === false && destination.errorMsg !== "ASSEMBLY_NOT_FOUND") {
+    return destination;
+  }
   if (
     destination.success &&
     destination.state.assemblyStatus !== ASSEMBLY_STATUS_OFFLINE
@@ -1769,6 +1795,18 @@ function commitGateUnlinkTransition(
     return { success: false as const, errorMsg: "ASSEMBLY_STATE_CHANGED" };
   }
 
+  const result = updateUnlinkedGatePair(session, validation);
+  if (result.success) {
+    log.info(
+      `[FrontierDeployment] Gates unlinked char=${validation.source.characterID} ` +
+        `source=${validation.source.item.itemID} destination=${pendingResult.pending.destinationGateID} ` +
+        `tx=${pendingResult.normalizedUUID}`,
+    );
+  }
+  return result;
+}
+
+function updateUnlinkedGatePair(session, validation) {
   const sourceUpdate = itemStore.updateInventoryItem(
     validation.source.item.itemID,
     (currentItem) => ({
@@ -1781,7 +1819,9 @@ function commitGateUnlinkTransition(
     }),
   );
   if (!sourceUpdate.success || !sourceUpdate.data) {
-    return sourceUpdate;
+    return sourceUpdate.success
+      ? { success: false as const, errorMsg: "SMART_GATE_UNLINK_UPDATE_FAILED" }
+      : sourceUpdate;
   }
 
   let destinationUpdate = null;
@@ -1801,8 +1841,15 @@ function commitGateUnlinkTransition(
       }),
     );
     if (!destinationUpdate.success || !destinationUpdate.data) {
-      itemStore.updateInventoryItem(sourceUpdate.data.itemID, sourceUpdate.previousData);
-      return destinationUpdate;
+      const rollback = itemStore.updateInventoryItem(sourceUpdate.data.itemID, sourceUpdate.previousData);
+      if (!rollback.success) {
+        log.error(`[FrontierDeployment] Gate unlink rollback failed item=${sourceUpdate.data.itemID} reason=${rollback.errorMsg || "UNKNOWN"}`);
+      }
+      return {
+        success: false as const,
+        errorMsg: destinationUpdate.errorMsg || "SMART_GATE_UNLINK_UPDATE_FAILED",
+        rollbackError: rollback.success ? null : rollback.errorMsg,
+      };
     }
   }
 
@@ -1827,12 +1874,19 @@ function commitGateUnlinkTransition(
     );
   }
   syncChanges(session, changes);
-  log.info(
-    `[FrontierDeployment] Gates unlinked char=${validation.source.characterID} ` +
-      `source=${validation.source.item.itemID} destination=${pendingResult.pending.destinationGateID} ` +
-      `tx=${pendingResult.normalizedUUID}`,
-  );
-  return { success: true as const, data: { source: sourceUpdate.data } };
+  clearPendingAssemblyTransitionsForItem(validation.source.item.itemID);
+  clearPendingAssemblyTransitionsForItem(validation.source.state.destinationGateID);
+  return {
+    success: true as const,
+    data: { source: sourceUpdate.data, destination: destinationUpdate?.data || null },
+  };
+}
+
+/** Owner-authorized mutation used by the API before blockchain reconciliation. */
+function unlinkSmartGate(session, sourceGateID) {
+  const validation = validateGateUnlink(session, sourceGateID);
+  if (validation.success === false) return validation;
+  return updateUnlinkedGatePair(session, validation);
 }
 
 function placeDirectAssembly({
@@ -3091,6 +3145,37 @@ function listOwnedSmartGates(characterID) {
   return gates.sort((left, right) => left.itemID - right.itemID);
 }
 
+function getSmartGateLinkStatus(characterID, gateID) {
+  const numericCharacterID = toInt(characterID, 0);
+  const source = validateOwnedSmartGateForCharacter(numericCharacterID, gateID, true);
+  if (source.success === false) return source;
+  const gates = listOwnedSmartGates(numericCharacterID);
+  const gate = gates.find(entry => entry.itemID === source.item.itemID);
+  const candidates = gates
+    .filter(entry => entry.itemID !== gate.itemID && entry.typeID === gate.typeID)
+    .map(entry => {
+      const validation = validateGateLinkForCharacter(numericCharacterID, gate.itemID, entry.itemID);
+      const distanceMeters = getSolarSystemDistanceMeters(gate.solarSystemID, entry.solarSystemID);
+      const distance = distanceMeters / METERS_PER_LIGHT_YEAR;
+      return {
+        ...entry,
+        distanceMeters: Number.isFinite(distanceMeters) ? BigInt(Math.ceil(distanceMeters)).toString() : null,
+        distanceLightYears: Number.isFinite(distance) ? distance : null,
+        eligible: validation.success,
+        reason: validation.success === false ? validation.errorMsg : null,
+      };
+    });
+  return {
+    success: true as const,
+    data: {
+      gate,
+      destination: gates.find(entry => entry.itemID === gate.destinationGateID) || null,
+      candidates,
+      rangeLightYears: gate.rangeLightYears,
+    },
+  };
+}
+
 function recordAssemblyInteraction(session, itemID) {
   const numericItemID = toInt(itemID, 0);
   const item = itemStore.findItemById(numericItemID);
@@ -3137,11 +3222,13 @@ module.exports = {
   depositItems,
   getDepositedItemsByType,
   getAssemblyRecord,
+  getSmartGateLinkStatus,
   hasAssemblyAdminPrivileges,
   hydrateConstructionEntityFromInventoryItem,
   listAssemblies,
   listAssemblyDefinitions,
   listOwnedSmartGates,
+  linkSmartGates,
   listMyAssemblies,
   recordAssemblyInteraction,
   refreshAssemblyStatePresentation,
@@ -3150,6 +3237,7 @@ module.exports = {
   reconcileSponsoredAssemblyState,
   reconcileSuiAssemblyState,
   recordInitialSuiAssemblyState,
+  unlinkSmartGate,
   // Shared with the Network Node fuel runtime, which reuses the assembly
   // transition transaction/signature conventions and construction state.
   buildAssemblyTransitionTransactionData,
