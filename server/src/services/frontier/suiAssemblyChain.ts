@@ -34,7 +34,7 @@ export type SuiAssemblyChainOptions = {
   tenant: string;
   execute: (label: string, tx: Transaction, ownerId?: number, assertSnapshotCurrent?: () => void) => Promise<unknown>;
   deriveId?: (itemId: string) => string;
-  /** Existing nodes use chain fuel; only explicit inventory transfer intents mutate it. */
+  /** Existing nodes use chain fuel; inventory changes require explicit transfer intents. */
   fuelAuthority?: boolean;
   /** Reject a stale local fuel snapshot before it can replenish a newer burn. */
   assertFuelSnapshotCurrent?: (assembly: AssemblySnapshot) => void;
@@ -347,6 +347,77 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
     return { maxEnergy, currentEnergyProduction, energyUsed, observedAtMs: Date.now() };
   }
 
+  /** Settle elapsed chain burn cycles before importing the node's confirmed state. */
+  async function updateFuel(assembly: AssemblySnapshot, assertSnapshotCurrent?: () => void): Promise<boolean> {
+    if (assembly.kind !== "network_node") return false;
+    assertSnapshotCurrent?.();
+    const state = await readAssembly(assembly);
+    if (!state || !state.online) return false;
+    const fuel = suiAssemblyFields(state.fields.fuel);
+    if (typeof fuel?.is_burning !== "boolean") throw new Error("Chain fuel burning state is invalid");
+    if (!fuel.is_burning) return false;
+    const burnStart = fuelU64(fuel.burn_start_time, "Chain fuel burn start");
+    if (burnStart === 0n) return false;
+    const previousElapsed = fuelU64(fuel.previous_cycle_elapsed_time, "Chain previous fuel elapsed time");
+    const burnRate = fuelU64(fuel.burn_rate_in_ms, "Chain fuel burn rate");
+    const typeID = fuelU64(suiAssemblyOption(fuel.type_id) ?? 0, "Chain fuel type");
+    if (typeID === 0n || burnRate === 0n) throw new Error("Chain burning fuel has an invalid type or burn rate");
+
+    const clockResponse = await client.getObject({ id: "0x6", options: { showContent: true } });
+    if (clockResponse.error || clockResponse.data?.content?.dataType !== "moveObject") throw new Error("Cannot read Sui Clock for fuel settlement");
+    const clockFields = clockResponse.data.content.fields as any;
+    const now = fuelU64(clockFields.timestamp_ms, "Sui Clock timestamp");
+    if (fuelU64(fuel.last_updated, "Chain fuel last updated time") === now) return false;
+    const configResponse = await client.getObject({ id: world.fuelConfigId, options: { showContent: true } });
+    if (configResponse.error || configResponse.data?.content?.dataType !== "moveObject") throw new Error("Cannot read FuelConfig for fuel settlement");
+    const table = suiAssemblyFields((configResponse.data.content.fields as any).fuel_efficiency);
+    const tableID = objectId(table?.id);
+    if (!tableID) throw new Error("FuelConfig efficiency table ID is missing");
+    const entry = await client.getDynamicFieldObject({ parentId: tableID, name: { type: "u64", value: String(typeID) } });
+    if (entry.error || entry.data?.content?.dataType !== "moveObject") throw new Error(`Cannot read efficiency for fuel ${typeID}`);
+    const efficiencyFields = entry.data.content.fields as any;
+    if (efficiencyFields.name !== undefined && fuelU64(efficiencyFields.name, "Fuel efficiency type") !== typeID) {
+      throw new Error("Fuel efficiency entry belongs to another type");
+    }
+    const efficiency = fuelU64(efficiencyFields.value, `Fuel ${typeID} efficiency`);
+    if (efficiency === 0n || efficiency > 100n || burnRate * efficiency > U64_MAX) throw new Error("Chain fuel efficiency or burn rate is invalid");
+    const cycleMs = burnRate * efficiency / 100n;
+    const elapsed = (now > burnStart ? now - burnStart : 0n) + previousElapsed;
+    if (cycleMs === 0n || elapsed > U64_MAX) throw new Error("Chain fuel cycle duration or elapsed time is invalid");
+    if (elapsed < cycleMs) return false;
+
+    const ids = state.fields.connected_assembly_ids;
+    if (!Array.isArray(ids)) throw new Error("Network node connected assembly IDs are missing");
+    const connected: SuiAssemblyChainObject[] = [];
+    const seen = new Set<string>();
+    for (const rawID of ids) {
+      const id = objectId(rawID);
+      if (!id || seen.has(normalizeSuiAddress(id))) throw new Error("Network node contains invalid or duplicate connected assembly IDs");
+      seen.add(normalizeSuiAddress(id));
+      const target = await readObject(id);
+      if (!target || target.kind === "network_node" || !sameId(target.networkNodeId, state.id)) {
+        throw new Error(`Connected assembly ${id} cannot be brought offline by this Network Node`);
+      }
+      connected.push(target);
+    }
+    const tx = new Transaction();
+    let [hotPotato] = tx.moveCall({ target: `${world.packageId}::network_node::update_fuel`, arguments: [
+      tx.object(state.id), tx.object(world.fuelConfigId), tx.object(world.adminAclId), tx.object("0x6"),
+    ] });
+    // The final unit can expire while building. These calls safely pass through
+    // an empty hot potato while fuel remains, and atomically offline all children
+    // if execution exhausts it. The Move contract decides which case applies.
+    for (const child of connected) {
+      [hotPotato] = tx.moveCall({ target: `${world.packageId}::${child.kind}::offline_connected_${child.kind}`, arguments: [
+        tx.object(child.id), hotPotato, tx.object(state.id), tx.object(world.energyConfigId),
+      ] });
+    }
+    tx.moveCall({ target: `${world.packageId}::network_node::destroy_offline_assemblies`, arguments: [hotPotato] });
+    assertSnapshotCurrent?.();
+    await execute(`assembly:${assembly.itemId}:fuel-burn`, tx, undefined, assertSnapshotCurrent);
+    return true;
+  }
+
   async function syncFuelIntent(assembly: AssemblySnapshot): Promise<void> {
     const intent = assembly.fuelIntent;
     if (!intent) return;
@@ -638,6 +709,6 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
   }
 
   return { deriveId, readAssembly, readObject, ensureAssembly, syncMetadata, configureFuelEfficiency, readEnergyRequirements,
-    readFuelState, readEnergyState, syncFuel, syncStatus, buildStatusTransaction, removeAssembly, withCaps };
+    readFuelState, readEnergyState, updateFuel, syncFuel, syncStatus, buildStatusTransaction, removeAssembly, withCaps };
 }
 export type SuiAssemblyChain = ReturnType<typeof createSuiAssemblyChain>;

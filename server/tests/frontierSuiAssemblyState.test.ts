@@ -269,6 +269,110 @@ test("chain refresh imports energy and fuel from the same verified node object",
   ]);
 });
 
+test("background fuel settlement imports the new confirmed reserve before native status publication", async () => {
+  const f = chainRefreshFixture();
+  f.fuel.quantity = 499;
+  let settlements = 0;
+  const confirmed = { itemId: "1", online: true };
+  const context = { ...f.context, fuelAuthority: true, chain: { ...f.context.chain,
+    async updateFuel(assembly, assertCurrent) {
+      assert.equal(assembly.itemId, "1");
+      assertCurrent();
+      settlements++;
+      f.fuel.quantity = 498;
+      f.objects.set("1", confirmed);
+      return true;
+    },
+  } };
+  await refreshSuiAssemblyChainStates(context, () => f.input, 1, { settleFuel: true });
+  assert.equal(settlements, 1);
+  assert.deepEqual(f.reads, ["1", "1"]);
+  assert.strictEqual(f.fuelReads[0].state, confirmed, "Do not reuse the node read before update_fuel committed");
+  assert.strictEqual(f.energyReads[0].state, confirmed);
+  assert.equal(f.projectedFuel[0].state.quantity, 498);
+  assert.equal(f.projectedStatus[0].status, 2);
+});
+
+test("ordinary chain reads and legacy local fuel mode never submit fuel settlement", async () => {
+  for (const fuelAuthority of [false, true]) {
+    const f = chainRefreshFixture();
+    const context = { ...f.context, fuelAuthority, chain: { ...f.context.chain,
+      async updateFuel() { assert.fail("This read must not mutate fuel"); },
+    } };
+    await refreshSuiAssemblyChainStates(context, () => f.input, 1);
+    if (!fuelAuthority) await refreshSuiAssemblyChainStates(context, () => f.input, 1, { settleFuel: true });
+  }
+});
+
+test("a committed native fuel transfer reaches the chain before another burn can consume its reserve", async () => {
+  const f = chainRefreshFixture();
+  const node = Object.values(f.input.items).find(item => item.itemID === 1);
+  const info = JSON.parse(node.customInfo);
+  info.evejsSuiNetworkNodeFuel = {
+    typeID: 88335, quantity: 499, unitVolume: "280000", observedAtMs: 1234,
+    pending: { id: "withdraw-all", typeID: 88335, quantityDelta: -499 },
+  };
+  node.customInfo = JSON.stringify(info);
+  const context = { ...f.context, fuelAuthority: true, chain: { ...f.context.chain,
+    async updateFuel() { assert.fail("Do not consume fuel already reserved by a native withdrawal"); },
+  } };
+  const identity = buildSuiAssemblyIdentitySnapshot(f.input).assemblies.find(assembly => assembly.itemId === "1");
+  assert.equal(identity.fuelIntent?.id, "withdraw-all");
+  await refreshSuiAssemblyChainStates(context, () => f.input, 1, { settleFuel: true });
+  assert.equal(f.projectedFuel.length, 1, "Fresh observations still reach the pending transfer reconciliation");
+});
+
+test("fuel exhaustion publishes confirmed offline state for the node and its connected assembly", async () => {
+  const f = chainRefreshFixture();
+  const updates: string[] = [];
+  const context = { ...f.context, fuelAuthority: true, chain: { ...f.context.chain,
+    async updateFuel(assembly, assertCurrent) {
+      assertCurrent();
+      updates.push(assembly.itemId);
+      if (assembly.itemId !== "1") return false;
+      f.fuel.quantity = 0;
+      f.objects.set("1", { itemId: "1", online: false });
+      f.objects.set("3", { itemId: "3", online: false });
+      return true;
+    },
+  } };
+  await refreshSuiAssemblyChainStates(context, () => f.input, undefined, { settleFuel: true });
+  assert.deepEqual(updates, ["1", "2"], "Only network nodes settle fuel");
+  assert.equal(f.projectedFuel[0].state.quantity, 0);
+  assert.deepEqual(f.projectedStatus.map(({ itemId, status }) => ({ itemId, status })), [
+    { itemId: "1", status: 1 }, { itemId: "2", status: 2 },
+    { itemId: "3", status: 1 }, { itemId: "4", status: 2 },
+  ]);
+});
+
+test("uncertain fuel settlement never publishes a guessed reserve", async () => {
+  const f = chainRefreshFixture();
+  const failure = new Error("Burn transaction response was lost; pending recovery");
+  const context = { ...f.context, fuelAuthority: true, chain: { ...f.context.chain,
+    async updateFuel() { throw failure; },
+  } };
+  await assert.rejects(refreshSuiAssemblyChainStates(context, () => f.input, 1, { settleFuel: true }), error => error === failure);
+  assert.deepEqual(f.projectedFuel, []);
+  assert.deepEqual(f.projectedEnergy, []);
+  assert.deepEqual(f.projectedStatus, []);
+});
+
+test("fuel settlement rejects a changed local identity or lifecycle request before submission", async () => {
+  for (const change of ["identity", "intent"]) {
+    const f = chainRefreshFixture();
+    const context = { ...f.context, fuelAuthority: true, chain: { ...f.context.chain,
+      async updateFuel(_assembly, assertCurrent) {
+        if (change === "identity") Object.values(f.input.items).find(item => item.itemID === 1).spaceState.position.x = 10;
+        else f.intents.set("1", { id: "new-offline-request", targetStatus: 1 });
+        assertCurrent();
+        assert.fail("A changed snapshot must not submit a burn transaction");
+      },
+    } };
+    await assert.rejects(refreshSuiAssemblyChainStates(context, () => f.input, 1, { settleFuel: true }), /changed during/);
+    assert.deepEqual(f.projectedFuel, []);
+  }
+});
+
 test("requested node refresh tolerates unanchored children while a requested child must exist", async () => {
   const f = chainRefreshFixture();
   f.objects.delete("3");

@@ -217,7 +217,10 @@ export function buildSuiAssemblyIdentitySnapshot(input: SuiAssemblySnapshotInput
 }
 
 /** Import confirmed counters with status, using the same verified node object. */
-export async function refreshSuiAssemblyChainStates(context: any, currentSnapshotInput: () => SuiAssemblySnapshotInput, assemblyID?: number) {
+export async function refreshSuiAssemblyChainStates(
+  context: any, currentSnapshotInput: () => SuiAssemblySnapshotInput, assemblyID?: number,
+  options: { settleFuel?: boolean } = {},
+) {
   await context.assertCurrent();
   const identities = buildSuiAssemblyIdentitySnapshot(currentSnapshotInput());
   let assemblies = identities.assemblies;
@@ -231,18 +234,38 @@ export async function refreshSuiAssemblyChainStates(context: any, currentSnapsho
   for (const assembly of assemblies) {
     if (assembly.kind === "network_node") context.clearEnergy(assembly);
     const intent = context.getStatusIntent(assembly);
-    const state = await context.chain.readAssembly(assembly);
+    let state = await context.chain.readAssembly(assembly);
     if (!state) {
       if (assemblyID !== undefined) {
         throw new Error("Assembly is not anchored on the current chain");
       }
       continue;
     }
+    function assertIdentityCurrent() {
+      const latest = buildSuiAssemblyIdentitySnapshot(currentSnapshotInput()).assemblies.find(a => a.itemId === assembly.itemId);
+      if (JSON.stringify(latest) !== JSON.stringify(assembly)) throw new Error("Assembly changed during chain state verification");
+    }
+    if (options.settleFuel && context.fuelAuthority && assembly.kind === "network_node" && !assembly.fuelIntent) {
+      // Only the serialized background worker settles elapsed burn cycles.
+      // Ordinary status reads stay read-only. Use the durable executor so a
+      // lost response recovers the same transaction before another burn update.
+      // A committed native transfer must reach the chain first: burning its
+      // reserved withdrawal here could make that saved intent impossible to apply.
+      const updated = await context.chain.updateFuel(assembly, () => {
+        assertIdentityCurrent();
+        if ((context.getStatusIntent(assembly)?.id ?? null) !== (intent?.id ?? null)) {
+          throw new Error("Assembly state request changed during fuel settlement");
+        }
+      });
+      if (updated) {
+        state = await context.chain.readAssembly(assembly);
+        if (!state) throw new Error("Network node disappeared after fuel settlement");
+      }
+    }
     const fuel = assembly.kind === "network_node" ? await context.chain.readFuelState(assembly, state) : null;
     const energy = assembly.kind === "network_node" ? await context.chain.readEnergyState(assembly, state) : null;
     await context.assertCurrent();
-    const latest = buildSuiAssemblyIdentitySnapshot(currentSnapshotInput()).assemblies.find(a => a.itemId === assembly.itemId);
-    if (JSON.stringify(latest) !== JSON.stringify(assembly)) throw new Error("Assembly changed during chain state verification");
+    assertIdentityCurrent();
     if (fuel) context.projectFuel(assembly, fuel);
     if (energy) context.projectEnergy(assembly, energy);
     const status = state.online ? 2 : 1;
@@ -725,8 +748,8 @@ export function startSuiAssemblySync() {
     }
   }
 
-  async function refreshChainStates(assemblyID?: number) {
-    await refreshSuiAssemblyChainStates(context, currentSnapshotInput, assemblyID);
+  async function refreshChainStates(assemblyID?: number, settleFuel = false) {
+    await refreshSuiAssemblyChainStates(context, currentSnapshotInput, assemblyID, { settleFuel });
   }
   const worker = createAssemblySyncWorker({
     report: (message) => log.warn(`[SuiAssemblySync] ${message}`),
@@ -750,7 +773,7 @@ export function startSuiAssemblySync() {
       await context.executor.recover();
       if (sponsoredAdmin.hasPrepared()) return;
       await restoreTemporaryStatuses();
-      await refreshChainStates();
+      await refreshChainStates(undefined, true);
       // Replace the shared cache only after a complete successful read. A
       // transient RPC failure preserves the last valid table for this world.
       await context.assertCurrent();
