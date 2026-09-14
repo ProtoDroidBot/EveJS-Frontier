@@ -1090,12 +1090,12 @@
 
   "marketDaemonRetryDelayMs": 2000,
 
-  // Base URL advertised as smart_assembly_base_dapp_url through MachoNet for the in-game Smart Assembly browser.
+  // Base URL advertised as smartAssemblyBaseDappUrl through MachoNet for the in-game Smart Assembly browser.
   // The client appends /client/root/, /client/behaviour/, or /client/networknode/monitor/ and its own query parameters. Restart the game client after changing this value.
-  // Valid values: Absolute HTTP(S) base URL without a query or fragment, for example "http://localhost:5173". Trailing slashes are removed before advertising it.
-  // Default: "http://localhost:5173".
+  // Valid values: Absolute HTTP(S) base URL without a query or fragment, for example "http://localhost:5174". Trailing slashes are removed before advertising it.
+  // Default: "http://localhost:5174".
 
-  "smartAssemblyBaseDappUrl": "http://localhost:5173",
+  "smartAssemblyBaseDappUrl": "https://dev.dapps.evefrontier.com",
 
   // Base URL sent to the client for image and icon requests.
   // Valid values: Absolute URL string ending with a slash, for example "http://127.0.0.1:26001/".

@@ -32,8 +32,10 @@ export type SuiAssemblyChainOptions = {
   client: SuiJsonRpcClient;
   world: SuiAssemblyWorld;
   tenant: string;
-  execute: (label: string, tx: Transaction, ownerId?: number) => Promise<unknown>;
+  execute: (label: string, tx: Transaction, ownerId?: number, assertSnapshotCurrent?: () => void) => Promise<unknown>;
   deriveId?: (itemId: string) => string;
+  /** Reject a stale local fuel snapshot before it can replenish a newer burn. */
+  assertFuelSnapshotCurrent?: (assembly: AssemblySnapshot) => void;
 };
 
 const STRUCT_NAMES = {
@@ -287,6 +289,7 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
 
   async function syncFuel(assembly: AssemblySnapshot): Promise<void> {
     if (assembly.kind !== "network_node") return;
+    options.assertFuelSnapshotCurrent?.(assembly);
     const state = await readAssembly(assembly);
     if (!state) throw new Error(`Network node ${assembly.itemId} must be anchored before fuel sync`);
     const fuel = suiAssemblyFields(state.fields.fuel);
@@ -314,11 +317,18 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
         tx.pure.u64(assembly.fuel.unitVolume), tx.pure.u64(deposit), tx.object("0x6"),
       ] });
     });
-    await execute(`assembly:${assembly.itemId}:fuel`, tx, assembly.ownerId);
+    options.assertFuelSnapshotCurrent?.(assembly);
+    await execute(`assembly:${assembly.itemId}:fuel`, tx, assembly.ownerId,
+      () => options.assertFuelSnapshotCurrent?.(assembly));
   }
 
   async function configureFuelEfficiency(typeId: number, efficiency: number): Promise<void> {
-    if (!Number.isSafeInteger(typeId) || typeId <= 0 || !Number.isInteger(efficiency) || efficiency < 10 || efficiency > 100) {
+    // The deployed legacy contract rejects efficiencies below 10. Server fuel
+    // settlement owns actual consumption (Unstable = 15/h at 8%); this fallback
+    // only lets the contract stop its unused native clock during offline().
+    // Never call update_fuel alongside the server's mirrored withdrawals.
+    const contractEfficiency = typeId === 77818 && efficiency === 8 ? 10 : efficiency;
+    if (!Number.isSafeInteger(typeId) || typeId <= 0 || !Number.isInteger(contractEfficiency) || contractEfficiency < 10 || contractEfficiency > 100) {
       throw new Error(`Fuel ${typeId} efficiency ${efficiency} cannot be represented by the deployed contract (10–100 percent)`);
     }
     const response = await client.getObject({ id: world.fuelConfigId, options: { showContent: true } });
@@ -332,15 +342,16 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
       throw new Error(`Cannot read efficiency for fuel ${typeId}`);
     }
     const fields = entry.data?.content?.dataType === "moveObject" ? entry.data.content.fields as any : null;
-    if (fields && String(fields.value) === String(efficiency)) return;
+    if (fields && String(fields.value) === String(contractEfficiency)) return;
     const tx = new Transaction();
     tx.moveCall({ target: `${world.packageId}::fuel::set_fuel_efficiency`, arguments: [
-      tx.object(world.fuelConfigId), tx.object(world.adminAclId), tx.pure.u64(typeId), tx.pure.u64(efficiency),
+      tx.object(world.fuelConfigId), tx.object(world.adminAclId), tx.pure.u64(typeId), tx.pure.u64(contractEfficiency),
     ] });
     await execute(`fuel:${typeId}:efficiency`, tx);
   }
 
   async function syncStatus(assembly: AssemblySnapshot): Promise<void> {
+    if (assembly.kind === "network_node") options.assertFuelSnapshotCurrent?.(assembly);
     const state = await readAssembly(assembly);
     if (!state) throw new Error(`Assembly ${assembly.itemId} must be anchored before status sync`);
     const desiredOnline = assembly.status === 2;
@@ -379,6 +390,16 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
             tx.pure.u64(assembly.fuel.unitVolume), tx.pure.u64(1), tx.object("0x6"),
           ] });
         } else {
+          // offline() calls the legacy native burn update. Temporarily empty the
+          // tank so it cannot charge elapsed time already settled by the server,
+          // then restore only the server remainder in this same atomic PTB.
+          // Move retains type_id at zero quantity, so stopping still has its type.
+          const fuel = suiAssemblyFields(state.fields.fuel);
+          const currentQuantity = BigInt(fuel.quantity);
+          if (currentQuantity > 0n) tx.moveCall({ target: `${world.packageId}::network_node::withdraw_fuel`, arguments: [
+            tx.object(state.id), tx.object(world.adminAclId), cap,
+            tx.pure.u64(suiAssemblyOption(fuel.type_id)), tx.pure.u64(currentQuantity),
+          ] });
           let [hotPotato] = tx.moveCall({ target: `${world.packageId}::network_node::offline`, arguments: [
             tx.object(state.id), tx.object(world.fuelConfigId), cap, tx.object("0x6"),
           ] });
@@ -387,6 +408,10 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
               arguments: [tx.object(item.id), hotPotato, tx.object(state.id), tx.object(world.energyConfigId)] });
           }
           tx.moveCall({ target: `${world.packageId}::network_node::destroy_offline_assemblies`, arguments: [hotPotato] });
+          if (assembly.fuel.quantity > 0) tx.moveCall({ target: `${world.packageId}::network_node::deposit_fuel`, arguments: [
+            tx.object(state.id), tx.object(world.adminAclId), cap, tx.pure.u64(assembly.fuel.typeId),
+            tx.pure.u64(assembly.fuel.unitVolume), tx.pure.u64(assembly.fuel.quantity), tx.object("0x6"),
+          ] });
         }
       } else {
         tx.moveCall({ target: `${world.packageId}::${assembly.kind}::${desiredOnline ? "online" : "offline"}`, arguments: [
@@ -394,7 +419,9 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
         ] });
       }
     });
-    await execute(`assembly:${assembly.itemId}:${desiredOnline ? "online" : "offline"}`, tx, assembly.ownerId);
+    if (assembly.kind === "network_node") options.assertFuelSnapshotCurrent?.(assembly);
+    await execute(`assembly:${assembly.itemId}:${desiredOnline ? "online" : "offline"}`, tx, assembly.ownerId,
+      assembly.kind === "network_node" ? () => options.assertFuelSnapshotCurrent?.(assembly) : undefined);
   }
 
   /** Only call for a previously confirmed mirror which has disappeared locally. */

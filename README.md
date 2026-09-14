@@ -295,10 +295,10 @@ Completed Smart Assemblies automatically mirror to Sui Localnet while the native
 Frontier server runs. See [automatic assembly synchronization](doc/FRONTIER_ASSEMBLY_SYNC.md)
 for supported state, retry behavior, and contract constraints.
 
-The server advertises `smart_assembly_base_dapp_url` through MachoNet global
+The server advertises `smartAssemblyBaseDappUrl` through MachoNet global
 config with a default of `http://localhost:5173`. To use another base URL, set
 `smartAssemblyBaseDappUrl` in `evejs.config.local.json` or set the environment
-variable `EVEJS_SMART_ASSEMBLY_BASE_DAPP_URL` before starting the server.
+variable `EVEJS_smartAssemblyBaseDappUrl` before starting the server.
 
 Use an HTTP(S) base URL without a query string or fragment. Trailing slashes
 are removed; the client appends `/client/root/`, `/client/behaviour/`, or

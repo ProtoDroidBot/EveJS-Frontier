@@ -155,14 +155,14 @@ function createAssemblyNetworkNodeGatewayService(context) {
     if (!publishGatewayNotice) {
       return false;
     }
-    const unitVolume = commitData.fuelTypeID > 0
+    const unitVolume = commitData.unitVolume ?? (commitData.fuelTypeID > 0
       ? Number(
           networkNodeFuelRuntime.getNetworkNodeFuelStatus(
             commitData.characterID,
             commitData.networkNodeID,
           )?.data?.unitVolume,
         ) || 0
-      : 0;
+      : 0);
     const payload = encodePayload(types.FuelChangedNotice, {
       network_node: { sequential: commitData.networkNodeID },
       fuel: buildFuelItemAttributes({
@@ -178,6 +178,10 @@ function createAssemblyNetworkNodeGatewayService(context) {
         ? { solar_system: commitData.solarSystemID }
         : { character: commitData.characterID },
     );
+  }
+
+  if (publishGatewayNotice) {
+    networkNodeFuelRuntime.registerFuelNoticePublisher(publishFuelChangedNotice);
   }
 
   function syncInventoryChangesToCharacter(characterID, changes) {

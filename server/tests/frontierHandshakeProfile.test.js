@@ -970,6 +970,11 @@ test("Frontier chain assemblies commit a one-use signed state transition", () =>
     };
     try {
         const service = new SmartAssemblyService();
+        assert.throws(() => service.Handle_set_online([itemID], session));
+        const fuel = require("../src/services/frontier/networkNodeFuelRuntime");
+        assert.equal(fuel.writeNetworkNodeFuelState(itemID, {
+            typeID: 88335, quantity: 100, updatedAtMs: nowMs,
+        }).success, true);
         const prepared = service.Handle_set_online([itemID], session);
         const transaction = Object.fromEntries(prepared.entries);
         const transactionData = JSON.parse(transaction.transaction_data);

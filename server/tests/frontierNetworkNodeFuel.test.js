@@ -157,7 +157,7 @@ test("deposit prepare validates without mutating", () => {
     assert.equal(networkNodeFuelRuntime.readNetworkNodeFuelState(itemStore.findItemById(node.itemID)).quantity, 0);
 });
 test("deposit execute commits once, persists, and suppresses duplicates", () => {
-    const node = createTestNetworkNode();
+    const node = createTestNetworkNode(OWNER_ID, 1);
     const { container, stack } = createFuelSource();
     const prepared = networkNodeFuelRuntime.prepareNetworkNodeFuelDeposit({
         characterID: OWNER_ID,
@@ -184,7 +184,7 @@ test("deposit execute commits once, persists, and suppresses duplicates", () => 
     assert.equal(fuelState.quantity, 1000);
     assert.ok(fuelState.updatedAtMs > 0);
     const customInfo = JSON.parse(persistedNode.customInfo);
-    assert.equal(customInfo.evejsFrontierConstruction.assemblyStatus, 2, "construction state preserved alongside fuel state");
+    assert.equal(customInfo.evejsFrontierConstruction.assemblyStatus, 1, "construction state preserved alongside fuel state");
     const duplicate = networkNodeFuelRuntime.executeNetworkNodeFuelTransaction({
         action: "networknode-fuel-deposit",
         characterID: OWNER_ID,

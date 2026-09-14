@@ -22,7 +22,10 @@ function snapshot(overrides: Partial<AssemblySnapshot> = {}): AssemblySnapshot {
     ...overrides,
   };
 }
-function fixture(assembly = snapshot(), options: { online?: boolean; quantity?: number } = {}) {
+function fixture(assembly = snapshot(), options: {
+  online?: boolean; quantity?: number; applyFuelTransactions?: boolean;
+  assertFuelSnapshotCurrent?: (assembly: AssemblySnapshot) => void;
+} = {}) {
   const id = address(assembly.itemId);
   const capId = address(70);
   const characterId = address(assembly.ownerId);
@@ -45,11 +48,38 @@ function fixture(assembly = snapshot(), options: { online?: boolean; quantity?: 
       content: { dataType: "moveObject", fields: { authorized_object_id: id } } }],
   ]);
   const executions: any[] = [];
-  const client: any = { getObject: async ({ id }: any) => objects.has(id)
-    ? { data: objects.get(id) } : { error: { code: "notExists" } } };
+  const efficiencies = new Map<string, number>();
+  objects.set(world.fuelConfigId, { content: { dataType: "moveObject", fields: {
+    fuel_efficiency: { fields: { id: { id: address(85) } } },
+  } } });
+  const client: any = {
+    getObject: async ({ id }: any) => objects.has(id)
+      ? { data: objects.get(id) } : { error: { code: "notExists" } },
+    getDynamicFieldObject: async ({ name }: any) => efficiencies.has(name.value)
+      ? { data: { content: { dataType: "moveObject", fields: { value: String(efficiencies.get(name.value)) } } } }
+      : { error: { code: "dynamicFieldNotFound" } },
+  };
   const chain = createSuiAssemblyChain({ client, world, tenant: "dev", deriveId: address,
-    execute: async (label, tx, ownerId) => { executions.push({ label, tx: tx.getData(), ownerId }); } });
-  return { assembly, chain, fields, objects, executions, capId, id };
+    assertFuelSnapshotCurrent: options.assertFuelSnapshotCurrent,
+    execute: async (label, tx, ownerId) => {
+      const data = tx.getData();
+      executions.push({ label, tx: data, ownerId });
+      const integer = (argument: any) => Buffer.from((data.inputs[argument.Input] as any).Pure.bytes, "base64").readBigUInt64LE();
+      for (const command of data.commands) {
+        const call = command.MoveCall;
+        if (call?.function === "set_fuel_efficiency") {
+          efficiencies.set(String(integer(call.arguments[2])), Number(integer(call.arguments[3])));
+        }
+        if (!options.applyFuelTransactions || !call) continue;
+        if (call.function === "withdraw_fuel") fields.fuel.fields.quantity = String(BigInt(fields.fuel.fields.quantity) - integer(call.arguments[4]));
+        if (call.function === "deposit_fuel") fields.fuel.fields.quantity = String(BigInt(fields.fuel.fields.quantity) + integer(call.arguments[5]));
+        if (call.function === "offline") {
+          assert.equal(fields.fuel.fields.quantity, "0", "Native offline burn must see an empty tank");
+          fields.status.fields.status.variant = "OFFLINE";
+        }
+      }
+    } });
+  return { assembly, chain, fields, objects, executions, capId, id, efficiencies };
 }
 
 test("assembly IDs preserve full u64 values beyond character ID range", () => {
@@ -103,7 +133,7 @@ test("taking a node offline consumes its required hot potato before returning ca
   const f = fixture(snapshot(), { online: true });
   await f.chain.syncStatus(f.assembly);
   assert.deepEqual(f.executions[0].tx.commands.map((c: any) => c.MoveCall?.function), [
-    "borrow_owner_cap", "offline", "destroy_offline_assemblies", "return_owner_cap",
+    "borrow_owner_cap", "withdraw_fuel", "offline", "destroy_offline_assemblies", "deposit_fuel", "return_owner_cap",
   ]);
 });
 
@@ -133,8 +163,63 @@ test("failed fuel synchronization cannot be followed by an online transition", a
   assert.equal(f.executions.length, 0);
 });
 
-test("unrepresentable local fuel efficiency is rejected before submitting a transaction", async () => {
+test("Unstable legacy efficiency fallback permits synchronization without changing the server rate", async () => {
   const f = fixture();
-  await assert.rejects(f.chain.configureFuelEfficiency(77818, 8), /cannot be represented/);
+  await f.chain.configureFuelEfficiency(77818, 8);
+  assert.equal(f.efficiencies.get("77818"), 10);
+  await f.chain.configureFuelEfficiency(77818, 8);
+  assert.equal(f.executions.length, 1, "Already-configured compatibility value is idempotent");
+});
+
+test("unsupported efficiencies are still rejected before submitting a transaction", async () => {
+  const f = fixture();
+  await assert.rejects(f.chain.configureFuelEfficiency(88335, 8), /cannot be represented/);
+  await assert.rejects(f.chain.configureFuelEfficiency(77818, 9), /cannot be represented/);
+  assert.equal(f.executions.length, 0);
+});
+
+for (const [typeId, hourlyUnits] of [[77818, 15], [88319, 8], [88335, 12]]) {
+  test(`mirrors ${hourlyUnits} consumed units per hour for fuel ${typeId} exactly once`, async () => {
+    const a = snapshot({ status: 2, fuel: { typeId, quantity: 100 - hourlyUnits, unitVolume: "280000" } });
+    const f = fixture(a, { online: true, quantity: 100, applyFuelTransactions: true });
+    await f.chain.syncFuel(a);
+    assert.equal(f.fields.fuel.fields.quantity, String(100 - hourlyUnits));
+    assert.deepEqual(f.executions[0].tx.commands.map((c: any) => c.MoveCall?.function), [
+      "borrow_owner_cap", "withdraw_fuel", "return_owner_cap",
+    ]);
+    await f.chain.syncFuel(a);
+    assert.equal(f.executions.length, 1, "Repeated snapshot must not consume fuel twice");
+  });
+}
+
+test("offline atomically preserves the server remainder without a second elapsed-time charge", async () => {
+  const a = snapshot({ fuel: { typeId: 88335, quantity: 88, unitVolume: "280000" } });
+  const f = fixture(a, { online: true, quantity: 100, applyFuelTransactions: true });
+  await f.chain.syncStatus(a);
+  assert.equal(f.fields.fuel.fields.quantity, "88");
+  assert.equal(f.fields.status.fields.status.variant, "OFFLINE");
+  await f.chain.syncFuel(a);
+  await f.chain.syncStatus(a);
+  assert.equal(f.executions.length, 1);
+});
+
+test("exhaustion empties and offlines the chain without restoring any fuel", async () => {
+  const a = snapshot({ fuel: { typeId: 0, quantity: 0, unitVolume: "0" } });
+  const f = fixture(a, { online: true, quantity: 3, applyFuelTransactions: true });
+  f.fields.fuel.fields.type_id.vec = ["88335"];
+  await f.chain.syncStatus(a);
+  assert.equal(f.fields.fuel.fields.quantity, "0");
+  assert.equal(f.fields.status.fields.status.variant, "OFFLINE");
+  assert.equal(f.executions[0].tx.commands.some((c: any) => c.MoveCall?.function === "deposit_fuel"), false);
+  await f.chain.syncFuel(a);
+  assert.equal(f.executions.length, 1);
+});
+
+test("a fuel change during transaction construction prevents a stale replenishment", async () => {
+  let checks = 0;
+  const f = fixture(snapshot(), { quantity: 88, assertFuelSnapshotCurrent() {
+    if (++checks > 1) throw new Error("fuel changed during synchronization");
+  } });
+  await assert.rejects(f.chain.syncFuel(f.assembly), /fuel changed/);
   assert.equal(f.executions.length, 0);
 });

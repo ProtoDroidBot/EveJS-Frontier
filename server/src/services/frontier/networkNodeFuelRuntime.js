@@ -26,10 +26,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * matches the UI's percent-style formula. Adjust here if a client trace ever
  * proves different values.
  *
- * Fuel burning is intentionally NOT implemented: the static data proves the
- * 3,000s burn interval but not the per-cycle quantity semantics. The
- * persisted `updatedAtMs` anchor is stored so a future deterministic
- * catch-up burn can be added without a schema change.
+ * Online fuel burns one unit per (3,000s * efficiency / 100): Unstable
+ * 15/hour, D2 8/hour, D1 12/hour. Persisted accounting preserves partial
+ * online intervals through refueling, offline cycles and server restarts.
+ * The assembly sync worker mirrors the resulting reserve onto Sui.
  */
 const crypto = require("crypto");
 const path = require("path");
@@ -50,6 +50,8 @@ const NETWORK_NODE_FUEL_CONFIG = Object.freeze([
     Object.freeze({ typeID: 88335, efficiency: 10 }), // D1 Fuel
 ]);
 const pendingFuelTransactions = new Map();
+let fuelNoticePublisher = null;
+let fuelTimer = null;
 function toInt(value, fallback = 0) {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? Math.trunc(numeric) : fallback;
@@ -112,16 +114,30 @@ function readNetworkNodeFuelState(item) {
         typeID: toInt(state.typeID, 0),
         quantity: Math.max(0, toInt(state.quantity, 0)),
         updatedAtMs: toInt(state.updatedAtMs, 0),
+        burnUpdatedAtMs: Math.max(0, toInt(state.burnUpdatedAtMs, 0)),
+        burnRemainderMs: Math.max(0, toInt(state.burnRemainderMs, 0)),
+        burnTypeID: toInt(state.burnTypeID, toInt(state.typeID, 0)),
     };
 }
 function writeNetworkNodeFuelState(itemID, state) {
     return itemStore.updateInventoryItem(itemID, (currentItem) => {
         const info = parseCustomInfo(currentItem.customInfo);
-        if (toInt(state && state.quantity, 0) > 0) {
+        if (toInt(state && state.quantity, 0) > 0 || toInt(state?.burnRemainderMs) > 0) {
+            const quantity = Math.max(0, toInt(state.quantity));
+            const typeID = quantity > 0 ? toInt(state.typeID) : 0;
+            const oldType = toInt(state.burnTypeID, toInt(state.typeID));
+            const oldEfficiency = NETWORK_NODE_FUEL_CONFIG.find(entry => entry.typeID === oldType)?.efficiency;
+            const newEfficiency = NETWORK_NODE_FUEL_CONFIG.find(entry => entry.typeID === typeID)?.efficiency;
+            // Keep the fraction already used if an empty tank is refilled with a
+            // different fuel, so switching fuels cannot erase accrued consumption.
+            const remainder = Math.max(0, toInt(state.burnRemainderMs));
             info[FUEL_INFO_KEY] = {
-                typeID: toInt(state.typeID, 0),
-                quantity: Math.max(0, toInt(state.quantity, 0)),
+                typeID,
+                quantity,
                 updatedAtMs: toInt(state.updatedAtMs, Date.now()),
+                burnUpdatedAtMs: toInt(state.burnUpdatedAtMs, Date.now()),
+                burnRemainderMs: oldEfficiency && newEfficiency ? Math.ceil(remainder * newEfficiency / oldEfficiency) : remainder,
+                burnTypeID: typeID || oldType,
             };
         }
         else {
@@ -133,6 +149,113 @@ function writeNetworkNodeFuelState(itemID, state) {
         };
     });
 }
+/** Pure accounting shared by ticks and status transitions inside a store update. */
+function calculateNetworkNodeFuelBurn(item, nowMs = Date.now()) {
+    const state = readNetworkNodeFuelState(item);
+    const efficiency = NETWORK_NODE_FUEL_CONFIG.find(entry => entry.typeID === state.typeID)?.efficiency;
+    if (!state.quantity || !efficiency)
+        return { state, consumedQuantity: 0 };
+    // Older reserves have no online-time history. Start now instead of charging
+    // for time that may have been spent offline before this feature existed.
+    const now = Math.max(state.burnUpdatedAtMs, toInt(nowMs, Date.now()));
+    const online = readConstructionState(item)?.assemblyStatus === ASSEMBLY_STATUS_ONLINE;
+    const elapsed = online && state.burnUpdatedAtMs > 0 ? now - state.burnUpdatedAtMs : 0;
+    const interval = Math.round(getNetworkNodeFuelAttributes().fuelBurnRateInSeconds * efficiency * 10);
+    const total = state.burnRemainderMs + elapsed;
+    const consumedQuantity = Math.min(state.quantity, Math.floor(total / interval));
+    return {
+        consumedQuantity,
+        state: {
+            ...state,
+            quantity: state.quantity - consumedQuantity,
+            updatedAtMs: consumedQuantity > 0 ? now : state.updatedAtMs,
+            burnUpdatedAtMs: now,
+            burnRemainderMs: consumedQuantity === state.quantity ? 0 : total % interval,
+        },
+    };
+}
+function publishFuelBurn(item, consumedQuantity) {
+    if (!fuelNoticePublisher || consumedQuantity <= 0)
+        return;
+    const fuel = readNetworkNodeFuelState(item);
+    try {
+        fuelNoticePublisher({
+            characterID: toInt(item.ownerID), networkNodeID: toInt(item.itemID),
+            solarSystemID: toInt(item.locationID), fuelTypeID: fuel.typeID, quantity: fuel.quantity,
+            unitVolume: fuel.typeID > 0 ? resolveFuelTypeVolume(fuel.typeID) : 0,
+        });
+    }
+    catch (error) {
+        require("../../utils/logger").warn(`[NetworkNodeFuel] Notice failed: ${error.message}`);
+    }
+}
+/** Persist the deduction and exhaustion status together; never charge twice. */
+function settleNetworkNodeFuel(itemID, nowMs = Date.now()) {
+    const item = itemStore.findItemById(itemID);
+    if (!item || toInt(item.typeID) !== NETWORK_NODE_TYPE_ID) {
+        return { success: false, errorMsg: "ASSEMBLY_NOT_FOUND" };
+    }
+    const calculated = calculateNetworkNodeFuelBurn(item, nowMs);
+    const online = readConstructionState(item)?.assemblyStatus === ASSEMBLY_STATUS_ONLINE;
+    if (!calculated.state.quantity && !calculated.consumedQuantity && !online) {
+        return { success: true, data: item, consumedQuantity: 0 };
+    }
+    const previous = readNetworkNodeFuelState(item);
+    // A running anchor already includes partial time; only persist a tick once
+    // a whole unit is due (or initialize a legacy reserve).
+    if (previous.quantity > 0 && previous.burnUpdatedAtMs > 0 && calculated.consumedQuantity === 0) {
+        return { success: true, data: item, consumedQuantity: 0 };
+    }
+    const result = itemStore.updateInventoryItem(itemID, currentItem => {
+        const info = parseCustomInfo(currentItem.customInfo);
+        if (calculated.state.quantity > 0 || calculated.state.burnRemainderMs > 0)
+            info[FUEL_INFO_KEY] = calculated.state;
+        else {
+            delete info[FUEL_INFO_KEY];
+        }
+        if (calculated.state.quantity === 0 && online) {
+            info.evejsFrontierConstruction.assemblyStatus = ASSEMBLY_STATUS_OFFLINE;
+        }
+        return { ...currentItem, customInfo: JSON.stringify(info) };
+    });
+    if (result.success) {
+        if (calculated.state.quantity === 0) {
+            require("./deploymentRuntime").notifyAssemblyFuelDepleted(result.data, result.previousData);
+        }
+        else
+            publishFuelBurn(result.data, calculated.consumedQuantity);
+    }
+    return { ...result, consumedQuantity: result.success ? calculated.consumedQuantity : 0 };
+}
+function settleAllNetworkNodeFuel(nowMs = Date.now()) {
+    for (const item of Object.values(itemStore.getAllItems())) {
+        if (toInt(item.typeID) !== NETWORK_NODE_TYPE_ID)
+            continue;
+        const result = settleNetworkNodeFuel(item.itemID, nowMs);
+        if (!result.success)
+            throw new Error(`Network Node ${item.itemID} fuel: ${result.errorMsg}`);
+    }
+}
+function startNetworkNodeFuelBurn() {
+    const config = require("../../config");
+    if (config.clientCompatibilityProfile !== "frontier" || process.env.NODE_TEST_CONTEXT ||
+        process.env.EVEJS_TEST_STORE_ISOLATED || process.env.EVEJS_TEST_STORE_BASELINE_ROOT)
+        return null;
+    if (fuelTimer)
+        return fuelTimer;
+    const tick = () => {
+        try {
+            settleAllNetworkNodeFuel();
+        }
+        catch (error) {
+            require("../../utils/logger").warn(`[NetworkNodeFuel] ${error.message}`);
+        }
+    };
+    tick();
+    fuelTimer = setInterval(tick, 1000);
+    fuelTimer.unref();
+    return fuelTimer;
+}
 function validateFuelNetworkNode(characterID, networkNodeID) {
     const ownerID = toInt(characterID, 0);
     const nodeID = toInt(networkNodeID, 0);
@@ -142,13 +265,17 @@ function validateFuelNetworkNode(characterID, networkNodeID) {
     if (nodeID <= 0) {
         return { errorMsg: "INVALID_ASSEMBLY_ID" };
     }
-    const item = itemStore.findItemById(nodeID);
+    let item = itemStore.findItemById(nodeID);
     if (!item || toInt(item.typeID, 0) !== NETWORK_NODE_TYPE_ID) {
         return { errorMsg: "ASSEMBLY_NOT_FOUND" };
     }
     if (toInt(item.ownerID, 0) !== ownerID) {
         return { errorMsg: "ASSEMBLY_NOT_OWNED" };
     }
+    const settled = settleNetworkNodeFuel(nodeID);
+    if (!settled.success)
+        return { errorMsg: settled.errorMsg };
+    item = settled.data;
     const constructionState = readConstructionState(item);
     if (constructionState.assemblyStatus !== ASSEMBLY_STATUS_OFFLINE &&
         constructionState.assemblyStatus !== ASSEMBLY_STATUS_ONLINE) {
@@ -223,7 +350,7 @@ function validateFuelDeposit({ characterID, networkNodeID, sourceItemID, sourceF
     if (!isAcceptedNetworkNodeFuelType(fuelTypeID)) {
         return { errorMsg: "UNSUPPORTED_FUEL_TYPE" };
     }
-    const fuelState = readNetworkNodeFuelState(nodeResult.item);
+    const fuelState = calculateNetworkNodeFuelBurn(nodeResult.item).state;
     if (fuelState.quantity > 0 && fuelState.typeID !== fuelTypeID) {
         return { errorMsg: "MIXED_FUEL_TYPES" };
     }
@@ -260,7 +387,7 @@ function validateFuelWithdraw({ characterID, networkNodeID, fuelTypeID, quantity
     if (numericQuantity <= 0) {
         return { errorMsg: "INVALID_QUANTITY" };
     }
-    const fuelState = readNetworkNodeFuelState(nodeResult.item);
+    const fuelState = calculateNetworkNodeFuelBurn(nodeResult.item).state;
     if (fuelState.quantity <= 0 || fuelState.typeID !== numericTypeID) {
         return { errorMsg: "UNSUPPORTED_FUEL_TYPE" };
     }
@@ -364,9 +491,11 @@ function commitFuelDeposit(transaction) {
     }
     const nextQuantity = validation.fuelState.quantity + validation.totalQuantity;
     const writeResult = writeNetworkNodeFuelState(transaction.request.networkNodeID, {
+        ...validation.fuelState,
         typeID: validation.fuelTypeID,
         quantity: nextQuantity,
         updatedAtMs: Date.now(),
+        burnUpdatedAtMs: validation.fuelState.quantity > 0 ? validation.fuelState.burnUpdatedAtMs : Date.now(),
     });
     if (!writeResult || writeResult.success !== true) {
         for (const restore of consumed.reverse()) {
@@ -398,6 +527,7 @@ function commitFuelWithdraw(transaction) {
     }
     const nextQuantity = validation.fuelState.quantity - validation.quantity;
     const writeResult = writeNetworkNodeFuelState(transaction.request.networkNodeID, {
+        ...validation.fuelState,
         typeID: validation.fuelTypeID,
         quantity: nextQuantity,
         updatedAtMs: Date.now(),
@@ -413,9 +543,7 @@ function commitFuelWithdraw(transaction) {
     const grantResult = itemStore.grantItemsToCharacterLocation(transaction.request.characterID, validation.destinationID, validation.destinationFlag, [{ itemType: validation.fuelTypeID, quantity: validation.quantity }]);
     if (!grantResult || grantResult.success !== true) {
         writeNetworkNodeFuelState(transaction.request.networkNodeID, {
-            typeID: validation.fuelTypeID,
-            quantity: validation.fuelState.quantity,
-            updatedAtMs: Date.now(),
+            ...validation.fuelState,
         });
         return {
             success: false,
@@ -425,6 +553,9 @@ function commitFuelWithdraw(transaction) {
         };
     }
     const changes = (grantResult.data && grantResult.data.changes) || [];
+    if (nextQuantity === 0) {
+        require("./deploymentRuntime").offlineAssemblyForFuelDepletion(transaction.request.networkNodeID);
+    }
     return {
         success: true,
         data: {
@@ -487,6 +618,12 @@ module.exports = {
     FUEL_INFO_KEY,
     NETWORK_NODE_TYPE_ID,
     NETWORK_NODE_FUEL_CONFIG,
+    calculateNetworkNodeFuelBurn,
+    settleNetworkNodeFuel,
+    settleAllNetworkNodeFuel,
+    startNetworkNodeFuelBurn,
+    registerFuelNoticePublisher(publisher) { fuelNoticePublisher = publisher; },
+    publishFuelBurn,
     executeNetworkNodeFuelTransaction,
     getNetworkNodeFuelAttributes,
     getNetworkNodeFuelConfig,

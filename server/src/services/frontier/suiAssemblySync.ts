@@ -3,7 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
-import { buildSuiAssemblySnapshot } from "./suiAssemblySnapshot";
+import { buildSuiAssemblySnapshot, type SuiAssemblySnapshotInput } from "./suiAssemblySnapshot";
 import { createSuiAssemblyChain, suiAssemblyFields, suiAssemblyOption } from "./suiAssemblyChain";
 import { createSuiAssemblyContents } from "./suiAssemblyContents";
 import { createAssemblyTransactionExecutor } from "./suiAssemblyTransactions";
@@ -64,6 +64,37 @@ export function assemblySyncEnabled(env: NodeJS.ProcessEnv, profile: string) {
   return profile === "frontier" && !["false", "0", "off", "no"].includes(String(env.EVEJS_SUI_ASSEMBLY_SYNC_ENABLED).trim().toLowerCase()) &&
     !env.NODE_TEST_CONTEXT && !env.EVEJS_TEST_STORE_ISOLATED &&
     !env.EVEJS_TEST_STORE_BASELINE_ROOT && !env.EVEJS_TEST_FRONTIER_FIXTURES;
+}
+
+/** Resolve exhaustion against the same persisted binding/nearest-node rules as anchoring. */
+export function findFuelDepletedAssemblyIds(input: SuiAssemblySnapshotInput): string[] {
+  const online = new Set<string>();
+  let hasEmptyOfflineNode = false;
+  const items = Object.fromEntries(Object.entries(input.items).map(([key, item]) => {
+    if (!item || typeof item !== "object") return [key, item];
+    let info;
+    try { info = typeof item.customInfo === "string" ? JSON.parse(item.customInfo) : item.customInfo; }
+    catch { return [key, item]; }
+    const construction = info?.evejsFrontierConstruction;
+    if (!construction) return [key, item];
+    if (Number(item.typeID) === 88092) {
+      if (Number(construction.assemblyStatus) === 1 && Number(info.evejsFrontierNetworkNodeFuel?.quantity ?? 0) === 0) {
+        hasEmptyOfflineNode = true;
+      }
+      return [key, item];
+    }
+    if (Number(construction.assemblyStatus) !== 2) return [key, item];
+    online.add(String(item.itemID ?? key));
+    // Only the provisional binding lookup uses an offline copy. Persist changes
+    // later through deploymentRuntime so the client receives normal notices.
+    return [key, { ...item, customInfo: { ...info, evejsFrontierConstruction: { ...construction, assemblyStatus: 1 } } }];
+  }));
+  if (!hasEmptyOfflineNode || !online.size) return [];
+  const provisional = buildSuiAssemblySnapshot({ ...input, items });
+  const exhausted = new Set(provisional.assemblies.filter(a =>
+    a.kind === "network_node" && a.status === 1 && a.fuel.quantity === 0).map(a => a.itemId));
+  return provisional.assemblies.filter(a => online.has(a.itemId) &&
+    a.networkNodeId !== null && exhausted.has(a.networkNodeId)).map(a => a.itemId);
 }
 
 /** Mirrors a consistent local snapshot; context owns the deployment-bound journal. */
@@ -127,6 +158,9 @@ export async function reconcileSuiAssemblies(snapshot: any, context: any, localI
         if (efficiency === undefined) throw new Error(`No local fuel efficiency for type ${node.fuel.typeId}`);
         await context.chain.configureFuelEfficiency(node.fuel.typeId, efficiency);
       }
+      // Stop the node and its connected assemblies atomically before mirroring
+      // an exhausted tank. The chain adapter neutralizes the legacy burn clock.
+      if (node.status === 1) await context.chain.syncStatus(node);
       await context.chain.syncFuel(node);
     })) {
       fuelReady.add(node.itemId);
@@ -185,6 +219,8 @@ export function startSuiAssemblySync() {
   if (!assemblySyncEnabled(process.env, config.clientCompatibilityProfile)) return null;
   const database = require("../../gameStore");
   const itemStore = require("../inventory/itemStore");
+  const networkNodeFuelRuntime = require("./networkNodeFuelRuntime");
+  const deploymentRuntime = require("./deploymentRuntime");
   const characterState = require("../character/characterState");
   const { TABLE, readStaticRows } = require("../_shared/referenceData");
   const log = require("../../utils/logger");
@@ -261,7 +297,26 @@ export function startSuiAssemblySync() {
       journalPath: path.join(root, `${synced.chainId}-${synced.packageId}.transactions.json`),
       onCommitted: (digest, label) => log.info(`[SuiAssemblySync] ${label}: ${digest}`),
     });
-    const chain = createSuiAssemblyChain({ client, world, execute: executor.execute, tenant: "dev" });
+    let snapshotItemIds = new Set<string>();
+    let snapshotNodeStatuses = new Map<string, number>();
+    const chain = createSuiAssemblyChain({ client, world, execute: executor.execute, tenant: "dev",
+      assertFuelSnapshotCurrent(assembly) {
+        // Retiring nodes intentionally have no local item. Live snapshot nodes
+        // must retain their quantity throughout asynchronous transaction builds.
+        if (!snapshotItemIds.has(assembly.itemId)) return;
+        const item = itemStore.findItemById(Number(assembly.itemId));
+        if (!item) throw new Error(`Network node ${assembly.itemId} was removed during synchronization; retry the current snapshot`);
+        if (Number(item.ownerID) !== assembly.ownerId ||
+            deploymentRuntime.readConstructionState(item)?.assemblyStatus !== snapshotNodeStatuses.get(assembly.itemId)) {
+          throw new Error(`Network node ${assembly.itemId} state changed during synchronization; retry the current snapshot`);
+        }
+        const fuel = networkNodeFuelRuntime.readNetworkNodeFuelState(item);
+        if (fuel.quantity !== assembly.fuel.quantity ||
+            (fuel.quantity > 0 && fuel.typeID !== assembly.fuel.typeId)) {
+          throw new Error(`Network node ${assembly.itemId} fuel changed during synchronization; retry the current snapshot`);
+        }
+      },
+    });
     async function getCharacter(ownerId: number) {
       const local = localCharacter(ownerId);
       if (!local) throw new Error(`Local Character ${ownerId} is missing`);
@@ -286,6 +341,10 @@ export function startSuiAssemblySync() {
       synced, chain, contents, executor, state, assertCurrent, getCharacter,
       fuelEfficiencies: new Map(require("./networkNodeFuelRuntime").getNetworkNodeFuelConfig().map((entry: any) => [entry.typeID, entry.efficiency])),
       setCharacters(rows: any[]) { characters = new Map(rows.map(character => [character.gameCharacterId, character])); },
+      setSnapshotItemIds(ids: Set<string>, assemblies: any[]) {
+        snapshotItemIds = ids;
+        snapshotNodeStatuses = new Map(assemblies.filter(a => a.kind === "network_node").map(a => [a.itemId, a.status]));
+      },
       save() { atomicJson(statePath, state); },
     };
   }
@@ -297,16 +356,26 @@ export function startSuiAssemblySync() {
       if (!context || context.synced.chainId !== synced.chainId || context.synced.packageId !== synced.packageId) {
         context = await makeContext(synced, { characters: [] });
       }
-      const rawItems = itemStore.getAllItems();
-      const snapshot = buildSuiAssemblySnapshot({
+      networkNodeFuelRuntime.settleAllNetworkNodeFuel(Date.now());
+      let rawItems = itemStore.getAllItems();
+      const snapshotInput: SuiAssemblySnapshotInput = {
         items: rawItems,
         characters: characterState.listCharacterIDs().map((id: number) => ({ ...characterState.getCharacterRecord(id), characterID: id })),
         components: readStaticRows(TABLE.SPACE_COMPONENTS_BY_TYPE),
         itemTypes: readStaticRows(TABLE.ITEM_TYPES), solarSystems: readStaticRows(TABLE.SOLAR_SYSTEMS),
         networkNodeBindings: Object.fromEntries(Object.values<any>(context.state.assemblies).filter(a => a.networkNodeId).map(a => [a.itemId, a.networkNodeId])),
-      });
+      };
+      const depletedDependents = findFuelDepletedAssemblyIds(snapshotInput);
+      for (const itemId of depletedDependents) {
+        const result = deploymentRuntime.offlineAssemblyForFuelDepletion(Number(itemId));
+        if (!result?.success) throw new Error(`Could not offline assembly ${itemId} after fuel depletion: ${result?.errorMsg || "unknown failure"}`);
+      }
+      if (depletedDependents.length) snapshotInput.items = rawItems = itemStore.getAllItems();
+      const snapshot = buildSuiAssemblySnapshot(snapshotInput);
       context.setCharacters(snapshot.characters);
-      await reconcileSuiAssemblies(snapshot, context, new Set(Object.values<any>(rawItems).map(item => String(item.itemID))));
+      const localItemIds = new Set<string>(Object.values<any>(rawItems).map(item => String(item.itemID)));
+      context.setSnapshotItemIds(localItemIds, snapshot.assemblies);
+      await reconcileSuiAssemblies(snapshot, context, localItemIds);
       const summary = JSON.stringify(snapshot.assemblies);
       if (summary !== lastSummary) {
         if (snapshot.assemblies.length) log.info(`[SuiAssemblySync] ${snapshot.assemblies.length} assemblies synchronized on ${synced.chainId}`);

@@ -28,6 +28,7 @@ const STATUS_LABELS = Object.freeze({
 });
 
 const ERROR_MESSAGES = Object.freeze({
+  NETWORK_NODE_FUEL_REQUIRED: "Deposit fuel in this Network Node before bringing it online.",
   ASSEMBLY_ADMIN_ACCESS_DENIED:
     "Assembly mutations require an elevated GM account role.",
   ASSEMBLY_ACCESS_DENIED: "You do not own this assembly.",

@@ -21,9 +21,9 @@ const {
 } = require("../src/network/tcp/utils/marshal");
 
 const CONFIG_KEY = "smartAssemblyBaseDappUrl";
-const CLIENT_KEY = "smart_assembly_base_dapp_url";
-const ENV_KEY = "EVEJS_SMART_ASSEMBLY_BASE_DAPP_URL";
-const DEFAULT_URL = "http://localhost:5173";
+const CLIENT_KEY = "smartAssemblyBaseDappUrl";
+const ENV_KEY = "EVEJS_smartAssemblyBaseDappUrl";
+const DEFAULT_URL = "http://localhost:5174";
 const FRONTIER_MARSHAL_OPTIONS = { compatibilityProfile: "frontier" };
 
 function getAdvertisedUrl(dict) {

@@ -100,7 +100,7 @@ test("offline storage and its node return offline after a confirmed inventory fa
   assert.equal(f.statuses.get(n.itemId), 1);
   const inventoryIndex = f.events.indexOf(`inventory:${s.itemId}`);
   assert.ok(f.events.indexOf(`status:${s.itemId}:1`) > inventoryIndex);
-  assert.ok(f.events.indexOf(`status:${n.itemId}:1`) > inventoryIndex);
+  assert.ok(f.events.lastIndexOf(`status:${n.itemId}:1`) > inventoryIndex);
   assert.equal(f.events.filter(e => e === `fuel:${n.itemId}:50`).length, 2);
 });
 
@@ -113,7 +113,8 @@ test("an uncertain inventory transaction stops the pass without submitting clean
   await assert.rejects(reconcileSuiAssemblies(snapshot([n, s]), f.context, new Set([n.itemId, s.itemId])), /unknown commit outcome/);
   assert.equal(f.events.at(-1), `inventory:${s.itemId}`);
   assert.equal(f.events.includes(`status:${s.itemId}:1`), false);
-  assert.equal(f.events.includes(`status:${n.itemId}:1`), false);
+  assert.ok(f.events.lastIndexOf(`status:${n.itemId}:1`) < f.events.indexOf(`inventory:${s.itemId}`),
+    "The node must not receive a cleanup transaction after an uncertain write");
 });
 
 test("an uncertain anchor prevents all later assemblies and phases from starting", async () => {
@@ -220,4 +221,15 @@ test("a failed child retirement preserves node fuel for the next retry", async (
   assert.equal(f.events.includes(`remove:${n.itemId}`), false);
   assert.ok(f.context.state.assemblies[s.itemId]);
   assert.ok(f.context.state.assemblies[n.itemId]);
+});
+
+test("exhaustion offlines the node before draining its fuel and keeps children offline", async () => {
+  const n = node({ fuel: { typeId: 0, quantity: 0, unitVolume: "0" } });
+  const s = storage();
+  const f = fixture();
+  await reconcileSuiAssemblies(snapshot([n, s]), f.context, new Set([n.itemId, s.itemId]));
+  assert.ok(f.events.indexOf(`status:${n.itemId}:1`) < f.events.indexOf(`fuel:${n.itemId}:0`));
+  assert.equal(f.statuses.get(n.itemId), 1);
+  assert.equal(f.statuses.get(s.itemId), 1);
+  assert.equal(f.events.some(event => event.startsWith("status:") && event.endsWith(":2")), false);
 });

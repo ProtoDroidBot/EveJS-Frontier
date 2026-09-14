@@ -209,7 +209,7 @@ test("deposit prepare validates without mutating", () => {
 });
 
 test("deposit execute commits once, persists, and suppresses duplicates", () => {
-  const node = createTestNetworkNode();
+  const node = createTestNetworkNode(OWNER_ID, 1);
   const { container, stack } = createFuelSource();
 
   const prepared = networkNodeFuelRuntime.prepareNetworkNodeFuelDeposit({
@@ -241,7 +241,7 @@ test("deposit execute commits once, persists, and suppresses duplicates", () => 
   const customInfo = JSON.parse(persistedNode.customInfo);
   assert.equal(
     customInfo.evejsFrontierConstruction.assemblyStatus,
-    2,
+    1,
     "construction state preserved alongside fuel state",
   );
 

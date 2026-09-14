@@ -1,6 +1,7 @@
 import assert = require("node:assert/strict");
 import { test } from "node:test";
-import { assemblySyncEnabled, createAssemblySyncWorker } from "../src/services/frontier/suiAssemblySync";
+import { assemblySyncEnabled, createAssemblySyncWorker, findFuelDepletedAssemblyIds } from "../src/services/frontier/suiAssemblySync";
+import type { SuiAssemblySnapshotInput } from "../src/services/frontier/suiAssemblySnapshot";
 
 function deferred() {
   let resolve!: () => void;
@@ -132,4 +133,43 @@ test("restart while the previous run is settling never forks the retry loop", as
   await timeouts.fireNext();
   assert.equal(calls, 2);
   assert.equal(timeouts.pending().length, 1);
+});
+
+function depletionInput(): SuiAssemblySnapshotInput {
+  const item = (itemID: number, typeID: number, x: number, status: number, quantity = 0) => ({
+    itemID, typeID, ownerID: 9001, locationID: 30000123, itemName: `Assembly ${itemID}`,
+    spaceState: { position: { x, y: 0, z: 0 } },
+    customInfo: JSON.stringify({
+      evejsFrontierConstruction: { assemblyTypeID: typeID, assemblyStatus: status, ownerID: 9001, solarSystemID: 30000123 },
+      ...(quantity ? { evejsFrontierNetworkNodeFuel: { typeID: 88335, quantity } } : {}),
+    }),
+  });
+  return {
+    items: [item(1, 88092, 0, 1), item(2, 88092, 100, 2, 100), item(3, 90184, 1, 2), item(4, 90184, 99, 2)],
+    characters: [{ characterID: 9001, accountId: 1, characterName: "Pilot" }],
+    components: [
+      { typeID: 88092, smartDeployable: { createOnChain: 1 }, smartAnchor: { fuelMaxCapacity: 1000, fuelBurnRateInSeconds: 3000 } },
+      { typeID: 90184, smartDeployable: { createOnChain: 1 } },
+    ],
+    itemTypes: [{ typeID: 88335, volume: 0.28 }],
+  };
+}
+
+test("fuel exhaustion resolves nearby dependent assemblies without changing source data", () => {
+  const input = depletionInput();
+  const original = structuredClone(input);
+  assert.deepEqual(findFuelDepletedAssemblyIds(input), ["3"]);
+  assert.deepEqual(input, original);
+});
+
+test("fuel exhaustion follows persisted bindings even when a fueled node is closer", () => {
+  const input = depletionInput();
+  input.networkNodeBindings = { "3": "2", "4": "1" };
+  assert.deepEqual(findFuelDepletedAssemblyIds(input), ["4"]);
+});
+
+test("fuel exhaustion does not rebind an assembly whose recorded node is missing", () => {
+  const input = depletionInput();
+  input.networkNodeBindings = { "3": "999" };
+  assert.deepEqual(findFuelDepletedAssemblyIds(input), []);
 });

@@ -1728,14 +1728,14 @@ const CONFIG_ENTRY_DEFINITIONS: any[] = [
   },
   {
     key: "smartAssemblyBaseDappUrl",
-    defaultValue: "http://localhost:5173",
+    defaultValue: "http://localhost:5174",
     envVar: "EVEJS_SMART_ASSEMBLY_BASE_DAPP_URL",
     envType: "string",
     description: [
-      "Base URL advertised as smart_assembly_base_dapp_url through MachoNet for the in-game Smart Assembly browser.",
+      "Base URL advertised as smartAssemblyBaseDappUrl through MachoNet for the in-game Smart Assembly browser.",
       "The client appends /client/root/, /client/behaviour/, or /client/networknode/monitor/ and its own query parameters. Restart the game client after changing this value.",
     ],
-    validValues: 'Absolute HTTP(S) base URL without a query or fragment, for example "http://localhost:5173". Trailing slashes are removed before advertising it.',
+    validValues: 'Absolute HTTP(S) base URL without a query or fragment, for example "http://localhost:5174". Trailing slashes are removed before advertising it.',
   },
   {
     key: "imageServerUrl",

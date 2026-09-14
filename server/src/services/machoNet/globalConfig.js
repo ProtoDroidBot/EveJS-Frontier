@@ -71,7 +71,7 @@ function buildGlobalConfigEntries(runtimeConfig = getRuntimeConfig()) {
         ["imageserverurl", runtimeConfig.imageServerUrl],
         // SmartAssemblySvc appends its own /client/... path to this base URL.
         [
-            "smart_assembly_base_dapp_url",
+            "smartAssemblyBaseDappUrl",
             String(runtimeConfig.smartAssemblyBaseDappUrl || config.smartAssemblyBaseDappUrl)
                 .trim()
                 .replace(/\/+$/, ""),

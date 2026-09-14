@@ -245,6 +245,16 @@ function readConstructionState(item) {
 }
 function writeConstructionState(item, state) {
     const info = parseCustomInfo(item && item.customInfo);
+    if (toInt(item?.typeID) === NETWORK_NODE_ASSEMBLY_TYPE_ID && info.evejsFrontierNetworkNodeFuel) {
+        const { state: fuel } = require("./networkNodeFuelRuntime").calculateNetworkNodeFuelBurn(item);
+        if (fuel.quantity > 0 || fuel.burnRemainderMs > 0)
+            info.evejsFrontierNetworkNodeFuel = fuel;
+        else {
+            delete info.evejsFrontierNetworkNodeFuel;
+        }
+        if (fuel.quantity === 0 && state.assemblyStatus === ASSEMBLY_STATUS_ONLINE)
+            state = { ...state, assemblyStatus: ASSEMBLY_STATUS_OFFLINE };
+    }
     info[CONSTRUCTION_INFO_KEY] = {
         ...state,
         constructionCost: normalizeQuantityMap(state && state.constructionCost),
@@ -526,6 +536,14 @@ function consumePlacementMaterials(characterID, shipItemID, constructionCost) {
     return { success: true, changes, consumed };
 }
 function syncChanges(session, changes) {
+    for (const change of Array.isArray(changes) ? changes : []) {
+        if (toInt(change.item?.typeID) !== NETWORK_NODE_ASSEMBLY_TYPE_ID || !change.previousData)
+            continue;
+        const fuelRuntime = require("./networkNodeFuelRuntime");
+        const consumed = fuelRuntime.readNetworkNodeFuelState(change.previousData).quantity -
+            fuelRuntime.readNetworkNodeFuelState(change.item).quantity;
+        fuelRuntime.publishFuelBurn(change.item, consumed);
+    }
     if (!session || !Array.isArray(changes) || changes.length === 0) {
         return;
     }
@@ -674,6 +692,9 @@ function beginAssemblyStateTransition(session, itemID, targetStatus) {
     if (validation.success === false) {
         return validation;
     }
+    if (numericTargetStatus === ASSEMBLY_STATUS_ONLINE && !hasNetworkNodeFuelForOnline(validation.item)) {
+        return { success: false, errorMsg: "NETWORK_NODE_FUEL_REQUIRED" };
+    }
     if (numericTargetStatus === ASSEMBLY_STATUS_ONLINE &&
         isSmartGateDefinition(validation.definition) &&
         validation.state.targetSolarSystemID <= 0) {
@@ -743,6 +764,31 @@ function refreshAssemblyStatePresentation(session, item, state) {
     }
     return { success: true, data: { broadcast: false, entity: null } };
 }
+/** System transition used when a node or its energy source runs out of fuel. */
+function notifyAssemblyFuelDepleted(item, previousData) {
+    const session = findAssemblyOwnerSession(null, item.ownerID);
+    refreshAssemblyStatePresentation(session, item, readConstructionState(item));
+    syncChanges(session, [{ item, previousData }]);
+    clearPendingAssemblyTransitionsForItem(item.itemID);
+}
+function hasNetworkNodeFuelForOnline(item) {
+    return toInt(item.typeID) !== NETWORK_NODE_ASSEMBLY_TYPE_ID ||
+        require("./networkNodeFuelRuntime").calculateNetworkNodeFuelBurn(item).state.quantity > 0;
+}
+function offlineAssemblyForFuelDepletion(itemID) {
+    const item = itemStore.findItemById(itemID);
+    const state = readConstructionState(item);
+    if (!state || state.assemblyStatus !== ASSEMBLY_STATUS_ONLINE)
+        return { success: true, data: item };
+    const result = itemStore.updateInventoryItem(itemID, currentItem => ({
+        ...currentItem,
+        customInfo: writeConstructionState(currentItem, { ...state, assemblyStatus: ASSEMBLY_STATUS_OFFLINE }),
+    }));
+    if (result.success) {
+        notifyAssemblyFuelDepleted(result.data, result.previousData);
+    }
+    return result;
+}
 function commitAssemblyStateTransition(session, itemID, transactionUUID, signature, targetStatus) {
     const numericItemID = toInt(itemID, 0);
     const numericTargetStatus = toInt(targetStatus, 0);
@@ -765,6 +811,9 @@ function commitAssemblyStateTransition(session, itemID, transactionUUID, signatu
     const validation = validateOwnedChainAssembly(session, numericItemID);
     if (validation.success === false) {
         return validation;
+    }
+    if (numericTargetStatus === ASSEMBLY_STATUS_ONLINE && !hasNetworkNodeFuelForOnline(validation.item)) {
+        return { success: false, errorMsg: "NETWORK_NODE_FUEL_REQUIRED" };
     }
     if (validation.state.assemblyStatus === numericTargetStatus) {
         return {
@@ -1702,6 +1751,9 @@ function adminSetAssemblyState(session, itemID, targetStatus) {
     if (state.assemblyStatus === ASSEMBLY_STATUS_UNDER_CONSTRUCTION) {
         return { success: false, errorMsg: "ASSEMBLY_UNDER_CONSTRUCTION" };
     }
+    if (numericTargetStatus === ASSEMBLY_STATUS_ONLINE && !hasNetworkNodeFuelForOnline(item)) {
+        return { success: false, errorMsg: "NETWORK_NODE_FUEL_REQUIRED" };
+    }
     if (state.assemblyStatus === numericTargetStatus) {
         return {
             success: true,
@@ -2211,6 +2263,9 @@ module.exports = {
     listOwnedSmartGates,
     listMyAssemblies,
     recordAssemblyInteraction,
+    refreshAssemblyStatePresentation,
+    offlineAssemblyForFuelDepletion,
+    notifyAssemblyFuelDepleted,
     // Shared with the Network Node fuel runtime, which reuses the assembly
     // transition transaction/signature conventions and construction state.
     buildAssemblyTransitionTransactionData,

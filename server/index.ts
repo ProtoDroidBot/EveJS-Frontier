@@ -262,6 +262,11 @@ try {
 
 // Start the TCP server with the service manager
 try {
+  require("./src/services/frontier/networkNodeFuelRuntime").startNetworkNodeFuelBurn();
+} catch (err) {
+  log.err(`[NetworkNodeFuel] Failed to start: ${err.message}`);
+}
+try {
   require("./src/services/frontier/suiAssemblySync").startSuiAssemblySync();
 } catch (err) {
   log.err(`[SuiAssemblySync] Failed to start: ${err.message}`);
