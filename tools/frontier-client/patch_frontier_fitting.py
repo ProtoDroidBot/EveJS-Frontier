@@ -18,6 +18,8 @@ MODULE_NAME = "eve/client/script/ui/eveCommands.pyc"
 SOURCE_MEMBER_SHA256 = "533a19a7e8e995f415bd9f2649b52d64372538de240791d8b5c227ef76c24f4d"
 CREATION_SERVICE_MODULE_NAME = "frontier/creation/client/service.pyc"
 CREATION_SERVICE_SOURCE_MEMBER_SHA256 = "55d9b955b0ab99fed39032db1580076946fb2e554c0ac8691eb7747d792f367c"
+ACTION_PROVIDER_MODULE_NAME = "frontier/creation/client/module_action_provider.pyc"
+ACTION_PROVIDER_SOURCE_MEMBER_SHA256 = "fe9644684a5c001c6a6509461efcd4905f928c20937dcf6ab7fda813f13a3a5e"
 PREVIOUS_WRAPPER_SHA256 = {
     "3a8b251364c9ca5dcf18f44518a5283869377f4781546885d916a57b8007910a",
     "74bd5fc669dbb04177083c1cdcb4350b3e2ba569a52208fd94b5f446b0c0f1e8",
@@ -27,10 +29,15 @@ ADAPTER = Path(__file__).with_name("fitting_compatibility_adapter.py")
 CREATION_SERVICE_ADAPTER = Path(__file__).with_name(
     "creation_service_compatibility_adapter.py"
 )
+ACTION_PROVIDER_ADAPTER = Path(__file__).with_name(
+    "action_bar_compatibility_adapter.py"
+)
 SOURCE_SENTINEL = b"EVEJS_FITTING_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_FITTING_ADAPTER_CODE_V1"
 CREATION_SERVICE_SOURCE_SENTINEL = b"EVEJS_CREATION_SERVICE_ORIGINAL_MEMBER_V1"
 CREATION_SERVICE_ADAPTER_SENTINEL = b"EVEJS_CREATION_SERVICE_ADAPTER_CODE_V1"
+ACTION_PROVIDER_SOURCE_SENTINEL = b"EVEJS_ACTION_PROVIDER_ORIGINAL_MEMBER_V1"
+ACTION_PROVIDER_ADAPTER_SENTINEL = b"EVEJS_ACTION_PROVIDER_ADAPTER_CODE_V1"
 
 
 class FittingPatchError(RuntimeError):
@@ -93,6 +100,34 @@ def patched_creation_service_member(member):
     return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
 
 
+def patched_action_provider_member(member):
+    original = marshal.loads(member[16:])
+    adapter = compile(
+        ACTION_PROVIDER_ADAPTER.read_text(encoding="utf-8"),
+        "evejs/action_bar_compatibility_adapter.py",
+        "exec",
+        dont_inherit=True,
+    )
+    wrapper = compile(
+        "import marshal as _evejs_action_provider_marshal\n"
+        "exec(_evejs_action_provider_marshal.loads(b'EVEJS_ACTION_PROVIDER_ORIGINAL_MEMBER_V1'[16:]))\n"
+        "exec(_evejs_action_provider_marshal.loads(b'EVEJS_ACTION_PROVIDER_ADAPTER_CODE_V1'))\n"
+        "_evejs_install_action_bar_compatibility(globals())\n",
+        original.co_filename,
+        "exec",
+        dont_inherit=True,
+    )
+    constants = tuple(
+        member
+        if value == ACTION_PROVIDER_SOURCE_SENTINEL
+        else marshal.dumps(adapter)
+        if value == ACTION_PROVIDER_ADAPTER_SENTINEL
+        else value
+        for value in wrapper.co_consts
+    )
+    return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
+
+
 def inspect_member(
     member,
     expected=SOURCE_MEMBER_SHA256,
@@ -136,7 +171,11 @@ def inspect_archive(archive, build=BUILD):
         )
     with zipfile.ZipFile(archive) as source:
         entries_by_name = {}
-        for module_name in (MODULE_NAME, CREATION_SERVICE_MODULE_NAME):
+        for module_name in (
+            MODULE_NAME,
+            CREATION_SERVICE_MODULE_NAME,
+            ACTION_PROVIDER_MODULE_NAME,
+        ):
             entries = [
                 entry
                 for entry in source.infolist()
@@ -155,8 +194,14 @@ def inspect_archive(archive, build=BUILD):
             patched_creation_service_member,
             set(),
         )
+        action_provider_state, action_provider_original = inspect_member(
+            source.read(entries_by_name[ACTION_PROVIDER_MODULE_NAME]),
+            ACTION_PROVIDER_SOURCE_MEMBER_SHA256,
+            patched_action_provider_member,
+            set(),
+        )
 
-    states = {command_state, service_state}
+    states = {command_state, service_state, action_provider_state}
     if states == {"patched"}:
         state = "patched"
     elif states == {"source"}:
@@ -166,6 +211,10 @@ def inspect_archive(archive, build=BUILD):
     return state, {
         MODULE_NAME: (command_state, command_original),
         CREATION_SERVICE_MODULE_NAME: (service_state, service_original),
+        ACTION_PROVIDER_MODULE_NAME: (
+            action_provider_state,
+            action_provider_original,
+        ),
     }
 
 
@@ -180,6 +229,13 @@ def patch_archive(archive, build=BUILD):
         if service_state != "patched":
             replacements[CREATION_SERVICE_MODULE_NAME] = (
                 patched_creation_service_member(service_original)
+            )
+        action_provider_state, action_provider_original = originals[
+            ACTION_PROVIDER_MODULE_NAME
+        ]
+        if action_provider_state != "patched":
+            replacements[ACTION_PROVIDER_MODULE_NAME] = (
+                patched_action_provider_member(action_provider_original)
             )
         rewrite_archive(archive, replacements)
     if inspect_archive(archive, build)[0] != "patched":

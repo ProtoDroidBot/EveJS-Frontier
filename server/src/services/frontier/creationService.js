@@ -13,6 +13,7 @@ const { registerCreationChargeAbilityHandlers, } = require(path.join(__dirname, 
 const { getCreationModuleChargeState, } = require(path.join(__dirname, "./creationChargeRuntime"));
 const { registerIffAbilityHandlers, } = require(path.join(__dirname, "./iffAbilityHandlers"));
 const { registerScanningAbilityHandlers, } = require(path.join(__dirname, "./scanningAbilityHandlers"));
+const scanningRuntime = require(path.join(__dirname, "./scanningRuntime"));
 // Behavior handlers must be registered before any get_creation snapshot is
 // built: module ability advertisement reads the handler registry.
 registerFallbackCreationAbilityHandlers();
@@ -22,6 +23,26 @@ registerScanningAbilityHandlers();
 const CREATION_ERROR_CLASS = "frontier.creation.common.errors.CreationError";
 const CREATION_ERROR_GENERIC = "CreationError_Generic";
 const CREATION_ERROR_UNKNOWN = "CreationError_UnknownCreation";
+function recordCreationModuleEmission(session, creationItemID) {
+    if (!session || !session._space) {
+        return;
+    }
+    try {
+        const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
+        const entity = typeof spaceRuntime.getEntity === "function"
+            ? spaceRuntime.getEntity(session, creationItemID)
+            : null;
+        if (entity) {
+            scanningRuntime.recordEntityScannerEmissionActivity(entity, {
+                nowMs: Date.now(),
+            });
+        }
+    }
+    catch (_) {
+        // Ability success must not be rolled back because its optional live-space
+        // scan emission could not be recorded during a session transition.
+    }
+}
 function throwCreationError(reason = CREATION_ERROR_GENERIC) {
     const normalized = String(reason || CREATION_ERROR_GENERIC);
     throwWrappedObject(CREATION_ERROR_CLASS, [normalized], { msg: normalized });
@@ -196,6 +217,7 @@ class CreationService extends BaseService {
         if (result.success !== true) {
             return false;
         }
+        recordCreationModuleEmission(session, requestedItemID);
         const data = result.data || {};
         const entries = [[
                 "server_time",

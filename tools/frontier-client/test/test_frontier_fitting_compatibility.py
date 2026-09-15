@@ -18,6 +18,7 @@ CLIENT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(CLIENT_DIR))
 
 import fitting_compatibility_adapter as adapter  # noqa: E402
+import action_bar_compatibility_adapter as action_bar_adapter  # noqa: E402
 import creation_service_compatibility_adapter as service_adapter  # noqa: E402
 import patch_frontier_fitting as patcher  # noqa: E402
 import frontier_windows_client as windows  # noqa: E402
@@ -263,6 +264,228 @@ class CreationServiceAdapterTests(unittest.TestCase):
         self.assertIs(self.CreationService.get_active_creation, first_active)
 
 
+class ActionBarAdapterTests(unittest.TestCase):
+    def setUp(self):
+        self.events = []
+        self.ship = NS(typeID=87698, modules=[])
+        self.module = NS(
+            itemID=500,
+            typeID=600,
+            locationID=100,
+            flagID=27,
+        )
+        self.charge = NS(
+            itemID=(100, 27, 700),
+            typeID=700,
+            categoryID=8,
+            flagID=27,
+            stacksize=12,
+        )
+        self.ship.modules.append(self.module)
+        test = self
+
+        class AbilityId:
+            ACTIVATE_EFFECT = "activate_effect"
+            DEACTIVATE_EFFECT = "deactivate_effect"
+            ONLINE = "online"
+            OFFLINE = "offline"
+            RELOAD = "reload"
+            UNLOAD = "unload"
+
+        class ModuleRef:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class StateManager:
+            def GetSubLocation(self, location_id, flag_id):
+                if (location_id, flag_id) == (100, 27):
+                    return test.charge
+                return None
+
+            def GetItemsInLocation(self, location_id):
+                return [test.charge] if location_id == 100 else []
+
+            def GetDefaultEffect(self, type_id):
+                return NS(effectName="useMissiles") if type_id == 600 else None
+
+            def Activate(self, item_id, effect_name, target_id, repeat):
+                test.events.append(
+                    ("activate", item_id, effect_name, target_id, repeat)
+                )
+                return 1
+
+            def Deactivate(self, item_id, effect_name):
+                test.events.append(("deactivate", item_id, effect_name))
+                return 1
+
+        class DogmaLM:
+            def LoadAmmo(self, *args):
+                test.events.append(("load", args))
+
+            def UnloadAmmo(self, *args):
+                test.events.append(("unload", args))
+
+        class Godma:
+            def __init__(self):
+                self.state_manager = StateManager()
+                self.dogma_lm = DogmaLM()
+
+            def GetItem(self, item_id):
+                return {100: test.ship, 500: test.module}.get(item_id)
+
+            def GetStateManager(self):
+                return self.state_manager
+
+            def GetDogmaLM(self):
+                return self.dogma_lm
+
+        class ModuleActionProvider:
+            def __init__(self):
+                self._godma = Godma()
+
+            def get_activatable_modules(self, ship_id):
+                test.events.append(("creation-modules", ship_id))
+                return ["creation-module"]
+
+            def is_auto_fire_available(self, ship_id):
+                test.events.append(("creation-auto-fire", ship_id))
+                return True
+
+            def _get_loaded_charge(self, module_item_id):
+                test.events.append(("creation-charge", module_item_id))
+                return "creation-charge"
+
+            def _module_charge_from_item(self, item):
+                return NS(
+                    type_id=item.typeID,
+                    item_id=item.itemID,
+                    quantity=item.stacksize,
+                    damage=0.0,
+                )
+
+            def has_activatable_default_effect(self, type_id):
+                return type_id == 600
+
+            def has_online_effect(self, type_id):
+                return type_id == 600
+
+            def activate(
+                self,
+                ship_id,
+                module_item_id,
+                action=AbilityId.ACTIVATE_EFFECT,
+                **params,
+            ):
+                test.events.append(
+                    ("creation-activate", ship_id, module_item_id, action, params)
+                )
+                return "creation-time"
+
+            def reload(self, ship_id, module_item_id, **params):
+                test.events.append(
+                    ("creation-reload", ship_id, module_item_id, params)
+                )
+                return "creation-reload-time"
+
+            def on_module_reloaded(self, module_item_id):
+                test.events.append(("reloaded", module_item_id))
+
+        self.AbilityId = AbilityId
+        self.Provider = ModuleActionProvider
+        self.namespace = {
+            "ModuleActionProvider": ModuleActionProvider,
+            "AbilityId": AbilityId,
+            "ModuleRef": ModuleRef,
+            "gametime": NS(now_sim=lambda: "now"),
+            "invconst": NS(categoryCharge=8),
+        }
+        action_bar_adapter._evejs_install_action_bar_compatibility(
+            self.namespace
+        )
+
+    def test_regular_modules_populate_action_bar_with_charge_state(self):
+        modules = self.Provider().get_activatable_modules(100)
+        self.assertEqual(len(modules), 1)
+        self.assertEqual(modules[0].item_id, 500)
+        self.assertEqual(modules[0].type_id, 600)
+        self.assertEqual(modules[0].loaded_type_id, 700)
+        self.assertEqual(modules[0].loaded_count, 12)
+        self.assertEqual(
+            modules[0].abilities,
+            [
+                self.AbilityId.ACTIVATE_EFFECT,
+                self.AbilityId.DEACTIVATE_EFFECT,
+                self.AbilityId.ONLINE,
+                self.AbilityId.OFFLINE,
+            ],
+        )
+        self.assertEqual(self.events, [])
+
+    def test_regular_module_actions_use_legacy_dogma(self):
+        provider = self.Provider()
+        self.assertEqual(
+            provider.activate(100, 500, target_id=900, repeat=1000),
+            "now",
+        )
+        self.assertEqual(
+            provider.activate(100, 500, self.AbilityId.OFFLINE),
+            "now",
+        )
+        self.assertEqual(
+            provider.reload(100, 500, type_id=700, item_id=701),
+            "now",
+        )
+        self.assertEqual(
+            provider.activate(100, 500, self.AbilityId.UNLOAD),
+            "now",
+        )
+        self.assertEqual(
+            self.events,
+            [
+                ("activate", 500, "useMissiles", 900, 1000),
+                ("deactivate", 500, "online"),
+                ("load", (100, [500], [701], 100)),
+                ("reloaded", 500),
+                ("unload", (100, [500], 100, None)),
+                ("reloaded", 500),
+            ],
+        )
+
+    def test_creation_hulls_keep_original_provider_behavior(self):
+        self.ship.typeID = 95276
+        provider = self.Provider()
+        self.assertEqual(
+            provider.get_activatable_modules(100),
+            ["creation-module"],
+        )
+        self.assertTrue(provider.is_auto_fire_available(100))
+        self.assertEqual(
+            provider.activate(100, 500),
+            "creation-time",
+        )
+        self.assertEqual(
+            self.events,
+            [
+                ("creation-modules", 100),
+                ("creation-auto-fire", 100),
+                (
+                    "creation-activate",
+                    100,
+                    500,
+                    self.AbilityId.ACTIVATE_EFFECT,
+                    {},
+                ),
+            ],
+        )
+
+    def test_action_bar_patch_is_idempotent(self):
+        first = self.Provider.get_activatable_modules
+        action_bar_adapter._evejs_install_action_bar_compatibility(
+            self.namespace
+        )
+        self.assertIs(self.Provider.get_activatable_modules, first)
+
+
 class WindowsUpgradeTests(unittest.TestCase):
     def test_upgrade_installs_fitting_patch_and_records_transaction_backup(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -303,6 +526,7 @@ class WindowsUpgradeTests(unittest.TestCase):
                 "mapViewLifecycle": "patched",
                 "fittingCompatibility": "outdated",
                 "inventoryView": "patched",
+                "collisionVfx": "patched",
             }
             with (
                 mock.patch.object(windows, "check_stage", side_effect=check),
@@ -406,6 +630,7 @@ class FittingBytecodePatchTests(unittest.TestCase):
                     for name in (
                         patcher.MODULE_NAME,
                         patcher.CREATION_SERVICE_MODULE_NAME,
+                        patcher.ACTION_PROVIDER_MODULE_NAME,
                     )
                 }
             with zipfile.ZipFile(archive_path, "w") as archive:

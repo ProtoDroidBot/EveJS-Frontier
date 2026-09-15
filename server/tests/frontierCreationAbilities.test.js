@@ -909,6 +909,33 @@ test("client-authored SNR helper is reproduced exactly", () => {
     assert.equal(scanningRuntime.calculateSnr(10, 2), 5);
     assert.equal(scanningRuntime.calculateSnr(10, 0), 100);
 });
+test("occluded scan contacts expose gravimetric and EM signatures only", () => {
+    const signatures = [
+        [scanningRuntime.SIGNATURE_TYPE_GRAVIMETRIC, 2, 0.5],
+        [scanningRuntime.SIGNATURE_TYPE_ELECTROMAGNETIC, 1, 0.5],
+        [scanningRuntime.SIGNATURE_TYPE_THERMAL, 4, 0.5],
+    ];
+    assert.deepEqual(scanningRuntime.getPresentedSignatureResults(signatures, false), signatures.slice(0, 2));
+    assert.deepEqual(scanningRuntime.getPresentedSignatureResults(signatures, true), signatures);
+});
+test("scan contact resolution is delayed, stable across rescans, and session scoped", () => {
+    const session = { _space: {} };
+    const first = scanningRuntime.replaceResolvedScanningContacts(session, [4101], { nowMs: 1000, delayMs: 6000 });
+    assert.equal(first.delayMsByEntityID.get(4101), 6000);
+    assert.equal(scanningRuntime.isScanningContactResolved(session, 4101, 6999), false);
+    assert.equal(scanningRuntime.isScanningContactResolved(session, 4101, 7000), true);
+    const repeated = scanningRuntime.replaceResolvedScanningContacts(session, [4101], { nowMs: 3000, delayMs: 6000 });
+    assert.equal(repeated.delayMsByEntityID.get(4101), 4000);
+    assert.equal(scanningRuntime.isScanningContactResolved(session, 4101, 7000), true);
+    const removed = scanningRuntime.replaceResolvedScanningContacts(session, [], { nowMs: 8000, delayMs: 6000 });
+    assert.deepEqual(removed.removedIDs, [4101]);
+    assert.equal(scanningRuntime.isScanningContactResolved(session, 4101, 8000), false);
+    const previousGeneration = session._space;
+    scanningRuntime.replaceResolvedScanningContacts(session, [4102], { nowMs: 9000, delayMs: 0 });
+    session._space = {};
+    assert.equal(scanningRuntime.isScanningContactResolved(session, 4102, 9000), false);
+    assert.ok(previousGeneration.frontierResolvedScanningContactsByID instanceof Map);
+});
 function runScan(candidates, overrides = {}) {
     return scanningRuntime.performDirectionalScan({
         originPosition: { x: 0, y: 0, z: 0 },
@@ -1040,12 +1067,63 @@ test("scan duration and signature multipliers come from authored dogma", () => {
         assert.equal(multiplier, 500);
     }
 });
-test("build 3467658 module-less scanningService uses the authored scanner profile and exact response", () => {
+test("non-modular scanners average every positive built-in sensor type", () => {
+    const profile = scanningRuntime.resolveBuiltInScannerProfile({
+        typeID: 0,
+        passiveDerivedState: {
+            attributes: {
+                208: 10,
+                209: 20,
+                210: 0,
+                211: 30,
+            },
+        },
+    });
+    assert.equal(profile.source, "built-in");
+    assert.deepEqual(profile.sensorStrengths, [10, 20, 30]);
+    assert.equal(profile.sensorStrength, 20);
+    assert.deepEqual(profile.multipliers, [
+        [scanningRuntime.SIGNATURE_TYPE_GRAVIMETRIC, 500],
+        [scanningRuntime.SIGNATURE_TYPE_ELECTROMAGNETIC, 500],
+        [scanningRuntime.SIGNATURE_TYPE_THERMAL, 500],
+    ]);
+});
+test("module and weapon activity raise EM signature and decay to baseline", () => {
+    const entity = {
+        activeModuleEffects: new Map([[1, {}], [2, {}]]),
+    };
+    scanningRuntime.recordEntityScannerEmissionActivity(entity, { nowMs: 1000 });
+    assert.equal(scanningRuntime.resolveEntityEmSignatureMultiplier(entity, 1000), 2);
+    assert.equal(scanningRuntime.resolveEntityEmSignatureMultiplier(entity, 6000), 1.75);
+    scanningRuntime.recordEntityScannerEmissionActivity(entity, {
+        nowMs: 6000,
+        isWeapon: true,
+    });
+    entity.activeModuleEffects.clear();
+    assert.equal(scanningRuntime.resolveEntityEmSignatureMultiplier(entity, 6000), 2);
+    assert.equal(scanningRuntime.resolveEntityEmSignatureMultiplier(entity, 21000), 1);
+    const signatures = scanningRuntime.buildSignatureResultsForTarget({
+        baseSignature: 10,
+        distanceMeters: 1000000,
+        multipliers: [[1, 500], [2, 500], [3, 500]],
+        emSignatureMultiplier: 2,
+    });
+    assert.deepEqual(signatures.map((entry) => entry[1]), [5, 10, 5]);
+});
+test("build 3467658 non-modular scanningService uses built-in hull sensors and exact response", () => {
     const ship = {
         kind: "ship",
         itemID: SHIP_ID,
         typeID: 95276,
         position: { x: 10, y: 20, z: 30 },
+        passiveDerivedState: {
+            attributes: {
+                208: 10,
+                209: 20,
+                210: 30,
+                211: 40,
+            },
+        },
     };
     const target = {
         kind: "deployable",
@@ -1054,6 +1132,7 @@ test("build 3467658 module-less scanningService uses the authored scanner profil
         position: { x: 10, y: 20, z: 100030 },
     };
     let captured = null;
+    let resolutionUpdate = null;
     const service = new ScanningService({
         spaceRuntime: {
             getEntity(_session, itemID) {
@@ -1064,6 +1143,12 @@ test("build 3467658 module-less scanningService uses the authored scanner profil
                     getDynamicEntities() {
                         return [ship, target, null];
                     },
+                };
+            },
+            updateResolvedScanningContactsForSession(session, resolvedIds, options) {
+                resolutionUpdate = { session, resolvedIds, options };
+                return {
+                    delayMsByEntityID: new Map([[8101, 6000]]),
                 };
             },
         },
@@ -1103,7 +1188,14 @@ test("build 3467658 module-less scanningService uses the authored scanner profil
         ],
     });
     assert.equal(service.name, "scanningService");
-    assert.equal(captured.moduleTypeID, 95322);
+    assert.equal(captured.moduleTypeID, ship.typeID);
+    assert.equal(captured.scannerProfile.source, "built-in");
+    assert.equal(captured.scannerProfile.sensorStrength, 25);
+    assert.deepEqual(captured.scannerProfile.multipliers, [
+        [scanningRuntime.SIGNATURE_TYPE_GRAVIMETRIC, 625],
+        [scanningRuntime.SIGNATURE_TYPE_ELECTROMAGNETIC, 625],
+        [scanningRuntime.SIGNATURE_TYPE_THERMAL, 625],
+    ]);
     assert.deepEqual(captured.originPosition, ship.position);
     assert.deepEqual(captured.direction, { x: 0, y: 0, z: 1 });
     assert.deepEqual(captured.previousScanIds, [7999]);
@@ -1111,8 +1203,15 @@ test("build 3467658 module-less scanningService uses the authored scanner profil
             itemID: 8101,
             typeID: TYPE_SIGNATURE_TARGET,
             position: target.position,
+            hasLineOfSight: true,
+            emSignatureMultiplier: 1,
         }]);
     assert.deepEqual(session._space.frontierDirectionalScanIds, [8101]);
+    assert.deepEqual(resolutionUpdate, {
+        session,
+        resolvedIds: [8101],
+        options: { delayMs: 6000 },
+    });
     assert.equal(response.type, "object");
     assert.equal(response.name, "util.KeyVal");
     const entries = new Map(response.args.entries);

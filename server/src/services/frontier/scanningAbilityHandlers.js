@@ -107,6 +107,9 @@ function collectScanCandidates(session, shipID) {
     if (!scene || typeof scene.getDynamicEntities !== "function") {
         return [];
     }
+    const nowMs = typeof scene.getCurrentSimTimeMs === "function"
+        ? scene.getCurrentSimTimeMs()
+        : Date.now();
     const candidates = [];
     for (const entity of scene.getDynamicEntities()) {
         if (!entity || toInt(entity.itemID, 0) === toInt(shipID, 0)) {
@@ -115,10 +118,18 @@ function collectScanCandidates(session, shipID) {
         if (!entity.position) {
             continue;
         }
+        if (typeof scene.canSessionDetectDynamicEntity === "function" &&
+            scene.canSessionDetectDynamicEntity(session, entity) !== true) {
+            continue;
+        }
         candidates.push({
             itemID: toInt(entity.itemID, 0),
             typeID: toInt(entity.typeID, 0),
             position: entity.position,
+            hasLineOfSight: typeof scene.hasLineOfSightForSession === "function"
+                ? scene.hasLineOfSightForSession(session, entity)
+                : true,
+            emSignatureMultiplier: scanningRuntime.resolveEntityEmSignatureMultiplier(entity, nowMs),
         });
     }
     return candidates;
@@ -154,7 +165,10 @@ function buildScanResponse(scan) {
             "resolved",
             buildDict(scan.resolvedIds.map((ballID) => ([
                 ballID,
-                millisecondsToFiletimeDelta(scan.durationMs),
+                millisecondsToFiletimeDelta(scan.resolvedDelayMsById instanceof Map &&
+                    scan.resolvedDelayMsById.has(ballID)
+                    ? scan.resolvedDelayMsById.get(ballID)
+                    : scan.durationMs),
             ]))),
         ],
     ]);
@@ -194,6 +208,9 @@ function registerScanningAbilityHandlers() {
             if (!moduleItem) {
                 return { success: false, errorMsg: "MODULE_NOT_FOUND" };
             }
+            scanningRuntime.recordEntityScannerEmissionActivity(entity, {
+                nowMs: Date.now(),
+            });
             const previousScanIds = Array.isArray(session._space && session._space.frontierDirectionalScanIds)
                 ? session._space.frontierDirectionalScanIds
                 : [];
@@ -207,6 +224,13 @@ function registerScanningAbilityHandlers() {
             });
             if (session._space) {
                 session._space.frontierDirectionalScanIds = scan.scanIds;
+            }
+            if (runtime &&
+                typeof runtime.updateResolvedScanningContactsForSession === "function") {
+                const resolution = runtime.updateResolvedScanningContactsForSession(session, scan.resolvedIds, { delayMs: scan.durationMs });
+                if (resolution && resolution.delayMsByEntityID instanceof Map) {
+                    scan.resolvedDelayMsById = resolution.delayMsByEntityID;
+                }
             }
             log.info(`[scanning] directional_scan ship=${shipID} module=${context.moduleItemID} ` +
                 `angle=${context.scanRequest.angleDegrees} results=${scan.updatedScans.length} ` +

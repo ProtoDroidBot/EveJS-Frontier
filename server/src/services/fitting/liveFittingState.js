@@ -27,12 +27,14 @@ const SLOT_FAMILY_FLAGS = Object.freeze({
     low: Object.freeze([11, 12, 13, 14, 15, 16, 17, 18]),
     med: Object.freeze([19, 20, 21, 22, 23, 24, 25, 26]),
     high: Object.freeze([27, 28, 29, 30, 31, 32, 33, 34]),
+    engine: Object.freeze([37]),
     rig: Object.freeze([92, 93, 94, 95, 96, 97, 98, 99]),
     subsystem: Object.freeze([125, 126, 127, 128, 129, 130, 131, 132]),
     service: Object.freeze([164, 165, 166, 167, 168, 169, 170, 171]),
 });
 const SHIP_FITTING_FLAG_RANGES = Object.freeze([
     Object.freeze([11, 34]),
+    Object.freeze([37, 37]),
     Object.freeze([92, 99]),
     Object.freeze([125, 132]),
     Object.freeze([164, 171]),
@@ -47,6 +49,7 @@ const EFFECT_ID_FALLBACK = Object.freeze({
     rigSlot: 2663,
     subSystem: 3772,
     serviceSlot: 6306,
+    engineSlot: 12064,
 });
 const ATTRIBUTE_ID_FALLBACK = Object.freeze({
     lowSlots: 12,
@@ -56,6 +59,7 @@ const ATTRIBUTE_ID_FALLBACK = Object.freeze({
     maxSubSystems: 136,
     rigSlots: 1137,
     serviceSlots: 2056,
+    engineSlots: 5652,
     isOnline: 1153,
     quantity: 20,
 });
@@ -340,6 +344,9 @@ function getRequiredSlotFamily(typeID) {
     if (typeHasEffectName(typeID, "serviceSlot")) {
         return "service";
     }
+    if (typeHasEffectName(typeID, "engineSlot")) {
+        return "engine";
+    }
     return null;
 }
 function isStrategicCruiserType(typeID) {
@@ -462,6 +469,7 @@ function getShipSlotCounts(shipTypeID, fittedItems = [], shipID = 0) {
     const rigSlotsID = getAttributeIDByNames("rigSlots");
     const maxSubSystemsID = getAttributeIDByNames("maxSubSystems");
     const serviceSlotsID = getAttributeIDByNames("serviceSlots");
+    const engineSlotsID = getAttributeIDByNames("engineSlots");
     const isStrategicCruiser = isStrategicCruiserType(shipTypeID);
     const compatibleSubsystems = isStrategicCruiser
         ? getValidStrategicCruiserSubsystems(shipTypeID, fittedItems, shipID)
@@ -479,6 +487,7 @@ function getShipSlotCounts(shipTypeID, fittedItems = [], shipID = 0) {
             ? STRATEGIC_CRUISER_SUBSYSTEM_FLAGS.length
             : maxSubSystemsID ? toInt(attributes[String(maxSubSystemsID)], 0) : 0,
         service: serviceSlotsID ? toInt(attributes[String(serviceSlotsID)], 0) : 0,
+        engine: engineSlotsID ? toInt(attributes[String(engineSlotsID)], 0) : 0,
     };
 }
 function getSlotFlagsForFamily(family, shipTypeID = null, fittedItems = [], shipID = 0) {
@@ -494,6 +503,9 @@ function getSlotFlagsForFamily(family, shipTypeID = null, fittedItems = [], ship
     }
     const slotCounts = getShipSlotCounts(shipTypeID, fittedItems, shipID);
     const limit = toInt(slotCounts[family], 0);
+    if (family === "engine") {
+        return limit > 0 ? baseFlags.slice(0, limit) : [];
+    }
     if (isStrategicCruiserType(shipTypeID)) {
         return baseFlags.slice(0, Math.max(0, limit));
     }

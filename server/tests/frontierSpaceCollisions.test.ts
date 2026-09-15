@@ -13,6 +13,8 @@ const {
   getStaticBallFlags,
 } = require("../src/space/destiny/stream/staticBallTail");
 const {
+  findSweptWeaponOccluder,
+  findWeaponLineOccluder,
   resolveEntityMovementCollision,
 } = require("../src/space/destiny/simulation/collisions");
 const {
@@ -128,6 +130,64 @@ test("server swept-sphere collision prevents tunneling through an object", () =>
   assert.deepEqual(ship.velocity, { x: 0, y: 0, z: 0 });
 });
 
+test("contained ships depenetrate to a station boundary instead of phasing out", () => {
+  const station = {
+    itemID: 2001,
+    kind: "station",
+    radius: 20,
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+  };
+  const scene = {
+    staticEntities: [station],
+    dynamicEntities: new Map(),
+  };
+  const ship = buildShip({
+    position: { x: 15, y: 0, z: 0 },
+    velocity: { x: 200, y: 0, z: 0 },
+  });
+
+  const collision = resolveEntityMovementCollision(
+    ship,
+    scene,
+    { x: 10, y: 0, z: 0 },
+  );
+
+  assert.equal(collision.entityID, station.itemID);
+  assert.equal(collision.startedOverlapping, true);
+  assert.equal(collision.penetrationDepth, 20);
+  assert.ok(Math.abs(ship.position.x - 30.01) < 1e-9);
+  assert.deepEqual(ship.velocity, { x: 200, y: 0, z: 0 });
+});
+
+test("station containment correction removes inward velocity even without displacement", () => {
+  const station = {
+    itemID: 2001,
+    kind: "station",
+    radius: 20,
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+  };
+  const scene = {
+    staticEntities: [station],
+    dynamicEntities: new Map(),
+  };
+  const ship = buildShip({
+    position: { x: 10, y: 0, z: 0 },
+    velocity: { x: -200, y: 0, z: 0 },
+  });
+
+  const collision = resolveEntityMovementCollision(
+    ship,
+    scene,
+    { x: 10, y: 0, z: 0 },
+  );
+
+  assert.equal(collision.startedOverlapping, true);
+  assert.ok(Math.abs(ship.position.x - 30.01) < 1e-9);
+  assert.deepEqual(ship.velocity, { x: 0, y: 0, z: 0 });
+});
+
 test("server collision ignores non-physical anchors and active warp", () => {
   const logicalAnchor = {
     itemID: 2001,
@@ -179,6 +239,284 @@ test("server collision ignores non-physical anchors and active warp", () => {
   }
 });
 
+test("direct weapons are occluded by the nearest physical entity", () => {
+  const source = buildShip({
+    itemID: 1001,
+    position: { x: 0, y: 0, z: 0 },
+    radius: 10,
+  });
+  const target = buildShip({
+    itemID: 1002,
+    position: { x: 100, y: 0, z: 0 },
+    radius: 10,
+  });
+  const fartherBlocker = buildShip({
+    itemID: 1004,
+    position: { x: 70, y: 0, z: 0 },
+    radius: 5,
+  });
+  const nearestBlocker = {
+    itemID: 1003,
+    kind: "structure",
+    position: { x: 40, y: 0, z: 0 },
+    radius: 5,
+  };
+  const scene = {
+    staticEntities: [fartherBlocker, nearestBlocker],
+    dynamicEntities: new Map([
+      [source.itemID, source],
+      [target.itemID, target],
+    ]),
+  };
+
+  const occlusion = findWeaponLineOccluder(scene, source, target);
+
+  assert.equal(occlusion.entityID, nearestBlocker.itemID);
+  assert.equal(occlusion.kind, "structure");
+  assert.ok(Math.abs(occlusion.position.x - 35) < 1e-9);
+});
+
+test("direct weapon occlusion ignores off-axis and explicitly non-physical objects", () => {
+  const source = buildShip({
+    itemID: 1001,
+    position: { x: 0, y: 0, z: 0 },
+    radius: 10,
+  });
+  const target = buildShip({
+    itemID: 1002,
+    position: { x: 100, y: 0, z: 0 },
+    radius: 10,
+  });
+  const scene = {
+    staticEntities: [
+      {
+        itemID: 2001,
+        kind: "structure",
+        position: { x: 40, y: 20, z: 0 },
+        radius: 5,
+      },
+      {
+        itemID: 2002,
+        kind: "structure",
+        position: { x: 60, y: 0, z: 0 },
+        radius: 10,
+        collisionEnabled: false,
+      },
+    ],
+    dynamicEntities: new Map([
+      [source.itemID, source],
+      [target.itemID, target],
+    ]),
+  };
+
+  assert.equal(findWeaponLineOccluder(scene, source, target), null);
+});
+
+test("the shared weapon damage path rejects damage through an occluder", () => {
+  const {
+    applyWeaponDamageToTargetForTesting,
+  } = require("../src/space/runtime")._testing;
+  const source = buildShip({
+    itemID: 1001,
+    position: { x: 0, y: 0, z: 0 },
+    radius: 10,
+  });
+  const target = buildShip({
+    itemID: 1002,
+    position: { x: 100, y: 0, z: 0 },
+    radius: 10,
+    shieldCapacity: 100,
+    armorHP: 100,
+    structureHP: 100,
+  });
+  const blocker = buildShip({
+    itemID: 1003,
+    position: { x: 50, y: 0, z: 0 },
+    radius: 10,
+  });
+  const scene = {
+    getAllVisibleEntities: () => [source, target, blocker],
+  };
+
+  const result = applyWeaponDamageToTargetForTesting(
+    scene,
+    source,
+    target,
+    { em: 50 },
+    1_000,
+  );
+
+  assert.equal(result.damageResult, null);
+  assert.equal(result.destroyResult, null);
+  assert.equal(result.occlusion.entityID, blocker.itemID);
+});
+
+test("server-resolved skillshots can damage an unresolved contact", () => {
+  const {
+    applyWeaponDamageToTargetForTesting,
+  } = require("../src/space/runtime")._testing;
+  const source = buildShip({ itemID: 1001 });
+  const hiddenTarget: Record<string, any> = buildShip({
+    itemID: 1002,
+    shieldCapacity: 100,
+    armorHP: 100,
+    structureHP: 100,
+  });
+  const observerSession = {
+    _space: {
+      shipID: source.itemID,
+      visibleDynamicEntityIDs: new Set([source.itemID]),
+    },
+  };
+  const scene = {
+    getAllVisibleEntities: () => [source, hiddenTarget],
+    getCurrentSimTimeMs: () => 1000,
+    getCurrentDestinyStamp: () => 10,
+    sessions: new Map(),
+    staticEntitiesByID: new Map(),
+  };
+
+  assert.equal(
+    observerSession._space.visibleDynamicEntityIDs.has(hiddenTarget.itemID),
+    false,
+  );
+  const result = applyWeaponDamageToTargetForTesting(
+    scene,
+    source,
+    hiddenTarget,
+    { em: 10 },
+    1000,
+    { skipWeaponOcclusion: true },
+  );
+
+  assert.equal(result.damageResult.success, true);
+  assert.ok(hiddenTarget.conditionState.shieldCharge < 1);
+});
+
+test("missile sweeps collide with intervening targets without tunneling", () => {
+  const source = buildShip({
+    itemID: 1001,
+    position: { x: 0, y: 0, z: 0 },
+    radius: 10,
+  });
+  const intendedTarget = buildShip({
+    itemID: 1002,
+    position: { x: 100, y: 0, z: 0 },
+    radius: 10,
+  });
+  const blocker = buildShip({
+    itemID: 1003,
+    position: { x: 50, y: 0, z: 0 },
+    radius: 10,
+  });
+  const missile = {
+    itemID: 2001,
+    kind: "missile",
+    mode: "MISSILE",
+    sourceShipID: source.itemID,
+    targetEntityID: intendedTarget.itemID,
+    radius: 1,
+    position: { x: 100, y: 0, z: 0 },
+    velocity: { x: 100, y: 0, z: 0 },
+  };
+  const scene = {
+    _activeTickSequence: 9,
+    staticEntities: [],
+    dynamicEntities: new Map<number, any>([
+      [source.itemID, source],
+      [intendedTarget.itemID, intendedTarget],
+      [blocker.itemID, blocker],
+      [missile.itemID, missile],
+    ]),
+  };
+
+  const occlusion = findSweptWeaponOccluder(
+    missile,
+    scene,
+    { x: 0, y: 0, z: 0 },
+    {
+      activeTickSequence: 9,
+      ignoreEntityIDs: [source.itemID, intendedTarget.itemID],
+    },
+  );
+
+  assert.equal(occlusion.entityID, blocker.itemID);
+  assert.ok(Math.abs(occlusion.fraction - 0.39) < 1e-12);
+  assert.ok(Math.abs(occlusion.position.x - 39) < 1e-9);
+});
+
+test("an occluded missile resolves against the blocker instead of its intended target", () => {
+  const {
+    resolveMissileLifecycleForTesting,
+  } = require("../src/space/runtime")._testing;
+  const source = buildShip({
+    itemID: 1001,
+    position: { x: 0, y: 0, z: 0 },
+  });
+  const target: any = buildShip({
+    itemID: 1002,
+    position: { x: 100, y: 0, z: 0 },
+    shieldCapacity: 100,
+    armorHP: 100,
+    structureHP: 100,
+  });
+  const blocker = {
+    itemID: 1003,
+    kind: "authoredSpaceProp",
+    position: { x: 50, y: 0, z: 0 },
+    radius: 10,
+  };
+  const missile = {
+    itemID: 2001,
+    kind: "missile",
+    sourceShipID: source.itemID,
+    sourceModuleID: 0,
+    sourceModuleTypeID: 5001,
+    targetEntityID: target.itemID,
+    position: { x: 39, y: 0, z: 0 },
+    radius: 1,
+    maxVelocity: 100,
+    expiresAtMs: 10_000,
+    impactAtMs: 8_000,
+    pendingGeometryImpact: true,
+    pendingWeaponOcclusion: true,
+    pendingGeometryImpactReason: "weapon-occlusion",
+    pendingGeometryImpactAtMs: 1_000,
+    pendingGeometryImpactEntityID: blocker.itemID,
+    pendingGeometryImpactPosition: { x: 39, y: 0, z: 0 },
+    missileSnapshot: {
+      rawShotDamage: { em: 100 },
+      explosionRadius: 1,
+      explosionVelocity: 1_000,
+      damageReductionFactor: 1,
+    },
+  };
+  const entities = new Map<number, any>([
+    [source.itemID, source],
+    [target.itemID, target],
+    [blocker.itemID, blocker],
+    [missile.itemID, missile],
+  ]);
+  const removedIDs: number[] = [];
+  const scene = {
+    systemID: 30000001,
+    getEntityByID: (entityID) => entities.get(Number(entityID)) || null,
+    getCurrentDestinyStamp: () => 10,
+    unregisterDynamicEntity: (entity) => {
+      removedIDs.push(Number(entity.itemID));
+      return { success: true };
+    },
+  };
+
+  const result = resolveMissileLifecycleForTesting(scene, missile, 1_000);
+
+  assert.equal(result.impact, true);
+  assert.equal(result.removed, true);
+  assert.equal(result.damageResult, null);
+  assert.deepEqual(removedIDs, [missile.itemID]);
+  assert.equal(target.conditionState, undefined);
+});
+
 test("ship lifecycle restores client collisions after undock, warp, and cloak", () => {
   const ship = buildShip({ position: { x: 0, y: 0, z: 0 } });
   const undockUpdates = buildUndockBootstrapMovementUpdates(ship, 10);
@@ -209,4 +547,133 @@ test("ship lifecycle restores client collisions after undock, warp, and cloak", 
   });
   assert.ok(ownerUncloak.some((update) => payloadMassiveValue(update) === 1));
   assert.ok(observerUncloak.some((update) => payloadMassiveValue(update) === 1));
+});
+
+test("session line of sight hides occluded targets until scanning resolves them", () => {
+  const {
+    SolarSystemScene,
+  } = require("../src/space/runtime")._testing;
+  const source = buildShip({
+    itemID: 1001,
+    bubbleID: 7,
+    systemID: 30000001,
+    position: { x: 0, y: 0, z: 0 },
+  });
+  const target = buildShip({
+    itemID: 1002,
+    bubbleID: 7,
+    systemID: 30000001,
+    position: { x: 100, y: 0, z: 0 },
+  });
+  const blocker = buildShip({
+    itemID: 1003,
+    bubbleID: 7,
+    systemID: 30000001,
+    position: { x: 50, y: 0, z: 0 },
+  });
+  const session: Record<string, any> = {
+    _space: { shipID: source.itemID },
+  };
+  const scene = Object.create(SolarSystemScene.prototype);
+  scene.dynamicEntities = new Map([
+    [source.itemID, source],
+    [target.itemID, target],
+    [blocker.itemID, blocker],
+  ]);
+  scene.staticEntities = [];
+  scene.staticEntitiesByID = new Map();
+
+  assert.equal(scene.hasLineOfSightForSession(session, target), false);
+  blocker.position.y = 100;
+  assert.equal(scene.hasLineOfSightForSession(session, target), true);
+
+  scene.isNativeBallReplacementPendingForSession = () => false;
+  scene.canSessionSeeAirNpeScopedEntity = () => true;
+  scene.canSessionSeeDungeonScopedEntity = () => true;
+  scene.isSessionInPilotWarpQuietWindow = () => false;
+  scene.getVisibilityPublicGridKeyForEntity = () => "grid";
+  scene.resolveVisibilityClusterKeyForSession = () => "grid";
+  scene.getVisibilityPublicGridClusterKeyForEntity = () => "grid";
+  scene.canSessionSeeEntityInPublicGrid = () => true;
+  scene.hasLineOfSightForSession = () => false;
+
+  session._space.initialStateSent = true;
+  session._space.visibleDynamicEntityIDs = new Set();
+  assert.deepEqual(
+    scene.validateTargetLockRequest(session, source, target),
+    { success: false, errorMsg: "TARGET_NOT_FOUND" },
+    "an unresolved contact cannot be promoted to a Dogma target by guessing its ID",
+  );
+  assert.equal(scene.canSessionSeeDynamicEntity(session, target, 1999), false);
+  session._space.frontierResolvedScanningContactsByID = new Map([
+    [target.itemID, { resolveAtMs: 2000 }],
+  ]);
+  assert.equal(scene.canSessionSeeDynamicEntity(session, target, 1999), false);
+  assert.equal(scene.canSessionSeeDynamicEntity(session, target, 2000), true);
+});
+
+test("unresolved weapon fire is presented without materializing its source", () => {
+  const {
+    SolarSystemScene,
+  } = require("../src/space/runtime")._testing;
+  const observer = buildShip({ itemID: 1001 });
+  const unresolvedSource = buildShip({ itemID: 1002 });
+  const session: Record<string, any> = {
+    socket: { destroyed: false },
+    _space: {
+      shipID: observer.itemID,
+      initialStateSent: true,
+      visibleDynamicEntityIDs: new Set([observer.itemID]),
+    },
+  };
+  const delivered: any[] = [];
+  const scene = Object.create(SolarSystemScene.prototype);
+  scene.sessions = new Map([[1, session]]);
+  scene.dynamicEntities = new Map([
+    [observer.itemID, observer],
+    [unresolvedSource.itemID, unresolvedSource],
+  ]);
+  scene.staticEntities = [];
+  scene.staticEntitiesByID = new Map();
+  scene.getCurrentSimTimeMs = () => 1000;
+  scene.getCurrentDestinyStamp = () => 10;
+  scene.getNextDestinyStamp = () => 11;
+  scene.canSessionSeeDynamicEntity = () => false;
+  scene.sendDestinyUpdates = (_session, updates) => {
+    delivered.push(...updates);
+    return updates[0] && updates[0].stamp;
+  };
+
+  const quietModule = scene.broadcastSpecialFx(
+    unresolvedSource.itemID,
+    "effects.Afterburner",
+    { moduleID: 2001, start: true, active: true, isOffensive: false },
+    unresolvedSource,
+  );
+  assert.equal(quietModule.deliveredCount, 0);
+  assert.equal(delivered.length, 0);
+
+  const weaponFire = scene.broadcastSpecialFx(
+    unresolvedSource.itemID,
+    "effects.TriglavianBeam",
+    {
+      moduleID: 2002,
+      targetID: observer.itemID,
+      start: true,
+      active: true,
+      isOffensive: true,
+    },
+    unresolvedSource,
+  );
+  assert.equal(weaponFire.deliveredCount, 1);
+  assert.ok(delivered.some((update) => update.payload[0] === "OnSpecialFX"));
+  assert.equal(
+    delivered.some((update) => update.payload[0] === "AddBalls2"),
+    false,
+  );
+  assert.deepEqual(
+    [...session._space.visibleDynamicEntityIDs],
+    [observer.itemID],
+    "weapon FX must not resolve or materialize the hidden ship",
+  );
 });

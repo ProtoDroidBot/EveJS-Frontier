@@ -25,9 +25,10 @@
  * ship's active fuel properties and is consumed before later batches. Legacy
  * saves with only `fuelTypeID`, and pre-FIFO `fuelComposition` saves, remain
  * supported.
- * Regular ships author the capacity directly as Dogma attribute 5633;
- * Creation ships derive it from FuelCapacityAdd modifiers supplied by fitted
- * fuel-storage modules.
+ * Regular ships author the capacity directly as Dogma attribute 5633 and
+ * require a fitted engine whose group determines the accepted fuel group.
+ * Creation ships derive capacity from FuelCapacityAdd modifiers supplied by
+ * fitted fuel-storage modules and may mix every supported fuel group.
  */
 const path = require("path");
 
@@ -66,9 +67,20 @@ const FUEL_GROUP_CRUDE = 4738;
 const FUEL_GROUP_CORVETTE = 4598;
 const FUEL_GROUP_IDS = Object.freeze([FUEL_GROUP_CRUDE, FUEL_GROUP_CORVETTE]);
 
+// inventorycommon.const engine groups in the staged client. Power Generator
+// is both a Creation module group and the hydrogen engine group accepted by
+// non-modular corvettes and shuttles.
+const ENGINE_GROUP_CRUDE = 4619;
+const ENGINE_GROUP_CORVETTE = 4741;
+const ENGINE_FUEL_GROUPS = Object.freeze({
+  [ENGINE_GROUP_CRUDE]: FUEL_GROUP_CRUDE,
+  [ENGINE_GROUP_CORVETTE]: FUEL_GROUP_CORVETTE,
+});
+
 // Client-side FUEL_LOCATION_FLAGS plus the docked hangar fallback.
 const FLAG_CARGO = 5;
 const FLAG_HANGAR = 4;
+const FLAG_ENGINE = 37;
 const FLAG_SPECIALIZED_FUEL_BAY = 133;
 
 function toInt(value, fallback = 0) {
@@ -91,6 +103,47 @@ function resolveFuelGroupID(typeID, deps: Record<string, any> = {}) {
 
 function isSupportedFuelType(typeID, deps: Record<string, any> = {}) {
   return FUEL_GROUP_IDS.includes(resolveFuelGroupID(typeID, deps));
+}
+
+/**
+ * Return the fuel groups enabled by the ship's fitted engine. Creation ships
+ * deliberately bypass engine filtering: their fitted fuel-storage module is
+ * the opt-in and all Frontier hydrogen/crude fuels remain valid.
+ */
+function getAllowedShipFuelGroupIDs(
+  shipItem,
+  fuelTank,
+  deps: Record<string, any> = {},
+) {
+  if (fuelTank && fuelTank.creationType) {
+    return [...FUEL_GROUP_IDS];
+  }
+
+  const listContainerItems = typeof deps.listContainerItems === "function"
+    ? deps.listContainerItems
+    : itemStore.listContainerItems;
+  const resolveType = typeof deps.resolveItemByTypeID === "function"
+    ? deps.resolveItemByTypeID
+    : resolveItemByTypeID;
+  const ownerID = toInt(shipItem && shipItem.ownerID, 0);
+  const shipID = toInt(shipItem && shipItem.itemID, 0);
+  if (ownerID <= 0 || shipID <= 0) {
+    return [];
+  }
+
+  const fuelGroupIDs = new Set<number>();
+  for (const engineItem of listContainerItems(ownerID, shipID, FLAG_ENGINE)) {
+    const engineType = resolveType(toInt(engineItem && engineItem.typeID, 0));
+    const engineGroupID = toInt(
+      engineType && engineType.groupID,
+      toInt(engineItem && engineItem.groupID, 0),
+    );
+    const fuelGroupID = toInt(ENGINE_FUEL_GROUPS[engineGroupID], 0);
+    if (fuelGroupID > 0) {
+      fuelGroupIDs.add(fuelGroupID);
+    }
+  }
+  return [...fuelGroupIDs];
 }
 
 /**
@@ -606,6 +659,22 @@ function loadFuelIntoShipTank({
   if (!fuelTank.supported) {
     return { success: false as const, errorMsg: "FUEL_TANK_MISSING" };
   }
+  const fuelGroupID = resolveFuelGroupID(numericTypeID, deps);
+  const allowedFuelGroupIDs = getAllowedShipFuelGroupIDs(
+    shipItem,
+    fuelTank,
+    deps,
+  );
+  if (!fuelTank.creationType && allowedFuelGroupIDs.length === 0) {
+    return { success: false as const, errorMsg: "FUEL_ENGINE_MISSING" };
+  }
+  if (!allowedFuelGroupIDs.includes(fuelGroupID)) {
+    return {
+      success: false as const,
+      errorMsg: "FUEL_TYPE_INCOMPATIBLE",
+      params: { allowedFuelGroupIDs, fuelGroupID },
+    };
+  }
   const previousFuelCharge = Math.min(getShipFuelCharge(shipItem), tankCapacity);
   let previousFuelQueue = trimFuelQueueToQuantity(
     getShipFuelQueue(shipItem),
@@ -764,6 +833,7 @@ module.exports = {
   collectFuelSourceStacks,
   getFuelEfficiency,
   getFuelProperties,
+  getAllowedShipFuelGroupIDs,
   getShipFuelCharge,
   getShipFuelComposition,
   getShipFuelQueue,

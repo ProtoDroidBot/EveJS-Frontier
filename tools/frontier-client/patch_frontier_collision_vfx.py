@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Install the verified build-3502403 contact-bound collision VFX fix."""
+
+import argparse
+import hashlib
+import importlib.util
+import marshal
+from pathlib import Path
+import sys
+import types
+import zipfile
+
+from patch_frontier_features import rewrite_archive
+
+
+BUILD = 3502403
+MODULE = "eve/client/script/environment/spaceObject/ship.pyc"
+SOURCE_SHA256 = "4c1685990e3900228ad53d2ce84bef43e44f534a4a4d89bfcebdf8031b9a0630"
+PREVIOUS_WRAPPER_SHA256 = {
+    "041d45a87fb69cd921d76fed9b37e2ad291d496bdedc304783dadb0a84fd9258",
+}
+ADAPTER = Path(__file__).with_name("collision_vfx_compatibility_adapter.py")
+SOURCE_SENTINEL = b"EVEJS_COLLISION_VFX_ORIGINAL_MEMBER_V1"
+ADAPTER_SENTINEL = b"EVEJS_COLLISION_VFX_ADAPTER_CODE_V1"
+
+
+class CollisionVfxPatchError(RuntimeError):
+    pass
+
+
+def patched_member(member):
+    original = marshal.loads(member[16:])
+    adapter = compile(
+        ADAPTER.read_text(encoding="utf-8"),
+        "evejs/collision_vfx_compatibility_adapter.py",
+        "exec",
+        dont_inherit=True,
+    )
+    wrapper = compile(
+        "import marshal as _evejs_collision_vfx_marshal\n"
+        "exec(_evejs_collision_vfx_marshal.loads(b'EVEJS_COLLISION_VFX_ORIGINAL_MEMBER_V1'[16:]))\n"
+        "exec(_evejs_collision_vfx_marshal.loads(b'EVEJS_COLLISION_VFX_ADAPTER_CODE_V1'))\n"
+        "_evejs_install_collision_vfx_compatibility(globals())\n",
+        original.co_filename,
+        "exec",
+        dont_inherit=True,
+    )
+    constants = tuple(
+        member
+        if value == SOURCE_SENTINEL
+        else marshal.dumps(adapter)
+        if value == ADAPTER_SENTINEL
+        else value
+        for value in wrapper.co_consts
+    )
+    return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
+
+
+def inspect_member(member, expected=SOURCE_SHA256):
+    if len(member) < 16 or member[:4] != importlib.util.MAGIC_NUMBER:
+        raise CollisionVfxPatchError("Unexpected Python bytecode header")
+    if hashlib.sha256(member).hexdigest() == expected:
+        return "source", member
+    member_hash = hashlib.sha256(member).hexdigest()
+    try:
+        wrapper = marshal.loads(member[16:])
+        if not isinstance(wrapper, types.CodeType):
+            raise ValueError("Not a code object")
+        originals = [
+            value
+            for value in wrapper.co_consts
+            if isinstance(value, bytes)
+            and hashlib.sha256(value).hexdigest() == expected
+        ]
+        if len(originals) == 1:
+            if patched_member(originals[0]) == member:
+                return "patched", originals[0]
+            if member_hash in PREVIOUS_WRAPPER_SHA256:
+                return "outdated", originals[0]
+    except (EOFError, TypeError, ValueError):
+        pass
+    raise CollisionVfxPatchError(
+        "Ship collision module differs from the exact supported source or patch"
+    )
+
+
+def inspect_archive(archive, build=BUILD):
+    if build != BUILD:
+        raise CollisionVfxPatchError(
+            f"No collision VFX patch is available for build {build}"
+        )
+    with zipfile.ZipFile(archive) as source:
+        entries = [entry for entry in source.infolist() if entry.filename == MODULE]
+        if len(entries) != 1:
+            raise CollisionVfxPatchError(f"Expected exactly one {MODULE}")
+        return inspect_member(source.read(entries[0]))[0]
+
+
+def patch_archive(archive, build=BUILD):
+    state = inspect_archive(archive, build)
+    if state in {"source", "outdated"}:
+        with zipfile.ZipFile(archive) as source:
+            _state, original = inspect_member(source.read(MODULE))
+        rewrite_archive(archive, {MODULE: patched_member(original)})
+    if inspect_archive(archive, build) != "patched":
+        raise CollisionVfxPatchError("Collision VFX patch verification failed")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--archive", type=Path, required=True)
+    parser.add_argument("--build", type=int, default=BUILD)
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    if sys.version_info[:2] != (3, 12):
+        raise CollisionVfxPatchError(
+            "Python 3.12 exactly is required for client bytecode"
+        )
+    if args.check:
+        print(inspect_archive(args.archive, args.build))
+    else:
+        patch_archive(args.archive, args.build)
+        print("patched")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (CollisionVfxPatchError, OSError, zipfile.BadZipFile) as error:
+        print(f"[evejs-frontier] {error}", file=sys.stderr)
+        raise SystemExit(1)

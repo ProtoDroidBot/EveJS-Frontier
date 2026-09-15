@@ -24,6 +24,8 @@ const FUEL_TYPE_SOF_40 = 84868;
 const CREATION_SHIP_TYPE = 95276;
 const REGULAR_FUEL_SHIP_TYPE = 91107;
 const REGULAR_TANKLESS_SHIP_TYPE = 606;
+const POWER_GENERATOR_TYPE = 77753; // group 4741 (hydrogen engine)
+const CRUDE_ENGINE_TYPE = 78490; // group 4619 (crude engine)
 const TANK_CAPACITY = 2250;
 // Seeded default character present in every store baseline; the main
 // handshake suite claims 140000005, so use a different one to stay disjoint.
@@ -42,6 +44,8 @@ function fakeTypeResolver(overrides = {}) {
         [CREATION_SHIP_TYPE]: { typeID: CREATION_SHIP_TYPE, categoryID: 6 },
         [REGULAR_FUEL_SHIP_TYPE]: { typeID: REGULAR_FUEL_SHIP_TYPE, categoryID: 6 },
         [REGULAR_TANKLESS_SHIP_TYPE]: { typeID: REGULAR_TANKLESS_SHIP_TYPE, categoryID: 6 },
+        [POWER_GENERATOR_TYPE]: { typeID: POWER_GENERATOR_TYPE, groupID: 4741 },
+        [CRUDE_ENGINE_TYPE]: { typeID: CRUDE_ENGINE_TYPE, groupID: 4619 },
         ...overrides,
     };
     return (typeID) => records[typeID] || null;
@@ -156,6 +160,17 @@ function shipItem(overrides = {}) {
         ...overrides,
     };
 }
+function engineItem(typeID, itemID = 600100) {
+    return {
+        itemID,
+        typeID,
+        ownerID: OWNER_ID,
+        locationID: SHIP_ID,
+        flagID: 37,
+        stacksize: 1,
+        singleton: 1,
+    };
+}
 test("fuel tanks are enabled by Creation modules or a regular hull Dogma attribute", () => {
     const deps = buildFakeStore().deps;
     assert.deepEqual(resolveShipFuelTank(shipItem(), TANK_CAPACITY, deps), {
@@ -185,10 +200,11 @@ test("a capacity value cannot opt a tankless regular ship or non-ship into fuel"
     assert.equal(nonShip.isShip, false);
     assert.equal(nonShip.supported, false);
 });
-test("LoadFuel: regular ships use their authored hull tank", () => {
+test("LoadFuel: regular ships use their authored hull tank with a fitted engine", () => {
     const store = buildFakeStore({
         items: [
             shipItem({ typeID: REGULAR_FUEL_SHIP_TYPE }),
+            engineItem(POWER_GENERATOR_TYPE),
             fuelStack(600001, 500),
         ],
     });
@@ -202,6 +218,116 @@ test("LoadFuel: regular ships use their authored hull tank", () => {
     });
     assert.equal(result.success, true);
     assert.equal(result.data.nextFuelCharge, 400);
+});
+test("LoadFuel: a Power Generator enables only hydrogen fuel on a regular ship", () => {
+    const hydrogenStore = buildFakeStore({
+        items: [
+            shipItem({ typeID: REGULAR_FUEL_SHIP_TYPE }),
+            engineItem(POWER_GENERATOR_TYPE),
+            fuelStack(600001, 300),
+        ],
+    });
+    const accepted = loadFuelIntoShipTank({
+        characterID: OWNER_ID,
+        shipID: SHIP_ID,
+        fuelTypeID: FUEL_TYPE_UNSTABLE,
+        quantity: 200,
+        fuelCapacity: 3000,
+        deps: hydrogenStore.deps,
+    });
+    assert.equal(accepted.success, true);
+    const crudeStore = buildFakeStore({
+        items: [
+            shipItem({ typeID: REGULAR_FUEL_SHIP_TYPE }),
+            engineItem(POWER_GENERATOR_TYPE),
+            fuelStack(600002, 300, { typeID: FUEL_TYPE_EU_40 }),
+        ],
+    });
+    const rejected = loadFuelIntoShipTank({
+        characterID: OWNER_ID,
+        shipID: SHIP_ID,
+        fuelTypeID: FUEL_TYPE_EU_40,
+        quantity: 200,
+        fuelCapacity: 3000,
+        deps: crudeStore.deps,
+    });
+    assert.equal(rejected.success, false);
+    assert.equal(rejected.errorMsg, "FUEL_TYPE_INCOMPATIBLE");
+    assert.deepEqual(crudeStore.consumeCalls, []);
+});
+test("LoadFuel: a Crude Engine enables only crude fuel on a regular ship", () => {
+    const crudeStore = buildFakeStore({
+        items: [
+            shipItem({ typeID: REGULAR_FUEL_SHIP_TYPE }),
+            engineItem(CRUDE_ENGINE_TYPE),
+            fuelStack(600001, 300, { typeID: FUEL_TYPE_EU_40 }),
+        ],
+    });
+    const accepted = loadFuelIntoShipTank({
+        characterID: OWNER_ID,
+        shipID: SHIP_ID,
+        fuelTypeID: FUEL_TYPE_EU_40,
+        quantity: 200,
+        fuelCapacity: 3000,
+        deps: crudeStore.deps,
+    });
+    assert.equal(accepted.success, true);
+    const hydrogenStore = buildFakeStore({
+        items: [
+            shipItem({ typeID: REGULAR_FUEL_SHIP_TYPE }),
+            engineItem(CRUDE_ENGINE_TYPE),
+            fuelStack(600002, 300),
+        ],
+    });
+    const rejected = loadFuelIntoShipTank({
+        characterID: OWNER_ID,
+        shipID: SHIP_ID,
+        fuelTypeID: FUEL_TYPE_UNSTABLE,
+        quantity: 200,
+        fuelCapacity: 3000,
+        deps: hydrogenStore.deps,
+    });
+    assert.equal(rejected.success, false);
+    assert.equal(rejected.errorMsg, "FUEL_TYPE_INCOMPATIBLE");
+    assert.deepEqual(hydrogenStore.consumeCalls, []);
+});
+test("LoadFuel: a regular ship without a fitted engine cannot be fueled", () => {
+    const store = buildFakeStore({
+        items: [
+            shipItem({ typeID: REGULAR_FUEL_SHIP_TYPE }),
+            fuelStack(600001, 300),
+        ],
+    });
+    const result = loadFuelIntoShipTank({
+        characterID: OWNER_ID,
+        shipID: SHIP_ID,
+        fuelTypeID: FUEL_TYPE_UNSTABLE,
+        quantity: 200,
+        fuelCapacity: 3000,
+        deps: store.deps,
+    });
+    assert.equal(result.success, false);
+    assert.equal(result.errorMsg, "FUEL_ENGINE_MISSING");
+    assert.deepEqual(store.consumeCalls, []);
+});
+test("LoadFuel: Creation ships continue accepting hydrogen and crude fuel", () => {
+    for (const [fuelTypeID, itemID] of [
+        [FUEL_TYPE_UNSTABLE, 600001],
+        [FUEL_TYPE_EU_40, 600002],
+    ]) {
+        const store = buildFakeStore({
+            items: [shipItem(), fuelStack(itemID, 300, { typeID: fuelTypeID })],
+        });
+        const result = loadFuelIntoShipTank({
+            characterID: OWNER_ID,
+            shipID: SHIP_ID,
+            fuelTypeID,
+            quantity: 200,
+            fuelCapacity: TANK_CAPACITY,
+            deps: store.deps,
+        });
+        assert.equal(result.success, true, `fuelTypeID=${fuelTypeID}`);
+    }
 });
 test("LoadFuel: successful load consumes source once and raises fuelCharge", () => {
     const store = buildFakeStore({

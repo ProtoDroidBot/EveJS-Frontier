@@ -1,8 +1,8 @@
 "use strict";
 
 /**
- * Frontier directional scanner runtime (module 95322, behavior
- * "directional_scan", capability "scanning").
+ * Frontier directional scanner runtime (fitted Creation scanners and classic
+ * ships' built-in sensors).
  *
  * Client contract (build 3467658 bytecode; the Creation path is unchanged
  * from 3455996):
@@ -33,6 +33,9 @@
  * - Per-signature-type strength multipliers come from the module's authored
  *   ActiveScanGravStrengthMulti / ActiveScanEMStrengthMulti /
  *   ActiveScanThermalStrengthMulti attributes (6265/6266/6267).
+ * - Non-modular ships use their built-in radar, ladar, magnetometric, and
+ *   gravimetric sensor strengths. When a hull authors more than one positive
+ *   sensor type, those strengths are averaged.
  *
  * Documented emulator approximation (NOT client-recoverable): the client
  * ships the reveal/where-it-lands math but the server-side signature model
@@ -51,6 +54,9 @@ const path = require("path");
 const {
   getTypeAttributeValue,
 } = require(path.join(__dirname, "../fitting/liveFittingState"));
+const {
+  getEntityMapKey,
+} = require(path.join(__dirname, "../../space/destiny/identity/entityID"));
 const { readStaticRows, TABLE } = require(path.join(
   __dirname,
   "../_shared/referenceData",
@@ -65,6 +71,27 @@ const RESOLVE_SNR_THRESHOLD = 1.0;
 const SIGNATURE_TYPE_GRAVIMETRIC = 1;
 const SIGNATURE_TYPE_ELECTROMAGNETIC = 2;
 const SIGNATURE_TYPE_THERMAL = 3;
+const BUILT_IN_SENSOR_STRENGTH_ATTRIBUTES = Object.freeze([
+  [208, "scanRadarStrength"],
+  [209, "scanLadarStrength"],
+  [210, "scanMagnetometricStrength"],
+  [211, "scanGravimetricStrength"],
+]);
+// Hull sensor strength and active-scanner strength multipliers are authored in
+// different scales. A 20-point built-in sensor maps to the fitted scanner's
+// baseline 500 multiplier while retaining relative differences between hulls.
+const BUILT_IN_SENSOR_TO_SCAN_MULTIPLIER = 25;
+const MODULE_ACTIVITY_EM_BONUS = 0.5;
+const WEAPON_ACTIVITY_EM_BONUS = 1.0;
+const ACTIVE_MODULE_EM_BONUS = 0.25;
+const MODULE_ACTIVITY_EM_DECAY_MS = 10000;
+const WEAPON_ACTIVITY_EM_DECAY_MS = 15000;
+const BEYOND_LINE_OF_SIGHT_SIGNATURE_TYPES = new Set([
+  SIGNATURE_TYPE_GRAVIMETRIC,
+  SIGNATURE_TYPE_ELECTROMAGNETIC,
+]);
+const RESOLVED_SCANNING_CONTACTS_KEY =
+  "frontierResolvedScanningContactsByID";
 const SIGNATURE_TYPE_MULTIPLIER_ATTRIBUTES = Object.freeze([
   [SIGNATURE_TYPE_GRAVIMETRIC, "ActiveScanGravStrengthMulti"],
   [SIGNATURE_TYPE_ELECTROMAGNETIC, "ActiveScanEMStrengthMulti"],
@@ -163,6 +190,163 @@ function resolveSignatureMultipliers(moduleTypeID) {
   return multipliers;
 }
 
+function readEntityAttribute(entity, attributeID, attributeName) {
+  const attributes = entity && entity.passiveDerivedState &&
+    entity.passiveDerivedState.attributes &&
+    typeof entity.passiveDerivedState.attributes === "object"
+      ? entity.passiveDerivedState.attributes
+      : null;
+  const derived = attributes
+    ? toFiniteNumber(attributes[String(attributeID)], 0)
+    : 0;
+  if (derived > 0) {
+    return derived;
+  }
+  return toFiniteNumber(
+    getTypeAttributeValue(toInt(entity && entity.typeID, 0), attributeName),
+    0,
+  );
+}
+
+/**
+ * Resolve the scanner profile for a classic/non-modular hull. Positive sensor
+ * types are averaged exactly once each; zero or absent types do not dilute a
+ * multi-sensor hull. entity.sensorStrength remains a compatibility fallback
+ * for runtime-authored NPCs which have no per-type attributes.
+ */
+function resolveBuiltInScannerProfile(entity) {
+  const sensorStrengths = BUILT_IN_SENSOR_STRENGTH_ATTRIBUTES
+    .map(([attributeID, attributeName]) =>
+      readEntityAttribute(entity, attributeID, attributeName))
+    .filter((value) => value > 0);
+  const explicitFallback = toFiniteNumber(entity && entity.sensorStrength, 0);
+  const sensorStrength = sensorStrengths.length > 0
+    ? sensorStrengths.reduce((total, value) => total + value, 0) /
+      sensorStrengths.length
+    : explicitFallback;
+  const multiplier = Math.max(
+    0,
+    sensorStrength * BUILT_IN_SENSOR_TO_SCAN_MULTIPLIER,
+  );
+  const durationMs = readEntityAttribute(
+    entity,
+    6179,
+    "activeScanDuration",
+  ) || DEFAULT_ACTIVE_SCAN_DURATION_MS;
+  return {
+    source: "built-in",
+    sensorStrength,
+    sensorStrengths,
+    durationMs,
+    multipliers: multiplier > 0
+      ? [
+          [SIGNATURE_TYPE_GRAVIMETRIC, multiplier],
+          [SIGNATURE_TYPE_ELECTROMAGNETIC, multiplier],
+          [SIGNATURE_TYPE_THERMAL, multiplier],
+        ]
+      : [],
+  };
+}
+
+function resolveDirectionalScannerProfile(moduleTypeID, scannerProfile = null) {
+  if (scannerProfile && typeof scannerProfile === "object") {
+    const multipliers = Array.isArray(scannerProfile.multipliers)
+      ? scannerProfile.multipliers
+          .map((entry) => ([
+            toInt(entry && entry[0], 0),
+            toFiniteNumber(entry && entry[1], 0),
+          ]))
+          .filter(([signatureType, multiplier]) =>
+            signatureType > 0 && multiplier > 0)
+      : [];
+    return {
+      durationMs: Math.max(
+        0,
+        toFiniteNumber(
+          scannerProfile.durationMs,
+          DEFAULT_ACTIVE_SCAN_DURATION_MS,
+        ),
+      ),
+      multipliers,
+    };
+  }
+  return {
+    durationMs: resolveScanDurationMs(moduleTypeID),
+    multipliers: resolveSignatureMultipliers(moduleTypeID),
+  };
+}
+
+function recordEntityScannerEmissionActivity(
+  entity,
+  options: Record<string, any> = {},
+) {
+  if (!entity || typeof entity !== "object") {
+    return null;
+  }
+  const nowMs = toFiniteNumber(options.nowMs, Date.now());
+  const current = entity.scannerEmissionState &&
+    typeof entity.scannerEmissionState === "object"
+      ? entity.scannerEmissionState
+      : {};
+  const next = {
+    lastModuleActivityAtMs: Math.max(
+      toFiniteNumber(current.lastModuleActivityAtMs, 0),
+      nowMs,
+    ),
+    lastWeaponActivityAtMs: toFiniteNumber(
+      current.lastWeaponActivityAtMs,
+      0,
+    ),
+  };
+  if (options.isWeapon === true) {
+    next.lastWeaponActivityAtMs = Math.max(
+      next.lastWeaponActivityAtMs,
+      nowMs,
+    );
+  }
+  entity.scannerEmissionState = next;
+  return next;
+}
+
+function resolveDecayingActivityBonus(nowMs, activityAtMs, durationMs, bonus) {
+  const ageMs = Math.max(0, nowMs - toFiniteNumber(activityAtMs, 0));
+  if (!(activityAtMs > 0) || ageMs >= durationMs) {
+    return 0;
+  }
+  return bonus * (1 - (ageMs / durationMs));
+}
+
+/**
+ * Return the target-side EM signature multiplier. Active effects contribute
+ * continuously; after the last action, the residual module/weapon emission
+ * decays linearly back to the authored base signature.
+ */
+function resolveEntityEmSignatureMultiplier(entity, nowMs = Date.now()) {
+  const currentTimeMs = toFiniteNumber(nowMs, Date.now());
+  const activeModuleCount = entity && entity.activeModuleEffects instanceof Map
+    ? entity.activeModuleEffects.size
+    : 0;
+  const state = entity && entity.scannerEmissionState &&
+    typeof entity.scannerEmissionState === "object"
+      ? entity.scannerEmissionState
+      : {};
+  const modulePulse = resolveDecayingActivityBonus(
+    currentTimeMs,
+    toFiniteNumber(state.lastModuleActivityAtMs, 0),
+    MODULE_ACTIVITY_EM_DECAY_MS,
+    MODULE_ACTIVITY_EM_BONUS,
+  );
+  const weaponPulse = resolveDecayingActivityBonus(
+    currentTimeMs,
+    toFiniteNumber(state.lastWeaponActivityAtMs, 0),
+    WEAPON_ACTIVITY_EM_DECAY_MS,
+    WEAPON_ACTIVITY_EM_BONUS,
+  );
+  return 1 +
+    (Math.max(0, activeModuleCount) * ACTIVE_MODULE_EM_BONUS) +
+    Math.max(modulePulse, weaponPulse);
+}
+
 // baseSignature is authored per type in spaceComponentsByType
 // ({"baseSignature": {"baseSignature": <float>}}), covering ~7,275 types.
 let baseSignaturesByTypeID = null;
@@ -204,6 +388,7 @@ function buildSignatureResultsForTarget({
   baseSignature,
   distanceMeters,
   multipliers,
+  emSignatureMultiplier = 1,
 }: Record<string, any>) {
   const noise = Math.max(
     0,
@@ -211,7 +396,11 @@ function buildSignatureResultsForTarget({
   );
   return multipliers.map(([signatureType, multiplier]) => ([
     signatureType,
-    baseSignature * (multiplier / 1000),
+    baseSignature * (multiplier / 1000) * (
+      toInt(signatureType, 0) === SIGNATURE_TYPE_ELECTROMAGNETIC
+        ? Math.max(1, toFiniteNumber(emSignatureMultiplier, 1))
+        : 1
+    ),
     noise,
   ]));
 }
@@ -219,6 +408,113 @@ function buildSignatureResultsForTarget({
 function isResolved(signatureResults) {
   return signatureResults.some(([, signature, noise]) =>
     calculateSnr(signature, noise) >= RESOLVE_SNR_THRESHOLD);
+}
+
+function getPresentedSignatureResults(signatureResults, hasLineOfSight = true) {
+  const entries = Array.isArray(signatureResults) ? signatureResults : [];
+  if (hasLineOfSight !== false) {
+    return entries;
+  }
+  return entries.filter(([signatureType]) =>
+    BEYOND_LINE_OF_SIGHT_SIGNATURE_TYPES.has(toInt(signatureType, 0)));
+}
+
+function getResolvedScanningContactMap(session, create = false) {
+  const generation = session && session._space;
+  if (!generation || typeof generation !== "object") {
+    return null;
+  }
+  if (generation[RESOLVED_SCANNING_CONTACTS_KEY] instanceof Map) {
+    return generation[RESOLVED_SCANNING_CONTACTS_KEY];
+  }
+  if (!create) {
+    return null;
+  }
+  const contacts = new Map();
+  generation[RESOLVED_SCANNING_CONTACTS_KEY] = contacts;
+  return contacts;
+}
+
+function isScanningContactResolved(session, rawEntityID, nowMs = Date.now()) {
+  const entityID = getEntityMapKey(rawEntityID);
+  const contacts = getResolvedScanningContactMap(session, false);
+  if (entityID === null || !(contacts instanceof Map)) {
+    return false;
+  }
+  const contact = contacts.get(entityID);
+  return Boolean(
+    contact &&
+      toFiniteNumber(contact.resolveAtMs, Number.POSITIVE_INFINITY) <=
+        toFiniteNumber(nowMs, Date.now()),
+  );
+}
+
+/**
+ * Replace the contacts resolved by the latest directional scan.
+ *
+ * A repeated scan preserves an existing contact's original resolve deadline,
+ * so continuously scanning the same signal cannot postpone (or re-hide) a
+ * contact forever. State lives on the exact session `_space` generation;
+ * docking or jumping therefore drops it with that client's presentation.
+ */
+function replaceResolvedScanningContacts(
+  session,
+  rawEntityIDs,
+  options: Record<string, any> = {},
+) {
+  const generation = session && session._space;
+  if (!generation || typeof generation !== "object") {
+    return {
+      activeIDs: new Set<any>(),
+      delayMsByEntityID: new Map<any, any>(),
+      removedIDs: [],
+    };
+  }
+
+  const nowMs = toFiniteNumber(options.nowMs, Date.now());
+  const delayMs = Math.max(0, toFiniteNumber(options.delayMs, 0));
+  const previous = getResolvedScanningContactMap(session, false);
+  const next = new Map<any, any>();
+  const delayMsByEntityID = new Map<any, any>();
+
+  for (const rawEntityID of Array.isArray(rawEntityIDs) ? rawEntityIDs : []) {
+    const entityID = getEntityMapKey(rawEntityID);
+    if (entityID === null || next.has(entityID)) {
+      continue;
+    }
+    const previousContact = previous instanceof Map
+      ? previous.get(entityID)
+      : null;
+    const resolveAtMs = previousContact &&
+      Number.isFinite(Number(previousContact.resolveAtMs))
+      ? Number(previousContact.resolveAtMs)
+      : nowMs + delayMs;
+    next.set(entityID, {
+      entityID,
+      detectedAtMs: previousContact &&
+        Number.isFinite(Number(previousContact.detectedAtMs))
+        ? Number(previousContact.detectedAtMs)
+        : nowMs,
+      resolveAtMs,
+      lastScannedAtMs: nowMs,
+    });
+    delayMsByEntityID.set(entityID, Math.max(0, resolveAtMs - nowMs));
+  }
+
+  const removedIDs = previous instanceof Map
+    ? [...previous.keys()].filter((entityID) => !next.has(entityID))
+    : [];
+  if (next.size > 0) {
+    generation[RESOLVED_SCANNING_CONTACTS_KEY] = next;
+  } else {
+    delete generation[RESOLVED_SCANNING_CONTACTS_KEY];
+  }
+
+  return {
+    activeIDs: new Set(next.keys()),
+    delayMsByEntityID,
+    removedIDs,
+  };
 }
 
 /**
@@ -242,14 +538,19 @@ function performDirectionalScan({
   angleDegrees,
   direction,
   moduleTypeID,
+  scannerProfile = null,
   candidates,
   previousScanIds = [],
 }: Record<string, any>) {
   const origin = normalizeVector(originPosition) || { x: 0, y: 0, z: 0 };
   const halfAngleRadians = (angleDegrees * Math.PI) / 180;
   const cosineThreshold = Math.cos(halfAngleRadians);
-  const multipliers = resolveSignatureMultipliers(moduleTypeID);
-  const durationMs = resolveScanDurationMs(moduleTypeID);
+  const resolvedScannerProfile = resolveDirectionalScannerProfile(
+    moduleTypeID,
+    scannerProfile,
+  );
+  const multipliers = resolvedScannerProfile.multipliers;
+  const durationMs = resolvedScannerProfile.durationMs;
 
   const combinedResults: any[] = [];
   const resolvedIds: any[] = [];
@@ -283,7 +584,12 @@ function performDirectionalScan({
       baseSignature,
       distanceMeters,
       multipliers,
+      emSignatureMultiplier: candidate && candidate.emSignatureMultiplier,
     });
+    const presentedSignatureResults = getPresentedSignatureResults(
+      signatureResults,
+      candidate && candidate.hasLineOfSight,
+    );
     const scanId = buildScanId(candidate.itemID);
     combinedResults.push({
       center: [position.x, position.y, position.z],
@@ -292,9 +598,9 @@ function performDirectionalScan({
       distance_range: [distanceMeters, distanceMeters],
       estimated_number: 1,
       estimated_number_uncertainty: 0,
-      signature_results: signatureResults,
+      signature_results: presentedSignatureResults,
     });
-    if (isResolved(signatureResults)) {
+    if (isResolved(presentedSignatureResults)) {
       resolvedIds.push(toInt(candidate.itemID, 0));
     }
   }
@@ -325,17 +631,32 @@ module.exports = {
   SCAN_ANGLE_DEFAULT_DEGREES,
   SCAN_ANGLE_MAX_DEGREES,
   SCAN_ANGLE_MIN_DEGREES,
+  RESOLVED_SCANNING_CONTACTS_KEY,
   SIGNATURE_TYPE_ELECTROMAGNETIC,
   SIGNATURE_TYPE_GRAVIMETRIC,
   SIGNATURE_TYPE_THERMAL,
+  ACTIVE_MODULE_EM_BONUS,
+  BUILT_IN_SENSOR_STRENGTH_ATTRIBUTES,
+  BUILT_IN_SENSOR_TO_SCAN_MULTIPLIER,
+  MODULE_ACTIVITY_EM_BONUS,
+  MODULE_ACTIVITY_EM_DECAY_MS,
+  WEAPON_ACTIVITY_EM_BONUS,
+  WEAPON_ACTIVITY_EM_DECAY_MS,
   buildScanId,
   buildSignatureResultsForTarget,
   calculateSnr,
+  getPresentedSignatureResults,
+  getResolvedScanningContactMap,
   isResolved,
+  isScanningContactResolved,
   normalizeScanRequest,
   performDirectionalScan,
+  recordEntityScannerEmissionActivity,
+  replaceResolvedScanningContacts,
+  resolveBuiltInScannerProfile,
   resolveBaseSignature,
   resolveScanDurationMs,
   resolveSignatureMultipliers,
+  resolveEntityEmSignatureMultiplier,
   resetScanningStaticDataForTests,
 };

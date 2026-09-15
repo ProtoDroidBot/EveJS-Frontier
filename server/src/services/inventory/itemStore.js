@@ -20,10 +20,11 @@ const { resolveRuntimeWreckRadius, } = require(path.join(__dirname, "./wreckRadi
 const { reserveItemIDs, } = require(path.join(__dirname, "../_shared/identityAllocator"));
 const { normalizeNonNegativeInt64, normalizePersistentEntityID, toJSONSafeEntityID, } = require(path.join(__dirname, "../../space/destiny/identity/entityID"));
 const { FUEL_BAY_FLAG, STRUCTURE_FUEL_BAY_FLAG, } = require(path.join(__dirname, "./fuelBayInventory"));
-// Fitting flag ranges (hi/med/lo slots, rigs, subsystems, service slots).
+// Fitting flag ranges (hi/med/lo slots, engine, rigs, subsystems, service slots).
 // Duplicated from liveFittingState to avoid circular dependency.
 const FITTING_FLAG_RANGES = Object.freeze([
     [11, 34],
+    [37, 37],
     [92, 99],
     [125, 132],
     [164, 171],
@@ -43,6 +44,7 @@ const GOLDEN_CAPSULE_IMPLANT_TYPE_ID = 33329;
 const ITEM_FLAGS = {
     HANGAR: 4,
     CARGO_HOLD: 5,
+    ENGINE_SLOT: 37,
     CORP_DELIVERIES: 62,
     SMART_STORAGE_UNIT: 66,
     FUEL_BAY: FUEL_BAY_FLAG,

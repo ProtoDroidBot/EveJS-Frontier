@@ -226,6 +226,225 @@ function getCandidateStartPosition(candidate, activeTickSequence) {
     : cloneVector(candidate && candidate.position);
 }
 
+function buildIgnoredEntityIdentitySet(values: any[] = []) {
+  return new Set(
+    values
+      .filter((value) => value !== undefined && value !== null)
+      .map((value) => getEntityIdentityText({ itemID: value })),
+  );
+}
+
+function findLineSegmentSphereIntersection(start, end, center, radius) {
+  const segment = subtractVectors(end, start);
+  const segmentLengthSquared = magnitudeSquared(segment);
+  const resolvedRadius = Math.max(0, toFiniteNumber(radius, 0));
+  if (
+    segmentLengthSquared <= COLLISION_MOTION_EPSILON_SQUARED ||
+    resolvedRadius <= 0
+  ) {
+    return null;
+  }
+
+  const relativeStart = subtractVectors(start, center);
+  const radiusSquared = resolvedRadius * resolvedRadius;
+  if (magnitudeSquared(relativeStart) <= radiusSquared) {
+    return {
+      fraction: 0,
+      position: cloneVector(start),
+      startedInside: true,
+    };
+  }
+
+  const a = segmentLengthSquared;
+  const b = 2 * dotProduct(relativeStart, segment);
+  const c = magnitudeSquared(relativeStart) - radiusSquared;
+  const discriminant = (b * b) - (4 * a * c);
+  if (discriminant < 0) {
+    return null;
+  }
+  const fraction = (-b - Math.sqrt(Math.max(0, discriminant))) / (2 * a);
+  if (fraction < 0 || fraction > 1) {
+    return null;
+  }
+  return {
+    fraction,
+    position: addVectors(start, scaleVector(segment, fraction)),
+    startedInside: false,
+  };
+}
+
+function findWeaponLineOccluder(
+  scene,
+  sourceEntity,
+  targetEntity,
+  options: Record<string, any> = {},
+) {
+  if (
+    !scene ||
+    !hasFinitePosition(sourceEntity) ||
+    !hasFinitePosition(targetEntity)
+  ) {
+    return null;
+  }
+
+  const sourcePosition = cloneVector(sourceEntity.position);
+  const targetPosition = cloneVector(targetEntity.position);
+  const sourceToTarget = subtractVectors(targetPosition, sourcePosition);
+  const centerDistanceSquared = magnitudeSquared(sourceToTarget);
+  if (centerDistanceSquared <= COLLISION_MOTION_EPSILON_SQUARED) {
+    return null;
+  }
+
+  const centerDistance = Math.sqrt(centerDistanceSquared);
+  const direction = scaleVector(sourceToTarget, 1 / centerDistance);
+  const sourceRadius = getEntityCollisionRadius(sourceEntity);
+  const targetRadius = getEntityCollisionRadius(targetEntity);
+  const startOffset = Math.min(
+    centerDistance,
+    sourceRadius + COLLISION_EPSILON_METERS,
+  );
+  const endOffset = Math.max(
+    startOffset,
+    centerDistance - targetRadius - COLLISION_EPSILON_METERS,
+  );
+  if (endOffset - startOffset <= COLLISION_EPSILON_METERS) {
+    return null;
+  }
+
+  const rayStart = addVectors(sourcePosition, scaleVector(direction, startOffset));
+  const rayEnd = addVectors(sourcePosition, scaleVector(direction, endOffset));
+  const ignoredIdentities = buildIgnoredEntityIdentitySet([
+    sourceEntity.itemID,
+    targetEntity.itemID,
+    ...(Array.isArray(options.ignoreEntityIDs) ? options.ignoreEntityIDs : []),
+  ]);
+  let earliest = null;
+  for (const candidate of getSceneCollisionCandidates(scene)) {
+    if (
+      !candidate ||
+      ignoredIdentities.has(getEntityIdentityText(candidate)) ||
+      !canEntitiesCollide(sourceEntity, candidate)
+    ) {
+      continue;
+    }
+    const intersection = findLineSegmentSphereIntersection(
+      rayStart,
+      rayEnd,
+      cloneVector(candidate.position),
+      getEntityCollisionRadius(candidate),
+    );
+    if (
+      intersection &&
+      (
+        !earliest ||
+        intersection.fraction < earliest.fraction - 1e-12 ||
+        (
+          Math.abs(intersection.fraction - earliest.fraction) <= 1e-12 &&
+          getEntityIdentityText(candidate).localeCompare(
+            getEntityIdentityText(earliest.entity),
+            undefined,
+            { numeric: true },
+          ) < 0
+        )
+      )
+    ) {
+      earliest = {
+        entity: candidate,
+        entityID: candidate.itemID,
+        kind: String(candidate.kind || "object"),
+        fraction: intersection.fraction,
+        distance: (endOffset - startOffset) * intersection.fraction,
+        position: cloneVector(intersection.position),
+        startedInside: intersection.startedInside,
+      };
+    }
+  }
+  return earliest;
+}
+
+function findSweptWeaponOccluder(
+  movingEntity,
+  scene,
+  previousPosition,
+  options: Record<string, any> = {},
+) {
+  if (
+    !movingEntity ||
+    !scene ||
+    !hasFinitePosition({ position: previousPosition }) ||
+    !hasFinitePosition(movingEntity)
+  ) {
+    return null;
+  }
+
+  const movingStart = cloneVector(previousPosition);
+  const movingEnd = cloneVector(movingEntity.position);
+  if (
+    magnitudeSquared(subtractVectors(movingEnd, movingStart)) <=
+      COLLISION_MOTION_EPSILON_SQUARED
+  ) {
+    return null;
+  }
+
+  const ignoredIdentities = buildIgnoredEntityIdentitySet([
+    movingEntity.itemID,
+    ...(Array.isArray(options.ignoreEntityIDs) ? options.ignoreEntityIDs : []),
+  ]);
+  const activeTickSequence = options.activeTickSequence ?? scene._activeTickSequence;
+  let earliest = null;
+  for (const candidate of getSceneCollisionCandidates(scene)) {
+    if (
+      !candidate ||
+      ignoredIdentities.has(getEntityIdentityText(candidate)) ||
+      !canEntitiesCollide(movingEntity, candidate)
+    ) {
+      continue;
+    }
+    const candidateEnd = cloneVector(candidate.position);
+    const candidateStart = getCandidateStartPosition(candidate, activeTickSequence);
+    const collision = findSweptSphereCollision(
+      movingEntity,
+      candidate,
+      movingStart,
+      movingEnd,
+      candidateStart,
+      candidateEnd,
+    );
+    if (
+      collision &&
+      (
+        !earliest ||
+        collision.fraction < earliest.fraction - 1e-12 ||
+        (
+          Math.abs(collision.fraction - earliest.fraction) <= 1e-12 &&
+          getEntityIdentityText(candidate).localeCompare(
+            getEntityIdentityText(earliest.entity),
+            undefined,
+            { numeric: true },
+          ) < 0
+        )
+      )
+    ) {
+      earliest = {
+        ...collision,
+        entity: candidate,
+        entityID: candidate.itemID,
+        kind: String(candidate.kind || "object"),
+        position: addVectors(
+          movingStart,
+          scaleVector(
+            subtractVectors(movingEnd, movingStart),
+            collision.fraction,
+          ),
+        ),
+        candidateStart,
+        candidateEnd,
+      };
+    }
+  }
+  return earliest;
+}
+
 function buildFallbackContactNormal(relativeMotion, movingEntity, candidate) {
   if (magnitudeSquared(relativeMotion) > COLLISION_MOTION_EPSILON_SQUARED) {
     return normalizeVector(scaleVector(relativeMotion, -1));
@@ -258,23 +477,26 @@ function findSweptSphereCollision(
   const relativeMotion = subtractVectors(relativeEnd, relativeStart);
   const radiusSquared = combinedRadius * combinedRadius;
   const startSeparationSquared = magnitudeSquared(relativeStart);
-  const endSeparationSquared = magnitudeSquared(relativeEnd);
 
   if (startSeparationSquared <= radiusSquared) {
-    // Existing overlaps are common at undock and warp-in points. Let an entity
-    // leave an overlap, but stop it from moving farther into the object.
-    if (endSeparationSquared >= startSeparationSquared) {
-      return null;
-    }
+    // A contained mover cannot be allowed to traverse the candidate until it
+    // happens to cross the far side of the sphere. Depenetrate it to the
+    // nearest boundary immediately. The end vector supplies a useful outward
+    // direction for the otherwise ambiguous center-to-center case.
     return {
       candidate,
       combinedRadius,
       fraction: 0,
       normal: normalizeVector(
         relativeStart,
-        buildFallbackContactNormal(relativeMotion, movingEntity, candidate),
+        normalizeVector(
+          relativeEnd,
+          buildFallbackContactNormal(relativeMotion, movingEntity, candidate),
+        ),
       ),
       startedOverlapping: true,
+      penetrationDepth:
+        combinedRadius - Math.sqrt(Math.max(0, startSeparationSquared)),
     };
   }
 
@@ -321,12 +543,6 @@ function resolveEntityMovementCollision(
 
   const movingStart = cloneVector(previousPosition);
   const movingEnd = cloneVector(entity.position);
-  if (
-    magnitudeSquared(subtractVectors(movingEnd, movingStart)) <=
-      COLLISION_MOTION_EPSILON_SQUARED
-  ) {
-    return null;
-  }
 
   const activeTickSequence = options.activeTickSequence ?? scene._activeTickSequence;
   const candidates = getSceneCollisionCandidates(scene)
@@ -376,15 +592,13 @@ function resolveEntityMovementCollision(
       earliest.fraction,
     ),
   );
-  entity.position = earliest.startedOverlapping
-    ? movingStart
-    : addVectors(
-        candidateImpactPosition,
-        scaleVector(
-          earliest.normal,
-          earliest.combinedRadius + COLLISION_EPSILON_METERS,
-        ),
-      );
+  entity.position = addVectors(
+    candidateImpactPosition,
+    scaleVector(
+      earliest.normal,
+      earliest.combinedRadius + COLLISION_EPSILON_METERS,
+    ),
+  );
 
   const candidateVelocity = cloneVector(earliest.candidate.velocity);
   const entityVelocity = cloneVector(entity.velocity);
@@ -407,6 +621,7 @@ function resolveEntityMovementCollision(
     normal: cloneVector(earliest.normal),
     combinedRadius: earliest.combinedRadius,
     startedOverlapping: earliest.startedOverlapping,
+    penetrationDepth: Math.max(0, toFiniteNumber(earliest.penetrationDepth, 0)),
   };
   entity.lastCollision = collision;
   if (entity.lastMotionDebug && typeof entity.lastMotionDebug === "object") {
@@ -424,7 +639,10 @@ function resolveEntityMovementCollision(
 module.exports = {
   COLLISION_EPSILON_METERS,
   canEntitiesCollide,
+  findLineSegmentSphereIntersection,
+  findSweptWeaponOccluder,
   findSweptSphereCollision,
+  findWeaponLineOccluder,
   getEntityCollisionRadius,
   getSceneCollisionCandidates,
   isEntityCollisionEnabled,

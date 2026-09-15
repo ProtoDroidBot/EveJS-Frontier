@@ -12,9 +12,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * object and FILETIME-delta fields, shared with the fitted Creation scanner.
  *
  * The client contains no separate strength/duration constants for this route.
- * Type 95322 is the sole type accepted by its is_scanner_module_type() helper,
- * so module-less scans deliberately use that authored static profile instead
- * of introducing an emulator-only strength or timing rule.
+ * This is the classic/non-modular ship path, so its scanner profile comes from
+ * the active hull's built-in sensor strengths rather than Creation module
+ * 95322. Multi-sensor hulls average their positive authored sensor types.
  */
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
@@ -23,7 +23,6 @@ const { throwWrappedUserError } = require(path.join(__dirname, "../../common/mac
 const { unwrapMarshalValue, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const scanningRuntime = require(path.join(__dirname, "./scanningRuntime"));
 const { buildScanResponse, } = require(path.join(__dirname, "./scanningAbilityHandlers"));
-const MODULELESS_SCANNER_PROFILE_TYPE_ID = 95322;
 function toInt(value, fallback = 0) {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? Math.trunc(numeric) : fallback;
@@ -50,16 +49,27 @@ function collectScanCandidates(spaceRuntime, session, shipID) {
     if (!scene || typeof scene.getDynamicEntities !== "function") {
         return [];
     }
+    const nowMs = typeof scene.getCurrentSimTimeMs === "function"
+        ? scene.getCurrentSimTimeMs()
+        : Date.now();
     const candidates = [];
     for (const entity of scene.getDynamicEntities()) {
         const itemID = toInt(entity && entity.itemID, 0);
         if (itemID <= 0 || itemID === toInt(shipID, 0) || !entity.position) {
             continue;
         }
+        if (typeof scene.canSessionDetectDynamicEntity === "function" &&
+            scene.canSessionDetectDynamicEntity(session, entity) !== true) {
+            continue;
+        }
         candidates.push({
             itemID,
             typeID: toInt(entity.typeID, 0),
             position: entity.position,
+            hasLineOfSight: typeof scene.hasLineOfSightForSession === "function"
+                ? scene.hasLineOfSightForSession(session, entity)
+                : true,
+            emSignatureMultiplier: scanningRuntime.resolveEntityEmSignatureMultiplier(entity, nowMs),
         });
     }
     return candidates;
@@ -109,15 +119,28 @@ class ScanningService extends BaseService {
         const previousScanIds = Array.isArray(session._space.frontierDirectionalScanIds)
             ? session._space.frontierDirectionalScanIds
             : [];
+        const scannerProfile = scanningRuntime.resolveBuiltInScannerProfile(entity);
+        scanningRuntime.recordEntityScannerEmissionActivity(entity, {
+            nowMs: Date.now(),
+        });
         const scan = this._performDirectionalScan({
             originPosition: entity.position,
             angleDegrees: request.angleDegrees,
             direction: request.direction,
-            moduleTypeID: MODULELESS_SCANNER_PROFILE_TYPE_ID,
+            moduleTypeID: entity.typeID,
+            scannerProfile,
             candidates: collectScanCandidates(this._spaceRuntime, session, shipID),
             previousScanIds,
         });
         session._space.frontierDirectionalScanIds = scan.scanIds;
+        if (this._spaceRuntime &&
+            typeof this._spaceRuntime.updateResolvedScanningContactsForSession ===
+                "function") {
+            const resolution = this._spaceRuntime.updateResolvedScanningContactsForSession(session, scan.resolvedIds, { delayMs: scan.durationMs });
+            if (resolution && resolution.delayMsByEntityID instanceof Map) {
+                scan.resolvedDelayMsById = resolution.delayMsByEntityID;
+            }
+        }
         log.info(`[scanningService] directional_scan ship=${shipID} ` +
             `angle=${request.angleDegrees} results=${scan.updatedScans.length} ` +
             `resolved=${scan.resolvedIds.length} durationMs=${scan.durationMs}`);
@@ -126,7 +149,6 @@ class ScanningService extends BaseService {
 }
 module.exports = ScanningService;
 module.exports._testing = {
-    MODULELESS_SCANNER_PROFILE_TYPE_ID,
     collectScanCandidates,
     resolveActiveShipID,
 };

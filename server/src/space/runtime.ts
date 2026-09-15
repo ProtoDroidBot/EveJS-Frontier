@@ -132,6 +132,14 @@ const {
   buildStaticVisibilityDeltaPlan,
 } = require(path.join(__dirname, "./destiny/visibility/delta.js"));
 const {
+  isScanningContactResolved,
+  recordEntityScannerEmissionActivity,
+  replaceResolvedScanningContacts,
+} = require(path.join(
+  __dirname,
+  "../services/frontier/scanningRuntime.js",
+));
+const {
   BUBBLE_CENTER_MIN_DISTANCE_METERS,
   BUBBLE_CENTER_MIN_DISTANCE_SQUARED,
   BUBBLE_HYSTERESIS_METERS,
@@ -555,6 +563,8 @@ const {
   createDestinyMovementSimulator,
 } = require(path.join(__dirname, "./destiny/simulation/movement.js"));
 const {
+  findSweptWeaponOccluder,
+  findWeaponLineOccluder,
   resolveEntityMovementCollision,
 } = require(path.join(__dirname, "./destiny/simulation/collisions.js"));
 const {
@@ -2143,6 +2153,11 @@ function summarizeMissileEntity(entity) {
       entity.pendingGeometryImpact === true
         ? String(entity.pendingGeometryImpactReason || "")
         : "",
+    pendingWeaponOcclusion: entity.pendingWeaponOcclusion === true,
+    pendingGeometryImpactEntityID: toInt(
+      entity.pendingGeometryImpactEntityID,
+      0,
+    ),
     pendingGeometryImpactPosition: summarizeVector(
       entity.pendingGeometryImpactPosition,
     ),
@@ -2488,14 +2503,19 @@ function buildMissileFlightSnapshot(scene, missileEntity, nowMs) {
     missileEntity.pendingGeometryImpactAtMs,
     0,
   );
+  const pendingWeaponOcclusion =
+    missileEntity.pendingGeometryImpact === true &&
+    missileEntity.pendingWeaponOcclusion === true;
   const clientReleaseGraceMs =
     missileEntity.clientDoSpread === true
       ? MISSILE_CLIENT_RELEASE_GRACE_MS
       : 0;
-  const impactReleaseFloorAtMs = Math.max(
-    visualImpactAtMs,
-    pendingGeometryImpactAtMs,
-  );
+  const impactReleaseFloorAtMs = pendingWeaponOcclusion
+    ? pendingGeometryImpactAtMs
+    : Math.max(
+        visualImpactAtMs,
+        pendingGeometryImpactAtMs,
+      );
   const hasReachedImpactRadius =
     Boolean(targetEntity) &&
     getMissileImpactDistance(missileEntity, targetEntity) <= 0.001;
@@ -2579,6 +2599,11 @@ function buildMissileFlightSnapshot(scene, missileEntity, nowMs) {
       missileEntity.pendingGeometryImpact === true
         ? String(missileEntity.pendingGeometryImpactReason || "")
         : "",
+    pendingWeaponOcclusion,
+    pendingGeometryImpactEntityID: toInt(
+      missileEntity.pendingGeometryImpactEntityID,
+      0,
+    ),
     pendingGeometryImpactPosition: summarizeVector(
       missileEntity.pendingGeometryImpactPosition,
     ),
@@ -2620,6 +2645,7 @@ function buildMissileFlightSnapshot(scene, missileEntity, nowMs) {
           targetPosition: summarizeVector(lastMissileStep.targetPosition),
           impactPosition: summarizeVector(lastMissileStep.impactPosition),
           sweptImpact: normalizeTraceValue(lastMissileStep.sweptImpact),
+          weaponOcclusion: normalizeTraceValue(lastMissileStep.weaponOcclusion),
         })
       : null,
   };
@@ -4112,12 +4138,15 @@ function buildSmartbombRuntimeCallbacks(scene = null) {
       return inRange;
     },
     applySmartbombDamage(attackerEntity, targetEntity, moduleItem, damageVector, whenMs) {
+      // Smartbombs are radial area effects rather than a shot travelling
+      // along the source-to-target segment.
       const result = applyWeaponDamageToTarget(
         scene,
         attackerEntity,
         targetEntity,
         damageVector,
         whenMs,
+        { skipWeaponOcclusion: true },
       );
       recordAreaDamageKillmailOutcome(
         attackerEntity,
@@ -6588,7 +6617,9 @@ function buildMissileLaunchPresentationSnapshot(entity) {
     ? entity.launchModules.map((value) => toInt(value, 0))
     : [];
   snapshot.pendingGeometryImpact = false;
+  snapshot.pendingWeaponOcclusion = false;
   snapshot.pendingGeometryImpactAtMs = 0;
+  snapshot.pendingGeometryImpactEntityID = 0;
   snapshot.pendingGeometryImpactReason = "";
   snapshot.pendingGeometryImpactPosition = { x: 0, y: 0, z: 0 };
   snapshot.liveImpactAtMs = 0;
@@ -6634,6 +6665,28 @@ function buildMissileFreshAcquirePresentationEntity(entity) {
 
 function isBubbleScopedStaticEntity(entity) {
   return entity && entity.staticVisibilityScope === "bubble";
+}
+
+// Smart Assemblies are `deployable` entities with an independently public
+// network/radar presence and a native-ball replacement lifecycle, so they
+// remain governed by public-grid visibility. Other physical contacts require
+// an unobstructed view unless an active scan has resolved them.
+const LINE_OF_SIGHT_VISIBILITY_KINDS = new Set([
+  "asteroid",
+  "container",
+  "drone",
+  "fighter",
+  "sentrygun",
+  "ship",
+  "sitekillablestructure",
+  "structure",
+  "wreck",
+]);
+
+function isLineOfSightVisibilitySubject(entity) {
+  return LINE_OF_SIGHT_VISIBILITY_KINDS.has(
+    String(entity && entity.kind || "").trim().toLowerCase(),
+  );
 }
 
 function isPublicGridScopedStaticEntity(entity) {
@@ -16358,6 +16411,21 @@ function applyWeaponDamageToTarget(
     };
   }
 
+  const weaponOcclusion =
+    options.skipWeaponOcclusion === true
+      ? null
+      : findWeaponLineOccluder(scene, attackerEntity, targetEntity);
+  if (weaponOcclusion) {
+    // A direct shot is absorbed at the first physical hull or object. Missile
+    // impacts opt out here because their swept path has already selected the
+    // actual impact entity.
+    return {
+      damageResult: null,
+      destroyResult: null,
+      occlusion: weaponOcclusion,
+    };
+  }
+
   const fighterDamageContext =
     targetEntity.kind === "fighter" &&
     typeof applyDamageToFighterSquadronSafe === "function"
@@ -17158,10 +17226,15 @@ function executeTurretCycle(scene, attackerEntity, effectState, cycleBoundaryMs)
     : resolveTurretShot({
       attackerEntity,
       targetEntity,
-      weaponSnapshot: presentedWeaponSnapshot,
-    });
+        weaponSnapshot: presentedWeaponSnapshot,
+      });
+  recordEntityScannerEmissionActivity(attackerEntity, {
+    nowMs: cycleBoundaryMs,
+    isWeapon: true,
+  });
   let damageResult = null;
   let destroyResult = null;
+  let weaponOcclusion = null;
 
   if (shotResult.hit && hasDamageableHealth(targetEntity)) {
     const weaponDamageResult = applyWeaponDamageToTarget(
@@ -17173,6 +17246,7 @@ function executeTurretCycle(scene, attackerEntity, effectState, cycleBoundaryMs)
     );
     damageResult = weaponDamageResult.damageResult;
     destroyResult = weaponDamageResult.destroyResult;
+    weaponOcclusion = weaponDamageResult.occlusion || null;
     const appliedDamageAmount = getAppliedDamageAmount(damageResult);
     if (appliedDamageAmount > 0) {
       noteKillmailDamage(attackerEntity, targetEntity, appliedDamageAmount, {
@@ -17210,7 +17284,7 @@ function executeTurretCycle(scene, attackerEntity, effectState, cycleBoundaryMs)
   // indiscriminate in retail and this keeps that - anything damageable nearby is
   // a candidate - so applyWeaponDamageToTarget handles the aggression fallout.
   const vortonArcResults: any[] = [];
-  if (isVortonCycle && shotResult.hit) {
+  if (isVortonCycle && shotResult.hit && !weaponOcclusion) {
     const arcCandidates: any[] = [];
     // Dynamic entities cover ships, drones, fighters and inventory-backed
     // objects; large collidable structures and orbitals live in the static set,
@@ -17412,6 +17486,7 @@ function executeTurretCycle(scene, attackerEntity, effectState, cycleBoundaryMs)
       shotResult,
       damageResult,
       destroyResult,
+      weaponOcclusion,
       vortonArcResults: isVortonCycle ? vortonArcResults : null,
       crystalResult: resolvedWeaponSnapshot.chargeMode === "crystal" ? chargeResults : null,
       ammoResult: resolvedWeaponSnapshot.chargeMode === "stack" ? chargeResults : null,
@@ -17732,6 +17807,10 @@ function executeMissileCycle(
         : "weapon",
     };
   }
+  recordEntityScannerEmissionActivity(attackerEntity, {
+    nowMs: cycleBoundaryMs,
+    isWeapon: true,
+  });
 
   const reloadStates =
     depletedEntries.length > 0
@@ -17842,6 +17921,14 @@ function resolveMissileLifecycle(scene, missileEntity, nowMs) {
     0,
     toFiniteNumber(missileEntity.pendingGeometryImpactAtMs, 0),
   );
+  const pendingWeaponOcclusion =
+    pendingGeometryImpact && missileEntity.pendingWeaponOcclusion === true;
+  const weaponOcclusionEntity = pendingWeaponOcclusion
+    ? scene.getEntityByID(missileEntity.pendingGeometryImpactEntityID)
+    : null;
+  const impactTargetEntity = pendingWeaponOcclusion
+    ? weaponOcclusionEntity
+    : targetEntity;
   const clientVisualReleaseAtMs = Math.max(
     0,
     toFiniteNumber(missileEntity.clientVisualReleaseAtMs, 0),
@@ -17863,10 +17950,12 @@ function resolveMissileLifecycle(scene, missileEntity, nowMs) {
     missileEntity.clientDoSpread === true
       ? MISSILE_CLIENT_RELEASE_GRACE_MS
       : 0;
-  const impactReleaseFloorAtMs = Math.max(
-    visualImpactAtMs,
-    pendingGeometryImpactAtMs,
-  );
+  const impactReleaseFloorAtMs = pendingWeaponOcclusion
+    ? pendingGeometryImpactAtMs
+    : Math.max(
+        visualImpactAtMs,
+        pendingGeometryImpactAtMs,
+      );
   const visualFlightElapsed =
     visualImpactAtMs <= 0 ||
     nowMs + 0.001 >= visualImpactAtMs;
@@ -17887,7 +17976,7 @@ function resolveMissileLifecycle(scene, missileEntity, nowMs) {
     : expiresAtMs;
   const hasExpired = timeoutExpiryAtMs > 0 && nowMs >= timeoutExpiryAtMs;
   const canImpactByGeometry =
-    hasLiveTarget &&
+    (hasLiveTarget || pendingWeaponOcclusion) &&
     impactReleaseElapsed &&
     (
       hasReachedImpactRadius ||
@@ -17918,6 +18007,8 @@ function resolveMissileLifecycle(scene, missileEntity, nowMs) {
       pendingGeometryImpactReason: pendingGeometryImpact
         ? String(missileEntity.pendingGeometryImpactReason || "")
         : "",
+      pendingWeaponOcclusion,
+      impactTarget: summarizeRuntimeEntityForMissileDebug(impactTargetEntity),
       pendingGeometryImpactPosition: summarizeVector(
         missileEntity.pendingGeometryImpactPosition,
       ),
@@ -18017,7 +18108,7 @@ function resolveMissileLifecycle(scene, missileEntity, nowMs) {
               toInt(missileEntity.typeID, 0),
             ),
           };
-    if (defenderInterceptTarget) {
+    if (!pendingWeaponOcclusion && defenderInterceptTarget) {
       return resolveDefenderIntercept(
         "defender-intercept",
         pendingGeometryImpactReady
@@ -18029,25 +18120,32 @@ function resolveMissileLifecycle(scene, missileEntity, nowMs) {
     }
     const impactResult = resolveMissileAppliedDamage(
       missileEntity.missileSnapshot,
-      targetEntity,
+      impactTargetEntity,
     );
     const weaponDamageResult = applyWeaponDamageToTarget(
       scene,
       attackerEntity,
-      targetEntity,
+      impactTargetEntity,
       impactResult.appliedDamage,
       nowMs,
+      {
+        skipWeaponOcclusion: pendingWeaponOcclusion,
+      },
     );
     const appliedDamageAmount = getAppliedDamageAmount(weaponDamageResult.damageResult);
-    if (appliedDamageAmount > 0) {
-      noteKillmailDamage(attackerEntity, targetEntity, appliedDamageAmount, {
+    if (impactTargetEntity && appliedDamageAmount > 0) {
+      noteKillmailDamage(attackerEntity, impactTargetEntity, appliedDamageAmount, {
         whenMs: nowMs,
         weaponSnapshot: missileEntity.missileSnapshot,
         moduleItem,
       });
     }
-    if (weaponDamageResult.destroyResult && weaponDamageResult.destroyResult.success) {
-      recordKillmailFromDestruction(targetEntity, weaponDamageResult.destroyResult, {
+    if (
+      impactTargetEntity &&
+      weaponDamageResult.destroyResult &&
+      weaponDamageResult.destroyResult.success
+    ) {
+      recordKillmailFromDestruction(impactTargetEntity, weaponDamageResult.destroyResult, {
         attackerEntity,
         victimSession: weaponDamageResult.victimSession,
         whenMs: nowMs,
@@ -18055,20 +18153,22 @@ function resolveMissileLifecycle(scene, missileEntity, nowMs) {
         moduleItem,
       });
     }
-    notifyWeaponDamageMessages(
-      attackerEntity,
-      targetEntity,
-      moduleItem,
-      impactResult.appliedDamage,
-      getAppliedDamageAmount(weaponDamageResult.damageResult),
-      sumDamageVector(impactResult.appliedDamage) > 0 ? 3 : 0,
-      {
-        isBanked:
-          missileEntity &&
-          missileEntity.missileSnapshot &&
-          missileEntity.missileSnapshot.isBanked === true,
-      },
-    );
+    if (impactTargetEntity) {
+      notifyWeaponDamageMessages(
+        attackerEntity,
+        impactTargetEntity,
+        moduleItem,
+        impactResult.appliedDamage,
+        getAppliedDamageAmount(weaponDamageResult.damageResult),
+        sumDamageVector(impactResult.appliedDamage) > 0 ? 3 : 0,
+        {
+          isBanked:
+            missileEntity &&
+            missileEntity.missileSnapshot &&
+            missileEntity.missileSnapshot.isBanked === true,
+        },
+      );
+    }
     logLifecycle("impact", {
       impactTrigger: pendingGeometryImpactReady
         ? "pending-geometry-impact"
@@ -18076,11 +18176,13 @@ function resolveMissileLifecycle(scene, missileEntity, nowMs) {
           ? "radius-overlap"
           : "unknown",
       attacker: summarizeRuntimeEntityForMissileDebug(attackerEntity),
+      impactTarget: summarizeRuntimeEntityForMissileDebug(impactTargetEntity),
       moduleItem: normalizeTraceValue(moduleItem),
       appliedDamage: normalizeTraceValue(impactResult.appliedDamage),
       appliedDamageAmount: roundNumber(appliedDamageAmount, 6),
       damageResult: normalizeTraceValue(weaponDamageResult.damageResult),
       destroyResult: normalizeTraceValue(weaponDamageResult.destroyResult),
+      weaponOcclusion: pendingWeaponOcclusion,
     });
     if (missileEntity.clientDoSpread === true) {
       // Keep the live ball around after impact for doSpread missiles. The
@@ -20357,11 +20459,96 @@ function advanceEntityForActiveSceneTick(scene, entity) {
         interval.endSimTimeMs,
       )
     : nativeResult;
-  const collision = movementResult
+  const sweptWeaponOcclusion =
+    movementResult && entity.kind === "missile"
+      ? findSweptWeaponOccluder(entity, scene, previousPosition, {
+          activeTickSequence,
+          ignoreEntityIDs: [
+            entity.sourceShipID,
+            entity.targetEntityID,
+          ],
+        })
+      : null;
+  if (sweptWeaponOcclusion) {
+    const impactPosition = cloneVector(sweptWeaponOcclusion.position);
+    const missileStep =
+      entity.lastMissileStep && typeof entity.lastMissileStep === "object"
+        ? entity.lastMissileStep
+        : {};
+    const stepDurationSeconds = Math.max(
+      0,
+      toFiniteNumber(missileStep.deltaSeconds, rawDeltaSeconds),
+    );
+    const stepStartMs = Math.max(
+      0,
+      interval.endSimTimeMs - (stepDurationSeconds * 1000),
+    );
+    const speedMetersPerSecond = Math.max(
+      0,
+      toFiniteNumber(entity.maxVelocity, magnitude(entity.velocity)),
+    );
+    const impactTravelMs =
+      speedMetersPerSecond > 0.000001
+        ? (distance(previousPosition, impactPosition) / speedMetersPerSecond) * 1000
+        : 0;
+    entity.pendingGeometryImpact = true;
+    entity.pendingWeaponOcclusion = true;
+    entity.pendingGeometryImpactReason = "weapon-occlusion";
+    entity.pendingGeometryImpactAtMs = roundNumber(
+      Math.min(
+        interval.endSimTimeMs,
+        stepStartMs + Math.max(0, impactTravelMs),
+      ),
+      3,
+    );
+    entity.pendingGeometryImpactEntityID = sweptWeaponOcclusion.entityID;
+    entity.pendingGeometryImpactPosition = impactPosition;
+    entity.position = impactPosition;
+    entity.targetPoint = cloneVector(impactPosition);
+    entity.velocity = { x: 0, y: 0, z: 0 };
+    entity.speedFraction = 0;
+    entity.lastMissileStep = {
+      ...missileStep,
+      stepDistance: roundNumber(distance(previousPosition, impactPosition), 6),
+      surfaceDistanceAfter: roundNumber(
+        Math.max(
+          0,
+          distance(
+            impactPosition,
+            sweptWeaponOcclusion.entity.position,
+          ) -
+            Math.max(0, toFiniteNumber(entity.radius, 0)) -
+            Math.max(0, toFiniteNumber(sweptWeaponOcclusion.entity.radius, 0)),
+        ),
+        6,
+      ),
+      reachedImpactSurface: true,
+      frozenAtGeometryImpact: true,
+      pendingGeometryImpactAtMs: entity.pendingGeometryImpactAtMs,
+      impactPosition: summarizeVector(impactPosition),
+      weaponOcclusion: {
+        entityID: sweptWeaponOcclusion.entityID,
+        kind: sweptWeaponOcclusion.kind,
+        fraction: roundNumber(sweptWeaponOcclusion.fraction, 9),
+        position: summarizeVector(impactPosition),
+      },
+    };
+  }
+  const movementCollision = movementResult && entity.kind !== "missile"
     ? resolveEntityMovementCollision(entity, scene, previousPosition, {
         activeTickSequence,
       })
     : null;
+  const collision = sweptWeaponOcclusion
+    ? {
+        entityID: sweptWeaponOcclusion.entityID,
+        kind: sweptWeaponOcclusion.kind,
+        fraction: sweptWeaponOcclusion.fraction,
+        normal: cloneVector(sweptWeaponOcclusion.normal),
+        combinedRadius: sweptWeaponOcclusion.combinedRadius,
+        weaponOcclusion: true,
+      }
+    : movementCollision;
   const result = collision
     ? {
         ...movementResult,
@@ -25008,12 +25195,25 @@ class SolarSystemScene {
     const entityPublicGridClusterKey = isBoxScoped
       ? null
       : this.getVisibilityPublicGridClusterKeyForEntity(entity);
-    const eligible = this.canSessionSeeEntityInPublicGrid(
+    const resolvedScanningContact = isScanningContactResolved(
+      session,
+      entity.itemID,
+      now,
+    );
+    const publicGridEligible = this.canSessionSeeEntityInPublicGrid(
       session,
       entity,
       options,
       egoEntity,
     );
+    const requiresLineOfSight =
+      !resolvedScanningContact &&
+      publicGridEligible &&
+      isLineOfSightVisibilitySubject(entity);
+    const hasLineOfSight =
+      !requiresLineOfSight || this.hasLineOfSightForSession(session, entity);
+    const eligible = resolvedScanningContact ||
+      (publicGridEligible && hasLineOfSight);
     if (traceEligibility) {
       const visibilityPosition =
         options.visibilityPositionOverride &&
@@ -25044,12 +25244,16 @@ class SolarSystemScene {
           ? "public-grid-cluster-missing"
           : exactClusterMatch
             ? "public-grid-cluster-match"
-            : eligible
+            : publicGridEligible
               ? "public-grid-nearby-match"
               : "public-grid-cluster-mismatch";
       spatialTrace.recordVisibilityEligibility(this, session, entity, {
         eligible,
-        reason: traceReason,
+        reason: resolvedScanningContact
+          ? "resolved-scanning-contact"
+          : publicGridEligible && !hasLineOfSight
+            ? "line-of-sight-occluded"
+            : traceReason,
         simulationTimeMs: now,
         policyDetails: {
           observerPublicGridKey: egoPublicGridKey,
@@ -25059,10 +25263,88 @@ class SolarSystemScene {
           requireExactPublicGridCluster:
             options.requireExactPublicGridCluster === true,
           visibilityDistanceMeters,
+          hasLineOfSight,
+          resolvedScanningContact,
         },
       });
     }
     return eligible;
+  }
+
+  hasLineOfSightForSession(session, entity) {
+    if (!session || !session._space || !entity) {
+      return false;
+    }
+    const egoEntity = this.getShipEntityForSession(session);
+    if (!egoEntity || entityIDsEqual(egoEntity.itemID, entity.itemID)) {
+      return Boolean(egoEntity);
+    }
+    return !findWeaponLineOccluder(this, egoEntity, entity);
+  }
+
+  canSessionDetectDynamicEntity(
+    session,
+    entity,
+    now = this.getCurrentSimTimeMs(),
+    options: Record<string, any> = {},
+  ) {
+    if (
+      !session ||
+      !session._space ||
+      !entity ||
+      entityIDsEqual(entity.itemID, session._space.shipID) ||
+      this.isNativeBallReplacementPendingForSession(session, entity, now) ||
+      !hasFiniteEntityPosition(entity) ||
+      !this.canSessionSeeAirNpeScopedEntity(session, entity, options) ||
+      !this.canSessionSeeDungeonScopedEntity(session, entity, options) ||
+      (isEntityCloaked(entity) && !canSessionSeeCloakedEntity(session, entity)) ||
+      toFiniteNumber(entity.visibilitySuppressedUntilMs, 0) > now ||
+      !canSessionSeeOwnerScopedShip(session, entity)
+    ) {
+      return false;
+    }
+    const egoEntity = this.getShipEntityForSession(session);
+    return Boolean(
+      egoEntity && canEntitiesInteractLocally(egoEntity, entity),
+    );
+  }
+
+  updateResolvedScanningContactsForSession(
+    session,
+    resolvedEntityIDs,
+    options: Record<string, any> = {},
+  ) {
+    const nowMs = toFiniteNumber(
+      options.nowMs,
+      this.getCurrentSimTimeMs(),
+    );
+    const detectableIDs = (Array.isArray(resolvedEntityIDs)
+      ? resolvedEntityIDs
+      : [])
+      .map((entityID) => getEntityMapKey(entityID))
+      .filter((entityID) => {
+        if (entityID === null) {
+          return false;
+        }
+        const entity = this.dynamicEntities.get(entityID) || null;
+        return Boolean(
+          entity &&
+          this.canSessionDetectDynamicEntity(session, entity, nowMs),
+        );
+      });
+    const resolution = replaceResolvedScanningContacts(
+      session,
+      detectableIDs,
+      {
+        nowMs,
+        delayMs: options.delayMs,
+      },
+    );
+    this.requestFinalSceneVisibilityReconciliation();
+    this.syncDynamicVisibilityForSession(session, nowMs, {
+      bypassTickPresentationBatch: true,
+    });
+    return resolution;
   }
 
   canSessionSeeEntityInPublicGrid(
@@ -25937,6 +26219,20 @@ class SolarSystemScene {
     if (
       session &&
       !this.canSessionSeeDungeonScopedEntity(session, targetEntity)
+    ) {
+      return {
+        success: false,
+        errorMsg: "TARGET_NOT_FOUND",
+      };
+    }
+    if (
+      session &&
+      session._space?.initialStateSent === true &&
+      !canSessionReceiveEntityDependentDestinyUpdate(
+        this,
+        session,
+        targetEntity,
+      )
     ) {
       return {
         success: false,
@@ -27400,6 +27696,7 @@ class SolarSystemScene {
       stopReason: null,
     };
     entity.activeModuleEffects.set(normalizedModuleID, effectState);
+    recordEntityScannerEmissionActivity(entity, { nowMs: now });
     const hasReadyOwnerSession = isReadyForDestiny(session);
     const propulsionPresentationStamp =
       hasReadyOwnerSession
@@ -27900,6 +28197,17 @@ class SolarSystemScene {
       }
       targetEntity = targetEntity || this.getEntityByID(resolvedTargetID);
       if (!targetEntity) {
+        return { success: false, errorMsg: "TARGET_NOT_FOUND" };
+      }
+      if (
+        !autoTargetingMissileCharge &&
+        session?._space?.initialStateSent === true &&
+        !canSessionReceiveEntityDependentDestinyUpdate(
+          this,
+          session,
+          targetEntity,
+        )
+      ) {
         return { success: false, errorMsg: "TARGET_NOT_FOUND" };
       }
       const targetLocked = isEntityLockedTarget(entity, resolvedTargetID);
@@ -28668,6 +28976,10 @@ class SolarSystemScene {
       initializePrecursorTurretEffectState(effectState, weaponSnapshot, now);
     }
     entity.activeModuleEffects.set(normalizedModuleID, effectState);
+    recordEntityScannerEmissionActivity(entity, {
+      nowMs: now,
+      isWeapon: isOffensiveWeaponFamily(effectState.weaponFamily),
+    });
     if (
       effectState.bastionModuleEffect === true ||
       effectState.immobilizesShip === true
@@ -30497,6 +30809,8 @@ class SolarSystemScene {
         stamp: null,
       };
     }
+    const mayReferenceUnresolvedWeaponSource =
+      options && options.isOffensive === true;
     if (visibilityEntity) {
       const canSeeVisibilityEntity =
         isSessionViewingOwnVisibilityEntity(session, visibilityEntity) ||
@@ -30507,7 +30821,10 @@ class SolarSystemScene {
           session,
           visibilityEntity,
         );
-      if (!hasMaterializedVisibilityEntity) {
+      if (
+        !hasMaterializedVisibilityEntity &&
+        !mayReferenceUnresolvedWeaponSource
+      ) {
         if (canSeeVisibilityEntity) {
           recordDependentNotificationSkip(
             this,
@@ -30574,6 +30891,19 @@ class SolarSystemScene {
       options && typeof options === "object"
         ? { ...options }
         : {};
+    if (
+      visibilityEntity &&
+      rawOptions.start !== false &&
+      (
+        toInt(rawOptions.moduleID, 0) > 0 ||
+        rawOptions.isOffensive === true
+      )
+    ) {
+      recordEntityScannerEmissionActivity(visibilityEntity, {
+        nowMs: this.getCurrentSimTimeMs(),
+        isWeapon: rawOptions.isOffensive === true,
+      });
+    }
     delete rawOptions.stampOverride;
     delete rawOptions.minimumLeadFromCurrentHistory;
     const {
@@ -30705,6 +31035,21 @@ class SolarSystemScene {
       options && typeof options === "object"
         ? { ...options }
         : {};
+    const mayReferenceUnresolvedWeaponSource =
+      rawOptions.isOffensive === true;
+    if (
+      visibilityEntity &&
+      rawOptions.start !== false &&
+      (
+        toInt(rawOptions.moduleID, 0) > 0 ||
+        mayReferenceUnresolvedWeaponSource
+      )
+    ) {
+      recordEntityScannerEmissionActivity(visibilityEntity, {
+        nowMs: this.getCurrentSimTimeMs(),
+        isWeapon: mayReferenceUnresolvedWeaponSource,
+      });
+    }
     delete rawOptions.stampOverride;
     delete rawOptions.minimumLeadFromCurrentHistory;
     const {
@@ -30755,7 +31100,10 @@ class SolarSystemScene {
             session,
             visibilityEntity,
           );
-        if (!hasMaterializedVisibilityEntity) {
+        if (
+          !hasMaterializedVisibilityEntity &&
+          !mayReferenceUnresolvedWeaponSource
+        ) {
           if (canSeeVisibilityEntity) {
             recordDependentNotificationSkip(
               this,
@@ -42359,6 +42707,25 @@ class SpaceRuntime {
     return scene ? scene.getEntityByID(entityID) : null;
   }
 
+  updateResolvedScanningContactsForSession(
+    session,
+    resolvedEntityIDs,
+    options: Record<string, any> = {},
+  ) {
+    const scene = this.getSceneForSession(session);
+    return scene
+      ? scene.updateResolvedScanningContactsForSession(
+          session,
+          resolvedEntityIDs,
+          options,
+        )
+      : {
+          activeIDs: new Set<any>(),
+          delayMsByEntityID: new Map<any, any>(),
+          removedIDs: [],
+        };
+  }
+
   executeMobileMicroJumpForShip(session, unitID, options: Record<string, any> = {}) {
     const scene = this.getSceneForSession(session);
     if (!scene) {
@@ -44101,6 +44468,9 @@ runtimeExports._testing = {
   abortActiveNativeSubwarpPlanForTesting: abortActiveNativeSubwarpPlan,
   advanceEntityForDestructionSnapshotForTesting:
     advanceEntityForDestructionSnapshot,
+  applyWeaponDamageToTargetForTesting: applyWeaponDamageToTarget,
+  executeTurretCycleForTesting: executeTurretCycle,
+  resolveMissileLifecycleForTesting: resolveMissileLifecycle,
   buildSalvagerRuntimeCallbacksForTesting: buildSalvagerRuntimeCallbacks,
   deriveAgilitySecondsForTesting: deriveAgilitySeconds,
   getWarpStopDistanceForTargetForTesting: getWarpStopDistanceForTarget,

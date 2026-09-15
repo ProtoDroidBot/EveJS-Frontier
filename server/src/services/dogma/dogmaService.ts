@@ -9361,6 +9361,10 @@ class DogmaService extends BaseService {
         return "That item cannot be loaded as fuel.";
       case "FUEL_TANK_MISSING":
         return "This ship has no fuel tank to load fuel into.";
+      case "FUEL_ENGINE_MISSING":
+        return "Fit a compatible engine before loading fuel into this ship.";
+      case "FUEL_TYPE_INCOMPATIBLE":
+        return "The fitted engine cannot use that type of fuel.";
       case "FUEL_TANK_OVERFLOW": {
         const remainingCapacity = Number(params.remainingCapacity);
         return Number.isFinite(remainingCapacity) && remainingCapacity > 0
