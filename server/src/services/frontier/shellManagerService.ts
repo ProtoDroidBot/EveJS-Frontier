@@ -13,12 +13,12 @@ const {
   ITEM_FLAGS,
   findItemById,
   grantItemToCharacterLocation,
-  listCharacterItems,
   updateInventoryItem,
 } = require("../inventory/itemStore");
+const environmentalEffects = require("./environmentalEffectsService");
+const shellEquipment = require("./shellEquipmentRuntime");
 
-const SHELL_CATEGORY_ID = 2153;
-const DEFAULT_SHELL_TYPE_ID = 91969;
+const { DEFAULT_SHELL_TYPE_ID, SHELL_CATEGORY_ID } = shellEquipment;
 // frontier/character/client/shell/integration.pyc, _change_shell_name().
 const MAX_SHELL_NAME_LENGTH = 100;
 const UNSUPPORTED_SHELL_MUTATION_NOTIFY =
@@ -28,25 +28,26 @@ function getSessionCharacterID(session) {
   return Number(session && (session.characterID || session.charid)) || 0;
 }
 
-function listOwnedShells(characterID) {
-  if (characterID <= 0) {
-    return [];
-  }
-  return listCharacterItems(characterID)
-    .filter((item) => Number(item && item.categoryID) === SHELL_CATEGORY_ID)
-    .sort((left, right) => Number(left.itemID) - Number(right.itemID));
-}
+const { listOwnedShells } = shellEquipment;
 
 function buildShellDbData(item) {
   if (!item) {
     return null;
   }
+  const implantTypeIDs = shellEquipment
+    .listShellEquipment(Number(item.ownerID), Number(item.itemID))
+    .filter(
+      (equipmentItem) =>
+        shellEquipment.getShellEquipmentKind(equipmentItem) ===
+        shellEquipment.SHELL_EQUIPMENT_KIND.IMPLANT,
+    )
+    .map((equipmentItem) => Number(equipmentItem.typeID));
   return buildDict([
     ["shellID", Number(item.itemID)],
     ["shellUniqueID", String(item.itemID)],
     ["shellName", String(item.itemName || "Blank Shell")],
     ["shellCrownID", null],
-    ["implants", buildList([])],
+    ["implants", buildList(implantTypeIDs)],
   ]);
 }
 
@@ -54,6 +55,92 @@ function throwShellNotify(notify) {
   throwWrappedUserError("CustomNotify", {
     notify: String(notify || UNSUPPORTED_SHELL_MUTATION_NOTIFY),
   });
+}
+
+function throwShellEquipmentError(errorMsg, kind = "equipment") {
+  const label = kind === shellEquipment.SHELL_EQUIPMENT_KIND.RAIMENT
+    ? "raiment"
+    : "implant";
+  const notifyByError = {
+    SHELL_NOT_FOUND: "No active shell is available.",
+    ITEM_NOT_FOUND: `That ${label} no longer exists.`,
+    ITEM_NOT_OWNED: `You do not own that ${label}.`,
+    CROWN_UNSUPPORTED: "Crowns are not supported as shell equipment yet.",
+    INVALID_EQUIPMENT_TYPE: `That item is not a shell ${label}.`,
+    ALREADY_EQUIPPED: `That ${label} is already equipped.`,
+    EQUIPPED_ON_ANOTHER_SHELL: `That ${label} is equipped on another shell.`,
+    SLOT_OCCUPIED: `This shell already has a ${label} equipped.`,
+    EQUIPMENT_NOT_FOUND: `This shell has no ${label} equipped.`,
+  };
+  throwShellNotify(notifyByError[String(errorMsg)] || `The ${label} could not be changed.`);
+}
+
+function syncShellEquipmentChanges(session, changes) {
+  for (const change of Array.isArray(changes) ? changes : []) {
+    if (!change || !change.item) {
+      continue;
+    }
+    syncInventoryItemForSession(
+      session,
+      change.item,
+      change.previousData || change.previousState || {},
+      { emitCfgLocation: false },
+    );
+  }
+}
+
+function refreshSessionShellDogma(session, reason) {
+  const systemID = Number(session && session._space && session._space.systemID) || 0;
+  if (systemID <= 0) {
+    return;
+  }
+  try {
+    const spaceRuntime = require("../../space/runtime");
+    const scene = spaceRuntime.ensureScene(systemID);
+    if (scene && typeof scene.refreshSessionShipDerivedState === "function") {
+      scene.refreshSessionShipDerivedState(session, {
+        notify: true,
+        reason: String(reason || "shell-equipment-change"),
+      });
+    }
+  } catch (error) {
+    log.warn(
+      `[shellManager] Failed to refresh shell dogma char=${getSessionCharacterID(session)} error=${error.message}`,
+    );
+  }
+}
+
+function equipShellItem(session, rawItemID, kind) {
+  const result = shellEquipment.equipActiveShellItem(
+    getSessionCharacterID(session),
+    Number(unwrapMarshalValue(rawItemID)),
+    kind,
+  );
+  if (!result || result.success !== true) {
+    return throwShellEquipmentError(result && result.errorMsg, kind);
+  }
+  syncShellEquipmentChanges(session, result.data.changes);
+  refreshSessionShellDogma(session, `shell-${kind}-equipped`);
+  log.info(
+    `[shellManager] Equipped ${kind}=${Number(result.data.item && result.data.item.itemID)} shell=${Number(result.data.shell.itemID)} char=${getSessionCharacterID(session)}`,
+  );
+  return true;
+}
+
+function destroyActiveShellItem(session, kind) {
+  const result = shellEquipment.destroyActiveShellEquipmentByKind(
+    getSessionCharacterID(session),
+    kind,
+  );
+  if (!result || result.success !== true) {
+    return throwShellEquipmentError(result && result.errorMsg, kind);
+  }
+  syncShellEquipmentChanges(session, result.data.changes);
+  refreshSessionShellDogma(session, `shell-${kind}-destroyed`);
+  log.info(
+    `[shellManager] Destroyed ${kind}=${Number(result.data.item && result.data.item.itemID)} shell=${Number(result.data.shell.itemID)} char=${getSessionCharacterID(session)}`,
+  );
+  return true;
 }
 
 function normalizeShellName(value) {
@@ -76,7 +163,7 @@ function renameOwnedShell(session, shellID, rawName) {
     characterID <= 0 ||
     !item ||
     Number(item.ownerID) !== characterID ||
-    Number(item.categoryID) !== SHELL_CATEGORY_ID
+    !shellEquipment.isShellItem(item)
   ) {
     throwShellNotify("You do not own this shell.");
   }
@@ -167,8 +254,16 @@ class ShellManagerService extends BaseService {
     return buildShellDbData(ensureActiveShell(session));
   }
 
-  Handle_get_medical_trait_shell_points() {
-    return [0, 0];
+  Handle_get_medical_trait_shell_points(_args, session) {
+    const characterID = getSessionCharacterID(session);
+    if (characterID <= 0) {
+      return [0, 0];
+    }
+    const state = environmentalEffects.snapshotCharacterState(characterID);
+    return [
+      Math.round(state.vitalityDamage),
+      Math.round(state.vitalityCapacity),
+    ];
   }
 
   Handle_get_medical_trait_breakdown() {
@@ -189,23 +284,35 @@ class ShellManagerService extends BaseService {
     return buildDict(entries);
   }
 
-  Handle_get_active_implant() {
-    return null;
+  Handle_get_active_implant(_args, session) {
+    const implant = shellEquipment.getActiveShellEquipmentByKind(
+      getSessionCharacterID(session),
+      shellEquipment.SHELL_EQUIPMENT_KIND.IMPLANT,
+    );
+    return implant
+      ? buildDict([
+          ["itemID", Number(implant.itemID)],
+          ["typeID", Number(implant.typeID)],
+        ])
+      : null;
   }
 
   // Build 3474408 corrected the RPC spelling to `has_raiment`.  The client
   // assigns this result directly to a Boolean controller property, while its
   // OnRaimentImplanted path computes the same property with `id is not None`.
-  // The Boolean response shape is observed; false is EveJS's neutral policy
-  // while raiment inventory/implant progression remains unsupported, not a
-  // claim about CCP's production response.
-  Handle_has_raiment() {
-    return false;
+  // The Boolean response shape is observed by the client controller.
+  Handle_has_raiment(_args, session) {
+    return Boolean(
+      shellEquipment.getActiveShellEquipmentByKind(
+        getSessionCharacterID(session),
+        shellEquipment.SHELL_EQUIPMENT_KIND.RAIMENT,
+      ),
+    );
   }
 
   // Preserve the older Frontier spelling for clients that still call it.
-  Handle_has_reignment() {
-    return this.Handle_has_raiment();
+  Handle_has_reignment(args, session) {
+    return this.Handle_has_raiment(args, session);
   }
 
   Handle_set_active_shell_name(args, session) {
@@ -243,12 +350,20 @@ class ShellManagerService extends BaseService {
     return this._rejectUnsupportedMutation("delete_active_crown");
   }
 
-  Handle_implant_implant() {
-    return this._rejectUnsupportedMutation("implant_implant");
+  Handle_implant_implant(args, session) {
+    const values = unwrapMarshalValue(args);
+    return equipShellItem(
+      session,
+      values && values[0],
+      shellEquipment.SHELL_EQUIPMENT_KIND.IMPLANT,
+    );
   }
 
-  Handle_delete_active_implant() {
-    return this._rejectUnsupportedMutation("delete_active_implant");
+  Handle_delete_active_implant(_args, session) {
+    return destroyActiveShellItem(
+      session,
+      shellEquipment.SHELL_EQUIPMENT_KIND.IMPLANT,
+    );
   }
 
   Handle_admin_create_and_implant_implant() {
@@ -303,4 +418,8 @@ module.exports._testing = {
   listOwnedShells,
   normalizeShellName,
   renameOwnedShell,
+  destroyActiveShellItem,
+  equipShellItem,
+  refreshSessionShellDogma,
+  syncShellEquipmentChanges,
 };

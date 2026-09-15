@@ -47,6 +47,29 @@ def _evejs_iter_ship_modules(provider, ship_id):
         yield module
 
 
+def _evejs_is_regular_action_bar_slot(provider, module):
+    """Return whether *module* occupies a high, medium, or low power slot."""
+    flag_id = getattr(module, "flagID", None)
+    if flag_id is None:
+        return False
+    invconst = provider._evejs_action_bar_invconst
+    slot_ranges = (
+        (
+            getattr(invconst, "flagLoSlot0", 11),
+            getattr(invconst, "flagLoSlot7", 18),
+        ),
+        (
+            getattr(invconst, "flagMedSlot0", 19),
+            getattr(invconst, "flagMedSlot7", 26),
+        ),
+        (
+            getattr(invconst, "flagHiSlot0", 27),
+            getattr(invconst, "flagHiSlot7", 34),
+        ),
+    )
+    return any(first <= flag_id <= last for first, last in slot_ranges)
+
+
 def _evejs_get_regular_charge(provider, module_item_id):
     module = _evejs_get_item(provider, module_item_id)
     if module is None:
@@ -85,13 +108,15 @@ def _evejs_build_regular_module_refs(provider, ship_id):
     result = []
     for module in _evejs_iter_ship_modules(provider, ship_id):
         type_id = getattr(module, "typeID", None)
-        if not type_id or not provider.has_activatable_default_effect(type_id):
+        if not type_id or not _evejs_is_regular_action_bar_slot(provider, module):
             continue
 
-        abilities = [
-            ability_id.ACTIVATE_EFFECT,
-            ability_id.DEACTIVATE_EFFECT,
-        ]
+        abilities = []
+        if provider.has_activatable_default_effect(type_id):
+            abilities.extend((
+                ability_id.ACTIVATE_EFFECT,
+                ability_id.DEACTIVATE_EFFECT,
+            ))
         if provider.has_online_effect(type_id):
             abilities.extend((ability_id.ONLINE, ability_id.OFFLINE))
 

@@ -37,6 +37,9 @@ const {
   resolveLocationDeathOutcome,
 } = require(path.join(__dirname, "../services/killmail/deathOutcomeResolver"));
 const {
+  destroyActiveShellEquipment,
+} = require(path.join(__dirname, "../services/frontier/shellEquipmentRuntime"));
+const {
   buildDunRotationFromDirection,
   resolveEntityWreckType,
   resolveShipWreckType,
@@ -772,6 +775,29 @@ function resolvePodRespawnStationID(session) {
   ) || 60003760;
 }
 
+function destroySessionShellEquipmentForDeath(session) {
+  const result = destroyActiveShellEquipment(session && session.characterID, {
+    reason: "death",
+  });
+  if (!result || result.success !== true) {
+    log.warn(
+      `[ShipDestruction] Shell equipment cleanup failed char=${session && session.characterID} error=${result && result.errorMsg || "UNKNOWN"}`,
+    );
+    return result;
+  }
+
+  const changes = result.data && Array.isArray(result.data.changes)
+    ? result.data.changes
+    : [];
+  emitShipDeathInventoryChangesForSession(session, changes);
+  if (changes.length > 0) {
+    log.info(
+      `[ShipDestruction] Destroyed ${changes.length} shell equipment item(s) for char=${session.characterID}`,
+    );
+  }
+  return result;
+}
+
 function destroyAttachedSessionCapsuleFallback(session, options: Record<string, any> = {}) {
   if (!session || !session.characterID || !session._space) {
     return {
@@ -823,6 +849,8 @@ function destroyAttachedSessionCapsuleFallback(session, options: Record<string, 
     return destroyResult;
   }
 
+  const shellEquipmentResult = destroySessionShellEquipmentForDeath(session);
+
   let respawnResult = null;
   if (getCharacterRecord(session.characterID)) {
     const targetStationID = resolvePodRespawnStationID(session);
@@ -859,6 +887,13 @@ function destroyAttachedSessionCapsuleFallback(session, options: Record<string, 
       wreckChanges:
         destroyResult.data && Array.isArray(destroyResult.data.wreckChanges)
           ? destroyResult.data.wreckChanges
+          : [],
+      shellEquipmentChanges:
+        shellEquipmentResult &&
+        shellEquipmentResult.success === true &&
+        shellEquipmentResult.data &&
+        Array.isArray(shellEquipmentResult.data.changes)
+          ? shellEquipmentResult.data.changes
           : [],
       boundResult: respawnResult && respawnResult.data ? respawnResult.data.boundResult : null,
       transientSessionFallback: true,
@@ -1073,6 +1108,8 @@ function destroySessionCapsuleToHomeStation(session, activeShip, options: Record
     );
   }
 
+  const shellEquipmentResult = destroySessionShellEquipmentForDeath(session);
+
   const respawnResult = rebuildDockedSessionAtStation(session, targetStationID, {
     emitNotifications: true,
     logSelection: true,
@@ -1115,6 +1152,13 @@ function destroySessionCapsuleToHomeStation(session, activeShip, options: Record
         destroyResult.data &&
         Array.isArray(destroyResult.data.wreckChanges)
           ? destroyResult.data.wreckChanges
+          : [],
+      shellEquipmentChanges:
+        shellEquipmentResult &&
+        shellEquipmentResult.success === true &&
+        shellEquipmentResult.data &&
+        Array.isArray(shellEquipmentResult.data.changes)
+          ? shellEquipmentResult.data.changes
           : [],
       boundResult: respawnResult.data.boundResult,
     },
@@ -1228,6 +1272,7 @@ module.exports._testing = {
   buildShipDeathPositions,
   processPendingDeathTests,
   purgeDestroyedShipEntityFromScene,
+  destroySessionShellEquipmentForDeath,
   clearPendingDeathTests() {
     pendingDeathTests.clear();
     clearPendingDeathTestTimer();

@@ -5,7 +5,12 @@ const {
   buildDict,
   buildKeyVal,
   buildList,
+  unwrapMarshalValue,
 } = require("../_shared/serviceHelpers");
+const {
+  syncInventoryItemForSession,
+} = require("../character/characterState");
+const shellEquipment = require("./shellEquipmentRuntime");
 
 const PATHWAY_CATEGORY_IDS = Object.freeze([1, 2, 3, 4]);
 const UNSUPPORTED_PROGRESSION_MUTATION_NOTIFY =
@@ -62,6 +67,91 @@ function throwUnsupportedProgressionMutation(methodName) {
   });
 }
 
+function throwRaimentMutationError(errorMsg) {
+  const notifyByError = {
+    SHELL_NOT_FOUND: "No active shell is available.",
+    ITEM_NOT_FOUND: "That raiment no longer exists.",
+    ITEM_NOT_OWNED: "You do not own that raiment.",
+    CROWN_UNSUPPORTED: "Crowns are not supported as shell equipment yet.",
+    INVALID_EQUIPMENT_TYPE: "That item is not a shell raiment.",
+    ALREADY_EQUIPPED: "That raiment is already equipped.",
+    EQUIPPED_ON_ANOTHER_SHELL: "That raiment is equipped on another shell.",
+    SLOT_OCCUPIED: "This shell already has a raiment equipped.",
+    EQUIPMENT_NOT_FOUND: "This shell has no raiment equipped.",
+  };
+  throwWrappedUserError("CustomNotify", {
+    notify: notifyByError[String(errorMsg)] || "The raiment could not be changed.",
+  });
+}
+
+function syncRaimentChanges(session, changes) {
+  for (const change of Array.isArray(changes) ? changes : []) {
+    if (!change || !change.item) {
+      continue;
+    }
+    syncInventoryItemForSession(
+      session,
+      change.item,
+      change.previousData || change.previousState || {},
+      { emitCfgLocation: false },
+    );
+  }
+}
+
+function refreshSessionShellDogma(session, reason) {
+  const systemID = Number(session && session._space && session._space.systemID) || 0;
+  if (systemID <= 0) {
+    return;
+  }
+  try {
+    const spaceRuntime = require("../../space/runtime");
+    const scene = spaceRuntime.ensureScene(systemID);
+    if (scene && typeof scene.refreshSessionShipDerivedState === "function") {
+      scene.refreshSessionShipDerivedState(session, {
+        notify: true,
+        reason: String(reason || "shell-raiment-change"),
+      });
+    }
+  } catch (error) {
+    log.warn(
+      `[experience] Failed to refresh shell dogma char=${getSessionCharacterID(session)} error=${error.message}`,
+    );
+  }
+}
+
+function implantRaiment(session, rawItemID) {
+  const result = shellEquipment.equipActiveShellItem(
+    getSessionCharacterID(session),
+    Number(unwrapMarshalValue(rawItemID)),
+    shellEquipment.SHELL_EQUIPMENT_KIND.RAIMENT,
+  );
+  if (!result || result.success !== true) {
+    return throwRaimentMutationError(result && result.errorMsg);
+  }
+  syncRaimentChanges(session, result.data.changes);
+  refreshSessionShellDogma(session, "shell-raiment-equipped");
+  log.info(
+    `[experience] Equipped raiment=${Number(result.data.item && result.data.item.itemID)} shell=${Number(result.data.shell.itemID)} char=${getSessionCharacterID(session)}`,
+  );
+  return true;
+}
+
+function deleteActiveRaiment(session) {
+  const result = shellEquipment.destroyActiveShellEquipmentByKind(
+    getSessionCharacterID(session),
+    shellEquipment.SHELL_EQUIPMENT_KIND.RAIMENT,
+  );
+  if (!result || result.success !== true) {
+    return throwRaimentMutationError(result && result.errorMsg);
+  }
+  syncRaimentChanges(session, result.data.changes);
+  refreshSessionShellDogma(session, "shell-raiment-destroyed");
+  log.info(
+    `[experience] Destroyed raiment=${Number(result.data.item && result.data.item.itemID)} shell=${Number(result.data.shell.itemID)} char=${getSessionCharacterID(session)}`,
+  );
+  return true;
+}
+
 class ExperienceService extends BaseService {
   constructor() {
     super("experience");
@@ -114,12 +204,22 @@ class ExperienceService extends BaseService {
     return throwUnsupportedProgressionMutation("implant_crown");
   }
 
-  Handle_implant_reignment() {
-    return throwUnsupportedProgressionMutation("implant_reignment");
+  Handle_implant_raiment(args, session) {
+    const values = unwrapMarshalValue(args);
+    return implantRaiment(session, values && values[0]);
   }
 
-  Handle_delete_active_reignment() {
-    return throwUnsupportedProgressionMutation("delete_active_reignment");
+  Handle_delete_active_raiment(_args, session) {
+    return deleteActiveRaiment(session);
+  }
+
+  // Preserve the misspelling used by older Frontier clients.
+  Handle_implant_reignment(args, session) {
+    return this.Handle_implant_raiment(args, session);
+  }
+
+  Handle_delete_active_reignment(args, session) {
+    return this.Handle_delete_active_raiment(args, session);
   }
 
   Handle_delete_active_crown() {
@@ -136,4 +236,6 @@ module.exports._testing = {
   buildEmptyCharacterProgression,
   buildEmptyMemories,
   buildEmptyMemoryPointTotals,
+  deleteActiveRaiment,
+  implantRaiment,
 };

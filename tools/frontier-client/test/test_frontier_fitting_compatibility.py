@@ -19,6 +19,7 @@ sys.path.insert(0, str(CLIENT_DIR))
 
 import fitting_compatibility_adapter as adapter  # noqa: E402
 import action_bar_compatibility_adapter as action_bar_adapter  # noqa: E402
+import action_bar_selection_adapter as selection_adapter  # noqa: E402
 import creation_service_compatibility_adapter as service_adapter  # noqa: E402
 import patch_frontier_fitting as patcher  # noqa: E402
 import frontier_windows_client as windows  # noqa: E402
@@ -274,6 +275,24 @@ class ActionBarAdapterTests(unittest.TestCase):
             locationID=100,
             flagID=27,
         )
+        self.medium_module = NS(
+            itemID=501,
+            typeID=601,
+            locationID=100,
+            flagID=19,
+        )
+        self.low_module = NS(
+            itemID=502,
+            typeID=602,
+            locationID=100,
+            flagID=11,
+        )
+        self.rig = NS(
+            itemID=503,
+            typeID=603,
+            locationID=100,
+            flagID=92,
+        )
         self.charge = NS(
             itemID=(100, 27, 700),
             typeID=700,
@@ -281,7 +300,12 @@ class ActionBarAdapterTests(unittest.TestCase):
             flagID=27,
             stacksize=12,
         )
-        self.ship.modules.append(self.module)
+        self.ship.modules.extend((
+            self.module,
+            self.medium_module,
+            self.low_module,
+            self.rig,
+        ))
         test = self
 
         class AbilityId:
@@ -331,7 +355,13 @@ class ActionBarAdapterTests(unittest.TestCase):
                 self.dogma_lm = DogmaLM()
 
             def GetItem(self, item_id):
-                return {100: test.ship, 500: test.module}.get(item_id)
+                return {
+                    100: test.ship,
+                    500: test.module,
+                    501: test.medium_module,
+                    502: test.low_module,
+                    503: test.rig,
+                }.get(item_id)
 
             def GetStateManager(self):
                 return self.state_manager
@@ -367,7 +397,7 @@ class ActionBarAdapterTests(unittest.TestCase):
                 return type_id == 600
 
             def has_online_effect(self, type_id):
-                return type_id == 600
+                return type_id in (600, 601)
 
             def activate(
                 self,
@@ -397,7 +427,15 @@ class ActionBarAdapterTests(unittest.TestCase):
             "AbilityId": AbilityId,
             "ModuleRef": ModuleRef,
             "gametime": NS(now_sim=lambda: "now"),
-            "invconst": NS(categoryCharge=8),
+            "invconst": NS(
+                categoryCharge=8,
+                flagLoSlot0=11,
+                flagLoSlot7=18,
+                flagMedSlot0=19,
+                flagMedSlot7=26,
+                flagHiSlot0=27,
+                flagHiSlot7=34,
+            ),
         }
         action_bar_adapter._evejs_install_action_bar_compatibility(
             self.namespace
@@ -405,7 +443,7 @@ class ActionBarAdapterTests(unittest.TestCase):
 
     def test_regular_modules_populate_action_bar_with_charge_state(self):
         modules = self.Provider().get_activatable_modules(100)
-        self.assertEqual(len(modules), 1)
+        self.assertEqual(len(modules), 3)
         self.assertEqual(modules[0].item_id, 500)
         self.assertEqual(modules[0].type_id, 600)
         self.assertEqual(modules[0].loaded_type_id, 700)
@@ -419,6 +457,14 @@ class ActionBarAdapterTests(unittest.TestCase):
                 self.AbilityId.OFFLINE,
             ],
         )
+        self.assertEqual(modules[1].item_id, 501)
+        self.assertEqual(
+            modules[1].abilities,
+            [self.AbilityId.ONLINE, self.AbilityId.OFFLINE],
+        )
+        self.assertEqual(modules[2].item_id, 502)
+        self.assertEqual(modules[2].abilities, [])
+        self.assertNotIn(503, [module.item_id for module in modules])
         self.assertEqual(self.events, [])
 
     def test_regular_module_actions_use_legacy_dogma(self):
@@ -484,6 +530,106 @@ class ActionBarAdapterTests(unittest.TestCase):
             self.namespace
         )
         self.assertIs(self.Provider.get_activatable_modules, first)
+
+
+class ActionBarSelectionAdapterTests(unittest.TestCase):
+    def setUp(self):
+        self.selected = []
+        test = self
+
+        class ItemAction:
+            def __init__(self, type_id):
+                self.key = ("item", type_id)
+                self.item_component = NS(type_id=type_id)
+
+        class ItemActionManager:
+            def has_available_action(self, item):
+                return item.type_id in (700, 701)
+
+            def get_action(self, type_id):
+                return ItemAction(type_id)
+
+        class Inventory:
+            def List(self, flag_id):
+                self.flag_id = flag_id
+                return [
+                    NS(typeID=700),
+                    NS(typeID=700),
+                    NS(typeID=701),
+                    NS(typeID=702),
+                ]
+
+        class ActionBarIntegration:
+            def __init__(self, ship_id):
+                self._loaded_ship_id = ship_id
+                self._item_action_manager = ItemActionManager()
+                self._inventory_cache_service = NS(
+                    GetInventoryFromId=lambda item_id: Inventory()
+                )
+                self._slots = [
+                    NS(action=ItemAction(700)),
+                    NS(action=None),
+                ]
+
+            def _add_available_module_entries(self, menu, slot_index):
+                menu.AddCaption("Add module")
+
+            def _set_slot_action(self, slot_index, action):
+                test.selected.append((self._loaded_ship_id, slot_index, action.key))
+
+        self.Integration = ActionBarIntegration
+        self.namespace = {
+            "ActionBarIntegration": ActionBarIntegration,
+            "evetypes": NS(
+                GetName=lambda type_id: {700: "Booster", 701: "Nanite"}[type_id],
+                GetIconID=lambda type_id: type_id + 1000,
+            ),
+            "GetIconFile": lambda icon_id: "icon:{}".format(icon_id),
+            "_evejs_action_bar_db_row_to_item": (
+                lambda row: NS(type_id=row.typeID)
+            ),
+            "_evejs_action_bar_flag_cargo": 5,
+        }
+        selection_adapter._evejs_install_action_bar_selection(self.namespace)
+
+    @staticmethod
+    def _menu():
+        class Menu:
+            def __init__(self):
+                self.captions = []
+                self.entries = []
+
+            def AddCaption(self, text):
+                self.captions.append(text)
+
+            def AddEntry(self, **entry):
+                self.entries.append(entry)
+
+        return Menu()
+
+    def test_consumables_are_selectable_for_regular_and_creation_ships(self):
+        for ship_id in (100, 200):
+            menu = self._menu()
+            self.Integration(ship_id)._add_available_module_entries(menu, 1)
+            self.assertEqual(menu.captions, ["Add module", "Add consumable"])
+            self.assertEqual(
+                [(entry["text"], entry["texturePath"]) for entry in menu.entries],
+                [("Nanite", "icon:1701")],
+            )
+            menu.entries[0]["func"]()
+
+        self.assertEqual(
+            self.selected,
+            [
+                (100, 1, ("item", 701)),
+                (200, 1, ("item", 701)),
+            ],
+        )
+
+    def test_action_bar_selection_patch_is_idempotent(self):
+        first = self.Integration._add_available_module_entries
+        selection_adapter._evejs_install_action_bar_selection(self.namespace)
+        self.assertIs(self.Integration._add_available_module_entries, first)
 
 
 class WindowsUpgradeTests(unittest.TestCase):
@@ -617,6 +763,35 @@ class FittingBytecodePatchTests(unittest.TestCase):
         self.assertEqual(state, "outdated")
         self.assertEqual(original, source)
 
+    def test_action_bar_integration_wrapper_is_exact_and_idempotent(self):
+        code = compile(
+            "class ActionBarIntegration:\n"
+            "    def _add_available_module_entries(self, menu, slot_index): pass\n",
+            "integration_fixture.py",
+            "exec",
+        )
+        source = member_for(code)
+        expected = hashlib.sha256(source).hexdigest()
+        patched = patcher.patched_action_bar_integration_member(source)
+        self.assertEqual(
+            patcher.inspect_member(
+                source,
+                expected,
+                patcher.patched_action_bar_integration_member,
+                set(),
+            )[0],
+            "source",
+        )
+        self.assertEqual(
+            patcher.inspect_member(
+                patched,
+                expected,
+                patcher.patched_action_bar_integration_member,
+                set(),
+            )[0],
+            "patched",
+        )
+
     @unittest.skipUnless(
         os.environ.get("EVE_FRONTIER_TEST_ARCHIVE"),
         "Set EVE_FRONTIER_TEST_ARCHIVE for real bytecode validation",
@@ -631,6 +806,7 @@ class FittingBytecodePatchTests(unittest.TestCase):
                         patcher.MODULE_NAME,
                         patcher.CREATION_SERVICE_MODULE_NAME,
                         patcher.ACTION_PROVIDER_MODULE_NAME,
+                        patcher.ACTION_BAR_INTEGRATION_MODULE_NAME,
                     )
                 }
             with zipfile.ZipFile(archive_path, "w") as archive:

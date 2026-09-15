@@ -26,6 +26,9 @@ const {
   getActiveImplantShipModifierEntries,
 } = require(path.join(__dirname, "../dogma/implants/activeImplantModifiers"));
 const {
+  buildActiveShellDogmaRecord,
+} = require(path.join(__dirname, "../frontier/shellEquipmentRuntime"));
+const {
   evaluateChargeCompatibility,
 } = require(path.join(__dirname, "chargeCompatibilityPolicy"));
 
@@ -2753,11 +2756,20 @@ function buildShipResourceState(charID, shipItem, options: Record<string, any> =
   );
   const includeActiveImplantModifiers =
     !isStructureHost && options.includeActiveImplantModifiers !== false && numericCharID > 0;
+  const shellEquipmentDogmaRecord = includeActiveImplantModifiers
+    ? buildActiveShellDogmaRecord(numericCharID)
+    : null;
   const implantShipAttributeModifierEntries = includeActiveImplantModifiers
-    ? getActiveImplantShipModifierEntries(numericCharID)
+    ? [
+        ...getActiveImplantShipModifierEntries(numericCharID),
+        ...getActiveImplantShipModifierEntries(shellEquipmentDogmaRecord),
+      ]
     : [];
   const implantLocationModifierSources = includeActiveImplantModifiers
-    ? getActiveImplantLocationModifierSources(numericCharID)
+    ? [
+        ...getActiveImplantLocationModifierSources(numericCharID),
+        ...getActiveImplantLocationModifierSources(shellEquipmentDogmaRecord),
+      ]
     : [];
   const additionalLocationModifierSources = [
     ...implantLocationModifierSources,

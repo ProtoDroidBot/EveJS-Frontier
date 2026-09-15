@@ -143,6 +143,10 @@ const temperatureRuntime = require(path.join(
   __dirname,
   "../services/frontier/temperatureRuntime.js",
 ));
+const environmentalEffectsRuntime = require(path.join(
+  __dirname,
+  "../services/frontier/environmentalEffectsService.js",
+));
 const {
   BUBBLE_CENTER_MIN_DISTANCE_METERS,
   BUBBLE_CENTER_MIN_DISTANCE_SQUARED,
@@ -14137,6 +14141,35 @@ function notifyShipTemperatureToSession(session, entity, result, nowMs) {
   ]);
 }
 
+function notifyEnvironmentalEffectsToSession(session, entity, result, nowMs) {
+  if (!session || !entity || !result || result.supported !== true) {
+    return false;
+  }
+
+  const deliveredStatus =
+    environmentalEffectsRuntime.deliverClientNotifications(session, result);
+  const attributeChanges = Array.isArray(result.attributeChanges)
+    ? result.attributeChanges
+    : [];
+  if (attributeChanges.length === 0) {
+    return deliveredStatus;
+  }
+
+  const timestamp = resolveSessionNotificationFileTime(session, nowMs);
+  const deliveredAttributes = notifyAttributeChanges(
+    session,
+    attributeChanges.map((change) => buildAttributeChange(
+      session,
+      entity.itemID,
+      change.attributeID,
+      change.value,
+      change.previousValue,
+      timestamp,
+    )),
+  );
+  return deliveredStatus || deliveredAttributes;
+}
+
 function notifyFuelChargeChangeToSession(
   session,
   entity,
@@ -16531,6 +16564,21 @@ function applyWeaponDamageToTarget(
   const victimSession = targetEntity.session || null;
   let destroyResult = null;
   if (damageResult.success) {
+    const feralizationResult = environmentalEffectsRuntime.applyNpcFeralization(
+      targetEntity,
+      attackerEntity,
+      "hit",
+      whenMs,
+      { appliedDamage: getAppliedDamageAmount(damageResult) },
+    );
+    if (feralizationResult.applied === true) {
+      notifyEnvironmentalEffectsToSession(
+        getOwningSessionForEntity(scene, targetEntity),
+        targetEntity,
+        feralizationResult,
+        whenMs,
+      );
+    }
     try {
       const droneRuntime = lazyRequire("../services/drone/droneRuntime");
       if (droneRuntime && typeof droneRuntime.noteIncomingAggression === "function") {
@@ -26564,6 +26612,25 @@ class SolarSystemScene {
       acquiredAtMs: toFiniteNumber(options.nowMs, this.getCurrentSimTimeMs()),
     });
     targetState.targetedBy.add(sourceID);
+
+    const acquiredAtMs = toFiniteNumber(
+      options.nowMs,
+      this.getCurrentSimTimeMs(),
+    );
+    const feralizationResult = environmentalEffectsRuntime.applyNpcFeralization(
+      targetEntity,
+      sourceEntity,
+      "scan",
+      acquiredAtMs,
+    );
+    if (feralizationResult.applied === true) {
+      notifyEnvironmentalEffectsToSession(
+        getOwningSessionForEntity(this, targetEntity),
+        targetEntity,
+        feralizationResult,
+        acquiredAtMs,
+      );
+    }
 
     if (sourceEntity.session) {
       this.notifyTargetEvent(sourceEntity.session, "add", targetID);
@@ -41401,6 +41468,29 @@ class SolarSystemScene {
     } catch (error) {
       log.warn(
         `[SpaceRuntime] Temperature tick failed for system=${this.systemID}: ${error.message}`,
+      );
+    }
+
+    try {
+      tickProfiler.section(
+        "environmentalEffects",
+        () => environmentalEffectsRuntime.tickScene(this, now, {
+          onAdvanced: (entity, result) => {
+            const ownerSession = getOwningSessionForEntity(this, entity);
+            if (ownerSession && isReadyForDestiny(ownerSession)) {
+              notifyEnvironmentalEffectsToSession(
+                ownerSession,
+                entity,
+                result,
+                now,
+              );
+            }
+          },
+        }),
+      );
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Environmental-effects tick failed for system=${this.systemID}: ${error.message}`,
       );
     }
 

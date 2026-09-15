@@ -15,6 +15,7 @@ const { throwWrappedUserError } = require(path.join(__dirname, "../../common/mac
 const { resolveShipByTypeID } = require(path.join(__dirname, "../chat/shipTypeRegistry"));
 const { getCharacterShips, findCharacterShip, getActiveShipRecord, shouldFlushDeferredDockedShipSessionChange, flushDeferredDockedShipSessionChange, completeDockedFittingBootstrap, syncInventoryItemForSession, syncShipFittingStateForSession, emitStripFittingDogmaMultiEventForSession, emitItemsChangedBatchForSession, emitFittingTransactionForSession, buildInventoryDogmaPrimeEntry, } = require(path.join(__dirname, "../character/characterState"));
 const { ITEM_FLAGS, FIGHTER_TUBE_FLAGS, listContainerItems, findItemById, findShipItemById, getItemMetadata, getInventoryItemUnitVolume, grantItemToCharacterLocation, moveItemToLocation, removeInventoryItem, takeItemTypeFromCharacterLocation, transferItemToOwnerLocation, mergeItemStacks, updateInventoryItem, } = require(path.join(__dirname, "./itemStore"));
+const { SHELL_EQUIPMENT_FLAG_ID, SHELL_EQUIPMENT_KIND, getShellEquipmentKind, listActiveShellEquipment, } = require(path.join(__dirname, "../frontier/shellEquipmentRuntime"));
 const { CORP_ROLE_DIRECTOR, toRoleMaskBigInt, getCorporationOfficeByInventoryID, getCorporationOffices, } = require(path.join(__dirname, "../corporation/corporationRuntimeState"));
 const { resolveItemByTypeID, } = require(path.join(__dirname, "./itemTypeRegistry"));
 const { isShipFittingFlag, listFittedItems, listFittedItemsForLocation, selectAutoFitFlagForType, validateFitForShip, resolveFitOnlineState, getShipBaseAttributeValue, getTypeAttributeValue, getTypeDogmaAttributes, getLoadedChargeByFlag, getFittedModuleByFlag, getLoadedChargeItems, buildChargeTupleItemID, getModuleChargeCapacity, isChargeCompatibleWithModule, SLOT_FAMILY_FLAGS, } = require(path.join(__dirname, "../fitting/liveFittingState"));
@@ -3779,8 +3780,13 @@ class InvBrokerService extends BaseService {
         });
         const shells = listContainerItems(characterID, characterID, numericFlag === null || numericFlag === 0 ? null : numericFlag).filter((item) => this._normalizeInventoryId(item && item.categoryID, 0) ===
             SHELL_CATEGORY_ID);
+        const raiments = (numericFlag === null ||
+            numericFlag === 0 ||
+            numericFlag === SHELL_EQUIPMENT_FLAG_ID)
+            ? listActiveShellEquipment(characterID).filter((item) => getShellEquipmentKind(item) === SHELL_EQUIPMENT_KIND.RAIMENT)
+            : [];
         const itemsByID = new Map();
-        for (const item of [...skills, ...shells]) {
+        for (const item of [...skills, ...shells, ...raiments]) {
             const itemID = this._normalizeInventoryId(item && item.itemID, 0);
             if (itemID > 0) {
                 itemsByID.set(itemID, item);

@@ -54,6 +54,7 @@ const { buildVisibilityDeltaPresentation, deliverVisibilityDeltaPresentation, ge
 const { buildDynamicVisibilityDeltaPlan, buildStaticVisibilityDeltaPlan, } = require(path.join(__dirname, "./destiny/visibility/delta.js"));
 const { isScanningContactResolved, recordEntityScannerEmissionActivity, replaceResolvedScanningContacts, } = require(path.join(__dirname, "../services/frontier/scanningRuntime.js"));
 const temperatureRuntime = require(path.join(__dirname, "../services/frontier/temperatureRuntime.js"));
+const environmentalEffectsRuntime = require(path.join(__dirname, "../services/frontier/environmentalEffectsService.js"));
 const { BUBBLE_CENTER_MIN_DISTANCE_METERS, BUBBLE_CENTER_MIN_DISTANCE_SQUARED, BUBBLE_HYSTERESIS_METERS, BUBBLE_RADIUS_METERS, BUBBLE_RADIUS_SQUARED, BUBBLE_RETENTION_RADIUS_SQUARED, PUBLIC_GRID_BOX_METERS, PUBLIC_GRID_HALF_BOX_METERS, PUBLIC_GRID_NEARBY_VISIBILITY_RADIUS_METERS, } = require(path.join(__dirname, "./destiny/visibility/constants.js"));
 const { resolveWarpVisibilityReferencePosition, } = require(path.join(__dirname, "./destiny/visibility/referencePosition.js"));
 const { beginPilotWarpVisibilityHandoff: beginPilotWarpVisibilityHandoffPlan, buildPilotWarpVisibilityHandoffReadiness, buildWarpDestinationAcquirePlan, buildWarpLiveGridDynamicRefreshPlan, buildWarpLiveGridStaticRefreshPlan, buildWarpSourceRemovalPlan, clearPilotWarpVisibilityHandoff: clearPilotWarpVisibilityHandoffPlan, isWarpDestinationStaticPreserved, } = require(path.join(__dirname, "./destiny/visibility/warpHandoff.js"));
@@ -9666,6 +9667,21 @@ function notifyShipTemperatureToSession(session, entity, result, nowMs) {
         buildAttributeChange(session, entity.itemID, temperatureRuntime.ATTRIBUTE_TEMPERATURE, notification.temperature, notification.previousTemperature, timestamp),
     ]);
 }
+function notifyEnvironmentalEffectsToSession(session, entity, result, nowMs) {
+    if (!session || !entity || !result || result.supported !== true) {
+        return false;
+    }
+    const deliveredStatus = environmentalEffectsRuntime.deliverClientNotifications(session, result);
+    const attributeChanges = Array.isArray(result.attributeChanges)
+        ? result.attributeChanges
+        : [];
+    if (attributeChanges.length === 0) {
+        return deliveredStatus;
+    }
+    const timestamp = resolveSessionNotificationFileTime(session, nowMs);
+    const deliveredAttributes = notifyAttributeChanges(session, attributeChanges.map((change) => buildAttributeChange(session, entity.itemID, change.attributeID, change.value, change.previousValue, timestamp)));
+    return deliveredStatus || deliveredAttributes;
+}
 function notifyFuelChargeChangeToSession(session, entity, whenMs = null, previousFuelCharge = null) {
     if (!session ||
         typeof session.sendNotification !== "function" ||
@@ -11327,6 +11343,10 @@ function applyWeaponDamageToTarget(scene, attackerEntity, targetEntity, shotDama
     const victimSession = targetEntity.session || null;
     let destroyResult = null;
     if (damageResult.success) {
+        const feralizationResult = environmentalEffectsRuntime.applyNpcFeralization(targetEntity, attackerEntity, "hit", whenMs, { appliedDamage: getAppliedDamageAmount(damageResult) });
+        if (feralizationResult.applied === true) {
+            notifyEnvironmentalEffectsToSession(getOwningSessionForEntity(scene, targetEntity), targetEntity, feralizationResult, whenMs);
+        }
         try {
             const droneRuntime = lazyRequire("../services/drone/droneRuntime");
             if (droneRuntime && typeof droneRuntime.noteIncomingAggression === "function") {
@@ -18390,6 +18410,11 @@ class SolarSystemScene {
             acquiredAtMs: toFiniteNumber(options.nowMs, this.getCurrentSimTimeMs()),
         });
         targetState.targetedBy.add(sourceID);
+        const acquiredAtMs = toFiniteNumber(options.nowMs, this.getCurrentSimTimeMs());
+        const feralizationResult = environmentalEffectsRuntime.applyNpcFeralization(targetEntity, sourceEntity, "scan", acquiredAtMs);
+        if (feralizationResult.applied === true) {
+            notifyEnvironmentalEffectsToSession(getOwningSessionForEntity(this, targetEntity), targetEntity, feralizationResult, acquiredAtMs);
+        }
         if (sourceEntity.session) {
             this.notifyTargetEvent(sourceEntity.session, "add", targetID);
             if (targetEntity.kind === "station" || hasDamageableHealth(targetEntity)) {
@@ -29391,6 +29416,19 @@ class SolarSystemScene {
             }
             catch (error) {
                 log.warn(`[SpaceRuntime] Temperature tick failed for system=${this.systemID}: ${error.message}`);
+            }
+            try {
+                tickProfiler.section("environmentalEffects", () => environmentalEffectsRuntime.tickScene(this, now, {
+                    onAdvanced: (entity, result) => {
+                        const ownerSession = getOwningSessionForEntity(this, entity);
+                        if (ownerSession && isReadyForDestiny(ownerSession)) {
+                            notifyEnvironmentalEffectsToSession(ownerSession, entity, result, now);
+                        }
+                    },
+                }));
+            }
+            catch (error) {
+                log.warn(`[SpaceRuntime] Environmental-effects tick failed for system=${this.systemID}: ${error.message}`);
             }
             finalizeActiveNativeSubwarpPlan(this);
             if (dockRequests.size > 0) {

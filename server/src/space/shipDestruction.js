@@ -11,6 +11,7 @@ const { CAPSULE_TYPE_ID, ITEM_FLAGS, createSpaceItemForOwner, findShipItemById, 
 const { emitFittingTransactionForSession, emitItemsChangedBatchForSession, getCharacterRecord, getActiveShipRecord, } = require(path.join(__dirname, "../services/character/characterState"));
 const { getSpaceDebrisLifetimeMs, } = require(path.join(__dirname, "../services/inventory/spaceDebrisState"));
 const { resolveLocationDeathOutcome, } = require(path.join(__dirname, "../services/killmail/deathOutcomeResolver"));
+const { destroyActiveShellEquipment, } = require(path.join(__dirname, "../services/frontier/shellEquipmentRuntime"));
 const { buildDunRotationFromDirection, resolveEntityWreckType, resolveShipWreckType, } = require(path.join(__dirname, "./wreckUtils"));
 const DEFAULT_DEATH_TEST_COUNT = 6;
 const DEFAULT_DEATH_TEST_RADIUS_METERS = 20_000;
@@ -589,6 +590,23 @@ function resolvePodRespawnStationID(session) {
         (session && session.clonestationid) ||
         60003760) || 60003760;
 }
+function destroySessionShellEquipmentForDeath(session) {
+    const result = destroyActiveShellEquipment(session && session.characterID, {
+        reason: "death",
+    });
+    if (!result || result.success !== true) {
+        log.warn(`[ShipDestruction] Shell equipment cleanup failed char=${session && session.characterID} error=${result && result.errorMsg || "UNKNOWN"}`);
+        return result;
+    }
+    const changes = result.data && Array.isArray(result.data.changes)
+        ? result.data.changes
+        : [];
+    emitShipDeathInventoryChangesForSession(session, changes);
+    if (changes.length > 0) {
+        log.info(`[ShipDestruction] Destroyed ${changes.length} shell equipment item(s) for char=${session.characterID}`);
+    }
+    return result;
+}
 function destroyAttachedSessionCapsuleFallback(session, options = {}) {
     if (!session || !session.characterID || !session._space) {
         return {
@@ -626,6 +644,7 @@ function destroyAttachedSessionCapsuleFallback(session, options = {}) {
         log.warn(`[ShipDestruction] Fallback capsule destroy cleanup failed for char=${session.characterID} pod=${abandonedCapsuleEntity.itemID} error=${destroyResult.errorMsg}`);
         return destroyResult;
     }
+    const shellEquipmentResult = destroySessionShellEquipmentForDeath(session);
     let respawnResult = null;
     if (getCharacterRecord(session.characterID)) {
         const targetStationID = resolvePodRespawnStationID(session);
@@ -656,6 +675,12 @@ function destroyAttachedSessionCapsuleFallback(session, options = {}) {
                 : [],
             wreckChanges: destroyResult.data && Array.isArray(destroyResult.data.wreckChanges)
                 ? destroyResult.data.wreckChanges
+                : [],
+            shellEquipmentChanges: shellEquipmentResult &&
+                shellEquipmentResult.success === true &&
+                shellEquipmentResult.data &&
+                Array.isArray(shellEquipmentResult.data.changes)
+                ? shellEquipmentResult.data.changes
                 : [],
             boundResult: respawnResult && respawnResult.data ? respawnResult.data.boundResult : null,
             transientSessionFallback: true,
@@ -825,6 +850,7 @@ function destroySessionCapsuleToHomeStation(session, activeShip, options = {}) {
     if (!destroyResult.success) {
         log.warn(`[ShipDestruction] Capsule destroy cleanup failed for char=${session.characterID} pod=${abandonedCapsuleEntity.itemID} error=${destroyResult.errorMsg}`);
     }
+    const shellEquipmentResult = destroySessionShellEquipmentForDeath(session);
     const respawnResult = rebuildDockedSessionAtStation(session, targetStationID, {
         emitNotifications: true,
         logSelection: true,
@@ -859,6 +885,12 @@ function destroySessionCapsuleToHomeStation(session, activeShip, options = {}) {
                 destroyResult.data &&
                 Array.isArray(destroyResult.data.wreckChanges)
                 ? destroyResult.data.wreckChanges
+                : [],
+            shellEquipmentChanges: shellEquipmentResult &&
+                shellEquipmentResult.success === true &&
+                shellEquipmentResult.data &&
+                Array.isArray(shellEquipmentResult.data.changes)
+                ? shellEquipmentResult.data.changes
                 : [],
             boundResult: respawnResult.data.boundResult,
         },
@@ -957,6 +989,7 @@ module.exports._testing = {
     buildShipDeathPositions,
     processPendingDeathTests,
     purgeDestroyedShipEntityFromScene,
+    destroySessionShellEquipmentForDeath,
     clearPendingDeathTests() {
         pendingDeathTests.clear();
         clearPendingDeathTestTimer();

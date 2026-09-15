@@ -13,6 +13,9 @@ const ShellManagerService = require(
   "../src/services/frontier/shellManagerService",
 );
 const itemStore = require("../src/services/inventory/itemStore");
+const shellEquipment = require(
+  "../src/services/frontier/shellEquipmentRuntime",
+);
 
 const CHARACTER_ID = 140000005;
 const FRONTIER_MARSHAL_OPTIONS = Object.freeze({
@@ -135,8 +138,6 @@ test("semantically undefined experience mutations fail explicitly as UserError",
     "delete_memory",
     "ascend",
     "implant_crown",
-    "implant_reignment",
-    "delete_active_reignment",
     "delete_active_crown",
   ];
 
@@ -151,7 +152,7 @@ test("semantically undefined experience mutations fail explicitly as UserError",
 });
 
 test("shell rename is owner-scoped, client-bounded, persisted, and notified", () => {
-  const grant = itemStore.grantItemToCharacterLocation(
+  const grant = itemStore.grantItemToOwnerLocation(
     CHARACTER_ID,
     CHARACTER_ID,
     itemStore.ITEM_FLAGS.HANGAR,
@@ -215,8 +216,6 @@ test("undefined shell progression mutations fail explicitly as UserError", () =>
     "create_crown",
     "implant_crown",
     "delete_active_crown",
-    "implant_implant",
-    "delete_active_implant",
     "admin_create_and_implant_implant",
     "admin_create_crown_without_cooldown",
     "clear_medical_trait_implants",
@@ -236,5 +235,157 @@ test("undefined shell progression mutations fail explicitly as UserError", () =>
       isWrappedUserError,
       method,
     );
+  }
+});
+
+test("shell implants and raiments persist per shell and are destroyed by lifecycle cleanup", () => {
+  const IMPLANT_TYPE_ID = 990001;
+  const SECOND_IMPLANT_TYPE_ID = 990002;
+  const RAIMENT_TYPE_ID = 990003;
+  const CROWN_TYPE_ID = 990004;
+  shellEquipment._testing.setEquipmentGroupOverride(
+    IMPLANT_TYPE_ID,
+    shellEquipment.SHELL_NEURAL_IMPLANT_GROUP_ID,
+  );
+  shellEquipment._testing.setEquipmentGroupOverride(
+    SECOND_IMPLANT_TYPE_ID,
+    shellEquipment.SHELL_NEURAL_IMPLANT_GROUP_ID,
+  );
+  shellEquipment._testing.setEquipmentGroupOverride(
+    RAIMENT_TYPE_ID,
+    shellEquipment.SHELL_RAIMENT_GROUP_ID,
+  );
+  shellEquipment._testing.setEquipmentGroupOverride(
+    CROWN_TYPE_ID,
+    shellEquipment.SHELL_CROWN_GROUP_ID,
+  );
+
+  const createdItems: any[] = [];
+  const grantOwned = (typeID, itemName) => {
+    const grant = itemStore.grantItemToOwnerLocation(
+      CHARACTER_ID,
+      CHARACTER_ID,
+      itemStore.ITEM_FLAGS.HANGAR,
+      typeID,
+      1,
+      { individualItems: true, itemName, singleton: 1 },
+    );
+    assert.equal(grant.success, true, grant.errorMsg);
+    const item = grant.data.items[0];
+    createdItems.push(item);
+    return item;
+  };
+
+  const shell = grantOwned(
+    ShellManagerService._testing.DEFAULT_SHELL_TYPE_ID,
+    "Equipment Test Shell",
+  );
+  const implant = grantOwned(IMPLANT_TYPE_ID, "Test Neural Implant");
+  const secondImplant = grantOwned(SECOND_IMPLANT_TYPE_ID, "Second Neural Implant");
+  const raiment = grantOwned(RAIMENT_TYPE_ID, "Test Raiment");
+  const crown = grantOwned(CROWN_TYPE_ID, "Deferred Crown");
+  const session: Record<string, any> = {
+    charid: CHARACTER_ID,
+    characterID: CHARACTER_ID,
+    sendNotification() {},
+  };
+
+  try {
+    const shellService = new ShellManagerService();
+    const experienceService = new ExperienceService();
+
+    assert.equal(
+      shellService.Handle_implant_implant([implant.itemID], session),
+      true,
+    );
+    assert.equal(
+      experienceService.Handle_implant_raiment([raiment.itemID], session),
+      true,
+    );
+    assert.equal(shellService.Handle_has_raiment([], session), true);
+
+    assert.equal(itemStore.findItemById(implant.itemID).locationID, shell.itemID);
+    assert.equal(
+      itemStore.findItemById(implant.itemID).flagID,
+      shellEquipment.SHELL_EQUIPMENT_FLAG_ID,
+    );
+    assert.equal(itemStore.findItemById(raiment.itemID).locationID, shell.itemID);
+    assert.deepEqual(shellEquipment.buildActiveShellDogmaRecord(CHARACTER_ID).implants, [
+      {
+        itemID: implant.itemID,
+        typeID: IMPLANT_TYPE_ID,
+        slot: 0,
+        shellEquipmentKind: shellEquipment.SHELL_EQUIPMENT_KIND.IMPLANT,
+      },
+      {
+        itemID: raiment.itemID,
+        typeID: RAIMENT_TYPE_ID,
+        slot: 0,
+        shellEquipmentKind: shellEquipment.SHELL_EQUIPMENT_KIND.RAIMENT,
+      },
+    ]);
+    assert.deepEqual(
+      Object.fromEntries(
+        shellService.Handle_get_active_shell_db_data([], session).entries,
+      ).implants,
+      { type: "list", items: [IMPLANT_TYPE_ID] },
+    );
+    assert.throws(
+      () => shellService.Handle_implant_implant([secondImplant.itemID], session),
+      isWrappedUserError,
+    );
+
+    // Removal is intentionally destructive; it never moves the item to a hangar.
+    assert.equal(shellService.Handle_delete_active_implant([], session), true);
+    assert.equal(itemStore.findItemById(implant.itemID), null);
+    assert.equal(
+      shellService.Handle_implant_implant([secondImplant.itemID], session),
+      true,
+    );
+
+    // A crown can coexist in the same inventory flag, but is excluded until
+    // its separate attribute semantics are implemented.
+    assert.equal(
+      itemStore.moveItemToLocation(
+        crown.itemID,
+        shell.itemID,
+        shellEquipment.SHELL_EQUIPMENT_FLAG_ID,
+        1,
+      ).success,
+      true,
+    );
+    const ascensionCleanup =
+      shellEquipment.destroyActiveShellEquipmentForAscension(CHARACTER_ID);
+    assert.equal(ascensionCleanup.success, true);
+    assert.equal(ascensionCleanup.data.reason, "ascension");
+    assert.equal(itemStore.findItemById(secondImplant.itemID), null);
+    assert.equal(itemStore.findItemById(raiment.itemID), null);
+    assert.notEqual(itemStore.findItemById(crown.itemID), null);
+
+    const deathImplant = grantOwned(IMPLANT_TYPE_ID, "Death Test Implant");
+    const deathRaiment = grantOwned(RAIMENT_TYPE_ID, "Death Test Raiment");
+    assert.equal(
+      shellService.Handle_implant_implant([deathImplant.itemID], session),
+      true,
+    );
+    assert.equal(
+      experienceService.Handle_implant_raiment([deathRaiment.itemID], session),
+      true,
+    );
+    const shipDestruction = require("../src/space/shipDestruction");
+    const deathCleanup =
+      shipDestruction._testing.destroySessionShellEquipmentForDeath(session);
+    assert.equal(deathCleanup.success, true);
+    assert.equal(deathCleanup.data.reason, "death");
+    assert.equal(itemStore.findItemById(deathImplant.itemID), null);
+    assert.equal(itemStore.findItemById(deathRaiment.itemID), null);
+    assert.notEqual(itemStore.findItemById(crown.itemID), null);
+  } finally {
+    shellEquipment._testing.clearEquipmentGroupOverrides();
+    for (const item of createdItems.reverse()) {
+      if (itemStore.findItemById(item.itemID)) {
+        itemStore.removeInventoryItem(item.itemID, { removeContents: true });
+      }
+    }
   }
 });

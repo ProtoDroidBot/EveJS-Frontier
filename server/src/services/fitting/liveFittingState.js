@@ -8,6 +8,7 @@ const { resolveItemByTypeID, } = require(path.join(__dirname, "../inventory/item
 const { MINING_HOLD_DEFINITIONS, } = require(path.join(__dirname, "../mining/miningConstants"));
 const { FUEL_BAY_ATTRIBUTE_ID, FUEL_BAY_RESOURCE_KEY, } = require(path.join(__dirname, "../inventory/fuelBayInventory"));
 const { getActiveImplantLocationModifierSources, getActiveImplantShipModifierEntries, } = require(path.join(__dirname, "../dogma/implants/activeImplantModifiers"));
+const { buildActiveShellDogmaRecord, } = require(path.join(__dirname, "../frontier/shellEquipmentRuntime"));
 const { evaluateChargeCompatibility, } = require(path.join(__dirname, "chargeCompatibilityPolicy"));
 const CHARGE_CATEGORY_ID = 8;
 const STRUCTURE_CATEGORY_ID = 65;
@@ -1912,11 +1913,20 @@ function buildShipResourceState(charID, shipItem, options = {}) {
         : fittedItems;
     const skillMap = resolveDogmaSkillMapForHost(numericCharID, shipItem || shipMetadata, options);
     const includeActiveImplantModifiers = !isStructureHost && options.includeActiveImplantModifiers !== false && numericCharID > 0;
+    const shellEquipmentDogmaRecord = includeActiveImplantModifiers
+        ? buildActiveShellDogmaRecord(numericCharID)
+        : null;
     const implantShipAttributeModifierEntries = includeActiveImplantModifiers
-        ? getActiveImplantShipModifierEntries(numericCharID)
+        ? [
+            ...getActiveImplantShipModifierEntries(numericCharID),
+            ...getActiveImplantShipModifierEntries(shellEquipmentDogmaRecord),
+        ]
         : [];
     const implantLocationModifierSources = includeActiveImplantModifiers
-        ? getActiveImplantLocationModifierSources(numericCharID)
+        ? [
+            ...getActiveImplantLocationModifierSources(numericCharID),
+            ...getActiveImplantLocationModifierSources(shellEquipmentDogmaRecord),
+        ]
         : [];
     const additionalLocationModifierSources = [
         ...implantLocationModifierSources,

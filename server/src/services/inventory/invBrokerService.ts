@@ -51,6 +51,12 @@ const {
   updateInventoryItem,
 } = require(path.join(__dirname, "./itemStore"));
 const {
+  SHELL_EQUIPMENT_FLAG_ID,
+  SHELL_EQUIPMENT_KIND,
+  getShellEquipmentKind,
+  listActiveShellEquipment,
+} = require(path.join(__dirname, "../frontier/shellEquipmentRuntime"));
+const {
   CORP_ROLE_DIRECTOR,
   toRoleMaskBigInt,
   getCorporationOfficeByInventoryID,
@@ -5590,8 +5596,17 @@ class InvBrokerService extends BaseService {
         this._normalizeInventoryId(item && item.categoryID, 0) ===
         SHELL_CATEGORY_ID,
     );
+    const raiments = (
+      numericFlag === null ||
+      numericFlag === 0 ||
+      numericFlag === SHELL_EQUIPMENT_FLAG_ID
+    )
+      ? listActiveShellEquipment(characterID).filter(
+          (item) => getShellEquipmentKind(item) === SHELL_EQUIPMENT_KIND.RAIMENT,
+        )
+      : [];
     const itemsByID = new Map();
-    for (const item of [...skills, ...shells]) {
+    for (const item of [...skills, ...shells, ...raiments]) {
       const itemID = this._normalizeInventoryId(item && item.itemID, 0);
       if (itemID > 0) {
         itemsByID.set(itemID, item);
