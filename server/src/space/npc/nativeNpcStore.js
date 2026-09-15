@@ -531,12 +531,11 @@ function removeNativeWreckCascade(wreckID) {
 function buildNativeSlimModuleTuples(entityID) {
     return listNativeModulesForEntity(entityID)
         .map((moduleRecord) => ([
-        toPositiveInt(moduleRecord && moduleRecord.moduleID, 0),
         toPositiveInt(moduleRecord && moduleRecord.typeID, 0),
         toPositiveInt(moduleRecord && moduleRecord.flagID, 0),
     ]))
         .filter((tuple) => tuple.every((value) => value > 0))
-        .sort((left, right) => left[2] - right[2] || left[0] - right[0]);
+        .sort((left, right) => left[1] - right[1] || left[0] - right[0]);
 }
 function buildNativeFittedItems(entityID) {
     return listNativeModulesForEntity(entityID).map((moduleRecord) => ({

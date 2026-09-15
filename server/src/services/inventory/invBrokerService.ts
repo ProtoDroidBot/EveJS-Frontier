@@ -213,6 +213,10 @@ const {
   validateMobileDepotFittingAccess,
 } = require(path.join(__dirname, "../ship/mobileDepotRuntime"));
 const {
+  DEFAULT_REFUGE_FITTING_RANGE_METERS,
+  findRefugeFittingAccess,
+} = require(path.join(__dirname, "../frontier/refugeFittingRuntime"));
+const {
   isShipServiceFlag,
   validateShipServiceAccess,
 } = require(path.join(__dirname, "../ship/shipServiceAccess"));
@@ -3021,6 +3025,26 @@ class InvBrokerService extends BaseService {
     };
   }
 
+  _getInSpaceFittingServiceAccess(session) {
+    const refugeAccess = findRefugeFittingAccess(session);
+    if (refugeAccess && refugeAccess.success) {
+      return refugeAccess;
+    }
+
+    const mobileDepotAccess = this._getMobileDepotFittingServiceAccess(session);
+    if (mobileDepotAccess && mobileDepotAccess.success) {
+      return mobileDepotAccess;
+    }
+
+    if (
+      refugeAccess &&
+      refugeAccess.errorMsg !== "REFUGE_FITTING_SERVICE_NOT_FOUND"
+    ) {
+      return refugeAccess;
+    }
+    return mobileDepotAccess;
+  }
+
   _validateInSpaceFittingServiceAccess(session, shipRecord, item, destination) {
     if (!this._isInSpaceRefitMove(session, shipRecord, item, destination)) {
       return { success: true as const };
@@ -3033,7 +3057,7 @@ class InvBrokerService extends BaseService {
       };
     }
 
-    return this._getMobileDepotFittingServiceAccess(session);
+    return this._getInSpaceFittingServiceAccess(session);
   }
 
   _isDockedStructureRefitMove(session, shipRecord, item, destination) {
@@ -3104,20 +3128,27 @@ class InvBrokerService extends BaseService {
     }
 
     const notifyByError = {
-      INVALID_SESSION: "You must be in space in your active ship to use a Mobile Depot fitting service.",
+      INVALID_SESSION: "You must be in space in your active ship to use an in-space fitting service.",
       MOBILE_DEPOT_NOT_ACTIVE: "This Mobile Depot is still activating.",
       MOBILE_DEPOT_REINFORCED: "This Mobile Depot is reinforced and cannot provide fitting service.",
-      MOBILE_DEPOT_FITTING_SERVICE_CLOAKED: "You cannot refit from a Mobile Depot while cloaked.",
+      MOBILE_DEPOT_FITTING_SERVICE_CLOAKED: "You cannot use an in-space fitting service while cloaked.",
+      REFUGE_NOT_ACTIVE: "This Refuge is offline or still activating.",
+      REFUGE_NOT_OWNER: "You do not own this Refuge fitting service.",
+      REFUGE_NOT_IN_SPACE: "This Refuge is not available in space.",
       MOBILE_DEPOT_FITTING_SERVICE_NOT_FOUND:
-        `You must be within ${MOBILE_DEPOT_FITTING_RANGE_METERS} meters of an active Mobile Depot you own to refit in space.`,
+        `You must be within ${MOBILE_DEPOT_FITTING_RANGE_METERS} meters of an active Mobile Depot or ${DEFAULT_REFUGE_FITTING_RANGE_METERS} meters of an online Refuge you own to refit in space.`,
       MOBILE_DEPOT_FITTING_SERVICE_NOT_AVAILABLE:
-        `You must be within ${MOBILE_DEPOT_FITTING_RANGE_METERS} meters of an active Mobile Depot you own to refit in space.`,
+        `You must be within ${MOBILE_DEPOT_FITTING_RANGE_METERS} meters of an active Mobile Depot or ${DEFAULT_REFUGE_FITTING_RANGE_METERS} meters of an online Refuge you own to refit in space.`,
+      REFUGE_FITTING_SERVICE_NOT_FOUND:
+        `You must be within ${MOBILE_DEPOT_FITTING_RANGE_METERS} meters of an active Mobile Depot or ${DEFAULT_REFUGE_FITTING_RANGE_METERS} meters of an online Refuge you own to refit in space.`,
+      REFUGE_FITTING_SERVICE_NOT_AVAILABLE:
+        `You must be within ${MOBILE_DEPOT_FITTING_RANGE_METERS} meters of an active Mobile Depot or ${DEFAULT_REFUGE_FITTING_RANGE_METERS} meters of an online Refuge you own to refit in space.`,
     };
 
     throwWrappedUserError("CustomNotify", {
       notify:
         notifyByError[errorMsg] ||
-        "Unable to access a Mobile Depot fitting service.",
+        "Unable to access an in-space fitting service.",
     });
   }
 

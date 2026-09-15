@@ -570,6 +570,7 @@ def export_universe_tables(request, out_dir, report):
             system = systems[key]
             system_content = content.get(key, None)
             star = optional(system_content, "star")
+            star_statistics = optional(star, "statistics")
             yield {
                 "_key": key,
                 "constellationID": int(system.constellationID),
@@ -577,10 +578,13 @@ def export_universe_tables(request, out_dir, report):
                 "nameID": int(system.nameID),
                 "position": vector(system.center),
                 "radius": float(optional(system_content, "radius", 0.0)),
+                "frostLine": clean_float(float(optional(system_content, "frostLine", 0.0) or 0.0)),
+                "habitableZone": to_plain(optional(system_content, "habitableZone", [])),
                 "regionID": int(system.regionID),
                 "securityClass": str(optional(system, "securityClass", "")),
                 "securityStatus": float(optional(system, "securityStatus", 0.0)),
                 "starID": int(optional(star, "id", 0) or 0),
+                "starTemperature": clean_float(float(optional(star_statistics, "temperature", 5778.0) or 5778.0)),
                 "sunTypeID": int(optional(system, "sunTypeID", 0) or 0),
             }
 

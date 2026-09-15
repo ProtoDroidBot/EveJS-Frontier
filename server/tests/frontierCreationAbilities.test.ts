@@ -1811,6 +1811,50 @@ test("module and weapon activity raise EM signature and decay to baseline", () =
   assert.deepEqual(signatures.map((entry) => entry[1]), [5, 10, 5]);
 });
 
+test("target mass increases only gravimetric signature and scan resolution", () => {
+  const referenceMass = scanningRuntime.GRAVIMETRIC_REFERENCE_MASS_KG;
+  const lightSignatures = scanningRuntime.buildSignatureResultsForTarget({
+    baseSignature: 10,
+    distanceMeters: scanningRuntime.MAXIMUM_SCAN_DISTANCE_METERS,
+    multipliers: [[1, 500], [2, 500], [3, 500]],
+    massKg: referenceMass / 2,
+  });
+  const heavySignatures = scanningRuntime.buildSignatureResultsForTarget({
+    baseSignature: 10,
+    distanceMeters: scanningRuntime.MAXIMUM_SCAN_DISTANCE_METERS,
+    multipliers: [[1, 500], [2, 500], [3, 500]],
+    massKg: referenceMass * 4,
+  });
+
+  assert.deepEqual(lightSignatures.map((entry) => entry[1]), [2.5, 5, 5]);
+  assert.deepEqual(heavySignatures.map((entry) => entry[1]), [20, 5, 5]);
+  assert.equal(
+    scanningRuntime.resolveGravimetricSignatureMultiplier(undefined),
+    1,
+  );
+
+  const resolutionScan = runScan([
+    {
+      itemID: 8051,
+      typeID: TYPE_SIGNATURE_TARGET,
+      mass: referenceMass / 4,
+      position: { x: 0, y: 0, z: scanningRuntime.MAXIMUM_SCAN_DISTANCE_METERS },
+    },
+    {
+      itemID: 8052,
+      typeID: TYPE_SIGNATURE_TARGET,
+      mass: referenceMass * 2,
+      position: { x: 0, y: 0, z: scanningRuntime.MAXIMUM_SCAN_DISTANCE_METERS },
+    },
+  ], {
+    scannerProfile: {
+      durationMs: 6000,
+      multipliers: [[scanningRuntime.SIGNATURE_TYPE_GRAVIMETRIC, 500]],
+    },
+  });
+  assert.deepEqual(resolutionScan.resolvedIds, [8052]);
+});
+
 test("build 3467658 non-modular scanningService uses built-in hull sensors and exact response", () => {
   const ship: Record<string, any> = {
     kind: "ship",
@@ -1830,6 +1874,7 @@ test("build 3467658 non-modular scanningService uses built-in hull sensors and e
     kind: "deployable",
     itemID: 8101,
     typeID: TYPE_SIGNATURE_TARGET,
+    mass: 8_000_000,
     position: { x: 10, y: 20, z: 100030 },
   };
   let captured = null;
@@ -1906,8 +1951,10 @@ test("build 3467658 non-modular scanningService uses built-in hull sensors and e
     itemID: 8101,
     typeID: TYPE_SIGNATURE_TARGET,
     position: target.position,
+    mass: target.mass,
     hasLineOfSight: true,
     emSignatureMultiplier: 1,
+    thermalSignatureMultiplier: 1,
   }]);
   assert.deepEqual(session._space.frontierDirectionalScanIds, [8101]);
   assert.deepEqual(resolutionUpdate, {

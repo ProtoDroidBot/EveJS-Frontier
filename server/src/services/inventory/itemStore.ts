@@ -1093,6 +1093,28 @@ function normalizeShipConditionState(rawValue) {
         conditionNumber(source.fuelCharge, DEFAULT_SHIP_CONDITION_STATE.fuelCharge),
       ),
   };
+  // Temperature is only authored for Frontier heat-capable hulls. Keep these
+  // fields optional so legacy ships retain their existing condition shape;
+  // the space temperature runtime adds them when the hull exposes heat
+  // capacity and conductance attributes.
+  const temperature = Number(source.temperature);
+  if (
+    source.temperature !== null &&
+    source.temperature !== undefined &&
+    Number.isFinite(temperature) &&
+    temperature >= 0
+  ) {
+    normalizedState.temperature = temperature;
+  }
+  const externalTemperature = Number(source.externalTemperature);
+  if (
+    source.externalTemperature !== null &&
+    source.externalTemperature !== undefined &&
+    Number.isFinite(externalTemperature) &&
+    externalTemperature >= 0
+  ) {
+    normalizedState.externalTemperature = externalTemperature;
+  }
   if (fuelQueue.length > 0) {
     normalizedState.fuelQueue = fuelQueue;
   }

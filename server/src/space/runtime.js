@@ -53,6 +53,7 @@ const { getPayloadPrimaryEntityID: getExactPayloadPrimaryEntityID, } = require(p
 const { buildVisibilityDeltaPresentation, deliverVisibilityDeltaPresentation, getPendingVisibilityAcquisitionIDs, getPendingVisibilityRemovalIDs, visibilityDeltaRequiresDelivery, } = require(path.join(__dirname, "./destiny/visibility/acquisition.js"));
 const { buildDynamicVisibilityDeltaPlan, buildStaticVisibilityDeltaPlan, } = require(path.join(__dirname, "./destiny/visibility/delta.js"));
 const { isScanningContactResolved, recordEntityScannerEmissionActivity, replaceResolvedScanningContacts, } = require(path.join(__dirname, "../services/frontier/scanningRuntime.js"));
+const temperatureRuntime = require(path.join(__dirname, "../services/frontier/temperatureRuntime.js"));
 const { BUBBLE_CENTER_MIN_DISTANCE_METERS, BUBBLE_CENTER_MIN_DISTANCE_SQUARED, BUBBLE_HYSTERESIS_METERS, BUBBLE_RADIUS_METERS, BUBBLE_RADIUS_SQUARED, BUBBLE_RETENTION_RADIUS_SQUARED, PUBLIC_GRID_BOX_METERS, PUBLIC_GRID_HALF_BOX_METERS, PUBLIC_GRID_NEARBY_VISIBILITY_RADIUS_METERS, } = require(path.join(__dirname, "./destiny/visibility/constants.js"));
 const { resolveWarpVisibilityReferencePosition, } = require(path.join(__dirname, "./destiny/visibility/referencePosition.js"));
 const { beginPilotWarpVisibilityHandoff: beginPilotWarpVisibilityHandoffPlan, buildPilotWarpVisibilityHandoffReadiness, buildWarpDestinationAcquirePlan, buildWarpLiveGridDynamicRefreshPlan, buildWarpLiveGridStaticRefreshPlan, buildWarpSourceRemovalPlan, clearPilotWarpVisibilityHandoff: clearPilotWarpVisibilityHandoffPlan, isWarpDestinationStaticPreserved, } = require(path.join(__dirname, "./destiny/visibility/warpHandoff.js"));
@@ -98,7 +99,7 @@ const { getFittedModuleItems, listFittedItemsForLocation, buildSlimModuleTuples,
 const { buildLiveModuleAttributeMap, } = require(path.join(__dirname, "./modules/liveModuleAttributes"));
 const { getActiveImplantLocationModifierSources, getActiveImplantShipModifierEntries, } = require(path.join(__dirname, "../services/dogma/implants/activeImplantModifiers"));
 const { getCachedCharacterSkillMap, } = require(path.join(__dirname, "../services/skills/skillState"));
-const { updateCharacterRecord, } = require(path.join(__dirname, "../services/character/characterState"));
+const { updateCharacterRecord, syncChargeSublocationTransitionForSession, } = require(path.join(__dirname, "../services/character/characterState"));
 const { isNativeNpcEntity, getNpcFittedModuleItems, getNpcLoadedChargeForModule, getNpcWeaponModules, getNpcHostileModules, getNpcAssistanceModules, getNpcSelfModules, getNpcSuperweaponModules, getNpcPropulsionModules, } = require(path.join(__dirname, "./npc/npcEquipment"));
 const { logNpcCombatDebug, summarizeNpcCombatEntity, summarizeNpcCombatModule, } = require(path.join(__dirname, "./npc/npcCombatDebug"));
 const { buildStartupPresenceSummary, getSceneActivityState, } = require(path.join(__dirname, "./npc/npcSceneActivity"));
@@ -2235,27 +2236,31 @@ function normalizeSlimShipModules(modules) {
     return modules
         .map((entry) => {
         if (Array.isArray(entry)) {
+            if (entry.length >= 3) {
+                return [
+                    toInt(entry[1], 0),
+                    toInt(entry[2], 0),
+                ];
+            }
             return [
                 toInt(entry[0], 0),
                 toInt(entry[1], 0),
-                toInt(entry[2], 0),
             ];
         }
         if (!entry || typeof entry !== "object") {
             return null;
         }
         return [
-            toInt(entry.itemID, 0),
             toInt(entry.typeID, 0),
             toInt(entry.flagID, 0),
         ];
     })
         .filter((entry) => Array.isArray(entry) &&
-        entry.length === 3 &&
+        entry.length === 2 &&
         entry.every((value) => Number.isInteger(value) && value > 0))
         .sort((left, right) => {
-        if (left[2] !== right[2]) {
-            return left[2] - right[2];
+        if (left[1] !== right[1]) {
+            return left[1] - right[1];
         }
         return left[0] - right[0];
     });
@@ -4271,6 +4276,10 @@ const { buildSpecialFxPayloadsForEntity, resolveSpecialFxOptionsForEntity, } = c
     isEntityUsingNpcShipHardpointPresentation,
     isOffensiveWeaponFamily,
     shouldUseShipKeyedSpecialFxModuleBinding: (visibilityEntity) => (isEntityUsingNpcShipHardpointPresentation(visibilityEntity)),
+    shouldUseFittingSlotKeyedSpecialFxModuleBinding: (visibilityEntity, options) => (!isEntityUsingNpcShipHardpointPresentation(visibilityEntity) &&
+        isShipFittingFlag(options && options.moduleFlagID) &&
+        (options && options.isOffensive === true ||
+            isOffensiveWeaponFamily(options && options.weaponFamily))),
     splitSpecialFxGuids,
 });
 function isSessionViewingOwnVisibilityEntity(session, visibilityEntity) {
@@ -9646,6 +9655,17 @@ function notifyCapacitorChangeToSession(session, entity, whenMs = null, previous
     notifyAttributeChanges(session, [buildAttributeChange(session, shipID, ATTRIBUTE_CHARGE, chargeAmount, normalizedPreviousChargeAmount, when)]);
     entity._lastCapNotifiedAmount = chargeAmount;
 }
+function notifyShipTemperatureToSession(session, entity, result, nowMs) {
+    const notification = result && result.notification;
+    if (!notification || !session || !entity) {
+        return false;
+    }
+    const timestamp = resolveSessionNotificationFileTime(session, nowMs);
+    return notifyAttributeChanges(session, [
+        buildAttributeChange(session, entity.itemID, temperatureRuntime.ATTRIBUTE_EXTERNAL_TEMPERATURE, notification.externalTemperature, notification.previousExternalTemperature, timestamp),
+        buildAttributeChange(session, entity.itemID, temperatureRuntime.ATTRIBUTE_TEMPERATURE, notification.temperature, notification.previousTemperature, timestamp),
+    ]);
+}
 function notifyFuelChargeChangeToSession(session, entity, whenMs = null, previousFuelCharge = null) {
     if (!session ||
         typeof session.sendNotification !== "function" ||
@@ -9863,6 +9883,7 @@ function ensureChargeTupleDogmaPrimeForSession(session, shipID, moduleFlagID, ch
         resolveChargeDogmaPrimeEntry(tupleChargeItem, {
             description: "charge",
             now: when,
+            compatibilityProfile: session.compatibilityProfile,
         }),
     ]);
     const clearTimer = setTimeout(() => {
@@ -9944,7 +9965,7 @@ function isEntityLockedTarget(entity, targetID) {
     }
     return ensureEntityTargetingState(entity).lockedTargets.has(normalizedTargetID);
 }
-function notifyChargeDamageChangeToSession(session, shipID, moduleFlagID, chargeTypeID, nextDamage, previousDamage, when = null) {
+function notifyChargeDamageChangeToSession(session, shipID, moduleFlagID, chargeTypeID, nextDamage, previousDamage, when = null, chargeItem = null) {
     const numericShipID = toInt(shipID, 0);
     const numericFlagID = toInt(moduleFlagID, 0);
     const numericChargeTypeID = toInt(chargeTypeID, 0);
@@ -9954,7 +9975,19 @@ function notifyChargeDamageChangeToSession(session, shipID, moduleFlagID, charge
         numericChargeTypeID <= 0) {
         return false;
     }
-    return notifyAttributeChanges(session, [buildAttributeChange(session, buildChargeTupleItemID(numericShipID, numericFlagID, numericChargeTypeID), ATTRIBUTE_ITEM_DAMAGE, roundNumber(toFiniteNumber(nextDamage, 0), 6), roundNumber(toFiniteNumber(previousDamage, 0), 6), when)]);
+    const nextDamageValue = getChargeDamageAttributeValue(numericChargeTypeID, nextDamage);
+    const previousDamageValue = getChargeDamageAttributeValue(numericChargeTypeID, previousDamage);
+    const freshlyPrimed = clamp(toFiniteNumber(nextDamage, 0), 0, 1) < 1 - 1e-9 &&
+        chargeItem &&
+        ensureChargeTupleDogmaPrimeForSession(session, numericShipID, numericFlagID, chargeItem, {
+            ownerID: toInt(chargeItem && chargeItem.ownerID, toInt(session && session.characterID, 0)),
+            quantityOverride: getChargeItemQuantity(chargeItem),
+            when,
+        });
+    if (freshlyPrimed) {
+        return scheduleChargeDamageChangeForFreshTuplePrime(session, numericShipID, numericFlagID, numericChargeTypeID, nextDamageValue, previousDamageValue, when);
+    }
+    return notifyAttributeChanges(session, [buildAttributeChange(session, buildChargeTupleItemID(numericShipID, numericFlagID, numericChargeTypeID), ATTRIBUTE_ITEM_DAMAGE, nextDamageValue, previousDamageValue, when)]);
 }
 function isModuleIncapacitated(moduleItem) {
     if (!moduleItem || typeof moduleItem !== "object") {
@@ -9969,6 +10002,11 @@ function getModuleStructureHitpoints(moduleItem) {
     const typeID = toInt(moduleItem && moduleItem.typeID, 0);
     const structureHP = Math.max(0, toFiniteNumber(getTypeAttributeValue(typeID, "hp", "structureHP"), 0));
     return structureHP > 0 ? structureHP : 40;
+}
+function getChargeDamageAttributeValue(chargeTypeID, damageRatio) {
+    const structureHP = Math.max(0, toFiniteNumber(getTypeAttributeValue(toInt(chargeTypeID, 0), "hp", "structureHP"), 0));
+    const normalizedDamage = clamp(toFiniteNumber(damageRatio, 0), 0, 1);
+    return roundNumber(structureHP > 0 ? structureHP * normalizedDamage : normalizedDamage, 6);
 }
 function getThermodynamicsHeatDamageMultiplier(skillMap) {
     const thermodynamicsLevel = getSkillLevel(skillMap, TYPE_THERMODYNAMICS);
@@ -10482,6 +10520,22 @@ function notifyRuntimeChargeTransitionToSession(session, shipID, moduleFlagID, p
     if (previousTypeID === nextTypeID && previousQuantity === nextQuantity) {
         return false;
     }
+    // The HUD reads charge quantity/removal from the tuple-backed inventory row;
+    // the Dogma quantity attribute alone does not mutate that local row.
+    syncChargeSublocationTransitionForSession(session, {
+        shipID,
+        flagID: moduleFlagID,
+        ownerID,
+        previousState: {
+            typeID: previousTypeID,
+            quantity: previousQuantity,
+        },
+        nextState: {
+            typeID: nextTypeID,
+            quantity: nextQuantity,
+        },
+        primeNextCharge: true,
+    });
     let notified = false;
     const when = options.when != null ? options.when : null;
     if (previousTypeID > 0) {
@@ -10489,24 +10543,6 @@ function notifyRuntimeChargeTransitionToSession(session, shipID, moduleFlagID, p
             notifyChargeQuantityChangeToSession(session, shipID, moduleFlagID, previousTypeID, previousTypeID === nextTypeID ? nextQuantity : 0, previousQuantity, when) || notified;
     }
     if (nextTypeID > 0 && nextTypeID !== previousTypeID) {
-        const nextChargeItem = options.nextChargeItem && typeof options.nextChargeItem === "object"
-            ? options.nextChargeItem
-            : {
-                typeID: nextTypeID,
-                ownerID,
-                quantity: 0,
-                stacksize: 0,
-            };
-        ensureChargeTupleDogmaPrimeForSession(session, shipID, moduleFlagID, {
-            ...nextChargeItem,
-            typeID: nextTypeID,
-            quantity: 0,
-            stacksize: 0,
-        }, {
-            ownerID,
-            quantityOverride: 0,
-            when,
-        });
         notified =
             notifyChargeQuantityChangeToSession(session, shipID, moduleFlagID, nextTypeID, nextQuantity, 0, when) || notified;
     }
@@ -11506,7 +11542,7 @@ function applyCrystalVolatilityDamage(scene, attackerEntity, moduleItem, chargeI
         updatedChargeItem = findItemById(chargeItem.itemID) || chargeItem;
     }
     if (attackerEntity.session) {
-        notifyChargeDamageChangeToSession(attackerEntity.session, attackerEntity.itemID, moduleItem.flagID, chargeItem.typeID, nextDamage, previousDamage, when);
+        notifyChargeDamageChangeToSession(attackerEntity.session, attackerEntity.itemID, moduleItem.flagID, chargeItem.typeID, nextDamage, previousDamage, when, updatedChargeItem);
     }
     if (nextDamage < 1 - 1e-9) {
         return {
@@ -19001,6 +19037,10 @@ class SolarSystemScene {
         applyPassiveResourceStateToEntity(entity, passiveResourceState, {
             recalculateSpeedFraction: false,
         });
+        temperatureRuntime.advanceShipTemperature(this, entity, this.getCurrentSimTimeMs(), {
+            findLineOccluder: findWeaponLineOccluder,
+            notify: false,
+        });
         if (entity.activeModuleEffects instanceof Map) {
             for (const effectState of entity.activeModuleEffects.values()) {
                 applyPropulsionEffectStateToEntity(entity, effectState);
@@ -20455,6 +20495,7 @@ class SolarSystemScene {
             for (const presentationEffectState of groupedTurretPresentationStates) {
                 const baseStartFxOptions = {
                     moduleID: presentationEffectState.moduleID,
+                    moduleFlagID: presentationEffectState.moduleFlagID,
                     moduleTypeID: presentationEffectState.typeID,
                     targetID: presentationEffectState.targetID || null,
                     chargeTypeID: presentationEffectState.chargeTypeID || null,
@@ -20974,6 +21015,7 @@ class SolarSystemScene {
             for (const presentationEffectState of groupedTurretPresentationStates) {
                 const baseStopFxOptions = {
                     moduleID: presentationEffectState.moduleID,
+                    moduleFlagID: presentationEffectState.moduleFlagID,
                     moduleTypeID: presentationEffectState.typeID,
                     targetID: presentationEffectState.targetID || null,
                     chargeTypeID: presentationEffectState.chargeTypeID || null,
@@ -25266,6 +25308,10 @@ class SolarSystemScene {
         this.sessions.set(session.clientID, session);
         forgetEntityFromNativeSubwarpPlans(this, shipEntity.itemID);
         this.dynamicEntities.set(shipEntity.itemID, shipEntity);
+        temperatureRuntime.advanceShipTemperature(this, shipEntity, attachedSceneCurrentSimTimeMs, {
+            findLineOccluder: findWeaponLineOccluder,
+            notify: false,
+        });
         this.reconcileEntityPublicGrid(shipEntity);
         this.reconcileEntityBubble(shipEntity);
         this.publicGridCompositionDirty = true;
@@ -29329,6 +29375,23 @@ class SolarSystemScene {
                     persistShipEntity(entity);
                 }
             }
+            try {
+                tickProfiler.section("temperature", () => temperatureRuntime.tickScene(this, now, {
+                    findLineOccluder: findWeaponLineOccluder,
+                    onAdvanced: (entity, result) => {
+                        const ownerSession = getOwningSessionForEntity(this, entity);
+                        if (ownerSession && isReadyForDestiny(ownerSession)) {
+                            notifyShipTemperatureToSession(ownerSession, entity, result, now);
+                        }
+                        if (shouldPersistShipEntityAtTick(entity, now)) {
+                            persistShipEntity(entity, { nowMs: now });
+                        }
+                    },
+                }));
+            }
+            catch (error) {
+                log.warn(`[SpaceRuntime] Temperature tick failed for system=${this.systemID}: ${error.message}`);
+            }
             finalizeActiveNativeSubwarpPlan(this);
             if (dockRequests.size > 0) {
                 const { dockSession } = lazyRequire("./transitions");
@@ -31910,6 +31973,7 @@ runtimeExports._testing = {
     clearSessionStateFromShipEntityForTesting: clearSessionStateFromShipEntity,
     clearTrackingStateForTesting: clearTrackingState,
     refreshShipPresentationFieldsForTesting: refreshShipPresentationFields,
+    normalizeSlimShipModulesForTesting: normalizeSlimShipModules,
     persistShipEntityForTesting: persistShipEntity,
     serializeSpaceStateForTesting: serializeSpaceState,
     shouldPersistShipEntityAtTickForTesting: shouldPersistShipEntityAtTick,
@@ -31950,6 +32014,7 @@ runtimeExports._testing = {
     notifyShipHealthAttributesToSessionForTesting: notifyShipHealthAttributesToSession,
     notifyModuleEffectStateForTesting: notifyModuleEffectState,
     notifyGenericModuleEffectStateForTesting: notifyGenericModuleEffectState,
+    notifyChargeDamageChangeToSessionForTesting: notifyChargeDamageChangeToSession,
     notifyRuntimeChargeTransitionToSessionForTesting: notifyRuntimeChargeTransitionToSession,
     broadcastDamageStateChangeForTesting: broadcastDamageStateChange,
     buildLaserDamageMessagePayloadForTesting: buildLaserDamageMessagePayload,

@@ -35,6 +35,7 @@ const {
   buildChargeSublocationItem,
   syncInventoryItemForSession,
   syncChargeGodmaPrimeForSession,
+  syncChargeSublocationTransitionForSession,
   syncShipFittingStateForSession,
   buildChargeDogmaPrimeEntry,
   syncDamageStateAttributesForSession,
@@ -287,6 +288,12 @@ const ATTRIBUTE_ITEM_DAMAGE = 3;
 const ATTRIBUTE_HP = getAttributeIDByNames("hp", "structureHP") || 9;
 const ATTRIBUTE_STRUCTURE_HP = ATTRIBUTE_HP;
 const ATTRIBUTE_MASS = 4;
+const ATTRIBUTE_HEAT_CAPACITY = 5762;
+const ATTRIBUTE_HEAT_CONDUCTANCE = 5763;
+const ATTRIBUTE_EXTERNAL_TEMPERATURE = 5764;
+const ATTRIBUTE_TEMPERATURE = 5765;
+const ATTRIBUTE_CONTINUOUS_HEAT = 5766;
+const STATION_TEMPERATURE_K = 295;
 const ATTRIBUTE_MAX_VELOCITY = getAttributeIDByNames("maxVelocity") || 37;
 const ATTRIBUTE_MAX_RANGE = getAttributeIDByNames("maxRange") || 54;
 const ATTRIBUTE_MAX_TARGET_RANGE =
@@ -2626,6 +2633,29 @@ class DogmaService extends BaseService {
     if (creationShipAttributeModifierEntries.length > 0) {
       applyModifierGroups(attributes, creationShipAttributeModifierEntries);
     }
+    if (
+      Number(attributes[ATTRIBUTE_HEAT_CAPACITY]) > 0 &&
+      Number(attributes[ATTRIBUTE_HEAT_CONDUCTANCE]) > 0
+    ) {
+      const externalTemperature = Number(
+        shipCondition.externalTemperature ??
+        attributes[ATTRIBUTE_EXTERNAL_TEMPERATURE],
+      );
+      const temperature = Number(
+        shipCondition.temperature ?? attributes[ATTRIBUTE_TEMPERATURE],
+      );
+      attributes[ATTRIBUTE_EXTERNAL_TEMPERATURE] =
+        Number.isFinite(externalTemperature) && externalTemperature >= 0
+          ? externalTemperature
+          : STATION_TEMPERATURE_K;
+      attributes[ATTRIBUTE_TEMPERATURE] =
+        Number.isFinite(temperature) && temperature >= 0
+          ? temperature
+          : STATION_TEMPERATURE_K;
+      if (!Number.isFinite(Number(attributes[ATTRIBUTE_CONTINUOUS_HEAT]))) {
+        attributes[ATTRIBUTE_CONTINUOUS_HEAT] = 0;
+      }
+    }
     const shieldCapacity = Number(attributes[ATTRIBUTE_SHIELD_CAPACITY]);
     if (
       Number.isFinite(shieldCapacity) &&
@@ -4019,6 +4049,42 @@ class DogmaService extends BaseService {
     const when = options.when != null
       ? options.when
       : this._sessionFileTime(session);
+    const isNewChargeTuple = nextTypeID > 0 && nextTypeID !== previousTypeID;
+    if (isNewChargeTuple) {
+      // Re-create Godma's tuple object before exposing the restored inventory row.
+      // Priming after OnItemChange can replace the row's live quantity with the
+      // prime's zero-value bootstrap, leaving the module HUD stale after reload.
+      this._primeChargeTupleForQuantityTransition(
+        session,
+        numericCharID,
+        numericShipID,
+        numericFlagID,
+        nextState,
+        options.nextChargeItem,
+        {
+          ...options,
+          when,
+        },
+      );
+    }
+    // A Dogma quantity change does not update the inventory-backed module HUD.
+    // Mirror every reload/unload into the tuple row before publishing attributes.
+    syncChargeSublocationTransitionForSession(session, {
+      shipID: numericShipID,
+      flagID: numericFlagID,
+      ownerID: numericCharID,
+      previousState: {
+        typeID: previousTypeID,
+        quantity: previousQuantity,
+      },
+      nextState: {
+        typeID: nextTypeID,
+        quantity: nextQuantity,
+      },
+      nextChargeItem: options.nextChargeItem,
+      // DogmaService primes new tuples above with weapon-specific overrides.
+      primeNextCharge: false,
+    });
     const sendQuantityChange = (change) => {
       if (!change) {
         return false;
@@ -4044,19 +4110,7 @@ class DogmaService extends BaseService {
         previousQuantity,
       )) || notified;
     }
-    if (nextTypeID > 0 && nextTypeID !== previousTypeID) {
-      this._primeChargeTupleForQuantityTransition(
-        session,
-        numericCharID,
-        numericShipID,
-        numericFlagID,
-        nextState,
-        options.nextChargeItem,
-        {
-          ...options,
-          when,
-        },
-      );
+    if (isNewChargeTuple) {
       notified = sendQuantityChange(buildQuantityChange(
         nextTypeID,
         nextQuantity,

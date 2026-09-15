@@ -3236,7 +3236,6 @@ function resolveFitOnlineState(charID, shipItem, moduleItem, fittedItems, option
 
 function buildSlimModuleTuples(charID, shipID) {
   return getFittedModuleItems(charID, shipID).map((item) => [
-    toInt(item.itemID, 0),
     toInt(item.typeID, 0),
     toInt(item.flagID, 0),
   ]);

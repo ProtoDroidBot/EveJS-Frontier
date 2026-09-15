@@ -42,6 +42,9 @@ const {
   currentFileTime,
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const {
+  normalizeInfoAttributesForProfile,
+} = require(path.join(__dirname, "../dogma/dogmaInfoCompatibility"));
+const {
   composeSessionRoleMask,
   normalizeRoleValue,
 } = require(path.join(__dirname, "../account/accountRoleProfiles"));
@@ -1327,6 +1330,17 @@ function buildChargeDogmaPrimeEntry(item, options: Record<string, any> = {}) {
       ? options.now
       : currentFileTime();
   const includeInvItem = options.includeInvItem === true;
+  const attributes = normalizeInfoAttributesForProfile(
+    {
+      type: "dict",
+      entries: Object.entries<any>(chargeAttributes).map(([attributeID, value]) => [
+        Number(attributeID),
+        Number(value),
+      ]),
+    },
+    now,
+    options.compatibilityProfile,
+  );
 
   return {
     type: "object",
@@ -1337,13 +1351,7 @@ function buildChargeDogmaPrimeEntry(item, options: Record<string, any> = {}) {
         ["itemID", item.itemID],
         ["invItem", includeInvItem ? buildDogmaInfoInventoryRow(item) : null],
         ["activeEffects", { type: "dict", entries: [] }],
-        ["attributes", {
-          type: "dict",
-          entries: Object.entries<any>(chargeAttributes).map(([attributeID, value]) => [
-            Number(attributeID),
-            Number(value),
-          ]),
-        }],
+        ["attributes", attributes],
         ["description", options.description || "charge"],
         ["time", now],
         ["wallclockTime", now],
@@ -1432,7 +1440,11 @@ function syncChargeGodmaPrimeForSession(
 
   session.sendNotification("OnGodmaPrimeItem", "clientID", [
     Number(locationID) || 0,
-    buildChargeDogmaPrimeEntry(item, options),
+    buildChargeDogmaPrimeEntry(item, {
+      ...options,
+      compatibilityProfile:
+        options.compatibilityProfile || session.compatibilityProfile,
+    }),
   ]);
 }
 
@@ -2153,6 +2165,7 @@ function syncChargeSublocationTransitionForSession(
     ownerID = null,
     previousState = null,
     nextState = null,
+    nextChargeItem = null,
     primeNextCharge = false,
     forceRepair = false,
     forcePrimeNextCharge = false,
@@ -2171,9 +2184,10 @@ function syncChargeSublocationTransitionForSession(
   }
 
   clearChargeSublocationSyncTimer(session, numericShipID, numericFlagID);
-  if (session._space) {
-    return;
-  }
+
+  // Space HUD modules use the same tuple-backed inventory row as docked fitting.
+  // Keep publishing OnItemChange transitions while in space so local stacksize
+  // and removal state cannot drift from the authoritative inventory item.
 
   const previousTypeID = Number(previousState && previousState.typeID) || 0;
   const nextTypeID = Number(nextState && nextState.typeID) || 0;
@@ -2200,6 +2214,7 @@ function syncChargeSublocationTransitionForSession(
   if (
     previousTypeID > 0 &&
     previousTypeID === nextTypeID &&
+    nextQuantity > 0 &&
     previousQuantity !== nextQuantity &&
     !shouldForceRepair
   ) {
@@ -2299,8 +2314,46 @@ function syncChargeSublocationTransitionForSession(
           finalizeDelayMs,
         )
         : 0;
+    const resolveProvidedNextChargeSync = () => {
+      if (!nextChargeItem || typeof nextChargeItem !== "object") {
+        return null;
+      }
+      const providedTypeID = Number(nextChargeItem.typeID) || 0;
+      const providedQuantity = Math.max(
+        0,
+        Number(nextChargeItem.stacksize ?? nextChargeItem.quantity ?? 0) || 0,
+      );
+      const providedLocationID = Number(nextChargeItem.locationID) || 0;
+      const providedFlagID = Number(nextChargeItem.flagID) || 0;
+      const providedOwnerID = Number(nextChargeItem.ownerID) || 0;
+      if (
+        providedTypeID !== nextTypeID ||
+        providedQuantity !== nextQuantity ||
+        providedLocationID !== numericShipID ||
+        providedFlagID !== numericFlagID ||
+        (Number(ownerID) > 0 && providedOwnerID !== Number(ownerID))
+      ) {
+        return null;
+      }
+      return {
+        chargeItem: nextChargeItem,
+        typeID: providedTypeID,
+        quantity: providedQuantity,
+        chargeBootstrapItem: buildChargeSublocationItem({
+          shipID: numericShipID,
+          flagID: numericFlagID,
+          typeID: providedTypeID,
+          quantity: providedQuantity,
+          ownerID: providedOwnerID || ownerID,
+          groupID: nextChargeItem.groupID,
+          categoryID: nextChargeItem.categoryID,
+        }),
+      };
+    };
+    const providedNextChargeSync =
+      repairDelayMs <= 0 ? resolveProvidedNextChargeSync() : null;
     const resolveValidatedNextChargeSync = () =>
-      resolveCurrentChargeTupleSyncItem({
+      providedNextChargeSync || resolveCurrentChargeTupleSyncItem({
         session,
         charID: Number(ownerID) || 0,
         shipID: numericShipID,

@@ -2287,6 +2287,17 @@ function solarSystemRecord(raw, constellationsByID, regionsByID, starsByID) {
     security: toNumber(raw.securityStatus, 0),
     factionID: toInt(raw.factionID, toInt(constellation.factionID, toInt(region.factionID, 0))),
     radius: toNumber(raw.radius, 0),
+    frostLine: toNumber(raw.frostLine, 0),
+    habitableZone: Array.isArray(raw.habitableZone)
+      ? raw.habitableZone.map((value) => toNumber(value, 0))
+      : [],
+    starTemperature: Math.max(
+      150,
+      toNumber(
+        raw.starTemperature,
+        toNumber(star.statistics && star.statistics.temperature, 5778),
+      ),
+    ),
     sunTypeID: toInt(star.typeID, 0),
     securityClass: raw.securityClass || "",
     ...(raw.visualEffect ? { visualEffect: raw.visualEffect } : {}),

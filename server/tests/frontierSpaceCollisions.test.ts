@@ -677,3 +677,68 @@ test("unresolved weapon fire is presented without materializing its source", () 
     "weapon FX must not resolve or materialize the hidden ship",
   );
 });
+
+test("weapon FX use the fitting-slot key expected by client hardpoints", () => {
+  const {
+    resolveSpecialFxOptionsForEntityForTesting,
+  } = require("../src/space/runtime")._testing;
+  const ship = buildShip({ categoryID: 6, slimCategoryID: 6 });
+
+  const weaponFx = resolveSpecialFxOptionsForEntityForTesting(
+    ship.itemID,
+    {
+      moduleID: 9988400000361,
+      moduleFlagID: 27,
+      moduleTypeID: 81974,
+      weaponFamily: "projectileTurret",
+      isOffensive: true,
+    },
+    ship,
+  );
+  assert.equal(weaponFx.moduleID, 27);
+  assert.equal(weaponFx.moduleFlagID, 27);
+
+  const utilityFx = resolveSpecialFxOptionsForEntityForTesting(
+    ship.itemID,
+    {
+      moduleID: 9988400000362,
+      moduleFlagID: 19,
+      weaponFamily: "",
+      isOffensive: false,
+    },
+    ship,
+  );
+  assert.equal(utilityFx.moduleID, 9988400000362);
+
+  const npcShip = buildShip({ itemID: 1002, nativeNpc: true });
+  const npcWeaponFx = resolveSpecialFxOptionsForEntityForTesting(
+    npcShip.itemID,
+    {
+      moduleID: 980100000001,
+      moduleFlagID: 27,
+      weaponFamily: "projectileTurret",
+      isOffensive: true,
+    },
+    npcShip,
+  );
+  assert.equal(npcWeaponFx.moduleID, npcShip.itemID);
+});
+
+test("ship CR data exposes fitted modules as client type-and-flag pairs", () => {
+  const {
+    normalizeSlimShipModulesForTesting,
+  } = require("../src/space/runtime")._testing;
+
+  assert.deepEqual(
+    normalizeSlimShipModulesForTesting([
+      [9988400000361, 81974, 27],
+      [12058, 28],
+      { itemID: 9988400000363, typeID: 522, flagID: 29 },
+    ]),
+    [
+      [81974, 27],
+      [12058, 28],
+      [522, 29],
+    ],
+  );
+});

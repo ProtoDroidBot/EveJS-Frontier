@@ -26,6 +26,7 @@ const {
 const {
   getActiveShipRecord,
   emitItemsChangedForSession,
+  syncChargeSublocationTransitionForSession,
   syncInventoryItemForSession,
 } = require(path.join(__dirname, "../character/characterState"));
 const {
@@ -97,6 +98,7 @@ const {
 const INV_UPDATE_LOCATION = 3;
 const shipStorageSnapshotCache = new Map();
 const ATTRIBUTE_ITEM_DAMAGE = 3;
+const ATTRIBUTE_STRUCTURE_HP = 9;
 const ATTRIBUTE_QUANTITY = 805;
 const ATTRIBUTE_CHARGE_SIZE = 128;
 const ATTRIBUTE_CHARGE_GROUP_1 = 604;
@@ -193,14 +195,25 @@ function notifyMiningChargeDamageChange(
   nextDamage,
   previousDamage,
 ) {
+  const chargeAttributes = getTypeAttributeMap(toInt(chargeTypeID, 0)) || {};
+  const structureHP = Math.max(
+    0,
+    toFiniteNumber(chargeAttributes[ATTRIBUTE_STRUCTURE_HP], 0),
+  );
+  const nextDamageValue = round6(
+    structureHP > 0 ? structureHP * clampRatio(nextDamage, 0) : nextDamage,
+  );
+  const previousDamageValue = round6(
+    structureHP > 0 ? structureHP * clampRatio(previousDamage, 0) : previousDamage,
+  );
   return notifyMiningChargeAttributeChange(
     session,
     shipID,
     moduleFlagID,
     chargeTypeID,
     ATTRIBUTE_ITEM_DAMAGE,
-    round6(nextDamage),
-    round6(previousDamage),
+    nextDamageValue,
+    previousDamageValue,
   );
 }
 
@@ -844,6 +857,19 @@ function applyCrystalVolatility(entity, moduleItem, snapshot, efficiency = 1) {
     }
     if (session) {
       syncInventoryChangesToSession(session, removeResult.data.changes);
+      syncChargeSublocationTransitionForSession(session, {
+        shipID: entity.itemID,
+        flagID: moduleItem.flagID,
+        ownerID: updatedChargeItem.ownerID || chargeItem.ownerID,
+        previousState: {
+          typeID: updatedChargeItem.typeID || chargeItem.typeID,
+          quantity: currentQuantity > 0 ? currentQuantity : 1,
+        },
+        nextState: {
+          typeID: updatedChargeItem.typeID || chargeItem.typeID,
+          quantity: 0,
+        },
+      });
       notifyMiningChargeRemoved(
         session,
         entity.itemID,

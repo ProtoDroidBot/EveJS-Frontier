@@ -41,8 +41,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * ships the reveal/where-it-lands math but the server-side signature model
  * (how a ball's baseSignature becomes per-type signature strength and noise)
  * is not in the client package. We therefore use a deterministic model:
- *   signature = baseSignature * (typeMultiplier / 1000)
+ *   signature = baseSignature * (typeMultiplier / 1000) * targetMultiplier
  *   noise     = distance / MAXIMUM_SCAN_DISTANCE
+ * Gravimetric target strength scales linearly from a neutral 1,000,000 kg
+ * reference mass. EM target strength is increased by live module activity;
+ * thermal target strength follows the authoritative hull temperature.
  * and resolve a contact (a 1-signature CombinedScanResult reported through
  * `resolved`) when snr >= RESOLVE_SNR_THRESHOLD. This is isolated in
  * buildSignatureResultsForTarget/isResolved so it can be replaced wholesale
@@ -61,6 +64,11 @@ const RESOLVE_SNR_THRESHOLD = 1.0;
 const SIGNATURE_TYPE_GRAVIMETRIC = 1;
 const SIGNATURE_TYPE_ELECTROMAGNETIC = 2;
 const SIGNATURE_TYPE_THERMAL = 3;
+// A typical small hull and the runtime's default ship mass. Normalizing here
+// keeps existing mass-less scan candidates neutral while allowing live mass
+// changes and large structures to produce proportionally stronger gravity
+// returns.
+const GRAVIMETRIC_REFERENCE_MASS_KG = 1_000_000;
 const BUILT_IN_SENSOR_STRENGTH_ATTRIBUTES = Object.freeze([
     [208, "scanRadarStrength"],
     [209, "scanLadarStrength"],
@@ -272,6 +280,15 @@ function resolveEntityEmSignatureMultiplier(entity, nowMs = Date.now()) {
         (Math.max(0, activeModuleCount) * ACTIVE_MODULE_EM_BONUS) +
         Math.max(modulePulse, weaponPulse);
 }
+/**
+ * Convert live target mass into its gravimetric signature multiplier.
+ * Missing/invalid mass remains neutral for compatibility with synthetic scan
+ * candidates, while every positive mass participates in the gravity result.
+ */
+function resolveGravimetricSignatureMultiplier(massKg) {
+    const mass = toFiniteNumber(massKg, 0);
+    return mass > 0 ? mass / GRAVIMETRIC_REFERENCE_MASS_KG : 1;
+}
 // baseSignature is authored per type in spaceComponentsByType
 // ({"baseSignature": {"baseSignature": <float>}}), covering ~7,275 types.
 let baseSignaturesByTypeID = null;
@@ -304,13 +321,18 @@ function calculateSnr(signature, noise) {
  * per-signature-type [signatureType, signature, noiseLevel] triples the
  * client's SignatureResult.__set_state__ consumes.
  */
-function buildSignatureResultsForTarget({ baseSignature, distanceMeters, multipliers, emSignatureMultiplier = 1, }) {
+function buildSignatureResultsForTarget({ baseSignature, distanceMeters, multipliers, massKg = null, emSignatureMultiplier = 1, thermalSignatureMultiplier = 1, }) {
     const noise = Math.max(0, distanceMeters / MAXIMUM_SCAN_DISTANCE_METERS);
+    const gravimetricSignatureMultiplier = resolveGravimetricSignatureMultiplier(massKg);
     return multipliers.map(([signatureType, multiplier]) => ([
         signatureType,
-        baseSignature * (multiplier / 1000) * (toInt(signatureType, 0) === SIGNATURE_TYPE_ELECTROMAGNETIC
-            ? Math.max(1, toFiniteNumber(emSignatureMultiplier, 1))
-            : 1),
+        baseSignature * (multiplier / 1000) * (toInt(signatureType, 0) === SIGNATURE_TYPE_GRAVIMETRIC
+            ? gravimetricSignatureMultiplier
+            : toInt(signatureType, 0) === SIGNATURE_TYPE_ELECTROMAGNETIC
+                ? Math.max(1, toFiniteNumber(emSignatureMultiplier, 1))
+                : toInt(signatureType, 0) === SIGNATURE_TYPE_THERMAL
+                    ? Math.max(0, toFiniteNumber(thermalSignatureMultiplier, 1))
+                    : 1),
         noise,
     ]));
 }
@@ -464,7 +486,9 @@ function performDirectionalScan({ originPosition, angleDegrees, direction, modul
             baseSignature,
             distanceMeters,
             multipliers,
+            massKg: candidate && candidate.mass,
             emSignatureMultiplier: candidate && candidate.emSignatureMultiplier,
+            thermalSignatureMultiplier: candidate && candidate.thermalSignatureMultiplier,
         });
         const presentedSignatureResults = getPresentedSignatureResults(signatureResults, candidate && candidate.hasLineOfSight);
         const scanId = buildScanId(candidate.itemID);
@@ -503,6 +527,7 @@ module.exports = {
     SCAN_ANGLE_MAX_DEGREES,
     SCAN_ANGLE_MIN_DEGREES,
     RESOLVED_SCANNING_CONTACTS_KEY,
+    GRAVIMETRIC_REFERENCE_MASS_KG,
     SIGNATURE_TYPE_ELECTROMAGNETIC,
     SIGNATURE_TYPE_GRAVIMETRIC,
     SIGNATURE_TYPE_THERMAL,
@@ -526,6 +551,7 @@ module.exports = {
     replaceResolvedScanningContacts,
     resolveBuiltInScannerProfile,
     resolveBaseSignature,
+    resolveGravimetricSignatureMultiplier,
     resolveScanDurationMs,
     resolveSignatureMultipliers,
     resolveEntityEmSignatureMultiplier,

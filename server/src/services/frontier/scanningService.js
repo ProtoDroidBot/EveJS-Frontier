@@ -22,6 +22,7 @@ const log = require(path.join(__dirname, "../../utils/logger"));
 const { throwWrappedUserError } = require(path.join(__dirname, "../../common/machoErrors"));
 const { unwrapMarshalValue, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const scanningRuntime = require(path.join(__dirname, "./scanningRuntime"));
+const temperatureRuntime = require(path.join(__dirname, "./temperatureRuntime"));
 const { buildScanResponse, } = require(path.join(__dirname, "./scanningAbilityHandlers"));
 function toInt(value, fallback = 0) {
     const numeric = Number(value);
@@ -66,10 +67,12 @@ function collectScanCandidates(spaceRuntime, session, shipID) {
             itemID,
             typeID: toInt(entity.typeID, 0),
             position: entity.position,
+            mass: Number(entity.mass),
             hasLineOfSight: typeof scene.hasLineOfSightForSession === "function"
                 ? scene.hasLineOfSightForSession(session, entity)
                 : true,
             emSignatureMultiplier: scanningRuntime.resolveEntityEmSignatureMultiplier(entity, nowMs),
+            thermalSignatureMultiplier: temperatureRuntime.resolveEntityThermalSignatureMultiplier(entity, nowMs),
         });
     }
     return candidates;

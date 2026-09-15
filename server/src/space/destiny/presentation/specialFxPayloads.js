@@ -110,6 +110,9 @@ function createSpecialFxPayloadPresentation(deps = {}) {
     const shouldUseShipKeyedSpecialFxModuleBinding = typeof deps.shouldUseShipKeyedSpecialFxModuleBinding === "function"
         ? deps.shouldUseShipKeyedSpecialFxModuleBinding
         : null;
+    const shouldUseFittingSlotKeyedSpecialFxModuleBinding = typeof deps.shouldUseFittingSlotKeyedSpecialFxModuleBinding === "function"
+        ? deps.shouldUseFittingSlotKeyedSpecialFxModuleBinding
+        : null;
     if (!destiny || typeof destiny.buildOnSpecialFXPayload !== "function") {
         throw new TypeError("special FX presentation requires buildOnSpecialFXPayload");
     }
@@ -133,33 +136,48 @@ function createSpecialFxPayloadPresentation(deps = {}) {
         const normalizedOptions = {
             ...options,
             moduleID: normalizeOptionalEntityIDSentinel(options.moduleID),
+            moduleFlagID: normalizeOptionalEntityIDSentinel(options.moduleFlagID),
             targetID: normalizeOptionalEntityIDSentinel(options.targetID),
         };
-        if (!usesShipKeyedSpecialFxModuleBinding(visibilityEntity, options)) {
-            return normalizedOptions;
-        }
-        const moduleID = normalizeEntityID(normalizedOptions.moduleID);
-        if (shouldUseShipKeyedSpecialFxModuleBinding) {
-            // Current NPC/entity-ship presentation replaces positive internal module
-            // keys before they reach the exact int64 wire boundary. Some generated
-            // superweapon module keys are intentionally unsafe Numbers; only the
-            // authoritative ship identity is serialized for this presentation mode.
-            const numericModuleID = Number(normalizedOptions.moduleID);
-            if (!Number.isFinite(numericModuleID) || Math.trunc(numericModuleID) <= 0) {
+        if (usesShipKeyedSpecialFxModuleBinding(visibilityEntity, options)) {
+            const moduleID = normalizeEntityID(normalizedOptions.moduleID);
+            if (shouldUseShipKeyedSpecialFxModuleBinding) {
+                // Current NPC/entity-ship presentation replaces positive internal module
+                // keys before they reach the exact int64 wire boundary. Some generated
+                // superweapon module keys are intentionally unsafe Numbers; only the
+                // authoritative ship identity is serialized for this presentation mode.
+                const numericModuleID = Number(normalizedOptions.moduleID);
+                if (!Number.isFinite(numericModuleID) || Math.trunc(numericModuleID) <= 0) {
+                    return normalizedOptions;
+                }
+            }
+            else if (moduleID === null) {
                 return normalizedOptions;
             }
+            return {
+                ...normalizedOptions,
+                // CCP EntityShip hardpoints are keyed by shipID for NPC/entity
+                // presentation, not by the underlying fitted module itemID.
+                moduleID: normalizeEntityID(shipID) ||
+                    normalizeEntityID(visibilityEntity.itemID) ||
+                    moduleID,
+            };
         }
-        else if (moduleID === null) {
-            return normalizedOptions;
+        if (visibilityEntity &&
+            visibilityEntity.kind === "ship" &&
+            shouldUseFittingSlotKeyedSpecialFxModuleBinding &&
+            shouldUseFittingSlotKeyedSpecialFxModuleBinding(visibilityEntity, options) === true) {
+            const moduleFlagID = Number(normalizedOptions.moduleFlagID);
+            if (Number.isFinite(moduleFlagID) && Math.trunc(moduleFlagID) > 0) {
+                return {
+                    ...normalizedOptions,
+                    // Ship.FitHardpoints stores ordinary fitted turrets by fitting flag,
+                    // so StandardWeapon cannot resolve a weapon item ID here.
+                    moduleID: Math.trunc(moduleFlagID),
+                };
+            }
         }
-        return {
-            ...normalizedOptions,
-            // CCP EntityShip hardpoints are keyed by shipID for NPC/entity
-            // presentation, not by the underlying fitted module itemID.
-            moduleID: normalizeEntityID(shipID) ||
-                normalizeEntityID(visibilityEntity.itemID) ||
-                moduleID,
-        };
+        return normalizedOptions;
     }
     function buildSpecialFxPayloadsForEntity(shipID, guid, options = {}, visibilityEntity = null) {
         const resolvedOptions = resolveSpecialFxOptionsForEntity(shipID, options, visibilityEntity);

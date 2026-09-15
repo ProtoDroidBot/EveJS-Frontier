@@ -18,7 +18,7 @@ function lazyRequire(relativeId) {
 const config = require(path.join(__dirname, "../../config"));
 const log = require(path.join(__dirname, "../../utils/logger"));
 const { canEntitiesInteractLocally, } = require(path.join(__dirname, "../../space/destiny/identity/interactionScope"));
-const { getActiveShipRecord, emitItemsChangedForSession, syncInventoryItemForSession, } = require(path.join(__dirname, "../character/characterState"));
+const { getActiveShipRecord, emitItemsChangedForSession, syncChargeSublocationTransitionForSession, syncInventoryItemForSession, } = require(path.join(__dirname, "../character/characterState"));
 const { getCachedCharacterSkillMap, } = require(path.join(__dirname, "../skills/skillState"));
 const { ITEM_FLAGS, findItemById, findShipItemById, getItemMutationVersion, grantItemsToCharacterLocation, listContainerItems, removeInventoryItem, updateInventoryItem, } = require(path.join(__dirname, "../inventory/itemStore"));
 const { getFittedModuleItems, getLoadedChargeByFlag, getEffectTypeRecord, isChargeCompatibleWithModule, isModuleOnline, buildShipResourceState, buildChargeTupleItemID, getTypeAttributeMap, } = require(path.join(__dirname, "../fitting/liveFittingState"));
@@ -35,6 +35,7 @@ const { buildKeyVal, currentFileTime, } = require(path.join(__dirname, "../_shar
 const INV_UPDATE_LOCATION = 3;
 const shipStorageSnapshotCache = new Map();
 const ATTRIBUTE_ITEM_DAMAGE = 3;
+const ATTRIBUTE_STRUCTURE_HP = 9;
 const ATTRIBUTE_QUANTITY = 805;
 const ATTRIBUTE_CHARGE_SIZE = 128;
 const ATTRIBUTE_CHARGE_GROUP_1 = 604;
@@ -103,7 +104,11 @@ function notifyMiningChargeAttributeChange(session, shipID, moduleFlagID, charge
     return true;
 }
 function notifyMiningChargeDamageChange(session, shipID, moduleFlagID, chargeTypeID, nextDamage, previousDamage) {
-    return notifyMiningChargeAttributeChange(session, shipID, moduleFlagID, chargeTypeID, ATTRIBUTE_ITEM_DAMAGE, round6(nextDamage), round6(previousDamage));
+    const chargeAttributes = getTypeAttributeMap(toInt(chargeTypeID, 0)) || {};
+    const structureHP = Math.max(0, toFiniteNumber(chargeAttributes[ATTRIBUTE_STRUCTURE_HP], 0));
+    const nextDamageValue = round6(structureHP > 0 ? structureHP * clampRatio(nextDamage, 0) : nextDamage);
+    const previousDamageValue = round6(structureHP > 0 ? structureHP * clampRatio(previousDamage, 0) : previousDamage);
+    return notifyMiningChargeAttributeChange(session, shipID, moduleFlagID, chargeTypeID, ATTRIBUTE_ITEM_DAMAGE, nextDamageValue, previousDamageValue);
 }
 function notifyMiningChargeRemoved(session, shipID, moduleFlagID, chargeTypeID, previousQuantity) {
     return notifyMiningChargeAttributeChange(session, shipID, moduleFlagID, chargeTypeID, ATTRIBUTE_QUANTITY, 0, Math.max(0, toInt(previousQuantity, 0)));
@@ -598,6 +603,19 @@ function applyCrystalVolatility(entity, moduleItem, snapshot, efficiency = 1) {
         }
         if (session) {
             syncInventoryChangesToSession(session, removeResult.data.changes);
+            syncChargeSublocationTransitionForSession(session, {
+                shipID: entity.itemID,
+                flagID: moduleItem.flagID,
+                ownerID: updatedChargeItem.ownerID || chargeItem.ownerID,
+                previousState: {
+                    typeID: updatedChargeItem.typeID || chargeItem.typeID,
+                    quantity: currentQuantity > 0 ? currentQuantity : 1,
+                },
+                nextState: {
+                    typeID: updatedChargeItem.typeID || chargeItem.typeID,
+                    quantity: 0,
+                },
+            });
             notifyMiningChargeRemoved(session, entity.itemID, moduleItem.flagID, updatedChargeItem.typeID || chargeItem.typeID, currentQuantity > 0 ? currentQuantity : 1);
         }
     }

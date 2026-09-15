@@ -20,6 +20,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const log = require(path.join(__dirname, "../../utils/logger"));
 const scanningRuntime = require(path.join(__dirname, "./scanningRuntime"));
+const temperatureRuntime = require(path.join(__dirname, "./temperatureRuntime"));
 const { ABILITY_DIRECTIONAL_SCAN, registerCreationAbilityHandler, } = require(path.join(__dirname, "./creationAbilityRuntime"));
 const { buildDict, buildKeyVal, buildList, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const { findItemById } = require(path.join(__dirname, "../inventory/itemStore"));
@@ -126,10 +127,12 @@ function collectScanCandidates(session, shipID) {
             itemID: toInt(entity.itemID, 0),
             typeID: toInt(entity.typeID, 0),
             position: entity.position,
+            mass: Number(entity.mass),
             hasLineOfSight: typeof scene.hasLineOfSightForSession === "function"
                 ? scene.hasLineOfSightForSession(session, entity)
                 : true,
             emSignatureMultiplier: scanningRuntime.resolveEntityEmSignatureMultiplier(entity, nowMs),
+            thermalSignatureMultiplier: temperatureRuntime.resolveEntityThermalSignatureMultiplier(entity, nowMs),
         });
     }
     return candidates;
