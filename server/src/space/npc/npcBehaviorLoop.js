@@ -16,6 +16,7 @@ const hostileModuleRuntime = require(path.join(__dirname, "../modules/hostileMod
 const { getTypeAttributeValue, } = require(path.join(__dirname, "../../services/fitting/liveFittingState"));
 const { canEntitiesInteractLocally, } = require(path.join(__dirname, "../destiny/identity/interactionScope"));
 const { applyNpcChaseMaxVelocityCommand, } = require(path.join(__dirname, "../destiny/commands/npc.js"));
+const { cancelNpcScanning, syncNpcScanning, } = require(path.join(__dirname, "./npcScanning"));
 const { ENTITY_TYPE, } = require(path.join(__dirname, "../entityConstants"));
 const CAPSULE_GROUP_ID = 29;
 const NPC_SYNTHETIC_PROPULSION_DURATION_MS = 60_000;
@@ -2906,6 +2907,7 @@ function tickController(scene, controller, now) {
         controller.manualOrder = null;
     }
     if (manualOrder && manualOrder.type === "stop") {
+        cancelNpcScanning(scene, entity, controller, now);
         clearNpcCombatState(scene, entity, controller, {
             deactivateWeapons: true,
             clearTargets: true,
@@ -2915,6 +2917,7 @@ function tickController(scene, controller, now) {
         return;
     }
     if (manualOrder && manualOrder.type === "returnHome") {
+        cancelNpcScanning(scene, entity, controller, now);
         clearNpcCombatState(scene, entity, controller, {
             deactivateWeapons: true,
             clearTargets: true,
@@ -2924,6 +2927,7 @@ function tickController(scene, controller, now) {
         scheduleNextThink(controller, behaviorProfile, now);
         return;
     }
+    syncNpcScanning(scene, entity, controller, behaviorProfile, now);
     const desiredTarget = resolveDesiredTarget(scene, controller, entity, behaviorProfile, manualOrder);
     if (!desiredTarget) {
         syncNpcChaseVelocity(scene, entity, controller, behaviorProfile, null);

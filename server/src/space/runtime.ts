@@ -147,6 +147,10 @@ const environmentalEffectsRuntime = require(path.join(
   __dirname,
   "../services/frontier/environmentalEffectsService.js",
 ));
+const npcMetamorphosisRuntime = require(path.join(
+  __dirname,
+  "./npc/npcMetamorphosis.js",
+));
 const {
   BUBBLE_CENTER_MIN_DISTANCE_METERS,
   BUBBLE_CENTER_MIN_DISTANCE_SQUARED,
@@ -16564,12 +16568,21 @@ function applyWeaponDamageToTarget(
   const victimSession = targetEntity.session || null;
   let destroyResult = null;
   if (damageResult.success) {
+    const appliedDamage = getAppliedDamageAmount(damageResult);
     const feralizationResult = environmentalEffectsRuntime.applyNpcFeralization(
       targetEntity,
       attackerEntity,
       "hit",
       whenMs,
-      { appliedDamage: getAppliedDamageAmount(damageResult) },
+      { appliedDamage },
+    );
+    npcMetamorphosisRuntime.generateNpcMetamorphosisItems(
+      attackerEntity,
+      "hit",
+      {
+        appliedDamage,
+        dependencies: options.npcMetamorphosisDependencies,
+      },
     );
     if (feralizationResult.applied === true) {
       notifyEnvironmentalEffectsToSession(
@@ -26612,25 +26625,6 @@ class SolarSystemScene {
       acquiredAtMs: toFiniteNumber(options.nowMs, this.getCurrentSimTimeMs()),
     });
     targetState.targetedBy.add(sourceID);
-
-    const acquiredAtMs = toFiniteNumber(
-      options.nowMs,
-      this.getCurrentSimTimeMs(),
-    );
-    const feralizationResult = environmentalEffectsRuntime.applyNpcFeralization(
-      targetEntity,
-      sourceEntity,
-      "scan",
-      acquiredAtMs,
-    );
-    if (feralizationResult.applied === true) {
-      notifyEnvironmentalEffectsToSession(
-        getOwningSessionForEntity(this, targetEntity),
-        targetEntity,
-        feralizationResult,
-        acquiredAtMs,
-      );
-    }
 
     if (sourceEntity.session) {
       this.notifyTargetEvent(sourceEntity.session, "add", targetID);

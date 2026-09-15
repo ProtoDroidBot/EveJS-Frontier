@@ -12,6 +12,10 @@ const StatusEffectMgrService = require(
 const ShellManagerService = require(
   "../src/services/frontier/shellManagerService",
 );
+const {
+  ATTRIBUTE_METAMORPHOSIS_ITEM,
+  ATTRIBUTE_METAMORPHOSIS_ITEM_AMOUNT_ON_HIT,
+} = require("../src/space/npc/npcMetamorphosis");
 
 function buildPlayerShip(
   characterID,
@@ -180,6 +184,7 @@ test("the shared NPC weapon path applies hit feralization", () => {
   });
   const source = {
     itemID: 60_002,
+    typeID: 95504,
     kind: "ship",
     nativeNpc: true,
     position: { x: 0, y: 0, z: 0 },
@@ -187,6 +192,34 @@ test("the shared NPC weapon path applies hit feralization", () => {
     passiveDerivedState: {
       attributes: {
         [environmentalEffects.ATTRIBUTE_FERALIZATION_AMOUNT_PER_HIT]: 25,
+        [ATTRIBUTE_METAMORPHOSIS_ITEM]: 95284,
+        [ATTRIBUTE_METAMORPHOSIS_ITEM_AMOUNT_ON_HIT]: 3,
+      },
+    },
+  };
+  const generatedCargo: any[] = [];
+  const metamorphosisDependencies = {
+    getTypeAttributeValue() {
+      return null;
+    },
+    resolveItemByTypeID(typeID) {
+      return typeID === 95284
+        ? { typeID, name: "Thrumming Strand", groupID: 5131, categoryID: 4 }
+        : null;
+    },
+    nativeNpcStore: {
+      allocateCargoID() {
+        return { success: true, data: 70_001 };
+      },
+      listNativeCargoForEntity() {
+        return generatedCargo;
+      },
+      upsertNativeCargo(record) {
+        generatedCargo.push({ ...record });
+        return { success: true, data: record };
+      },
+      buildNativeCargoItems() {
+        return generatedCargo.map((record) => ({ ...record }));
       },
     },
   };
@@ -204,13 +237,55 @@ test("the shared NPC weapon path applies hit feralization", () => {
     target,
     { em: 10 },
     1_000,
-    { skipWeaponOcclusion: true },
+    {
+      skipWeaponOcclusion: true,
+      npcMetamorphosisDependencies: metamorphosisDependencies,
+    },
   );
 
   assert.equal(result.damageResult.success, true);
   assert.equal(
     environmentalEffects.snapshotCharacterState(251).feralization,
     25,
+  );
+  assert.equal(generatedCargo.length, 1);
+  assert.equal(generatedCargo[0].typeID, 95284);
+  assert.equal(generatedCargo[0].quantity, 3);
+});
+
+test("acquiring a target lock does not apply feralization", () => {
+  const {
+    SolarSystemScene,
+  } = require("../src/space/runtime")._testing;
+  const target = buildPlayerShip(252, { itemID: 61_001 });
+  const source: any = {
+    itemID: 61_002,
+    kind: "ship",
+    nativeNpc: true,
+    passiveDerivedState: {
+      attributes: {
+        [environmentalEffects.ATTRIBUTE_FERALIZATION_AMOUNT_PER_SCAN]: 40,
+        [ATTRIBUTE_METAMORPHOSIS_ITEM]: 95284,
+      },
+    },
+  };
+  const scene = Object.create(SolarSystemScene.prototype);
+  scene.validateTargetLockRequest = () => ({
+    success: true,
+    data: {
+      targetingStats: { effectiveMaxLockedTargets: 1 },
+    },
+  });
+  scene.allocateTargetSequence = () => 1;
+  scene.getCurrentSimTimeMs = () => 1_000;
+
+  const result = scene.finalizeTargetLock(source, target, { nowMs: 1_000 });
+
+  assert.equal(result.success, true);
+  assert.equal(source.lockedTargets.has(target.itemID), true);
+  assert.equal(
+    environmentalEffects.snapshotCharacterState(252, { create: false }),
+    null,
   );
 });
 

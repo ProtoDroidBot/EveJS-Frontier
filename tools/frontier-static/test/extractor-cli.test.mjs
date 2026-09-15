@@ -19,6 +19,9 @@ test("the Frontier snapshot includes modular ship creation authority", () => {
     assert.equal(REQUIRED_RESOURCES.creationParts, "res:/staticdata/creation_parts.fsdbinary");
     assert.equal(REQUIRED_RESOURCES.creationHardpointTypes, "res:/staticdata/creation_hardpoint_types.fsdbinary");
 });
+test("the Frontier snapshot includes client type-list authority", () => {
+    assert.equal(REQUIRED_RESOURCES.typeLists, "res:/staticdata/typelist.fsdbinary");
+});
 test("parseArgs accepts an explicit Frontier client and build", () => {
     const clientRoot = path.resolve("tmp", "frontier client");
     const outDir = path.resolve("tmp", "frontier output");

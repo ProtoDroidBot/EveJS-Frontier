@@ -21,6 +21,10 @@ test("DatabaseCreator emits Frontier landscape site authority", () => {
   assert.equal(REQUIRED_TABLES.includes("landscapeSites"), true);
 });
 
+test("DatabaseCreator emits client type-list authority", () => {
+  assert.equal(REQUIRED_TABLES.includes("clientTypeLists"), true);
+});
+
 test("DatabaseCreator emits complete Frontier dungeon authority", () => {
   assert.equal(REQUIRED_TABLES.includes("frontierDungeonTemplates"), true);
 });

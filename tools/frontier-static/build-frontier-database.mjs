@@ -78,6 +78,7 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
     const landscapeDungeonTemplates = readTable(dataDir, "landscapeDungeonTemplates", "dungeons");
     const landscapeEcosystems = readTable(dataDir, "landscapeEcosystems", "ecosystems");
     const landscapeSites = readTable(dataDir, "landscapeSites", "sites");
+    const clientTypeLists = readTable(dataDir, "clientTypeLists", "typeLists");
     const spaceComponentsByType = readTable(dataDir, "spaceComponentsByType", "types");
     const characters = readTable(dataDir, "characters");
     const componentTypesByID = new Map(spaceComponentsByType.map((row) => [Number(row.typeID ?? row._key), row]));
@@ -106,6 +107,7 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
         landscapeDungeonTemplates: snapshotManifest.outputs["landscapeDungeonTemplates.jsonl"].records,
         landscapeEcosystems: snapshotManifest.outputs["landscapeEcosystems.jsonl"].records,
         landscapeSites: snapshotManifest.outputs["landscapeSites.jsonl"].records,
+        clientTypeLists: snapshotManifest.outputs["typeLists.jsonl"].records,
         stations: snapshotManifest.outputs["npcStations.jsonl"].records,
         stargates: snapshotManifest.outputs["mapStargates.jsonl"].records,
         systems: snapshotManifest.outputs["mapSolarSystems.jsonl"].records,
@@ -121,6 +123,7 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
         landscapeDungeonTemplates: landscapeDungeonTemplates.length,
         landscapeEcosystems: landscapeEcosystems.length,
         landscapeSites: landscapeSites.length,
+        clientTypeLists: clientTypeLists.length,
         stations: stations.length,
         stargates: stargates.length,
         systems: systems.length,
@@ -128,6 +131,12 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
     for (const key of Object.keys(expected)) {
         if (actual[key] !== expected[key]) {
             throw new Error(`Generated ${key} count mismatch: expected ${expected[key]}, found ${actual[key]}`);
+        }
+    }
+    const clientTypeListIDs = new Set(clientTypeLists.map((entry) => Number(entry.listID)));
+    for (const requiredListID of [861, 923, 985]) {
+        if (!clientTypeListIDs.has(requiredListID)) {
+            throw new Error(`Generated client type-list authority is missing list ${requiredListID}`);
         }
     }
     const stationIDs = new Set(stations.map((station) => Number(station.stationID)));

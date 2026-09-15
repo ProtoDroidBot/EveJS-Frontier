@@ -62,6 +62,7 @@ NATIVE_TABLES = (
     ),
     ("stationOperations", "stationOperationsLoader", "stationOperations.jsonl"),
     ("typeDogma", "typeDogmaLoader", "typeDogma.jsonl"),
+    ("typeLists", "typeListLoader", "typeLists.jsonl"),
     ("typeMaterials", "typeMaterialsLoader", "typeMaterials.jsonl"),
     ("types", "typesLoader", "types.jsonl"),
 )

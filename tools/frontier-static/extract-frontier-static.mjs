@@ -41,6 +41,7 @@ const REQUIRED_RESOURCES = {
     systems: "res:/staticdata/systems.static",
     systemsSchema: "res:/staticdata/systems.schema",
     typeDogma: "res:/staticdata/typedogma.fsdbinary",
+    typeLists: "res:/staticdata/typelist.fsdbinary",
     typeMaterials: "res:/staticdata/typematerials.fsdbinary",
     types: "res:/staticdata/types.fsdbinary",
 };

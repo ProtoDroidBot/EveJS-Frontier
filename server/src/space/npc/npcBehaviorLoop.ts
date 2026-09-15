@@ -64,6 +64,10 @@ const {
   applyNpcChaseMaxVelocityCommand,
 } = require(path.join(__dirname, "../destiny/commands/npc.js"));
 const {
+  cancelNpcScanning,
+  syncNpcScanning,
+} = require(path.join(__dirname, "./npcScanning"));
+const {
   ENTITY_TYPE,
 } = require(path.join(__dirname, "../entityConstants"));
 
@@ -4103,6 +4107,7 @@ function tickController(scene, controller, now) {
   }
 
   if (manualOrder && manualOrder.type === "stop") {
+    cancelNpcScanning(scene, entity, controller, now);
     clearNpcCombatState(scene, entity, controller, {
       deactivateWeapons: true,
       clearTargets: true,
@@ -4113,6 +4118,7 @@ function tickController(scene, controller, now) {
   }
 
   if (manualOrder && manualOrder.type === "returnHome") {
+    cancelNpcScanning(scene, entity, controller, now);
     clearNpcCombatState(scene, entity, controller, {
       deactivateWeapons: true,
       clearTargets: true,
@@ -4122,6 +4128,8 @@ function tickController(scene, controller, now) {
     scheduleNextThink(controller, behaviorProfile, now);
     return;
   }
+
+  syncNpcScanning(scene, entity, controller, behaviorProfile, now);
 
   const desiredTarget = resolveDesiredTarget(
     scene,

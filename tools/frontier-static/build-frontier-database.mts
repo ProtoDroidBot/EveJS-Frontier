@@ -101,6 +101,7 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
     "ecosystems",
   );
   const landscapeSites = readTable(dataDir, "landscapeSites", "sites");
+  const clientTypeLists = readTable(dataDir, "clientTypeLists", "typeLists");
   const spaceComponentsByType = readTable(
     dataDir,
     "spaceComponentsByType",
@@ -144,6 +145,7 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
     landscapeEcosystems:
       snapshotManifest.outputs["landscapeEcosystems.jsonl"].records,
     landscapeSites: snapshotManifest.outputs["landscapeSites.jsonl"].records,
+    clientTypeLists: snapshotManifest.outputs["typeLists.jsonl"].records,
     stations: snapshotManifest.outputs["npcStations.jsonl"].records,
     stargates: snapshotManifest.outputs["mapStargates.jsonl"].records,
     systems: snapshotManifest.outputs["mapSolarSystems.jsonl"].records,
@@ -159,6 +161,7 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
     landscapeDungeonTemplates: landscapeDungeonTemplates.length,
     landscapeEcosystems: landscapeEcosystems.length,
     landscapeSites: landscapeSites.length,
+    clientTypeLists: clientTypeLists.length,
     stations: stations.length,
     stargates: stargates.length,
     systems: systems.length,
@@ -167,6 +170,17 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
     if (actual[key] !== expected[key]) {
       throw new Error(
         `Generated ${key} count mismatch: expected ${expected[key]}, found ${actual[key]}`,
+      );
+    }
+  }
+
+  const clientTypeListIDs = new Set(
+    clientTypeLists.map((entry) => Number(entry.listID)),
+  );
+  for (const requiredListID of [861, 923, 985]) {
+    if (!clientTypeListIDs.has(requiredListID)) {
+      throw new Error(
+        `Generated client type-list authority is missing list ${requiredListID}`,
       );
     }
   }

@@ -55,6 +55,7 @@ const { buildDynamicVisibilityDeltaPlan, buildStaticVisibilityDeltaPlan, } = req
 const { isScanningContactResolved, recordEntityScannerEmissionActivity, replaceResolvedScanningContacts, } = require(path.join(__dirname, "../services/frontier/scanningRuntime.js"));
 const temperatureRuntime = require(path.join(__dirname, "../services/frontier/temperatureRuntime.js"));
 const environmentalEffectsRuntime = require(path.join(__dirname, "../services/frontier/environmentalEffectsService.js"));
+const npcMetamorphosisRuntime = require(path.join(__dirname, "./npc/npcMetamorphosis.js"));
 const { BUBBLE_CENTER_MIN_DISTANCE_METERS, BUBBLE_CENTER_MIN_DISTANCE_SQUARED, BUBBLE_HYSTERESIS_METERS, BUBBLE_RADIUS_METERS, BUBBLE_RADIUS_SQUARED, BUBBLE_RETENTION_RADIUS_SQUARED, PUBLIC_GRID_BOX_METERS, PUBLIC_GRID_HALF_BOX_METERS, PUBLIC_GRID_NEARBY_VISIBILITY_RADIUS_METERS, } = require(path.join(__dirname, "./destiny/visibility/constants.js"));
 const { resolveWarpVisibilityReferencePosition, } = require(path.join(__dirname, "./destiny/visibility/referencePosition.js"));
 const { beginPilotWarpVisibilityHandoff: beginPilotWarpVisibilityHandoffPlan, buildPilotWarpVisibilityHandoffReadiness, buildWarpDestinationAcquirePlan, buildWarpLiveGridDynamicRefreshPlan, buildWarpLiveGridStaticRefreshPlan, buildWarpSourceRemovalPlan, clearPilotWarpVisibilityHandoff: clearPilotWarpVisibilityHandoffPlan, isWarpDestinationStaticPreserved, } = require(path.join(__dirname, "./destiny/visibility/warpHandoff.js"));
@@ -11343,7 +11344,12 @@ function applyWeaponDamageToTarget(scene, attackerEntity, targetEntity, shotDama
     const victimSession = targetEntity.session || null;
     let destroyResult = null;
     if (damageResult.success) {
-        const feralizationResult = environmentalEffectsRuntime.applyNpcFeralization(targetEntity, attackerEntity, "hit", whenMs, { appliedDamage: getAppliedDamageAmount(damageResult) });
+        const appliedDamage = getAppliedDamageAmount(damageResult);
+        const feralizationResult = environmentalEffectsRuntime.applyNpcFeralization(targetEntity, attackerEntity, "hit", whenMs, { appliedDamage });
+        npcMetamorphosisRuntime.generateNpcMetamorphosisItems(attackerEntity, "hit", {
+            appliedDamage,
+            dependencies: options.npcMetamorphosisDependencies,
+        });
         if (feralizationResult.applied === true) {
             notifyEnvironmentalEffectsToSession(getOwningSessionForEntity(scene, targetEntity), targetEntity, feralizationResult, whenMs);
         }
@@ -18410,11 +18416,6 @@ class SolarSystemScene {
             acquiredAtMs: toFiniteNumber(options.nowMs, this.getCurrentSimTimeMs()),
         });
         targetState.targetedBy.add(sourceID);
-        const acquiredAtMs = toFiniteNumber(options.nowMs, this.getCurrentSimTimeMs());
-        const feralizationResult = environmentalEffectsRuntime.applyNpcFeralization(targetEntity, sourceEntity, "scan", acquiredAtMs);
-        if (feralizationResult.applied === true) {
-            notifyEnvironmentalEffectsToSession(getOwningSessionForEntity(this, targetEntity), targetEntity, feralizationResult, acquiredAtMs);
-        }
         if (sourceEntity.session) {
             this.notifyTargetEvent(sourceEntity.session, "add", targetID);
             if (targetEntity.kind === "station" || hasDamageableHealth(targetEntity)) {
