@@ -176,6 +176,32 @@ test("Frontier Cairn markers honor matching code visibility", () => {
     assert.deepEqual(response.items.map((row) => dictEntry(row, "item_id")), [1001, 1004]);
     assert.equal(dictEntry(response.items[1], "transponder_code"), "shared-code");
 });
+test("Frontier IFF map returns the solar-view structure contract as an iterable list", () => {
+    const service = new IffMapService(buildCairnOptions("tribe"));
+    const session = {
+        characterID: 42,
+        corporationID: 7,
+        shipID: 500,
+        _space: { systemID: 30000004, shipID: 500 },
+    };
+    const response = service.callMethod("get_visible_structures", [], session);
+    assert.equal(response.type, "list");
+    assert.deepEqual(response.items.map((row) => dictEntry(row, "item_id")), [1001, 1002]);
+    assert.deepEqual(response.items[0].entries.map(([key]) => key), [
+        "item_id",
+        "type_id",
+        "name",
+        "position",
+        "is_mine",
+        "transponder_channel",
+        "transponder_code",
+    ]);
+    assert.doesNotThrow(() => marshalEncode(response, { compatibilityProfile: "frontier" }));
+    const empty = new IffMapService({
+        getSceneForSession: () => null,
+    }).callMethod("get_visible_structures", [], session);
+    assert.deepEqual(empty, { type: "list", items: [] });
+});
 test("Frontier Cairn transponder mutation rejects owned non-Cairn items unchanged", () => {
     const originalCustomInfo = "Berth:9988400001127";
     const ownedShip = {

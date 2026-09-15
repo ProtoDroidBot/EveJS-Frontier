@@ -32,6 +32,7 @@ CERTIFICATE_VERIFIER = SCRIPT_DIR / "verify-frontier-certificates.mjs"
 DOCKING_PATCHER = SCRIPT_DIR / "patch_frontier_docking.py"
 FEATURE_PATCHER = SCRIPT_DIR / "patch_frontier_features.py"
 INDUSTRY_STORAGE_PATCHER = SCRIPT_DIR / "patch_frontier_industry_storage.py"
+MAP_VIEW_PATCHER = SCRIPT_DIR / "patch_frontier_map_view.py"
 PEM_CERTIFICATE_RE = re.compile(
     rb"-----BEGIN CERTIFICATE-----\s+([A-Za-z0-9+/=\r\n]+?)\s+"
     rb"-----END CERTIFICATE-----",
@@ -731,6 +732,10 @@ def code_patch_states(archive: Path, build: int) -> dict:
         if industry not in {"source", "patched", "outdated", "partial"}:
             raise FrontierWindowsError(f"Unexpected Industry storage adapter state: {industry}")
         states["industryStorage"] = industry
+        map_view = run_python_patcher(MAP_VIEW_PATCHER, archive, build, check=True)
+        if map_view not in {"source", "patched"}:
+            raise FrontierWindowsError(f"Unexpected map-view lifecycle state: {map_view}")
+        states["mapViewLifecycle"] = map_view
     return states
 
 
@@ -738,6 +743,7 @@ def expected_code_states(build: int, state: str) -> dict:
     result = {"docking": state, "features": state}
     if build == 3502403:
         result["industryStorage"] = state
+        result["mapViewLifecycle"] = state
     return result
 
 
@@ -753,6 +759,8 @@ def patch_code_archive(archive: Path, build: int) -> dict:
         run_python_patcher(FEATURE_PATCHER, archive, build, check=False)
     if states.get("industryStorage") == "source":
         run_python_patcher(INDUSTRY_STORAGE_PATCHER, archive, build, check=False)
+    if states.get("mapViewLifecycle") == "source":
+        run_python_patcher(MAP_VIEW_PATCHER, archive, build, check=False)
     patched = code_patch_states(archive, build)
     if patched != expected_code_states(build, "patched"):
         raise FrontierWindowsError(f"code.ccp did not reach the exact patched state: {patched}")
@@ -1332,6 +1340,7 @@ def check_stage(
     gateway_leaf: Path = DEFAULT_GATEWAY_LEAF,
     allow_industry_storage_source: bool = False,
     allow_industry_storage_outdated: bool = False,
+    allow_map_view_source: bool = False,
 ) -> dict:
     stage_root = stage_root.resolve()
     marker_path, marker = load_stage(stage_root)
@@ -1355,6 +1364,8 @@ def check_stage(
         expected_states["industryStorage"] = "source"
     if allow_industry_storage_outdated and build == 3502403 and code_states.get("industryStorage") == "outdated":
         expected_states["industryStorage"] = "outdated"
+    if allow_map_view_source and build == 3502403 and code_states.get("mapViewLifecycle") == "source":
+        expected_states["mapViewLifecycle"] = "source"
     if code_states != expected_states:
         raise FrontierWindowsError(f"code.ccp patch state is not fully enabled: {code_states}")
     verify_placebo(paths["commonIni"])
@@ -1424,32 +1435,44 @@ def check_stage(
 
 
 def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
-    """Upgrade a verified stage while preserving its earlier client patches."""
+    """Upgrade a verified stage with current build-specific code adapters."""
     check_stage(stage_root, allow_industry_storage_source=True,
-                allow_industry_storage_outdated=True, **check_options)
+                allow_industry_storage_outdated=True,
+                allow_map_view_source=True, **check_options)
     marker_path, marker = load_stage(stage_root)
     build = int(marker["build"])
     paths = stage_paths(stage_root, marker)
     states = code_patch_states(paths["code"], build)
-    if states.get("industryStorage") == "patched":
+    if (states.get("industryStorage") == "patched"
+            and states.get("mapViewLifecycle") == "patched"):
         return check_stage(stage_root, **check_options)
-    if build != 3502403 or states.get("industryStorage") not in {"source", "outdated"}:
-        raise FrontierWindowsError("Stage cannot receive the Industry storage adapter")
+    if (build != 3502403
+            or states.get("industryStorage") not in {"source", "patched", "outdated"}
+            or states.get("mapViewLifecycle") not in {"source", "patched"}):
+        raise FrontierWindowsError("Stage cannot receive the current code adapters")
     _, profile = resolve_profile(build, str(marker["nativeBlue"]), check_options.get("profile_path"))
     touched = [paths["code"], paths["manifest"], marker_path]
     backup_root, original_hashes = backup_transaction_files(stage_root, touched)
     # Recheck before entering rollback scope; a competing writer's newer state
     # must never be overwritten by our backup if this operation did not write.
     if any(sha256_file(path) != original_hashes[path.relative_to(stage_root).as_posix()] for path in touched):
-        raise FrontierWindowsError("Stage changed before the Industry storage upgrade")
+        raise FrontierWindowsError("Stage changed before the code-adapter upgrade")
     try:
-        run_python_patcher(INDUSTRY_STORAGE_PATCHER, paths["code"], build, check=False)
+        if states["industryStorage"] != "patched":
+            run_python_patcher(INDUSTRY_STORAGE_PATCHER, paths["code"], build, check=False)
+        if states["mapViewLifecycle"] != "patched":
+            run_python_patcher(MAP_VIEW_PATCHER, paths["code"], build, check=False)
         refresh_manifest_atomic(paths["manifest"], stage_root, profile)
         for path in touched[:2]:
             marker["currentHashes"][path.relative_to(stage_root).as_posix()] = sha256_file(path)
-        marker["industryStoragePatchState"] = "patched"
-        marker["industryStoragePatchBackup"] = str(backup_root)
-        marker["preIndustryStorageHashes"] = original_hashes
+        if states["industryStorage"] != "patched":
+            marker["industryStoragePatchState"] = "patched"
+            marker["industryStoragePatchBackup"] = str(backup_root)
+            marker["preIndustryStorageHashes"] = original_hashes
+        if states["mapViewLifecycle"] != "patched":
+            marker["mapViewLifecyclePatchState"] = "patched"
+            marker["mapViewLifecyclePatchBackup"] = str(backup_root)
+            marker["preMapViewLifecycleHashes"] = original_hashes
         write_json_atomic(marker_path, marker)
         return check_stage(stage_root, **check_options)
     except BaseException:
@@ -1527,6 +1550,7 @@ def patch_stage(
                 "currentHashes": current_hashes,
                 "frontierFeaturePatchState": code_states["features"],
                 "industryStoragePatchState": code_states.get("industryStorage"),
+                "mapViewLifecyclePatchState": code_states.get("mapViewLifecycle"),
                 "fileStates": {
                     "nativeBlue": "exact-target",
                     "codeCcp": "exact-patched",

@@ -236,6 +236,7 @@ const {
 const {
   getShipFuelCharge,
   loadFuelIntoShipTank,
+  resolveShipFuelTank,
 } = require(path.join(__dirname, "../frontier/fuelTankRuntime"));
 const worldData = require(path.join(__dirname, "../../space/worldData"));
 const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
@@ -2660,11 +2661,20 @@ class DogmaService extends BaseService {
     // clamped to the derived capacity) so the fuel widgets read a live
     // numerator the same way the capacitor gauge reads attribute 18.
     const fuelCapacity = Number(attributes[ATTRIBUTE_FUEL_CAPACITY]);
-    if (Number.isFinite(fuelCapacity) && fuelCapacity > 0) {
+    const fuelTank = resolveShipFuelTank(shipData, fuelCapacity);
+    if (fuelTank.supported) {
       attributes[ATTRIBUTE_FUEL_CHARGE] = Math.min(
         getShipFuelCharge(shipData),
-        fuelCapacity,
+        fuelTank.capacity,
       );
+    } else {
+      // Do not leak the fuel widget onto non-ships or ordinary hulls whose
+      // effective attributes happened to acquire an unrelated capacity
+      // modifier. Only an authored hull tank or a Creation module enables it.
+      if (fuelTank.isShip && fuelTank.source === null) {
+        attributes[ATTRIBUTE_FUEL_CAPACITY] = 0;
+      }
+      delete attributes[ATTRIBUTE_FUEL_CHARGE];
     }
     attributes[ATTRIBUTE_PILOT_SECURITY_STATUS] = Number.isFinite(securityStatus)
       ? securityStatus
@@ -9297,6 +9307,7 @@ class DogmaService extends BaseService {
     switch (String(loadResult && loadResult.errorMsg || "")) {
       case "FUEL_SHIP_NOT_FOUND":
       case "FUEL_SHIP_NOT_OWNED":
+      case "FUEL_SHIP_INVALID":
         return "That ship cannot take on fuel right now.";
       case "FUEL_QUANTITY_INVALID":
         return "The fuel amount must be a positive number of units.";

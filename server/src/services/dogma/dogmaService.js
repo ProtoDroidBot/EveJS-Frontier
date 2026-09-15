@@ -46,7 +46,7 @@ const { consumeStructureServiceModuleOnlineFuel, buildStructureServiceModuleEffe
 const { buildCrpAccessDeniedInsufficientRolesValues, characterCanDisableStructureServiceModule, } = require(path.join(__dirname, "../structure/structureServiceAuthority"));
 const { resolveStructureEffectiveHitpoints, } = require(path.join(__dirname, "../structure/structureFullPowerDogma"));
 const { boardRookieShipForSession, isRookieShipItem, repairShipAndFittedItemsForSession, resolveRookieShipTypeID, } = require(path.join(__dirname, "../ship/rookieShipRuntime"));
-const { getShipFuelCharge, loadFuelIntoShipTank, } = require(path.join(__dirname, "../frontier/fuelTankRuntime"));
+const { getShipFuelCharge, loadFuelIntoShipTank, resolveShipFuelTank, } = require(path.join(__dirname, "../frontier/fuelTankRuntime"));
 const worldData = require(path.join(__dirname, "../../space/worldData"));
 const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
 const { buildChildEntityScopeMetadata, canEntitiesInteractLocally, } = require(path.join(__dirname, "../../space/destiny/identity/interactionScope.js"));
@@ -1869,8 +1869,18 @@ class DogmaService extends BaseService {
         // clamped to the derived capacity) so the fuel widgets read a live
         // numerator the same way the capacitor gauge reads attribute 18.
         const fuelCapacity = Number(attributes[ATTRIBUTE_FUEL_CAPACITY]);
-        if (Number.isFinite(fuelCapacity) && fuelCapacity > 0) {
-            attributes[ATTRIBUTE_FUEL_CHARGE] = Math.min(getShipFuelCharge(shipData), fuelCapacity);
+        const fuelTank = resolveShipFuelTank(shipData, fuelCapacity);
+        if (fuelTank.supported) {
+            attributes[ATTRIBUTE_FUEL_CHARGE] = Math.min(getShipFuelCharge(shipData), fuelTank.capacity);
+        }
+        else {
+            // Do not leak the fuel widget onto non-ships or ordinary hulls whose
+            // effective attributes happened to acquire an unrelated capacity
+            // modifier. Only an authored hull tank or a Creation module enables it.
+            if (fuelTank.isShip && fuelTank.source === null) {
+                attributes[ATTRIBUTE_FUEL_CAPACITY] = 0;
+            }
+            delete attributes[ATTRIBUTE_FUEL_CHARGE];
         }
         attributes[ATTRIBUTE_PILOT_SECURITY_STATUS] = Number.isFinite(securityStatus)
             ? securityStatus
@@ -7001,6 +7011,7 @@ class DogmaService extends BaseService {
         switch (String(loadResult && loadResult.errorMsg || "")) {
             case "FUEL_SHIP_NOT_FOUND":
             case "FUEL_SHIP_NOT_OWNED":
+            case "FUEL_SHIP_INVALID":
                 return "That ship cannot take on fuel right now.";
             case "FUEL_QUANTITY_INVALID":
                 return "The fuel amount must be a positive number of units.";

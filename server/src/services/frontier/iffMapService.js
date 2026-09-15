@@ -54,6 +54,16 @@ class IffMapService extends CairnService {
         return buildList(rows.map(buildBeaconRow));
     }
     /**
+     * The build-3502403 solar-system view names cairn/transponder rows
+     * "structures" and iterates this result unconditionally. Keep the client
+     * RPC at the IFF service boundary while reusing CairnService's visibility
+     * authority and exact row shape; that implementation also guarantees an
+     * empty marshalled list when the pilot has no active space scene.
+     */
+    Handle_get_visible_structures(args, session) {
+        return super.Handle_get_visible_cairns(args, session);
+    }
+    /**
      * set_transponder(item_id, channel, code): channel None turns the
      * transponder off; the code argument is only meaningful on the "code"
      * channel. Applies to an owned transponder-capable item (the client uses

@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 /**
- * Frontier Creation fuel tank runtime.
+ * Frontier ship fuel tank runtime.
  *
  * Client contract (staged build 3450341 bytecode evidence):
  *   dogmaIM.LoadFuel(shipID, fuelTypeID, quantity, fuelItems=None, locationID=None)
@@ -22,16 +22,20 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *
  * Server model: the loaded amount persists as
  * `shipItem.conditionState.fuelCharge`, an absolute unit count (units, not
- * m3: the widget prints "<n> / <capacity> units" and capacity derives from
- * Creation FuelCapacityAdd modifiers independent of cargo volume).
+ * m3: the widget prints "<n> / <capacity> units"). Regular ships author the
+ * capacity directly as Dogma attribute 5633; Creation ships derive it from
+ * FuelCapacityAdd modifiers supplied by fitted fuel-storage modules.
  */
 const path = require("path");
 const itemStore = require(path.join(__dirname, "../inventory/itemStore"));
 const { resolveItemByTypeID } = require(path.join(__dirname, "../inventory/itemTypeRegistry"));
+const { getTypeDogmaAttributes } = require(path.join(__dirname, "../fitting/liveFittingState"));
+const { getCreationTemplate } = require(path.join(__dirname, "./creationStaticData"));
 const ATTRIBUTE_FUEL_EFFICIENCY = 5607;
 const ATTRIBUTE_FUEL_CAPACITY = 5633;
 const ATTRIBUTE_FUEL_RATE = 5634;
 const ATTRIBUTE_FUEL_CHARGE = 5635;
+const SHIP_CATEGORY_ID = 6;
 // inventorycommon.const.fuelGroups in the staged client.
 const FUEL_GROUP_CRUDE = 4738;
 const FUEL_GROUP_CORVETTE = 4598;
@@ -57,6 +61,47 @@ function resolveFuelGroupID(typeID, deps = {}) {
 }
 function isSupportedFuelType(typeID, deps = {}) {
     return FUEL_GROUP_IDS.includes(resolveFuelGroupID(typeID, deps));
+}
+/**
+ * Resolve the two authored fuel-tank paths used by Frontier ships.
+ *
+ * Regular hulls opt in with a positive base fuelCapacity Dogma attribute.
+ * Creation hulls have a zero base value and receive their effective capacity
+ * from fitted Creation fuel-storage modules.  A positive effective value on
+ * any other item is not enough to turn it into a fuel-capable ship.
+ */
+function resolveShipFuelTank(shipItem, effectiveCapacity, deps = {}) {
+    const resolveType = typeof deps.resolveItemByTypeID === "function"
+        ? deps.resolveItemByTypeID
+        : resolveItemByTypeID;
+    const resolveDogmaAttributes = typeof deps.getTypeDogmaAttributes === "function"
+        ? deps.getTypeDogmaAttributes
+        : getTypeDogmaAttributes;
+    const resolveCreationTemplate = typeof deps.getCreationTemplate === "function"
+        ? deps.getCreationTemplate
+        : getCreationTemplate;
+    const typeID = toInt(shipItem && shipItem.typeID, 0);
+    const typeRecord = typeID > 0 ? resolveType(typeID) : null;
+    const categoryID = toInt(typeRecord && typeRecord.categoryID, toInt(shipItem && shipItem.categoryID, 0));
+    const isShip = typeID > 0 && categoryID === SHIP_CATEGORY_ID;
+    const typeAttributes = isShip ? resolveDogmaAttributes(typeID) : null;
+    const baseCapacity = Math.max(0, toFiniteNumber(typeAttributes && (typeAttributes[ATTRIBUTE_FUEL_CAPACITY] ??
+        typeAttributes[String(ATTRIBUTE_FUEL_CAPACITY)]), 0));
+    const creationType = isShip && Boolean(resolveCreationTemplate(typeID));
+    const capacity = Math.max(0, toFiniteNumber(effectiveCapacity, 0));
+    const source = creationType
+        ? "creation-module"
+        : baseCapacity > 0
+            ? "hull-attribute"
+            : null;
+    return {
+        isShip,
+        creationType,
+        source,
+        baseCapacity,
+        capacity,
+        supported: isShip && source !== null && capacity > 0,
+    };
 }
 function getShipFuelCharge(shipItem) {
     const conditionState = shipItem && shipItem.conditionState && typeof shipItem.conditionState === "object"
@@ -172,14 +217,18 @@ function loadFuelIntoShipTank({ characterID, shipID, fuelTypeID, quantity, fuelI
     if (!shipItem || toInt(shipItem.ownerID, 0) !== ownerID) {
         return { success: false, errorMsg: "FUEL_SHIP_NOT_OWNED" };
     }
+    const fuelTank = resolveShipFuelTank(shipItem, fuelCapacity, deps);
+    if (!fuelTank.isShip) {
+        return { success: false, errorMsg: "FUEL_SHIP_INVALID" };
+    }
     if (requestedQuantity <= 0) {
         return { success: false, errorMsg: "FUEL_QUANTITY_INVALID" };
     }
     if (!isSupportedFuelType(numericTypeID, deps)) {
         return { success: false, errorMsg: "FUEL_TYPE_UNSUPPORTED" };
     }
-    const tankCapacity = Math.max(0, toFiniteNumber(fuelCapacity, 0));
-    if (tankCapacity <= 0) {
+    const tankCapacity = fuelTank.capacity;
+    if (!fuelTank.supported) {
         return { success: false, errorMsg: "FUEL_TANK_MISSING" };
     }
     const previousFuelCharge = Math.min(getShipFuelCharge(shipItem), tankCapacity);
@@ -283,5 +332,6 @@ module.exports = {
     isSupportedFuelType,
     loadFuelIntoShipTank,
     normalizeRequestedFuelItemIDs,
+    resolveShipFuelTank,
 };
 //# sourceMappingURL=fuelTankRuntime.js.map

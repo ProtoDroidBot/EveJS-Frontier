@@ -21,12 +21,15 @@ const {
   getShipFuelCharge,
   loadFuelIntoShipTank,
   normalizeRequestedFuelItemIDs,
+  resolveShipFuelTank,
 } = require("../src/services/frontier/fuelTankRuntime");
 const itemStore = require("../src/services/inventory/itemStore");
 const DogmaService = require("../src/services/dogma/dogmaService");
 
 const FUEL_TYPE_UNSTABLE = 77818; // group 4598 (corvette/hydrogen fuel)
 const CREATION_SHIP_TYPE = 95276;
+const REGULAR_FUEL_SHIP_TYPE = 91107;
+const REGULAR_TANKLESS_SHIP_TYPE = 606;
 const TANK_CAPACITY = 2250;
 
 // Seeded default character present in every store baseline; the main
@@ -37,14 +40,16 @@ const SHIP_ID = 500000001;
 const STATION_ID = 64000001;
 
 function fakeTypeResolver(overrides: Record<string, any> = {}) {
-  const groups: Record<string, any> = {
-    [FUEL_TYPE_UNSTABLE]: 4598,
-    111111: 4738, // crude fuel
-    222222: 34, // not fuel
+  const records: Record<string, any> = {
+    [FUEL_TYPE_UNSTABLE]: { typeID: FUEL_TYPE_UNSTABLE, groupID: 4598 },
+    111111: { typeID: 111111, groupID: 4738 }, // crude fuel
+    222222: { typeID: 222222, groupID: 34 }, // not fuel
+    [CREATION_SHIP_TYPE]: { typeID: CREATION_SHIP_TYPE, categoryID: 6 },
+    [REGULAR_FUEL_SHIP_TYPE]: { typeID: REGULAR_FUEL_SHIP_TYPE, categoryID: 6 },
+    [REGULAR_TANKLESS_SHIP_TYPE]: { typeID: REGULAR_TANKLESS_SHIP_TYPE, categoryID: 6 },
     ...overrides,
   };
-  return (typeID) =>
-    groups[typeID] === undefined ? null : { typeID, groupID: groups[typeID] };
+  return (typeID) => records[typeID] || null;
 }
 
 function buildFakeStore({ items = [], failConsumeForItemID = null }: Record<string, any> = {}) {
@@ -59,6 +64,11 @@ function buildFakeStore({ items = [], failConsumeForItemID = null }: Record<stri
     getShipUpdate: () => shipUpdate,
     deps: {
       resolveItemByTypeID: fakeTypeResolver(),
+      getCreationTemplate: (typeID) =>
+        typeID === CREATION_SHIP_TYPE ? { _key: CREATION_SHIP_TYPE } : null,
+      getTypeDogmaAttributes: (typeID) => typeID === REGULAR_FUEL_SHIP_TYPE
+        ? { [ATTRIBUTE_FUEL_CAPACITY]: 3000 }
+        : { [ATTRIBUTE_FUEL_CAPACITY]: 0 },
       findItemById: (itemID) => byID.get(itemID) || null,
       listContainerItems: (ownerID, locationID, flagID) =>
         [...byID.values()].filter(
@@ -127,11 +137,81 @@ function shipItem(overrides: Record<string, any> = {}) {
     ownerID: OWNER_ID,
     locationID: STATION_ID,
     flagID: 4,
+    categoryID: 6,
     singleton: 1,
     conditionState: { fuelCharge: 0 },
     ...overrides,
   };
 }
+
+test("fuel tanks are enabled by Creation modules or a regular hull Dogma attribute", () => {
+  const deps = buildFakeStore().deps;
+  assert.deepEqual(
+    resolveShipFuelTank(shipItem(), TANK_CAPACITY, deps),
+    {
+      isShip: true,
+      creationType: true,
+      source: "creation-module",
+      baseCapacity: 0,
+      capacity: TANK_CAPACITY,
+      supported: true,
+    },
+  );
+  assert.deepEqual(
+    resolveShipFuelTank(
+      shipItem({ typeID: REGULAR_FUEL_SHIP_TYPE }),
+      3000,
+      deps,
+    ),
+    {
+      isShip: true,
+      creationType: false,
+      source: "hull-attribute",
+      baseCapacity: 3000,
+      capacity: 3000,
+      supported: true,
+    },
+  );
+});
+
+test("a capacity value cannot opt a tankless regular ship or non-ship into fuel", () => {
+  const deps = buildFakeStore().deps;
+  const tankless = resolveShipFuelTank(
+    shipItem({ typeID: REGULAR_TANKLESS_SHIP_TYPE }),
+    TANK_CAPACITY,
+    deps,
+  );
+  assert.equal(tankless.isShip, true);
+  assert.equal(tankless.supported, false);
+  assert.equal(tankless.source, null);
+
+  const nonShip = resolveShipFuelTank(
+    shipItem({ typeID: 222222, categoryID: 4 }),
+    TANK_CAPACITY,
+    deps,
+  );
+  assert.equal(nonShip.isShip, false);
+  assert.equal(nonShip.supported, false);
+});
+
+test("LoadFuel: regular ships use their authored hull tank", () => {
+  const store = buildFakeStore({
+    items: [
+      shipItem({ typeID: REGULAR_FUEL_SHIP_TYPE }),
+      fuelStack(600001, 500),
+    ],
+  });
+  const result = loadFuelIntoShipTank({
+    characterID: OWNER_ID,
+    shipID: SHIP_ID,
+    fuelTypeID: FUEL_TYPE_UNSTABLE,
+    quantity: 400,
+    fuelCapacity: 3000,
+    deps: store.deps,
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.data.nextFuelCharge, 400);
+});
 
 test("LoadFuel: successful load consumes source once and raises fuelCharge", () => {
   const store = buildFakeStore({
