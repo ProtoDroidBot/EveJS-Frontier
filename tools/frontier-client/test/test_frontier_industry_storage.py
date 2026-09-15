@@ -389,7 +389,8 @@ class PatcherTests(unittest.TestCase):
     def test_windows_pipeline_requires_adapter_only_for_supported_build(self):
         self.assertEqual(windows.expected_code_states(3502403, "patched"),
                          {"docking": "patched", "features": "patched", "industryStorage": "patched",
-                          "mapViewLifecycle": "patched", "fittingCompatibility": "patched"})
+                          "mapViewLifecycle": "patched", "fittingCompatibility": "patched",
+                          "inventoryView": "patched"})
         self.assertEqual(windows.expected_code_states(3488090, "source"), {"docking": "source", "features": "source"})
         with mock.patch.object(windows, "run_python_patcher", return_value="patched") as run:
             self.assertEqual(windows.patch_code_archive(Path("unused"), 3502403), windows.expected_code_states(3502403, "patched"))
@@ -421,7 +422,7 @@ class PatcherTests(unittest.TestCase):
                 with mock.patch.object(windows, "check_stage", side_effect=check), \
                      mock.patch.object(windows, "load_stage", return_value=(marker_path, marker)), \
                      mock.patch.object(windows, "stage_paths", return_value={"code": code, "manifest": manifest}), \
-                     mock.patch.object(windows, "code_patch_states", return_value={"docking": "patched", "features": "patched", "industryStorage": "source", "mapViewLifecycle": "patched", "fittingCompatibility": "patched"}), \
+                     mock.patch.object(windows, "code_patch_states", return_value={"docking": "patched", "features": "patched", "industryStorage": "source", "mapViewLifecycle": "patched", "fittingCompatibility": "patched", "inventoryView": "patched"}), \
                      mock.patch.object(windows, "resolve_profile", return_value=(None, {})), \
                      mock.patch.object(windows, "run_python_patcher", side_effect=patch), \
                      mock.patch.object(windows, "refresh_manifest_atomic", side_effect=refresh):

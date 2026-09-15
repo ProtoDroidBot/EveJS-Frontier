@@ -230,6 +230,19 @@ function normalizeProp(rawProp, fileName, fileSystemID, propIndex = 0) {
             entity.destinyCollisionTailSource = normalizeText(rawProp.destinyCollisionTailSource, "");
         }
     }
+    for (const fieldName of [
+        "collisionEnabled",
+        "destinyCollisionEnabled",
+        "destinyForceMassive",
+        "nonPhysicalCollision",
+    ]) {
+        if (hasOwn(rawProp, fieldName)) {
+            entity[fieldName] = rawProp[fieldName] === true;
+        }
+    }
+    if (hasOwn(rawProp, "collisionRadius")) {
+        entity.collisionRadius = Math.max(0, toFiniteNumber(rawProp.collisionRadius, entity.radius));
+    }
     markEligibleAuthoredBootstrapDelivery(entity, rawProp);
     if (typeID > 0) {
         entity.typeID = typeID;

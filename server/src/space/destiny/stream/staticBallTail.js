@@ -61,9 +61,26 @@ function getStaticBallFallbackFlags(entity) {
     }
     return BALL_FLAG.IS_GLOBAL;
 }
+function isStaticBallCollisionEnabled(entity) {
+    if (!entity || entity.collisionEnabled === false ||
+        entity.destinyCollisionEnabled === false ||
+        entity.nonPhysicalCollision === true ||
+        entity.nonPhysicalDecloakExempt === true) {
+        return false;
+    }
+    if (entity.destinyForceMassive === false) {
+        return false;
+    }
+    const kind = String(entity.kind || "").trim().toLowerCase();
+    return kind !== "asteroidbelt" && kind !== "landscapesite";
+}
 function getConfiguredStaticBallFlags(entity) {
-    return (resolveConfiguredBallFlags(entity, getStaticBallFallbackFlags(entity)) &
+    let flags = (resolveConfiguredBallFlags(entity, getStaticBallFallbackFlags(entity)) &
         ~BALL_FLAG.IS_FREE) & 0xff;
+    flags = isStaticBallCollisionEnabled(entity)
+        ? flags | BALL_FLAG.IS_MASSIVE
+        : flags & ~BALL_FLAG.IS_MASSIVE;
+    return flags & 0xff;
 }
 function hasExplicitStaticTail(entity) {
     const tail = normalizeStaticTailBuffer(entity && entity.destinyCollisionTail);
@@ -212,6 +229,7 @@ module.exports = {
     getStaticBallFallbackFlags,
     getStaticBallFlags,
     getStaticBallMode,
+    isStaticBallCollisionEnabled,
     normalizeStaticTailBuffer,
     resolveStaticBallHeaderCorporationID,
     resolveStaticBallTail,

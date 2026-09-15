@@ -68,7 +68,7 @@ function createDestinyWarpUpdateBuilders(deps: Record<string, any> = {}) {
         maxSpeed: entity.maxVelocity,
         isFree: true,
         isGlobal: false,
-        isMassive: false,
+        isMassive: true,
         isInteractive: true,
         isMoribund: false,
         position: entity.position,
@@ -632,6 +632,10 @@ function createDestinyWarpUpdateBuilders(deps: Record<string, any> = {}) {
       {
         stamp,
         payload: destiny.buildSetBallVelocityPayload(entity.itemID, headingVelocity),
+      },
+      {
+        stamp,
+        payload: destiny.buildSetBallMassivePayload(entity.itemID, true),
       },
     ];
     if (options.includePosition !== false) {

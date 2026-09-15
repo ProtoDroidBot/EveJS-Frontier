@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-const { buildGotoDirectionPayload, buildNonEnablingMassDemotionAction, buildOnSpecialFXPayload, buildSetBallAgilityPayload, buildSetBallAngularAgilityPayload, buildSetBallMassPayload, buildSetBallPositionPayload, buildSetBallVelocityPayload, buildSetMaxSpeedPayload, buildSetMaxAngularSpeedPayload, } = require("../stream/actions");
+const { buildGotoDirectionPayload, buildOnSpecialFXPayload, buildSetBallAgilityPayload, buildSetBallAngularAgilityPayload, buildSetBallMassPayload, buildSetBallMassivePayload, buildSetBallPositionPayload, buildSetBallVelocityPayload, buildSetMaxSpeedPayload, buildSetMaxAngularSpeedPayload, } = require("../stream/actions");
 const { normalizeDestinyStamp, } = require("../delivery/stamps");
 const { getEntityIDText, } = require("../identity/entityID");
 const { normalizeVector, } = require("../stream/primitives");
@@ -64,8 +64,8 @@ function buildUndockBootstrapMovementUpdates(entity, stampOverride = 0) {
         },
         {
             stamp,
-            // Exact bootstrap demotion only; no caller-controlled massive state.
-            payload: buildNonEnablingMassDemotionAction(entity.itemID),
+            // Undocked ships participate in native client-side collision response.
+            payload: buildSetBallMassivePayload(entity.itemID, true),
         },
         {
             stamp,

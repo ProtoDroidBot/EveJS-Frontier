@@ -2,11 +2,11 @@
 
 const {
   buildGotoDirectionPayload,
-  buildNonEnablingMassDemotionAction,
   buildOnSpecialFXPayload,
   buildSetBallAgilityPayload,
   buildSetBallAngularAgilityPayload,
   buildSetBallMassPayload,
+  buildSetBallMassivePayload,
   buildSetBallPositionPayload,
   buildSetBallVelocityPayload,
   buildSetMaxSpeedPayload,
@@ -101,8 +101,8 @@ function buildUndockBootstrapMovementUpdates(
     },
     {
       stamp,
-      // Exact bootstrap demotion only; no caller-controlled massive state.
-      payload: buildNonEnablingMassDemotionAction(entity.itemID),
+      // Undocked ships participate in native client-side collision response.
+      payload: buildSetBallMassivePayload(entity.itemID, true),
     },
     {
       stamp,

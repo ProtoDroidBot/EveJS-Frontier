@@ -11,6 +11,7 @@ const {
   buildOnSlimItemChangePayload,
   buildOnSpecialFXPayload,
   buildSetBallMassPayload,
+  buildSetBallMassivePayload,
   buildSetMaxSpeedPayload,
   buildUncloakBallPayload,
 } = require("../stream/actions");
@@ -144,7 +145,10 @@ function buildOwnerCloakActivationPresentationUpdates(options: Record<string, an
 }
 
 function buildOwnerUncloakPresentationUpdates(options: Record<string, any> = {}) {
-  const updates: any[] = [];
+  const updates: any[] = [buildPresentationUpdate(
+    options.stamp,
+    buildSetBallMassivePayload(options.entityID, true),
+  )];
   if (options.includeRenderFx !== false) {
     updates.push(buildPresentationUpdate(
       options.stamp,
@@ -196,10 +200,16 @@ function buildCloakDeliveryPresentationUpdates(options: Record<string, any> = {}
 }
 
 function buildUncloakDeliveryPresentationUpdates(options: Record<string, any> = {}) {
-  const updates = [buildPresentationUpdate(
-    options.stamp,
-    buildUncloakBallPayload(options.entityID),
-  )];
+  const updates = [
+    buildPresentationUpdate(
+      options.stamp,
+      buildUncloakBallPayload(options.entityID),
+    ),
+    buildPresentationUpdate(
+      options.stamp,
+      buildSetBallMassivePayload(options.entityID, true),
+    ),
+  ];
   if (options.includeRenderFx !== false) {
     updates.push(buildPresentationUpdate(
       options.stamp,

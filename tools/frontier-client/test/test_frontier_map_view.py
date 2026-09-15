@@ -114,6 +114,7 @@ class MapViewPatchTests(unittest.TestCase):
                     "industryStorage": "patched",
                     "mapViewLifecycle": "source",
                     "fittingCompatibility": "patched",
+                    "inventoryView": "patched",
                 }
                 with (
                     mock.patch.object(windows, "check_stage", side_effect=check),

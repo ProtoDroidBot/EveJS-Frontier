@@ -555,6 +555,9 @@ const {
   createDestinyMovementSimulator,
 } = require(path.join(__dirname, "./destiny/simulation/movement.js"));
 const {
+  resolveEntityMovementCollision,
+} = require(path.join(__dirname, "./destiny/simulation/collisions.js"));
+const {
   createNativeSubwarpController,
 } = require(path.join(__dirname, "./destiny/simulation/nativeSubwarp.js"));
 const {
@@ -20329,6 +20332,7 @@ function advanceEntityForActiveSceneTick(scene, entity) {
   // immediately before consumption while retaining the tick's authored
   // behavior frames and start snapshots.
   const plan = refreshActiveNativeSubwarpPlan(scene);
+  const previousPosition = cloneVector(entity.position);
   const nativeResult = destinyNativeSubwarpController.consumeSceneIntervalEntity(
     plan,
     entity,
@@ -20345,7 +20349,7 @@ function advanceEntityForActiveSceneTick(scene, entity) {
             Number(plan.effectiveStartSimTimeMs)) / 1000,
         )
       : interval.deltaSeconds;
-  const result = nativeResult === null
+  const movementResult = nativeResult === null
     ? advanceMovement(
         entity,
         buildActiveSceneMovementView(scene, plan, entity),
@@ -20353,6 +20357,19 @@ function advanceEntityForActiveSceneTick(scene, entity) {
         interval.endSimTimeMs,
       )
     : nativeResult;
+  const collision = movementResult
+    ? resolveEntityMovementCollision(entity, scene, previousPosition, {
+        activeTickSequence,
+      })
+    : null;
+  const result = collision
+    ? {
+        ...movementResult,
+        changed: true,
+        collision,
+        collisionResolved: true,
+      }
+    : movementResult;
   entity._lastMovementAdvancedTickSequence = activeTickSequence;
   entity._lastMovementAdvancedAtMs = interval.endSimTimeMs;
   return {

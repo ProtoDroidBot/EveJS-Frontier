@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const { normalizeEntityID, } = require("../identity/entityID");
-const { buildCloakBallPayload, buildOnCrDataChangePayload, buildOnDamageStateChangePayload, buildOnDbuffUpdatedPayload, buildOnSlimItemChangePayload, buildOnSpecialFXPayload, buildSetBallMassPayload, buildSetMaxSpeedPayload, buildUncloakBallPayload, } = require("../stream/actions");
+const { buildCloakBallPayload, buildOnCrDataChangePayload, buildOnDamageStateChangePayload, buildOnDbuffUpdatedPayload, buildOnSlimItemChangePayload, buildOnSpecialFXPayload, buildSetBallMassPayload, buildSetBallMassivePayload, buildSetMaxSpeedPayload, buildUncloakBallPayload, } = require("../stream/actions");
 function buildPresentationUpdate(stamp, payload) {
     return { stamp, payload };
 }
@@ -50,7 +50,7 @@ function buildOwnerCloakActivationPresentationUpdates(options = {}) {
     return updates;
 }
 function buildOwnerUncloakPresentationUpdates(options = {}) {
-    const updates = [];
+    const updates = [buildPresentationUpdate(options.stamp, buildSetBallMassivePayload(options.entityID, true))];
     if (options.includeRenderFx !== false) {
         updates.push(buildPresentationUpdate(options.stamp, buildOnSpecialFXPayload(options.entityID, options.renderFxGuid, options.renderFxOptions)));
     }
@@ -73,7 +73,10 @@ function buildCloakDeliveryPresentationUpdates(options = {}) {
     return updates;
 }
 function buildUncloakDeliveryPresentationUpdates(options = {}) {
-    const updates = [buildPresentationUpdate(options.stamp, buildUncloakBallPayload(options.entityID))];
+    const updates = [
+        buildPresentationUpdate(options.stamp, buildUncloakBallPayload(options.entityID)),
+        buildPresentationUpdate(options.stamp, buildSetBallMassivePayload(options.entityID, true)),
+    ];
     if (options.includeRenderFx !== false) {
         updates.push(buildPresentationUpdate(options.stamp, buildOnSpecialFXPayload(options.entityID, options.renderFxGuid, options.renderFxOptions)));
     }

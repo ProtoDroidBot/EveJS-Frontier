@@ -213,6 +213,47 @@ function hasExplicitMissilePresentationFlag(entity) {
   return Boolean(entity && entity.massive === true);
 }
 
+function isFreeBallCollisionEnabled(entity) {
+  if (!isFreeBallEntity(entity)) {
+    return false;
+  }
+  const kind = String(entity.kind || "").trim().toLowerCase();
+  if (
+    entity.collisionEnabled === false ||
+    entity.destinyCollisionEnabled === false ||
+    entity.nonPhysicalCollision === true ||
+    entity.nonPhysicalDecloakExempt === true
+  ) {
+    return false;
+  }
+  if (
+    kind === "missile" ||
+    kind === "probe" ||
+    kind === "scannerprobe" ||
+    kind === "warpdisruptionprobe" ||
+    isEntityInActiveWarp(entity) ||
+    entity.pendingDock ||
+    entity.sessionlessWarpIngress ||
+    entity.cloaked === true ||
+    Number(entity.isCloaked) > 0 ||
+    Number(entity.cloakMode) > 0 ||
+    entity.stargateJumpCloak === true
+  ) {
+    return false;
+  }
+  if (
+    entity.collisionEnabled === true ||
+    entity.destinyCollisionEnabled === true ||
+    entity.destinyForceMassive === true
+  ) {
+    return true;
+  }
+  if (entity.destinyForceMassive === false) {
+    return false;
+  }
+  return true;
+}
+
 function getFreeBallFlags(entity) {
   if (entity && entity.kind === "missile") {
     return isTargetedLiveMissile(entity)
@@ -225,13 +266,13 @@ function getFreeBallFlags(entity) {
     ? flags | BALL_FLAG.IS_INTERACTIVE
     : flags & ~BALL_FLAG.IS_INTERACTIVE;
 
-  if (entity && entity.kind === "ship") {
-    // The controlled ship remains non-massive so native Destiny cannot alter
-    // player flight. NPCs retain retail solidity without making the player
-    // collide with them.
-    flags = isNpcShipEntity(entity)
-      ? flags | BALL_FLAG.IS_MASSIVE
-      : flags & ~BALL_FLAG.IS_MASSIVE;
+  if (isFreeBallCollisionEnabled(entity)) {
+    // Native Destiny only applies local bump/collision response to massive
+    // balls. Keep ordinary sub-warp entities solid while warp, docking, cloak,
+    // missile, and probe phases remain explicitly non-colliding.
+    flags |= BALL_FLAG.IS_MASSIVE;
+  } else if (entity && entity.kind === "ship") {
+    flags &= ~BALL_FLAG.IS_MASSIVE;
   } else if (typeof (entity && entity.isMassive) === "boolean") {
     flags = entity.isMassive
       ? flags | BALL_FLAG.IS_MASSIVE
@@ -921,6 +962,7 @@ module.exports = {
   getShipWarpFactor,
   isFreeBallEntity,
   isFreeBallInteractive,
+  isFreeBallCollisionEnabled,
   isTargetedLiveMissile,
   shouldUseSessionlessNpcWarpAddBallsBootstrap,
   usesFrontierBallEncoding,

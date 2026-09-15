@@ -302,6 +302,7 @@ class WindowsUpgradeTests(unittest.TestCase):
                 "industryStorage": "patched",
                 "mapViewLifecycle": "patched",
                 "fittingCompatibility": "outdated",
+                "inventoryView": "patched",
             }
             with (
                 mock.patch.object(windows, "check_stage", side_effect=check),

@@ -2031,7 +2031,7 @@ test("Frontier free GOTO balls match the native mode trailer", () => {
     assert.equal(encoded.length, 244);
     assert.equal(encoded.readBigInt64LE(0), 9002n);
     assert.equal(encoded.readUInt8(8), 0);
-    assert.equal(encoded.readUInt8(37), 0x09);
+    assert.equal(encoded.readUInt8(37), 0x0d);
     assert.equal(encoded.readInt32LE(38), -0x80000000);
     assert.equal(encoded.readDoubleLE(42), 1);
     assert.equal(encoded.readInt32LE(74), -1);
