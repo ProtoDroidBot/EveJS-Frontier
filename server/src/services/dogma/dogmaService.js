@@ -46,7 +46,7 @@ const { consumeStructureServiceModuleOnlineFuel, buildStructureServiceModuleEffe
 const { buildCrpAccessDeniedInsufficientRolesValues, characterCanDisableStructureServiceModule, } = require(path.join(__dirname, "../structure/structureServiceAuthority"));
 const { resolveStructureEffectiveHitpoints, } = require(path.join(__dirname, "../structure/structureFullPowerDogma"));
 const { boardRookieShipForSession, isRookieShipItem, repairShipAndFittedItemsForSession, resolveRookieShipTypeID, } = require(path.join(__dirname, "../ship/rookieShipRuntime"));
-const { getShipFuelCharge, loadFuelIntoShipTank, resolveShipFuelTank, } = require(path.join(__dirname, "../frontier/fuelTankRuntime"));
+const { ATTRIBUTE_FUEL_CONTAINMENT_BURDEN, ATTRIBUTE_FUEL_EFFICIENCY, ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY, ATTRIBUTE_FUEL_VOLATILITY, getShipFuelCharge, getShipFuelProperties, loadFuelIntoShipTank, resolveShipFuelTank, } = require(path.join(__dirname, "../frontier/fuelTankRuntime"));
 const worldData = require(path.join(__dirname, "../../space/worldData"));
 const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
 const { buildChildEntityScopeMetadata, canEntitiesInteractLocally, } = require(path.join(__dirname, "../../space/destiny/identity/interactionScope.js"));
@@ -1872,6 +1872,15 @@ class DogmaService extends BaseService {
         const fuelTank = resolveShipFuelTank(shipData, fuelCapacity);
         if (fuelTank.supported) {
             attributes[ATTRIBUTE_FUEL_CHARGE] = Math.min(getShipFuelCharge(shipData), fuelTank.capacity);
+            const fuelProperties = getShipFuelProperties(shipData);
+            if (fuelProperties.totalQuantity > 0) {
+                attributes[ATTRIBUTE_FUEL_EFFICIENCY] = fuelProperties.fuelEfficiency;
+                attributes[ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY] =
+                    fuelProperties.fuelThermalInefficiency;
+                attributes[ATTRIBUTE_FUEL_CONTAINMENT_BURDEN] =
+                    fuelProperties.fuelContainmentBurden;
+                attributes[ATTRIBUTE_FUEL_VOLATILITY] = fuelProperties.fuelVolatility;
+            }
         }
         else {
             // Do not leak the fuel widget onto non-ships or ordinary hulls whose
@@ -6986,12 +6995,28 @@ class DogmaService extends BaseService {
         if (session) {
             session._lastLoadFuelRequest = { key: requestKey, atMs: nowMs };
         }
-        const { previousFuelCharge, nextFuelCharge, fuelTypeID: loadedFuelTypeID, changes, } = loadResult.data;
+        const { previousFuelCharge, nextFuelCharge, fuelTypeID: loadedFuelTypeID, fuelQueue, previousFuelProperties, fuelProperties, changes, } = loadResult.data;
         // Keep a live space entity's condition copy coherent so later
         // entity-side persists cannot roll the tank level back.
-        this._syncSpaceEntityFuelCharge(session, shipID, nextFuelCharge, loadedFuelTypeID);
+        this._syncSpaceEntityFuelCharge(session, shipID, nextFuelCharge, loadedFuelTypeID, fuelQueue);
         this._syncInventoryChanges(session, changes);
         const when = this._sessionFileTime(session);
+        const propertyAttributeChanges = [
+            [ATTRIBUTE_FUEL_EFFICIENCY, "fuelEfficiency"],
+            [ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY, "fuelThermalInefficiency"],
+            [ATTRIBUTE_FUEL_CONTAINMENT_BURDEN, "fuelContainmentBurden"],
+            [ATTRIBUTE_FUEL_VOLATILITY, "fuelVolatility"],
+        ].filter(([, propertyName]) => (Number(previousFuelProperties[propertyName]) !==
+            Number(fuelProperties[propertyName]))).map(([attributeID, propertyName]) => [
+            "OnModuleAttributeChange",
+            charID,
+            shipID,
+            attributeID,
+            when,
+            fuelProperties[propertyName],
+            previousFuelProperties[propertyName],
+            null,
+        ]);
         this._notifyModuleAttributeChanges(session, [[
                 "OnModuleAttributeChange",
                 charID,
@@ -7001,7 +7026,7 @@ class DogmaService extends BaseService {
                 nextFuelCharge,
                 previousFuelCharge,
                 null,
-            ]]);
+            ], ...propertyAttributeChanges]);
         log.info(`[DogmaIM] LoadFuel loaded ship=${shipID} type=${fuelTypeID} ` +
             `qty=${quantity} fuelCharge=${previousFuelCharge}->${nextFuelCharge}/${fuelCapacity}`);
         return null;
@@ -7017,8 +7042,6 @@ class DogmaService extends BaseService {
                 return "The fuel amount must be a positive number of units.";
             case "FUEL_TYPE_UNSUPPORTED":
                 return "That item cannot be loaded as fuel.";
-            case "FUEL_TYPE_MISMATCH":
-                return "The fuel tank must be empty before loading a different fuel type.";
             case "FUEL_TANK_MISSING":
                 return "This ship has no fuel tank to load fuel into.";
             case "FUEL_TANK_OVERFLOW": {
@@ -7037,7 +7060,7 @@ class DogmaService extends BaseService {
                 return "The fuel could not be loaded.";
         }
     }
-    _syncSpaceEntityFuelCharge(session, shipID, nextFuelCharge, fuelTypeID = 0) {
+    _syncSpaceEntityFuelCharge(session, shipID, nextFuelCharge, fuelTypeID = 0, fuelQueue = null) {
         if (!spaceRuntime || typeof spaceRuntime.getEntity !== "function") {
             return false;
         }
@@ -7055,6 +7078,7 @@ class DogmaService extends BaseService {
             ...entity.conditionState,
             fuelCharge: Math.max(0, Number(nextFuelCharge) || 0),
             fuelTypeID: Number(fuelTypeID) || 0,
+            fuelQueue,
         });
         return true;
     }

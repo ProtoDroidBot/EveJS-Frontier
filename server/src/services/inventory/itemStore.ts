@@ -1044,6 +1044,32 @@ function normalizeShipConditionState(rawValue) {
   const conditionNumber = (value, fallback) =>
     value === undefined || value === null ? fallback : toFiniteNumber(value, fallback);
 
+  const rawFuelQueue = Array.isArray(source.fuelQueue)
+    ? source.fuelQueue
+    : Array.isArray(source.fuelComposition)
+      ? source.fuelComposition
+      : [];
+  const fuelQueue: any[] = [];
+  for (const entry of rawFuelQueue) {
+    const fuelTypeID = toNumber(entry && (entry.fuelTypeID ?? entry.typeID), 0);
+    const quantity = Math.max(0, toFiniteNumber(entry && entry.quantity, 0));
+    if (
+      Number.isSafeInteger(fuelTypeID) &&
+      fuelTypeID > 0 &&
+      quantity > 1e-9
+    ) {
+      const tail = fuelQueue[fuelQueue.length - 1];
+      if (tail && tail.fuelTypeID === fuelTypeID) {
+        tail.quantity += quantity;
+      } else {
+        fuelQueue.push({ fuelTypeID, quantity });
+      }
+    }
+  }
+  const queuedFuelCharge = fuelQueue.reduce(
+    (total, entry) => total + entry.quantity,
+    0,
+  );
   const normalizedState: Record<string, any> = {
     damage: conditionNumber(source.damage, DEFAULT_SHIP_CONDITION_STATE.damage),
     charge: conditionNumber(source.charge, DEFAULT_SHIP_CONDITION_STATE.charge),
@@ -1058,18 +1084,29 @@ function normalizeShipConditionState(rawValue) {
     incapacitated: Boolean(
       source.incapacitated ?? DEFAULT_SHIP_CONDITION_STATE.incapacitated,
     ),
-    fuelCharge: Math.max(
-      0,
-      conditionNumber(source.fuelCharge, DEFAULT_SHIP_CONDITION_STATE.fuelCharge),
-    ),
+    fuelCharge: fuelQueue.length > 0
+      ? queuedFuelCharge
+      : Math.max(
+        0,
+        conditionNumber(source.fuelCharge, DEFAULT_SHIP_CONDITION_STATE.fuelCharge),
+      ),
   };
+  if (fuelQueue.length > 0) {
+    normalizedState.fuelQueue = fuelQueue;
+  }
   const fuelTypeID = toNumber(source.fuelTypeID, 0);
-  if (
+  if (fuelQueue.length > 0) {
+    normalizedState.fuelTypeID = fuelQueue[0].fuelTypeID;
+  } else if (
     normalizedState.fuelCharge > 0 &&
     Number.isSafeInteger(fuelTypeID) &&
     fuelTypeID > 0
   ) {
     normalizedState.fuelTypeID = fuelTypeID;
+    normalizedState.fuelQueue = [{
+      fuelTypeID,
+      quantity: normalizedState.fuelCharge,
+    }];
   }
   return normalizedState;
 }

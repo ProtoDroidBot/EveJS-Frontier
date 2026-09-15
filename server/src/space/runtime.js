@@ -41,7 +41,7 @@ const { isFrontierProfile: isFrontierStartupProfile, resolveDefaultStartupSystem
 const { updateShipItem, updateInventoryItem, removeInventoryItem, listContainerItems, listSystemSpaceItems, findItemById, findShipItemById, getShipConditionState, normalizeShipConditionState, getItemMetadata, pruneExpiredSpaceItems, } = require(path.join(__dirname, "../services/inventory/itemStore"));
 const { resolveRuntimeWreckRadius, resolveRuntimeWreckStructureFallbackHP, } = require(path.join(__dirname, "../services/inventory/wreckRadius"));
 const { resolveItemByTypeID, } = require(path.join(__dirname, "../services/inventory/itemTypeRegistry"));
-const { ATTRIBUTE_FUEL_CAPACITY, ATTRIBUTE_FUEL_CHARGE, calculateFueledCapacitorRecharge, getShipFuelCharge, getShipFuelTypeID, resolveShipFuelTank, } = require(path.join(__dirname, "../services/frontier/fuelTankRuntime"));
+const { ATTRIBUTE_FUEL_CAPACITY, ATTRIBUTE_FUEL_CHARGE, ATTRIBUTE_FUEL_CONTAINMENT_BURDEN, ATTRIBUTE_FUEL_EFFICIENCY, ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY, ATTRIBUTE_FUEL_VOLATILITY, calculateFueledCapacitorRecharge, getShipFuelCharge, getShipFuelQueue, getShipFuelTypeID, normalizeFuelQueue, resolveShipFuelTank, } = require(path.join(__dirname, "../services/frontier/fuelTankRuntime"));
 const { resolveStargatePhysicalRadius, } = require(path.join(__dirname, "./stargateRadius"));
 const { getStargateVisualOverrideField, } = require(path.join(__dirname, "./stargateVisualOverrides"));
 const { buildDunRotationFromNormalizedDirection: buildStargateDunRotationFromDirection, getStargateSystemForwardDirection, } = require(path.join(__dirname, "./stargateOrientation"));
@@ -6655,17 +6655,38 @@ function getEntityPassiveAttribute(entity, attributeID, fallback = 0) {
         : null;
     return toFiniteNumber(attributes && (attributes[attributeID] ?? attributes[String(attributeID)]), fallback);
 }
-function setEntityFuelState(entity, nextFuelCharge, fuelTypeID) {
+function setEntityFuelState(entity, nextFuelCharge, fuelTypeID, fuelQueue = null) {
     if (!entity || entity.kind !== "ship") {
         return 0;
     }
     const normalizedFuelCharge = Math.max(0, toFiniteNumber(nextFuelCharge, 0));
+    const normalizedFuelQueue = fuelQueue === null
+        ? normalizedFuelCharge > 0 && toInt(fuelTypeID, 0) > 0
+            ? [{ fuelTypeID: toInt(fuelTypeID, 0), quantity: normalizedFuelCharge }]
+            : []
+        : normalizeFuelQueue(fuelQueue);
     entity.conditionState = normalizeShipConditionState({
         ...(entity.conditionState || {}),
         fuelCharge: normalizedFuelCharge,
+        fuelQueue: normalizedFuelQueue,
         fuelTypeID: normalizedFuelCharge > 0 ? toInt(fuelTypeID, 0) : 0,
     });
     return normalizedFuelCharge;
+}
+function setEntityFuelProperties(entity, fuelProperties) {
+    const attributes = entity && entity.passiveDerivedState &&
+        entity.passiveDerivedState.attributes;
+    if (!attributes || typeof attributes !== "object") {
+        return;
+    }
+    for (const [attributeID, propertyName] of [
+        [ATTRIBUTE_FUEL_EFFICIENCY, "fuelEfficiency"],
+        [ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY, "fuelThermalInefficiency"],
+        [ATTRIBUTE_FUEL_CONTAINMENT_BURDEN, "fuelContainmentBurden"],
+        [ATTRIBUTE_FUEL_VOLATILITY, "fuelVolatility"],
+    ]) {
+        attributes[attributeID] = Math.max(0, toFiniteNumber(fuelProperties && fuelProperties[propertyName], 0));
+    }
 }
 function persistEntityCapacitorRatio(entity) {
     if (!entity || entity.kind !== "ship" || entity.persistSpaceState !== true) {
@@ -6677,12 +6698,14 @@ function persistEntityCapacitorRatio(entity) {
     }
     const nextRatio = getEntityCapacitorRatio(entity);
     const fuelCharge = getShipFuelCharge(entity);
+    const fuelQueue = getShipFuelQueue(entity);
     const fuelTypeID = getShipFuelTypeID(entity);
     const result = updateShipItem(entity.itemID, (currentItem) => {
         const conditionState = {
             ...(currentItem.conditionState || {}),
             charge: nextRatio,
             fuelCharge,
+            fuelQueue,
         };
         if (fuelCharge > 0 && fuelTypeID > 0) {
             conditionState.fuelTypeID = fuelTypeID;
@@ -9614,6 +9637,31 @@ function notifyFuelChargeChangeToSession(session, entity, whenMs = null, previou
     notifyAttributeChanges(session, [buildAttributeChange(session, shipID, ATTRIBUTE_FUEL_CHARGE, fuelCharge, normalizedPreviousFuelCharge, when)]);
     entity._lastFuelNotifiedAmount = fuelCharge;
 }
+function notifyFuelPropertyChangesToSession(session, entity, previousFuelProperties, nextFuelProperties, whenMs = null) {
+    if (!session ||
+        typeof session.sendNotification !== "function" ||
+        !entity) {
+        return;
+    }
+    const when = whenMs != null
+        ? resolveSessionNotificationFileTime(session, whenMs)
+        : session && session._space && session._space.simFileTime
+            ? resolveSessionNotificationFileTime(session)
+            : currentFileTime();
+    const changes = [
+        [ATTRIBUTE_FUEL_EFFICIENCY, "fuelEfficiency"],
+        [ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY, "fuelThermalInefficiency"],
+        [ATTRIBUTE_FUEL_CONTAINMENT_BURDEN, "fuelContainmentBurden"],
+        [ATTRIBUTE_FUEL_VOLATILITY, "fuelVolatility"],
+    ].flatMap(([attributeID, propertyName]) => {
+        const previousValue = Math.max(0, toFiniteNumber(previousFuelProperties && previousFuelProperties[propertyName], 0));
+        const nextValue = Math.max(0, toFiniteNumber(nextFuelProperties && nextFuelProperties[propertyName], 0));
+        return previousValue === nextValue
+            ? []
+            : [buildAttributeChange(session, toInt(entity.itemID, 0), attributeID, nextValue, previousValue, when)];
+    });
+    notifyAttributeChanges(session, changes);
+}
 function advanceEntityCapacitorRecharge(entity, deltaSeconds, nowMs = Date.now(), deps = {}) {
     const capacitorCapacity = Math.max(0, toFiniteNumber(entity && entity.capacitorCapacity, 0));
     const capacitorRechargeRate = Math.max(0, toFiniteNumber(entity && entity.capacitorRechargeRate, 0));
@@ -9649,6 +9697,7 @@ function advanceEntityCapacitorRecharge(entity, deltaSeconds, nowMs = Date.now()
             };
         }
         const previousFuelCharge = getShipFuelCharge(entity);
+        const fuelQueue = getShipFuelQueue(entity);
         const fuelTypeID = getShipFuelTypeID(entity);
         const passiveState = entity.passiveDerivedState || {};
         const recharge = calculateFueledCapacitorRecharge({
@@ -9659,6 +9708,7 @@ function advanceEntityCapacitorRecharge(entity, deltaSeconds, nowMs = Date.now()
             powerLoad: toFiniteNumber(passiveState.powerLoad, getEntityPassiveAttribute(entity, ATTRIBUTE_POWER_LOAD, 0)),
             fuelCharge: previousFuelCharge,
             fuelTypeID,
+            fuelQueue,
             deltaSeconds,
         }, deps);
         if (recharge.rechargedEnergy <= 0) {
@@ -9670,16 +9720,22 @@ function advanceEntityCapacitorRecharge(entity, deltaSeconds, nowMs = Date.now()
             };
         }
         setEntityCapacitorRatio(entity, recharge.nextCapacitorAmount / capacitorCapacity);
-        setEntityFuelState(entity, recharge.nextFuelCharge, fuelTypeID);
+        setEntityFuelState(entity, recharge.nextFuelCharge, recharge.nextFuelTypeID, recharge.nextFuelQueue);
+        setEntityFuelProperties(entity, recharge.nextFuelProperties);
         const normalizedNowMs = toFiniteNumber(nowMs, Date.now());
         const lastCapNotify = toFiniteNumber(entity._lastCapNotifyAtMs, 0);
+        const activeFuelChanged = recharge.previousFuelTypeID !== recharge.nextFuelTypeID;
         const reachedTerminalState = recharge.nextFuelCharge <= 0 ||
-            recharge.nextCapacitorAmount >= capacitorCapacity;
+            recharge.nextCapacitorAmount >= capacitorCapacity ||
+            activeFuelChanged;
         if (normalizedNowMs - lastCapNotify >= 500 || reachedTerminalState) {
             persistEntityCapacitorRatio(entity);
             if (entity.session && isReadyForDestiny(entity.session)) {
                 notifyCapacitorChangeToSession(entity.session, entity, normalizedNowMs, previousChargeAmount);
                 notifyFuelChargeChangeToSession(entity.session, entity, normalizedNowMs, previousFuelCharge);
+                if (activeFuelChanged) {
+                    notifyFuelPropertyChangesToSession(entity.session, entity, recharge.fuelProperties, recharge.nextFuelProperties, normalizedNowMs);
+                }
             }
             entity._lastCapNotifyAtMs = normalizedNowMs;
         }

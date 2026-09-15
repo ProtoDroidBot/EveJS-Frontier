@@ -234,7 +234,12 @@ const {
   resolveRookieShipTypeID,
 } = require(path.join(__dirname, "../ship/rookieShipRuntime"));
 const {
+  ATTRIBUTE_FUEL_CONTAINMENT_BURDEN,
+  ATTRIBUTE_FUEL_EFFICIENCY,
+  ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY,
+  ATTRIBUTE_FUEL_VOLATILITY,
   getShipFuelCharge,
+  getShipFuelProperties,
   loadFuelIntoShipTank,
   resolveShipFuelTank,
 } = require(path.join(__dirname, "../frontier/fuelTankRuntime"));
@@ -2667,6 +2672,15 @@ class DogmaService extends BaseService {
         getShipFuelCharge(shipData),
         fuelTank.capacity,
       );
+      const fuelProperties = getShipFuelProperties(shipData);
+      if (fuelProperties.totalQuantity > 0) {
+        attributes[ATTRIBUTE_FUEL_EFFICIENCY] = fuelProperties.fuelEfficiency;
+        attributes[ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY] =
+          fuelProperties.fuelThermalInefficiency;
+        attributes[ATTRIBUTE_FUEL_CONTAINMENT_BURDEN] =
+          fuelProperties.fuelContainmentBurden;
+        attributes[ATTRIBUTE_FUEL_VOLATILITY] = fuelProperties.fuelVolatility;
+      }
     } else {
       // Do not leak the fuel widget onto non-ships or ordinary hulls whose
       // effective attributes happened to acquire an unrelated capacity
@@ -9284,6 +9298,9 @@ class DogmaService extends BaseService {
       previousFuelCharge,
       nextFuelCharge,
       fuelTypeID: loadedFuelTypeID,
+      fuelQueue,
+      previousFuelProperties,
+      fuelProperties,
       changes,
     } = loadResult.data;
     // Keep a live space entity's condition copy coherent so later
@@ -9293,9 +9310,28 @@ class DogmaService extends BaseService {
       shipID,
       nextFuelCharge,
       loadedFuelTypeID,
+      fuelQueue,
     );
     this._syncInventoryChanges(session, changes);
     const when = this._sessionFileTime(session);
+    const propertyAttributeChanges = [
+      [ATTRIBUTE_FUEL_EFFICIENCY, "fuelEfficiency"],
+      [ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY, "fuelThermalInefficiency"],
+      [ATTRIBUTE_FUEL_CONTAINMENT_BURDEN, "fuelContainmentBurden"],
+      [ATTRIBUTE_FUEL_VOLATILITY, "fuelVolatility"],
+    ].filter(([, propertyName]) => (
+      Number(previousFuelProperties[propertyName]) !==
+      Number(fuelProperties[propertyName])
+    )).map(([attributeID, propertyName]) => [
+      "OnModuleAttributeChange",
+      charID,
+      shipID,
+      attributeID,
+      when,
+      fuelProperties[propertyName],
+      previousFuelProperties[propertyName],
+      null,
+    ]);
     this._notifyModuleAttributeChanges(session, [[
       "OnModuleAttributeChange",
       charID,
@@ -9305,7 +9341,7 @@ class DogmaService extends BaseService {
       nextFuelCharge,
       previousFuelCharge,
       null,
-    ]]);
+    ], ...propertyAttributeChanges]);
     log.info(
       `[DogmaIM] LoadFuel loaded ship=${shipID} type=${fuelTypeID} ` +
       `qty=${quantity} fuelCharge=${previousFuelCharge}->${nextFuelCharge}/${fuelCapacity}`,
@@ -9323,8 +9359,6 @@ class DogmaService extends BaseService {
         return "The fuel amount must be a positive number of units.";
       case "FUEL_TYPE_UNSUPPORTED":
         return "That item cannot be loaded as fuel.";
-      case "FUEL_TYPE_MISMATCH":
-        return "The fuel tank must be empty before loading a different fuel type.";
       case "FUEL_TANK_MISSING":
         return "This ship has no fuel tank to load fuel into.";
       case "FUEL_TANK_OVERFLOW": {
@@ -9343,7 +9377,13 @@ class DogmaService extends BaseService {
         return "The fuel could not be loaded.";
     }
   }
-  _syncSpaceEntityFuelCharge(session, shipID, nextFuelCharge, fuelTypeID = 0) {
+  _syncSpaceEntityFuelCharge(
+    session,
+    shipID,
+    nextFuelCharge,
+    fuelTypeID = 0,
+    fuelQueue = null,
+  ) {
     if (!spaceRuntime || typeof spaceRuntime.getEntity !== "function") {
       return false;
     }
@@ -9360,6 +9400,7 @@ class DogmaService extends BaseService {
       ...entity.conditionState,
       fuelCharge: Math.max(0, Number(nextFuelCharge) || 0),
       fuelTypeID: Number(fuelTypeID) || 0,
+      fuelQueue,
     });
     return true;
   }

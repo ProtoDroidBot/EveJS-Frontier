@@ -20,11 +20,14 @@
  *
  * Server model: the loaded amount persists as
  * `shipItem.conditionState.fuelCharge`, an absolute unit count (units, not
- * m3: the widget prints "<n> / <capacity> units"). `fuelTypeID` accompanies a
- * non-empty tank so capacitor recharge can apply that fuel's authored
- * efficiency and so unlike fuels cannot be mixed. Regular ships author the
- * capacity directly as Dogma attribute 5633; Creation ships derive it from
- * FuelCapacityAdd modifiers supplied by fitted fuel-storage modules.
+ * m3: the widget prints "<n> / <capacity> units"). `fuelQueue` records each
+ * loaded batch in first-in-first-out order. The head batch supplies the
+ * ship's active fuel properties and is consumed before later batches. Legacy
+ * saves with only `fuelTypeID`, and pre-FIFO `fuelComposition` saves, remain
+ * supported.
+ * Regular ships author the capacity directly as Dogma attribute 5633;
+ * Creation ships derive it from FuelCapacityAdd modifiers supplied by fitted
+ * fuel-storage modules.
  */
 const path = require("path");
 
@@ -46,6 +49,15 @@ const ATTRIBUTE_FUEL_EFFICIENCY = 5607;
 const ATTRIBUTE_FUEL_CAPACITY = 5633;
 const ATTRIBUTE_FUEL_RATE = 5634;
 const ATTRIBUTE_FUEL_CHARGE = 5635;
+const ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY = 6123;
+const ATTRIBUTE_FUEL_CONTAINMENT_BURDEN = 6124;
+const ATTRIBUTE_FUEL_VOLATILITY = 6311;
+const FUEL_PROPERTY_ATTRIBUTE_IDS = Object.freeze({
+  fuelEfficiency: ATTRIBUTE_FUEL_EFFICIENCY,
+  fuelThermalInefficiency: ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY,
+  fuelContainmentBurden: ATTRIBUTE_FUEL_CONTAINMENT_BURDEN,
+  fuelVolatility: ATTRIBUTE_FUEL_VOLATILITY,
+});
 const SHIP_CATEGORY_ID = 6;
 const FUEL_EPSILON = 1e-9;
 
@@ -139,38 +151,174 @@ function resolveShipFuelTank(
   };
 }
 
+function getConditionState(shipItem) {
+  return shipItem && shipItem.conditionState && typeof shipItem.conditionState === "object"
+    ? shipItem.conditionState
+    : null;
+}
+
+/**
+ * Canonicalize a persisted/API fuel queue without losing load order.
+ * Adjacent batches of the same type are equivalent and are coalesced, while
+ * same-type batches separated by another fuel remain distinct FIFO entries.
+ */
+function normalizeFuelQueue(rawQueue) {
+  let rawEntries: any[] = [];
+  if (rawQueue instanceof Map) {
+    rawEntries = [...rawQueue.entries()];
+  } else if (Array.isArray(rawQueue)) {
+    rawEntries = rawQueue;
+  } else if (rawQueue && typeof rawQueue === "object") {
+    rawEntries = Object.entries(rawQueue);
+  }
+
+  const fuelQueue: any[] = [];
+  for (const entry of rawEntries) {
+    const tuple = Array.isArray(entry);
+    const fuelTypeID = toInt(
+      tuple ? entry[0] : entry && (entry.fuelTypeID ?? entry.typeID),
+      0,
+    );
+    const quantity = Math.max(
+      0,
+      toFiniteNumber(tuple ? entry[1] : entry && entry.quantity, 0),
+    );
+    if (fuelTypeID <= 0 || quantity <= FUEL_EPSILON) {
+      continue;
+    }
+    const tail = fuelQueue[fuelQueue.length - 1];
+    if (tail && tail.fuelTypeID === fuelTypeID) {
+      tail.quantity += quantity;
+    } else {
+      fuelQueue.push({ fuelTypeID, quantity });
+    }
+  }
+
+  return fuelQueue;
+}
+
+// Compatibility alias for callers and saves using the transitional
+// composition representation. Its array order is interpreted as FIFO order.
+const normalizeFuelComposition = normalizeFuelQueue;
+
+function getFuelQueueQuantity(fuelQueue) {
+  return normalizeFuelQueue(fuelQueue).reduce(
+    (total, entry) => total + entry.quantity,
+    0,
+  );
+}
+
 function getShipFuelCharge(shipItem) {
-  const conditionState =
-    shipItem && shipItem.conditionState && typeof shipItem.conditionState === "object"
-      ? shipItem.conditionState
-      : null;
+  const conditionState = getConditionState(shipItem);
+  const fuelQueue = getShipFuelQueue(shipItem);
+  if (fuelQueue.length > 0) {
+    return getFuelQueueQuantity(fuelQueue);
+  }
   return Math.max(0, toFiniteNumber(conditionState && conditionState.fuelCharge, 0));
 }
 
+function getShipFuelQueue(shipItem) {
+  const conditionState = getConditionState(shipItem);
+  const persistedQueue = conditionState && Array.isArray(conditionState.fuelQueue)
+    ? conditionState.fuelQueue
+    : conditionState && conditionState.fuelComposition;
+  const fuelQueue = normalizeFuelQueue(persistedQueue);
+  if (fuelQueue.length > 0) {
+    return fuelQueue;
+  }
+  const fuelCharge = Math.max(
+    0,
+    toFiniteNumber(conditionState && conditionState.fuelCharge, 0),
+  );
+  const fuelTypeID = toInt(conditionState && conditionState.fuelTypeID, 0);
+  return fuelCharge > FUEL_EPSILON && fuelTypeID > 0
+    ? [{ fuelTypeID, quantity: fuelCharge }]
+    : [];
+}
+
+const getShipFuelComposition = getShipFuelQueue;
+
 function getShipFuelTypeID(shipItem) {
+  const fuelQueue = getShipFuelQueue(shipItem);
+  if (fuelQueue.length > 0) {
+    return fuelQueue[0].fuelTypeID;
+  }
   const conditionState =
-    shipItem && shipItem.conditionState && typeof shipItem.conditionState === "object"
-      ? shipItem.conditionState
-      : null;
+    getConditionState(shipItem);
   const fuelTypeID = toInt(conditionState && conditionState.fuelTypeID, 0);
   return fuelTypeID > 0 ? fuelTypeID : 0;
 }
 
-function getFuelEfficiency(fuelTypeID, deps: Record<string, any> = {}) {
+function getFuelProperties(fuelTypeID, deps: Record<string, any> = {}) {
   const resolveDogmaAttributes = typeof deps.getTypeDogmaAttributes === "function"
     ? deps.getTypeDogmaAttributes
     : getTypeDogmaAttributes;
   const attributes = resolveDogmaAttributes(toInt(fuelTypeID, 0));
-  return Math.max(
-    0,
-    toFiniteNumber(
-      attributes && (
-        attributes[ATTRIBUTE_FUEL_EFFICIENCY] ??
-        attributes[String(ATTRIBUTE_FUEL_EFFICIENCY)]
-      ),
+  const properties: Record<string, number> = {};
+  for (const [propertyName, attributeID] of Object.entries(
+    FUEL_PROPERTY_ATTRIBUTE_IDS,
+  )) {
+    properties[propertyName] = Math.max(
       0,
-    ),
-  );
+      toFiniteNumber(
+        attributes && (
+          attributes[attributeID] ?? attributes[String(attributeID)]
+        ),
+        0,
+      ),
+    );
+  }
+  return properties;
+}
+
+function getFuelEfficiency(fuelTypeID, deps: Record<string, any> = {}) {
+  return getFuelProperties(fuelTypeID, deps).fuelEfficiency;
+}
+
+/** Return the properties of the FIFO head (the fuel currently being burned). */
+function calculateFuelQueueProperties(
+  fuelQueue,
+  deps: Record<string, any> = {},
+): Record<string, any> {
+  const normalizedQueue = normalizeFuelQueue(fuelQueue);
+  const totalQuantity = getFuelQueueQuantity(normalizedQueue);
+  const activeBatch = normalizedQueue[0] || null;
+  const activeProperties: Record<string, number> = activeBatch
+    ? getFuelProperties(activeBatch.fuelTypeID, deps)
+    : Object.fromEntries(
+        Object.keys(FUEL_PROPERTY_ATTRIBUTE_IDS).map((propertyName) => [propertyName, 0]),
+      );
+  return {
+    totalQuantity,
+    fuelTypeCount: new Set(normalizedQueue.map((entry) => entry.fuelTypeID)).size,
+    activeFuelTypeID: activeBatch ? activeBatch.fuelTypeID : 0,
+    ...activeProperties,
+  };
+}
+
+function getShipFuelProperties(shipItem, deps: Record<string, any> = {}) {
+  return calculateFuelQueueProperties(getShipFuelQueue(shipItem), deps);
+}
+
+function trimFuelQueueToQuantity(fuelQueue, nextTotalQuantity) {
+  let remaining = Math.max(0, toFiniteNumber(nextTotalQuantity, 0));
+  const trimmedQueue: any[] = [];
+  for (const entry of normalizeFuelQueue(fuelQueue)) {
+    if (remaining <= FUEL_EPSILON) {
+      break;
+    }
+    const quantity = Math.min(entry.quantity, remaining);
+    trimmedQueue.push({ fuelTypeID: entry.fuelTypeID, quantity });
+    remaining -= quantity;
+  }
+  return normalizeFuelQueue(trimmedQueue);
+}
+
+function appendFuelQueueBatch(fuelQueue, fuelTypeID, quantity) {
+  return normalizeFuelQueue([
+    ...normalizeFuelQueue(fuelQueue),
+    { fuelTypeID, quantity },
+  ]);
 }
 
 /**
@@ -191,6 +339,8 @@ function calculateFueledCapacitorRecharge(
     powerLoad,
     fuelCharge,
     fuelTypeID,
+    fuelQueue,
+    fuelComposition,
     deltaSeconds,
   }: Record<string, any>,
   deps: Record<string, any> = {},
@@ -200,11 +350,25 @@ function calculateFueledCapacitorRecharge(
     capacity,
     Math.max(0, toFiniteNumber(currentCapacitorAmount, 0)),
   );
-  const loadedFuel = Math.max(0, toFiniteNumber(fuelCharge, 0));
-  const numericFuelTypeID = toInt(fuelTypeID, 0);
-  const fuelEfficiency = numericFuelTypeID > 0
-    ? getFuelEfficiency(numericFuelTypeID, deps)
-    : 0;
+  let normalizedFuelQueue = normalizeFuelQueue(
+    Array.isArray(fuelQueue) ? fuelQueue : fuelComposition,
+  );
+  if (normalizedFuelQueue.length === 0) {
+    const legacyFuelCharge = Math.max(0, toFiniteNumber(fuelCharge, 0));
+    const legacyFuelTypeID = toInt(fuelTypeID, 0);
+    if (legacyFuelCharge > FUEL_EPSILON && legacyFuelTypeID > 0) {
+      normalizedFuelQueue = [{
+        fuelTypeID: legacyFuelTypeID,
+        quantity: legacyFuelCharge,
+      }];
+    }
+  }
+  const loadedFuel = getFuelQueueQuantity(normalizedFuelQueue);
+  const fuelProperties = calculateFuelQueueProperties(
+    normalizedFuelQueue,
+    deps,
+  );
+  const fuelEfficiency = fuelProperties.fuelEfficiency;
   const powerHeadroom = Math.max(
     0,
     toFiniteNumber(powerOutput, 0) - toFiniteNumber(powerLoad, 0),
@@ -219,16 +383,42 @@ function calculateFueledCapacitorRecharge(
     missingEnergy,
     effectiveRechargeRate * Math.max(0, toFiniteNumber(deltaSeconds, 0)),
   );
-  const rechargedEnergy = fuelEfficiency > 0 && loadedFuel > 0
-    ? Math.min(requestedEnergy, loadedFuel * fuelEfficiency)
-    : 0;
-  const consumedFuel = fuelEfficiency > 0
-    ? rechargedEnergy / fuelEfficiency
-    : 0;
-  const rawNextFuelCharge = Math.max(0, loadedFuel - consumedFuel);
+  const nextFuelQueue = normalizedFuelQueue.map((entry) => ({ ...entry }));
+  let remainingEnergy = requestedEnergy;
+  let consumedFuel = 0;
+  while (remainingEnergy > FUEL_EPSILON && nextFuelQueue.length > 0) {
+    const activeBatch = nextFuelQueue[0];
+    const activeEfficiency = getFuelEfficiency(activeBatch.fuelTypeID, deps);
+    // A zero-efficiency head must block later batches to preserve strict FIFO.
+    if (activeEfficiency <= 0) {
+      break;
+    }
+    const availableEnergy = activeBatch.quantity * activeEfficiency;
+    const batchEnergy = Math.min(remainingEnergy, availableEnergy);
+    const batchFuel = batchEnergy / activeEfficiency;
+    consumedFuel += batchFuel;
+    remainingEnergy -= batchEnergy;
+    activeBatch.quantity -= batchFuel;
+    if (activeBatch.quantity <= FUEL_EPSILON) {
+      nextFuelQueue.shift();
+    }
+  }
+  const rechargedEnergy = requestedEnergy - remainingEnergy;
+  const rawNextFuelCharge = Math.max(
+    0,
+    getFuelQueueQuantity(nextFuelQueue),
+  );
   const nextFuelCharge = rawNextFuelCharge <= FUEL_EPSILON
     ? 0
     : rawNextFuelCharge;
+  const normalizedNextFuelQueue = trimFuelQueueToQuantity(
+    nextFuelQueue,
+    nextFuelCharge,
+  );
+  const nextFuelProperties = calculateFuelQueueProperties(
+    normalizedNextFuelQueue,
+    deps,
+  );
   const rawNextCapacitorAmount = Math.min(
     capacity,
     currentAmount + rechargedEnergy,
@@ -245,10 +435,19 @@ function calculateFueledCapacitorRecharge(
     authoredRechargeRate,
     effectiveRechargeRate,
     fuelEfficiency,
+    fuelProperties,
+    nextFuelProperties,
     consumedFuel,
     rechargedEnergy,
     previousFuelCharge: loadedFuel,
     nextFuelCharge,
+    previousFuelTypeID: fuelProperties.activeFuelTypeID,
+    nextFuelTypeID: nextFuelProperties.activeFuelTypeID,
+    previousFuelQueue: normalizedFuelQueue,
+    nextFuelQueue: normalizedNextFuelQueue,
+    // Compatibility aliases for callers of the transitional representation.
+    previousFuelComposition: normalizedFuelQueue,
+    nextFuelComposition: normalizedNextFuelQueue,
   };
 }
 
@@ -408,17 +607,20 @@ function loadFuelIntoShipTank({
     return { success: false as const, errorMsg: "FUEL_TANK_MISSING" };
   }
   const previousFuelCharge = Math.min(getShipFuelCharge(shipItem), tankCapacity);
-  const previousFuelTypeID = getShipFuelTypeID(shipItem);
+  let previousFuelQueue = trimFuelQueueToQuantity(
+    getShipFuelQueue(shipItem),
+    previousFuelCharge,
+  );
+  // An old save can contain charge without a type. Adopt that charge as the
+  // first newly loaded type, matching the prior migration behavior.
   if (
     previousFuelCharge > FUEL_EPSILON &&
-    previousFuelTypeID > 0 &&
-    previousFuelTypeID !== numericTypeID
+    previousFuelQueue.length === 0
   ) {
-    return {
-      success: false as const,
-      errorMsg: "FUEL_TYPE_MISMATCH",
-      params: { previousFuelTypeID },
-    };
+    previousFuelQueue = [{
+      fuelTypeID: numericTypeID,
+      quantity: previousFuelCharge,
+    }];
   }
   const remainingCapacity = Math.floor(tankCapacity - previousFuelCharge);
   if (requestedQuantity > remainingCapacity) {
@@ -487,14 +689,34 @@ function loadFuelIntoShipTank({
     previousFuelCharge + requestedQuantity,
     tankCapacity,
   );
-  const updateResult = updateShipItem(numericShipID, (currentItem) => ({
-    ...currentItem,
-    conditionState: {
+  const nextFuelQueue = appendFuelQueueBatch(
+    previousFuelQueue,
+    numericTypeID,
+    requestedQuantity,
+  );
+  const nextFuelTypeID = nextFuelQueue[0]?.fuelTypeID || 0;
+  const previousFuelProperties = calculateFuelQueueProperties(
+    previousFuelQueue,
+    deps,
+  );
+  const fuelProperties = calculateFuelQueueProperties(nextFuelQueue, deps);
+  const updateResult = updateShipItem(numericShipID, (currentItem) => {
+    const conditionState: Record<string, any> = {
       ...(currentItem.conditionState || {}),
       fuelCharge: nextFuelCharge,
-      fuelTypeID: numericTypeID,
-    },
-  }));
+      fuelQueue: nextFuelQueue,
+    };
+    delete conditionState.fuelComposition;
+    if (nextFuelTypeID > 0) {
+      conditionState.fuelTypeID = nextFuelTypeID;
+    } else {
+      delete conditionState.fuelTypeID;
+    }
+    return {
+      ...currentItem,
+      conditionState,
+    };
+  });
   if (!updateResult || updateResult.success !== true) {
     for (const restore of consumed.reverse()) {
       grantItemsToCharacterLocation(ownerID, restore.locationID, restore.flagID, [
@@ -515,7 +737,11 @@ function loadFuelIntoShipTank({
       loadedQuantity: requestedQuantity,
       previousFuelCharge,
       nextFuelCharge,
-      fuelTypeID: numericTypeID,
+      fuelTypeID: nextFuelTypeID,
+      previousFuelQueue,
+      fuelQueue: nextFuelQueue,
+      previousFuelProperties,
+      fuelProperties,
       shipItem: updateResult.data,
       changes,
     },
@@ -525,16 +751,29 @@ function loadFuelIntoShipTank({
 module.exports = {
   ATTRIBUTE_FUEL_CAPACITY,
   ATTRIBUTE_FUEL_CHARGE,
+  ATTRIBUTE_FUEL_CONTAINMENT_BURDEN,
   ATTRIBUTE_FUEL_EFFICIENCY,
   ATTRIBUTE_FUEL_RATE,
+  ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY,
+  ATTRIBUTE_FUEL_VOLATILITY,
+  FUEL_PROPERTY_ATTRIBUTE_IDS,
   FUEL_GROUP_IDS,
+  appendFuelQueueBatch,
+  calculateFuelQueueProperties,
   calculateFueledCapacitorRecharge,
   collectFuelSourceStacks,
   getFuelEfficiency,
+  getFuelProperties,
   getShipFuelCharge,
+  getShipFuelComposition,
+  getShipFuelQueue,
+  getShipFuelProperties,
   getShipFuelTypeID,
   isSupportedFuelType,
   loadFuelIntoShipTank,
+  normalizeFuelComposition,
+  normalizeFuelQueue,
   normalizeRequestedFuelItemIDs,
   resolveShipFuelTank,
+  trimFuelQueueToQuantity,
 };
