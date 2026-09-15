@@ -222,6 +222,7 @@ class UpgradeTests(unittest.TestCase):
                         self.assertEqual({path: path.read_bytes() for path in touched}, after)
                 self.assertTrue(checks[0]["allow_industry_storage_source"])
                 self.assertTrue(checks[0]["allow_industry_storage_outdated"])
+                self.assertTrue(checks[0]["allow_fitting_compatibility_source"])
                 if len(checks) > 1:
                     self.assertNotIn("allow_industry_storage_outdated", checks[1])
 

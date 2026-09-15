@@ -113,6 +113,7 @@ class MapViewPatchTests(unittest.TestCase):
                     "features": "patched",
                     "industryStorage": "patched",
                     "mapViewLifecycle": "source",
+                    "fittingCompatibility": "patched",
                 }
                 with (
                     mock.patch.object(windows, "check_stage", side_effect=check),
@@ -162,6 +163,7 @@ class MapViewPatchTests(unittest.TestCase):
                             (backup / "code.ccp").read_bytes(), original[code]
                         )
                 self.assertTrue(checks[0]["allow_map_view_source"])
+                self.assertTrue(checks[0]["allow_fitting_compatibility_source"])
                 self.assertNotIn("allow_map_view_source", checks[1])
 
     @unittest.skipUnless(
