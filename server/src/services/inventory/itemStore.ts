@@ -1044,7 +1044,7 @@ function normalizeShipConditionState(rawValue) {
   const conditionNumber = (value, fallback) =>
     value === undefined || value === null ? fallback : toFiniteNumber(value, fallback);
 
-  return {
+  const normalizedState: Record<string, any> = {
     damage: conditionNumber(source.damage, DEFAULT_SHIP_CONDITION_STATE.damage),
     charge: conditionNumber(source.charge, DEFAULT_SHIP_CONDITION_STATE.charge),
     armorDamage: conditionNumber(
@@ -1063,6 +1063,15 @@ function normalizeShipConditionState(rawValue) {
       conditionNumber(source.fuelCharge, DEFAULT_SHIP_CONDITION_STATE.fuelCharge),
     ),
   };
+  const fuelTypeID = toNumber(source.fuelTypeID, 0);
+  if (
+    normalizedState.fuelCharge > 0 &&
+    Number.isSafeInteger(fuelTypeID) &&
+    fuelTypeID > 0
+  ) {
+    normalizedState.fuelTypeID = fuelTypeID;
+  }
+  return normalizedState;
 }
 
 function normalizeModuleState(rawValue) {

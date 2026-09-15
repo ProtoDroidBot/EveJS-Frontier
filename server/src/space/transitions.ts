@@ -612,15 +612,31 @@ function sendEjectHandoffDestiny(
   return result && result.stamp;
 }
 
-function applyTqDockingTransitionSessionChangeShape(plan) {
+function applyTqDockingTransitionSessionChangeShape(
+  plan,
+  options: Record<PropertyKey, any> = {},
+) {
   if (!plan || !plan.sessionChanges) {
     return plan;
   }
   const sessionChanges = plan.sessionChanges;
-  delete sessionChanges.stationid2;
+  if (options.preserveStationID2ForSpaceScene !== true) {
+    delete sessionChanges.stationid2;
+  }
 
   const orderedChanges: Record<PropertyKey, any> = {};
-  for (const key of ["stationid", "structureid", "locationid", "solarsystemid"]) {
+  // The client uses stationid2 as its stable docked-location identity.  If an
+  // undock only clears stationid, the session is logically in space but the
+  // view-state service can retain the hangar scene and never bind Beyonce.
+  // Keep both station fields in the same transition so leaving a station
+  // automatically activates the space scene.
+  for (const key of [
+    "stationid",
+    "stationid2",
+    "structureid",
+    "locationid",
+    "solarsystemid",
+  ]) {
     if (Object.prototype.hasOwnProperty.call(sessionChanges, key)) {
       orderedChanges[key] = sessionChanges[key];
     }
@@ -632,6 +648,12 @@ function applyTqDockingTransitionSessionChangeShape(plan) {
   }
   plan.sessionChanges = orderedChanges;
   return plan;
+}
+
+function applyUndockSessionChangeShape(plan) {
+  return applyTqDockingTransitionSessionChangeShape(plan, {
+    preserveStationID2ForSpaceScene: true,
+  });
 }
 
 function sendUndockInvulnerabilityUpdated(session, shipID) {
@@ -2281,7 +2303,7 @@ function undockSession(session, options: Record<PropertyKey, any> = {}) {
     });
     flushCharacterSessionNotificationPlan(
       session,
-      applyTqDockingTransitionSessionChangeShape(applyResult.notificationPlan),
+      applyUndockSessionChangeShape(applyResult.notificationPlan),
     );
     queuePendingSessionEffects(session, {
       previousLocalChannelID,
@@ -4570,6 +4592,7 @@ module.exports = {
   repairSameSceneSessionViewState,
 };
 module.exports._testing = {
+  applyUndockSessionChangeShapeForTesting: applyUndockSessionChangeShape,
   buildBoundResultForTesting: buildBoundResult,
   buildGateSpawnState,
   completeStargateJumpForTesting: completeStargateJump,

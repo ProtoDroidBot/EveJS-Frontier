@@ -12,10 +12,15 @@ Object.defineProperty(exports, "__esModule", { value: true });
  */
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { ATTRIBUTE_FUEL_CAPACITY, ATTRIBUTE_FUEL_CHARGE, collectFuelSourceStacks, getShipFuelCharge, loadFuelIntoShipTank, normalizeRequestedFuelItemIDs, resolveShipFuelTank, } = require("../src/services/frontier/fuelTankRuntime");
+const { ATTRIBUTE_FUEL_CAPACITY, ATTRIBUTE_FUEL_CHARGE, ATTRIBUTE_FUEL_EFFICIENCY, calculateFueledCapacitorRecharge, collectFuelSourceStacks, getFuelEfficiency, getShipFuelCharge, getShipFuelTypeID, loadFuelIntoShipTank, normalizeRequestedFuelItemIDs, resolveShipFuelTank, } = require("../src/services/frontier/fuelTankRuntime");
 const itemStore = require("../src/services/inventory/itemStore");
 const DogmaService = require("../src/services/dogma/dogmaService");
+const { advanceEntityCapacitorRechargeForTesting, } = require("../src/space/runtime")._testing;
 const FUEL_TYPE_UNSTABLE = 77818; // group 4598 (corvette/hydrogen fuel)
+const FUEL_TYPE_EU_90 = 78437;
+const FUEL_TYPE_SOF_80 = 78515;
+const FUEL_TYPE_EU_40 = 78516;
+const FUEL_TYPE_SOF_40 = 84868;
 const CREATION_SHIP_TYPE = 95276;
 const REGULAR_FUEL_SHIP_TYPE = 91107;
 const REGULAR_TANKLESS_SHIP_TYPE = 606;
@@ -29,7 +34,10 @@ const STATION_ID = 64000001;
 function fakeTypeResolver(overrides = {}) {
     const records = {
         [FUEL_TYPE_UNSTABLE]: { typeID: FUEL_TYPE_UNSTABLE, groupID: 4598 },
-        111111: { typeID: 111111, groupID: 4738 }, // crude fuel
+        [FUEL_TYPE_EU_90]: { typeID: FUEL_TYPE_EU_90, groupID: 4738 },
+        [FUEL_TYPE_SOF_80]: { typeID: FUEL_TYPE_SOF_80, groupID: 4738 },
+        [FUEL_TYPE_EU_40]: { typeID: FUEL_TYPE_EU_40, groupID: 4738 },
+        [FUEL_TYPE_SOF_40]: { typeID: FUEL_TYPE_SOF_40, groupID: 4738 },
         222222: { typeID: 222222, groupID: 34 }, // not fuel
         [CREATION_SHIP_TYPE]: { typeID: CREATION_SHIP_TYPE, categoryID: 6 },
         [REGULAR_FUEL_SHIP_TYPE]: { typeID: REGULAR_FUEL_SHIP_TYPE, categoryID: 6 },
@@ -51,9 +59,26 @@ function buildFakeStore({ items = [], failConsumeForItemID = null } = {}) {
         deps: {
             resolveItemByTypeID: fakeTypeResolver(),
             getCreationTemplate: (typeID) => typeID === CREATION_SHIP_TYPE ? { _key: CREATION_SHIP_TYPE } : null,
-            getTypeDogmaAttributes: (typeID) => typeID === REGULAR_FUEL_SHIP_TYPE
-                ? { [ATTRIBUTE_FUEL_CAPACITY]: 3000 }
-                : { [ATTRIBUTE_FUEL_CAPACITY]: 0 },
+            getTypeDogmaAttributes: (typeID) => {
+                if (typeID === REGULAR_FUEL_SHIP_TYPE) {
+                    return { [ATTRIBUTE_FUEL_CAPACITY]: 3000 };
+                }
+                if (typeID === FUEL_TYPE_UNSTABLE) {
+                    return { [ATTRIBUTE_FUEL_EFFICIENCY]: 8 };
+                }
+                const crudeFuelEfficiencies = {
+                    [FUEL_TYPE_EU_90]: 90,
+                    [FUEL_TYPE_SOF_80]: 80,
+                    [FUEL_TYPE_EU_40]: 40,
+                    [FUEL_TYPE_SOF_40]: 40,
+                };
+                if (crudeFuelEfficiencies[typeID] !== undefined) {
+                    return {
+                        [ATTRIBUTE_FUEL_EFFICIENCY]: crudeFuelEfficiencies[typeID],
+                    };
+                }
+                return { [ATTRIBUTE_FUEL_CAPACITY]: 0 };
+            },
             findItemById: (itemID) => byID.get(itemID) || null,
             listContainerItems: (ownerID, locationID, flagID) => [...byID.values()].filter((item) => item.ownerID === ownerID &&
                 item.locationID === locationID &&
@@ -188,7 +213,168 @@ test("LoadFuel: successful load consumes source once and raises fuelCharge", () 
     assert.deepEqual(store.consumeCalls, [{ itemID: 600001, quantity: 1000 }]);
     assert.equal(store.getItem(600001).stacksize, 500);
     assert.equal(store.getShipUpdate().conditionState.fuelCharge, 1000);
+    assert.equal(store.getShipUpdate().conditionState.fuelTypeID, FUEL_TYPE_UNSTABLE);
+    assert.equal(result.data.fuelTypeID, FUEL_TYPE_UNSTABLE);
     assert.equal(result.data.changes.length, 1);
+});
+test("LoadFuel: a non-empty tank cannot mix unlike fuel types", () => {
+    const store = buildFakeStore({
+        items: [
+            shipItem({
+                conditionState: {
+                    fuelCharge: 100,
+                    fuelTypeID: FUEL_TYPE_UNSTABLE,
+                },
+            }),
+            fuelStack(600001, 100, { typeID: FUEL_TYPE_EU_40 }),
+        ],
+    });
+    const result = loadFuelIntoShipTank({
+        characterID: OWNER_ID,
+        shipID: SHIP_ID,
+        fuelTypeID: FUEL_TYPE_EU_40,
+        quantity: 100,
+        fuelCapacity: TANK_CAPACITY,
+        deps: store.deps,
+    });
+    assert.equal(result.success, false);
+    assert.equal(result.errorMsg, "FUEL_TYPE_MISMATCH");
+    assert.deepEqual(store.consumeCalls, []);
+});
+test("LoadFuel: an empty or legacy untyped tank records the newly loaded type", () => {
+    for (const conditionState of [
+        { fuelCharge: 0, fuelTypeID: FUEL_TYPE_UNSTABLE },
+        { fuelCharge: 25 },
+    ]) {
+        const store = buildFakeStore({
+            items: [
+                shipItem({ conditionState }),
+                fuelStack(600001, 100, { typeID: FUEL_TYPE_EU_40 }),
+            ],
+        });
+        const result = loadFuelIntoShipTank({
+            characterID: OWNER_ID,
+            shipID: SHIP_ID,
+            fuelTypeID: FUEL_TYPE_EU_40,
+            quantity: 50,
+            fuelCapacity: TANK_CAPACITY,
+            deps: store.deps,
+        });
+        assert.equal(result.success, true);
+        assert.equal(store.getShipUpdate().conditionState.fuelTypeID, FUEL_TYPE_EU_40);
+    }
+});
+test("capacitor recharge is capped by unused power grid and burns fuel by efficiency", () => {
+    const deps = buildFakeStore().deps;
+    const recharge = calculateFueledCapacitorRecharge({
+        currentCapacitorAmount: 20,
+        capacitorCapacity: 100,
+        capacitorRechargeRate: 12,
+        powerOutput: 15,
+        powerLoad: 5,
+        fuelCharge: 10,
+        fuelTypeID: FUEL_TYPE_UNSTABLE,
+        deltaSeconds: 2,
+    }, deps);
+    assert.equal(recharge.powerHeadroom, 10);
+    assert.equal(recharge.effectiveRechargeRate, 10);
+    assert.equal(recharge.fuelEfficiency, 8);
+    assert.equal(recharge.rechargedEnergy, 20);
+    assert.equal(recharge.consumedFuel, 2.5);
+    assert.equal(recharge.nextCapacitorAmount, 40);
+    assert.equal(recharge.nextFuelCharge, 7.5);
+});
+test("more unused power grid directly accelerates Frontier recharge", () => {
+    const deps = buildFakeStore().deps;
+    const calculate = (powerOutput, powerLoad) => calculateFueledCapacitorRecharge({
+        currentCapacitorAmount: 0,
+        capacitorCapacity: 100,
+        capacitorRechargeRate: 12,
+        powerOutput,
+        powerLoad,
+        fuelCharge: 100,
+        fuelTypeID: FUEL_TYPE_UNSTABLE,
+        deltaSeconds: 2,
+    }, deps);
+    assert.equal(calculate(6, 5).rechargedEnergy, 2);
+    assert.equal(calculate(15, 5).rechargedEnergy, 20);
+    assert.equal(calculate(30, 5).rechargedEnergy, 50);
+    assert.equal(calculate(5, 5).rechargedEnergy, 0);
+    assert.equal(calculate(4, 5).consumedFuel, 0);
+});
+test("fuel quantity truncates recharge and all fuel tiers use authored efficiency", () => {
+    const deps = buildFakeStore().deps;
+    const unstable = calculateFueledCapacitorRecharge({
+        currentCapacitorAmount: 0,
+        capacitorCapacity: 100,
+        capacitorRechargeRate: 20,
+        powerOutput: 20,
+        powerLoad: 0,
+        fuelCharge: 0.5,
+        fuelTypeID: FUEL_TYPE_UNSTABLE,
+        deltaSeconds: 1,
+    }, deps);
+    assert.equal(unstable.rechargedEnergy, 4);
+    assert.equal(unstable.nextFuelCharge, 0);
+    const crude = calculateFueledCapacitorRecharge({
+        currentCapacitorAmount: 0,
+        capacitorCapacity: 100,
+        capacitorRechargeRate: 20,
+        powerOutput: 20,
+        powerLoad: 0,
+        fuelCharge: 0.5,
+        fuelTypeID: FUEL_TYPE_EU_40,
+        deltaSeconds: 1,
+    }, deps);
+    assert.deepEqual([
+        FUEL_TYPE_EU_40,
+        FUEL_TYPE_SOF_40,
+        FUEL_TYPE_SOF_80,
+        FUEL_TYPE_EU_90,
+    ].map((typeID) => getFuelEfficiency(typeID, deps)), [40, 40, 80, 90]);
+    assert.equal(crude.rechargedEnergy, 20);
+    assert.equal(crude.consumedFuel, 0.5);
+    assert.equal(crude.nextFuelCharge, 0);
+});
+test("space recharge applies the same fuel and power-grid rules to Creation and regular ships", () => {
+    const deps = buildFakeStore().deps;
+    for (const [typeID, fuelCapacity, capacitorRechargeRate] of [
+        [CREATION_SHIP_TYPE, TANK_CAPACITY, 1.2],
+        [REGULAR_FUEL_SHIP_TYPE, 3000, 0],
+    ]) {
+        const entity = {
+            kind: "ship",
+            itemID: SHIP_ID + typeID,
+            typeID,
+            categoryID: 6,
+            ownerID: OWNER_ID,
+            capacitorCapacity: 100,
+            capacitorRechargeRate,
+            capacitorChargeRatio: 0.2,
+            conditionState: {
+                charge: 0.2,
+                fuelCharge: 10,
+                fuelTypeID: FUEL_TYPE_UNSTABLE,
+            },
+            passiveDerivedState: {
+                powerOutput: 15,
+                powerLoad: 5,
+                attributes: {
+                    [ATTRIBUTE_FUEL_CAPACITY]: fuelCapacity,
+                    11: 15,
+                    15: 5,
+                },
+            },
+            persistSpaceState: false,
+        };
+        const result = advanceEntityCapacitorRechargeForTesting(entity, 1, 1000, deps);
+        assert.equal(result.mode, "frontier-fueled");
+        assert.equal(result.changed, true);
+        assert.equal(result.rechargedEnergy, 10);
+        assert.equal(entity.capacitorChargeRatio, 0.3);
+        assert.equal(entity.conditionState.fuelCharge, 8.75);
+        assert.equal(entity.conditionState.fuelTypeID, FUEL_TYPE_UNSTABLE);
+    }
 });
 test("LoadFuel: drains multiple stacks oldest-first across cargo and fuel bay", () => {
     const store = buildFakeStore({
@@ -318,12 +504,15 @@ test("LoadFuel: unsupported fuel types are rejected, crude fuel accepted", () =>
     assert.equal(rejected.success, false);
     assert.equal(rejected.errorMsg, "FUEL_TYPE_UNSUPPORTED");
     const crudeStore = buildFakeStore({
-        items: [shipItem(), fuelStack(600001, 300, { typeID: 111111 })],
+        items: [
+            shipItem(),
+            fuelStack(600001, 300, { typeID: FUEL_TYPE_EU_40 }),
+        ],
     });
     const accepted = loadFuelIntoShipTank({
         characterID: OWNER_ID,
         shipID: SHIP_ID,
-        fuelTypeID: 111111,
+        fuelTypeID: FUEL_TYPE_EU_40,
         quantity: 200,
         fuelCapacity: TANK_CAPACITY,
         deps: crudeStore.deps,
@@ -424,17 +613,24 @@ test("LoadFuel: source scan skips wrong-type and wrong-location stacks", () => {
     });
     assert.deepEqual(stacks.map((item) => item.itemID), [600003]);
 });
-test("conditionState persists fuelCharge through normalization", () => {
+test("conditionState persists fuel charge and its exact type through normalization", () => {
     const normalized = itemStore.normalizeShipConditionState({
         damage: 0.25,
         charge: 0.5,
         fuelCharge: 1234,
+        fuelTypeID: FUEL_TYPE_UNSTABLE,
     });
     assert.equal(normalized.fuelCharge, 1234);
+    assert.equal(normalized.fuelTypeID, FUEL_TYPE_UNSTABLE);
     assert.equal(itemStore.normalizeShipConditionState({}).fuelCharge, 0);
+    assert.equal(Object.hasOwn(itemStore.normalizeShipConditionState({ fuelTypeID: 123 }), "fuelTypeID"), false);
     assert.equal(itemStore.normalizeShipConditionState({ fuelCharge: -50 }).fuelCharge, 0);
     assert.equal(getShipFuelCharge({ conditionState: { fuelCharge: 77 } }), 77);
+    assert.equal(getShipFuelTypeID({
+        conditionState: { fuelCharge: 77, fuelTypeID: FUEL_TYPE_UNSTABLE },
+    }), FUEL_TYPE_UNSTABLE);
     assert.equal(getShipFuelCharge({}), 0);
+    assert.equal(getShipFuelTypeID({}), 0);
 });
 // ── Handler-level coverage against the disposable game store ────────────
 function grantTestItems() {
@@ -481,6 +677,7 @@ test("Handle_LoadFuel: end-to-end load, duplicate suppression, persistence", () 
     assert.equal(service.Handle_LoadFuel(args, session), null);
     const persistedShip = itemStore.findItemById(ship.itemID);
     assert.equal(persistedShip.conditionState.fuelCharge, 1000);
+    assert.equal(persistedShip.conditionState.fuelTypeID, FUEL_TYPE_UNSTABLE);
     const persistedStack = itemStore.findItemById(fuelStackItem.itemID);
     assert.equal(persistedStack.stacksize, 500);
     const attributeEvents = notifications.filter((entry) => entry.name === "OnModuleAttributeChanges");
@@ -505,6 +702,7 @@ test("Handle_LoadFuel: end-to-end load, duplicate suppression, persistence", () 
     }));
     assert.equal(roundTrip.success, true);
     assert.equal(roundTrip.data.conditionState.fuelCharge, 1250);
+    assert.equal(roundTrip.data.conditionState.fuelTypeID, FUEL_TYPE_UNSTABLE);
 });
 test("Handle_LoadFuel: rejects a non-active ship", () => {
     const { ship } = grantTestItems();

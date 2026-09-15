@@ -22,7 +22,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *
  * Server model: the loaded amount persists as
  * `shipItem.conditionState.fuelCharge`, an absolute unit count (units, not
- * m3: the widget prints "<n> / <capacity> units"). Regular ships author the
+ * m3: the widget prints "<n> / <capacity> units"). `fuelTypeID` accompanies a
+ * non-empty tank so capacitor recharge can apply that fuel's authored
+ * efficiency and so unlike fuels cannot be mixed. Regular ships author the
  * capacity directly as Dogma attribute 5633; Creation ships derive it from
  * FuelCapacityAdd modifiers supplied by fitted fuel-storage modules.
  */
@@ -36,6 +38,7 @@ const ATTRIBUTE_FUEL_CAPACITY = 5633;
 const ATTRIBUTE_FUEL_RATE = 5634;
 const ATTRIBUTE_FUEL_CHARGE = 5635;
 const SHIP_CATEGORY_ID = 6;
+const FUEL_EPSILON = 1e-9;
 // inventorycommon.const.fuelGroups in the staged client.
 const FUEL_GROUP_CRUDE = 4738;
 const FUEL_GROUP_CORVETTE = 4598;
@@ -108,6 +111,71 @@ function getShipFuelCharge(shipItem) {
         ? shipItem.conditionState
         : null;
     return Math.max(0, toFiniteNumber(conditionState && conditionState.fuelCharge, 0));
+}
+function getShipFuelTypeID(shipItem) {
+    const conditionState = shipItem && shipItem.conditionState && typeof shipItem.conditionState === "object"
+        ? shipItem.conditionState
+        : null;
+    const fuelTypeID = toInt(conditionState && conditionState.fuelTypeID, 0);
+    return fuelTypeID > 0 ? fuelTypeID : 0;
+}
+function getFuelEfficiency(fuelTypeID, deps = {}) {
+    const resolveDogmaAttributes = typeof deps.getTypeDogmaAttributes === "function"
+        ? deps.getTypeDogmaAttributes
+        : getTypeDogmaAttributes;
+    const attributes = resolveDogmaAttributes(toInt(fuelTypeID, 0));
+    return Math.max(0, toFiniteNumber(attributes && (attributes[ATTRIBUTE_FUEL_EFFICIENCY] ??
+        attributes[String(ATTRIBUTE_FUEL_EFFICIENCY)]), 0));
+}
+/**
+ * Advance Frontier's fuel-driven capacitor recharge for one tick.
+ *
+ * One MW of unused power grid supplies one GJ/s of capacitor recharge. Each
+ * unit of loaded fuel supplies `fuelEfficiency` GJ. The returned state is
+ * deliberately pure so both Creation and regular fuel-tank ships use exactly
+ * the same accounting. `capacitorRechargeRate` is retained in the input for
+ * diagnostics/legacy callers, but Frontier's rate is the free grid headroom.
+ */
+function calculateFueledCapacitorRecharge({ currentCapacitorAmount, capacitorCapacity, capacitorRechargeRate, powerOutput, powerLoad, fuelCharge, fuelTypeID, deltaSeconds, }, deps = {}) {
+    const capacity = Math.max(0, toFiniteNumber(capacitorCapacity, 0));
+    const currentAmount = Math.min(capacity, Math.max(0, toFiniteNumber(currentCapacitorAmount, 0)));
+    const loadedFuel = Math.max(0, toFiniteNumber(fuelCharge, 0));
+    const numericFuelTypeID = toInt(fuelTypeID, 0);
+    const fuelEfficiency = numericFuelTypeID > 0
+        ? getFuelEfficiency(numericFuelTypeID, deps)
+        : 0;
+    const powerHeadroom = Math.max(0, toFiniteNumber(powerOutput, 0) - toFiniteNumber(powerLoad, 0));
+    const authoredRechargeRate = Math.max(0, toFiniteNumber(capacitorRechargeRate, 0));
+    const effectiveRechargeRate = powerHeadroom;
+    const missingEnergy = Math.max(0, capacity - currentAmount);
+    const requestedEnergy = Math.min(missingEnergy, effectiveRechargeRate * Math.max(0, toFiniteNumber(deltaSeconds, 0)));
+    const rechargedEnergy = fuelEfficiency > 0 && loadedFuel > 0
+        ? Math.min(requestedEnergy, loadedFuel * fuelEfficiency)
+        : 0;
+    const consumedFuel = fuelEfficiency > 0
+        ? rechargedEnergy / fuelEfficiency
+        : 0;
+    const rawNextFuelCharge = Math.max(0, loadedFuel - consumedFuel);
+    const nextFuelCharge = rawNextFuelCharge <= FUEL_EPSILON
+        ? 0
+        : rawNextFuelCharge;
+    const rawNextCapacitorAmount = Math.min(capacity, currentAmount + rechargedEnergy);
+    const nextCapacitorAmount = capacity - rawNextCapacitorAmount <= FUEL_EPSILON
+        ? capacity
+        : rawNextCapacitorAmount;
+    return {
+        currentCapacitorAmount: currentAmount,
+        nextCapacitorAmount,
+        missingEnergy,
+        powerHeadroom,
+        authoredRechargeRate,
+        effectiveRechargeRate,
+        fuelEfficiency,
+        consumedFuel,
+        rechargedEnergy,
+        previousFuelCharge: loadedFuel,
+        nextFuelCharge,
+    };
 }
 function normalizeRequestedFuelItemIDs(fuelItems) {
     if (!Array.isArray(fuelItems)) {
@@ -232,6 +300,16 @@ function loadFuelIntoShipTank({ characterID, shipID, fuelTypeID, quantity, fuelI
         return { success: false, errorMsg: "FUEL_TANK_MISSING" };
     }
     const previousFuelCharge = Math.min(getShipFuelCharge(shipItem), tankCapacity);
+    const previousFuelTypeID = getShipFuelTypeID(shipItem);
+    if (previousFuelCharge > FUEL_EPSILON &&
+        previousFuelTypeID > 0 &&
+        previousFuelTypeID !== numericTypeID) {
+        return {
+            success: false,
+            errorMsg: "FUEL_TYPE_MISMATCH",
+            params: { previousFuelTypeID },
+        };
+    }
     const remainingCapacity = Math.floor(tankCapacity - previousFuelCharge);
     if (requestedQuantity > remainingCapacity) {
         return {
@@ -295,6 +373,7 @@ function loadFuelIntoShipTank({ characterID, shipID, fuelTypeID, quantity, fuelI
         conditionState: {
             ...(currentItem.conditionState || {}),
             fuelCharge: nextFuelCharge,
+            fuelTypeID: numericTypeID,
         },
     }));
     if (!updateResult || updateResult.success !== true) {
@@ -316,6 +395,7 @@ function loadFuelIntoShipTank({ characterID, shipID, fuelTypeID, quantity, fuelI
             loadedQuantity: requestedQuantity,
             previousFuelCharge,
             nextFuelCharge,
+            fuelTypeID: numericTypeID,
             shipItem: updateResult.data,
             changes,
         },
@@ -327,8 +407,11 @@ module.exports = {
     ATTRIBUTE_FUEL_EFFICIENCY,
     ATTRIBUTE_FUEL_RATE,
     FUEL_GROUP_IDS,
+    calculateFueledCapacitorRecharge,
     collectFuelSourceStacks,
+    getFuelEfficiency,
     getShipFuelCharge,
+    getShipFuelTypeID,
     isSupportedFuelType,
     loadFuelIntoShipTank,
     normalizeRequestedFuelItemIDs,

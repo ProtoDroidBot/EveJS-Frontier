@@ -376,14 +376,27 @@ function sendEjectHandoffDestiny(session, scene, expectedGeneration, abandonedSh
     const result = submitSameSceneShipHandoffPlan(session, scene, expectedGeneration, plan, "DESTINY_EGO_VISIBILITY_DELIVERY_FAILED");
     return result && result.stamp;
 }
-function applyTqDockingTransitionSessionChangeShape(plan) {
+function applyTqDockingTransitionSessionChangeShape(plan, options = {}) {
     if (!plan || !plan.sessionChanges) {
         return plan;
     }
     const sessionChanges = plan.sessionChanges;
-    delete sessionChanges.stationid2;
+    if (options.preserveStationID2ForSpaceScene !== true) {
+        delete sessionChanges.stationid2;
+    }
     const orderedChanges = {};
-    for (const key of ["stationid", "structureid", "locationid", "solarsystemid"]) {
+    // The client uses stationid2 as its stable docked-location identity.  If an
+    // undock only clears stationid, the session is logically in space but the
+    // view-state service can retain the hangar scene and never bind Beyonce.
+    // Keep both station fields in the same transition so leaving a station
+    // automatically activates the space scene.
+    for (const key of [
+        "stationid",
+        "stationid2",
+        "structureid",
+        "locationid",
+        "solarsystemid",
+    ]) {
         if (Object.prototype.hasOwnProperty.call(sessionChanges, key)) {
             orderedChanges[key] = sessionChanges[key];
         }
@@ -395,6 +408,11 @@ function applyTqDockingTransitionSessionChangeShape(plan) {
     }
     plan.sessionChanges = orderedChanges;
     return plan;
+}
+function applyUndockSessionChangeShape(plan) {
+    return applyTqDockingTransitionSessionChangeShape(plan, {
+        preserveStationID2ForSpaceScene: true,
+    });
 }
 function sendUndockInvulnerabilityUpdated(session, shipID) {
     if (!session || typeof session.sendNotification !== "function") {
@@ -1667,7 +1685,7 @@ function undockSession(session, options = {}) {
             inventoryBootstrapPending: false,
             hydrationProfile: "undock",
         });
-        flushCharacterSessionNotificationPlan(session, applyTqDockingTransitionSessionChangeShape(applyResult.notificationPlan));
+        flushCharacterSessionNotificationPlan(session, applyUndockSessionChangeShape(applyResult.notificationPlan));
         queuePendingSessionEffects(session, {
             previousLocalChannelID,
         });
@@ -3391,6 +3409,7 @@ module.exports = {
     repairSameSceneSessionViewState,
 };
 module.exports._testing = {
+    applyUndockSessionChangeShapeForTesting: applyUndockSessionChangeShape,
     buildBoundResultForTesting: buildBoundResult,
     buildGateSpawnState,
     completeStargateJumpForTesting: completeStargateJump,

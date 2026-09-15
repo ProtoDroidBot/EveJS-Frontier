@@ -6986,10 +6986,10 @@ class DogmaService extends BaseService {
         if (session) {
             session._lastLoadFuelRequest = { key: requestKey, atMs: nowMs };
         }
-        const { previousFuelCharge, nextFuelCharge, changes } = loadResult.data;
+        const { previousFuelCharge, nextFuelCharge, fuelTypeID: loadedFuelTypeID, changes, } = loadResult.data;
         // Keep a live space entity's condition copy coherent so later
         // entity-side persists cannot roll the tank level back.
-        this._syncSpaceEntityFuelCharge(session, shipID, nextFuelCharge);
+        this._syncSpaceEntityFuelCharge(session, shipID, nextFuelCharge, loadedFuelTypeID);
         this._syncInventoryChanges(session, changes);
         const when = this._sessionFileTime(session);
         this._notifyModuleAttributeChanges(session, [[
@@ -7017,6 +7017,8 @@ class DogmaService extends BaseService {
                 return "The fuel amount must be a positive number of units.";
             case "FUEL_TYPE_UNSUPPORTED":
                 return "That item cannot be loaded as fuel.";
+            case "FUEL_TYPE_MISMATCH":
+                return "The fuel tank must be empty before loading a different fuel type.";
             case "FUEL_TANK_MISSING":
                 return "This ship has no fuel tank to load fuel into.";
             case "FUEL_TANK_OVERFLOW": {
@@ -7035,7 +7037,7 @@ class DogmaService extends BaseService {
                 return "The fuel could not be loaded.";
         }
     }
-    _syncSpaceEntityFuelCharge(session, shipID, nextFuelCharge) {
+    _syncSpaceEntityFuelCharge(session, shipID, nextFuelCharge, fuelTypeID = 0) {
         if (!spaceRuntime || typeof spaceRuntime.getEntity !== "function") {
             return false;
         }
@@ -7049,10 +7051,11 @@ class DogmaService extends BaseService {
         if (!entity || !entity.conditionState) {
             return false;
         }
-        entity.conditionState = {
+        entity.conditionState = normalizeShipConditionState({
             ...entity.conditionState,
             fuelCharge: Math.max(0, Number(nextFuelCharge) || 0),
-        };
+            fuelTypeID: Number(fuelTypeID) || 0,
+        });
         return true;
     }
     Handle_GetAllInfo(args, session) {

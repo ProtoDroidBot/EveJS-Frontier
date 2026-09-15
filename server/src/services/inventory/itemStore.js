@@ -891,7 +891,7 @@ function normalizeFighterAbilityStates(rawValue) {
 function normalizeShipConditionState(rawValue) {
     const source = rawValue && typeof rawValue === "object" ? rawValue : DEFAULT_SHIP_CONDITION_STATE;
     const conditionNumber = (value, fallback) => value === undefined || value === null ? fallback : toFiniteNumber(value, fallback);
-    return {
+    const normalizedState = {
         damage: conditionNumber(source.damage, DEFAULT_SHIP_CONDITION_STATE.damage),
         charge: conditionNumber(source.charge, DEFAULT_SHIP_CONDITION_STATE.charge),
         armorDamage: conditionNumber(source.armorDamage, DEFAULT_SHIP_CONDITION_STATE.armorDamage),
@@ -899,6 +899,13 @@ function normalizeShipConditionState(rawValue) {
         incapacitated: Boolean(source.incapacitated ?? DEFAULT_SHIP_CONDITION_STATE.incapacitated),
         fuelCharge: Math.max(0, conditionNumber(source.fuelCharge, DEFAULT_SHIP_CONDITION_STATE.fuelCharge)),
     };
+    const fuelTypeID = toNumber(source.fuelTypeID, 0);
+    if (normalizedState.fuelCharge > 0 &&
+        Number.isSafeInteger(fuelTypeID) &&
+        fuelTypeID > 0) {
+        normalizedState.fuelTypeID = fuelTypeID;
+    }
+    return normalizedState;
 }
 function normalizeModuleState(rawValue) {
     if (rawValue === undefined) {

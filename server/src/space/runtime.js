@@ -41,6 +41,7 @@ const { isFrontierProfile: isFrontierStartupProfile, resolveDefaultStartupSystem
 const { updateShipItem, updateInventoryItem, removeInventoryItem, listContainerItems, listSystemSpaceItems, findItemById, findShipItemById, getShipConditionState, normalizeShipConditionState, getItemMetadata, pruneExpiredSpaceItems, } = require(path.join(__dirname, "../services/inventory/itemStore"));
 const { resolveRuntimeWreckRadius, resolveRuntimeWreckStructureFallbackHP, } = require(path.join(__dirname, "../services/inventory/wreckRadius"));
 const { resolveItemByTypeID, } = require(path.join(__dirname, "../services/inventory/itemTypeRegistry"));
+const { ATTRIBUTE_FUEL_CAPACITY, ATTRIBUTE_FUEL_CHARGE, calculateFueledCapacitorRecharge, getShipFuelCharge, getShipFuelTypeID, resolveShipFuelTank, } = require(path.join(__dirname, "../services/frontier/fuelTankRuntime"));
 const { resolveStargatePhysicalRadius, } = require(path.join(__dirname, "./stargateRadius"));
 const { getStargateVisualOverrideField, } = require(path.join(__dirname, "./stargateVisualOverrides"));
 const { buildDunRotationFromNormalizedDirection: buildStargateDunRotationFromDirection, getStargateSystemForwardDirection, } = require(path.join(__dirname, "./stargateOrientation"));
@@ -6645,6 +6646,27 @@ function getEntityCapacitorAmount(entity) {
     return (toFiniteNumber(entity && entity.capacitorCapacity, 0) *
         getEntityCapacitorRatio(entity));
 }
+function getEntityPassiveAttribute(entity, attributeID, fallback = 0) {
+    const attributes = entity &&
+        entity.passiveDerivedState &&
+        entity.passiveDerivedState.attributes &&
+        typeof entity.passiveDerivedState.attributes === "object"
+        ? entity.passiveDerivedState.attributes
+        : null;
+    return toFiniteNumber(attributes && (attributes[attributeID] ?? attributes[String(attributeID)]), fallback);
+}
+function setEntityFuelState(entity, nextFuelCharge, fuelTypeID) {
+    if (!entity || entity.kind !== "ship") {
+        return 0;
+    }
+    const normalizedFuelCharge = Math.max(0, toFiniteNumber(nextFuelCharge, 0));
+    entity.conditionState = normalizeShipConditionState({
+        ...(entity.conditionState || {}),
+        fuelCharge: normalizedFuelCharge,
+        fuelTypeID: normalizedFuelCharge > 0 ? toInt(fuelTypeID, 0) : 0,
+    });
+    return normalizedFuelCharge;
+}
 function persistEntityCapacitorRatio(entity) {
     if (!entity || entity.kind !== "ship" || entity.persistSpaceState !== true) {
         return false;
@@ -6654,13 +6676,25 @@ function persistEntityCapacitorRatio(entity) {
         return false;
     }
     const nextRatio = getEntityCapacitorRatio(entity);
-    const result = updateShipItem(entity.itemID, (currentItem) => ({
-        ...currentItem,
-        conditionState: {
+    const fuelCharge = getShipFuelCharge(entity);
+    const fuelTypeID = getShipFuelTypeID(entity);
+    const result = updateShipItem(entity.itemID, (currentItem) => {
+        const conditionState = {
             ...(currentItem.conditionState || {}),
             charge: nextRatio,
-        },
-    }));
+            fuelCharge,
+        };
+        if (fuelCharge > 0 && fuelTypeID > 0) {
+            conditionState.fuelTypeID = fuelTypeID;
+        }
+        else {
+            delete conditionState.fuelTypeID;
+        }
+        return {
+            ...currentItem,
+            conditionState,
+        };
+    });
     return Boolean(result && result.success);
 }
 function consumeEntityCapacitor(entity, amount) {
@@ -9263,6 +9297,8 @@ function resolveBootstrapPreviousSimTimeMs(session, fallbackMs = null) {
 // client's HUD gauge updates in real-time.  Attribute 18 ("charge") is the
 // current capacitor energy in GJ.
 const ATTRIBUTE_CHARGE = 18;
+const ATTRIBUTE_POWER_OUTPUT = getAttributeIDByNames("powerOutput") || 11;
+const ATTRIBUTE_POWER_LOAD = getAttributeIDByNames("powerLoad") || 15;
 const ATTRIBUTE_ITEM_DAMAGE = 3;
 const ATTRIBUTE_SHIP_DAMAGE = getAttributeIDByNames("damage") || 3;
 const ATTRIBUTE_SHIP_SHIELD_CHARGE = getAttributeIDByNames("shieldCharge") || 264;
@@ -9553,6 +9589,137 @@ function notifyCapacitorChangeToSession(session, entity, whenMs = null, previous
             : chargeAmount;
     notifyAttributeChanges(session, [buildAttributeChange(session, shipID, ATTRIBUTE_CHARGE, chargeAmount, normalizedPreviousChargeAmount, when)]);
     entity._lastCapNotifiedAmount = chargeAmount;
+}
+function notifyFuelChargeChangeToSession(session, entity, whenMs = null, previousFuelCharge = null) {
+    if (!session ||
+        typeof session.sendNotification !== "function" ||
+        !entity) {
+        return;
+    }
+    const fuelCharge = Number(getShipFuelCharge(entity).toFixed(9));
+    const shipID = toInt(entity.itemID, 0);
+    const when = whenMs != null
+        ? resolveSessionNotificationFileTime(session, whenMs)
+        : session && session._space && session._space.simFileTime
+            ? resolveSessionNotificationFileTime(session)
+            : currentFileTime();
+    const hasExplicitPreviousFuelCharge = previousFuelCharge !== null &&
+        previousFuelCharge !== undefined &&
+        Number.isFinite(Number(previousFuelCharge));
+    const normalizedPreviousFuelCharge = hasExplicitPreviousFuelCharge
+        ? Number(Number(previousFuelCharge).toFixed(9))
+        : Number.isFinite(Number(entity._lastFuelNotifiedAmount))
+            ? Number(Number(entity._lastFuelNotifiedAmount).toFixed(9))
+            : fuelCharge;
+    notifyAttributeChanges(session, [buildAttributeChange(session, shipID, ATTRIBUTE_FUEL_CHARGE, fuelCharge, normalizedPreviousFuelCharge, when)]);
+    entity._lastFuelNotifiedAmount = fuelCharge;
+}
+function advanceEntityCapacitorRecharge(entity, deltaSeconds, nowMs = Date.now(), deps = {}) {
+    const capacitorCapacity = Math.max(0, toFiniteNumber(entity && entity.capacitorCapacity, 0));
+    const capacitorRechargeRate = Math.max(0, toFiniteNumber(entity && entity.capacitorRechargeRate, 0));
+    if (!entity ||
+        entity.kind !== "ship" ||
+        capacitorCapacity <= 0) {
+        return { mode: "none", changed: false, rechargedEnergy: 0, consumedFuel: 0 };
+    }
+    const capRatio = getEntityCapacitorRatio(entity);
+    if (capRatio >= 1) {
+        return { mode: "none", changed: false, rechargedEnergy: 0, consumedFuel: 0 };
+    }
+    const previousChargeAmount = capacitorCapacity * capRatio;
+    const runtimeShipItem = buildRuntimeShipItemFromEntity(entity);
+    const derivedFuelCapacity = Math.max(0, getEntityPassiveAttribute(entity, ATTRIBUTE_FUEL_CAPACITY, 0));
+    let fuelTank = resolveShipFuelTank(runtimeShipItem, derivedFuelCapacity, deps);
+    // Regular ships author their tank directly on the hull. Retain that
+    // capacity if a partially hydrated runtime entity lacks the derived copy.
+    if (!fuelTank.creationType &&
+        fuelTank.baseCapacity > 0 &&
+        fuelTank.capacity <= 0) {
+        fuelTank = resolveShipFuelTank(runtimeShipItem, fuelTank.baseCapacity, deps);
+    }
+    const usesFrontierFuelRecharge = fuelTank.creationType || fuelTank.baseCapacity > 0;
+    if (usesFrontierFuelRecharge) {
+        if (!fuelTank.supported) {
+            return {
+                mode: "frontier-fueled",
+                changed: false,
+                rechargedEnergy: 0,
+                consumedFuel: 0,
+                fuelTank,
+            };
+        }
+        const previousFuelCharge = getShipFuelCharge(entity);
+        const fuelTypeID = getShipFuelTypeID(entity);
+        const passiveState = entity.passiveDerivedState || {};
+        const recharge = calculateFueledCapacitorRecharge({
+            currentCapacitorAmount: previousChargeAmount,
+            capacitorCapacity,
+            capacitorRechargeRate,
+            powerOutput: toFiniteNumber(passiveState.powerOutput, getEntityPassiveAttribute(entity, ATTRIBUTE_POWER_OUTPUT, 0)),
+            powerLoad: toFiniteNumber(passiveState.powerLoad, getEntityPassiveAttribute(entity, ATTRIBUTE_POWER_LOAD, 0)),
+            fuelCharge: previousFuelCharge,
+            fuelTypeID,
+            deltaSeconds,
+        }, deps);
+        if (recharge.rechargedEnergy <= 0) {
+            return {
+                mode: "frontier-fueled",
+                changed: false,
+                fuelTank,
+                ...recharge,
+            };
+        }
+        setEntityCapacitorRatio(entity, recharge.nextCapacitorAmount / capacitorCapacity);
+        setEntityFuelState(entity, recharge.nextFuelCharge, fuelTypeID);
+        const normalizedNowMs = toFiniteNumber(nowMs, Date.now());
+        const lastCapNotify = toFiniteNumber(entity._lastCapNotifyAtMs, 0);
+        const reachedTerminalState = recharge.nextFuelCharge <= 0 ||
+            recharge.nextCapacitorAmount >= capacitorCapacity;
+        if (normalizedNowMs - lastCapNotify >= 500 || reachedTerminalState) {
+            persistEntityCapacitorRatio(entity);
+            if (entity.session && isReadyForDestiny(entity.session)) {
+                notifyCapacitorChangeToSession(entity.session, entity, normalizedNowMs, previousChargeAmount);
+                notifyFuelChargeChangeToSession(entity.session, entity, normalizedNowMs, previousFuelCharge);
+            }
+            entity._lastCapNotifyAtMs = normalizedNowMs;
+        }
+        return {
+            mode: "frontier-fueled",
+            changed: true,
+            fuelTank,
+            ...recharge,
+        };
+    }
+    // Tankless legacy ships retain the standard nonlinear EVE recharge curve.
+    if (capacitorRechargeRate <= 0) {
+        return { mode: "legacy", changed: false, rechargedEnergy: 0, consumedFuel: 0 };
+    }
+    const tauSeconds = capacitorRechargeRate / 1000;
+    const rechargeModel = (resolveItemByTypeID(entity.typeID) || {}).capacitorRechargeModel;
+    const rechargedRatio = rechargeModel === "frontier-linear"
+        ? Math.min(1, capRatio + (capacitorRechargeRate * Math.max(0, toFiniteNumber(deltaSeconds, 0)) /
+            capacitorCapacity))
+        : advancePassiveRechargeRatio(capRatio, deltaSeconds, tauSeconds);
+    const newRatio = settlePassiveRechargeRatio(rechargedRatio, capacitorCapacity);
+    if (newRatio === capRatio) {
+        return { mode: "legacy", changed: false, rechargedEnergy: 0, consumedFuel: 0 };
+    }
+    setEntityCapacitorRatio(entity, newRatio);
+    const normalizedNowMs = toFiniteNumber(nowMs, Date.now());
+    const lastCapNotify = toFiniteNumber(entity._lastCapNotifyAtMs, 0);
+    if (normalizedNowMs - lastCapNotify >= 500 || newRatio >= 1) {
+        persistEntityCapacitorRatio(entity);
+        if (entity.session && isReadyForDestiny(entity.session)) {
+            notifyCapacitorChangeToSession(entity.session, entity, normalizedNowMs, previousChargeAmount);
+        }
+        entity._lastCapNotifyAtMs = normalizedNowMs;
+    }
+    return {
+        mode: "legacy",
+        changed: true,
+        rechargedEnergy: capacitorCapacity * (newRatio - capRatio),
+        consumedFuel: 0,
+    };
 }
 function ensureChargeTupleDogmaPrimeForSession(session, shipID, moduleFlagID, chargeItem, options = {}) {
     const numericShipID = toInt(shipID, 0);
@@ -28381,47 +28548,11 @@ class SolarSystemScene {
                 // -----------------------------------------------------------------
                 advanceEntityRackHeat(this, entity, now);
                 // -----------------------------------------------------------------
-                // CCP parity: Non-linear capacitor recharge.
-                //
-                // Formula (instantaneous rate):
-                //   dC/dt = (10 * Cmax / tau) * ( sqrt(C/Cmax) - C/Cmax )
-                //
-                // Where Cmax = capacitorCapacity (GJ), tau = rechargeRate (ms → s),
-                // C = current capacitor level.  Peak recharge occurs at exactly 25%
-                // capacitor.  This matches CCP's Dogma engine as verified by
-                // community tools (Pyfa, EFT) and the EVE University wiki.
-                //
-                // Notifications are throttled to ~500 ms to avoid flooding the
-                // client (which itself only polls at 500 ms intervals).
+                // Capacitor recharge. Frontier fuel-tank ships burn their loaded fuel
+                // and are capped by unused power-grid headroom; tankless legacy ships
+                // retain the standard nonlinear EVE recharge curve.
                 // -----------------------------------------------------------------
-                if (entity.kind === "ship" &&
-                    toFiniteNumber(entity.capacitorCapacity, 0) > 0 &&
-                    toFiniteNumber(entity.capacitorRechargeRate, 0) > 0) {
-                    const capRatio = getEntityCapacitorRatio(entity);
-                    if (capRatio < 1) {
-                        const Cmax = entity.capacitorCapacity;
-                        const tauSeconds = entity.capacitorRechargeRate / 1000;
-                        const previousChargeAmount = Cmax * capRatio;
-                        // Imported EVE recharge durations were converted to units per second.
-                        const rechargeModel = (resolveItemByTypeID(entity.typeID) || {}).capacitorRechargeModel;
-                        const rechargedRatio = rechargeModel === "frontier-linear"
-                            ? Math.min(1, capRatio + (entity.capacitorRechargeRate * Math.max(0, deltaSeconds) / Cmax))
-                            : advancePassiveRechargeRatio(capRatio, deltaSeconds, tauSeconds);
-                        const newRatio = settlePassiveRechargeRatio(rechargedRatio, Cmax);
-                        if (newRatio !== capRatio) {
-                            setEntityCapacitorRatio(entity, newRatio);
-                            // Throttle persistence and client notifications to ~500 ms.
-                            const lastCapNotify = toFiniteNumber(entity._lastCapNotifyAtMs, 0);
-                            if (now - lastCapNotify >= 500) {
-                                persistEntityCapacitorRatio(entity);
-                                if (entity.session && isReadyForDestiny(entity.session)) {
-                                    notifyCapacitorChangeToSession(entity.session, entity, now, previousChargeAmount);
-                                }
-                                entity._lastCapNotifyAtMs = now;
-                            }
-                        }
-                    }
-                }
+                advanceEntityCapacitorRecharge(entity, deltaSeconds, now);
                 // -----------------------------------------------------------------
                 // Server-authoritative passive shield recharge.
                 //
@@ -31491,8 +31622,10 @@ runtimeExports._testing = {
     buildEntityDerivedAttributeSnapshotForTesting: buildEntityDerivedAttributeSnapshot,
     notifyShipDerivedAttributesToSessionForTesting: notifyShipDerivedAttributesToSession,
     computeTargetLockDurationMsForTesting: computeTargetLockDurationMs,
+    advanceEntityCapacitorRechargeForTesting: advanceEntityCapacitorRecharge,
     advancePassiveRechargeRatioForTesting: advancePassiveRechargeRatio,
     notifyCapacitorChangeToSessionForTesting: notifyCapacitorChangeToSession,
+    notifyFuelChargeChangeToSessionForTesting: notifyFuelChargeChangeToSession,
     notifyShipHealthAttributesToSessionForTesting: notifyShipHealthAttributesToSession,
     notifyModuleEffectStateForTesting: notifyModuleEffectState,
     notifyGenericModuleEffectStateForTesting: notifyGenericModuleEffectState,
