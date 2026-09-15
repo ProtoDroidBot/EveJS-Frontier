@@ -11,7 +11,7 @@ function fixture(overrides: Record<string, any> = {}) {
   const walletAddress = key.toSuiAddress();
   const session = { characterID: 140000001 };
   const grid = { networkNodeID: 50, radiusMeters: 100000, maxEnergy: 1000, energyUsed: 100,
-    energyAvailable: 900, connectedAssemblies: [], nearbyAssemblies: [] };
+    energyAvailable: 900, connectedAssemblies: [], nearbyAssemblies: [], radarAssemblies: [] };
   const state: any = { time: 1000, sessions: [session], walletAddress, calls: [], error: null };
   const authDependencies = {
     now: () => state.time, getSessions: () => state.sessions,
@@ -48,6 +48,7 @@ test("grid wallet authorization is scoped, signed, and invalidated by logout or 
   const { api, key, walletAddress, authDependencies, state, login } = fixture();
   const challenge: any = await api.challenge({ walletAddress });
   assert.match(challenge.data.message, /Smart Assembly energy grid/);
+  assert.match(challenge.data.message, /radar/);
   assert.match(challenge.data.message, /connecting or disconnecting/);
   const stranger = Ed25519Keypair.generate();
   const invalidSignature = (await stranger.signTransaction(await Transaction.from(challenge.data.transactionData).build())).signature;

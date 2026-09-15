@@ -16,6 +16,7 @@ function fixture() {
   const state: any = {
     time: 1000, sessions: [session], wallet: address, inRange: true,
     reads: [], prepared: [], executed: [], notifications: [], commits: 0,
+    listenerReads: [],
     deployment: { network: "localnet", chainId: "abcd", packageId: "0x1", objectRegistryId: "0x2", assemblyObjectID: "0x3" },
   };
   const transactions = new Map<string, any>();
@@ -58,6 +59,14 @@ function fixture() {
     getDeployment: () => state.deployment,
     resolveAccess: () => ({ authorized: true, activeShipID: 77, solarSystemID: 33, inRange: state.inRange }),
     readCargo: () => ({ shipID: 77, capacity: 500, usedVolume: 3, items: [] }),
+    readListener: (_session: any, request: any) => {
+      state.listenerReads.push(request);
+      return { success: true, data: {
+        ...request, targetName: "Listening target", capacity: 100, usedVolume: 2,
+        requested: request.requested, matched: request.requested.map((item: any) => ({ ...item, available: item.quantity })),
+        items: [], satisfied: true, observedAtMs: state.time,
+      } };
+    },
     readChain: async () => ({ status: "synced" }), flushChain: async () => ({ status: "synced" }),
     notify: (...args: any[]) => state.notifications.push(args), verifySignature: verifyStorageAuthorization,
   };
@@ -143,6 +152,24 @@ test("invalid identifiers and fractional or unbounded quantities are rejected be
     assert.equal((await api.prepare(authorization, 50, { direction: "deposit", stacks: [{ itemID: 11, quantity }] }) as any).errorMsg, "INVALID_QUANTITY");
   }
   assert.equal(state.prepared.length, 0);
+});
+
+test("inventory listeners use the authenticated character session and reject stale authorization", async () => {
+  const { api, login, state, dependencies } = fixture();
+  const authorization = await login();
+  const request = { targetKind: "cargo", targetID: 77, inventory: "cargo",
+    requested: [{ typeID: 12, quantity: 5 }] };
+  const result: any = await api.listener(authorization, request);
+  assert.equal(result.success, true);
+  assert.equal(result.data.satisfied, true);
+  assert.deepEqual(state.listenerReads, [request]);
+
+  dependencies.readListener = async () => {
+    await Promise.resolve();
+    state.sessions = [];
+    return { success: true, data: result.data };
+  };
+  assert.equal((await api.listener(authorization, request) as any).errorMsg, "CHARACTER_NOT_ONLINE");
 });
 
 test("execute verifies the exact operation and storage binding then rechecks live range", async () => {
@@ -247,6 +274,12 @@ test("mounted HTTP routes reject untrusted origins and require bearer auth", asy
     assert.equal(unauthenticated.status, 401);
     assert.equal(unauthenticated.headers.get("cache-control"), "no-store");
     assert.equal((await unauthenticated.json() as any).errorMsg, "AUTH_REQUIRED");
+    const listener = await fetch(`${base}/listener`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetKind: "cargo", targetID: 77, inventory: "cargo",
+        requested: [{ typeID: 12, quantity: 1 }] }),
+    });
+    assert.equal(listener.status, 401);
   } finally { server.close(); await once(server, "close"); }
 });
 

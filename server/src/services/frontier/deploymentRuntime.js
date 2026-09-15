@@ -18,6 +18,10 @@ const NETWORK_NODE_ASSEMBLY_TYPE_ID = 88_092;
 const PORTABLE_ASSEMBLY_TYPE_IDS = new Set([87_160, 87_161, 87_162, 87_566]);
 const SLINGSHOT_GATE_TYPE_IDS = new Set([95_627, 95_677]);
 const ITEM_FLAG_CARGO_HOLD = 5;
+const CARGO_CONTAINER_TYPE_ID = 23;
+const CARGO_CONTAINER_CAPACITY_FALLBACK = 27_500;
+const DISMANTLE_CARGO_DISTANCE_METERS = 275;
+const DISMANTLE_CARGO_SPACING_METERS = 175;
 const ASSEMBLY_TRANSITION_TTL_MS = 2 * 60 * 1000;
 const SUI_ZERO_DIGEST = "11111111111111111111111111111111";
 const METERS_PER_LIGHT_YEAR = 9_460_730_472_580_800;
@@ -109,6 +113,43 @@ function vectorDistance(left, right) {
         return Number.POSITIVE_INFINITY;
     }
     return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+function normalizeDirection(value) {
+    const direction = normalizeWorldVector(value) || { x: 1, y: 0, z: 0 };
+    const length = Math.hypot(direction.x, direction.y, direction.z);
+    return length > 0
+        ? { x: direction.x / length, y: direction.y / length, z: direction.z / length }
+        : { x: 1, y: 0, z: 0 };
+}
+function getDismantleContainerSpawnState(item, containerIndex) {
+    const source = normalizeWorldVector(item && item.spaceState && item.spaceState.position) ||
+        { x: 0, y: 0, z: 0 };
+    const direction = normalizeDirection(item && item.spaceState && item.spaceState.direction);
+    const perpendicular = normalizeDirection({
+        x: -direction.y,
+        y: direction.x,
+        z: 0,
+    });
+    const row = Math.floor(containerIndex / 2);
+    const side = containerIndex % 2 === 0 ? 1 : -1;
+    const forwardDistance = DISMANTLE_CARGO_DISTANCE_METERS +
+        row * DISMANTLE_CARGO_SPACING_METERS;
+    const lateralDistance = containerIndex === 0
+        ? 0
+        : side * DISMANTLE_CARGO_SPACING_METERS * 0.5;
+    const position = {
+        x: source.x + direction.x * forwardDistance + perpendicular.x * lateralDistance,
+        y: source.y + direction.y * forwardDistance + perpendicular.y * lateralDistance,
+        z: source.z + direction.z * forwardDistance + perpendicular.z * lateralDistance,
+    };
+    return {
+        direction,
+        mode: "STOP",
+        position,
+        speedFraction: 0,
+        targetPoint: position,
+        velocity: { x: 0, y: 0, z: 0 },
+    };
 }
 function addWorldVectors(left, right) {
     const a = normalizeWorldVector(left);
@@ -1885,41 +1926,251 @@ function completeConstruction(itemID, options = {}) {
         data: { item: updateResult.data, presentation: spawnResult },
     };
 }
-function cancelConstruction(session, itemID) {
-    const validation = validateOwnedConstructionItem(session, itemID);
-    if (validation.success === false) {
-        return validation;
+function getDismantleGrantUnitVolume(itemType) {
+    const metadata = itemStore.getItemMetadata(itemType && itemType.typeID || itemType);
+    const categoryID = toInt(metadata && metadata.categoryID, 0);
+    return categoryID === 6 || categoryID === 9
+        ? Math.max(0, toFiniteNumber(metadata && metadata.volume, 0))
+        : Math.max(0, itemStore.getPackagedVolumeForType(metadata.typeID, metadata));
+}
+function buildDismantleCargoPlan(item, state) {
+    const containerType = itemStore.getItemMetadata(CARGO_CONTAINER_TYPE_ID);
+    if (!containerType || toInt(containerType.typeID, 0) !== CARGO_CONTAINER_TYPE_ID) {
+        return { success: false, errorMsg: "CARGO_CONTAINER_TYPE_NOT_FOUND" };
     }
-    const { item, state } = validation;
+    const capacity = Math.max(0, toFiniteNumber(containerType.capacity, CARGO_CONTAINER_CAPACITY_FALLBACK)) || CARGO_CONTAINER_CAPACITY_FALLBACK;
+    const entriesByOwner = new Map();
+    const addEntry = (ownerID, entry) => {
+        const numericOwnerID = toInt(ownerID, 0);
+        if (numericOwnerID <= 0)
+            return false;
+        if (!entriesByOwner.has(numericOwnerID))
+            entriesByOwner.set(numericOwnerID, []);
+        entriesByOwner.get(numericOwnerID).push(entry);
+        return true;
+    };
+    const existingItems = itemStore.listContainerItems(null, item.itemID, null)
+        .filter((child) => toInt(child && child.locationID, 0) === toInt(item.itemID, 0))
+        .sort((left, right) => (toInt(left && left.ownerID, 0) - toInt(right && right.ownerID, 0) ||
+        toInt(left && left.itemID, 0) - toInt(right && right.itemID, 0)));
+    for (const child of existingItems) {
+        const quantity = getItemQuantity(child);
+        if (quantity <= 0 ||
+            !addEntry(child.ownerID, {
+                itemID: toInt(child.itemID, 0),
+                kind: "move",
+                quantity,
+                singleton: toInt(child.singleton, 0) !== 0,
+                typeID: toInt(child.typeID, 0),
+                unitVolume: Math.max(0, itemStore.getInventoryItemUnitVolume(child)),
+            })) {
+            return { success: false, errorMsg: "INVALID_DISMANTLE_CONTENTS" };
+        }
+    }
+    // A completed assembly consumed its authored construction cost. Recreate
+    // exactly that cost; an unfinished site's deposited rows are already above
+    // and only those actually deposited are returned.
     if (state.assemblyStatus !== ASSEMBLY_STATUS_UNDER_CONSTRUCTION) {
+        for (const [rawTypeID, rawQuantity] of Object.entries(state.constructionCost)) {
+            const typeID = toInt(rawTypeID, 0);
+            const quantity = toInt(rawQuantity, 0);
+            const itemType = itemStore.getItemMetadata(typeID);
+            if (typeID <= 0 ||
+                quantity <= 0 ||
+                !itemType ||
+                toInt(itemType.typeID, 0) !== typeID ||
+                !addEntry(item.ownerID, {
+                    itemType,
+                    kind: "grant",
+                    quantity,
+                    singleton: [6, 9].includes(toInt(itemType.categoryID, 0)),
+                    typeID,
+                    unitVolume: getDismantleGrantUnitVolume(itemType),
+                })) {
+                return { success: false, errorMsg: "INVALID_CONSTRUCTION_MATERIAL" };
+            }
+        }
+    }
+    const bins = [];
+    const binsByOwner = new Map();
+    const createBin = (ownerID) => {
+        const bin = { ownerID, usedVolume: 0, moves: [], grants: [] };
+        bins.push(bin);
+        if (!binsByOwner.has(ownerID))
+            binsByOwner.set(ownerID, []);
+        binsByOwner.get(ownerID).push(bin);
+        return bin;
+    };
+    const epsilon = 1e-6;
+    for (const [ownerID, entries] of [...entriesByOwner.entries()]
+        .sort((left, right) => left[0] - right[0])) {
+        for (const entry of entries) {
+            if (entry.unitVolume > capacity + epsilon) {
+                return {
+                    success: false,
+                    errorMsg: "DISMANTLE_ITEM_EXCEEDS_CONTAINER_CAPACITY",
+                    data: { capacity, typeID: entry.typeID, unitVolume: entry.unitVolume },
+                };
+            }
+            let remaining = entry.quantity;
+            while (remaining > 0) {
+                let bin = (binsByOwner.get(ownerID) || []).find((candidate) => (entry.unitVolume <= 0 ||
+                    candidate.usedVolume + entry.unitVolume <= capacity + epsilon));
+                if (!bin)
+                    bin = createBin(ownerID);
+                const availableUnits = entry.unitVolume > 0
+                    ? Math.floor((capacity - bin.usedVolume + epsilon) / entry.unitVolume)
+                    : remaining;
+                const quantity = entry.singleton
+                    ? 1
+                    : Math.min(remaining, Math.max(0, availableUnits));
+                if (quantity <= 0) {
+                    bin = createBin(ownerID);
+                    continue;
+                }
+                if (entry.kind === "move") {
+                    bin.moves.push({ itemID: entry.itemID, quantity });
+                }
+                else {
+                    bin.grants.push({ itemType: entry.itemType, quantity });
+                }
+                bin.usedVolume += entry.unitVolume * quantity;
+                remaining -= quantity;
+            }
+        }
+    }
+    const sourceName = String(item.itemName || `Assembly ${item.itemID}`);
+    const totalByOwner = new Map();
+    for (const bin of bins) {
+        totalByOwner.set(bin.ownerID, (totalByOwner.get(bin.ownerID) || 0) + 1);
+    }
+    const nextPartByOwner = new Map();
+    return {
+        success: true,
+        data: {
+            capacity,
+            containers: bins.map((bin, index) => {
+                const part = (nextPartByOwner.get(bin.ownerID) || 0) + 1;
+                nextPartByOwner.set(bin.ownerID, part);
+                const parts = totalByOwner.get(bin.ownerID);
+                return {
+                    grants: bin.grants,
+                    itemType: containerType,
+                    moves: bin.moves,
+                    ownerID: bin.ownerID,
+                    solarSystemID: state.solarSystemID,
+                    options: {
+                        ...getDismantleContainerSpawnState(item, index),
+                        createdAtMs: Date.now(),
+                        customInfo: JSON.stringify({
+                            evejsFrontierDismantleCargo: {
+                                ownerID: bin.ownerID,
+                                part,
+                                parts,
+                                sourceItemID: item.itemID,
+                            },
+                        }),
+                        itemName: `${sourceName} Dismantled Cargo${parts > 1 ? ` ${part}/${parts}` : ""}`,
+                        launcherID: item.itemID,
+                    },
+                };
+            }),
+        },
+    };
+}
+function syncDismantleChanges(session, changes) {
+    const changesByOwner = new Map();
+    for (const change of Array.isArray(changes) ? changes : []) {
+        const ownerID = toInt(change && change.item && change.item.ownerID ||
+            change && change.previousData && change.previousData.ownerID, 0);
+        if (ownerID <= 0)
+            continue;
+        if (!changesByOwner.has(ownerID))
+            changesByOwner.set(ownerID, []);
+        changesByOwner.get(ownerID).push(change);
+    }
+    for (const [ownerID, ownerChanges] of changesByOwner) {
+        syncChanges(findAssemblyOwnerSession(session, ownerID), ownerChanges);
+    }
+}
+function validateDismantleAssembly(session, itemID) {
+    const characterID = getCharacterID(session);
+    const item = itemStore.findItemById(toInt(itemID, 0));
+    const state = readConstructionState(item);
+    if (!item || !state) {
+        return { success: false, errorMsg: "ASSEMBLY_NOT_FOUND" };
+    }
+    if (characterID <= 0 || toInt(item.ownerID, 0) !== characterID) {
+        return { success: false, errorMsg: "ASSEMBLY_ACCESS_DENIED" };
+    }
+    if (getSolarSystemID(session) !== state.solarSystemID) {
+        return { success: false, errorMsg: "ASSEMBLY_NOT_IN_CURRENT_SYSTEM" };
+    }
+    if (state.destinationGateID > 0 || listAssemblies().some((candidate) => (candidate.itemID !== item.itemID && candidate.destinationGateID === item.itemID))) {
+        return { success: false, errorMsg: "SMART_GATE_MUST_BE_UNLINKED" };
+    }
+    const industryProduction = require("./industryProduction");
+    const production = industryProduction.getProduction(item);
+    if (industryProduction.invalidStoredProduction(item) ||
+        (production && production.state !== "STOPPED")) {
+        return { success: false, errorMsg: "ASSEMBLY_OCCUPIED" };
+    }
+    const berthingRuntime = require(path.join(__dirname, "./berthingRuntime"));
+    if (hasPersistedBerthReference(item.itemID) ||
+        (typeof berthingRuntime.hasActiveContractForHostAssembly === "function" &&
+            berthingRuntime.hasActiveContractForHostAssembly(item.itemID))) {
+        return { success: false, errorMsg: "ASSEMBLY_OCCUPIED" };
+    }
+    return { success: true, characterID, item, state };
+}
+function dismantleAssembly(session, itemID, options = {}) {
+    const validation = validateDismantleAssembly(session, itemID);
+    if (validation.success === false)
+        return validation;
+    const { item, state } = validation;
+    if (options.requireUnderConstruction === true &&
+        state.assemblyStatus !== ASSEMBLY_STATUS_UNDER_CONSTRUCTION) {
         return { success: false, errorMsg: "CONSTRUCTION_ALREADY_COMPLETE" };
     }
-    const shipItem = itemStore.getActiveShipItem(item.ownerID);
-    if (!shipItem) {
-        return { success: false, errorMsg: "SHIP_NOT_FOUND" };
-    }
-    const changes = [];
-    for (const depositedItem of itemStore.listContainerItems(item.ownerID, item.itemID, null)) {
-        const transferResult = itemStore.transferItemToOwnerLocation(depositedItem.itemID, item.ownerID, shipItem.itemID, ITEM_FLAG_CARGO_HOLD);
-        if (!transferResult.success) {
-            return transferResult;
-        }
-        changes.push(...((transferResult.data && transferResult.data.changes) || []));
-    }
+    const cargoPlan = buildDismantleCargoPlan(item, state);
+    if (cargoPlan.success === false)
+        return cargoPlan;
+    const commitResult = itemStore.commitContainerizedInventoryRemoval({
+        containers: cargoPlan.data.containers,
+        expectedCustomInfo: item.customInfo,
+        rootItemID: item.itemID,
+    });
+    if (!commitResult.success)
+        return commitResult;
     clearCompletionTimer(item.itemID);
-    getSpaceRuntime().removeDynamicEntity(state.solarSystemID, item.itemID, {
+    clearActivationTimer(item.itemID);
+    clearPendingAssemblyTransitionsForItem(item.itemID);
+    const spaceRuntime = getSpaceRuntime();
+    spaceRuntime.removeDynamicEntity(state.solarSystemID, item.itemID, {
         broadcast: true,
+        persistSpaceState: false,
     });
-    const removeResult = itemStore.removeInventoryItem(item.itemID, {
-        removeContents: false,
-    });
-    if (!removeResult.success) {
-        return removeResult;
+    const containerItems = commitResult.data && commitResult.data.containers || [];
+    for (const container of containerItems) {
+        const spawnResult = spaceRuntime.spawnDynamicInventoryEntity(state.solarSystemID, container.itemID, { broadcast: true });
+        if (!spawnResult || spawnResult.success !== true) {
+            log.warn(`[FrontierDeployment] Dismantle cargo presentation failed ` +
+                `container=${container.itemID} reason=${spawnResult && spawnResult.errorMsg || "UNKNOWN"}`);
+        }
     }
-    changes.push(...((removeResult.data && removeResult.data.changes) || []));
-    syncChanges(session, changes);
-    log.info(`[FrontierDeployment] Construction cancelled char=${item.ownerID} item=${item.itemID}`);
-    return { success: true, data: { changes } };
+    syncDismantleChanges(session, commitResult.data && commitResult.data.changes);
+    log.info(`[FrontierDeployment] Dismantled item=${item.itemID} type=${state.assemblyTypeID} ` +
+        `containers=${containerItems.length} system=${state.solarSystemID}`);
+    return {
+        success: true,
+        data: {
+            containers: containerItems,
+            record: buildAssemblyRecord(item, state),
+        },
+    };
+}
+function cancelConstruction(session, itemID) {
+    return dismantleAssembly(session, itemID, { requireUnderConstruction: true });
 }
 function clearPendingAssemblyTransitionsForItem(itemID) {
     const numericItemID = toInt(itemID, 0);
@@ -2625,6 +2876,7 @@ module.exports = {
     beginAssemblyStateTransition,
     buildDeployable,
     cancelConstruction,
+    dismantleAssembly,
     commitGateJumpTransition,
     commitGateLinkTransition,
     commitGateUnlinkTransition,
@@ -2658,6 +2910,7 @@ module.exports = {
     isValidAssemblyTransitionSignature,
     readConstructionState,
     _testing: {
+        buildDismantleCargoPlan,
         buildDefinitionsFromRows,
         buildAssemblyTransitionTransactionData,
         isValidAssemblyTransitionSignature,

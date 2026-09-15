@@ -2545,6 +2545,232 @@ function removeInventoryItem(itemId, options = {}) {
         },
     };
 }
+/**
+ * Atomically replace one inventory-backed space entity with one or more cargo
+ * containers. Existing child rows can be split between the containers and new
+ * replacement materials can be granted into them in the same item-table
+ * write. Dismantling uses this primitive so a failed persistence write cannot
+ * remove an assembly, strand only part of a user's partition, or duplicate
+ * the materials that created it.
+ */
+function commitContainerizedInventoryRemoval(request) {
+    ensureMigrated();
+    const rootItemID = Number(request && request.rootItemID);
+    const containerSpecs = Array.isArray(request && request.containers)
+        ? request.containers
+        : null;
+    if (!Number.isSafeInteger(rootItemID) ||
+        rootItemID <= 0 ||
+        !containerSpecs) {
+        return { success: false, errorMsg: "INVALID_CONTAINERIZED_REMOVAL" };
+    }
+    const items = cloneValue(readItems());
+    const characters = readCharacters();
+    const rootItem = normalizeInventoryItem(items[String(rootItemID)]);
+    if (!rootItem) {
+        return { success: false, errorMsg: "ITEM_NOT_FOUND" };
+    }
+    if (request.expectedCustomInfo !== undefined &&
+        JSON.stringify(rootItem.customInfo) !== JSON.stringify(request.expectedCustomInfo)) {
+        return { success: false, errorMsg: "ITEM_STATE_CHANGED" };
+    }
+    const normalizedSpecs = [];
+    const seenMovedQuantities = new Map();
+    for (const rawSpec of containerSpecs) {
+        const ownerID = Number(rawSpec && rawSpec.ownerID);
+        const solarSystemID = Number(rawSpec && rawSpec.solarSystemID);
+        const itemType = resolveItemTypeReference(rawSpec && rawSpec.itemType);
+        const moves = Array.isArray(rawSpec && rawSpec.moves) ? rawSpec.moves : [];
+        const grants = Array.isArray(rawSpec && rawSpec.grants) ? rawSpec.grants : [];
+        const options = rawSpec && rawSpec.options && typeof rawSpec.options === "object"
+            ? rawSpec.options
+            : {};
+        if (!Number.isSafeInteger(ownerID) ||
+            ownerID <= 0 ||
+            !Number.isSafeInteger(solarSystemID) ||
+            solarSystemID <= 0 ||
+            !itemType ||
+            toNumber(itemType.typeID, 0) <= 0) {
+            return { success: false, errorMsg: "INVALID_CONTAINER_SPEC" };
+        }
+        const grantValidationError = validateGrantEntries(grants);
+        if (grantValidationError) {
+            return grantValidationError;
+        }
+        const normalizedMoves = [];
+        for (const move of moves) {
+            const itemID = Number(move && move.itemID);
+            const quantity = Number(move && move.quantity);
+            const source = normalizeInventoryItem(items[String(itemID)]);
+            if (!Number.isSafeInteger(itemID) ||
+                itemID <= 0 ||
+                itemID === rootItemID ||
+                !Number.isSafeInteger(quantity) ||
+                quantity <= 0 ||
+                !source ||
+                toNumber(source.ownerID, 0) !== ownerID ||
+                toNumber(source.locationID, 0) !== rootItemID) {
+                return { success: false, errorMsg: "INVALID_CONTAINER_MOVE" };
+            }
+            const availableQuantity = source.singleton === 1
+                ? 1
+                : normalizePositiveInteger(source.stacksize, 1);
+            const requestedQuantity = (seenMovedQuantities.get(itemID) || 0) + quantity;
+            if (requestedQuantity > availableQuantity) {
+                return { success: false, errorMsg: "INSUFFICIENT_ITEMS" };
+            }
+            seenMovedQuantities.set(itemID, requestedQuantity);
+            normalizedMoves.push({ itemID, quantity });
+        }
+        normalizedSpecs.push({
+            grants,
+            itemType,
+            moves: normalizedMoves,
+            options,
+            ownerID,
+            solarSystemID,
+        });
+    }
+    const changes = [];
+    const containers = [];
+    for (const spec of normalizedSpecs) {
+        const options = spec.options;
+        const container = buildInventoryItem({
+            itemID: nextItemID(spec.ownerID, items, characters[String(spec.ownerID)] || null),
+            typeID: spec.itemType.typeID,
+            ownerID: spec.ownerID,
+            locationID: spec.solarSystemID,
+            flagID: 0,
+            itemName: options.itemName || spec.itemType.name,
+            singleton: 1,
+            customInfo: options.customInfo || "",
+            createdAtMs: options.createdAtMs ?? Date.now(),
+            expiresAtMs: options.expiresAtMs ?? null,
+            launcherID: options.launcherID ?? rootItemID,
+            dunRotation: options.dunRotation ?? null,
+            spaceRadius: options.spaceRadius ?? null,
+            spaceState: normalizeSpaceState({
+                ...options,
+                systemID: spec.solarSystemID,
+                mode: options.mode || "STOP",
+            }),
+        });
+        items[String(container.itemID)] = container;
+        containers.push(cloneValue(container));
+        changes.push({
+            created: true,
+            item: cloneValue(container),
+            previousState: { locationID: 0, flagID: 0 },
+        });
+    }
+    const moves = [];
+    let affectsFitting = false;
+    for (let index = 0; index < normalizedSpecs.length; index += 1) {
+        const spec = normalizedSpecs[index];
+        const container = containers[index];
+        for (const move of spec.moves) {
+            const stageResult = stageItemMoveToLocation(items, characters, move.itemID, container.itemID, 0, move.quantity);
+            if (!stageResult.success) {
+                return stageResult;
+            }
+            affectsFitting = affectsFitting || stageResult.affectsFitting;
+            moves.push(stageResult.data);
+            changes.push(...stageResult.data.changes);
+        }
+    }
+    const stackIndex = buildStackIndex(items);
+    const grantedItems = [];
+    for (let index = 0; index < normalizedSpecs.length; index += 1) {
+        const spec = normalizedSpecs[index];
+        const container = containers[index];
+        for (const entry of spec.grants) {
+            const metadata = resolveItemTypeReference(entry.itemType);
+            const quantity = normalizePositiveSafeInteger(entry.quantity, null);
+            if (!metadata || !quantity) {
+                return { success: false, errorMsg: "INVALID_CONTAINER_GRANT" };
+            }
+            const options = entry.options && typeof entry.options === "object"
+                ? entry.options
+                : {};
+            const singletonMode = options.singleton === undefined || options.singleton === null
+                ? shouldItemDefaultToSingleton(metadata)
+                : toNumber(options.singleton, 0) > 0;
+            const resolvedSingleton = options.singleton !== undefined && options.singleton !== null
+                ? toNumber(options.singleton, 1)
+                : 1;
+            if (singletonMode) {
+                for (let grantIndex = 0; grantIndex < quantity; grantIndex += 1) {
+                    const item = buildInventoryItem({
+                        itemID: nextItemID(spec.ownerID, items, characters[String(spec.ownerID)] || null),
+                        typeID: metadata.typeID,
+                        ownerID: spec.ownerID,
+                        locationID: container.itemID,
+                        flagID: 0,
+                        itemName: options.itemName || metadata.name,
+                        singleton: resolvedSingleton,
+                        customInfo: options.customInfo || "",
+                    });
+                    items[String(item.itemID)] = item;
+                    grantedItems.push(cloneValue(item));
+                    changes.push({
+                        created: true,
+                        item: cloneValue(item),
+                        previousState: { locationID: 0, flagID: 0 },
+                    });
+                }
+            }
+            else {
+                applyStackableGrant({
+                    ownerID: spec.ownerID,
+                    locationID: container.itemID,
+                    flagID: 0,
+                    metadata,
+                    quantity,
+                    options,
+                    items,
+                    stackIndex,
+                    changes,
+                    createdItems: grantedItems,
+                    transientCreatedItemIDs: [],
+                    characterRecord: characters[String(spec.ownerID)] || null,
+                });
+            }
+        }
+    }
+    const remainingChildren = Object.values(items).some((rawItem) => {
+        const item = normalizeInventoryItem(rawItem);
+        return item &&
+            toNumber(item.itemID, 0) !== rootItemID &&
+            toNumber(item.locationID, 0) === rootItemID;
+    });
+    if (remainingChildren) {
+        return { success: false, errorMsg: "CONTAINERIZED_REMOVAL_NOT_EMPTY" };
+    }
+    delete items[String(rootItemID)];
+    changes.push({
+        removed: true,
+        previousData: cloneValue(rootItem),
+        item: buildRemovedItemNotificationState(rootItem),
+    });
+    if (affectsFitting) {
+        bumpDogmaInvalidationVersion();
+    }
+    if (!writeItems(items, { indexDelta: indexDeltaFromChanges(changes) })) {
+        return { success: false, errorMsg: "WRITE_ERROR" };
+    }
+    repo.setTransientPath(ITEMS_TABLE, `/${String(rootItemID)}`, false);
+    notifyInsuranceInventoryMutationChanges(changes, "commitContainerizedInventoryRemoval");
+    return {
+        success: true,
+        data: {
+            changes,
+            containers,
+            grantedItems,
+            moves,
+            removedItem: cloneValue(rootItem),
+        },
+    };
+}
 /** Commit a production transition together with its inventory effects. Staging
  * uses a private table copy: a failed grant, consumption, or metadata write must
  * never leave paid inputs or products without the matching durable job state. */
@@ -4001,6 +4227,7 @@ module.exports = {
     spawnShipInStationHangar,
     updateInventoryItem,
     removeInventoryItem,
+    commitContainerizedInventoryRemoval,
     consumeInventoryItemQuantity,
     commitInventoryProduction,
     pruneExpiredSpaceItems,

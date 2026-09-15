@@ -402,6 +402,123 @@ test("portable structures deploy directly away from nodes and use construction s
   assert.equal(f.state(nearNode.data.item.itemID).assemblyStatus, deployment.ASSEMBLY_STATUS_ONLINE);
 });
 
+test("dismantling returns construction materials and every user partition in capacity-sized cargo containers", t => {
+  const f = fixture(t);
+  const placed = f.place(FIELD_TYPE_ID);
+  assert.equal(placed.success, true, placed.errorMsg);
+  const assemblyID = placed.data.item.itemID;
+  const visitorID = OWNER_ID + 1;
+  const originalGetMetadata = itemStore.getItemMetadata;
+  const originalGetUnitVolume = itemStore.getInventoryItemUnitVolume;
+  const originalGetPackagedVolume = itemStore.getPackagedVolumeForType;
+  t.mock.method(itemStore, "getItemMetadata", (typeID, ...args) => ({
+    ...originalGetMetadata(typeID, ...args),
+    ...(Number(typeID) === 23 ? { capacity: 25 } : {}),
+  }));
+  t.mock.method(itemStore, "getInventoryItemUnitVolume", item => (
+    [MATERIAL_A, MATERIAL_B].includes(Number(item && item.typeID))
+      ? 10
+      : originalGetUnitVolume(item)
+  ));
+  t.mock.method(itemStore, "getPackagedVolumeForType", (typeID, metadata) => (
+    [MATERIAL_A, MATERIAL_B].includes(Number(typeID))
+      ? 10
+      : originalGetPackagedVolume(typeID, metadata)
+  ));
+
+  const stored = itemStore.grantItemToOwnerLocation(
+    visitorID,
+    assemblyID,
+    66,
+    originalGetMetadata(MATERIAL_A),
+    3,
+  );
+  assert.equal(stored.success, true, stored.errorMsg);
+  const input = itemStore.grantItemToOwnerLocation(
+    OWNER_ID,
+    assemblyID,
+    20_000,
+    originalGetMetadata(MATERIAL_A),
+    2,
+  );
+  assert.equal(input.success, true, input.errorMsg);
+  const output = itemStore.grantItemToOwnerLocation(
+    OWNER_ID,
+    assemblyID,
+    20_001,
+    originalGetMetadata(MATERIAL_B),
+    1,
+  );
+  assert.equal(output.success, true, output.errorMsg);
+  const originalContentIDs = [stored, input, output]
+    .flatMap(result => result.data.items.map(row => row.itemID));
+
+  const result = deployment.dismantleAssembly(f.session, assemblyID);
+  assert.equal(result.success, true, result.errorMsg);
+  assert.equal(f.item(assemblyID), null);
+  assert.ok(result.data.containers.length > 1);
+  const containerIDs = new Set(result.data.containers.map(container => container.itemID));
+  const contents = result.data.containers.flatMap(container => (
+    itemStore.listContainerItems(null, container.itemID, 0)
+  ));
+  for (const container of result.data.containers) {
+    const used = itemStore.listContainerItems(null, container.itemID, 0)
+      .reduce((sum, row) => sum + itemStore.getInventoryItemUnitVolume(row) *
+        (row.singleton ? 1 : row.stacksize), 0);
+    assert.ok(used <= 25, `container ${container.itemID} uses ${used} m3`);
+  }
+  assert.ok(originalContentIDs.every(itemID => {
+    const row = f.item(itemID);
+    return row && containerIDs.has(row.locationID) && row.flagID === 0;
+  }));
+  assert.ok(contents.some(row => row.ownerID === visitorID));
+  assert.ok(result.data.containers
+    .filter(container => container.ownerID === visitorID)
+    .every(container => itemStore.listContainerItems(null, container.itemID, 0)
+      .every(row => row.ownerID === visitorID)));
+  const totals = contents.reduce((byOwnerAndType, row) => {
+    const key = `${row.ownerID}:${row.typeID}`;
+    byOwnerAndType[key] = (byOwnerAndType[key] || 0) + (row.singleton ? 1 : row.stacksize);
+    return byOwnerAndType;
+  }, {});
+  assert.equal(totals[`${OWNER_ID}:${MATERIAL_A}`], COST[MATERIAL_A] + 2);
+  assert.equal(totals[`${OWNER_ID}:${MATERIAL_B}`], COST[MATERIAL_B] + 1);
+  assert.equal(totals[`${visitorID}:${MATERIAL_A}`], 3);
+
+  for (const container of result.data.containers) {
+    itemStore.removeInventoryItem(container.itemID, { removeContents: true });
+  }
+});
+
+test("dismantling an unfinished construction site returns only deposited materials", t => {
+  const f = fixture(t);
+  assert.equal(f.place(NODE_TYPE_ID).success, true);
+  f.tick(DURATION_MS);
+  const placed = f.place(FIELD_TYPE_ID, [1_000, 0, 0]);
+  assert.equal(placed.success, true, placed.errorMsg);
+  const siteID = placed.data.item.itemID;
+  assert.equal(f.item(siteID).typeID, SITE_TYPE_ID);
+  assert.equal(deployment.depositItems(
+    f.session,
+    siteID,
+    f.ship.itemID,
+    { [MATERIAL_A]: COST[MATERIAL_A] },
+  ).success, true);
+
+  const result = deployment.cancelConstruction(f.session, siteID);
+  assert.equal(result.success, true, result.errorMsg);
+  assert.equal(f.item(siteID), null);
+  const contents = result.data.containers.flatMap(container => (
+    itemStore.listContainerItems(OWNER_ID, container.itemID, 0)
+  ));
+  const totals = contents.reduce((byType, row) => {
+    byType[row.typeID] = (byType[row.typeID] || 0) + (row.singleton ? 1 : row.stacksize);
+    return byType;
+  }, {});
+  assert.equal(totals[MATERIAL_A], COST[MATERIAL_A]);
+  assert.equal(totals[MATERIAL_B] || 0, 0);
+});
+
 function createLegacyFundedSite(f, completeAtMs) {
   const [site] = grant(SYSTEM_ID, SITE_TYPE_ID, 1, {
     individualItems: true,

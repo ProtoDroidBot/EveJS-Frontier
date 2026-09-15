@@ -22,6 +22,10 @@ const ERROR_MESSAGES = Object.freeze({
   ASSEMBLY_TRANSACTION_MISMATCH: "The assembly transaction no longer matches this action.",
   ASSEMBLY_TRANSACTION_NOT_FOUND: "The assembly transaction expired. Try the action again.",
   ASSEMBLY_UNDER_CONSTRUCTION: "Construction must finish before this assembly can be onlined.",
+  ASSEMBLY_OCCUPIED: "This assembly has an active industry job or occupied berth.",
+  CARGO_CONTAINER_TYPE_NOT_FOUND: "Dismantle cargo containers are unavailable.",
+  DISMANTLE_ITEM_EXCEEDS_CONTAINER_CAPACITY: "An item is too large for a dismantle cargo container.",
+  INVALID_DISMANTLE_CONTENTS: "The assembly contains invalid inventory rows.",
   INVALID_ASSEMBLY_SIGNATURE: "The signed assembly transaction could not be verified.",
   INVALID_ASSEMBLY_STATE: "The requested assembly state is invalid.",
   SMART_GATE_ALREADY_LINKED: "One of those Heavy Gates is already linked.",
@@ -127,6 +131,19 @@ class SmartAssemblyService extends BaseService {
       itemID,
     );
     if (!result || result.success !== true) {
+      throwAssemblyError(result);
+    }
+    return null;
+  }
+
+  Handle_dismantle_assembly(args, session) {
+    const itemID = Number(args && args[0]) || 0;
+    const result = getDeploymentRuntime().dismantleAssembly(session, itemID);
+    if (!result || result.success !== true) {
+      log.info(
+        `[smartAssemblyService] Dismantle rejected char=${session && session.characterID} ` +
+          `item=${itemID} reason=${result && result.errorMsg || "UNKNOWN"}`,
+      );
       throwAssemblyError(result);
     }
     return null;

@@ -58,9 +58,44 @@ function distance(left, right) {
   if (!a || !b || ![a.x, a.y, a.z, b.x, b.y, b.z].every(value => typeof value === "number" && Number.isFinite(value))) return Infinity;
   return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }
+function relativePosition(item, node) {
+  const position = item?.spaceState?.position;
+  const origin = node?.spaceState?.position;
+  if (!position || !origin || ![position.x, position.y, position.z, origin.x, origin.y, origin.z]
+    .every(value => typeof value === "number" && Number.isFinite(value))) return null;
+  return { x: position.x - origin.x, y: position.y - origin.y, z: position.z - origin.z };
+}
 function eligible(assembly, node) {
   return assembly.itemID !== node.itemID && assembly.ownerID === node.ownerID &&
     assembly.locationID === node.locationID && distance(assembly, node) <= NETWORK_NODE_RADIUS_METERS;
+}
+function radarEligible(assembly, node) {
+  return assembly.itemID !== node.itemID && assembly.locationID === node.locationID &&
+    distance(assembly, node) <= NETWORK_NODE_RADIUS_METERS;
+}
+function assemblyKind(item, component) {
+  if (component?.smartAnchor) return "network_node";
+  if (component?.smartGate) return "gate";
+  if (component?.smartStorageUnit) return "storage_unit";
+  if (component?.smartTurret) return "turret";
+  if (require("./industryBlueprints").isIndustryFacilityType(item.typeID)) return "industry";
+  return "assembly";
+}
+function activeIndustry(item) {
+  const blueprints = require("./industryBlueprints");
+  if (!blueprints.isIndustryFacilityType(item.typeID)) return null;
+  const production = require("./industryProduction").getProduction(item);
+  if (!production || !["RUNNING", "DISCONTINUING"].includes(production.state)) return null;
+  const blueprint = blueprints.getSelectedBlueprint(item);
+  const products = Object.values<any>(blueprint?.outputs || {}).map(slot => {
+    const name = itemStore.getItemMetadata(slot.type_id)?.name;
+    return {
+      typeID: Number(slot.type_id),
+      name: name && name !== "Item" ? name : `Type ${slot.type_id}`,
+      quantityPerRun: Number(slot.quantity_per_run),
+    };
+  }).sort((a, b) => a.typeID - b.typeID);
+  return { state: production.state, jobID: production.jobID, runEndAtMs: production.runEndAtMs, products };
 }
 function completed(item) {
   const state = deployment().readConstructionState(item);
@@ -199,6 +234,7 @@ function getNetworkNodeEnergyStatus(characterID, nodeID) {
   const maxEnergy = observed?.maxEnergy ?? getNetworkNodeEnergyCapacity(node.typeID);
   const production = observed?.currentEnergyProduction ?? (nodeOnline(node) ? maxEnergy : 0);
   const used = observed?.energyUsed ?? energyUsed(view, Number(nodeID));
+  const componentsByType = new Map(components().map(component => [Number(component.typeID ?? component._key), component]));
   const entry = item => ({ itemID: Number(item.itemID), typeID: Number(item.typeID),
     name: item.itemName || itemStore.getItemMetadata(item.typeID)?.name || `Assembly ${item.itemID}`,
     assemblyStatus: deployment().readConstructionState(item).assemblyStatus,
@@ -209,12 +245,29 @@ function getNetworkNodeEnergyStatus(characterID, nodeID) {
       deployment().readConstructionState(item).assemblyStatus === 2 ? "Take this assembly offline before disconnecting it." : null,
     energyUsed: deployment().readConstructionState(item).assemblyStatus === 2 ? view.costs.get(Number(item.typeID)) : 0,
   });
+  const radarEntry = item => {
+    const typeID = Number(item.typeID);
+    const typeName = itemStore.getItemMetadata(typeID)?.name;
+    return {
+      itemID: Number(item.itemID), typeID,
+      name: item.itemName || typeName || `Assembly ${item.itemID}`,
+      typeName: typeName && typeName !== "Item" ? typeName : `Type ${typeID}`,
+      structureType: assemblyKind(item, componentsByType.get(typeID)),
+      assemblyStatus: deployment().readConstructionState(item).assemblyStatus,
+      distanceMeters: distance(item, node),
+      relativePosition: relativePosition(item, node),
+      linkedToNode: view.bindings.get(Number(item.itemID)) === Number(nodeID),
+      industry: activeIndustry(item),
+    };
+  };
   return { success: true as const, data: { networkNodeID: Number(nodeID), radiusMeters: NETWORK_NODE_RADIUS_METERS,
     maxEnergy, energyUsed: used, energyAvailable: Math.max(0, production - used),
     online: nodeOnline(node), energyConfigSource: getAssemblyEnergyConfigSource(),
     connectedAssemblies: view.items.filter(item => view.bindings.get(Number(item.itemID)) === Number(nodeID)).map(entry),
     nearbyAssemblies: view.items.filter(item => Number(item.typeID) !== NETWORK_NODE_TYPE_ID && eligible(item, node) &&
       view.bindings.get(Number(item.itemID)) !== Number(nodeID)).map(entry),
+    radarAssemblies: view.items.filter(item => radarEligible(item, node)).map(radarEntry)
+      .sort((left, right) => left.distanceMeters - right.distanceMeters || left.itemID - right.itemID),
   } };
 }
 function changeConnection(session, assemblyID, nodeID, connect) {

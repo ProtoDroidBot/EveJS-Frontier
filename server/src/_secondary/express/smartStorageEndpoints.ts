@@ -41,6 +41,11 @@ const ERROR_MESSAGES: Record<string, string> = {
   INVALID_ASSEMBLY_ID: "Select a valid in-game Smart Storage Unit.",
   INVALID_QUANTITY: "Select one or more stacks with positive whole quantities.",
   INVALID_DIRECTION: "Choose deposit or withdraw.",
+  INVALID_LISTENER_REQUEST: "Choose a supported inventory and one or more valid item quantities to listen for.",
+  INVALID_INVENTORY: "That inventory is not a supported Smart Assembly, active ship, Field Storage, or nearby cargo container.",
+  FACILITY_NOT_FOUND: "That Smart Assembly inventory is unavailable.",
+  FACILITY_NOT_IN_CURRENT_SYSTEM: "The requested inventory is not in your current system.",
+  FACILITY_OUT_OF_RANGE: "Move within range of the requested inventory while the listener is running.",
   STORAGE_CAPACITY_EXCEEDED: "The Smart Storage Unit does not have enough free capacity.",
   SHIP_CARGO_CAPACITY_EXCEEDED: "Your active ship does not have enough cargo capacity.",
   TRANSACTION_NOT_FOUND: "The prepared transfer expired. Refresh the inventories before preparing another transfer.",
@@ -145,6 +150,8 @@ function defaultDependencies() {
         usedVolume: items.reduce((total: number, item: any) => total + item.quantity * item.unitVolume, 0),
       };
     },
+    readListener: (session: any, request: any) =>
+      require("../../services/frontier/inventoryListenerRuntime").readInventoryListener(session, request),
     readChain: (input: any) => require("../../services/frontier/suiStorageSync").readSuiStorageSyncStatus(input),
     flushChain: (input: any) => require("../../services/frontier/suiStorageSync").flushSuiStorageSync(input),
     notify: (session: any, commit: any) => {
@@ -276,6 +283,19 @@ export function createSmartStorageApi(overrides?: Record<string, any>, authOptio
       if (!cargo) return failed("ACCESS_DENIED");
       return { success: true, data: { ...inventory.data, characterID: latest.data.characterID, cargo, deployment: readDeployment(latest.data.storageUnitID), chain } };
     },
+    async listener(authorization: unknown, body: any) {
+      const identity = authenticate(authorization);
+      if (identity.success === false) return identity;
+      const result = await Promise.resolve(dependencies.readListener(identity.data.session, body));
+      if (!result?.success) return failed(result?.errorMsg || "INVALID_INVENTORY", result?.params);
+      // Do not release a read after the wallet's live character session changed
+      // while an injected or future asynchronous inventory reader was running.
+      const current = authenticate(authorization);
+      if (current.success === false) return current;
+      if (current.data.characterID !== identity.data.characterID ||
+          current.data.walletAddress !== identity.data.walletAddress) return failed("ACCESS_DENIED");
+      return result;
+    },
     async prepare(authorization: unknown, id: unknown, body: any) {
       const resolved = accessContext(authorization, id);
       if (resolved.success === false) return resolved;
@@ -373,6 +393,7 @@ export function mountSmartStorageEndpoints(app: any, options: Record<string, any
   };
   app.post(`${PREFIX}/auth/challenge`, route((service, req) => service.challenge(req.body)));
   app.post(`${PREFIX}/auth/session`, route((service, req) => service.session(req.body)));
+  app.post(`${PREFIX}/listener`, route((service, req) => service.listener(req.headers.authorization, req.body)));
   app.get(`${PREFIX}/:storageUnitID/inventory`, route((service, req) => service.inventory(req.headers.authorization, req.params.storageUnitID)));
   app.post(`${PREFIX}/:storageUnitID/prepare`, route((service, req) => service.prepare(req.headers.authorization, req.params.storageUnitID, req.body)));
   app.post(`${PREFIX}/:storageUnitID/execute`, route((service, req) => service.execute(req.headers.authorization, req.params.storageUnitID, req.body)));

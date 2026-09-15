@@ -4,9 +4,12 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const reference = require("../src/services/_shared/referenceData");
 const originalRows = reference.readStaticRows;
-const COMPONENTS = [88092, 77917, 88082, 92404, 88086].map(typeID => ({
+const COMPONENTS = [88092, 77917, 88082, 92404, 88086, 87119].map(typeID => ({
   typeID, smartDeployable: { createOnChain: 1, constructionCost: { 34: 1 } },
   ...(typeID === 88092 ? { smartAnchor: { maxEnergyCapacity: 1000 } } : {}),
+  ...(typeID === 77917 ? { smartStorageUnit: {} } : {}),
+  ...(typeID === 88082 ? { smartGate: {} } : {}),
+  ...(typeID === 92404 ? { smartTurret: {} } : {}),
 }));
 test.mock.method(reference, "readStaticRows", table => table === reference.TABLE.SPACE_COMPONENTS_BY_TYPE ? COMPONENTS : originalRows(table));
 const itemStore = require("../src/services/inventory/itemStore");
@@ -24,13 +27,14 @@ let items = new Map<number, any>();
 
 function assembly(itemID, typeID = 88092, options: Record<string, any> = {}) {
   const { ownerID = OWNER, systemID = SYSTEM, status = typeID === 88092 ? 2 : 1,
-    x = 0, y = 0, z = 0, quantity = 100, binding, ...rest } = options;
+    x = 0, y = 0, z = 0, quantity = 100, binding, industry, ...rest } = options;
   const item = { itemID, typeID, itemName: `Assembly ${itemID}`, ownerID, locationID: systemID,
     spaceState: { position: { x, y, z } },
     customInfo: JSON.stringify({
       evejsFrontierConstruction: { assemblyTypeID: typeID, assemblyStatus: status, ownerID, solarSystemID: systemID },
       ...(typeID === 88092 ? { evejsFrontierNetworkNodeFuel: { typeID: 88335, quantity, burnUpdatedAtMs: NOW } } : {}),
       ...(binding ? { [energy.ENERGY_INFO_KEY]: binding } : {}),
+      ...(industry ? { evejsFrontierIndustry: industry } : {}),
     }), ...rest };
   items.set(itemID, item);
   return item;
@@ -60,7 +64,7 @@ test.beforeEach(t => {
     return { success: true, data, previousData };
   });
   if (sync.getTrackedSuiAssemblyNetworkNodeID) t.mock.method(sync, "getTrackedSuiAssemblyNetworkNodeID", () => null);
-  config.setAssemblyEnergyConfig([{ typeID: 77917, energyRequired: 500 }, { typeID: 88082, energyRequired: 50 }, { typeID: 92404, energyRequired: 40 }], { energyConfigID: "0x1" });
+  config.setAssemblyEnergyConfig([{ typeID: 87119, energyRequired: 100 }, { typeID: 77917, energyRequired: 500 }, { typeID: 88082, energyRequired: 50 }, { typeID: 92404, energyRequired: 40 }], { energyConfigID: "0x1" });
   deployment._testing.clearBuildDefinitionCache();
   deployment._testing.clearPendingAssemblyTransitions();
 });
@@ -191,6 +195,36 @@ test("connects completed owned assemblies within the inclusive 3D 80 km radius",
   assert.equal(energy.connectAssembly(SESSION, 3, 1).errorMsg, "NETWORK_NODE_OUT_OF_RANGE");
   assert.equal(energy.connectAssembly(SESSION, 4, 1).errorMsg, "ASSEMBLY_ACCESS_DENIED");
   assert.equal(energy.connectAssembly(SESSION, 6, 1).errorMsg, "ASSEMBLY_NOT_FOUND");
+});
+
+test("radar detects all nearby Smart Assemblies with private relative coordinates, type, links, and active Industry", () => {
+  assembly(1, 88092, { x: 1000, y: 2000, z: 3000 });
+  assembly(2, 77917, { x: 4000, y: 6000, z: 3000 });
+  assembly(3, 87119, {
+    ownerID: OWNER + 1, x: 1000, y: 2000, z: 83000,
+    industry: {
+      version: 1, blueprintID: 1026,
+      production: { version: 1, jobID: 77, state: "RUNNING", requestedRuns: 4,
+        completedRuns: 1, runStartedAtMs: NOW, runEndAtMs: NOW + 3000, stopReason: null },
+    },
+  });
+  assembly(4, 92404, { ownerID: OWNER + 1, x: 81000.1, y: 2000, z: 3000 });
+  assembly(5, 88082, { systemID: SYSTEM + 1 });
+  const radar = status().radarAssemblies;
+  assert.deepEqual(radar.map(row => row.itemID), [2, 3]);
+  assert.deepEqual(radar[0].relativePosition, { x: 3000, y: 4000, z: 0 });
+  assert.equal("position" in radar[0], false);
+  assert.equal("ownerID" in radar[0], false);
+  assert.equal(radar[0].distanceMeters, 5000);
+  assert.equal(radar[0].structureType, "storage_unit");
+  assert.equal(radar[0].linkedToNode, true);
+  assert.equal(radar[0].industry, null);
+  assert.equal(radar[1].distanceMeters, 80000);
+  assert.equal(radar[1].structureType, "industry");
+  assert.equal(radar[1].linkedToNode, false);
+  assert.equal(radar[1].industry.state, "RUNNING");
+  assert.equal(radar[1].industry.jobID, 77);
+  assert.deepEqual(radar[1].industry.products.map(product => [product.typeID, product.quantityPerRun]), [[83895, 1]]);
 });
 
 test("uses deployed per-type costs, accounts once while online, and releases offline", () => {

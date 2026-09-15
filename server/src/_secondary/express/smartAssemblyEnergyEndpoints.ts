@@ -57,7 +57,7 @@ function positiveID(value: unknown) {
 export function createSmartAssemblyEnergyApi(overrides: Record<string, any> = {}) {
   const auth = overrides.auth || createSmartStorageApi(overrides.authDependencies, {
     scope: "Smart Assembly energy grid",
-    description: "This signature authorizes viewing and connecting or disconnecting assemblies you own in your active in-game character's energy grid.",
+    description: "This signature authorizes viewing the Network Node's nearby Smart Assembly radar and connecting or disconnecting assemblies you own in your active in-game character's energy grid.",
   });
   const runtime = () => overrides.runtime || require("../../services/frontier/networkNodeEnergyRuntime");
   const runWithState = overrides.runWithState || (overrides.runtime ? (_nodeID, operation) => operation() :
