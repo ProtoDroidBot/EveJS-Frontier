@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -62,6 +63,42 @@ function readTable(dataDir, tableName, collectionName = null) {
   }
   const table = JSON.parse(fs.readFileSync(tablePath, "utf8"));
   return collectionName ? table[collectionName] : table;
+}
+
+function sha256File(filePath) {
+  const hash = crypto.createHash("sha256");
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest("hex");
+}
+
+function installCollisionBundle(snapshot, snapshotManifest, dataDir) {
+  const metadata = snapshotManifest.assets && snapshotManifest.assets.collisionBundle;
+  if (!metadata || typeof metadata.path !== "string") {
+    throw new Error("Frontier snapshot has no collision bundle asset");
+  }
+  const sourcePath = path.resolve(snapshot, metadata.path);
+  const sourceRelative = path.relative(snapshot, sourcePath);
+  if (!sourceRelative || sourceRelative.startsWith("..") || path.isAbsolute(sourceRelative)) {
+    throw new Error(`Collision bundle path escapes the snapshot: ${metadata.path}`);
+  }
+  const storeRoot = path.resolve(dataDir, "..");
+  const targetPath = path.resolve(storeRoot, metadata.path);
+  const targetRelative = path.relative(storeRoot, targetPath);
+  if (!targetRelative || targetRelative.startsWith("..") || path.isAbsolute(targetRelative)) {
+    throw new Error(`Collision bundle path escapes the game store: ${metadata.path}`);
+  }
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.copyFileSync(sourcePath, targetPath);
+  if (fs.statSync(targetPath).size !== metadata.bytes) {
+    throw new Error("Installed collision bundle byte size mismatch");
+  }
+  if (sha256File(targetPath) !== metadata.sha256) {
+    throw new Error("Installed collision bundle SHA-256 mismatch");
+  }
+  return {
+    ...metadata,
+    path: targetRelative.split(path.sep).join("/"),
+  };
 }
 
 function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
@@ -297,6 +334,20 @@ async function main() {
 
   const databaseManifestPath = path.resolve(dataDir, "../manifest.json");
   const databaseManifest = JSON.parse(fs.readFileSync(databaseManifestPath, "utf8"));
+  const collisionBundle = installCollisionBundle(
+    snapshot,
+    snapshotManifest,
+    dataDir,
+  );
+  databaseManifest.assets = {
+    ...(databaseManifest.assets || {}),
+    collisionBundle,
+  };
+  fs.writeFileSync(
+    databaseManifestPath,
+    `${JSON.stringify(databaseManifest, null, 2)}\n`,
+    "utf8",
+  );
   const report = validateDatabase(dataDir, snapshotManifest, databaseManifest);
   const reportPath = path.resolve(dataDir, "../frontier-database-validation.json");
   fs.writeFileSync(
@@ -305,6 +356,7 @@ async function main() {
       build: checked.build,
       databaseManifest: databaseManifestPath,
       dataDir,
+      collisionBundle,
       ...report,
     }, null, 2)}\n`,
     "utf8",
@@ -333,6 +385,7 @@ if (process.argv[1] &&
 }
 
 export {
+  installCollisionBundle,
   parseArgs,
   RIFT_AUTHORITY_BUILDS,
   validateDatabase,

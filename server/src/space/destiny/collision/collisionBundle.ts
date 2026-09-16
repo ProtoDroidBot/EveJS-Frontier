@@ -448,6 +448,9 @@ function getDefaultCollisionBundle() {
     } else {
       const installed = readInstalledCollisionAsset(resolveStoreRoot());
       if (!fs.existsSync(installed.sourcePath)) {
+        if (String(process.env.EVEJS_COLLISION_BUNDLE_REQUIRED || "") === "1") {
+          throw new Error(`Collision bundle is required but missing: ${installed.sourcePath}`);
+        }
         return null;
       }
       defaultCollisionBundle = loadCollisionBundle(installed.sourcePath, installed);
@@ -457,13 +460,21 @@ function getDefaultCollisionBundle() {
     if (String(process.env.EVEJS_COLLISION_BUNDLE_REQUIRED || "") === "1") {
       throw error;
     }
-    defaultCollisionBundle = null;
+    // An absent optional asset is handled above. A present but malformed or
+    // hash-mismatched asset must never silently downgrade authoritative
+    // collision behavior to the legacy sphere fallback.
+    throw error;
   }
   return defaultCollisionBundle;
 }
 
 function getDefaultCollisionBundleError() {
-  getDefaultCollisionBundle();
+  try {
+    getDefaultCollisionBundle();
+  } catch {
+    // This diagnostic accessor reports the retained initialization failure;
+    // normal bundle consumers still receive the original exception.
+  }
   return defaultCollisionBundleError;
 }
 
@@ -473,18 +484,30 @@ function resetDefaultCollisionBundleForTesting() {
   defaultCollisionBundleError = null;
 }
 
+function setDefaultCollisionBundleForTesting(bundle) {
+  defaultCollisionBundleLoaded = true;
+  defaultCollisionBundle = bundle;
+  defaultCollisionBundleError = null;
+}
+
 function isCollisionOptedOut(entity) {
   return Boolean(
     entity &&
     (
       entity.collisionEnabled === false ||
       entity.destinyCollisionEnabled === false ||
-      entity.nonPhysicalCollision === true
+      entity.destinyForceMassive === false ||
+      entity.nonPhysicalCollision === true ||
+      entity.nonPhysicalDecloakExempt === true
     ),
   );
 }
 
-function resolveEntityCollisionPresentation(entity, bundle = getDefaultCollisionBundle()) {
+function resolveEntityCollisionPresentation(
+  entity,
+  bundle = getDefaultCollisionBundle(),
+  options: Record<string, any> = {},
+) {
   const collisionScale = toFiniteNumber(entity && entity.collisionScale, 1);
   if (!entity || isCollisionOptedOut(entity)) {
     return {
@@ -518,8 +541,10 @@ function resolveEntityCollisionPresentation(entity, bundle = getDefaultCollision
 
   const profile = entity.collisionProfile && typeof entity.collisionProfile === "object"
     ? entity.collisionProfile
-    : collisionID > 0 && bundle
-      ? bundle.getProfile(collisionID)
+    : collisionID > 0 && bundle && options.includeProfile !== false
+      ? options.metadataOnly === true
+        ? bundle.getMetadata(collisionID)
+        : bundle.getProfile(collisionID)
       : null;
   return {
     collisionID,
@@ -540,4 +565,5 @@ module.exports = {
   resetDefaultCollisionBundleForTesting,
   resolveEntityCollisionPresentation,
   rotateVectorWxyz,
+  setDefaultCollisionBundleForTesting,
 };

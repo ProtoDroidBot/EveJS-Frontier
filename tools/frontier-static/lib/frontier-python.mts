@@ -115,6 +115,7 @@ function windowsPythonCandidates(): PythonCandidate[] {
       source: "repository Python 3.12 environment",
     },
     { command: "py.exe", prefixArgs: ["-3.12"], source: "Python launcher" },
+    { command: "python312.exe", prefixArgs: [], source: "python312.exe" },
     { command: "python3.12.exe", prefixArgs: [], source: "python3.12.exe" },
     { command: "python.exe", prefixArgs: [], source: "python.exe" },
   ].filter((candidate): candidate is PythonCandidate => Boolean(candidate));
@@ -435,4 +436,5 @@ export {
   resolveFrontierPython,
   windowsExternalPythonEnvironment,
   windowsExternalPythonSetup,
+  windowsPythonCandidates,
 };

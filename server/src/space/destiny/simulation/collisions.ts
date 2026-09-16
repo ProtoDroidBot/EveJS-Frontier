@@ -92,6 +92,20 @@ function getEntityCollisionRadius(entity) {
   );
 }
 
+function getEntityCollisionBroadphaseRadius(entity) {
+  const presentation = resolveEntityCollisionPresentation(
+    entity,
+    undefined,
+    { metadataOnly: true },
+  );
+  const profileRadius = presentation.profile && Math.max(
+    0,
+    toFiniteNumber(presentation.profile.boundingRadius, 0) *
+      Math.abs(toFiniteNumber(presentation.collisionScale, 1)),
+  );
+  return profileRadius > 0 ? profileRadius : getEntityCollisionRadius(entity);
+}
+
 function isEntityCloakedForCollision(entity) {
   return Boolean(
     entity &&
@@ -121,7 +135,7 @@ function isEntityCollisionEnabled(entity) {
   if (
     !entity ||
     !hasFinitePosition(entity) ||
-    getEntityCollisionRadius(entity) <= 0 ||
+    getEntityCollisionBroadphaseRadius(entity) <= 0 ||
     hasCollisionOptOut(entity)
   ) {
     return false;
@@ -807,7 +821,11 @@ function findSweptSphereCollision(
       options.movingRadius !== undefined
         ? Math.max(0, toFiniteNumber(options.movingRadius, 0))
         : getEntityCollisionRadius(movingEntity)
-    ) + getEntityCollisionRadius(candidate);
+    ) + (
+      options.candidateRadius !== undefined
+        ? Math.max(0, toFiniteNumber(options.candidateRadius, 0))
+        : getEntityCollisionRadius(candidate)
+    );
   if (combinedRadius <= 0) {
     return null;
   }
@@ -894,6 +912,13 @@ function findSweptEntityCollision(
   const presentation = resolveEntityCollisionPresentation(candidate);
   const profile = presentation.profile;
   if (!profileHasPrimitiveGeometry(profile)) {
+    const profileFallbackRadius = profile
+      ? Math.max(
+          0,
+          toFiniteNumber(profile.boundingRadius, 0) *
+            Math.abs(toFiniteNumber(presentation.collisionScale, 1)),
+        )
+      : null;
     return findSweptSphereCollision(
       movingEntity,
       candidate,
@@ -901,7 +926,9 @@ function findSweptEntityCollision(
       movingEnd,
       candidateStart,
       candidateEnd,
-      options,
+      profileFallbackRadius > 0
+        ? { ...options, candidateRadius: profileFallbackRadius }
+        : options,
     );
   }
 
@@ -1160,6 +1187,7 @@ module.exports = {
   findSweptWeaponOccluder,
   findSweptSphereCollision,
   findWeaponLineOccluder,
+  getEntityCollisionBroadphaseRadius,
   getEntityCollisionRadius,
   getSceneCollisionCandidates,
   isEntityCollisionEnabled,

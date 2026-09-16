@@ -53,12 +53,14 @@ $GeneratedRoot = [IO.Path]::GetFullPath(
 )
 $GeneratedData = Join-Path $GeneratedRoot 'data'
 $GeneratedManifest = Join-Path $GeneratedRoot 'manifest.json'
+$GeneratedAssets = Join-Path $GeneratedRoot 'assets'
 $RuntimeBase = [IO.Path]::GetFullPath(
     (Join-Path $RepoRoot '_local\frontier-runtime')
 )
 $RuntimeRoot = [IO.Path]::GetFullPath((Join-Path $RuntimeBase $Build))
 $ExpectedRuntimeRoot = [IO.Path]::GetFullPath((Join-Path $RuntimeBase $Build))
-$RuntimeData = Join-Path $RuntimeRoot 'gameStore\data'
+$RuntimeGameStore = Join-Path $RuntimeRoot 'gameStore'
+$RuntimeData = Join-Path $RuntimeGameStore 'data'
 $RuntimeMarker = Join-Path $RuntimeRoot '.evejs-frontier-runtime'
 $PidMarker = Join-Path $RuntimeRoot '.evejs-frontier-server.pid.json'
 $StaticRoot = [IO.Path]::GetFullPath(
@@ -364,9 +366,32 @@ function Assert-GeneratedInputs {
     }
 }
 
+function Copy-GeneratedRuntimeSupportFiles {
+    param(
+        [Parameter(Mandatory)] [string]$TargetGameStore,
+        [Parameter(Mandatory)] [string]$TargetRuntimeRoot
+    )
+
+    New-Item -ItemType Directory -Path $TargetGameStore -Force | Out-Null
+    Copy-Item -LiteralPath $GeneratedManifest -Destination (
+        Join-Path $TargetGameStore 'manifest.json'
+    ) -Force
+    Copy-Item -LiteralPath $GeneratedManifest -Destination (
+        Join-Path $TargetRuntimeRoot 'generated-manifest.json'
+    ) -Force
+    if (Test-Path -LiteralPath $GeneratedAssets -PathType Container) {
+        $targetAssets = Join-Path $TargetGameStore 'assets'
+        New-Item -ItemType Directory -Path $targetAssets -Force | Out-Null
+        Copy-Item -Path (Join-Path $GeneratedAssets '*') -Destination $targetAssets `
+            -Recurse -Force
+    }
+}
+
 function Initialize-Runtime {
     if (Test-Path -LiteralPath $RuntimeRoot) {
         [void](Assert-RecognizedRuntime)
+        Copy-GeneratedRuntimeSupportFiles -TargetGameStore $RuntimeGameStore `
+            -TargetRuntimeRoot $RuntimeRoot
         Write-Host "[evejs-frontier] Reusing marker-owned runtime for build $Build."
         return
     }
@@ -387,9 +412,8 @@ function Initialize-Runtime {
         $temporaryGameStore = Join-Path $initializingRoot 'gameStore'
         New-Item -ItemType Directory -Path $temporaryGameStore -Force | Out-Null
         Copy-Item -LiteralPath $GeneratedData -Destination $temporaryGameStore -Recurse -Force
-        Copy-Item -LiteralPath $GeneratedManifest -Destination (
-            Join-Path $initializingRoot 'generated-manifest.json'
-        ) -Force
+        Copy-GeneratedRuntimeSupportFiles -TargetGameStore $temporaryGameStore `
+            -TargetRuntimeRoot $initializingRoot
 
         $runtimeMarkerValue = [ordered]@{
             kind = $script:RuntimeMarkerKind
@@ -655,6 +679,7 @@ function Get-ServerEnvironment {
     $logLevel = if ($Quiet) { '1' } else { '2' }
     return [ordered]@{
         EVEJS_GAMESTORE_DATA_DIR = $RuntimeData
+        EVEJS_COLLISION_BUNDLE_REQUIRED = '1'
         EVEJS_STATIC_JSONL_ROOT = $StaticRoot
         EVEJS_CLIENT_COMPATIBILITY_PROFILE = 'frontier'
         EVEJS_CLIENT_VERSION = $ClientVersion

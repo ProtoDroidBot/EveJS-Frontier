@@ -29,6 +29,7 @@ function populateBuild(buildRoot, { build, platform, sync = build, blueName = pl
         path.join("bin64", "staticdata", "mapObjects.db"),
         path.join("bin64", "cacert.pem"),
         path.join("bin64", "packages", "certifi", "cacert.pem"),
+        path.join("bin64", "bundle.collision"),
         path.join("bin64", blueName),
         platform === "windows"
             ? path.join("bin64", "exefile.exe")

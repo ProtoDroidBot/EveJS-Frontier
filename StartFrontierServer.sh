@@ -55,8 +55,10 @@ fi
 
 GENERATED_ROOT="${REPO_ROOT}/_local/frontier-gameStore/${BUILD}"
 GENERATED_DATA="${GENERATED_ROOT}/data"
+GENERATED_ASSETS="${GENERATED_ROOT}/assets"
 RUNTIME_ROOT="${REPO_ROOT}/_local/frontier-runtime/${BUILD}"
-RUNTIME_DATA="${RUNTIME_ROOT}/gameStore/data"
+RUNTIME_GAMESTORE="${RUNTIME_ROOT}/gameStore"
+RUNTIME_DATA="${RUNTIME_GAMESTORE}/data"
 RUNTIME_MARKER="${RUNTIME_ROOT}/.evejs-frontier-runtime"
 STATIC_ROOT="${REPO_ROOT}/_local/frontier-sde/${BUILD}"
 
@@ -88,9 +90,19 @@ fi
 if [[ ! -d "$RUNTIME_DATA" ]]; then
   mkdir -p "$(dirname "$RUNTIME_DATA")"
   ditto "$GENERATED_DATA" "$RUNTIME_DATA"
-  cp "${GENERATED_ROOT}/manifest.json" "${RUNTIME_ROOT}/generated-manifest.json"
   printf 'build=%s\n' "$BUILD" > "$RUNTIME_MARKER"
   echo "[evejs-frontier] Created isolated runtime from generated build $BUILD."
+fi
+
+# Assets and their attestation are immutable generated inputs, not runtime
+# state. Refreshing them is safe when reusing a marker-owned runtime and lets a
+# newly extracted collision bundle become active without discarding the DB.
+mkdir -p "$RUNTIME_GAMESTORE"
+cp "${GENERATED_ROOT}/manifest.json" "${RUNTIME_GAMESTORE}/manifest.json"
+cp "${GENERATED_ROOT}/manifest.json" "${RUNTIME_ROOT}/generated-manifest.json"
+if [[ -d "$GENERATED_ASSETS" ]]; then
+  mkdir -p "${RUNTIME_GAMESTORE}/assets"
+  ditto "$GENERATED_ASSETS" "${RUNTIME_GAMESTORE}/assets"
 fi
 
 echo "[evejs-frontier] Runtime: $RUNTIME_ROOT"
@@ -100,6 +112,7 @@ echo "[evejs-frontier] Profile: Frontier 20.04 build $BUILD, MachoNet 489, Place
 cd "$REPO_ROOT"
 exec env \
   EVEJS_GAMESTORE_DATA_DIR="$RUNTIME_DATA" \
+  EVEJS_COLLISION_BUNDLE_REQUIRED="1" \
   EVEJS_STATIC_JSONL_ROOT="$STATIC_ROOT" \
   EVEJS_CLIENT_COMPATIBILITY_PROFILE="frontier" \
   EVEJS_CLIENT_VERSION="20.04" \

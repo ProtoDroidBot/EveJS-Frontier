@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildPythonInvocation, resolveFrontierPython, windowsExternalPythonEnvironment, windowsExternalPythonSetup, } from "../lib/frontier-python.mjs";
+import { buildPythonInvocation, resolveFrontierPython, windowsExternalPythonEnvironment, windowsExternalPythonSetup, windowsPythonCandidates, } from "../lib/frontier-python.mjs";
 import { isInventoryMember, isPublicProtoMember, parseArgs, } from "../../frontier-contracts/export-frontier-contracts.mjs";
 test("contract exporter parses build and destination options", () => {
     const options = parseArgs([
@@ -49,6 +49,9 @@ test("external Windows Python keeps its standard library ahead of client modules
     const ctypesIndex = setup.indexOf("import ctypes");
     assert.notEqual(appendIndex, -1);
     assert.ok(ctypesIndex > appendIndex);
+});
+test("Windows Python discovery includes the python312 executable name", () => {
+    assert.equal(windowsPythonCandidates().some((candidate) => candidate.command.toLowerCase() === "python312.exe"), true);
 });
 test("explicit Wine runner maps POSIX script and output paths to drive Z", () => {
     const invocation = buildPythonInvocation({

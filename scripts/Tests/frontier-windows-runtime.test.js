@@ -93,6 +93,30 @@ test("3502403 handshake metadata is scoped to Frontier environment overrides", (
 function runScript(script, args) {
     return spawnSync(POWERSHELL, ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", script, ...args], { encoding: "utf8" });
 }
+test("Windows runtime initialization carries generated collision assets", { skip: !canRunPowerShell }, (t) => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "evejs frontier collision runtime "));
+    t.after(() => fs.rmSync(fixtureRoot, { force: true, recursive: true }));
+    const startScript = path.join(fixtureRoot, "StartFrontierServer.ps1");
+    fs.copyFileSync(path.join(REPO_ROOT, "StartFrontierServer.ps1"), startScript);
+    const build = "9994412";
+    const generatedRoot = path.join(fixtureRoot, "_local", "frontier-gameStore", build);
+    fs.mkdirSync(path.join(generatedRoot, "data", "exampleTable"), { recursive: true });
+    fs.writeFileSync(path.join(generatedRoot, "data", "exampleTable", "data.json"), "[]\n");
+    const generatedBundle = path.join(generatedRoot, "assets", "collision", "bundle.collision");
+    fs.mkdirSync(path.dirname(generatedBundle), { recursive: true });
+    fs.writeFileSync(generatedBundle, "collision fixture\n");
+    fs.writeFileSync(path.join(generatedRoot, "manifest.json"), "{}\n");
+    fs.mkdirSync(path.join(fixtureRoot, "_local", "frontier-sde", build), { recursive: true });
+    const initialize = runScript(startScript, [
+        "-Build",
+        build,
+        "-InitializeOnly",
+    ]);
+    assert.equal(initialize.status, 0, initialize.stderr || initialize.stdout);
+    const runtimeGameStore = path.join(fixtureRoot, "_local", "frontier-runtime", build, "gameStore");
+    assert.equal(fs.readFileSync(path.join(runtimeGameStore, "assets", "collision", "bundle.collision"), "utf8"), "collision fixture\n");
+    assert.equal(fs.existsSync(path.join(runtimeGameStore, "manifest.json")), true);
+});
 test("Frontier server dry-run rejects a stale synchronized Sui deployment", { skip: !canRunPowerShell }, (t) => {
     const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "evejs frontier stale world "));
     t.after(() => fs.rmSync(fixtureRoot, { force: true, recursive: true }));
@@ -169,6 +193,9 @@ test("Windows runtime initialization and reset require an exact owned marker", {
     fs.mkdirSync(staticRoot, { recursive: true });
     fs.writeFileSync(path.join(generatedData, "data.json"), "[]\n");
     fs.writeFileSync(path.join(generatedRoot, "manifest.json"), "{}\n");
+    const generatedCollisionBundle = path.join(generatedRoot, "assets", "collision", "bundle.collision");
+    fs.mkdirSync(path.dirname(generatedCollisionBundle), { recursive: true });
+    fs.writeFileSync(generatedCollisionBundle, "collision fixture\n");
     const dryRun = runScript(startScript, [
         "-Build",
         build,
@@ -191,6 +218,8 @@ test("Windows runtime initialization and reset require an exact owned marker", {
     assert.equal(marker.build, build);
     assert.equal(path.resolve(marker.runtimeRoot), path.resolve(runtimeRoot));
     assert.equal(fs.existsSync(path.join(runtimeRoot, "gameStore", "data", "exampleTable", "data.json")), true);
+    assert.equal(fs.readFileSync(path.join(runtimeRoot, "gameStore", "assets", "collision", "bundle.collision"), "utf8"), "collision fixture\n");
+    assert.equal(fs.existsSync(path.join(runtimeRoot, "gameStore", "manifest.json")), true);
     const status = runScript(startScript, ["-Build", build, "-Status"]);
     assert.equal(status.status, 0, status.stderr || status.stdout);
     assert.match(status.stdout, /Runtime: initialized/);

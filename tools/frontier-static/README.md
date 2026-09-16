@@ -24,6 +24,8 @@ The extractor:
   Crude Rift entry objects, resources, transforms, triggers, and events;
 - preserves modular ship templates, parts, modules, and hardpoint definitions
   used by the Frontier Creation management service;
+- copies the build's `bin64/bundle.collision` FlatBuffer without conversion,
+  verifies its sorted graphic-ID index, and records its byte hash and schema;
 - writes deterministic, build-numbered JSONL under `_local/frontier-sde`;
 - records source and output hashes in `frontier-extraction-manifest.json`.
 
@@ -74,9 +76,9 @@ recognized extractor manifest.
 npm run frontier:validate -- --snapshot _local/frontier-sde/3502403
 ```
 
-Validation checks hashes, JSONL framing, key uniqueness, type/group/category
-references, system/star relationships, map-object system references, and
-reciprocal stargate destinations.
+Validation checks hashes (including the raw collision bundle), JSONL framing,
+key uniqueness, type/group/category references, system/star relationships,
+map-object system references, and reciprocal stargate destinations.
 
 Landscape validation also checks that every site references an exported
 ecosystem and entry dungeon, every ecosystem pattern references an exported
@@ -136,6 +138,19 @@ The equivalent low-level generator invocation remains available on every
 platform; the npm wrapper derives the build-numbered output from the validated
 snapshot and applies the exact supported-build policy.
 
+Database generation installs the attested bundle at
+`<gameStore>/assets/collision/bundle.collision` and records it in the runtime
+manifest. The server reads primitive collision components lazily by graphic ID;
+mesh-only entries retain the existing sphere fallback until convex narrow-phase
+support is enabled.
+
+For diagnostics, `EVEJS_COLLISION_BUNDLE_PATH` can point the server at an
+explicit bundle and `EVEJS_COLLISION_BUNDLE_SHA256` can pin its expected hash.
+Set `EVEJS_COLLISION_BUNDLE_REQUIRED=1` to reject a missing bundle when
+collision resolution first initializes. A present bundle that fails its
+manifest hash or structural checks is always rejected rather than silently
+reverting to type-radius collisions.
+
 Frontier-specific map data that the current EveJS generator does not yet
 consume is retained in `mapLagrangePoints.jsonl`, `mapJumps.jsonl`, and
 `locationCache.jsonl` for the compatibility layer. The three landscape tables
@@ -154,6 +169,10 @@ shadowing modules that must match the external interpreter. The pinned
 environment used by the setup workflow is `_local\frontier-python312`. The
 embedded-Python fallback continues to use the client-first `PYTHONPATH`
 required by the client's `python312.dll`.
+
+Direct Windows probing recognizes both `python312.exe` and
+`python3.12.exe` on `PATH` (as well as the Python launcher and the explicit
+`EVEJS_FRONTIER_PYTHON312` override).
 
 If required imports still fail, `frontier-python-runner-windows.c` can be
 compiled with Visual Studio 2022 Build Tools and the Windows SDK. The runner

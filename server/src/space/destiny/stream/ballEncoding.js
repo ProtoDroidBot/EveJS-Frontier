@@ -8,6 +8,7 @@ const { appendFreeBallOwnershipHeader, resolveDestinyHarmonic, resolveFreeBallAl
 const { getStaticBallFlags, getStaticBallMode, resolveStaticBallTail, } = require("./staticBallTail");
 const { buildVector, normalizeVector, pushBigInt64, pushDouble, pushFloat, pushInt32, pushUInt8, toFiniteNumber, toInt32, } = require("./primitives");
 const { ENTITY_TYPE, } = require("../../entityConstants");
+const { resolveEntityCollisionPresentation, } = require("../collision/collisionBundle");
 const FREE_MODE_BY_NAME = Object.freeze({
     GOTO: BALL_MODE.GOTO,
     FOLLOW: BALL_MODE.FOLLOW,
@@ -276,6 +277,32 @@ function getFrontierBallOrientation(entity) {
         z: sineYaw * sinePitch,
     };
 }
+function getFrontierRigidCollisionOrientation(entity) {
+    const source = entity && (entity.collisionQuaternion || entity.collisionRotation);
+    const candidate = Array.isArray(source) && source.length >= 4
+        ? { w: source[0], x: source[1], y: source[2], z: source[3] }
+        : source && typeof source === "object"
+            ? source
+            : null;
+    if (!candidate) {
+        return { w: 1, x: 0, y: 0, z: 0 };
+    }
+    const orientation = {
+        w: toFiniteNumber(candidate.w, 1),
+        x: toFiniteNumber(candidate.x, 0),
+        y: toFiniteNumber(candidate.y, 0),
+        z: toFiniteNumber(candidate.z, 0),
+    };
+    const length = Math.hypot(orientation.w, orientation.x, orientation.y, orientation.z);
+    return length > Number.EPSILON
+        ? {
+            w: orientation.w / length,
+            x: orientation.x / length,
+            y: orientation.y / length,
+            z: orientation.z / length,
+        }
+        : { w: 1, x: 0, y: 0, z: 0 };
+}
 function getShipWarpFactor(entity) {
     const warpState = entity && entity.warpState;
     const factor = toInt32((warpState && warpState.warpSpeed) ||
@@ -395,13 +422,14 @@ function appendFrontierCommonBallTail(chunks, entity, options = {}) {
         entity &&
         entity.kind === "ship")
         ? getFrontierBallOrientation(entity)
-        : { w: 1, x: 0, y: 0, z: 0 };
+        : getFrontierRigidCollisionOrientation(entity);
     pushDouble(chunks, orientation.w);
     pushDouble(chunks, orientation.x);
     pushDouble(chunks, orientation.y);
     pushDouble(chunks, orientation.z);
-    pushInt32(chunks, toInt32(entity && entity.collisionID, -1));
-    pushFloat(chunks, toFiniteNumber(entity && entity.collisionScale, 1));
+    const collision = resolveEntityCollisionPresentation(entity, undefined, { includeProfile: false });
+    pushInt32(chunks, toInt32(collision.collisionID, -1));
+    pushFloat(chunks, collision.collisionScale);
 }
 function appendFrontierFreeBallConfiguration(chunks, entity) {
     // Native defaults for dynamical orientation and individual warp factors.
