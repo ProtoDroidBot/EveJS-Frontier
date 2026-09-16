@@ -42111,7 +42111,13 @@ class SpaceRuntime {
           );
         }
       }
-      if (options.reconcileUniverseSites !== false) {
+      // Reconciliation can be deferred during login, but the active dungeon
+      // instances already present in runtime state are cheap to materialize
+      // and must exist before the signal tracker builds its initial map state.
+      // Keep materialization independent from the heavier reconciliation so
+      // entering a preloaded system does not leave its dungeons absent until
+      // the background job completes.
+      if (options.materializeUniverseSites !== false) {
         try {
           const startupStartedAtMs = Date.now();
           const dungeonUniverseSiteService = lazyRequire("../services/dungeon/dungeonUniverseSiteService");
@@ -42451,8 +42457,7 @@ class SpaceRuntime {
     if (
       !scene ||
       !preparation ||
-      preparation.prepared !== true ||
-      preparation.sceneExisted !== true
+      preparation.success === false
     ) {
       return null;
     }

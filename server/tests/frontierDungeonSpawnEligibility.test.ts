@@ -6,6 +6,7 @@ const test = require("node:test");
 const {
   collectFrontierDungeonSpawnAuthorityIDs,
   GENERAL_ANCHOR_CLASS_WEIGHTS,
+  LIGHT_SECOND_METERS,
   MAXIMUM_LARGE_ANCHOR_OFFSET_METERS,
   MINIMUM_LARGE_ANCHOR_OFFSET_METERS,
   RESOURCE_ANCHOR_CLASS_WEIGHTS,
@@ -16,6 +17,11 @@ const {
   isTemplateFromFrontierDungeonDataset,
   orderUniverseDungeonAnchorCandidates,
 } = require("../src/services/dungeon/dungeonSpawnEligibility");
+
+test("large dungeon anchors stay within 0.01 to 0.5 light-seconds", () => {
+  assert.equal(MINIMUM_LARGE_ANCHOR_OFFSET_METERS, LIGHT_SECOND_METERS * 0.01);
+  assert.equal(MAXIMUM_LARGE_ANCHOR_OFFSET_METERS, LIGHT_SECOND_METERS * 0.5);
+});
 
 test("universe spawning accepts only templates present in the Frontier dungeon dataset", () => {
   const source = {

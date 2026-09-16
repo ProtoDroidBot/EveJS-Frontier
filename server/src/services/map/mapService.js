@@ -29,6 +29,9 @@ const fleetHelpers = require(path.join(__dirname, "../fleets/fleetHelpers"));
 const { buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 const { listIndustryJobsOverLast24Hours, } = require(path.join(__dirname, "../industry/industryRuntimeState"));
 const sessionRegistry = require(path.join(__dirname, "../chat/sessionRegistry"));
+const dungeonRuntime = require(path.join(__dirname, "../dungeon/dungeonRuntime"));
+const DungeonUniverseSiteService = require(path.join(__dirname, "../dungeon/dungeonUniverseSiteService"));
+const dungeonVisibilityPolicy = require(path.join(__dirname, "../dungeon/dungeonVisibilityPolicy"));
 const MAP_ROWSET = "eve.common.script.sys.rowset.Rowset";
 const HISTORY_COLUMNS = Object.freeze(["solarSystemID", "value1", "value2", "value3"]);
 const VISITS_COLUMNS = Object.freeze(["lastDateTime", "solarSystemID", "visits"]);
@@ -339,7 +342,65 @@ function buildPlanetOrbitalMapEntry(orbital) {
         orbitIndex: null,
     });
 }
-function buildSolarSystemItemRows(solarSystemID) {
+function buildDungeonBeaconMapRows(solarSystemID, session = null, options = {}) {
+    const numericSystemID = toPositiveInteger(solarSystemID, 0);
+    const runtime = options.dungeonRuntime || dungeonRuntime;
+    const siteService = options.dungeonUniverseSiteService || DungeonUniverseSiteService;
+    const visibilityPolicy = options.dungeonVisibilityPolicy || dungeonVisibilityPolicy;
+    if (!numericSystemID ||
+        !runtime ||
+        typeof runtime.listActiveInstancesBySystem !== "function" ||
+        !siteService ||
+        typeof siteService.buildSiteEntity !== "function" ||
+        !visibilityPolicy ||
+        typeof visibilityPolicy.resolveDungeonInstanceVisibilityForSession !== "function") {
+        return [];
+    }
+    let instances = [];
+    try {
+        instances = runtime.listActiveInstancesBySystem(numericSystemID, {
+            full: true,
+        });
+    }
+    catch (error) {
+        log.warn(`[MapService] Failed to list dungeon beacons for solarSystemID=${numericSystemID}: ${error.message}`);
+        return [];
+    }
+    if (!Array.isArray(instances) || instances.length === 0) {
+        return [];
+    }
+    const instancesByID = new Map(instances.map((instance) => [
+        toPositiveInteger(instance && instance.instanceID, 0),
+        instance,
+    ]));
+    return instances
+        .filter((instance) => Boolean(visibilityPolicy.resolveDungeonInstanceVisibilityForSession(session, instance && instance.instanceID, {
+        systemID: numericSystemID,
+        getInstance: (instanceID) => (instancesByID.get(toPositiveInteger(instanceID, 0)) || null),
+    })))
+        .map((instance) => {
+        const beacon = siteService.buildSiteEntity(instance);
+        if (!beacon) {
+            return null;
+        }
+        const metadata = instance && instance.metadata && typeof instance.metadata === "object"
+            ? instance.metadata
+            : {};
+        const spawnState = instance && instance.spawnState && typeof instance.spawnState === "object"
+            ? instance.spawnState
+            : {};
+        return buildSolarSystemItemRow({
+            ...beacon,
+            solarSystemID: numericSystemID,
+            orbitID: toPositiveInteger(metadata.anchorItemID, 0) ||
+                toPositiveInteger(spawnState.anchorItemID, 0) ||
+                null,
+            isBeacon: true,
+        });
+    })
+        .filter(Array.isArray);
+}
+function buildSolarSystemItemRows(solarSystemID, session = null) {
     const numericSystemID = toPositiveInteger(solarSystemID, 0);
     if (!numericSystemID || !worldData.getSolarSystemByID(numericSystemID)) {
         return [];
@@ -359,6 +420,7 @@ function buildSolarSystemItemRows(solarSystemID) {
         ...planetOrbitalState
             .listDefaultCustomsOfficesForSystem(numericSystemID)
             .map(buildPlanetOrbitalMapEntry),
+        ...buildDungeonBeaconMapRows(numericSystemID, session),
     ];
     return rows.filter(Array.isArray).sort(compareSolarSystemItemRows);
 }
@@ -544,9 +606,9 @@ class MapService extends BaseService {
         log.debug("[MapService] GetAllRoamingWeatherSystems called");
         return buildEmptyRowset(ROAMING_WEATHER_COLUMNS);
     }
-    Handle_GetSolarsystemItems(args) {
+    Handle_GetSolarsystemItems(args, session) {
         const solarSystemID = toPositiveInteger(args && args[0], 0);
-        const rows = buildSolarSystemItemRows(solarSystemID);
+        const rows = buildSolarSystemItemRows(solarSystemID, session);
         log.debug(`[MapService] GetSolarsystemItems solarSystemID=${solarSystemID} rows=${rows.length}`);
         return buildRowset(SOLAR_SYSTEM_ITEM_COLUMNS, rows, MAP_ROWSET);
     }
@@ -637,6 +699,7 @@ class MapService extends BaseService {
 }
 module.exports = MapService;
 module.exports._testing = {
+    buildDungeonBeaconMapRows,
     buildCorporationMemberMapRows,
     getSessionCorporationID,
     getSessionSolarSystemID,
