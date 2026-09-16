@@ -8913,9 +8913,17 @@ function syncRuntimeStructureStateChanges(runtime, changePayload: Record<string,
   };
 }
 
+const NON_PHYSICAL_CELESTIAL_KINDS = new Set([
+  "lagrangepoint",
+]);
+
 function buildStaticCelestialEntity(celestial) {
+  const kind = celestial.kind || "celestial";
+  const isNonPhysical = NON_PHYSICAL_CELESTIAL_KINDS.has(
+    String(kind).trim().toLowerCase(),
+  );
   return {
-    kind: celestial.kind || "celestial",
+    kind,
     itemID: celestial.itemID,
     typeID: celestial.typeID,
     groupID: celestial.groupID,
@@ -8925,6 +8933,12 @@ function buildStaticCelestialEntity(celestial) {
     radius: celestial.radius || (celestial.groupID === 10 ? 15000 : 1000),
     position: cloneVector(celestial.position),
     velocity: { x: 0, y: 0, z: 0 },
+    ...(isNonPhysical
+      ? {
+          nonPhysicalCollision: true,
+          nonPhysicalDecloakExempt: true,
+        }
+      : {}),
   };
 }
 
@@ -44814,6 +44828,7 @@ runtimeExports._testing = {
   resolveCompressionFacilityTypelistsForTesting:
     resolveCompressionFacilityTypelistsForEntity,
   buildStaticStargateEntityForTesting: buildStaticStargateEntity,
+  buildStaticCelestialEntityForTesting: buildStaticCelestialEntity,
   buildStaticLandscapeSiteEntityForTesting: buildStaticLandscapeSiteEntity,
   buildStaticPlanetOrbitalEntityForTesting: buildStaticPlanetOrbitalEntity,
   buildChangedStructureRowsForTesting: buildChangedStructureRows,

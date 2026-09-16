@@ -32,6 +32,8 @@ const runtime = require("../src/space/runtime");
 
 const getStationUndockSpawnState =
   runtime._testing.getStationUndockSpawnStateForTesting;
+const buildStaticCelestialEntity =
+  runtime._testing.buildStaticCelestialEntityForTesting;
 
 function buildShip(overrides: Record<string, any> = {}) {
   return {
@@ -150,6 +152,44 @@ test("stations without locator data undock ships beyond the collision sphere", (
     50_000,
     "an explicitly safer fallback offset must not be shortened",
   );
+});
+
+test("co-located Lagrange markers do not eject ships from station undock range", () => {
+  const station = {
+    stationID: 64000001,
+    stationTypeID: 85226,
+    position: { x: 100, y: 200, z: 300 },
+    radius: 33_811,
+    interactionRadius: 33_811,
+  };
+  const spawnState = getStationUndockSpawnState(station, {
+    selectionStrategy: "first",
+  });
+  const lagrangePoint = buildStaticCelestialEntity({
+    itemID: 412000001,
+    typeID: 88163,
+    kind: "lagrangePoint",
+    radius: 105_000,
+    position: station.position,
+  });
+  const ship = buildShip({
+    position: spawnState.position,
+    velocity: { x: 0, y: 0, z: 0 },
+  });
+  const scene = {
+    staticEntities: [lagrangePoint],
+    dynamicEntities: new Map([[ship.itemID, ship]]),
+  };
+
+  assert.equal(lagrangePoint.nonPhysicalCollision, true);
+  assert.equal(lagrangePoint.nonPhysicalDecloakExempt, true);
+  assert.notEqual(getStaticBallFlags(lagrangePoint) & BALL_FLAG.IS_GLOBAL, 0);
+  assert.equal(getStaticBallFlags(lagrangePoint) & BALL_FLAG.IS_MASSIVE, 0);
+  assert.equal(
+    resolveEntityMovementCollision(ship, scene, spawnState.position),
+    null,
+  );
+  assert.deepEqual(ship.position, spawnState.position);
 });
 
 test("server swept-sphere collision prevents tunneling through an object", () => {
