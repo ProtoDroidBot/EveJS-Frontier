@@ -2,9 +2,11 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const log = require(path.join(__dirname, "../utils/logger"));
-const { DEFAULT_MAX_SCENERY_PROPS, buildLandscapeScenePlan, } = require(path.join(__dirname, "./frontierLandscapeScenePlan"));
+const { DEFAULT_MAX_SCENERY_PROPS, DEFAULT_MAX_RESOURCE_PROPS, buildLandscapeScenePlan, } = require(path.join(__dirname, "./frontierLandscapeScenePlan"));
+const { resolveFrontierSalvageResourceProfile, } = require(path.join(__dirname, "../services/mining/frontierSalvageResources"));
 const DEFAULT_MATERIALIZE_RANGE_METERS = 1_000_000;
 const DEFAULT_MAX_NEARBY_SITES = 4;
+const MAX_EXACT_LANDSCAPE_PROPS = 96;
 function toInt(value, fallback = 0) {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? Math.trunc(numeric) : fallback;
@@ -72,7 +74,9 @@ function clearDungeonVisibilityMarkers(entity) {
 }
 function resolveDependencies(options = {}) {
     return {
+        classifyResourceObject: options.classifyResourceObject || resolveFrontierSalvageResourceProfile,
         dungeonService: options.dungeonService || require(path.join(__dirname, "../services/dungeon/dungeonUniverseSiteService")),
+        miningRuntimeState: options.miningRuntimeState || null,
         worldData: options.worldData || require(path.join(__dirname, "./worldData")),
     };
 }
@@ -130,7 +134,8 @@ function materializeLandscapeSite(scene, siteEntity, options = {}) {
             },
         };
     }
-    const { dungeonService, worldData } = resolveDependencies(options);
+    const dependencies = resolveDependencies(options);
+    const { classifyResourceObject, dungeonService, worldData, } = dependencies;
     const ecosystem = worldData.getLandscapeEcosystemByID(siteEntity.ecosystemID);
     if (!ecosystem) {
         return {
@@ -147,25 +152,76 @@ function materializeLandscapeSite(scene, siteEntity, options = {}) {
         };
     }
     const maxSceneryProps = Math.max(1, Math.min(96, toInt(options.maxSceneryProps, DEFAULT_MAX_SCENERY_PROPS)));
-    const plan = buildLandscapeScenePlan(siteEntity, ecosystem, (dungeonID) => worldData.getLandscapeDungeonTemplateByID(dungeonID), { maxSceneryProps });
+    const maxResourceProps = Math.max(1, Math.min(96, toInt(options.maxResourceProps, DEFAULT_MAX_RESOURCE_PROPS)));
+    const plan = buildLandscapeScenePlan(siteEntity, ecosystem, (dungeonID) => worldData.getLandscapeDungeonTemplateByID(dungeonID), {
+        classifyResourceObject,
+        maxResourceProps,
+        maxSceneryProps,
+    });
+    const exactProps = [
+        ...(Array.isArray(plan.resourceProps) ? plan.resourceProps : []),
+        ...(Array.isArray(plan.environmentProps) ? plan.environmentProps : []),
+    ].slice(0, MAX_EXACT_LANDSCAPE_PROPS);
     const entities = dungeonService.buildEnvironmentEntities({ instanceID: siteID }, siteEntity, {}, {
-        environmentProps: plan.environmentProps,
-        exactContentCaps: { environmentProps: maxSceneryProps },
+        environmentProps: exactProps,
+        exactContentCaps: { environmentProps: exactProps.length },
     });
     const addedEntities = [];
+    const resourceEntities = [];
     for (const rawEntity of entities) {
         const entity = clearDungeonVisibilityMarkers(rawEntity);
-        entity.kind = "landscapeEnvironmentProp";
+        const resourceProfile = classifyResourceObject(entity);
+        entity.kind = resourceProfile
+            ? "landscapeSalvageResource"
+            : "landscapeEnvironmentProp";
         entity.landscapeMaterializedSiteContent = true;
         entity.landscapeSiteID = siteID;
         entity.landscapeEcosystemID = toInt(siteEntity.ecosystemID, 0);
         entity.landscapeDunObjectID = toInt(entity.dunObjectID, 0) || null;
+        if (resourceProfile) {
+            const visualTypeID = Math.max(0, toInt(resourceProfile.typeID, entity.typeID));
+            const visualTypeRecord = resourceProfile.typeRecord || {};
+            entity.landscapeSalvageResource = true;
+            entity.beltID = siteID;
+            entity.miningPresentationTypeID = visualTypeID;
+            entity.miningYieldTypeID = Math.max(0, toInt(resourceProfile.yieldTypeID, visualTypeID));
+            entity.miningYieldKind = "salvage";
+            entity.preserveMiningVisualPresentation = true;
+            entity.resourceQuantity = Math.max(1, toInt(resourceProfile.resourceQuantity, 1));
+            entity.skipMiningTemplateResolution = true;
+            entity.suppressSlimGraphicID = false;
+            entity.suppressSlimName = false;
+            entity.slimGraphicID = toInt(entity.graphicID, 0) || null;
+            entity.itemName = String(visualTypeRecord.name || entity.itemName || "Salvageable Wreckage");
+            entity.slimName = entity.itemName;
+        }
         entity.nonPhysicalDecloakExempt = true;
         entity.staticVisibilityScope = "bubble";
         if (scene.addStaticEntity(entity)) {
-            addedEntities.push(entity);
+            if (resourceProfile) {
+                const miningRuntimeState = dependencies.miningRuntimeState || require(path.join(__dirname, "../services/mining/miningRuntimeState"));
+                if (scene._miningRuntimeState &&
+                    miningRuntimeState &&
+                    typeof miningRuntimeState.registerMineableEntity === "function") {
+                    miningRuntimeState.registerMineableEntity(scene, entity, { broadcast: false });
+                }
+            }
+            const entityStillPresent = typeof scene.getEntityByID === "function"
+                ? Boolean(scene.getEntityByID(entity.itemID))
+                : scene.staticEntitiesByID instanceof Map
+                    ? scene.staticEntitiesByID.has(entity.itemID)
+                    : true;
+            if (entityStillPresent) {
+                addedEntities.push(entity);
+                if (resourceProfile) {
+                    resourceEntities.push(entity);
+                }
+            }
         }
     }
+    siteEntity.landscapeSalvageResourceEntityIDs = resourceEntities
+        .map((entity) => toInt(entity && entity.itemID, 0))
+        .filter((entityID) => entityID > 0);
     materializedSiteIDs.add(siteID);
     if (options.broadcast === true &&
         addedEntities.length > 0 &&
@@ -173,7 +229,8 @@ function materializeLandscapeSite(scene, siteEntity, options = {}) {
         scene.broadcastAddBalls(addedEntities, options.excludedSession || null);
     }
     log.info(`[FrontierLandscape] Materialized site=${siteID} ecosystem=${toInt(siteEntity.ecosystemID, 0)} ` +
-        `patterns=${plan.selectedPatterns.length} props=${addedEntities.length} locators=${plan.locators.length}`);
+        `patterns=${plan.selectedPatterns.length} props=${addedEntities.length} ` +
+        `resources=${resourceEntities.length} locators=${plan.locators.length}`);
     return {
         success: true,
         data: {
@@ -182,6 +239,7 @@ function materializeLandscapeSite(scene, siteEntity, options = {}) {
             locators: plan.locators,
             patterns: plan.selectedPatterns,
             propsSpawned: addedEntities.length,
+            resourcesSpawned: resourceEntities.length,
             siteID,
         },
     };
@@ -196,7 +254,7 @@ function dematerializeLandscapeSite(scene, siteID, options = {}) {
     }
     const entities = (Array.isArray(scene.staticEntities) ? scene.staticEntities : [])
         .filter((entity) => (entity &&
-        String(entity.kind || "") === "landscapeEnvironmentProp" &&
+        ["landscapeEnvironmentProp", "landscapeSalvageResource"].includes(String(entity.kind || "")) &&
         toInt(entity.landscapeSiteID, 0) === numericSiteID));
     const removedEntityIDs = [];
     for (const entity of entities) {
@@ -206,6 +264,17 @@ function dematerializeLandscapeSite(scene, siteID, options = {}) {
             nowMs: options.nowMs,
         });
         if (result && result.success === true) {
+            if (String(entity.kind || "") === "landscapeSalvageResource") {
+                const miningRuntimeState = options.miningRuntimeState || (scene._miningRuntimeState
+                    ? require(path.join(__dirname, "../services/mining/miningRuntimeState"))
+                    : null);
+                if (miningRuntimeState &&
+                    typeof miningRuntimeState.clearMineableState === "function") {
+                    miningRuntimeState.clearMineableState(scene, entity.itemID, {
+                        removePersisted: false,
+                    });
+                }
+            }
             removedEntityIDs.push(entity.itemID);
         }
     }

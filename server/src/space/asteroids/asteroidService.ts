@@ -23,11 +23,18 @@ const {
 const {
   getSolarSystemByID,
   getCelestialsForSystem,
+  getLandscapeDungeonTemplateByID,
+  getLandscapeEcosystemByID,
 } = require(path.join(__dirname, "../../space/worldData"));
+const {
+  DEFAULT_MAX_SCENERY_PROPS,
+  buildLandscapeScenePlan,
+} = require(path.join(__dirname, "../frontierLandscapeScenePlan"));
 
 const STATIC_ASTEROID_ITEM_ID_BASE = 5_000_000_000_000;
 const STATIC_ASTEROID_ITEM_ID_STRIDE = 512;
 const ASTEROID_OUTPUT_TYPE_ATTRIBUTE_ID = 6070;
+const MAX_FRONTIER_DUNGEON_ASTEROID_ANCHORS = 12;
 
 const FIELD_SHAPE_PROFILES = Object.freeze({
   default: Object.freeze({
@@ -688,6 +695,133 @@ function buildCurvedAsteroidOffset(profile, asteroidIndex, totalCount, rng) {
   );
 }
 
+function resolveFrontierDungeonObjectAnchors(belt, options: Record<string, any> = {}) {
+  if (!belt || belt.frontierLandscapeSite !== true) {
+    return [];
+  }
+  const resolveEcosystem = options.getLandscapeEcosystemByID || getLandscapeEcosystemByID;
+  const resolveDungeon = options.getLandscapeDungeonTemplateByID || getLandscapeDungeonTemplateByID;
+  const scenePlanBuilder = options.buildLandscapeScenePlan || buildLandscapeScenePlan;
+  const ecosystemID = toPositiveInt(belt.ecosystemID, 0);
+  const ecosystem = ecosystemID > 0 ? resolveEcosystem(ecosystemID) : null;
+  if (!ecosystem || typeof resolveDungeon !== "function" || typeof scenePlanBuilder !== "function") {
+    return [];
+  }
+
+  let plan = null;
+  try {
+    plan = scenePlanBuilder(
+      belt,
+      ecosystem,
+      (dungeonID) => resolveDungeon(dungeonID),
+      { maxSceneryProps: DEFAULT_MAX_SCENERY_PROPS },
+    );
+  } catch (_error) {
+    return [];
+  }
+
+  // Prefer authored resource locators, then fall back to visible scenery. Use one object per
+  // dungeon-pattern occurrence so the field follows the actual layout without making a tiny
+  // cluster around every individual prop.
+  const resourceLocators = (Array.isArray(plan && plan.locators) ? plan.locators : [])
+    .filter((locator) => String(locator && locator.role || "").toLowerCase() === "resourcelocator");
+  const anchorCandidates = [
+    ...resourceLocators,
+    ...(Array.isArray(plan && plan.environmentProps) ? plan.environmentProps : []),
+  ];
+  const anchors: any[] = [];
+  const seenPatternKeys = new Set<any>();
+  for (const candidate of anchorCandidates) {
+    if (!candidate || !candidate.positionOffset || typeof candidate.positionOffset !== "object") {
+      continue;
+    }
+    const keyParts = String(candidate.key || "").split(":");
+    const patternKey = candidate.patternKind
+      ? [
+        "landscape",
+        candidate.patternKind,
+        toPositiveInt(candidate.dungeonID, 0),
+        Math.max(0, Math.trunc(toFiniteNumber(candidate.occurrenceIndex, 0))),
+      ].join(":")
+      : keyParts.length >= 4
+        ? keyParts.slice(0, 4).join(":")
+        : String(candidate.key || `${anchors.length}`);
+    if (seenPatternKeys.has(patternKey)) {
+      continue;
+    }
+    seenPatternKeys.add(patternKey);
+    anchors.push(cloneVector(candidate.positionOffset));
+    if (anchors.length >= MAX_FRONTIER_DUNGEON_ASTEROID_ANCHORS) {
+      break;
+    }
+  }
+  return anchors;
+}
+
+function buildDungeonAnchoredAsteroidOffset(
+  belt,
+  asteroidIndex,
+  rng,
+  dungeonObjectAnchors: any[] = [],
+) {
+  const anchors = dungeonObjectAnchors
+    .filter((anchor) => anchor && typeof anchor === "object")
+    .map((anchor) => cloneVector(anchor));
+  if (anchors.length <= 0) {
+    return null;
+  }
+
+  const normalizedAsteroidIndex = Math.max(0, Math.trunc(toFiniteNumber(asteroidIndex, 0)));
+  const anchor = anchors[normalizedAsteroidIndex % anchors.length];
+  const minimumScatterMeters = Math.max(
+    5_000,
+    toFiniteNumber(belt && belt.dungeonObjectScatterMinMeters, 18_000),
+  );
+  const maximumScatterMeters = Math.max(
+    minimumScatterMeters,
+    toFiniteNumber(belt && belt.dungeonObjectScatterMaxMeters, 48_000),
+  );
+
+  // Sample a spherical shell rather than the normal belt ribbon. Frontier dungeon scenery can sit
+  // far from the warp-in beacon, so a full 3D scatter both follows those objects and gives the field
+  // meaningful X/Y/Z depth. Cube-root interpolation prevents the inner edge becoming too dense.
+  const azimuth = rng() * Math.PI * 2;
+  const verticalUnit = (rng() * 2) - 1;
+  const planarUnit = Math.sqrt(Math.max(0, 1 - (verticalUnit * verticalUnit)));
+  const distance = lerp(
+    minimumScatterMeters,
+    maximumScatterMeters,
+    Math.cbrt(clamp(rng(), 0, 1)),
+  );
+  return addVectors(anchor, {
+    x: Math.cos(azimuth) * planarUnit * distance,
+    y: verticalUnit * distance,
+    z: Math.sin(azimuth) * planarUnit * distance,
+  });
+}
+
+function buildAsteroidOffsetForBelt(
+  belt,
+  fieldProfile,
+  asteroidIndex,
+  totalCount,
+  rng,
+  dungeonObjectAnchors: any[] = [],
+) {
+  if (belt && belt.frontierLandscapeSite === true && dungeonObjectAnchors.length > 0) {
+    const anchoredOffset = buildDungeonAnchoredAsteroidOffset(
+      belt,
+      asteroidIndex,
+      rng,
+      dungeonObjectAnchors,
+    );
+    if (anchoredOffset) {
+      return anchoredOffset;
+    }
+  }
+  return buildCurvedAsteroidOffset(fieldProfile, asteroidIndex, totalCount, rng);
+}
+
 function resolveRecordWeight(record) {
   if (!record || typeof record !== "object") {
     return 1;
@@ -1093,6 +1227,7 @@ function buildSystemOreAsteroidEntity(
   fieldProfile,
   rng,
   pool,
+  dungeonObjectAnchors: any[] = [],
 ) {
   const typeRow = selectSystemOreType(pool, rng);
   if (!typeRow) {
@@ -1103,11 +1238,13 @@ function buildSystemOreAsteroidEntity(
   const yieldTypeRecord = typeRow.miningYieldTypeRecord || typeRow;
 
   const itemID = buildAsteroidItemID(belt.itemID, asteroidIndex + 1);
-  const asteroidOffset = buildCurvedAsteroidOffset(
+  const asteroidOffset = buildAsteroidOffsetForBelt(
+    belt,
     fieldProfile,
     asteroidIndex,
     totalCount,
     rng,
+    dungeonObjectAnchors,
   );
   const position = addVectors(cloneVector(belt.position), asteroidOffset);
   const shellTypeRecord = resolveGeneratedOreAsteroidShellTypeRecord(typeRow, itemID);
@@ -1200,6 +1337,7 @@ function populateBeltField(scene, belt) {
     ? frontierResourcePool
     : buildBeltOreSubset(systemOrePool, enriched.securityClass, rng);
   const legacyClusterOffsets: any[] = [];
+  const dungeonObjectAnchors = resolveFrontierDungeonObjectAnchors(belt);
 
   const spawned: any[] = [];
   for (let asteroidIndex = 0; asteroidIndex < totalCount; asteroidIndex += 1) {
@@ -1212,6 +1350,7 @@ function populateBeltField(scene, belt) {
         fieldProfile,
         rng,
         beltSubset,
+        dungeonObjectAnchors,
       )
       : buildDecorativeFallbackAsteroidEntity(
         belt,
@@ -1343,6 +1482,9 @@ module.exports = {
     buildAsteroidItemID,
     buildCurvedFieldProfile,
     buildCurvedAsteroidOffset,
+    buildDungeonAnchoredAsteroidOffset,
+    buildAsteroidOffsetForBelt,
+    resolveFrontierDungeonObjectAnchors,
     populateBeltField,
     listGeneratedAsteroidEntities,
     buildSystemOrePool,

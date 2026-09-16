@@ -1312,12 +1312,12 @@
 
   "asteroidFieldsEnabled": true,
 
-  // Clears persisted belt asteroid depletion state during server startup so every asteroid belt repopulates.
-  // Matches Tranquility, where mined-out belts come back on downtime rather than on a respawn timer. Generated ice sites keep their own respawn lifecycle and are not affected.
+  // Administrative override that clears persisted belt asteroid depletion state during server startup.
+  // Disabled by default because mined-out asteroids now retain their depletion time across restarts and respawn after 24 hours. Generated ice sites keep their own lifecycle.
   // Valid values: true or false.
-  // Default: true.
+  // Default: false.
 
-  "asteroidBeltStartupReset": true,
+  "asteroidBeltStartupReset": false,
 
   // Turns on generated default billboard props beside empire-space stargates (`0.1+`).
   // These use PublicEveJS bubble-scoped static visibility, matching the existing generated CONCORD scene style.

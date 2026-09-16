@@ -1,7 +1,7 @@
 "use strict";
 
 const FRONTIER_RESOURCE_FIELD_SOURCE = "frontierLandscapeEcosystem";
-const FRONTIER_RESOURCE_FIELD_POLICY_VERSION = 1;
+const FRONTIER_RESOURCE_FIELD_POLICY_VERSION = 2;
 const FRONTIER_SYNTHETIC_RESOURCE_FIELDS_ENABLED = true;
 
 const RESOURCE_FIELD_PROFILES = Object.freeze({
@@ -13,6 +13,8 @@ const RESOURCE_FIELD_PROFILES = Object.freeze({
     fieldRadiusMeters: 38_000,
     clusterRadiusMeters: 6_000,
     verticalSpreadMeters: 5_000,
+    dungeonObjectScatterMinMeters: 18_000,
+    dungeonObjectScatterMaxMeters: 48_000,
   }),
   outer: Object.freeze({
     fieldStyleID: "frontier_outer_resource_field",
@@ -22,6 +24,8 @@ const RESOURCE_FIELD_PROFILES = Object.freeze({
     fieldRadiusMeters: 46_000,
     clusterRadiusMeters: 7_000,
     verticalSpreadMeters: 6_000,
+    dungeonObjectScatterMinMeters: 22_000,
+    dungeonObjectScatterMaxMeters: 58_000,
   }),
   fringe: Object.freeze({
     fieldStyleID: "frontier_fringe_resource_field",
@@ -40,6 +44,8 @@ const RESOURCE_FIELD_PROFILES = Object.freeze({
     fieldRadiusMeters: 42_000,
     clusterRadiusMeters: 6_500,
     verticalSpreadMeters: 5_500,
+    dungeonObjectScatterMinMeters: 20_000,
+    dungeonObjectScatterMaxMeters: 54_000,
   }),
   trojan: Object.freeze({
     fieldStyleID: "frontier_trojan_resource_field",
@@ -49,6 +55,8 @@ const RESOURCE_FIELD_PROFILES = Object.freeze({
     fieldRadiusMeters: 32_000,
     clusterRadiusMeters: 5_000,
     verticalSpreadMeters: 4_500,
+    dungeonObjectScatterMinMeters: 16_000,
+    dungeonObjectScatterMaxMeters: 42_000,
   }),
 });
 
@@ -136,6 +144,8 @@ function buildFrontierResourceFieldDefinition(site) {
     fieldRadiusMeters: profile.fieldRadiusMeters,
     clusterRadiusMeters: profile.clusterRadiusMeters,
     verticalSpreadMeters: profile.verticalSpreadMeters,
+    dungeonObjectScatterMinMeters: profile.dungeonObjectScatterMinMeters,
+    dungeonObjectScatterMaxMeters: profile.dungeonObjectScatterMaxMeters,
     resourceTypeIDs: [...profile.resourceTypeIDs],
     resourceZone,
     asteroidSpawnRule: resourceZone,

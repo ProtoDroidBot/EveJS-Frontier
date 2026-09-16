@@ -5,6 +5,16 @@ const CRUDE_RIFT_GROUP_ID = 4872;
 const CRUDE_MATTER_GROUP_ID = 4593;
 const SPAWN_GUARD_EVENT_TYPE_ID = 3;
 const PREFERRED_RIFT_DUNGEON_IDS = new Set([14001, 14008]);
+const CRUDE_MATTER_QUANTITY_BY_POTENTIAL = Object.freeze({
+    low: 1_000,
+    mid: 10_000,
+    high: 100_000,
+});
+const RIFT_FORMATION_YIELD = Object.freeze({
+    rupture: Object.freeze({ potential: "low", resourceQuantity: 1_000 }),
+    fissure: Object.freeze({ potential: "mid", resourceQuantity: 10_000 }),
+    fault: Object.freeze({ potential: "high", resourceQuantity: 100_000 }),
+});
 function toPositiveInt(value, fallback = 0) {
     const numeric = Math.trunc(Number(value) || 0);
     return numeric > 0 ? numeric : fallback;
@@ -82,6 +92,59 @@ function collectSpawnGuardObjectIDs(dungeon) {
     }
     return objectIDs;
 }
+function classifyCrudeMatterResource(resource) {
+    const typeName = String(resource && resource.itemName || "").trim();
+    const localName = String(resource && resource.localName || "").trim();
+    const classificationText = `${typeName} ${localName}`.toLowerCase();
+    const age = /\byoung\b/.test(classificationText)
+        ? "young"
+        : /\bold\b/.test(classificationText)
+            ? "old"
+            : null;
+    const quality = /\bfine\b/.test(classificationText)
+        ? "fine"
+        : /\brough\b/.test(classificationText)
+            ? "rough"
+            : null;
+    const namedPotential = /\bhigh\b/.test(classificationText)
+        ? "high"
+        : /\b(mid|medium)\b/.test(classificationText)
+            ? "mid"
+            : /\blow\b/.test(classificationText)
+                ? "low"
+                : null;
+    const formation = /\bfaults?\b/.test(classificationText)
+        ? "fault"
+        : /\bfissures?\b/.test(classificationText)
+            ? "fissure"
+            : /\bruptures?\b/.test(classificationText)
+                ? "rupture"
+                : null;
+    const formationYield = formation ? RIFT_FORMATION_YIELD[formation] : null;
+    const potential = formationYield ? formationYield.potential : namedPotential;
+    const resourceQuantity = formationYield
+        ? formationYield.resourceQuantity
+        : potential
+            ? CRUDE_MATTER_QUANTITY_BY_POTENTIAL[potential]
+            : null;
+    const tags = [...new Set(localName
+            .toLowerCase()
+            .replace(/\b(crude|matter|young|old|fine|rough|low|mid|medium|high|ruptures?|fissures?|faults?)\b/g, " ")
+            .split(/[^a-z0-9]+/)
+            .map((tag) => tag.trim())
+            .filter(Boolean))];
+    return {
+        typeID: toPositiveInt(resource && resource.typeID, 0),
+        typeName: typeName || null,
+        localName: localName || null,
+        age,
+        quality,
+        formation,
+        potential,
+        resourceQuantity,
+        tags,
+    };
+}
 function createFrontierRiftAuthority(options = {}) {
     const referenceData = options.referenceData || require(path.join(__dirname, "../services/_shared/referenceData"));
     const itemTypes = options.itemTypes || require(path.join(__dirname, "../services/inventory/itemTypeRegistry"));
@@ -105,9 +168,8 @@ function createFrontierRiftAuthority(options = {}) {
                 continue;
             }
             const spawnGuardObjectIDs = collectSpawnGuardObjectIDs(dungeon);
-            const sceneObjects = objects
+            const authoredSceneObjects = objects
                 .filter((object) => (object.objectID !== entryObjectID &&
-                !spawnGuardObjectIDs.has(object.objectID) &&
                 object.typeID > 0))
                 .map((object) => {
                 const type = itemTypes.resolveItemByTypeID(object.typeID) || {};
@@ -123,7 +185,10 @@ function createFrontierRiftAuthority(options = {}) {
                     ],
                 };
             });
+            const sceneObjects = authoredSceneObjects.filter((object) => !spawnGuardObjectIDs.has(object.objectID));
             const resources = sceneObjects.filter((object) => object.groupID === CRUDE_MATTER_GROUP_ID);
+            const resourceVariants = authoredSceneObjects.filter((object) => object.groupID === CRUDE_MATTER_GROUP_ID);
+            const resourceProfiles = resourceVariants.map(classifyCrudeMatterResource);
             templates.push({
                 ...dungeon,
                 dungeonID,
@@ -133,6 +198,9 @@ function createFrontierRiftAuthority(options = {}) {
                 itemName: String(dungeon.dungeonName || entryType.name || `Rift ${dungeonID}`),
                 preferred: PREFERRED_RIFT_DUNGEON_IDS.has(dungeonID),
                 resources,
+                resourceVariants,
+                resourceProfiles,
+                riftTags: [...new Set(resourceProfiles.flatMap((profile) => profile.tags))],
                 sceneObjects,
                 spawnGuardObjectIDs: [...spawnGuardObjectIDs].sort((left, right) => left - right),
             });
@@ -190,12 +258,15 @@ function getDefaultAuthority() {
     return defaultAuthority;
 }
 module.exports = {
+    CRUDE_MATTER_QUANTITY_BY_POTENTIAL,
     CRUDE_MATTER_GROUP_ID,
     CRUDE_RIFT_GROUP_ID,
     PREFERRED_RIFT_DUNGEON_IDS,
     SPAWN_GUARD_EVENT_TYPE_ID,
+    RIFT_FORMATION_YIELD,
     collectDungeonObjects,
     collectSpawnGuardObjectIDs,
+    classifyCrudeMatterResource,
     createFrontierRiftAuthority,
     getTemplateByDungeonID: (...args) => getDefaultAuthority().getTemplateByDungeonID(...args),
     getTemplateByTypeID: (...args) => getDefaultAuthority().getTemplateByTypeID(...args),

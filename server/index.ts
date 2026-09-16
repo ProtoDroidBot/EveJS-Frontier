@@ -105,10 +105,10 @@ try {
   log.line();
 }
 
-// Repopulate mined-out asteroid belts. Belt fields regenerate deterministically
-// whenever a scene is built, so this only has to drop the persisted depletion
-// state that would otherwise delete each rock again on spawn. Must run before
-// any scene exists. Ice sites respawn on their own lifecycle and are left alone.
+// Optional administrative reset for mined-out asteroid belts. Ordinary
+// depletion now survives restarts and expires after the configured 24-hour
+// lifecycle; this flag remains as an explicit operator override. Must run
+// before any scene exists. Ice sites retain their own lifecycle.
 if (config.asteroidBeltStartupReset === true) {
   try {
     const miningRuntimeState = require(path.join(

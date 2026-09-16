@@ -84,6 +84,7 @@ const {
   getMineableState,
   applyMiningDelta,
   isMineableStaticEntity,
+  respawnDepletedMineables,
 } = require("./miningRuntimeState");
 const {
   getNpcFittedModuleItems,
@@ -645,6 +646,9 @@ function isChargeHeuristicallyValidForYield(chargeItem, mineableState) {
   if (!chargeItem || !mineableState) {
     return true;
   }
+  if (mineableState.yieldKind === "salvage") {
+    return true;
+  }
   if (mineableState.yieldKind !== "ore") {
     return false;
   }
@@ -679,7 +683,7 @@ function isFamilyCompatibleWithYield(snapshot, mineableState) {
   if (snapshot.family === "ice") {
     return mineableState.yieldKind === "ice";
   }
-  return mineableState.yieldKind === "ore";
+  return mineableState.yieldKind === "ore" || mineableState.yieldKind === "salvage";
 }
 
 function isMiningSnapshotCompatibleWithState(snapshot, mineableState) {
@@ -1269,6 +1273,15 @@ function handleSceneCreated(scene) {
 
 function tickScene(scene, now) {
   ensureSceneMiningState(scene);
+  respawnDepletedMineables(scene, Date.now());
+  try {
+    const frontierRiftSceneService = lazyRequire("../../space/frontierRiftSceneService");
+    if (frontierRiftSceneService && typeof frontierRiftSceneService.tickScene === "function") {
+      frontierRiftSceneService.tickScene(scene, Date.now());
+    }
+  } catch (_) {
+    // Frontier Rift lifecycle is optional in isolated mining runtime tests.
+  }
   if (config.miningNpcFleetAutoMineEnabled !== true) {
     return;
   }

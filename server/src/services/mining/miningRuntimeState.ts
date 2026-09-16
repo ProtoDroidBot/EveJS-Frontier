@@ -29,8 +29,9 @@ const {
 } = require(path.join(__dirname, "../../space/destiny/commands/mining.js"));
 
 const MINING_RUNTIME_TABLE = "miningRuntimeState";
-const MINING_RUNTIME_VERSION = 1;
+const MINING_RUNTIME_VERSION = 2;
 const ASTEROID_DEPLETION_DESTRUCTION_EFFECT_ID = 2;
+const DEPLETED_MINEABLE_RESPAWN_DELAY_MS = 24 * 60 * 60 * 1000;
 const WORMHOLE_SYSTEM_MIN = 31_000_000;
 const WORMHOLE_SYSTEM_MAX = 31_999_999;
 const ORE_GRADE_VARIANTS = Object.freeze([
@@ -138,6 +139,17 @@ function isWormholeSystemID(systemID) {
 }
 
 function normalizeStateRecord(record: Record<string, any> = {}) {
+  const remainingQuantity = Math.max(0, toInt(record.remainingQuantity, 0));
+  const updatedAtMs = Math.max(0, toInt(record.updatedAtMs, Date.now()));
+  const depletedAtMs = remainingQuantity <= 0
+    ? Math.max(0, toInt(record.depletedAtMs, updatedAtMs))
+    : 0;
+  const respawnAtMs = remainingQuantity <= 0 && depletedAtMs > 0
+    ? Math.max(
+      depletedAtMs + DEPLETED_MINEABLE_RESPAWN_DELAY_MS,
+      toInt(record.respawnAtMs, 0),
+    )
+    : 0;
   return {
     version: MINING_RUNTIME_VERSION,
     entityID: toInt(record.entityID, 0),
@@ -148,9 +160,11 @@ function normalizeStateRecord(record: Record<string, any> = {}) {
     yieldKind: String(record.yieldKind || "").trim().toLowerCase() || null,
     unitVolume: Math.max(0.000001, toFiniteNumber(record.unitVolume, 1)),
     originalQuantity: Math.max(0, toInt(record.originalQuantity, 0)),
-    remainingQuantity: Math.max(0, toInt(record.remainingQuantity, 0)),
+    remainingQuantity,
     originalRadius: Math.max(1, toFiniteNumber(record.originalRadius, 1)),
-    updatedAtMs: Math.max(0, toInt(record.updatedAtMs, Date.now())),
+    updatedAtMs,
+    depletedAtMs,
+    respawnAtMs,
   };
 }
 
@@ -542,9 +556,11 @@ function applyYieldPresentationToEntity(entity, state, summary = null) {
   }
 
   const resolvedGraphicID = toInt(
-    (resolvedPresentation && resolvedPresentation.graphicID) ||
-      entity.graphicID ||
-      entity.slimGraphicID,
+    entity.preserveMiningVisualPresentation === true
+      ? entity.graphicID || entity.slimGraphicID
+      : (resolvedPresentation && resolvedPresentation.graphicID) ||
+        entity.graphicID ||
+        entity.slimGraphicID,
     0,
   );
   if (resolvedGraphicID > 0) {
@@ -552,7 +568,10 @@ function applyYieldPresentationToEntity(entity, state, summary = null) {
     entity.slimGraphicID = resolvedGraphicID;
   }
 
-  if (state.remainingQuantity > 0) {
+  if (
+    state.remainingQuantity > 0 &&
+    entity.preserveMiningVisualPresentation !== true
+  ) {
     const minimumRadiusRatio = Math.max(
       0.01,
       toFiniteNumber(config.miningDepletedAsteroidRadiusRatio, 0.25),
@@ -603,6 +622,52 @@ function shouldPersistMineableState(entity) {
   );
 }
 
+function shouldRespawnDepletedMineable(entity) {
+  if (!entity) {
+    return false;
+  }
+  return (
+    normalizeLowerText(entity.kind, "") === "asteroid"
+  );
+}
+
+function getDepletedMineableRespawnAtMs(entity, state) {
+  if (
+    !shouldRespawnDepletedMineable(entity) ||
+    !state ||
+    toInt(state.remainingQuantity, 0) > 0
+  ) {
+    return 0;
+  }
+  const depletedAtMs = Math.max(
+    0,
+    toInt(state.depletedAtMs, toInt(state.updatedAtMs, 0)),
+  );
+  if (depletedAtMs <= 0) {
+    return 0;
+  }
+  return Math.max(
+    depletedAtMs + DEPLETED_MINEABLE_RESPAWN_DELAY_MS,
+    toInt(state.respawnAtMs, 0),
+  );
+}
+
+function isDepletedMineableRespawnDue(entity, state, nowMs = Date.now()) {
+  const respawnAtMs = getDepletedMineableRespawnAtMs(entity, state);
+  return respawnAtMs > 0 && toInt(nowMs, 0) >= respawnAtMs;
+}
+
+function buildMineableRespawnTemplate(entity) {
+  const template = cloneValue(entity);
+  if (!template) {
+    return null;
+  }
+  template.bubbleID = null;
+  template.publicGridKey = null;
+  template.publicGridClusterKey = null;
+  return template;
+}
+
 function isGeneratedIceMineableEntity(entity) {
   return Boolean(
     entity &&
@@ -618,6 +683,8 @@ function buildSceneCache(scene, persistedByEntityID: Record<string, any> = {}) {
     version: MINING_RUNTIME_VERSION,
     persistedByEntityID,
     byEntityID: new Map(),
+    respawnTemplatesByEntityID: new Map(),
+    nextRespawnAtMs: 0,
   };
 }
 
@@ -646,7 +713,9 @@ function areMiningStatesEquivalent(left, right) {
     Math.abs(toFiniteNumber(left.unitVolume, 0) - toFiniteNumber(right.unitVolume, 0)) < 0.000001 &&
     toInt(left.originalQuantity, 0) === toInt(right.originalQuantity, 0) &&
     toInt(left.remainingQuantity, 0) === toInt(right.remainingQuantity, 0) &&
-    Math.abs(toFiniteNumber(left.originalRadius, 0) - toFiniteNumber(right.originalRadius, 0)) < 0.000001
+    Math.abs(toFiniteNumber(left.originalRadius, 0) - toFiniteNumber(right.originalRadius, 0)) < 0.000001 &&
+    toInt(left.depletedAtMs, 0) === toInt(right.depletedAtMs, 0) &&
+    toInt(left.respawnAtMs, 0) === toInt(right.respawnAtMs, 0)
   );
 }
 
@@ -688,7 +757,7 @@ function writePersistedState(scene, state, options: Record<string, any> = {}) {
   return true;
 }
 
-function removePersistedState(scene, entityID) {
+function removePersistedState(scene, entityID, options: Record<string, any> = {}) {
   const systemID = toInt(scene && scene.systemID, 0);
   const normalizedEntityID = toInt(entityID, 0);
   if (systemID <= 0 || normalizedEntityID <= 0) {
@@ -700,12 +769,16 @@ function removePersistedState(scene, entityID) {
     `/systems/${String(systemID)}/entities/${String(normalizedEntityID)}`,
   );
   const persistedByEntityID =
-    scene &&
-    scene._miningRuntimeState &&
-    scene._miningRuntimeState.persistedByEntityID &&
-    typeof scene._miningRuntimeState.persistedByEntityID === "object"
-      ? scene._miningRuntimeState.persistedByEntityID
-      : null;
+    options.persistedByEntityID && typeof options.persistedByEntityID === "object"
+      ? options.persistedByEntityID
+      : (
+          scene &&
+          scene._miningRuntimeState &&
+          scene._miningRuntimeState.persistedByEntityID &&
+          typeof scene._miningRuntimeState.persistedByEntityID === "object"
+            ? scene._miningRuntimeState.persistedByEntityID
+            : null
+        );
   if (persistedByEntityID) {
     delete persistedByEntityID[String(normalizedEntityID)];
   }
@@ -863,7 +936,117 @@ function isMineableStaticEntity(entity) {
   }
 
   const typeRecord = resolveItemByTypeID(toInt(entity.typeID, 0)) || null;
-  return Boolean(typeRecord && (classifyMiningMaterialType(typeRecord) || isDecorativeAsteroidType(typeRecord)));
+  const classification = typeRecord
+    ? classifyMiningMaterialType(typeRecord)
+    : null;
+  if (classification && classification.kind === "salvage") {
+    return entity.landscapeSalvageResource === true;
+  }
+  return Boolean(typeRecord && (classification || isDecorativeAsteroidType(typeRecord)));
+}
+
+function recomputeNextDepletedMineableRespawn(cache) {
+  if (!cache || !(cache.byEntityID instanceof Map)) {
+    return 0;
+  }
+  let nextRespawnAtMs = 0;
+  for (const [entityID, state] of cache.byEntityID.entries()) {
+    const template = cache.respawnTemplatesByEntityID instanceof Map
+      ? cache.respawnTemplatesByEntityID.get(entityID)
+      : null;
+    const respawnAtMs = getDepletedMineableRespawnAtMs(template, state);
+    if (respawnAtMs > 0 && (nextRespawnAtMs <= 0 || respawnAtMs < nextRespawnAtMs)) {
+      nextRespawnAtMs = respawnAtMs;
+    }
+  }
+  cache.nextRespawnAtMs = nextRespawnAtMs;
+  return nextRespawnAtMs;
+}
+
+function scheduleDepletedMineableRespawn(cache, entity, state) {
+  const respawnAtMs = getDepletedMineableRespawnAtMs(entity, state);
+  if (
+    respawnAtMs > 0 &&
+    (toInt(cache && cache.nextRespawnAtMs, 0) <= 0 || respawnAtMs < cache.nextRespawnAtMs)
+  ) {
+    cache.nextRespawnAtMs = respawnAtMs;
+  }
+  return respawnAtMs;
+}
+
+function registerMineableEntityInCache(
+  scene,
+  entity,
+  cache,
+  options: Record<string, any> = {},
+) {
+  if (!scene || !entity || !cache || !isMineableStaticEntity(entity)) {
+    return null;
+  }
+
+  const entityID = toInt(entity.itemID, 0);
+  if (entityID <= 0) {
+    return null;
+  }
+  entity.systemID = toInt(scene.systemID, 0);
+
+  const persistState = shouldPersistMineableState(entity);
+  const rawPersistedState = persistState
+    ? cache.persistedByEntityID[String(entityID)] || null
+    : null;
+  const existingCachedState = cache.byEntityID.get(entityID) || null;
+  let persistedState = rawPersistedState || existingCachedState;
+  if (
+    persistedState &&
+    isDepletedMineableRespawnDue(entity, persistedState, options.nowMs ?? Date.now())
+  ) {
+    removePersistedState(scene, entityID, {
+      persistedByEntityID: cache.persistedByEntityID,
+    });
+    cache.byEntityID.delete(entityID);
+    persistedState = null;
+  }
+
+  if (shouldRespawnDepletedMineable(entity)) {
+    const template = buildMineableRespawnTemplate(entity);
+    if (template) {
+      cache.respawnTemplatesByEntityID.set(entityID, template);
+    }
+  }
+
+  const state = buildMineableState(scene, entity, persistedState);
+  if (!state) {
+    return null;
+  }
+  cache.byEntityID.set(entityID, state);
+
+  if (state.remainingQuantity <= 0) {
+    if (typeof scene.removeStaticEntity === "function") {
+      scene.removeStaticEntity(entityID, {
+        broadcast: options.broadcast === true,
+        nowMs: options.nowMs,
+      });
+    }
+    if (persistState) {
+      writePersistedState(scene, state, {
+        existingPersistedState: rawPersistedState,
+        persistedByEntityID: cache.persistedByEntityID,
+        persistBaseline: true,
+      });
+    }
+    scheduleDepletedMineableRespawn(cache, entity, state);
+    return state;
+  }
+
+  applyYieldPresentationToEntity(entity, state, options.presentationSummary || null);
+  if (persistState) {
+    writePersistedState(scene, state, {
+      existingPersistedState: rawPersistedState,
+      persistedByEntityID: cache.persistedByEntityID,
+      persistBaseline: false,
+    });
+  }
+  return state;
 }
 
 function ensureSceneMiningState(scene) {
@@ -877,51 +1060,23 @@ function ensureSceneMiningState(scene) {
   const persistedByEntityID = readPersistedSystemState(scene.systemID);
   const cache = buildSceneCache(scene, persistedByEntityID);
   const presentationSummary = createMiningPresentationSummary(scene.systemID);
+  scene._miningRuntimeState = cache;
 
   for (const entity of [...(scene.staticEntities || [])]) {
-    if (!isMineableStaticEntity(entity)) {
-      continue;
-    }
-
-    entity.systemID = toInt(scene && scene.systemID, 0);
-    const persistState = shouldPersistMineableState(entity);
-    const persistedState = persistState
-      ? persistedByEntityID[String(toInt(entity.itemID, 0))] || null
-      : null;
-    const state = buildMineableState(scene, entity, persistedState);
-    if (!state) {
-      continue;
-    }
-
-    if (state.remainingQuantity <= 0) {
-      scene.removeStaticEntity(entity.itemID, {
-        broadcast: false,
-      });
-      cache.byEntityID.set(state.entityID, state);
-      if (persistState) {
-        writePersistedState(scene, state, {
-          existingPersistedState: persistedState,
-          persistedByEntityID,
-          persistBaseline: true,
-        });
-      }
-      continue;
-    }
-
-    applyYieldPresentationToEntity(entity, state, presentationSummary);
-    cache.byEntityID.set(state.entityID, state);
-    if (persistState) {
-      writePersistedState(scene, state, {
-        existingPersistedState: persistedState,
-        persistedByEntityID,
-        persistBaseline: false,
-      });
-    }
+    registerMineableEntityInCache(scene, entity, cache, {
+      broadcast: false,
+      nowMs: Date.now(),
+      presentationSummary,
+    });
   }
 
-  scene._miningRuntimeState = cache;
   logMiningPresentationSummary(scene, presentationSummary);
   return cache;
+}
+
+function registerMineableEntity(scene, entity, options: Record<string, any> = {}) {
+  const cache = ensureSceneMiningState(scene);
+  return registerMineableEntityInCache(scene, entity, cache, options);
 }
 
 function getMineableState(scene, entityID) {
@@ -929,7 +1084,19 @@ function getMineableState(scene, entityID) {
   if (!cache) {
     return null;
   }
-  return cache.byEntityID.get(toInt(entityID, 0)) || null;
+  const normalizedEntityID = toInt(entityID, 0);
+  const cachedState = cache.byEntityID.get(normalizedEntityID) || null;
+  if (cachedState) {
+    return cachedState;
+  }
+  const entity = scene && typeof scene.getEntityByID === "function"
+    ? scene.getEntityByID(normalizedEntityID)
+    : scene && scene.staticEntitiesByID instanceof Map
+      ? scene.staticEntitiesByID.get(normalizedEntityID) || null
+      : null;
+  return entity
+    ? registerMineableEntityInCache(scene, entity, cache, { broadcast: false })
+    : null;
 }
 
 function updateMineableState(scene, entity, nextState, options: Record<string, any> = {}) {
@@ -941,7 +1108,26 @@ function updateMineableState(scene, entity, nextState, options: Record<string, a
     };
   }
 
-  const normalizedState = normalizeStateRecord(nextState);
+  const entityID = toInt(nextState.entityID, toInt(entity.itemID, 0));
+  const previousState = cache.byEntityID.get(entityID) || null;
+  const nextStateWithLifecycle = { ...nextState, entityID };
+  if (shouldRespawnDepletedMineable(entity)) {
+    if (toInt(nextState.remainingQuantity, 0) <= 0) {
+      const existingDepletedAtMs = previousState && toInt(previousState.remainingQuantity, 0) <= 0
+        ? toInt(previousState.depletedAtMs, 0)
+        : 0;
+      const depletedAtMs = existingDepletedAtMs > 0
+        ? existingDepletedAtMs
+        : Math.max(0, toInt(options.respawnClockNowMs, Date.now()));
+      nextStateWithLifecycle.depletedAtMs = depletedAtMs;
+      nextStateWithLifecycle.respawnAtMs =
+        depletedAtMs + DEPLETED_MINEABLE_RESPAWN_DELAY_MS;
+    } else {
+      nextStateWithLifecycle.depletedAtMs = 0;
+      nextStateWithLifecycle.respawnAtMs = 0;
+    }
+  }
+  const normalizedState = normalizeStateRecord(nextStateWithLifecycle);
   if (shouldPersistMineableState(entity)) {
     writePersistedState(scene, normalizedState, {
       existingPersistedState:
@@ -950,6 +1136,11 @@ function updateMineableState(scene, entity, nextState, options: Record<string, a
     });
   }
   cache.byEntityID.set(normalizedState.entityID, normalizedState);
+  if (normalizedState.remainingQuantity <= 0) {
+    scheduleDepletedMineableRespawn(cache, entity, normalizedState);
+  } else if (previousState && toInt(previousState.remainingQuantity, 0) <= 0) {
+    recomputeNextDepletedMineableRespawn(cache);
+  }
 
   if (normalizedState.remainingQuantity <= 0) {
     if (typeof scene.clearAllTargetingForEntity === "function") {
@@ -1000,6 +1191,78 @@ function updateMineableState(scene, entity, nextState, options: Record<string, a
       state: normalizedState,
     },
   };
+}
+
+function clearMineableState(scene, entityID, options: Record<string, any> = {}) {
+  const cache = ensureSceneMiningState(scene);
+  const normalizedEntityID = toInt(entityID, 0);
+  if (!cache || normalizedEntityID <= 0) {
+    return false;
+  }
+  if (options.removePersisted !== false) {
+    removePersistedState(scene, normalizedEntityID, {
+      persistedByEntityID: cache.persistedByEntityID,
+    });
+  }
+  cache.byEntityID.delete(normalizedEntityID);
+  cache.respawnTemplatesByEntityID.delete(normalizedEntityID);
+  recomputeNextDepletedMineableRespawn(cache);
+  return true;
+}
+
+function respawnDepletedMineables(scene, nowMs = Date.now(), options: Record<string, any> = {}) {
+  const cache = ensureSceneMiningState(scene);
+  const normalizedNowMs = Math.max(0, toInt(nowMs, Date.now()));
+  if (
+    !cache ||
+    toInt(cache.nextRespawnAtMs, 0) <= 0 ||
+    normalizedNowMs < toInt(cache.nextRespawnAtMs, 0)
+  ) {
+    return [];
+  }
+
+  const respawned: any[] = [];
+  for (const [entityID, state] of [...cache.byEntityID.entries()]) {
+    const template = cache.respawnTemplatesByEntityID.get(entityID) || null;
+    if (!template || !isDepletedMineableRespawnDue(template, state, normalizedNowMs)) {
+      continue;
+    }
+    const existingEntity = typeof scene.getEntityByID === "function"
+      ? scene.getEntityByID(entityID)
+      : scene.staticEntitiesByID instanceof Map
+        ? scene.staticEntitiesByID.get(entityID) || null
+        : null;
+    if (existingEntity) {
+      continue;
+    }
+
+    const entity = buildMineableRespawnTemplate(template);
+    if (!entity || typeof scene.addStaticEntity !== "function" || !scene.addStaticEntity(entity)) {
+      continue;
+    }
+    removePersistedState(scene, entityID, {
+      persistedByEntityID: cache.persistedByEntityID,
+    });
+    const freshState = buildMineableState(scene, entity, null);
+    if (!freshState) {
+      scene.removeStaticEntity(entityID, { broadcast: false });
+      continue;
+    }
+    cache.byEntityID.set(entityID, freshState);
+    cache.respawnTemplatesByEntityID.set(entityID, buildMineableRespawnTemplate(entity));
+    applyYieldPresentationToEntity(entity, freshState);
+    respawned.push(entity);
+  }
+
+  recomputeNextDepletedMineableRespawn(cache);
+  if (
+    options.broadcast !== false &&
+    respawned.length > 0 &&
+    typeof scene.broadcastAddBalls === "function"
+  ) {
+    scene.broadcastAddBalls(respawned, options.excludedSession || null);
+  }
+  return respawned;
 }
 
 function resolveOreMinedSession(options: Record<string, any> = {}) {
@@ -1444,6 +1707,29 @@ function applyMiningDelta(scene, entity, minedQuantity, wastedQuantity, options:
   if (generatedMiningSite) {
     deltaData.generatedMiningSite = generatedMiningSite;
   }
+  if (deltaData.depleted && entity && entity.frontierRiftResource === true) {
+    try {
+      const frontierRiftSceneService = require(path.join(
+        __dirname,
+        "../../space/frontierRiftSceneService",
+      ));
+      if (
+        frontierRiftSceneService &&
+        typeof frontierRiftSceneService.handleResourceDepleted === "function"
+      ) {
+        deltaData.frontierRiftSite = frontierRiftSceneService.handleResourceDepleted(
+          scene,
+          entity,
+          {
+            broadcast: options.broadcast !== false,
+            nowMs: Math.max(0, toInt(options.respawnClockNowMs, Date.now())),
+          },
+        );
+      }
+    } catch (_) {
+      // Frontier Rift lifecycle is optional in isolated mining-state tests.
+    }
+  }
   notifyOreMined(scene, entity, currentState, deltaData, {
     ...options,
     wastedQuantity,
@@ -1676,10 +1962,14 @@ function resetSceneMiningState(scene, options: Record<string, any> = {}) {
 
 module.exports = {
   MINING_RUNTIME_TABLE,
+  DEPLETED_MINEABLE_RESPAWN_DELAY_MS,
   ensureSceneMiningState,
+  registerMineableEntity,
   getMineableState,
   updateMineableState,
   applyMiningDelta,
+  clearMineableState,
+  respawnDepletedMineables,
   isMineableStaticEntity,
   shouldPersistMineableState,
   clearPersistedSystemState,
@@ -1693,6 +1983,9 @@ module.exports = {
     getTemplateEntriesForFieldStyle,
     buildTemplateEntriesForOreDefinition,
     applyYieldPresentationToEntity,
+    getDepletedMineableRespawnAtMs,
+    isDepletedMineableRespawnDue,
+    shouldRespawnDepletedMineable,
     ORE_GRADE_VARIANTS,
   },
 };

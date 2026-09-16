@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const { resolveItemByTypeID } = require(path.join(__dirname, "../inventory/itemTypeRegistry"));
 const { MINING_HOLD_FLAGS, MINING_HOLD_DEFINITIONS, getMiningHoldDefinitionByFlag, } = require("./miningConstants");
+const { isFrontierSalvageMiningType, } = require("./frontierSalvageResources");
 const MINING_SHIP_BAY_FLAGS = Object.freeze(MINING_HOLD_DEFINITIONS.map((definition) => definition.flagID));
 const miningMaterialKindCache = new Map();
 function toInt(value, fallback = 0) {
@@ -31,7 +32,11 @@ function computeMiningMaterialKind(typeRecord) {
         return null;
     }
     const categoryID = toInt(typeRecord.categoryID, 0);
+    const groupID = toInt(typeRecord.groupID, 0);
     const groupName = String(typeRecord.groupName || "").trim().toLowerCase();
+    if (isFrontierSalvageMiningType(groupID)) {
+        return "salvage";
+    }
     if (categoryID === 2 && groupName === "harvestable cloud") {
         return "gas";
     }

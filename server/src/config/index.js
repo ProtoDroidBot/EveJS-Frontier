@@ -1886,12 +1886,12 @@ const CONFIG_ENTRY_DEFINITIONS = [
     },
     {
         key: "asteroidBeltStartupReset",
-        defaultValue: true,
+        defaultValue: false,
         envVar: "EVEJS_ASTEROID_BELT_STARTUP_RESET",
         envType: "boolean",
         description: [
-            "Clears persisted belt asteroid depletion state during server startup so every asteroid belt repopulates.",
-            "Matches Tranquility, where mined-out belts come back on downtime rather than on a respawn timer. Generated ice sites keep their own respawn lifecycle and are not affected.",
+            "Administrative override that clears persisted belt asteroid depletion state during server startup.",
+            "Disabled by default because mined-out asteroids now retain their depletion time across restarts and respawn after 24 hours. Generated ice sites keep their own lifecycle.",
         ],
         validValues: "true or false.",
     },

@@ -45,6 +45,9 @@ const {
 const {
   ENTITY_TYPE,
 } = require("../../entityConstants");
+const {
+  resolveEntityCollisionPresentation,
+} = require("../collision/collisionBundle");
 
 const FREE_MODE_BY_NAME = Object.freeze({
   GOTO: BALL_MODE.GOTO,
@@ -552,8 +555,9 @@ function appendFrontierCommonBallTail(chunks, entity, options: Record<string, an
   pushDouble(chunks, orientation.x);
   pushDouble(chunks, orientation.y);
   pushDouble(chunks, orientation.z);
-  pushInt32(chunks, toInt32(entity && entity.collisionID, -1));
-  pushFloat(chunks, toFiniteNumber(entity && entity.collisionScale, 1));
+  const collision = resolveEntityCollisionPresentation(entity);
+  pushInt32(chunks, toInt32(collision.collisionID, -1));
+  pushFloat(chunks, collision.collisionScale);
 }
 
 function appendFrontierFreeBallConfiguration(chunks, entity) {

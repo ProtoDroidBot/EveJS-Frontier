@@ -29,7 +29,7 @@ const { computeMiningResult, } = require("./miningMath");
 const { isMiningEffectRecord, buildMiningModuleSnapshot, } = require("./miningDogma");
 const commandBurstRuntime = require(path.join(__dirname, "../../space/modules/commandBurstRuntime"));
 const { getLocationModifierSourcesForSystem, } = require(path.join(__dirname, "../exploration/wormholes/wormholeEnvironmentRuntime"));
-const { ensureSceneMiningState, getMineableState, applyMiningDelta, isMineableStaticEntity, } = require("./miningRuntimeState");
+const { ensureSceneMiningState, getMineableState, applyMiningDelta, isMineableStaticEntity, respawnDepletedMineables, } = require("./miningRuntimeState");
 const { getNpcFittedModuleItems, getNpcLoadedChargeForModule, isNativeNpcEntity, } = require(path.join(__dirname, "../../space/npc/npcEquipment"));
 const { buildKeyVal, currentFileTime, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const INV_UPDATE_LOCATION = 3;
@@ -437,6 +437,9 @@ function isChargeHeuristicallyValidForYield(chargeItem, mineableState) {
     if (!chargeItem || !mineableState) {
         return true;
     }
+    if (mineableState.yieldKind === "salvage") {
+        return true;
+    }
     if (mineableState.yieldKind !== "ore") {
         return false;
     }
@@ -466,7 +469,7 @@ function isFamilyCompatibleWithYield(snapshot, mineableState) {
     if (snapshot.family === "ice") {
         return mineableState.yieldKind === "ice";
     }
-    return mineableState.yieldKind === "ore";
+    return mineableState.yieldKind === "ore" || mineableState.yieldKind === "salvage";
 }
 function isMiningSnapshotCompatibleWithState(snapshot, mineableState) {
     return isFamilyCompatibleWithYield(snapshot, mineableState);
@@ -903,6 +906,16 @@ function handleSceneCreated(scene) {
 }
 function tickScene(scene, now) {
     ensureSceneMiningState(scene);
+    respawnDepletedMineables(scene, Date.now());
+    try {
+        const frontierRiftSceneService = lazyRequire("../../space/frontierRiftSceneService");
+        if (frontierRiftSceneService && typeof frontierRiftSceneService.tickScene === "function") {
+            frontierRiftSceneService.tickScene(scene, Date.now());
+        }
+    }
+    catch (_) {
+        // Frontier Rift lifecycle is optional in isolated mining runtime tests.
+    }
     if (config.miningNpcFleetAutoMineEnabled !== true) {
         return;
     }

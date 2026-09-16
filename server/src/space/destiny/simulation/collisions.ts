@@ -2,6 +2,11 @@ import type { Vector3 } from "./../../types";
 
 "use strict";
 
+const {
+  resolveEntityCollisionPresentation,
+  rotateVectorWxyz,
+} = require("../collision/collisionBundle");
+
 const NON_PHYSICAL_COLLISION_KINDS = new Set([
   "asteroidbelt",
   "landscapesite",
@@ -273,6 +278,325 @@ function findLineSegmentSphereIntersection(start, end, center, radius) {
   };
 }
 
+function closestPointOnSegment(point, start, end) {
+  const segment = subtractVectors(end, start);
+  const lengthSquared = magnitudeSquared(segment);
+  if (lengthSquared <= COLLISION_MOTION_EPSILON_SQUARED) {
+    return cloneVector(start);
+  }
+  const fraction = Math.max(
+    0,
+    Math.min(1, dotProduct(subtractVectors(point, start), segment) / lengthSquared),
+  );
+  return addVectors(start, scaleVector(segment, fraction));
+}
+
+function findSweptPointAgainstSphere(start, end, center, radius) {
+  const resolvedRadius = Math.max(0, toFiniteNumber(radius, 0));
+  if (resolvedRadius <= 0) {
+    return null;
+  }
+  const startOffset = subtractVectors(start, center);
+  const startDistanceSquared = magnitudeSquared(startOffset);
+  if (startDistanceSquared <= resolvedRadius * resolvedRadius) {
+    const motion = subtractVectors(end, start);
+    return {
+      fraction: 0,
+      normal: normalizeVector(
+        startOffset,
+        normalizeVector(scaleVector(motion, -1)),
+      ),
+      penetrationDepth:
+        resolvedRadius - Math.sqrt(Math.max(0, startDistanceSquared)),
+      startedOverlapping: true,
+    };
+  }
+  const intersection = findLineSegmentSphereIntersection(
+    start,
+    end,
+    center,
+    resolvedRadius,
+  );
+  if (!intersection) {
+    return null;
+  }
+  return {
+    fraction: intersection.fraction,
+    normal: normalizeVector(subtractVectors(intersection.position, center)),
+    penetrationDepth: 0,
+    startedOverlapping: false,
+  };
+}
+
+function findSweptPointAgainstCapsule(start, end, capsuleStart, capsuleEnd, radius) {
+  const resolvedRadius = Math.max(0, toFiniteNumber(radius, 0));
+  if (resolvedRadius <= 0) {
+    return null;
+  }
+  const capsuleAxis = subtractVectors(capsuleEnd, capsuleStart);
+  const axisLengthSquared = magnitudeSquared(capsuleAxis);
+  if (axisLengthSquared <= COLLISION_MOTION_EPSILON_SQUARED) {
+    return findSweptPointAgainstSphere(start, end, capsuleStart, resolvedRadius);
+  }
+
+  const startClosest = closestPointOnSegment(start, capsuleStart, capsuleEnd);
+  const startOffset = subtractVectors(start, startClosest);
+  const startDistanceSquared = magnitudeSquared(startOffset);
+  if (startDistanceSquared <= resolvedRadius * resolvedRadius) {
+    const motion = subtractVectors(end, start);
+    return {
+      fraction: 0,
+      normal: normalizeVector(
+        startOffset,
+        normalizeVector(scaleVector(motion, -1)),
+      ),
+      penetrationDepth:
+        resolvedRadius - Math.sqrt(Math.max(0, startDistanceSquared)),
+      startedOverlapping: true,
+    };
+  }
+
+  const direction = subtractVectors(end, start);
+  const directionLengthSquared = magnitudeSquared(direction);
+  if (directionLengthSquared <= COLLISION_MOTION_EPSILON_SQUARED) {
+    return null;
+  }
+
+  // Analytic ray/capsule intersection. The cylinder body and both spherical
+  // end caps are tested separately; the earliest segment fraction wins.
+  const originFromA = subtractVectors(start, capsuleStart);
+  const baba = axisLengthSquared;
+  const bard = dotProduct(capsuleAxis, direction);
+  const baoa = dotProduct(capsuleAxis, originFromA);
+  const rdoa = dotProduct(direction, originFromA);
+  const oaoa = magnitudeSquared(originFromA);
+  const a = (baba * directionLengthSquared) - (bard * bard);
+  const b = (baba * rdoa) - (baoa * bard);
+  const c = (baba * oaoa) - (baoa * baoa) -
+    (resolvedRadius * resolvedRadius * baba);
+
+  const candidates = [];
+  const discriminant = (b * b) - (a * c);
+  if (Math.abs(a) > COLLISION_MOTION_EPSILON_SQUARED && discriminant >= 0) {
+    const fraction = (-b - Math.sqrt(Math.max(0, discriminant))) / a;
+    const axisProjection = baoa + (fraction * bard);
+    if (fraction >= 0 && fraction <= 1 && axisProjection > 0 && axisProjection < baba) {
+      candidates.push(fraction);
+    }
+  }
+  for (const capCenter of [capsuleStart, capsuleEnd]) {
+    const capHit = findLineSegmentSphereIntersection(
+      start,
+      end,
+      capCenter,
+      resolvedRadius,
+    );
+    if (capHit) {
+      candidates.push(capHit.fraction);
+    }
+  }
+  if (candidates.length === 0) {
+    return null;
+  }
+  const fraction = Math.min(...candidates);
+  const impact = addVectors(start, scaleVector(direction, fraction));
+  const closest = closestPointOnSegment(impact, capsuleStart, capsuleEnd);
+  return {
+    fraction,
+    normal: normalizeVector(
+      subtractVectors(impact, closest),
+      normalizeVector(scaleVector(direction, -1)),
+    ),
+    penetrationDepth: 0,
+    startedOverlapping: false,
+  };
+}
+
+function buildBoxFrame(box) {
+  const edges = [box.edgeX, box.edgeY, box.edgeZ].map((edge) => cloneVector(edge));
+  const lengths = edges.map((edge) => Math.sqrt(magnitudeSquared(edge)));
+  if (lengths.some((length) => length <= COLLISION_EPSILON_METERS)) {
+    return null;
+  }
+  return {
+    corner: cloneVector(box.corner),
+    axes: edges.map((edge, index) => scaleVector(edge, 1 / lengths[index])),
+    lengths,
+  };
+}
+
+function boxCoordinates(point, frame) {
+  const relative = subtractVectors(point, frame.corner);
+  return frame.axes.map((axis) => dotProduct(relative, axis));
+}
+
+function pointFromBoxCoordinates(coordinates, frame) {
+  let point = cloneVector(frame.corner);
+  for (let index = 0; index < 3; index += 1) {
+    point = addVectors(point, scaleVector(frame.axes[index], coordinates[index]));
+  }
+  return point;
+}
+
+function chooseEarlierIntersection(current, candidate) {
+  if (!candidate) {
+    return current;
+  }
+  if (!current || candidate.fraction < current.fraction - 1e-12) {
+    return candidate;
+  }
+  return current;
+}
+
+function findSweptSphereAgainstBox(start, end, radius, box) {
+  const resolvedRadius = Math.max(0, toFiniteNumber(radius, 0));
+  const frame = buildBoxFrame(box);
+  if (!frame) {
+    return null;
+  }
+  const startCoordinates = boxCoordinates(start, frame);
+  const clampedStart = startCoordinates.map((coordinate, index) =>
+    Math.max(0, Math.min(frame.lengths[index], coordinate)));
+  const closestStart = pointFromBoxCoordinates(clampedStart, frame);
+  const startOffset = subtractVectors(start, closestStart);
+  const startDistance = Math.sqrt(Math.max(0, magnitudeSquared(startOffset)));
+  const startInside = startCoordinates.every(
+    (coordinate, index) => coordinate >= 0 && coordinate <= frame.lengths[index],
+  );
+  if (startInside || startDistance <= resolvedRadius) {
+    if (startInside) {
+      let nearestAxis = 0;
+      let nearestSide = -1;
+      let nearestDistance = startCoordinates[0];
+      for (let axis = 0; axis < 3; axis += 1) {
+        const distances = [
+          { distance: startCoordinates[axis], side: -1 },
+          { distance: frame.lengths[axis] - startCoordinates[axis], side: 1 },
+        ];
+        for (const value of distances) {
+          if (value.distance < nearestDistance) {
+            nearestAxis = axis;
+            nearestSide = value.side;
+            nearestDistance = value.distance;
+          }
+        }
+      }
+      return {
+        fraction: 0,
+        normal: scaleVector(frame.axes[nearestAxis], nearestSide),
+        penetrationDepth: resolvedRadius + nearestDistance,
+        startedOverlapping: true,
+      };
+    }
+    return {
+      fraction: 0,
+      normal: normalizeVector(startOffset),
+      penetrationDepth: resolvedRadius - startDistance,
+      startedOverlapping: true,
+    };
+  }
+
+  const direction = subtractVectors(end, start);
+  if (magnitudeSquared(direction) <= COLLISION_MOTION_EPSILON_SQUARED) {
+    return null;
+  }
+  const endCoordinates = boxCoordinates(end, frame);
+  const coordinateMotion = endCoordinates.map(
+    (coordinate, index) => coordinate - startCoordinates[index],
+  );
+  let earliest = null;
+
+  // Six planar face regions of the rounded box.
+  for (let axis = 0; axis < 3; axis += 1) {
+    if (Math.abs(coordinateMotion[axis]) <= Number.EPSILON) {
+      continue;
+    }
+    for (const side of [-1, 1]) {
+      const plane = side < 0 ? -resolvedRadius : frame.lengths[axis] + resolvedRadius;
+      const fraction = (plane - startCoordinates[axis]) / coordinateMotion[axis];
+      if (fraction < 0 || fraction > 1) {
+        continue;
+      }
+      const coordinates = startCoordinates.map(
+        (coordinate, index) => coordinate + (coordinateMotion[index] * fraction),
+      );
+      const withinFace = coordinates.every(
+        (coordinate, index) => index === axis ||
+          (coordinate >= 0 && coordinate <= frame.lengths[index]),
+      );
+      const movingTowardFace = side < 0
+        ? coordinateMotion[axis] > 0
+        : coordinateMotion[axis] < 0;
+      if (withinFace && movingTowardFace) {
+        earliest = chooseEarlierIntersection(earliest, {
+          fraction,
+          normal: scaleVector(frame.axes[axis], side),
+          penetrationDepth: 0,
+          startedOverlapping: false,
+        });
+      }
+    }
+  }
+
+  // Twelve edge capsules include the rounded edge cylinders and corner caps.
+  for (let edgeAxis = 0; edgeAxis < 3; edgeAxis += 1) {
+    const otherAxes = [0, 1, 2].filter((axis) => axis !== edgeAxis);
+    for (const firstSide of [0, 1]) {
+      for (const secondSide of [0, 1]) {
+        const coordinates = [0, 0, 0];
+        coordinates[otherAxes[0]] = firstSide * frame.lengths[otherAxes[0]];
+        coordinates[otherAxes[1]] = secondSide * frame.lengths[otherAxes[1]];
+        const edgeStart = pointFromBoxCoordinates(coordinates, frame);
+        coordinates[edgeAxis] = frame.lengths[edgeAxis];
+        const edgeEnd = pointFromBoxCoordinates(coordinates, frame);
+        earliest = chooseEarlierIntersection(
+          earliest,
+          findSweptPointAgainstCapsule(
+            start,
+            end,
+            edgeStart,
+            edgeEnd,
+            resolvedRadius,
+          ),
+        );
+      }
+    }
+  }
+  return earliest;
+}
+
+function resolveEntityCollisionQuaternion(entity) {
+  const source = entity && (entity.collisionQuaternion || entity.collisionRotation);
+  if (Array.isArray(source) && source.length >= 4) {
+    return {
+      w: toFiniteNumber(source[0], 1),
+      x: toFiniteNumber(source[1], 0),
+      y: toFiniteNumber(source[2], 0),
+      z: toFiniteNumber(source[3], 0),
+    };
+  }
+  if (source && typeof source === "object") {
+    return {
+      w: toFiniteNumber(source.w, 1),
+      x: toFiniteNumber(source.x, 0),
+      y: toFiniteNumber(source.y, 0),
+      z: toFiniteNumber(source.z, 0),
+    };
+  }
+  return { w: 1, x: 0, y: 0, z: 0 };
+}
+
+function transformProfilePoint(point, origin, scale, quaternion) {
+  return addVectors(
+    origin,
+    rotateVectorWxyz(scaleVector(point, scale), quaternion),
+  );
+}
+
+function transformProfileDirection(direction, scale, quaternion) {
+  return rotateVectorWxyz(scaleVector(direction, scale), quaternion);
+}
+
 function findWeaponLineOccluder(
   scene,
   sourceEntity,
@@ -327,11 +651,14 @@ function findWeaponLineOccluder(
     ) {
       continue;
     }
-    const intersection = findLineSegmentSphereIntersection(
+    const intersection = findSweptEntityCollision(
+      sourceEntity,
+      candidate,
       rayStart,
       rayEnd,
       cloneVector(candidate.position),
-      getEntityCollisionRadius(candidate),
+      cloneVector(candidate.position),
+      { movingRadius: 0 },
     );
     if (
       intersection &&
@@ -354,8 +681,16 @@ function findWeaponLineOccluder(
         kind: String(candidate.kind || "object"),
         fraction: intersection.fraction,
         distance: (endOffset - startOffset) * intersection.fraction,
-        position: cloneVector(intersection.position),
-        startedInside: intersection.startedInside,
+        position: addVectors(
+          rayStart,
+          scaleVector(
+            subtractVectors(rayEnd, rayStart),
+            intersection.fraction,
+          ),
+        ),
+        startedInside: intersection.startedOverlapping,
+        primitiveType: intersection.primitiveType || "sphereFallback",
+        collisionID: intersection.collisionID || null,
       };
     }
   }
@@ -402,7 +737,7 @@ function findSweptWeaponOccluder(
     }
     const candidateEnd = cloneVector(candidate.position);
     const candidateStart = getCandidateStartPosition(candidate, activeTickSequence);
-    const collision = findSweptSphereCollision(
+    const collision = findSweptEntityCollision(
       movingEntity,
       candidate,
       movingStart,
@@ -465,9 +800,14 @@ function findSweptSphereCollision(
   movingEnd,
   candidateStart,
   candidateEnd,
+  options: Record<string, any> = {},
 ) {
   const combinedRadius =
-    getEntityCollisionRadius(movingEntity) + getEntityCollisionRadius(candidate);
+    (
+      options.movingRadius !== undefined
+        ? Math.max(0, toFiniteNumber(options.movingRadius, 0))
+        : getEntityCollisionRadius(movingEntity)
+    ) + getEntityCollisionRadius(candidate);
   if (combinedRadius <= 0) {
     return null;
   }
@@ -531,6 +871,174 @@ function findSweptSphereCollision(
   };
 }
 
+function profileHasPrimitiveGeometry(profile) {
+  return Boolean(
+    profile &&
+    (
+      (Array.isArray(profile.balls) && profile.balls.length > 0) ||
+      (Array.isArray(profile.boxes) && profile.boxes.length > 0) ||
+      (Array.isArray(profile.capsules) && profile.capsules.length > 0)
+    ),
+  );
+}
+
+function findSweptEntityCollision(
+  movingEntity,
+  candidate,
+  movingStart,
+  movingEnd,
+  candidateStart,
+  candidateEnd,
+  options: Record<string, any> = {},
+) {
+  const presentation = resolveEntityCollisionPresentation(candidate);
+  const profile = presentation.profile;
+  if (!profileHasPrimitiveGeometry(profile)) {
+    return findSweptSphereCollision(
+      movingEntity,
+      candidate,
+      movingStart,
+      movingEnd,
+      candidateStart,
+      candidateEnd,
+      options,
+    );
+  }
+
+  const movingRadius = options.movingRadius !== undefined
+    ? Math.max(0, toFiniteNumber(options.movingRadius, 0))
+    : getEntityCollisionRadius(movingEntity);
+  const collisionScale = toFiniteNumber(presentation.collisionScale, 1);
+  const absoluteScale = Math.abs(collisionScale);
+  const quaternion = resolveEntityCollisionQuaternion(candidate);
+  const candidateMotion = subtractVectors(candidateEnd, candidateStart);
+  const relativeEnd = subtractVectors(movingEnd, candidateMotion);
+
+  // Reject the vast majority of candidates using the bundle's authored bound
+  // before materializing or testing individual compound primitives.
+  const broadphaseRadius = Math.max(
+    movingRadius,
+    movingRadius + (Math.max(0, toFiniteNumber(profile.boundingRadius, 0)) * absoluteScale),
+  );
+  const relativeStartFromOrigin = subtractVectors(movingStart, candidateStart);
+  const startsInsideBroadphase =
+    magnitudeSquared(relativeStartFromOrigin) <= broadphaseRadius * broadphaseRadius;
+  if (
+    !startsInsideBroadphase &&
+    !findLineSegmentSphereIntersection(
+      movingStart,
+      relativeEnd,
+      candidateStart,
+      broadphaseRadius,
+    )
+  ) {
+    return null;
+  }
+
+  let earliest = null;
+  let primitiveIndex = 0;
+  for (const ball of profile.balls || []) {
+    const center = transformProfilePoint(
+      ball.center,
+      candidateStart,
+      collisionScale,
+      quaternion,
+    );
+    const shapeRadius = Math.max(0, toFiniteNumber(ball.radius, 0) * absoluteScale);
+    const collision = findSweptPointAgainstSphere(
+      movingStart,
+      relativeEnd,
+      center,
+      movingRadius + shapeRadius,
+    );
+    earliest = chooseEarlierIntersection(earliest, collision && {
+      ...collision,
+      combinedRadius: movingRadius + shapeRadius,
+      primitiveIndex,
+      primitiveType: "ball",
+    });
+    primitiveIndex += 1;
+  }
+  for (const box of profile.boxes || []) {
+    const worldBox = {
+      corner: transformProfilePoint(
+        box.corner,
+        candidateStart,
+        collisionScale,
+        quaternion,
+      ),
+      edgeX: transformProfileDirection(box.edgeX, collisionScale, quaternion),
+      edgeY: transformProfileDirection(box.edgeY, collisionScale, quaternion),
+      edgeZ: transformProfileDirection(box.edgeZ, collisionScale, quaternion),
+    };
+    const collision = findSweptSphereAgainstBox(
+      movingStart,
+      relativeEnd,
+      movingRadius,
+      worldBox,
+    );
+    earliest = chooseEarlierIntersection(earliest, collision && {
+      ...collision,
+      combinedRadius: movingRadius,
+      primitiveIndex,
+      primitiveType: "box",
+    });
+    primitiveIndex += 1;
+  }
+  for (const capsule of profile.capsules || []) {
+    const capsuleStart = transformProfilePoint(
+      capsule.start,
+      candidateStart,
+      collisionScale,
+      quaternion,
+    );
+    const capsuleEnd = transformProfilePoint(
+      capsule.end,
+      candidateStart,
+      collisionScale,
+      quaternion,
+    );
+    const shapeRadius = Math.max(
+      0,
+      toFiniteNumber(capsule.radius, 0) * absoluteScale,
+    );
+    const collision = findSweptPointAgainstCapsule(
+      movingStart,
+      relativeEnd,
+      capsuleStart,
+      capsuleEnd,
+      movingRadius + shapeRadius,
+    );
+    earliest = chooseEarlierIntersection(earliest, collision && {
+      ...collision,
+      combinedRadius: movingRadius + shapeRadius,
+      primitiveIndex,
+      primitiveType: "capsule",
+    });
+    primitiveIndex += 1;
+  }
+  if (!earliest) {
+    return null;
+  }
+
+  const movingImpact = addVectors(
+    movingStart,
+    scaleVector(subtractVectors(movingEnd, movingStart), earliest.fraction),
+  );
+  const correctionDistance = earliest.startedOverlapping
+    ? Math.max(0, toFiniteNumber(earliest.penetrationDepth, 0)) + COLLISION_EPSILON_METERS
+    : COLLISION_EPSILON_METERS;
+  return {
+    ...earliest,
+    candidate,
+    collisionID: presentation.collisionID,
+    resolvedPosition: addVectors(
+      movingImpact,
+      scaleVector(earliest.normal, correctionDistance),
+    ),
+  };
+}
+
 function resolveEntityMovementCollision(
   entity,
   scene,
@@ -551,7 +1059,7 @@ function resolveEntityMovementCollision(
   for (const candidate of candidates) {
     const candidateEnd = cloneVector(candidate.position);
     const candidateStart = getCandidateStartPosition(candidate, activeTickSequence);
-    const collision = findSweptSphereCollision(
+    const collision = findSweptEntityCollision(
       entity,
       candidate,
       movingStart,
@@ -585,20 +1093,24 @@ function resolveEntityMovementCollision(
     return null;
   }
 
-  const candidateImpactPosition = addVectors(
-    earliest.candidateStart,
-    scaleVector(
-      subtractVectors(earliest.candidateEnd, earliest.candidateStart),
-      earliest.fraction,
-    ),
-  );
-  entity.position = addVectors(
-    candidateImpactPosition,
-    scaleVector(
-      earliest.normal,
-      earliest.combinedRadius + COLLISION_EPSILON_METERS,
-    ),
-  );
+  if (earliest.resolvedPosition) {
+    entity.position = cloneVector(earliest.resolvedPosition);
+  } else {
+    const candidateImpactPosition = addVectors(
+      earliest.candidateStart,
+      scaleVector(
+        subtractVectors(earliest.candidateEnd, earliest.candidateStart),
+        earliest.fraction,
+      ),
+    );
+    entity.position = addVectors(
+      candidateImpactPosition,
+      scaleVector(
+        earliest.normal,
+        earliest.combinedRadius + COLLISION_EPSILON_METERS,
+      ),
+    );
+  }
 
   const candidateVelocity = cloneVector(earliest.candidate.velocity);
   const entityVelocity = cloneVector(entity.velocity);
@@ -622,6 +1134,8 @@ function resolveEntityMovementCollision(
     combinedRadius: earliest.combinedRadius,
     startedOverlapping: earliest.startedOverlapping,
     penetrationDepth: Math.max(0, toFiniteNumber(earliest.penetrationDepth, 0)),
+    primitiveType: earliest.primitiveType || "sphereFallback",
+    collisionID: earliest.collisionID || null,
   };
   entity.lastCollision = collision;
   if (entity.lastMotionDebug && typeof entity.lastMotionDebug === "object") {
@@ -640,6 +1154,9 @@ module.exports = {
   COLLISION_EPSILON_METERS,
   canEntitiesCollide,
   findLineSegmentSphereIntersection,
+  findSweptEntityCollision,
+  findSweptPointAgainstCapsule,
+  findSweptSphereAgainstBox,
   findSweptWeaponOccluder,
   findSweptSphereCollision,
   findWeaponLineOccluder,

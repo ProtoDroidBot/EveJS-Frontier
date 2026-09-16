@@ -4,15 +4,18 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  classifyCrudeMatterResource,
   createFrontierRiftAuthority,
 } = require("../src/space/frontierRiftAuthority");
 const {
+  RIFT_RESPAWN_DELAY_MS,
   RIFT_SITE_ID_BASE,
   createFrontierRiftSiteStore,
 } = require("../src/space/frontierRiftSites");
 const {
   buildRiftEnvironmentPlan,
   buildRiftSiteEntity,
+  handleResourceDepleted,
   materializeRiftSite,
 } = require("../src/space/frontierRiftSceneService");
 const {
@@ -87,6 +90,7 @@ function buildDungeon() {
           objectID: 1468972,
           roomID: 12001,
           typeID: 92394,
+          localName: "Fine Young Rupture",
           position: { x: 1254, y: 889, z: -711 },
         },
         {
@@ -164,6 +168,31 @@ test("Frontier Rift authority preserves the authored room and initial trigger st
   assert.equal(template.preferred, true);
   assert.deepEqual(template.spawnGuardObjectIDs, [1508330]);
   assert.deepEqual(template.resources.map((resource) => resource.typeID), [92394]);
+  assert.deepEqual(template.resourceVariants.map((resource) => resource.typeID), [92394, 78434]);
+  assert.deepEqual(template.resourceProfiles, [
+    {
+      typeID: 92394,
+      typeName: "Fine Young Crude Matter",
+      localName: "Fine Young Rupture",
+      age: "young",
+      quality: "fine",
+      formation: "rupture",
+      potential: "low",
+      resourceQuantity: 1_000,
+      tags: [],
+    },
+    {
+      typeID: 78434,
+      typeName: "Rough Young Crude Matter",
+      localName: null,
+      age: "young",
+      quality: "rough",
+      formation: null,
+      potential: null,
+      resourceQuantity: null,
+      tags: [],
+    },
+  ]);
   assert.deepEqual(
     template.sceneObjects.map((object) => object.objectID),
     [1468972, 1466745],
@@ -173,6 +202,43 @@ test("Frontier Rift authority preserves the authored room and initial trigger st
     y: 1797,
     z: -711,
   });
+});
+
+test("Crude Matter formations determine yield tier and mineable quantity", () => {
+  assert.deepEqual(classifyCrudeMatterResource({
+    typeID: 95834,
+    itemName: "Crude Matter - Old/Rough/Mid",
+    localName: "Old Rough Fault",
+  }), {
+    typeID: 95834,
+    typeName: "Crude Matter - Old/Rough/Mid",
+    localName: "Old Rough Fault",
+    age: "old",
+    quality: "rough",
+    formation: "fault",
+    potential: "high",
+    resourceQuantity: 100_000,
+    tags: [],
+  });
+
+  assert.deepEqual(
+    ["Rupture", "Fissure", "Fault"].map((formation) => {
+      const profile = classifyCrudeMatterResource({ localName: formation });
+      return [profile.formation, profile.potential, profile.resourceQuantity];
+    }),
+    [
+      ["rupture", "low", 1_000],
+      ["fissure", "mid", 10_000],
+      ["fault", "high", 100_000],
+    ],
+  );
+
+  const explicitHigh = classifyCrudeMatterResource({
+    itemName: "Crude Matter - Young/Fine/High",
+  });
+  assert.equal(explicitHigh.formation, null);
+  assert.equal(explicitHigh.potential, "high");
+  assert.equal(explicitHigh.resourceQuantity, 100_000);
 });
 
 test("Frontier Rift sites persist exact client IDs and authored resources", () => {
@@ -191,6 +257,97 @@ test("Frontier Rift sites persist exact client IDs and authored resources", () =
   assert.equal(result.data.kind, "riftDungeon");
   assert.deepEqual(result.data.resourceTypeIDs, [92394]);
   assert.deepEqual(store.listSites(30021998), [result.data]);
+  assert.deepEqual(result.data.riftTags, []);
+});
+
+test("depleted Rift sites own a persisted 24-hour respawn lifecycle", () => {
+  const store = buildStore();
+  const site = store.createSite({
+    template: 14001,
+    solarSystemID: 30021998,
+    position: { x: 100, y: 200, z: 300 },
+  }).data;
+  const depletedAtMs = 10_000;
+
+  const depleted = store.markDepleted(site.itemID, { nowMs: depletedAtMs });
+  assert.equal(depleted.success, true);
+  assert.equal(depleted.data.lifecycleState, "depleted");
+  assert.equal(depleted.data.respawnAtMs, depletedAtMs + RIFT_RESPAWN_DELAY_MS);
+  assert.deepEqual(store.listSites(30021998, { activeOnly: true }), []);
+  assert.deepEqual(
+    store.reactivateDueSites(30021998, depleted.data.respawnAtMs - 1).data.sites,
+    [],
+  );
+
+  const reactivated = store.reactivateDueSites(30021998, depleted.data.respawnAtMs);
+  assert.equal(reactivated.success, true);
+  assert.equal(reactivated.data.sites.length, 1);
+  assert.equal(reactivated.data.sites[0].lifecycleState, "active");
+  assert.equal(reactivated.data.sites[0].depletedAtMs, 0);
+  assert.equal(reactivated.data.sites[0].respawnAtMs, 0);
+});
+
+test("mining the final Crude Matter prop depletes the Rift site, not the prop lifecycle", () => {
+  const authority = buildAuthority();
+  const store = buildStore(authority);
+  const site = store.createSite({
+    template: 14001,
+    solarSystemID: 30021998,
+    position: { x: 100, y: 200, z: 300 },
+  }).data;
+  const root: Record<string, any> = buildRiftSiteEntity(site);
+  const resource: Record<string, any> = {
+    itemID: 7_000_000_000_000,
+    customFrontierRiftContent: true,
+    frontierRiftResource: true,
+    frontierRiftSiteID: site.itemID,
+  };
+  const scenery: Record<string, any> = {
+    itemID: 7_000_000_000_001,
+    customFrontierRiftContent: true,
+    frontierRiftResource: false,
+    frontierRiftSiteID: site.itemID,
+  };
+  root.frontierRiftResourceEntityIDs = [resource.itemID];
+  const scene: Record<string, any> = {
+    systemID: site.solarSystemID,
+    staticEntities: [root, resource, scenery],
+    staticEntitiesByID: new Map([
+      [root.itemID, root],
+      [resource.itemID, resource],
+      [scenery.itemID, scenery],
+    ]),
+    _frontierMaterializedRiftSiteIDs: new Set([site.itemID]),
+    removeStaticEntity(entityID) {
+      const numericEntityID = Number(entityID);
+      const entity = this.staticEntitiesByID.get(numericEntityID) || null;
+      if (!entity) return { success: false, errorMsg: "STATIC_ENTITY_NOT_FOUND" };
+      this.staticEntitiesByID.delete(numericEntityID);
+      this.staticEntities = this.staticEntities.filter((entry) => entry.itemID !== numericEntityID);
+      return { success: true, data: { entity } };
+    },
+  };
+  const clearedEntityIDs: any[] = [];
+  const depletedAtMs = 25_000;
+  const result = handleResourceDepleted(scene, resource, {
+    authority,
+    broadcast: false,
+    dungeonService: {},
+    miningRuntimeState: {
+      clearMineableState(_scene, entityID) {
+        clearedEntityIDs.push(entityID);
+      },
+    },
+    nowMs: depletedAtMs,
+    siteStore: store,
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.data.completed, true);
+  assert.equal(result.data.respawnAtMs, depletedAtMs + RIFT_RESPAWN_DELAY_MS);
+  assert.deepEqual(clearedEntityIDs, [resource.itemID]);
+  assert.equal(scene.staticEntities.length, 0);
+  assert.equal(store.getSite(site.itemID).lifecycleState, "depleted");
 });
 
 test("Rift scene materialization emits a CRDungeon root and exact active room props", () => {
@@ -231,6 +388,7 @@ test("Rift scene materialization emits a CRDungeon root and exact active room pr
           dungeonSiteID: site.itemID,
           dungeonSiteInstanceID: site.itemID,
           itemID: 7_000_000_000_000 + index,
+          dunObjectID: prop.dunObjectID,
           typeID: prop.typeID,
           groupID: type.groupID,
           categoryID: type.categoryID,
@@ -259,6 +417,10 @@ test("Rift scene materialization emits a CRDungeon root and exact active room pr
   assert.equal(root.dungeonID, 14001);
   assert.equal(content.length, 2);
   assert.equal(content.filter((entity) => entity.frontierRiftResource).length, 1);
+  const resource = content.find((entity) => entity.frontierRiftResource);
+  assert.equal(resource.frontierRiftFormation, "rupture");
+  assert.equal(resource.frontierRiftYieldTier, "low");
+  assert.equal(resource.resourceQuantity, 1_000);
   assert.deepEqual(scene.broadcasts, [
     [site.itemID],
     [7_000_000_000_000, 7_000_000_000_001],
