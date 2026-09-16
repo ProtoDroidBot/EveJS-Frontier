@@ -1,7 +1,8 @@
 "use strict";
 
 const FRONTIER_RESOURCE_FIELD_SOURCE = "frontierLandscapeEcosystem";
-const FRONTIER_SYNTHETIC_RESOURCE_FIELDS_ENABLED = false;
+const FRONTIER_RESOURCE_FIELD_POLICY_VERSION = 1;
+const FRONTIER_SYNTHETIC_RESOURCE_FIELDS_ENABLED = true;
 
 const RESOURCE_FIELD_PROFILES = Object.freeze({
   inner: Object.freeze({
@@ -22,8 +23,8 @@ const RESOURCE_FIELD_PROFILES = Object.freeze({
     clusterRadiusMeters: 7_000,
     verticalSpreadMeters: 6_000,
   }),
-  transitional: Object.freeze({
-    fieldStyleID: "frontier_transitional_resource_field",
+  fringe: Object.freeze({
+    fieldStyleID: "frontier_fringe_resource_field",
     resourceTypeIDs: Object.freeze([
       91374,
       91375,
@@ -81,8 +82,12 @@ function resolveFrontierResourceZone(site) {
   if (featureKind !== "asteroidbelt" || !tags.has("belt")) {
     return null;
   }
-  if (tags.has("transitional")) {
-    return "transitional";
+  if (
+    tags.has("fringe") ||
+    tags.has("transitional") ||
+    /\b(fringe|transitional)\b/i.test(String(site && site.ecosystemName || ""))
+  ) {
+    return "fringe";
   }
   if (tags.has("inner")) {
     return "inner";
@@ -133,15 +138,18 @@ function buildFrontierResourceFieldDefinition(site) {
     verticalSpreadMeters: profile.verticalSpreadMeters,
     resourceTypeIDs: [...profile.resourceTypeIDs],
     resourceZone,
+    asteroidSpawnRule: resourceZone,
     resourceFieldSource: FRONTIER_RESOURCE_FIELD_SOURCE,
     frontierLandscapeSite: true,
     sourceLandscapeSiteID: itemID,
+    sourceDungeonID: toPositiveInt(site && site.dungeonID, 0) || null,
     ecosystemID,
     ecosystemName: String(site && site.ecosystemName || ""),
   };
 }
 
 module.exports = {
+  FRONTIER_RESOURCE_FIELD_POLICY_VERSION,
   FRONTIER_RESOURCE_FIELD_SOURCE,
   FRONTIER_RESOURCE_FIELD_STYLES,
   FRONTIER_SYNTHETIC_RESOURCE_FIELDS_ENABLED,

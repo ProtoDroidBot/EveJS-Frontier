@@ -4,8 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "build": "npm --prefix .. run build",
-    "typecheck": "npm --prefix .. run typecheck",
+    "build": "npm --prefix .. run build:server",
+    "typecheck": "npm --prefix .. run typecheck:server",
     "prestart": "npm run build",
     "start": "node --enable-source-maps --report-on-fatalerror --report-uncaught-exception --report-dir=./logs/node-reports --max-old-space-size=8192 .",
     "db:migrate": "node src/gameStore/migrateJsonToSqlite.js",

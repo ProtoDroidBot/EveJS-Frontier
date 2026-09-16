@@ -14,6 +14,7 @@ function buildMaps() {
     const stargateTypes = readStaticRows(TABLE.STARGATE_TYPES);
     const celestials = readStaticRows(TABLE.CELESTIALS);
     const asteroidBelts = readStaticRows(TABLE.ASTEROID_BELTS);
+    const frontierDungeonTemplates = readStaticRows(TABLE.FRONTIER_DUNGEON_TEMPLATES);
     const landscapeDungeonTemplates = readStaticRows(TABLE.LANDSCAPE_DUNGEON_TEMPLATES);
     const landscapeEcosystems = readStaticRows(TABLE.LANDSCAPE_ECOSYSTEMS);
     const landscapeSites = readStaticRows(TABLE.LANDSCAPE_SITES);
@@ -25,6 +26,7 @@ function buildMaps() {
     const stargateTypesById = new Map();
     const celestialsById = new Map();
     const asteroidBeltsById = new Map();
+    const frontierDungeonTemplatesById = new Map();
     const landscapeDungeonTemplatesById = new Map();
     const landscapeEcosystemsById = new Map();
     const landscapeSitesById = new Map();
@@ -64,6 +66,9 @@ function buildMaps() {
             asteroidBeltsBySystem.set(asteroidBelt.solarSystemID, []);
         }
         asteroidBeltsBySystem.get(asteroidBelt.solarSystemID).push(asteroidBelt);
+    }
+    for (const dungeon of frontierDungeonTemplates) {
+        frontierDungeonTemplatesById.set(Number(dungeon.dungeonID ?? dungeon._key), dungeon);
     }
     for (const dungeon of landscapeDungeonTemplates) {
         landscapeDungeonTemplatesById.set(Number(dungeon.dungeonID ?? dungeon._key), dungeon);
@@ -110,6 +115,7 @@ function buildMaps() {
         stargateTypes,
         celestials,
         asteroidBelts,
+        frontierDungeonTemplates,
         landscapeDungeonTemplates,
         landscapeEcosystems,
         landscapeSites,
@@ -121,6 +127,7 @@ function buildMaps() {
         stargateTypesById,
         celestialsById,
         asteroidBeltsById,
+        frontierDungeonTemplatesById,
         landscapeDungeonTemplatesById,
         landscapeEcosystemsById,
         landscapeSitesById,
@@ -136,7 +143,7 @@ function buildMaps() {
 function ensureLoaded() {
     if (!cache) {
         cache = buildMaps();
-        log.info(`[SpaceWorld] Loaded ${cache.solarSystems.length} systems, ${cache.stations.length} stations, ${cache.stationTypes.length} station types, ${cache.celestials.length} celestials, ${cache.asteroidBelts.length} asteroid belts, ${cache.landscapeSites.length} landscape sites, ${cache.landscapeEcosystems.length} landscape ecosystems, ${cache.landscapeDungeonTemplates.length} landscape dungeons, ${cache.stargates.length} stargates`);
+        log.info(`[SpaceWorld] Loaded ${cache.solarSystems.length} systems, ${cache.stations.length} stations, ${cache.stationTypes.length} station types, ${cache.celestials.length} celestials, ${cache.asteroidBelts.length} asteroid belts, ${cache.frontierDungeonTemplates.length} Frontier dungeons, ${cache.landscapeSites.length} landscape sites, ${cache.landscapeEcosystems.length} landscape ecosystems, ${cache.landscapeDungeonTemplates.length} landscape dungeons, ${cache.stargates.length} stargates`);
     }
     return cache;
 }
@@ -192,6 +199,9 @@ function getLandscapeEcosystems() {
 function getLandscapeDungeonTemplateByID(dungeonID) {
     return ensureLoaded().landscapeDungeonTemplatesById.get(Number(dungeonID)) || null;
 }
+function getFrontierDungeonTemplateByID(dungeonID) {
+    return ensureLoaded().frontierDungeonTemplatesById.get(Number(dungeonID)) || null;
+}
 function getCelestialsForSystem(solarSystemID) {
     return [
         ...(ensureLoaded().celestialsBySystem.get(Number(solarSystemID)) || []),
@@ -243,6 +253,7 @@ module.exports = {
     getLandscapeSitesForSystem,
     getLandscapeEcosystemByID,
     getLandscapeEcosystems,
+    getFrontierDungeonTemplateByID,
     getLandscapeDungeonTemplateByID,
     getCelestialByID,
     getStructureByID,

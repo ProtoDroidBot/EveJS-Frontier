@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.cache/typescript/tests.tsbuildinfo"
+  },
+  "include": ["server/tests/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "**/node_modules",
+    "**/target",
+    "_local"
+  ]
+}

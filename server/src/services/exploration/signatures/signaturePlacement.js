@@ -67,6 +67,22 @@ function hashSeed(seed) {
     state ^= state >>> 16;
     return state >>> 0;
 }
+function pickWeightedAnchorIndex(candidates, seed) {
+    const weights = candidates.map((candidate) => Math.max(0, toFiniteNumber(candidate && candidate.selectionWeight, 0)));
+    const totalWeight = weights.reduce((total, weight) => total + weight, 0);
+    if (totalWeight <= 0) {
+        return hashSeed(`${seed}:anchor`) % candidates.length;
+    }
+    const selection = (hashSeed(`${seed}:anchor`) / 0x100000000) * totalWeight;
+    let cumulativeWeight = 0;
+    for (let index = 0; index < weights.length; index += 1) {
+        cumulativeWeight += weights[index];
+        if (selection < cumulativeWeight) {
+            return index;
+        }
+    }
+    return weights.length - 1;
+}
 function buildAnchorRelativeSignaturePlacement(anchorCandidates = [], seed, options = {}) {
     const candidates = (Array.isArray(anchorCandidates) ? anchorCandidates : [])
         .filter((entry) => entry && typeof entry === "object");
@@ -79,7 +95,7 @@ function buildAnchorRelativeSignaturePlacement(anchorCandidates = [], seed, opti
         }),
     };
     const resolvedCandidates = candidates.length > 0 ? candidates : [fallbackAnchor];
-    const anchorIndex = hashSeed(`${seed}:anchor`) % resolvedCandidates.length;
+    const anchorIndex = pickWeightedAnchorIndex(resolvedCandidates, seed);
     const anchor = resolvedCandidates[anchorIndex] || resolvedCandidates[0] || fallbackAnchor;
     const baseDistanceAu = Math.max(0.5, toFiniteNumber(options.baseDistanceAu, DEFAULT_SIGNATURE_ANCHOR_DISTANCE_AU));
     const distanceJitterAu = Math.max(0, toFiniteNumber(options.distanceJitterAu, DEFAULT_SIGNATURE_DISTANCE_JITTER_AU));
@@ -96,14 +112,20 @@ function buildAnchorRelativeSignaturePlacement(anchorCandidates = [], seed, opti
         ((((hashSeed(`${seed}:distance`) % 200_001) / 100_000) - 1) * distanceJitterAu);
     const distanceMeters = Math.max(0.5 * auMeters, distanceAu * auMeters);
     const anchorPosition = cloneVector(anchor && anchor.position);
+    const minimumDistanceMeters = Math.max(0, toFiniteNumber(anchor && anchor.minimumDistanceMeters, 0));
+    const maximumDistanceMeters = Math.max(minimumDistanceMeters, toFiniteNumber(anchor && anchor.maximumDistanceMeters, 0));
+    const boundedDistanceMeters = maximumDistanceMeters > 0
+        ? minimumDistanceMeters + ((hashSeed(`${seed}:bounded-distance`) / 0x100000000) *
+            (maximumDistanceMeters - minimumDistanceMeters))
+        : distanceMeters;
     return {
         anchorIndex,
         anchorItemID: toInt(anchor && anchor.itemID, 0) || null,
         anchorPosition,
         direction,
-        distanceAu,
-        distanceMeters,
-        position: addVectors(anchorPosition, scaleVector(direction, distanceMeters)),
+        distanceAu: boundedDistanceMeters / auMeters,
+        distanceMeters: boundedDistanceMeters,
+        position: addVectors(anchorPosition, scaleVector(direction, boundedDistanceMeters)),
     };
 }
 function estimateNearestAnchorDistanceMeters(position, anchorCandidates = []) {

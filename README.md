@@ -25,6 +25,12 @@ JavaScript and maps are ignored by Git; edit the TypeScript sources and rebuild
 before running a direct `node` command. Source maps let stack traces point back
 to TypeScript when Node runs with `--enable-source-maps`.
 
+The build keeps separate incremental caches for the server, tools, browser, and
+tests. Use `npm run build:server` for server-only work or
+`npm run build:production` to omit test emission; `npm run build` preserves the
+full historical build behavior. Starting through `server/package.json` builds
+only the server target before launch.
+
 Server start commands compile before launching. Windows setup, certificate,
 database, and editor launchers also prepare compiled tools. Docker compiles in
 a separate build stage and includes the compiled files and production

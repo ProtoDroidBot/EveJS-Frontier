@@ -11,7 +11,9 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "useDefineForClassFields": false,
-    "sourceMap": true
+    "sourceMap": true,
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/typescript/browser.tsbuildinfo"
   },
   "include": ["tools/NewEdenStoreEditor/public/**/*.ts"]
 }

@@ -9,7 +9,16 @@ const {
   resolveFrontierResourceZone,
 } = require("../src/space/asteroids/frontierResourceFields");
 
-test("Frontier landscape resource-field prototypes remain deterministic but disabled", () => {
+test("Frontier Inner and Outer landscape fields use their authored asteroid rules", () => {
+  const inner = buildFrontierResourceFieldDefinition({
+    itemID: 900439959,
+    solarSystemID: 30021998,
+    featureKind: "asteroidBelt",
+    featureTags: ["belt", "inner", "belt_hot"],
+    ecosystemID: 4,
+    ecosystemName: "Natural World - Inner Belt - Stone Cluster",
+    position: { x: 10, y: 20, z: 30 },
+  });
   const site: Record<string, any> = {
     itemID: 900439961,
     itemName: "Outer Vestiges",
@@ -29,16 +38,32 @@ test("Frontier landscape resource-field prototypes remain deterministic but disa
   const first = buildFrontierResourceFieldDefinition(site);
   const second = buildFrontierResourceFieldDefinition(site);
 
-  assert.equal(FRONTIER_SYNTHETIC_RESOURCE_FIELDS_ENABLED, false);
+  assert.equal(FRONTIER_SYNTHETIC_RESOURCE_FIELDS_ENABLED, true);
+  assert.equal(inner.resourceZone, "inner");
+  assert.equal(inner.asteroidCount, 30);
+  assert.equal(inner.maxAsteroidCount, 42);
+  assert.deepEqual(inner.resourceTypeIDs, [91374, 91375, 91376]);
   assert.equal(resolveFrontierResourceZone(site), "outer");
   assert.deepEqual(first, second);
   assert.equal(first.itemID, 900439961);
   assert.equal(first.fieldStyleID, "frontier_outer_resource_field");
+  assert.equal(first.asteroidCount, 34);
+  assert.equal(first.maxAsteroidCount, 48);
   assert.deepEqual(first.resourceTypeIDs, [91377, 91378, 91379, 91380, 91381]);
   assert.equal(first.sourceLandscapeSiteID, site.itemID);
 });
 
-test("Trojan Drifting Annex is covered by the same disabled synthetic-field policy", () => {
+test("Frontier Fringe and Trojan fields retain their distinct asteroid rules", () => {
+  const fringe = buildFrontierResourceFieldDefinition({
+    itemID: 900439960,
+    solarSystemID: 30021998,
+    featureKind: "asteroidBelt",
+    featureTags: ["belt", "transitional", "belt_warm"],
+    ecosystemID: 20,
+    ecosystemName: "Transitional Belt - Trade Hub",
+    dungeonID: 14026,
+    position: { x: -1, y: -2, z: -3 },
+  });
   const trojan = buildFrontierResourceFieldDefinition({
     itemID: 900439962,
     itemName: "Trojan Drifting Annex",
@@ -50,8 +75,20 @@ test("Trojan Drifting Annex is covered by the same disabled synthetic-field poli
     position: { x: 1, y: 2, z: 3 },
   });
 
-  assert.equal(FRONTIER_SYNTHETIC_RESOURCE_FIELDS_ENABLED, false);
+  assert.equal(FRONTIER_SYNTHETIC_RESOURCE_FIELDS_ENABLED, true);
+  assert.equal(fringe.resourceZone, "fringe");
+  assert.equal(fringe.asteroidSpawnRule, "fringe");
+  assert.equal(fringe.fieldStyleID, "frontier_fringe_resource_field");
+  assert.equal(fringe.asteroidCount, 32);
+  assert.equal(fringe.maxAsteroidCount, 46);
+  assert.deepEqual(fringe.resourceTypeIDs, [
+    91374, 91375, 91376, 91377, 91378, 91379, 91380, 91381,
+  ]);
+  assert.equal(fringe.sourceDungeonID, 14026);
   assert.equal(trojan.resourceZone, "trojan");
+  assert.equal(trojan.asteroidSpawnRule, "trojan");
+  assert.equal(trojan.asteroidCount, 24);
+  assert.equal(trojan.maxAsteroidCount, 36);
   assert.deepEqual(trojan.resourceTypeIDs, [91374, 91375, 91376, 91379, 91380, 91381]);
   assert.equal(buildFrontierResourceFieldDefinition({
     itemID: 42,

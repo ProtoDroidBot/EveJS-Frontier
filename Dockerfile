@@ -9,12 +9,18 @@ COPY externalservices/market-server ./externalservices/market-server
 COPY tools/market-seed ./tools/market-seed
 COPY tools/market-seederv2 ./tools/market-seederv2
 
-RUN cargo build --locked --release \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/opt/cargo-target,sharing=locked \
+    cargo build --locked --release \
       --manifest-path externalservices/market-server/Cargo.toml \
  && cargo build --locked --release \
       --manifest-path tools/market-seed/Cargo.toml \
  && cargo build --locked --release \
-      --manifest-path tools/market-seederv2/Cargo.toml
+      --manifest-path tools/market-seederv2/Cargo.toml \
+ && install -D /opt/cargo-target/release/market-server /opt/artifacts/market-server \
+ && install -D /opt/cargo-target/release/market-seed /opt/artifacts/market-seed \
+ && install -D /opt/cargo-target/release/market-seederv2 /opt/artifacts/market-seederv2
 
 
 FROM node:24-bookworm-slim AS node-dependencies
@@ -25,17 +31,18 @@ RUN apt-get update \
 
 WORKDIR /app/server
 COPY server/package.json server/package-lock.json ./
-RUN npm ci --omit=dev
+RUN --mount=type=cache,target=/root/.npm,sharing=locked npm ci --omit=dev
 
 
 FROM node:24-bookworm-slim AS typescript-builder
 
 WORKDIR /app
 COPY package.json package-lock.json ./
-# postinstall compiles the source, which is copied in the next layer.
-RUN npm ci --include=dev --ignore-scripts
+# Source is copied next, so skip postinstall and build the production targets explicitly.
+RUN --mount=type=cache,target=/root/.npm,sharing=locked npm ci --include=dev --ignore-scripts
 COPY . .
-RUN npm run build \
+RUN --mount=type=cache,target=/app/node_modules/.cache/typescript,sharing=locked \
+    npm run build:production \
  && npm prune --omit=dev --ignore-scripts
 
 
@@ -48,9 +55,9 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=typescript-builder --chown=node:node /app/ ./
 COPY --from=node-dependencies --chown=node:node /app/server/node_modules ./server/node_modules
-COPY --from=rust-builder /opt/cargo-target/release/market-server /usr/local/bin/market-server
-COPY --from=rust-builder /opt/cargo-target/release/market-seed /usr/local/bin/market-seed
-COPY --from=rust-builder /opt/cargo-target/release/market-seederv2 /usr/local/bin/market-seederv2
+COPY --from=rust-builder /opt/artifacts/market-server /usr/local/bin/market-server
+COPY --from=rust-builder /opt/artifacts/market-seed /usr/local/bin/market-seed
+COPY --from=rust-builder /opt/artifacts/market-seederv2 /usr/local/bin/market-seederv2
 
 RUN mkdir -p /var/lib/evejs \
  && chmod +x /app/docker/entrypoint.sh \

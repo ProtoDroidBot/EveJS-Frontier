@@ -7140,7 +7140,7 @@ function getStationUndockSpawnState(station, options: Record<string, any> = {}) 
   }
 
   if (station) {
-    return stationLocatorGeometry.buildStationUndockSpawnState(station, {
+    const locatorSpawnState = stationLocatorGeometry.buildStationUndockSpawnState(station, {
       shipTypeID: options.shipTypeID,
       selectionStrategy: options.selectionStrategy || "random",
       selectionKey: options.selectionKey,
@@ -7150,6 +7150,38 @@ function getStationUndockSpawnState(station, options: Record<string, any> = {}) 
       ),
       random: options.random,
     });
+    if (
+      locatorSpawnState.source !== "stored" ||
+      station.dockPosition ||
+      station.undockPosition
+    ) {
+      return locatorSpawnState;
+    }
+
+    // Frontier's BioLab station data currently has neither authored locator
+    // geometry nor stored dock/undock coordinates. The locator fallback then
+    // resolves to the station center. Once the ship starts moving, the broad
+    // station collision sphere ejects it and the client presents that as
+    // repeated impacts and tumbling during warp alignment. Preserve authored
+    // and explicitly stored berths, but place data-less fallbacks beyond the
+    // same interaction sphere used by Destiny collision handling.
+    const direction = normalizeVector(
+      locatorSpawnState.direction,
+      DEFAULT_RIGHT,
+    );
+    const spawnDistance = Math.max(
+      DEFAULT_STATION_UNDOCK_DISTANCE,
+      getStationInteractionRadius(station) + 2500,
+      distance(locatorSpawnState.position, station.position),
+    );
+    return {
+      ...locatorSpawnState,
+      direction,
+      position: addVectors(
+        cloneVector(station.position),
+        scaleVector(direction, spawnDistance),
+      ),
+    };
   }
 
   const dockDirection = normalizeVector(
@@ -42338,22 +42370,65 @@ class SpaceRuntime {
       const dungeonUniverseRuntime = lazyRequire("../services/dungeon/dungeonUniverseRuntime");
       if (
         !dungeonUniverseRuntime ||
-        typeof dungeonUniverseRuntime.prepareSystemForPlayerEntry !== "function"
+        (
+          typeof dungeonUniverseRuntime.prepareSystemForPlayerEntry !== "function" &&
+          typeof dungeonUniverseRuntime.scheduleSystemUniversePersistentSitesReconcile !== "function"
+        )
       ) {
         throw new Error("SYSTEM_CONTENT_PREPARER_UNAVAILABLE");
       }
-      const result = dungeonUniverseRuntime.prepareSystemForPlayerEntry(numericSystemID, {
-        reason: options.universeSiteReconcileReason || "player-entry",
-        lifecycleReason: "system-wake",
-        nowMs: options.nowMs,
-        cleanupInvalidGeneratedIce: true,
-      });
+      const runSynchronously = options.synchronousUniverseSiteReconcile === true;
+      const result = runSynchronously
+        ? dungeonUniverseRuntime.prepareSystemForPlayerEntry(numericSystemID, {
+          reason: options.universeSiteReconcileReason || "player-entry",
+          lifecycleReason: "system-wake",
+          nowMs: options.nowMs,
+          cleanupInvalidGeneratedIce: true,
+        })
+        : dungeonUniverseRuntime.scheduleSystemUniversePersistentSitesReconcile(
+          numericSystemID,
+          {
+            reason: options.universeSiteReconcileReason || "player-entry",
+            nowMs: options.nowMs,
+            force: true,
+            debounceMs: 0,
+            initialDelayMs: options.universeSiteReconcileInitialDelayMs,
+            includeRandomAllocatedUniverseFamilies: true,
+            cleanupInvalidGeneratedIce: true,
+            onComplete: (scheduledResult) => {
+              if (!scheduledResult || scheduledResult.success === false) {
+                return;
+              }
+              const scene = this.scenes.get(numericSystemID) || null;
+              if (!scene) {
+                return;
+              }
+              try {
+                const dungeonUniverseSiteService = lazyRequire(
+                  "../services/dungeon/dungeonUniverseSiteService",
+                );
+                if (
+                  dungeonUniverseSiteService &&
+                  typeof dungeonUniverseSiteService.handleSceneCreated === "function"
+                ) {
+                  dungeonUniverseSiteService.handleSceneCreated(scene, { force: true });
+                }
+              } catch (error) {
+                log.warn(
+                  `[SpaceRuntime] Player-entry background materialize failed ` +
+                    `for system=${numericSystemID}: ${error.message}`,
+                );
+              }
+            },
+          },
+        );
       if (!result || result.success === false) {
         throw new Error(result && result.errorMsg || "SYSTEM_CONTENT_PREPARE_FAILED");
       }
       return {
         success: true,
-        prepared: true,
+        prepared: runSynchronously,
+        scheduled: !runSynchronously,
         systemID: numericSystemID,
         sceneExisted: Boolean(existingScene),
         result,

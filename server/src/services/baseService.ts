@@ -11,6 +11,7 @@ const serviceCallShapeCapture = require(path.join(
   __dirname,
   "_shared/serviceCallShapeCapture",
 ));
+const serviceTaskPool = require(path.join(__dirname, "../utils/serviceTaskPool"));
 
 function normalizeMethodName(method) {
   if (typeof method === "string") {
@@ -41,6 +42,19 @@ class BaseService {
 
   get name() {
     return this._name;
+  }
+
+  /**
+   * Run a pure CPU-heavy calculation outside the main networking/simulation
+   * thread. The task must not mutate live service state; apply its returned
+   * plan from the calling service after awaiting it.
+   */
+  runIsolatedTask(modulePath, exportName, args: any[] = [], options: Record<string, any> = {}) {
+    return serviceTaskPool.run({
+      modulePath,
+      exportName,
+      args,
+    }, options);
   }
 
   /**

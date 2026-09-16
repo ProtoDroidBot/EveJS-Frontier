@@ -28,6 +28,10 @@ const {
   buildUncloakDeliveryPresentationUpdates,
 } = require("../src/space/destiny/presentation/specialFxPayloads");
 const destinyActions = require("../src/space/destiny/stream/actions");
+const runtime = require("../src/space/runtime");
+
+const getStationUndockSpawnState =
+  runtime._testing.getStationUndockSpawnStateForTesting;
 
 function buildShip(overrides: Record<string, any> = {}) {
   return {
@@ -100,6 +104,52 @@ test("warp, docking, and cloak phases remain non-colliding on the client", () =>
     warpState: { nativeWarpCommand: "GOTO" },
   });
   assert.notEqual(getFreeBallFlags(aligningShip) & BALL_FLAG.IS_MASSIVE, 0);
+});
+
+test("stations without locator data undock ships beyond the collision sphere", () => {
+  const station = {
+    stationID: 64000001,
+    stationTypeID: 85226,
+    position: { x: 100, y: 200, z: 300 },
+    radius: 33_811,
+    interactionRadius: 33_811,
+    dockPosition: null,
+    undockPosition: null,
+    dockOrientation: null,
+    undockDirection: null,
+    dunRotation: null,
+  };
+
+  const spawnState = getStationUndockSpawnState(station, {
+    selectionStrategy: "first",
+  });
+  const centerDistance = Math.hypot(
+    spawnState.position.x - station.position.x,
+    spawnState.position.y - station.position.y,
+    spawnState.position.z - station.position.z,
+  );
+
+  assert.equal(spawnState.source, "stored");
+  assert.deepEqual(spawnState.direction, { x: 0, y: 0, z: 1 });
+  assert.equal(centerDistance, station.radius + 2500);
+  assert.ok(
+    centerDistance > station.radius + buildShip().radius,
+    "the undocked ship must not start intersecting the station ball",
+  );
+
+  const distantSpawnState = getStationUndockSpawnState(station, {
+    extraUndockDistance: 50_000,
+    selectionStrategy: "first",
+  });
+  assert.equal(
+    Math.hypot(
+      distantSpawnState.position.x - station.position.x,
+      distantSpawnState.position.y - station.position.y,
+      distantSpawnState.position.z - station.position.z,
+    ),
+    50_000,
+    "an explicitly safer fallback offset must not be shortened",
+  );
 });
 
 test("server swept-sphere collision prevents tunneling through an object", () => {

@@ -72,6 +72,42 @@ const wormholeRuntime = require(path.join(
  */
 module.exports = function (serviceManager) {
   const dispatcher = new PacketDispatcher(serviceManager);
+  const pendingDispatches: any[] = [];
+  let dispatchTurnScheduled = false;
+
+  // Start at most one newly-arrived service packet per event-loop turn. Calls
+  // still overlap while awaiting I/O, but a burst from one service cannot run
+  // every synchronous handler preamble inside a socket's data callback and
+  // starve handshakes on other sockets.
+  const scheduleNextPacketDispatch = () => {
+    if (dispatchTurnScheduled || pendingDispatches.length <= 0) {
+      return;
+    }
+    dispatchTurnScheduled = true;
+    setImmediate(() => {
+      dispatchTurnScheduled = false;
+      const next = pendingDispatches.shift();
+      if (
+        next &&
+        !(
+          next.session &&
+          next.session.socket &&
+          next.session.socket.destroyed === true
+        )
+      ) {
+        Promise.resolve(dispatcher.dispatch(next.decoded, next.session)).catch((err) => {
+          log.err(`[TCP] async packet dispatch error: ${err.message}`);
+          logDebug(`[TCP] async dispatch stack: ${err.stack}`);
+        });
+      }
+      scheduleNextPacketDispatch();
+    });
+  };
+
+  const enqueuePacketDispatch = (decoded, session) => {
+    pendingDispatches.push({ decoded, session });
+    scheduleNextPacketDispatch();
+  };
   const startupPreloadPlan = spaceRuntime.getStartupSolarSystemPreloadPlan();
 
   log.startupSection(
@@ -108,12 +144,13 @@ module.exports = function (serviceManager) {
       `${startupPreloadPlan.systemIDs.length} startup system(s)`,
   );
   const universeStartup = dungeonUniverseRuntime.prepareStartupUniversePersistentSites({
-    startupSystemIDs: [],
+    startupSystemIDs: startupPreloadPlan.systemIDs,
     resetMiningAnomaliesOnStartup: false,
-    cleanupInvalidGeneratedIce: false,
+    cleanupInvalidGeneratedIce: true,
     restoreGeneratedIceAfterDowntime: false,
-    scheduleBackgroundReconcile: false,
-    backgroundReason: "startup-awake-only",
+    reconcileStartupSystems: true,
+    scheduleBackgroundReconcile: true,
+    backgroundReason: "server-startup",
   });
   const universePrepareElapsedMs = Date.now() - universePrepareStartedAtMs;
   log.info(
@@ -332,11 +369,9 @@ module.exports = function (serviceManager) {
                 );
               }
 
-              // Dispatch asynchronously so services can await external RPC calls
-              Promise.resolve(dispatcher.dispatch(decoded, clientSession)).catch((err) => {
-                log.err(`[TCP] async packet dispatch error: ${err.message}`);
-                logDebug(`[TCP] async dispatch stack: ${err.stack}`);
-              });
+              // Dispatch on a fair event-loop turn so another connection can
+              // progress its handshake between CPU-heavy service calls.
+              enqueuePacketDispatch(decoded, clientSession);
             } catch (err) {
               log.err(`[TCP] packet processing error: ${err.message}`);
               logDebug(`[TCP] stack: ${err.stack}`);
@@ -398,10 +433,9 @@ module.exports = function (serviceManager) {
           );
         }
       } else if (universeBackground && universeBackground.needsFullReconcile === true) {
-        log.warn(
-          "[DungeonUniverse] persistent universe site state is stale; startup will not auto-reconcile it. " +
-          "Run npm run parity:dungeon-universe-inspect -- --output %TEMP%\\evejs-dungeon-universe-inspect.json " +
-          "to inspect the dry-run delta; seeding remains a separate reviewed action.",
+        log.info(
+          "[DungeonUniverse] persistent universe site state was stale; startup reconciliation " +
+          `${universeBackground.scheduled === true ? "is populating" : "will populate"} map sites in the background`,
         );
       }
       tidiAutoscaler.init();

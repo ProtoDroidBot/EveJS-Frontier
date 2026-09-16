@@ -1,7 +1,16 @@
 {
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.browser.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.browser.json --noEmit",
+    "build": "npm run build:production && npm run build:tests",
+    "build:production": "npm run build:server && npm run build:tools && npm run build:browser",
+    "build:server": "tsc -p tsconfig.json",
+    "build:tools": "tsc -p tsconfig.tools.json",
+    "build:browser": "tsc -p tsconfig.browser.json",
+    "build:tests": "tsc -p tsconfig.tests.json",
+    "typecheck": "npm run typecheck:server && npm run typecheck:tools && npm run typecheck:browser && npm run typecheck:tests",
+    "typecheck:server": "tsc -p tsconfig.json --noEmit --tsBuildInfoFile ./node_modules/.cache/typescript/server-typecheck.tsbuildinfo",
+    "typecheck:tools": "tsc -p tsconfig.tools.json --noEmit --tsBuildInfoFile ./node_modules/.cache/typescript/tools-typecheck.tsbuildinfo",
+    "typecheck:browser": "tsc -p tsconfig.browser.json --noEmit --tsBuildInfoFile ./node_modules/.cache/typescript/browser-typecheck.tsbuildinfo",
+    "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit --tsBuildInfoFile ./node_modules/.cache/typescript/tests-typecheck.tsbuildinfo",
     "postinstall": "npm run build",
     "frontier:contracts": "node tools/frontier-contracts/export-frontier-contracts.mjs",
     "frontier:discover": "node tools/frontier-static/discover-frontier-client.mjs",

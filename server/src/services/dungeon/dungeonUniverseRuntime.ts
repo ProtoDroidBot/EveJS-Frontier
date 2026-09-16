@@ -2,12 +2,15 @@ const path = require("path");
 
 const log = require(path.join(__dirname, "../../utils/logger"));
 const config = require(path.join(__dirname, "../../config"));
+const serviceTaskPool = require(path.join(__dirname, "../../utils/serviceTaskPool"));
 const worldData = require(path.join(__dirname, "../../space/worldData"));
+const asteroidData = require(path.join(__dirname, "../../space/asteroids/asteroidData"));
 const dungeonAuthority = require(path.join(__dirname, "./dungeonAuthority"));
 const dungeonRuntime = require(path.join(__dirname, "./dungeonRuntime"));
 const dungeonSiteAdapter = require(path.join(__dirname, "./dungeonSiteAdapter"));
 const dungeonSiteSpawnPolicy = require(path.join(__dirname, "./dungeonSiteSpawnPolicy"));
 const dungeonRuntimeState = require(path.join(__dirname, "./dungeonRuntimeState"));
+const dungeonSpawnEligibility = require(path.join(__dirname, "./dungeonSpawnEligibility"));
 const {
   buildAnchorRelativeSignaturePlacement,
 } = require(path.join(__dirname, "../exploration/signatures/signaturePlacement"));
@@ -68,8 +71,11 @@ const COSMIC_SIGNATURE_TYPE_ID = 19_728;
 const COSMIC_SIGNATURE_GROUP_ID = 502;
 const COSMIC_ANOMALY_TYPE_ID = 28_356;
 const COSMIC_ANOMALY_GROUP_ID = 885;
-const BACKGROUND_RECONCILE_BATCH_SIZE = 96;
+const BACKGROUND_RECONCILE_INITIAL_BATCH_SIZE = 4;
+const BACKGROUND_RECONCILE_MAX_BATCH_SIZE = 64;
+const BACKGROUND_RECONCILE_TARGET_SLICE_MS = 12;
 const BACKGROUND_RECONCILE_DELAY_MS = 25;
+const STARTUP_SYSTEM_RECONCILE_JOB_LIMIT = 25;
 const SYSTEM_RECONCILE_INITIAL_DELAY_MS = 250;
 const SYSTEM_WAKE_RECONCILE_DEBOUNCE_MS = 30_000;
 const RANDOM_UNIVERSE_ALLOCATION_VERSION = 1;
@@ -300,6 +306,10 @@ const RANDOM_ALLOCATED_UNIVERSE_FAMILIES = new Set([
   "ghost",
   "combat_hacking",
 ]);
+const DUNGEON_UNIVERSE_PLANNING_TASK = path.join(
+  __dirname,
+  "dungeonUniversePlanningTask.js",
+);
 const WAKE_ALLOCATED_UNIVERSE_FAMILIES = new Set(RANDOM_ALLOCATED_UNIVERSE_FAMILIES);
 
 let universeReconcileTicker = null;
@@ -319,6 +329,8 @@ const combatAnomalyTemplatesByLabelCache = new Map();
 const prospectingOreTemplatesByKeyCache = new Map();
 let stargateAdjacencyCache = null;
 const stableWakeCandidateRankingsByFamilyBand = new Map();
+let frontierDungeonSpawnAuthorityIDsCache = null;
+let landscapeDungeonSpawnExclusionIDsCache = null;
 
 function toInt(value, fallback = 0) {
   const numeric = Number(value);
@@ -453,6 +465,35 @@ function listSystemIDsByBand(band) {
 
 function cloneValue(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function getLandscapeDungeonSpawnExclusionIDs() {
+  if (!landscapeDungeonSpawnExclusionIDsCache) {
+    const worldSnapshot = worldData.ensureLoaded();
+    landscapeDungeonSpawnExclusionIDsCache = new Set(
+      dungeonSpawnEligibility.collectLandscapeDungeonSpawnExclusionIDs(worldSnapshot),
+    );
+  }
+  return landscapeDungeonSpawnExclusionIDsCache;
+}
+
+function getFrontierDungeonSpawnAuthorityIDs() {
+  if (!frontierDungeonSpawnAuthorityIDsCache) {
+    const worldSnapshot = worldData.ensureLoaded();
+    frontierDungeonSpawnAuthorityIDsCache = new Set(
+      dungeonSpawnEligibility.collectFrontierDungeonSpawnAuthorityIDs(worldSnapshot),
+    );
+  }
+  return frontierDungeonSpawnAuthorityIDsCache;
+}
+
+function isUniverseSpawnEligibleTemplate(template) {
+  return Boolean(template && template.templateID) &&
+    dungeonSpawnEligibility.isTemplateEligibleForUniverseSpawning(
+      template,
+      getFrontierDungeonSpawnAuthorityIDs(),
+      getLandscapeDungeonSpawnExclusionIDs(),
+    );
 }
 
 function hashValue(value) {
@@ -963,6 +1004,18 @@ function buildBroadUniverseDescriptor(systemIDs = null) {
       0,
       toInt(authorityPayload && authorityPayload.counts && authorityPayload.counts.templateCount, 0),
     ),
+    spawnEligibility: {
+      frontierDungeonAuthorityVersion:
+        dungeonSpawnEligibility.FRONTIER_DUNGEON_SPAWN_AUTHORITY_VERSION,
+      frontierDungeonIDs: [...getFrontierDungeonSpawnAuthorityIDs()],
+      landscapeExclusionVersion:
+        dungeonSpawnEligibility.LANDSCAPE_SPAWN_EXCLUSION_VERSION,
+      frontierResourceFieldPolicyVersion:
+        asteroidData.FRONTIER_RESOURCE_FIELD_POLICY_VERSION,
+      frontierResourceFieldsEnabled:
+        asteroidData.FRONTIER_SYNTHETIC_RESOURCE_FIELDS_ENABLED === true,
+      excludedLandscapeDungeonIDs: [...getLandscapeDungeonSpawnExclusionIDs()],
+    },
     familyPolicies,
     estimatedSiteCount,
   };
@@ -1023,7 +1076,7 @@ function buildUniverseDescriptor() {
   const broad = buildBroadUniverseDescriptor();
   const mining = buildMiningUniverseDescriptor();
   const descriptor = {
-    version: 2,
+    version: 4,
     broadDescriptorKey: broad.descriptorKey,
     miningDescriptorKey: mining.descriptorKey,
   };
@@ -1083,35 +1136,50 @@ function extractStaticPosition(record) {
 
 function buildUniverseAnchorCandidates(systemID, family) {
   const normalizedFamily = normalizeLowerText(family, "combat");
-  const belts = worldData.getAsteroidBeltsForSystem(systemID)
+  const resourceFamily = normalizedFamily === "ore" || normalizedFamily === "gas";
+  const belts = (
+    resourceFamily
+      ? asteroidData.getBeltsForSystem(systemID)
+      : worldData.getAsteroidBeltsForSystem(systemID)
+  )
     .map((belt) => ({
       itemID: toInt(belt && belt.itemID, 0),
+      anchorKind: belt && belt.frontierLandscapeSite === true
+        ? "landscape-resource-field"
+        : "asteroid-belt",
+      resourceZone: normalizeLowerText(belt && belt.resourceZone, "") || null,
+      ecosystemID: toInt(belt && belt.ecosystemID, 0) || null,
       position: extractStaticPosition(belt),
     }))
     .filter((entry) => entry.itemID > 0);
   const celestials = worldData.getCelestialsForSystem(systemID)
-    .filter((celestial) => toInt(celestial && celestial.groupID, 0) !== 6)
     .map((celestial) => ({
       itemID: toInt(celestial && celestial.itemID, 0),
+      groupID: toInt(celestial && celestial.groupID, 0),
       position: extractStaticPosition(celestial),
     }))
     .filter((entry) => entry.itemID > 0);
   const stations = worldData.getStationsForSystem(systemID)
     .map((station) => ({
       itemID: toInt(station && station.stationID, 0),
+      anchorKind: "station",
       position: extractStaticPosition(station),
     }))
     .filter((entry) => entry.itemID > 0);
   const stargates = worldData.getStargatesForSystem(systemID)
     .map((stargate) => ({
       itemID: toInt(stargate && stargate.itemID, 0),
+      anchorKind: "stargate",
       position: extractStaticPosition(stargate),
     }))
     .filter((entry) => entry.itemID > 0);
 
-  const ordered = normalizedFamily === "ore" || normalizedFamily === "gas"
-    ? [...belts, ...celestials, ...stations, ...stargates]
-    : [...celestials, ...belts, ...stations, ...stargates];
+  const ordered = dungeonSpawnEligibility.orderUniverseDungeonAnchorCandidates({
+    belts,
+    celestials,
+    stations,
+    stargates,
+  }, normalizedFamily);
   if (ordered.length > 0) {
     return ordered;
   }
@@ -1251,7 +1319,7 @@ function resolveGeneratedMiningTemplate(definition) {
 
 function enrichGeneratedMiningDefinition(definition, nowMs, options: Record<string, any> = {}) {
   const template = resolveGeneratedMiningTemplate(definition);
-  if (!template) {
+  if (!template || !isUniverseSpawnEligibleTemplate(template)) {
     return null;
   }
 
@@ -1711,6 +1779,9 @@ function listTemplateCandidatesForSpawnFamily(family) {
       if (!template || !template.templateID) {
         continue;
       }
+      if (!isUniverseSpawnEligibleTemplate(template)) {
+        continue;
+      }
       if (templateMatchesSpawnFamily(template, cacheKey, { difficultyRange: [0, 99] })) {
         candidatesByTemplateID.set(template.templateID, template);
       }
@@ -1949,6 +2020,7 @@ function listCombatAnomalyTemplatesForLabel(label, options: Record<string, any> 
       : normalizedLabel;
     const templates = Object.freeze(dungeonAuthority
       .listTemplatesByFamily("combat")
+      .filter((template) => isUniverseSpawnEligibleTemplate(template))
       .filter((template) => normalizeLowerText(template && template.siteKind, "") === "anomaly")
       .filter((template) => normalizeLowerText(classifyCombatAnomalyTemplate(template), "") === lookupLabel)
       .sort((left, right) => (
@@ -2012,6 +2084,7 @@ function listProspectingOreTemplates(mineral, tier) {
   const sizeTerms = prospectingSizeTermsForTier(tier);
   const candidates = dungeonAuthority
     .listTemplatesByFamily("ore")
+    .filter((template) => isUniverseSpawnEligibleTemplate(template))
     .filter((template) => normalizeLowerText(template && template.siteKind, "") === "anomaly")
     .filter((template) => {
       const name = normalizeLowerText(template && (template.resolvedName || template.name || ""), "");
@@ -2298,6 +2371,9 @@ function pickUniverseTemplateForSlot(family, systemID, slotIndex, rotationIndex,
 }
 
 function buildUniverseSiteDefinition(template, family, systemID, slotIndex, options: Record<string, any> = {}) {
+  if (!isUniverseSpawnEligibleTemplate(template)) {
+    return null;
+  }
   const spawnFamilyKey = normalizeLowerText(options.spawnFamilyKey, family);
   const siteID = buildUniverseSiteID(spawnFamilyKey, systemID, slotIndex);
   if (siteID <= 0) {
@@ -2784,6 +2860,7 @@ function pickExplorationDetectorTemplate(
   const policyContext = buildTemplatePolicyContext(family, targetSystemID, band);
   const candidates = dungeonAuthority
     .listTemplatesByFamily(family)
+    .filter((template) => isUniverseSpawnEligibleTemplate(template))
     .filter((template) => normalizeLowerText(template && template.siteKind, "") === "signature")
     .filter((template) => {
       const evaluation = evaluateTemplateSpawnPolicy(
@@ -3070,9 +3147,17 @@ function listStableWakeAllocationCandidateSystemIDs(family, band, bandProfile) {
   return [...stableWakeCandidateRankingsByFamilyBand.get(cacheKey)];
 }
 
-function listActiveRandomAllocatedInstances(family, band, candidateSystemIDs) {
+function listActiveRandomAllocatedInstances(
+  family,
+  band,
+  candidateSystemIDs,
+  activeInstances = null,
+) {
   const candidateSet = new Set<any>(normalizeSystemIDs(candidateSystemIDs));
-  return listUniverseSeededPersistentSiteInstances()
+  const sourceInstances = Array.isArray(activeInstances)
+    ? activeInstances
+    : listUniverseSeededPersistentSiteInstances();
+  return sourceInstances
     .filter((instance) => (
       normalizeLowerText(instance && instance.siteOrigin, "") === "universe_dungeon" &&
       getInstanceSpawnFamilyKey(instance) === normalizeLowerText(family, "") &&
@@ -3105,6 +3190,9 @@ function buildRandomAllocatedDefinitionForSlot(
 
   if (existing && existing.templateID) {
     template = dungeonAuthority.getTemplateByID(existing.templateID);
+    if (template && !isUniverseSpawnEligibleTemplate(template)) {
+      template = null;
+    }
     if (template) {
       evaluation = evaluateTemplateSpawnPolicy(
         template,
@@ -3185,7 +3273,12 @@ function buildRandomAllocatedSystemPlanForBand(
   }
 
   const candidateSet = new Set<any>(candidateSystemIDs);
-  const activeInstances = listActiveRandomAllocatedInstances(family, band, candidateSystemIDs);
+  const activeInstances = listActiveRandomAllocatedInstances(
+    family,
+    band,
+    candidateSystemIDs,
+    options.activeInstances,
+  );
   const existingBySystem = new Map();
   for (const instance of activeInstances) {
     const systemID = Math.max(0, toInt(instance && instance.solarSystemID, 0));
@@ -3511,6 +3604,9 @@ function listDesiredUniverseDungeonSiteDefinitions(systemIDs = null, nowMs = Dat
           let template = existing && existing.templateID
             ? dungeonAuthority.getTemplateByID(existing.templateID)
             : null;
+          if (template && !isUniverseSpawnEligibleTemplate(template)) {
+            template = null;
+          }
           let evaluation = template
             ? evaluateTemplateSpawnPolicy(
               template,
@@ -5097,10 +5193,31 @@ function scheduleNextBackgroundReconcileSlice() {
   }
   const delayMs = backgroundReconcileJob.sliceCount <= 0
     ? Math.max(BACKGROUND_RECONCILE_DELAY_MS, toInt(backgroundReconcileJob.initialDelayMs, BACKGROUND_RECONCILE_DELAY_MS))
-    : BACKGROUND_RECONCILE_DELAY_MS;
+    : Math.max(
+      BACKGROUND_RECONCILE_DELAY_MS,
+      Math.max(0, toInt(backgroundReconcileJob.retryNotBeforeMs, 0) - Date.now()),
+    );
   backgroundReconcileTimer = setTimeout(() => {
     backgroundReconcileTimer = null;
-    runBackgroundUniverseReconcileSlice();
+    Promise.resolve(runBackgroundUniverseReconcileSlice()).catch((error) => {
+      if (backgroundReconcileJob) {
+        backgroundReconcileJob.consecutiveFailureCount = Math.max(
+          1,
+          toInt(backgroundReconcileJob.consecutiveFailureCount, 0) + 1,
+        );
+        const retryDelayMs = Math.min(
+          30_000,
+          1_000 * (2 ** Math.min(5, backgroundReconcileJob.consecutiveFailureCount - 1)),
+        );
+        backgroundReconcileJob.retryNotBeforeMs = Date.now() + retryDelayMs;
+      }
+      log.warn(
+        `[DungeonUniverse] background reconcile slice failed: ${error.message}`,
+      );
+      if (backgroundReconcileJob) {
+        scheduleNextBackgroundReconcileSlice();
+      }
+    });
   }, delayMs);
   if (typeof backgroundReconcileTimer.unref === "function") {
     backgroundReconcileTimer.unref();
@@ -5196,7 +5313,32 @@ function buildRandomAllocatedSystemPlanForFamily(family, options: Record<string,
   };
 }
 
-function getBackgroundFamilyAllocationPlan(job, family) {
+function snapshotActiveRandomAllocationInstances(family) {
+  return listUniverseSeededPersistentSiteInstances()
+    .filter((instance) => (
+      normalizeLowerText(instance && instance.siteOrigin, "") === "universe_dungeon" &&
+      getInstanceSpawnFamilyKey(instance) === normalizeLowerText(family, "")
+    ))
+    .map((instance) => cloneValue(instance));
+}
+
+async function buildRandomAllocatedSystemPlanForFamilyInWorker(family) {
+  const activeInstances = snapshotActiveRandomAllocationInstances(family);
+  try {
+    return await serviceTaskPool.run({
+      modulePath: DUNGEON_UNIVERSE_PLANNING_TASK,
+      exportName: "buildRandomAllocatedSystemPlanForFamily",
+      args: [family, { activeInstances }],
+    });
+  } catch (error) {
+    log.warn(
+      `[DungeonUniverse] isolated worker planning failed for ${family}: ${error.message}`,
+    );
+    throw error;
+  }
+}
+
+async function getBackgroundFamilyAllocationPlan(job, family) {
   if (
     backgroundFamilyAllocationCache &&
     backgroundFamilyAllocationCache.family === family &&
@@ -5204,7 +5346,10 @@ function getBackgroundFamilyAllocationPlan(job, family) {
   ) {
     return backgroundFamilyAllocationCache.plan;
   }
-  const plan = buildRandomAllocatedSystemPlanForFamily(family);
+  const plan = await buildRandomAllocatedSystemPlanForFamilyInWorker(family);
+  if (backgroundReconcileJob !== job || !plan) {
+    return null;
+  }
   backgroundFamilyAllocationCache = {
     family,
     nowMs: Math.max(0, toInt(job && job.nowMs, 0)),
@@ -5213,7 +5358,7 @@ function getBackgroundFamilyAllocationPlan(job, family) {
   return plan;
 }
 
-function runBackgroundUniverseReconcileSlice() {
+async function runBackgroundUniverseReconcileSlice() {
   const job = backgroundReconcileJob;
   if (!job || job.completed === true) {
     return null;
@@ -5234,6 +5379,14 @@ function runBackgroundUniverseReconcileSlice() {
   }
 
   const family = job.familyQueue[job.familyIndex];
+  let allocatedSystemIDsByBand = null;
+  if (family !== "generatedmining" && familyUsesRandomAllocation(family)) {
+    const allocationPlan = await getBackgroundFamilyAllocationPlan(job, family);
+    if (backgroundReconcileJob !== job || !allocationPlan) {
+      return null;
+    }
+    allocatedSystemIDsByBand = allocationPlan.allocatedSystemIDsByBand;
+  }
   const sliceStartMs = Date.now();
   if (family === "generatedmining") {
     const miningDefinitions = listDesiredGeneratedMiningDefinitions(sliceSystemIDs, job.nowMs);
@@ -5268,13 +5421,13 @@ function runBackgroundUniverseReconcileSlice() {
     job.invalidGeneratedIceFound += Math.max(0, toInt(invalidGeneratedIceCleanup && invalidGeneratedIceCleanup.invalidCount, 0));
     job.invalidGeneratedIceDespawned += Math.max(0, toInt(invalidGeneratedIceCleanup && invalidGeneratedIceCleanup.despawnedCount, 0));
   } else {
-    const broadResult = familyUsesRandomAllocation(family)
+    const broadResult = allocatedSystemIDsByBand
       ? listDesiredUniverseDungeonSiteDefinitions(
         sliceSystemIDs,
         job.nowMs,
         {
           families: [family],
-          allocatedSystemIDsByBand: getBackgroundFamilyAllocationPlan(job, family).allocatedSystemIDsByBand,
+          allocatedSystemIDsByBand,
         },
       )
       : listDesiredUniverseDungeonSiteDefinitions(
@@ -5297,6 +5450,17 @@ function runBackgroundUniverseReconcileSlice() {
 
   job.systemIndex += sliceSystemIDs.length;
   job.sliceCount += 1;
+  job.consecutiveFailureCount = 0;
+  job.retryNotBeforeMs = 0;
+  const sliceElapsedMs = Date.now() - sliceStartMs;
+  if (sliceElapsedMs > job.targetSliceMs && job.batchSize > 1) {
+    job.batchSize = Math.max(1, Math.floor(job.batchSize / 2));
+  } else if (
+    sliceElapsedMs < Math.max(1, Math.floor(job.targetSliceMs / 2)) &&
+    job.batchSize < job.maxBatchSize
+  ) {
+    job.batchSize = Math.min(job.maxBatchSize, job.batchSize + 1);
+  }
   if (
     job.systemIndex >= job.systemIDs.length ||
     job.sliceCount === 1 ||
@@ -5305,7 +5469,7 @@ function runBackgroundUniverseReconcileSlice() {
     log.info(
       `[DungeonUniverse] background full reconcile: ${family} slice ${job.sliceCount} ` +
         `processed ${Math.min(job.systemIndex, job.systemIDs.length)}/${job.systemIDs.length} systems ` +
-        `in ${Date.now() - sliceStartMs}ms`,
+        `in ${sliceElapsedMs}ms (next batch=${job.batchSize})`,
     );
   }
 
@@ -5313,7 +5477,7 @@ function runBackgroundUniverseReconcileSlice() {
   return {
     family,
     sliceSystemCount: sliceSystemIDs.length,
-    elapsedMs: Date.now() - sliceStartMs,
+    elapsedMs: sliceElapsedMs,
   };
 }
 
@@ -5336,8 +5500,7 @@ function scheduleBackgroundUniverseReconcile(options: Record<string, any> = {}) 
   }
 
   const families = [
-    ...dungeonAuthority.listUniverseSpawnFamilies()
-      .filter((family) => !isWakeAllocatedUniverseFamily(family)),
+    ...dungeonAuthority.listUniverseSpawnFamilies(),
     ...listSovereigntyGuaranteedSpawnFamilies(),
   ];
   const systemIDs = normalizeSystemIDs();
@@ -5350,7 +5513,21 @@ function scheduleBackgroundUniverseReconcile(options: Record<string, any> = {}) 
     familyQueue: ["generatedmining", ...families],
     familyIndex: 0,
     systemIndex: 0,
-    batchSize: Math.max(1, toInt(options.batchSize, BACKGROUND_RECONCILE_BATCH_SIZE)),
+    batchSize: Math.max(
+      1,
+      toInt(options.batchSize, BACKGROUND_RECONCILE_INITIAL_BATCH_SIZE),
+    ),
+    maxBatchSize: Math.max(
+      Math.max(
+        1,
+        toInt(options.batchSize, BACKGROUND_RECONCILE_INITIAL_BATCH_SIZE),
+      ),
+      toInt(options.maxBatchSize, BACKGROUND_RECONCILE_MAX_BATCH_SIZE),
+    ),
+    targetSliceMs: Math.max(
+      1,
+      toInt(options.targetSliceMs, BACKGROUND_RECONCILE_TARGET_SLICE_MS),
+    ),
     initialDelayMs: Math.max(BACKGROUND_RECONCILE_DELAY_MS, toInt(options.initialDelayMs, 2_000)),
     sliceCount: 0,
     desiredSiteCount: 0,
@@ -5365,6 +5542,8 @@ function scheduleBackgroundUniverseReconcile(options: Record<string, any> = {}) 
     invalidGeneratedIceScanned: 0,
     invalidGeneratedIceFound: 0,
     invalidGeneratedIceDespawned: 0,
+    consecutiveFailureCount: 0,
+    retryNotBeforeMs: 0,
     completed: false,
   };
   log.info(
@@ -5498,7 +5677,16 @@ function scheduleNextSystemUniverseReconcileSlice() {
     : Math.max(0, toInt(job.sliceDelayMs, BACKGROUND_RECONCILE_DELAY_MS));
   systemUniverseReconcileTimer = setTimeout(() => {
     systemUniverseReconcileTimer = null;
-    runSystemUniverseReconcileSlice();
+    Promise.resolve(runSystemUniverseReconcileSlice()).catch((error) => {
+      const activeJob = getNextSystemUniverseReconcileJob();
+      if (activeJob) {
+        completeSystemUniverseReconcileJob(activeJob, {
+          error,
+          family: activeJob.familyQueue[activeJob.familyIndex] || null,
+        });
+      }
+      scheduleNextSystemUniverseReconcileSlice();
+    });
   }, delayMs);
   if (typeof systemUniverseReconcileTimer.unref === "function") {
     systemUniverseReconcileTimer.unref();
@@ -5659,13 +5847,14 @@ function reconcileSystemUniverseFamilySlice(job, family) {
   if (typeof job.rng === "function") {
     definitionOptions.rng = job.rng;
   }
-  if (job.allocatedSystemIDsByBand && typeof job.allocatedSystemIDsByBand === "object") {
+  const familyAllocation = job.randomAllocationPlans &&
+    job.randomAllocationPlans[family];
+  if (familyAllocation && typeof familyAllocation === "object") {
+    definitionOptions.allocatedSystemIDsByBand = familyAllocation;
+  } else if (job.allocatedSystemIDsByBand && typeof job.allocatedSystemIDsByBand === "object") {
     definitionOptions.allocatedSystemIDsByBand = job.allocatedSystemIDsByBand;
   } else if (familyUsesRandomAllocation(family)) {
-    definitionOptions.allocatedSystemIDsByBand =
-      buildRandomAllocatedSystemPlanForFamily(family, {
-        rng: job.rng,
-      }).allocatedSystemIDsByBand;
+    throw new Error(`random allocation plan is not ready for ${family}`);
   }
   const broadResult = listDesiredUniverseDungeonSiteDefinitions(
     [job.systemID],
@@ -5686,7 +5875,7 @@ function reconcileSystemUniverseFamilySlice(job, family) {
   };
 }
 
-function runSystemUniverseReconcileSlice() {
+async function runSystemUniverseReconcileSlice() {
   clearSystemUniverseReconcileTimer();
   const job = getNextSystemUniverseReconcileJob();
   if (!job) {
@@ -5697,6 +5886,27 @@ function runSystemUniverseReconcileSlice() {
     const result = completeSystemUniverseReconcileJob(job);
     scheduleNextSystemUniverseReconcileSlice();
     return result;
+  }
+
+  if (
+    family !== "generatedmining" &&
+    familyUsesRandomAllocation(family) &&
+    !(job.randomAllocationPlans && job.randomAllocationPlans[family]) &&
+    !(job.allocatedSystemIDsByBand && typeof job.allocatedSystemIDsByBand === "object")
+  ) {
+    try {
+      const plan = typeof job.rng === "function"
+        ? buildRandomAllocatedSystemPlanForFamily(family, { rng: job.rng })
+        : await buildRandomAllocatedSystemPlanForFamilyInWorker(family);
+      if (systemUniverseReconcileJobs.get(job.systemID) !== job) {
+        return null;
+      }
+      job.randomAllocationPlans[family] = plan.allocatedSystemIDsByBand;
+    } catch (error) {
+      const result = completeSystemUniverseReconcileJob(job, { error, family });
+      scheduleNextSystemUniverseReconcileSlice();
+      return result;
+    }
   }
 
   const sliceStartMs = Date.now();
@@ -5818,6 +6028,7 @@ function scheduleSystemUniversePersistentSitesReconcile(systemID, options: Recor
       options.allocatedSystemIDsByBand && typeof options.allocatedSystemIDsByBand === "object"
         ? cloneValue(options.allocatedSystemIDsByBand)
         : null,
+    randomAllocationPlans: {},
     desiredSiteCount: 0,
     desiredMiningSiteCount: 0,
     desiredPersistentSiteCount: 0,
@@ -6088,29 +6299,106 @@ function prepareStartupUniversePersistentSites(options: Record<string, any> = {}
       nowMs,
       systemIDs: startupSystemIDs,
     }));
+  const statusBeforeStartupReconcile = getUniverseReconcileStatus(nowMs);
+  const shouldReconcileStartupSystems =
+    options.reconcileStartupSystems !== false &&
+    startupSystemIDs.length > 0 &&
+    startupSystemIDs.length <= STARTUP_SYSTEM_RECONCILE_JOB_LIMIT &&
+    statusBeforeStartupReconcile.fullUpToDate !== true;
+  const startupSummary = shouldReconcileStartupSystems
+    ? (() => {
+      let scheduledSystemCount = 0;
+      let alreadyScheduledSystemCount = 0;
+      for (const systemID of startupSystemIDs) {
+        const scheduled = scheduleSystemUniversePersistentSitesReconcile(systemID, {
+          nowMs,
+          reason: normalizeText(options.startupReason, "server-startup-preload"),
+          force: true,
+          debounceMs: 0,
+          initialDelayMs: options.startupInitialDelayMs,
+          includeRandomAllocatedUniverseFamilies: true,
+          cleanupInvalidGeneratedIce: false,
+          logProgress: options.logStartupProgress === true,
+          onComplete: (result) => {
+            if (!result || result.success === false) {
+              return;
+            }
+            refreshLoadedGeneratedMiningScenes([systemID], Date.now());
+            try {
+              const runtime = require(path.join(__dirname, "../../space/runtime"));
+              const scene = runtime && runtime.scenes instanceof Map
+                ? runtime.scenes.get(systemID)
+                : null;
+              if (!scene) {
+                return;
+              }
+              const siteService = require(path.join(
+                __dirname,
+                "./dungeonUniverseSiteService",
+              ));
+              if (typeof siteService.handleSceneCreated === "function") {
+                siteService.handleSceneCreated(scene, { force: true });
+              }
+            } catch (error) {
+              log.warn(
+                `[DungeonUniverse] startup system materialization failed ` +
+                  `system=${systemID}: ${error.message}`,
+              );
+            }
+          },
+        });
+        if (scheduled && scheduled.scheduled === true) {
+          scheduledSystemCount += 1;
+        } else if (scheduled && scheduled.reason === "already_running") {
+          alreadyScheduledSystemCount += 1;
+        }
+      }
+      return {
+        systemCount: startupSystemIDs.length,
+        desiredSiteCount: 0,
+        createdInstances: 0,
+        retainedInstances: 0,
+        replacedInstances: 0,
+        removedInstances: 0,
+        miningStateRowsCreated: 0,
+        miningStateRowsRemoved: 0,
+        scheduledSystemCount,
+        alreadyScheduledSystemCount,
+        skipped: false,
+        asynchronous: true,
+        reason: "scheduled_background",
+      };
+    })()
+    : (startupSystemIDs.length > 0
+      ? {
+        systemCount: startupSystemIDs.length,
+        desiredSiteCount: 0,
+        createdInstances: 0,
+        retainedInstances: 0,
+        replacedInstances: 0,
+        removedInstances: 0,
+        miningStateRowsCreated: 0,
+        miningStateRowsRemoved: 0,
+        skipped: true,
+        reason:
+          statusBeforeStartupReconcile.fullUpToDate === true
+            ? "cached_universe_current"
+            : (
+              startupSystemIDs.length > STARTUP_SYSTEM_RECONCILE_JOB_LIMIT
+                ? "covered_by_full_background_reconcile"
+                : "startup_reconcile_disabled"
+            ),
+      }
+      : null);
   const status = getUniverseReconcileStatus(nowMs);
-  const startupSummary = startupSystemIDs.length > 0
-    ? {
-      systemCount: startupSystemIDs.length,
-      desiredSiteCount: 0,
-      createdInstances: 0,
-      retainedInstances: 0,
-      replacedInstances: 0,
-      removedInstances: 0,
-      miningStateRowsCreated: 0,
-      miningStateRowsRemoved: 0,
-      skipped: true,
-      reason: status.fullUpToDate === true
-        ? "cached_universe_current"
-        : "background_reconcile_required",
-    }
-    : null;
   const background = options.scheduleBackgroundReconcile === true && status.fullUpToDate !== true
     ? scheduleBackgroundUniverseReconcile({
       status,
       nowMs,
       reason: normalizeText(options.backgroundReason, "startup-stale"),
       batchSize: options.backgroundBatchSize,
+      maxBatchSize: options.backgroundMaxBatchSize,
+      targetSliceMs: options.backgroundTargetSliceMs,
       initialDelayMs: options.backgroundInitialDelayMs,
     })
     : {
