@@ -377,6 +377,7 @@ function buildCache(sourceState = null) {
     const instanceIDsByTemplate = new Map();
     const instanceIDsByFamily = new Map();
     const instanceIDsByLifecycle = new Map();
+    const instanceIDsBySiteKey = new Map();
     const instanceIDBySiteKey = new Map();
     const activeExpiringEntries = [];
     const universePersistentTerminalInstanceIDs = [];
@@ -409,6 +410,7 @@ function buildCache(sourceState = null) {
             universePersistentTerminalInstanceIDs.push(instance.instanceID);
         }
         if (instance.siteKey) {
+            appendIndex(instanceIDsBySiteKey, instance.siteKey, instance.instanceID);
             const existing = instanceIDBySiteKey.get(instance.siteKey) || null;
             if (!existing ||
                 !isActiveLifecycleState(summariesByID.get(existing) && summariesByID.get(existing).lifecycleState)) {
@@ -422,6 +424,7 @@ function buildCache(sourceState = null) {
         instanceIDsByTemplate,
         instanceIDsByFamily,
         instanceIDsByLifecycle,
+        instanceIDsBySiteKey,
     ]) {
         for (const [key, values] of indexMap.entries()) {
             indexMap.set(key, [...new Set(values)].sort((left, right) => left - right));
@@ -438,6 +441,7 @@ function buildCache(sourceState = null) {
         instanceIDsByTemplate,
         instanceIDsByFamily,
         instanceIDsByLifecycle,
+        instanceIDsBySiteKey,
         instanceIDBySiteKey,
         activeExpiringEntries,
         nextActiveExpiryAtMs,
@@ -452,6 +456,218 @@ function ensureCache() {
 }
 function loadState() {
     return ensureCache().state;
+}
+function removeIndexEntry(indexMap, key, instanceID) {
+    if (!key && key !== 0) {
+        return;
+    }
+    const normalizedKey = String(key);
+    const existing = indexMap.get(normalizedKey) || [];
+    const next = existing.filter((entry) => entry !== instanceID);
+    if (next.length > 0) {
+        indexMap.set(normalizedKey, next);
+    }
+    else {
+        indexMap.delete(normalizedKey);
+    }
+}
+function appendSortedUniqueIndexEntry(indexMap, key, instanceID) {
+    if (!key && key !== 0) {
+        return;
+    }
+    const normalizedKey = String(key);
+    const existing = indexMap.get(normalizedKey) || [];
+    if (existing.includes(instanceID)) {
+        return;
+    }
+    indexMap.set(normalizedKey, [...existing, instanceID].sort((left, right) => left - right));
+}
+function insertActiveExpiryEntry(entries, entry) {
+    let low = 0;
+    let high = entries.length;
+    while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        const candidate = entries[middle];
+        if (candidate.expiresAtMs < entry.expiresAtMs ||
+            (candidate.expiresAtMs === entry.expiresAtMs &&
+                candidate.instanceID < entry.instanceID)) {
+            low = middle + 1;
+        }
+        else {
+            high = middle;
+        }
+    }
+    entries.splice(low, 0, entry);
+}
+function insertSortedUniqueNumber(entries, value) {
+    if (!entries.includes(value)) {
+        entries.push(value);
+        entries.sort((left, right) => left - right);
+    }
+}
+function refreshSiteKeyIndex(cacheState, siteKey) {
+    const normalizedSiteKey = normalizeText(siteKey, "");
+    if (!normalizedSiteKey) {
+        return;
+    }
+    let selectedInstanceID = 0;
+    for (const instanceID of cacheState.instanceIDsBySiteKey.get(normalizedSiteKey) || []) {
+        const instance = cacheState.instancesByID.get(instanceID) || null;
+        if (!instance) {
+            continue;
+        }
+        if (selectedInstanceID <= 0 ||
+            !isActiveLifecycleState(cacheState.summariesByID.get(selectedInstanceID) &&
+                cacheState.summariesByID.get(selectedInstanceID).lifecycleState)) {
+            selectedInstanceID = instanceID;
+        }
+    }
+    if (selectedInstanceID > 0) {
+        cacheState.instanceIDBySiteKey.set(normalizedSiteKey, selectedInstanceID);
+    }
+    else {
+        cacheState.instanceIDBySiteKey.delete(normalizedSiteKey);
+    }
+}
+function removeInstanceFromCache(cacheState, instanceID) {
+    const existing = cacheState.instancesByID.get(instanceID) || null;
+    if (!existing) {
+        return null;
+    }
+    const summary = cacheState.summariesByID.get(instanceID) || buildInstanceSummary(existing);
+    delete cacheState.state.instancesByID[String(instanceID)];
+    cacheState.instancesByID.delete(instanceID);
+    cacheState.summariesByID.delete(instanceID);
+    removeIndexEntry(cacheState.instanceIDsBySystem, summary.solarSystemID, instanceID);
+    removeIndexEntry(cacheState.activeInstanceIDsBySystem, summary.solarSystemID, instanceID);
+    removeIndexEntry(cacheState.instanceIDsByTemplate, summary.templateID, instanceID);
+    removeIndexEntry(cacheState.instanceIDsByFamily, summary.siteFamily, instanceID);
+    removeIndexEntry(cacheState.instanceIDsByLifecycle, summary.lifecycleState, instanceID);
+    removeIndexEntry(cacheState.instanceIDsBySiteKey, summary.siteKey, instanceID);
+    cacheState.activeExpiringEntries = cacheState.activeExpiringEntries
+        .filter((entry) => entry.instanceID !== instanceID);
+    cacheState.universePersistentTerminalInstanceIDs =
+        cacheState.universePersistentTerminalInstanceIDs
+            .filter((entry) => entry !== instanceID);
+    if (summary.siteKey &&
+        cacheState.instanceIDBySiteKey.get(summary.siteKey) === instanceID) {
+        refreshSiteKeyIndex(cacheState, summary.siteKey);
+    }
+    return existing;
+}
+function addInstanceToCache(cacheState, rawInstance) {
+    const instance = normalizeInstanceRecord(rawInstance);
+    const instanceID = instance.instanceID;
+    cacheState.state.instancesByID[String(instanceID)] = instance;
+    cacheState.instancesByID.set(instanceID, instance);
+    const summary = buildInstanceSummary(instance);
+    cacheState.summariesByID.set(instanceID, summary);
+    appendSortedUniqueIndexEntry(cacheState.instanceIDsBySystem, instance.solarSystemID, instanceID);
+    appendSortedUniqueIndexEntry(cacheState.instanceIDsByTemplate, instance.templateID, instanceID);
+    appendSortedUniqueIndexEntry(cacheState.instanceIDsByFamily, instance.siteFamily, instanceID);
+    appendSortedUniqueIndexEntry(cacheState.instanceIDsByLifecycle, instance.lifecycleState, instanceID);
+    appendSortedUniqueIndexEntry(cacheState.instanceIDsBySiteKey, instance.siteKey, instanceID);
+    if (isActiveLifecycleState(instance.lifecycleState)) {
+        appendSortedUniqueIndexEntry(cacheState.activeInstanceIDsBySystem, instance.solarSystemID, instanceID);
+        const expiresAtMs = Math.max(0, toInt(instance && instance.timers && instance.timers.expiresAtMs, 0));
+        if (expiresAtMs > 0) {
+            insertActiveExpiryEntry(cacheState.activeExpiringEntries, { instanceID, expiresAtMs });
+        }
+    }
+    else if (instance &&
+        instance.runtimeFlags &&
+        instance.runtimeFlags.universePersistent === true &&
+        instance.runtimeFlags.universeSeeded === true) {
+        insertSortedUniqueNumber(cacheState.universePersistentTerminalInstanceIDs, instanceID);
+    }
+    if (instance.siteKey) {
+        const existingInstanceID = cacheState.instanceIDBySiteKey.get(instance.siteKey) || 0;
+        const existingSummary = cacheState.summariesByID.get(existingInstanceID) || null;
+        if (existingInstanceID <= 0 ||
+            !isActiveLifecycleState(existingSummary && existingSummary.lifecycleState)) {
+            cacheState.instanceIDBySiteKey.set(instance.siteKey, instanceID);
+        }
+    }
+    return instance;
+}
+function refreshIncrementalDerivedIndexes(cacheState) {
+    cacheState.nextActiveExpiryAtMs = cacheState.activeExpiringEntries.length > 0
+        ? cacheState.activeExpiringEntries[0].expiresAtMs
+        : 0;
+}
+// Apply a small set of instance changes without cloning, diffing, and
+// re-indexing every runtime instance. Universe reconciliation calls this for
+// bounded system slices, keeping the synchronous event-loop cost proportional
+// to the slice rather than the size of the whole persisted universe.
+function applyInstanceChanges(changes = {}) {
+    const cacheState = ensureCache();
+    const removeInstanceIDs = [...new Set((Array.isArray(changes.removeInstanceIDs) ? changes.removeInstanceIDs : [])
+            .map((entry) => Math.max(0, toInt(entry, 0)))
+            .filter((entry) => entry > 0))];
+    const upsertInstances = (Array.isArray(changes.upsertInstances)
+        ? changes.upsertInstances
+        : [])
+        .map((entry) => normalizeInstanceRecord(entry))
+        .filter((entry) => entry.instanceID > 0 && entry.templateID && entry.solarSystemID > 0);
+    const upsertsByID = new Map(upsertInstances.map((instance) => [instance.instanceID, instance]));
+    const changedUpserts = [...upsertsByID.values()].filter((instance) => (!isDeepStrictEqual(cacheState.instancesByID.get(instance.instanceID), instance)));
+    const changedRemovals = removeInstanceIDs.filter((instanceID) => (cacheState.instancesByID.has(instanceID) && !upsertsByID.has(instanceID)));
+    const requestedNextSequence = changes.nextInstanceSequence == null
+        ? cacheState.state.nextInstanceSequence
+        : Math.max(cacheState.state.nextInstanceSequence, toInt(changes.nextInstanceSequence, cacheState.state.nextInstanceSequence));
+    const sequenceChanged = requestedNextSequence !== cacheState.state.nextInstanceSequence;
+    if (changedUpserts.length <= 0 && changedRemovals.length <= 0 && !sequenceChanged) {
+        return {
+            success: true,
+            skippedWrite: true,
+            changed: 0,
+        };
+    }
+    let success = true;
+    for (const instance of changedUpserts) {
+        const result = repo.write(DUNGEON_RUNTIME_TABLE, `/instancesByID/${instance.instanceID}`, cloneValue(instance));
+        if (!result || result.success !== true) {
+            success = false;
+        }
+    }
+    for (const instanceID of changedRemovals) {
+        const result = repo.remove(DUNGEON_RUNTIME_TABLE, `/instancesByID/${instanceID}`);
+        if (!(result && (result.success === true || result.errorMsg === "ENTRY_NOT_FOUND"))) {
+            success = false;
+        }
+    }
+    if (sequenceChanged) {
+        const result = repo.write(DUNGEON_RUNTIME_TABLE, "/nextInstanceSequence", requestedNextSequence);
+        if (!result || result.success !== true) {
+            success = false;
+        }
+    }
+    if (!success) {
+        // Some row writes may have succeeded. Force a clean persisted reload on
+        // the next access rather than leaving a partially updated cache visible.
+        cache = null;
+        return {
+            success: false,
+            skippedWrite: false,
+            changed: changedUpserts.length + changedRemovals.length + (sequenceChanged ? 1 : 0),
+        };
+    }
+    for (const instanceID of new Set([
+        ...changedRemovals,
+        ...changedUpserts.map((instance) => instance.instanceID),
+    ])) {
+        removeInstanceFromCache(cacheState, instanceID);
+    }
+    for (const instance of changedUpserts) {
+        addInstanceToCache(cacheState, instance);
+    }
+    cacheState.state.nextInstanceSequence = requestedNextSequence;
+    refreshIncrementalDerivedIndexes(cacheState);
+    return {
+        success: true,
+        skippedWrite: false,
+        changed: changedUpserts.length + changedRemovals.length + (sequenceChanged ? 1 : 0),
+    };
 }
 // Persist a normalized state by diffing it against the live persisted table and
 // writing ONLY the rows that changed (per instance + per scalar) instead of a
@@ -563,6 +779,9 @@ function getInstanceSummary(instanceID) {
     const summary = ensureCache().summariesByID.get(Math.max(0, toInt(instanceID, 0)));
     return summary ? cloneValue(summary) : null;
 }
+function getNextInstanceSequence() {
+    return Math.max(1, toInt(ensureCache().state.nextInstanceSequence, 1));
+}
 function filterSummaryList(instanceIDs, options = {}) {
     const normalizedLifecycleFilter = Array.isArray(options.lifecycleStates)
         ? [...new Set(options.lifecycleStates.map((entry) => normalizeLifecycleState(entry)))]
@@ -593,6 +812,9 @@ function listInstanceSummariesBySystem(solarSystemID, options = {}) {
         ? ensureCache().activeInstanceIDsBySystem
         : ensureCache().instanceIDsBySystem;
     return filterSummaryList(indexMap.get(String(normalizedSystemID)) || [], options);
+}
+function listAllInstanceSummaries(options = {}) {
+    return filterSummaryList([...ensureCache().summariesByID.keys()], options);
 }
 function listInstanceSummariesByTemplate(templateID, options = {}) {
     const normalizedTemplateID = normalizeText(templateID, "");
@@ -691,16 +913,19 @@ module.exports = {
     DUNGEON_RUNTIME_VERSION,
     TERMINAL_LIFECYCLE_STATES,
     UNIVERSE_RECONCILE_META_VERSION,
+    applyInstanceChanges,
     clearRuntimeCache,
     findInstanceSummaryBySiteKey,
     getInstanceSnapshot,
     getInstanceSummary,
     getNextActiveExpiryAtMs,
+    getNextInstanceSequence,
     getStateSnapshot,
     getUniverseReconcileMeta,
     isActiveLifecycleState,
     isRetiredMissionInstanceRecord,
     isRetiredMissionTemplateID,
+    listAllInstanceSummaries,
     listExpiredActiveInstanceSummaries,
     listInstanceSummariesByLifecycle,
     listInstanceSummariesByFamily,

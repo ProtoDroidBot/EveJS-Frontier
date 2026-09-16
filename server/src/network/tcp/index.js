@@ -8,6 +8,7 @@ const net = require("net");
 const pc = require("picocolors");
 const log = require(path.join(__dirname, "../../utils/logger"));
 const config = require(path.join(__dirname, "../../config"));
+const interactiveWorkloadGate = require(path.join(__dirname, "../../utils/interactiveWorkloadGate"));
 const EVEHandshake = require(path.join(__dirname, "./handshake"));
 const { marshalDecode } = require(path.join(__dirname, "./utils/marshal"));
 const { readPacketLength } = require(path.join(__dirname, "./packetFraming"));
@@ -51,16 +52,30 @@ module.exports = function (serviceManager) {
                 !(next.session &&
                     next.session.socket &&
                     next.session.socket.destroyed === true)) {
-                Promise.resolve(dispatcher.dispatch(next.decoded, next.session)).catch((err) => {
+                const finishInteractiveDispatch = next.loginInteractive === true
+                    ? interactiveWorkloadGate.beginLogin()
+                    : null;
+                Promise.resolve()
+                    .then(() => dispatcher.dispatch(next.decoded, next.session))
+                    .catch((err) => {
                     log.err(`[TCP] async packet dispatch error: ${err.message}`);
                     logDebug(`[TCP] async dispatch stack: ${err.stack}`);
+                })
+                    .finally(() => {
+                    if (finishInteractiveDispatch) {
+                        finishInteractiveDispatch();
+                    }
                 });
             }
             scheduleNextPacketDispatch();
         });
     };
     const enqueuePacketDispatch = (decoded, session) => {
-        pendingDispatches.push({ decoded, session });
+        pendingDispatches.push({
+            decoded,
+            session,
+            loginInteractive: !(session && Number(session.characterID) > 0),
+        });
         scheduleNextPacketDispatch();
     };
     const startupPreloadPlan = spaceRuntime.getStartupSolarSystemPreloadPlan();
@@ -176,10 +191,14 @@ module.exports = function (serviceManager) {
         const handshake = new EVEHandshake(socket);
         let handshakeComplete = false;
         let clientSession = null;
+        const finishTrackedLogin = interactiveWorkloadGate.beginLogin();
         // Start the handshake (sends VersionExchangeServer)
         handshake.start();
         // Listen for data
         socket.on("data", (chunk) => {
+            if (!handshakeComplete || !(clientSession && Number(clientSession.characterID) > 0)) {
+                interactiveWorkloadGate.noteLoginActivity();
+            }
             tcpBuffer = Buffer.concat([tcpBuffer, chunk]);
             // Frame-level parsing: packet length byte order is client-profile specific.
             while (tcpBuffer.length >= 4) {
@@ -202,6 +221,7 @@ module.exports = function (serviceManager) {
                         const result = handshake.handlePacket(payload);
                         if (result.done) {
                             handshakeComplete = true;
+                            finishTrackedLogin();
                             logDebug(`Handshake complete for ${socket.remoteAddress} — entering packet dispatch mode`);
                             // Create client session from handshake data
                             clientSession = new ClientSession({
@@ -284,6 +304,7 @@ module.exports = function (serviceManager) {
             }
         });
         socket.on("close", () => {
+            finishTrackedLogin();
             if (clientSession) {
                 disconnectCharacterSession(clientSession, {
                     broadcast: true,
@@ -294,6 +315,7 @@ module.exports = function (serviceManager) {
             logInfo(`connection closed: ${socket.remoteAddress}:${socket.remotePort}`);
         });
         socket.on("error", (err) => {
+            finishTrackedLogin();
             if (clientSession) {
                 disconnectCharacterSession(clientSession, {
                     broadcast: true,

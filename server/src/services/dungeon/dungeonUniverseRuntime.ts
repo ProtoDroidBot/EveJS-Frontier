@@ -3,6 +3,10 @@ const path = require("path");
 const log = require(path.join(__dirname, "../../utils/logger"));
 const config = require(path.join(__dirname, "../../config"));
 const serviceTaskPool = require(path.join(__dirname, "../../utils/serviceTaskPool"));
+const interactiveWorkloadGate = require(path.join(
+  __dirname,
+  "../../utils/interactiveWorkloadGate",
+));
 const worldData = require(path.join(__dirname, "../../space/worldData"));
 const asteroidData = require(path.join(__dirname, "../../space/asteroids/asteroidData"));
 const dungeonAuthority = require(path.join(__dirname, "./dungeonAuthority"));
@@ -75,6 +79,7 @@ const BACKGROUND_RECONCILE_INITIAL_BATCH_SIZE = 4;
 const BACKGROUND_RECONCILE_MAX_BATCH_SIZE = 64;
 const BACKGROUND_RECONCILE_TARGET_SLICE_MS = 12;
 const BACKGROUND_RECONCILE_DELAY_MS = 25;
+const INDEXED_SYSTEM_LOOKUP_LIMIT = 256;
 const STARTUP_SYSTEM_RECONCILE_JOB_LIMIT = 25;
 const SYSTEM_RECONCILE_INITIAL_DELAY_MS = 250;
 const SYSTEM_WAKE_RECONCILE_DEBOUNCE_MS = 30_000;
@@ -4024,8 +4029,23 @@ function shouldRotateUniversePersistentTerminalInstance(instance, nowMs) {
 
 function listProtectedGeneratedMiningSiteKeys(systemIDs, nowMs = Date.now()) {
   const targetedSystemIDs = new Set<any>(normalizeSystemIDs(systemIDs));
-  return dungeonRuntime
-    .listUniversePersistentTerminalInstances({ full: true })
+  const candidates = (
+    Array.isArray(systemIDs) &&
+    systemIDs.length > 0 &&
+    targetedSystemIDs.size > 0 &&
+    targetedSystemIDs.size <= INDEXED_SYSTEM_LOOKUP_LIMIT
+  )
+    ? [...targetedSystemIDs].flatMap((systemID) => (
+      dungeonRuntime.listInstancesBySystem(systemID, { full: true })
+    )).filter((instance) => (
+      !dungeonRuntimeState.isActiveLifecycleState(instance && instance.lifecycleState) &&
+      instance &&
+      instance.runtimeFlags &&
+      instance.runtimeFlags.universePersistent === true &&
+      instance.runtimeFlags.universeSeeded === true
+    ))
+    : dungeonRuntime.listUniversePersistentTerminalInstances({ full: true });
+  return candidates
     .filter((instance) => (
       normalizeLowerText(instance && instance.siteOrigin, "") === "generatedmining" &&
       targetedSystemIDs.has(Math.max(0, toInt(instance && instance.solarSystemID, 0))) &&
@@ -4520,11 +4540,21 @@ function restoreGeneratedIceAfterDowntime(options: Record<string, any> = {}) {
 
 function listUniverseSeededGeneratedMiningInstances(systemIDs = null) {
   const targetedSystemIDs = new Set<any>(normalizeSystemIDs(systemIDs));
-  return [
-    ...dungeonRuntime.listInstancesByLifecycle("seeded", { full: true }),
-    ...dungeonRuntime.listInstancesByLifecycle("active", { full: true }),
-    ...dungeonRuntime.listInstancesByLifecycle("paused", { full: true }),
-  ].filter((instance) => (
+  const candidates = (
+    Array.isArray(systemIDs) &&
+    systemIDs.length > 0 &&
+    targetedSystemIDs.size > 0 &&
+    targetedSystemIDs.size <= INDEXED_SYSTEM_LOOKUP_LIMIT
+  )
+    ? [...targetedSystemIDs].flatMap((systemID) => (
+      dungeonRuntime.listInstancesBySystem(systemID, { full: true, activeOnly: true })
+    ))
+    : [
+      ...dungeonRuntime.listInstancesByLifecycle("seeded", { full: true }),
+      ...dungeonRuntime.listInstancesByLifecycle("active", { full: true }),
+      ...dungeonRuntime.listInstancesByLifecycle("paused", { full: true }),
+    ];
+  return candidates.filter((instance) => (
     instance &&
     String(instance.siteOrigin || "").trim().toLowerCase() === "generatedmining" &&
     instance.runtimeFlags &&
@@ -4788,11 +4818,21 @@ function isIceAuthorityRuntimeInstance(instance) {
 function listActiveIceAuthorityRuntimeInstances(systemIDs = null) {
   const targetedSystemIDs = new Set<any>(normalizeSystemIDs(systemIDs));
   const byInstanceID = new Map();
-  for (const instance of [
-    ...dungeonRuntime.listInstancesByLifecycle("seeded", { full: true }),
-    ...dungeonRuntime.listInstancesByLifecycle("active", { full: true }),
-    ...dungeonRuntime.listInstancesByLifecycle("paused", { full: true }),
-  ]) {
+  const candidates = (
+    Array.isArray(systemIDs) &&
+    systemIDs.length > 0 &&
+    targetedSystemIDs.size > 0 &&
+    targetedSystemIDs.size <= INDEXED_SYSTEM_LOOKUP_LIMIT
+  )
+    ? [...targetedSystemIDs].flatMap((systemID) => (
+      dungeonRuntime.listInstancesBySystem(systemID, { full: true, activeOnly: true })
+    ))
+    : [
+      ...dungeonRuntime.listInstancesByLifecycle("seeded", { full: true }),
+      ...dungeonRuntime.listInstancesByLifecycle("active", { full: true }),
+      ...dungeonRuntime.listInstancesByLifecycle("paused", { full: true }),
+    ];
+  for (const instance of candidates) {
     const systemID = Math.max(0, toInt(instance && instance.solarSystemID, 0));
     if (systemID <= 0 || (targetedSystemIDs.size > 0 && !targetedSystemIDs.has(systemID))) {
       continue;
@@ -5019,11 +5059,21 @@ function cleanupInvalidGeneratedIceAuthority(options: Record<string, any> = {}) 
 function listUniverseSeededPersistentSiteInstances(systemIDs = null) {
   const targetedSystemIDs = new Set<any>(normalizeSystemIDs(systemIDs));
   const byInstanceID = new Map();
-  for (const instance of [
-    ...dungeonRuntime.listInstancesByLifecycle("seeded", { full: true }),
-    ...dungeonRuntime.listInstancesByLifecycle("active", { full: true }),
-    ...dungeonRuntime.listInstancesByLifecycle("paused", { full: true }),
-  ]) {
+  const candidates = (
+    Array.isArray(systemIDs) &&
+    systemIDs.length > 0 &&
+    targetedSystemIDs.size > 0 &&
+    targetedSystemIDs.size <= INDEXED_SYSTEM_LOOKUP_LIMIT
+  )
+    ? [...targetedSystemIDs].flatMap((systemID) => (
+      dungeonRuntime.listInstancesBySystem(systemID, { full: true, activeOnly: true })
+    ))
+    : [
+      ...dungeonRuntime.listInstancesByLifecycle("seeded", { full: true }),
+      ...dungeonRuntime.listInstancesByLifecycle("active", { full: true }),
+      ...dungeonRuntime.listInstancesByLifecycle("paused", { full: true }),
+    ];
+  for (const instance of candidates) {
     if (!instance || !(instance.runtimeFlags && instance.runtimeFlags.universeSeeded === true)) {
       continue;
     }
@@ -5191,32 +5241,44 @@ function scheduleNextBackgroundReconcileSlice() {
   if (!backgroundReconcileJob || backgroundReconcileJob.completed === true) {
     return;
   }
-  const delayMs = backgroundReconcileJob.sliceCount <= 0
+  const baseDelayMs = backgroundReconcileJob.sliceCount <= 0
     ? Math.max(BACKGROUND_RECONCILE_DELAY_MS, toInt(backgroundReconcileJob.initialDelayMs, BACKGROUND_RECONCILE_DELAY_MS))
     : Math.max(
       BACKGROUND_RECONCILE_DELAY_MS,
       Math.max(0, toInt(backgroundReconcileJob.retryNotBeforeMs, 0) - Date.now()),
     );
+  const delayMs = Math.max(
+    baseDelayMs,
+    interactiveWorkloadGate.getBackgroundDeferralDelayMs(),
+  );
   backgroundReconcileTimer = setTimeout(() => {
     backgroundReconcileTimer = null;
-    Promise.resolve(runBackgroundUniverseReconcileSlice()).catch((error) => {
-      if (backgroundReconcileJob) {
-        backgroundReconcileJob.consecutiveFailureCount = Math.max(
-          1,
-          toInt(backgroundReconcileJob.consecutiveFailureCount, 0) + 1,
-        );
-        const retryDelayMs = Math.min(
-          30_000,
-          1_000 * (2 ** Math.min(5, backgroundReconcileJob.consecutiveFailureCount - 1)),
-        );
-        backgroundReconcileJob.retryNotBeforeMs = Date.now() + retryDelayMs;
-      }
-      log.warn(
-        `[DungeonUniverse] background reconcile slice failed: ${error.message}`,
-      );
-      if (backgroundReconcileJob) {
+    // Yield through the poll phase before starting synchronous authority work,
+    // allowing a newly arrived socket packet to activate the login gate.
+    setImmediate(() => {
+      if (interactiveWorkloadGate.shouldDeferBackgroundWork()) {
         scheduleNextBackgroundReconcileSlice();
+        return;
       }
+      Promise.resolve(runBackgroundUniverseReconcileSlice()).catch((error) => {
+        if (backgroundReconcileJob) {
+          backgroundReconcileJob.consecutiveFailureCount = Math.max(
+            1,
+            toInt(backgroundReconcileJob.consecutiveFailureCount, 0) + 1,
+          );
+          const retryDelayMs = Math.min(
+            30_000,
+            1_000 * (2 ** Math.min(5, backgroundReconcileJob.consecutiveFailureCount - 1)),
+          );
+          backgroundReconcileJob.retryNotBeforeMs = Date.now() + retryDelayMs;
+        }
+        log.warn(
+          `[DungeonUniverse] background reconcile slice failed: ${error.message}`,
+        );
+        if (backgroundReconcileJob) {
+          scheduleNextBackgroundReconcileSlice();
+        }
+      });
     });
   }, delayMs);
   if (typeof backgroundReconcileTimer.unref === "function") {
@@ -5386,6 +5448,14 @@ async function runBackgroundUniverseReconcileSlice() {
       return null;
     }
     allocatedSystemIDsByBand = allocationPlan.allocatedSystemIDsByBand;
+  }
+  if (interactiveWorkloadGate.shouldDeferBackgroundWork()) {
+    scheduleNextBackgroundReconcileSlice();
+    return {
+      family,
+      deferred: true,
+      reason: "interactive_login",
+    };
   }
   const sliceStartMs = Date.now();
   if (family === "generatedmining") {
@@ -5672,20 +5742,30 @@ function scheduleNextSystemUniverseReconcileSlice() {
   if (!job) {
     return;
   }
-  const delayMs = job.sliceCount <= 0
+  const baseDelayMs = job.sliceCount <= 0
     ? Math.max(0, toInt(job.initialDelayMs, SYSTEM_RECONCILE_INITIAL_DELAY_MS))
     : Math.max(0, toInt(job.sliceDelayMs, BACKGROUND_RECONCILE_DELAY_MS));
+  const delayMs = Math.max(
+    baseDelayMs,
+    interactiveWorkloadGate.getBackgroundDeferralDelayMs(),
+  );
   systemUniverseReconcileTimer = setTimeout(() => {
     systemUniverseReconcileTimer = null;
-    Promise.resolve(runSystemUniverseReconcileSlice()).catch((error) => {
-      const activeJob = getNextSystemUniverseReconcileJob();
-      if (activeJob) {
-        completeSystemUniverseReconcileJob(activeJob, {
-          error,
-          family: activeJob.familyQueue[activeJob.familyIndex] || null,
-        });
+    setImmediate(() => {
+      if (interactiveWorkloadGate.shouldDeferBackgroundWork()) {
+        scheduleNextSystemUniverseReconcileSlice();
+        return;
       }
-      scheduleNextSystemUniverseReconcileSlice();
+      Promise.resolve(runSystemUniverseReconcileSlice()).catch((error) => {
+        const activeJob = getNextSystemUniverseReconcileJob();
+        if (activeJob) {
+          completeSystemUniverseReconcileJob(activeJob, {
+            error,
+            family: activeJob.familyQueue[activeJob.familyIndex] || null,
+          });
+        }
+        scheduleNextSystemUniverseReconcileSlice();
+      });
     });
   }, delayMs);
   if (typeof systemUniverseReconcileTimer.unref === "function") {
@@ -5907,6 +5987,17 @@ async function runSystemUniverseReconcileSlice() {
       scheduleNextSystemUniverseReconcileSlice();
       return result;
     }
+  }
+
+  if (interactiveWorkloadGate.shouldDeferBackgroundWork()) {
+    scheduleNextSystemUniverseReconcileSlice();
+    return {
+      success: true as const,
+      deferred: true,
+      reason: "interactive_login",
+      family,
+      systemID: job.systemID,
+    };
   }
 
   const sliceStartMs = Date.now();

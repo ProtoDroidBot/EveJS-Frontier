@@ -4,15 +4,16 @@
 
 const path = require("path");
 
-let initialized = false;
+let runtime = null;
 
 function getDungeonUniverseRuntime() {
-  if (!initialized) {
-    const database = require(path.join(__dirname, "../../gameStore"));
-    database.preloadAll();
-    initialized = true;
+  if (!runtime) {
+    // Worker planning reads only the tables its calculation touches. A full
+    // preload here duplicated the server's entire 157-table cache and caused a
+    // second startup-like preload in the same process session.
+    runtime = require(path.join(__dirname, "./dungeonUniverseRuntime"));
   }
-  return require(path.join(__dirname, "./dungeonUniverseRuntime"));
+  return runtime;
 }
 
 function buildRandomAllocatedSystemPlanForFamily(family, options: Record<string, any> = {}) {

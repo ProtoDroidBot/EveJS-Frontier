@@ -4,6 +4,7 @@ const path = require("path");
 const { isDeepStrictEqual } = require("util");
 const dungeonAuthority = require(path.join(__dirname, "./dungeonAuthority"));
 const runtimeState = require(path.join(__dirname, "./dungeonRuntimeState"));
+const INDEXED_RECONCILE_SYSTEM_LIMIT = 256;
 const instanceChangeListeners = new Set();
 let runtimeTicker = null;
 function toInt(value, fallback = 0) {
@@ -813,76 +814,79 @@ function reconcileUniverseSeededInstances(definitions = [], options = {}) {
     const retainedInstanceIDs = [];
     const preservedInstanceIDs = [];
     let replacedInstances = 0;
-    runtimeState.mutateState((table) => {
-        const instancesByID = table.instancesByID || {};
-        const existingBySiteKey = new Map();
-        for (const [instanceID, rawInstance] of Object.entries(instancesByID)) {
-            const instance = runtimeState.normalizeInstanceRecord({
-                ...rawInstance,
-                instanceID: toInt(rawInstance && rawInstance.instanceID, toInt(instanceID, 0)),
-            });
-            if (!(instance.runtimeFlags && instance.runtimeFlags.universeSeeded === true)) {
-                continue;
-            }
-            if (siteFamilyFilter &&
-                !siteFamilyFilter.has(normalizeText(instance.siteFamily, "").toLowerCase())) {
-                continue;
-            }
-            const instanceSpawnFamilyKey = normalizeText(instance &&
-                instance.metadata &&
-                instance.metadata.spawnFamilyKey, normalizeText(instance &&
-                instance.spawnState &&
-                instance.spawnState.spawnFamilyKey, instance && instance.siteFamily)).toLowerCase();
-            if (spawnFamilyFilter &&
-                !spawnFamilyFilter.has(instanceSpawnFamilyKey)) {
-                continue;
-            }
-            if (siteOriginFilter &&
-                !siteOriginFilter.has(normalizeText(instance.siteOrigin, "").toLowerCase())) {
-                continue;
-            }
-            if (targetedSystemIDs.size > 0 &&
-                !targetedSystemIDs.has(Math.max(0, toInt(instance.solarSystemID, 0)))) {
-                continue;
-            }
-            existingBySiteKey.set(instance.siteKey, instance);
+    const candidateSummaries = (targetedSystemIDs.size > 0 &&
+        targetedSystemIDs.size <= INDEXED_RECONCILE_SYSTEM_LIMIT)
+        ? [...targetedSystemIDs].flatMap((systemID) => (runtimeState.listInstanceSummariesBySystem(systemID)))
+        : runtimeState.listAllInstanceSummaries().filter((summary) => (targetedSystemIDs.size <= 0 ||
+            targetedSystemIDs.has(Math.max(0, toInt(summary && summary.solarSystemID, 0)))));
+    const existingBySiteKey = new Map();
+    for (const summary of candidateSummaries) {
+        const instance = runtimeState.getInstanceSnapshot(summary.instanceID);
+        if (!instance || !(instance.runtimeFlags && instance.runtimeFlags.universeSeeded === true)) {
+            continue;
         }
-        for (const [siteKey, instance] of existingBySiteKey.entries()) {
-            if (!desiredBySiteKey.has(siteKey) && !preserveSiteKeys.has(siteKey)) {
-                removedBefore.push(cloneValue(instance));
-                delete instancesByID[String(instance.instanceID)];
-            }
+        if (siteFamilyFilter &&
+            !siteFamilyFilter.has(normalizeText(instance.siteFamily, "").toLowerCase())) {
+            continue;
         }
-        let nextInstanceSequence = Math.max(1, toInt(table.nextInstanceSequence, 1));
-        for (const definition of normalizedDefinitions) {
-            const template = templatesByID.get(definition.templateID);
-            if (!template) {
-                continue;
-            }
-            const existing = existingBySiteKey.get(definition.siteKey) || null;
-            if (existing && preserveSiteKeys.has(definition.siteKey)) {
-                retainedInstanceIDs.push(existing.instanceID);
-                preservedInstanceIDs.push(existing.instanceID);
-                continue;
-            }
-            if (existing && definitionsMatchActiveUniverseInstance(existing, definition, template)) {
-                retainedInstanceIDs.push(existing.instanceID);
-                continue;
-            }
-            if (existing) {
-                removedBefore.push(cloneValue(existing));
-                delete instancesByID[String(existing.instanceID)];
-                replacedInstances += 1;
-            }
-            const nextInstanceID = nextInstanceSequence;
-            nextInstanceSequence += 1;
-            const created = buildInstanceRecordFromOptions(nextInstanceID, template, definition, nowMs);
-            instancesByID[String(nextInstanceID)] = created;
-            createdAfter.push(cloneValue(created));
+        const instanceSpawnFamilyKey = normalizeText(instance &&
+            instance.metadata &&
+            instance.metadata.spawnFamilyKey, normalizeText(instance &&
+            instance.spawnState &&
+            instance.spawnState.spawnFamilyKey, instance && instance.siteFamily)).toLowerCase();
+        if (spawnFamilyFilter &&
+            !spawnFamilyFilter.has(instanceSpawnFamilyKey)) {
+            continue;
         }
-        table.nextInstanceSequence = nextInstanceSequence;
-        return table;
+        if (siteOriginFilter &&
+            !siteOriginFilter.has(normalizeText(instance.siteOrigin, "").toLowerCase())) {
+            continue;
+        }
+        existingBySiteKey.set(instance.siteKey, instance);
+    }
+    const removeInstanceIDs = new Set();
+    for (const [siteKey, instance] of existingBySiteKey.entries()) {
+        if (!desiredBySiteKey.has(siteKey) && !preserveSiteKeys.has(siteKey)) {
+            removedBefore.push(cloneValue(instance));
+            removeInstanceIDs.add(instance.instanceID);
+        }
+    }
+    let nextInstanceSequence = runtimeState.getNextInstanceSequence();
+    const upsertInstances = [];
+    for (const definition of normalizedDefinitions) {
+        const template = templatesByID.get(definition.templateID);
+        if (!template) {
+            continue;
+        }
+        const existing = existingBySiteKey.get(definition.siteKey) || null;
+        if (existing && preserveSiteKeys.has(definition.siteKey)) {
+            retainedInstanceIDs.push(existing.instanceID);
+            preservedInstanceIDs.push(existing.instanceID);
+            continue;
+        }
+        if (existing && definitionsMatchActiveUniverseInstance(existing, definition, template)) {
+            retainedInstanceIDs.push(existing.instanceID);
+            continue;
+        }
+        if (existing) {
+            removedBefore.push(cloneValue(existing));
+            removeInstanceIDs.add(existing.instanceID);
+            replacedInstances += 1;
+        }
+        const nextInstanceID = nextInstanceSequence;
+        nextInstanceSequence += 1;
+        const created = buildInstanceRecordFromOptions(nextInstanceID, template, definition, nowMs);
+        upsertInstances.push(created);
+        createdAfter.push(cloneValue(created));
+    }
+    const mutation = runtimeState.applyInstanceChanges({
+        removeInstanceIDs: [...removeInstanceIDs],
+        upsertInstances,
+        nextInstanceSequence,
     });
+    if (!mutation || mutation.success !== true) {
+        throw new Error("failed to persist universe-seeded dungeon instance changes");
+    }
     for (const removed of removedBefore) {
         emitInstanceChange("removed", removed, null, {
             source: "reconcileUniverseSeededInstances",
@@ -1488,24 +1492,27 @@ function tickRuntime(options = {}) {
         ? new Map(expiredSummaries.map((summary) => [summary.instanceID, runtimeState.getInstanceSnapshot(summary.instanceID)]))
         : null;
     const expiredInstanceIDs = [];
-    runtimeState.mutateState((table) => {
-        for (const summary of expiredSummaries) {
-            const target = table.instancesByID[String(summary.instanceID)];
-            if (!target) {
-                continue;
-            }
-            target.lifecycleState = "despawned";
-            target.lifecycleReason =
-                normalizeText(options.lifecycleReason, "") ||
-                    normalizeText(target.lifecycleReason, "") ||
-                    "expired";
-            target.timers = target.timers || {};
-            target.timers.lastUpdatedAtMs = nowMs;
-            target.timers.despawnAtMs = Math.max(0, toInt(target.timers.despawnAtMs, 0), nowMs);
-            expiredInstanceIDs.push(summary.instanceID);
+    const upsertInstances = [];
+    for (const summary of expiredSummaries) {
+        const target = runtimeState.getInstanceSnapshot(summary.instanceID);
+        if (!target) {
+            continue;
         }
-        return table;
-    });
+        target.lifecycleState = "despawned";
+        target.lifecycleReason =
+            normalizeText(options.lifecycleReason, "") ||
+                normalizeText(target.lifecycleReason, "") ||
+                "expired";
+        target.timers = target.timers || {};
+        target.timers.lastUpdatedAtMs = nowMs;
+        target.timers.despawnAtMs = Math.max(0, toInt(target.timers.despawnAtMs, 0), nowMs);
+        expiredInstanceIDs.push(summary.instanceID);
+        upsertInstances.push(target);
+    }
+    const mutation = runtimeState.applyInstanceChanges({ upsertInstances });
+    if (!mutation || mutation.success !== true) {
+        throw new Error("failed to persist expired dungeon runtime instances");
+    }
     if (emitChanges) {
         for (const instanceID of expiredInstanceIDs) {
             emitInstanceChange("updated", beforeByID.get(instanceID) || null, runtimeState.getInstanceSnapshot(instanceID), {
