@@ -1,12 +1,13 @@
 const fs = require("fs");
 const path = require("path");
+const frontierLandscapeSpawns = require("./frontierLandscapeSpawns");
 
 const CONFIG_PATH = path.resolve(
   __dirname,
   "../../../frontier-dungeon-spawns.json",
 );
 
-const SUPPORTED_SCHEMA_VERSION = 1;
+const SUPPORTED_SCHEMA_VERSION = 2;
 const NPC_PROFILE_TABLE = "npcProfiles";
 const NPC_BEHAVIOR_PROFILE_TABLE = "npcBehaviorProfiles";
 const DEFAULT_ROGUE_DRONE_CORPORATION_ID = 1000287;
@@ -83,6 +84,48 @@ function nonNegativeNumber(value, fieldName) {
     throw new TypeError(`${fieldName} must be a non-negative finite number`);
   }
   return normalized;
+}
+
+function positiveNumber(value, fieldName) {
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized <= 0) {
+    throw new TypeError(`${fieldName} must be a positive finite number`);
+  }
+  return normalized;
+}
+
+function normalizePlacementDistanceAu(value, fieldName) {
+  const source = assertRecord(value, fieldName);
+  const min = nonNegativeNumber(source.min, `${fieldName}.min`);
+  const max = positiveNumber(source.max, `${fieldName}.max`);
+  if (max < min) {
+    throw new TypeError(`${fieldName}.max must be greater than or equal to ${fieldName}.min`);
+  }
+  return { min, max };
+}
+
+function normalizeSeparationLightSeconds(value, fieldName) {
+  const source = assertRecord(value, fieldName);
+  const min = positiveNumber(source.min, `${fieldName}.min`);
+  const max = positiveNumber(source.max, `${fieldName}.max`);
+  if (max < min) {
+    throw new TypeError(`${fieldName}.max must be greater than or equal to ${fieldName}.min`);
+  }
+  return { min, max };
+}
+
+function normalizeWarpIn(value, fieldName) {
+  const source = assertRecord(value, fieldName);
+  return {
+    boundaryRadiusMeters: positiveNumber(
+      source.boundaryRadiusMeters,
+      `${fieldName}.boundaryRadiusMeters`,
+    ),
+    collisionClearanceMeters: nonNegativeNumber(
+      source.collisionClearanceMeters,
+      `${fieldName}.collisionClearanceMeters`,
+    ),
+  };
 }
 
 function requiredBoolean(value, fieldName) {
@@ -214,6 +257,22 @@ function validateConfig(rawConfig) {
       rawDefaults.factionTagPrefix,
       "defaults.factionTagPrefix",
     ),
+    siteSpawnFrequency: positiveNumber(
+      rawDefaults.siteSpawnFrequency,
+      "defaults.siteSpawnFrequency",
+    ),
+    sitePlacementDistanceAu: normalizePlacementDistanceAu(
+      rawDefaults.sitePlacementDistanceAu,
+      "defaults.sitePlacementDistanceAu",
+    ),
+    siteSeparationLightSeconds: normalizeSeparationLightSeconds(
+      rawDefaults.siteSeparationLightSeconds,
+      "defaults.siteSeparationLightSeconds",
+    ),
+    warpIn: normalizeWarpIn(
+      rawDefaults.warpIn,
+      "defaults.warpIn",
+    ),
     maxNpcEntriesPerController: positiveInteger(
       rawDefaults.maxNpcEntriesPerController,
       "defaults.maxNpcEntriesPerController",
@@ -247,6 +306,24 @@ function validateConfig(rawConfig) {
     siteTypes[siteTypeKey] = {
       key: nonEmptyText(siteType.key, `${fieldName}.key`),
       name: nonEmptyText(siteType.name, `${fieldName}.name`),
+      spawnFrequency: siteType.spawnFrequency == null
+        ? defaults.siteSpawnFrequency
+        : positiveNumber(siteType.spawnFrequency, `${fieldName}.spawnFrequency`),
+      placementDistanceAu: siteType.placementDistanceAu == null
+        ? cloneValue(defaults.sitePlacementDistanceAu)
+        : normalizePlacementDistanceAu(
+          siteType.placementDistanceAu,
+          `${fieldName}.placementDistanceAu`,
+        ),
+      separationLightSeconds: siteType.separationLightSeconds == null
+        ? cloneValue(defaults.siteSeparationLightSeconds)
+        : normalizeSeparationLightSeconds(
+          siteType.separationLightSeconds,
+          `${fieldName}.separationLightSeconds`,
+        ),
+      warpIn: siteType.warpIn == null
+        ? cloneValue(defaults.warpIn)
+        : normalizeWarpIn(siteType.warpIn, `${fieldName}.warpIn`),
       allowsNpcWaves: requiredBoolean(
         siteType.allowsNpcWaves,
         `${fieldName}.allowsNpcWaves`,
@@ -623,6 +700,24 @@ function validateConfig(rawConfig) {
     sites[String(dungeonID)] = {
       name: nonEmptyText(site.name, `${fieldName}.name`),
       siteTypeID,
+      spawnFrequency: site.spawnFrequency == null
+        ? siteType.spawnFrequency
+        : positiveNumber(site.spawnFrequency, `${fieldName}.spawnFrequency`),
+      placementDistanceAu: site.placementDistanceAu == null
+        ? cloneValue(siteType.placementDistanceAu)
+        : normalizePlacementDistanceAu(
+          site.placementDistanceAu,
+          `${fieldName}.placementDistanceAu`,
+        ),
+      separationLightSeconds: site.separationLightSeconds == null
+        ? cloneValue(siteType.separationLightSeconds)
+        : normalizeSeparationLightSeconds(
+          site.separationLightSeconds,
+          `${fieldName}.separationLightSeconds`,
+        ),
+      warpIn: site.warpIn == null
+        ? cloneValue(siteType.warpIn)
+        : normalizeWarpIn(site.warpIn, `${fieldName}.warpIn`),
       entryBeaconTypeID: positiveInteger(
         site.entryBeaconTypeID,
         `${fieldName}.entryBeaconTypeID`,
@@ -1079,6 +1174,61 @@ function buildConfiguredEntityProps(
   return environmentProps;
 }
 
+function buildConfiguredSiteEncounter(siteConfiguration) {
+  const plan = frontierLandscapeSpawns.buildDungeonSpawnPlan(
+    siteConfiguration.dungeonID,
+  );
+  if (!plan || plan.activated !== true || !Array.isArray(plan.npcs) || plan.npcs.length <= 0) {
+    return null;
+  }
+  const spawnEntries = plan.npcs.map((npc, index) => ({
+    key: `frontier-site-npc:${siteConfiguration.dungeonID}:${index + 1}`,
+    profileID: npc.profileID,
+    spawnQuery: npc.profileID,
+    typeID: npc.typeID,
+    shipTypeID: npc.typeID,
+    label: npc.name,
+    name: npc.name,
+    role: npc.boss === true ? "boss" : "site_entity",
+    factionKey: npc.familyKey,
+    factionTag: npc.familyTag,
+    sourceSpawnerTypeID: null,
+    sourceDungeonObjectID: null,
+    positionOffset: cloneValue(npc.positionOffset),
+    frontierEncounterBoss: npc.boss === true,
+    frontierEncounterFamilyKey: npc.familyKey,
+    frontierEncounterFamilyTag: npc.familyTag,
+  }));
+  return {
+    key: `frontier-site-encounter:${siteConfiguration.dungeonID}:${plan.spawnTableID}`,
+    label: `${siteConfiguration.name}: ${plan.encounterName || plan.spawnTableID}`,
+    supported: true,
+    spawnQuery: spawnEntries[0].profileID,
+    amount: spawnEntries.length,
+    spawnEntries,
+    exact: true,
+    deadspace: true,
+    trigger: "on_load",
+    prerequisiteKey: null,
+    waveIndex: 1,
+    notes: [
+      `Configured ${plan.spawnTableID} site encounter for dungeonID=${siteConfiguration.dungeonID}.`,
+      ...(plan.npcs.some((npc) => npc.boss === true)
+        ? ["This deterministic site roll includes the optional Constructing Battleship boss."]
+        : []),
+    ],
+    sourceGroupID: `configured:${plan.spawnTableID}`,
+    sourceGroupTitle: plan.encounterName || plan.spawnTableID,
+    frontierDungeonObjectID: null,
+    frontierDungeonRoomID: null,
+    frontierFactionKey: null,
+    frontierFactionTag: null,
+    frontierEncounterSpawnTableID: plan.spawnTableID,
+    frontierEncounterParentSpawnTableID: plan.parentSpawnTableID || null,
+    frontierEncounterTags: cloneValue(plan.encounterTags || []),
+  };
+}
+
 function buildConfiguredPopulationHints(template, resolvedSiteConfiguration = null) {
   const siteConfiguration = resolvedSiteConfiguration && isRecord(resolvedSiteConfiguration)
     ? resolvedSiteConfiguration
@@ -1230,6 +1380,10 @@ function buildConfiguredPopulationHints(template, resolvedSiteConfiguration = nu
       frontierFactionTag: controller.faction.tag,
     };
   }).filter((encounter) => encounter.spawnEntries.length > 0);
+  const configuredSiteEncounter = buildConfiguredSiteEncounter(siteConfiguration);
+  if (configuredSiteEncounter) {
+    encounters.push(configuredSiteEncounter);
+  }
 
   const environmentProps = buildConfiguredEntityProps(
     template,
@@ -1241,6 +1395,14 @@ function buildConfiguredPopulationHints(template, resolvedSiteConfiguration = nu
     source: "frontier_dungeon_spawn_config",
     frontierDungeonSpawnConfigured: true,
     frontierDungeonSpawnConfigVersion: config.schemaVersion,
+    frontierDungeonSpawnFrequency: siteConfiguration.spawnFrequency,
+    frontierDungeonPlacementDistanceAu: cloneValue(
+      siteConfiguration.placementDistanceAu,
+    ),
+    frontierDungeonSeparationLightSeconds: cloneValue(
+      siteConfiguration.separationLightSeconds,
+    ),
+    frontierDungeonWarpIn: cloneValue(siteConfiguration.warpIn),
     frontierFactionKey: siteConfiguration.factionKey,
     frontierFactionTag: siteConfiguration.factionTag,
     frontierDungeonTags: cloneValue(siteConfiguration.tags),
@@ -1333,6 +1495,14 @@ function decorateTemplate(template) {
     ...template,
     frontierDungeonSpawnConfigured: true,
     frontierDungeonSpawnConfigVersion: config.schemaVersion,
+    frontierDungeonSpawnFrequency: siteConfiguration.spawnFrequency,
+    frontierDungeonPlacementDistanceAu: cloneValue(
+      siteConfiguration.placementDistanceAu,
+    ),
+    frontierDungeonSeparationLightSeconds: cloneValue(
+      siteConfiguration.separationLightSeconds,
+    ),
+    frontierDungeonWarpIn: cloneValue(siteConfiguration.warpIn),
     frontierFactionKey: siteConfiguration.factionKey,
     frontierFactionTag: siteConfiguration.factionTag,
     frontierDungeonTags: cloneValue(siteConfiguration.tags),

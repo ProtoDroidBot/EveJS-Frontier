@@ -11,6 +11,8 @@
 !evejs.config.local.json
 !npc-behavior.config.json
 !frontier-dungeon-spawns.json
+!frontier-dungeon-loot.json
+!frontier-landscape-spawns.json
 !server/
 !server/**
 !tools/

@@ -2251,6 +2251,182 @@ const CONFIG_ENTRY_DEFINITIONS: any[] = [
     validValues: "true or false.",
   },
   {
+    key: "frontierEnvironmentalHeatWarningThresholdKelvin",
+    defaultValue: 500,
+    envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_HEAT_WARNING_THRESHOLD_KELVIN",
+    envType: "number",
+    minValue: 0,
+    description: [
+      "Hull temperature at which the Frontier heat effect becomes armed and starts building grace.",
+      "The critical threshold must remain greater than this warning threshold.",
+    ],
+    validValues: "Non-negative temperature in kelvin below the critical threshold.",
+  },
+  {
+    key: "frontierEnvironmentalHeatCriticalThresholdKelvin",
+    defaultValue: 1500,
+    envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_HEAT_CRITICAL_THRESHOLD_KELVIN",
+    envType: "number",
+    minValue: 0,
+    exclusiveMinValue: true,
+    description:
+      "Hull temperature at which the Frontier heat effect becomes active and its damage-delay timer starts.",
+    validValues: "Positive temperature in kelvin above the heat warning threshold.",
+  },
+  {
+    key: "frontierEnvironmentalFeralizationThresholdRatio",
+    defaultValue: 1,
+    envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_FERALIZATION_THRESHOLD_RATIO",
+    envType: "number",
+    minValue: 0,
+    exclusiveMinValue: true,
+    description:
+      "Fraction of a ship's nominal maximum feralization that activates the feralization effect and starts its damage-delay timer.",
+    validValues: "Positive ratio. 1 activates at 100% of nominal maximum; 0.5 activates at 50%.",
+  },
+  {
+    key: "frontierEnvironmentalTemporalDriftThresholdRatio",
+    defaultValue: 1,
+    envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_TEMPORAL_DRIFT_THRESHOLD_RATIO",
+    envType: "number",
+    minValue: 0,
+    exclusiveMinValue: true,
+    description:
+      "Fraction of a ship's nominal maximum temporal drift that activates the temporal-drift effect and starts its damage-delay timer.",
+    validValues: "Positive ratio. 1 activates at 100% of nominal maximum; 0.5 activates at 50%.",
+  },
+  {
+    key: "frontierEnvironmentalDamageDelaySeconds",
+    defaultValue: 30,
+    envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_DAMAGE_DELAY_SECONDS",
+    envType: "number",
+    minValue: 0,
+    description: [
+      "Continuous time an individual environmental effect must remain active before that effect deals vitality or ship hitpoint damage.",
+      "Each heat, feralization, and temporal-drift effect tracks this grace period independently.",
+    ],
+    validValues: "Non-negative number of seconds. 0 applies damage immediately.",
+  },
+  {
+    key: "frontierCloneDeathTransitionDelaySeconds",
+    defaultValue: 5,
+    envVar: "EVEJS_FRONTIER_CLONE_DEATH_TRANSITION_DELAY_SECONDS",
+    envType: "number",
+    minValue: 0,
+    description: [
+      "Delay between a confirmed hull or shell death and the session change that opens the Frontier intermediary death report.",
+      "The death notification is sent immediately so the stock client can begin its explosion or shell-expiration presentation before clone locations appear.",
+    ],
+    validValues: "Non-negative number of seconds. 0 opens the death report immediately.",
+  },
+  {
+    key: "frontierEnvironmentalVitalityDamagePerEffectPerSecond",
+    defaultValue: 1,
+    envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_VITALITY_DAMAGE_PER_EFFECT_PER_SECOND",
+    envType: "number",
+    minValue: 0,
+    description:
+      "Shell vitality removed per second by each environmental effect after its configured damage delay.",
+    validValues: "Non-negative vitality damage per active effect per second. 0 disables vitality damage.",
+  },
+  {
+    key: "frontierEnvironmentalHitpointDamagePerEffectPerSecond",
+    defaultValue: 1,
+    envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_HITPOINT_DAMAGE_PER_EFFECT_PER_SECOND",
+    envType: "number",
+    minValue: 0,
+    description: [
+      "Raw thermal ship damage dealt per second by each environmental effect after its configured damage delay.",
+      "Damage uses the normal shield, armor, structure, resistance, notification, persistence, and destruction paths.",
+    ],
+    validValues: "Non-negative hitpoint damage per active effect per second. 0 disables ship damage.",
+  },
+  {
+    key: "frontierEnvironmentalRiftRadiusMeters",
+    defaultValue: 100_000,
+    envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_RIFT_RADIUS_METERS",
+    envType: "number",
+    minValue: 0,
+    exclusiveMinValue: true,
+    description:
+      "Surface-distance radius around Crude Matter rifts over which temporal drift is generated.",
+    validValues: "Positive radius in meters.",
+  },
+  {
+    key: "frontierEnvironmentalRiftDriftMultiplier",
+    defaultValue: 2,
+    envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_RIFT_DRIFT_MULTIPLIER",
+    envType: "number",
+    minValue: 0,
+    exclusiveMinValue: true,
+    description:
+      "Multiplier applied to nominal maximum temporal drift at the center of a Crude Matter rift.",
+    validValues: "Positive multiplier.",
+  },
+  {
+    key: "frontierScanningDetectionRangeMeters",
+    defaultValue: 100_000_000,
+    envVar: "EVEJS_FRONTIER_SCANNING_DETECTION_RANGE_METERS",
+    envType: "number",
+    minValue: 0,
+    exclusiveMinValue: true,
+    maxValue: 100_000_000,
+    description: [
+      "Maximum distance at which Frontier directional scanning returns a contact signature.",
+      "The upper bound is the build-3502403 client scanner's authored 100,000 km limit.",
+    ],
+    validValues: "Positive distance in meters up to 100000000.",
+  },
+  {
+    key: "frontierScanningResolutionRangeMeters",
+    defaultValue: 100_000_000,
+    envVar: "EVEJS_FRONTIER_SCANNING_RESOLUTION_RANGE_METERS",
+    envType: "number",
+    minValue: 0,
+    exclusiveMinValue: true,
+    maxValue: 100_000_000,
+    description: [
+      "Maximum distance at which a strong Frontier directional-scan contact may resolve into its real ballpark object.",
+      "Contacts beyond this range can remain visible as unresolved signatures up to the detection range.",
+    ],
+    validValues: "Positive distance in meters no greater than frontierScanningDetectionRangeMeters.",
+  },
+  {
+    key: "frontierScanningResolutionSnrThreshold",
+    defaultValue: 1,
+    envVar: "EVEJS_FRONTIER_SCANNING_RESOLUTION_SNR_THRESHOLD",
+    envType: "number",
+    minValue: 0,
+    exclusiveMinValue: true,
+    description: [
+      "Signal-to-noise ratio required for a Frontier directional-scan contact to resolve.",
+      "1 preserves the client's 100% signal threshold; larger values require a stronger return.",
+    ],
+    validValues: "Positive signal-to-noise ratio.",
+  },
+  {
+    key: "frontierScanningRenderResolvedObjects",
+    defaultValue: true,
+    envVar: "EVEJS_FRONTIER_SCANNING_RENDER_RESOLVED_OBJECTS",
+    envType: "boolean",
+    description: [
+      "Uses Frontier's delayed scan-contact visibility path to add a resolved contact's real ballpark object.",
+      "Disable to keep every directional-scan contact signature-only.",
+    ],
+    validValues: "true or false.",
+  },
+  {
+    key: "frontierScanningRenderOutOfRangeSignatures",
+    defaultValue: true,
+    envVar: "EVEJS_FRONTIER_SCANNING_RENDER_OUT_OF_RANGE_SIGNATURES",
+    envType: "boolean",
+    description: [
+      "Keeps contacts outside the configured resolution range in the Frontier scan response as unresolved signatures.",
+      "Disable to omit those contacts instead.",
+    ],
+    validValues: "true or false.",
+  },
+  {
     key: "proxyNodeId",
     defaultValue: 0xffaa,
     envVar: "EVEJS_PROXY_NODE_ID",
@@ -2857,6 +3033,26 @@ function buildValidatedConfigValues(rawValues: Record<string, any> = {}, options
       ? rawValues[entry.key]
       : baseValues[entry.key];
     nextValues[entry.key] = coerceConfigValue(entry, candidateValue);
+  }
+
+  if (
+    nextValues.frontierEnvironmentalHeatCriticalThresholdKelvin <=
+    nextValues.frontierEnvironmentalHeatWarningThresholdKelvin
+  ) {
+    throw new Error(
+      "frontierEnvironmentalHeatCriticalThresholdKelvin must be greater than " +
+        "frontierEnvironmentalHeatWarningThresholdKelvin.",
+    );
+  }
+
+  if (
+    nextValues.frontierScanningResolutionRangeMeters >
+    nextValues.frontierScanningDetectionRangeMeters
+  ) {
+    throw new Error(
+      "frontierScanningResolutionRangeMeters must be less than or equal to " +
+        "frontierScanningDetectionRangeMeters.",
+    );
   }
 
   return nextValues;

@@ -11,6 +11,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const BaseService = require("../baseService");
 const log = require("../../utils/logger");
 const config = require("../../config");
+const interactiveWorkloadGate = require("../../utils/interactiveWorkloadGate");
 // Phase 0 / 0.C: character-domain writes via the strict character repository.
 const { createTableRepository, } = require("../../gameStore/tableRepository");
 const repo = createTableRepository("service:character", { strict: true });
@@ -1509,6 +1510,12 @@ class CharService extends BaseService {
             log.warn(`[CharService] Failed to select character ${charId}: ${applyResult.errorMsg}`);
         }
         else {
+            // Applying the character makes subsequent packets look like ordinary
+            // in-session traffic, but the client is still constructing its initial
+            // station/structure/space presentation.  Protect that serial bootstrap
+            // from the cold dungeon-universe sweep started at server boot.
+            session._interactiveBootstrapUntilMs =
+                interactiveWorkloadGate.noteSessionBootstrapActivity();
             characterControlRuntime.recordRetailSessionStarted(charId, {
                 session,
                 previousCharacterID,

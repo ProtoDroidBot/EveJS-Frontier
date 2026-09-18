@@ -54,6 +54,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const { getTypeAttributeValue, } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const { getEntityMapKey, } = require(path.join(__dirname, "../../space/destiny/identity/entityID"));
+const config = require(path.join(__dirname, "../../config"));
 const { readStaticRows, TABLE } = require(path.join(__dirname, "../_shared/referenceData"));
 const SCAN_ANGLE_MIN_DEGREES = 2.5;
 const SCAN_ANGLE_MAX_DEGREES = 45.0;
@@ -94,6 +95,7 @@ const SIGNATURE_TYPE_MULTIPLIER_ATTRIBUTES = Object.freeze([
     [SIGNATURE_TYPE_ELECTROMAGNETIC, "ActiveScanEMStrengthMulti"],
     [SIGNATURE_TYPE_THERMAL, "ActiveScanThermalStrengthMulti"],
 ]);
+const UNRESOLVED_SNR_MARGIN = 1e-6;
 function toFiniteNumber(value, fallback = 0) {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : fallback;
@@ -234,6 +236,32 @@ function resolveDirectionalScannerProfile(moduleTypeID, scannerProfile = null) {
         multipliers: resolveSignatureMultipliers(moduleTypeID),
     };
 }
+/**
+ * Resolve the server-owned portion of Frontier directional scanning.
+ *
+ * The client hard-codes a 100,000 km scanner ceiling, so the configurable
+ * detection range may narrow that window but never extends it. Resolution is
+ * deliberately a second range: contacts between it and the detection range
+ * remain CombinedScanResult signatures and are not promoted to ballpark
+ * objects by Frontier's delayed resolution path.
+ */
+function resolveScanningConfig(overrides = {}) {
+    const source = overrides && typeof overrides === "object" ? overrides : {};
+    const detectionRangeMeters = Math.min(MAXIMUM_SCAN_DISTANCE_METERS, Math.max(1, toFiniteNumber(source.detectionRangeMeters, toFiniteNumber(config.frontierScanningDetectionRangeMeters, MAXIMUM_SCAN_DISTANCE_METERS))));
+    const resolutionRangeMeters = Math.min(detectionRangeMeters, Math.max(1, toFiniteNumber(source.resolutionRangeMeters, toFiniteNumber(config.frontierScanningResolutionRangeMeters, detectionRangeMeters))));
+    const resolutionSnrThreshold = Math.max(Number.EPSILON, toFiniteNumber(source.resolutionSnrThreshold, toFiniteNumber(config.frontierScanningResolutionSnrThreshold, RESOLVE_SNR_THRESHOLD)));
+    return {
+        detectionRangeMeters,
+        resolutionRangeMeters,
+        resolutionSnrThreshold,
+        renderResolvedObjects: source.renderResolvedObjects == null
+            ? config.frontierScanningRenderResolvedObjects !== false
+            : source.renderResolvedObjects !== false,
+        renderOutOfRangeSignatures: source.renderOutOfRangeSignatures == null
+            ? config.frontierScanningRenderOutOfRangeSignatures !== false
+            : source.renderOutOfRangeSignatures !== false,
+    };
+}
 function recordEntityScannerEmissionActivity(entity, options = {}) {
     if (!entity || typeof entity !== "object") {
         return null;
@@ -336,8 +364,33 @@ function buildSignatureResultsForTarget({ baseSignature, distanceMeters, multipl
         noise,
     ]));
 }
-function isResolved(signatureResults) {
-    return signatureResults.some(([, signature, noise]) => calculateSnr(signature, noise) >= RESOLVE_SNR_THRESHOLD);
+function isResolved(signatureResults, threshold = RESOLVE_SNR_THRESHOLD) {
+    const resolvedThreshold = Math.max(Number.EPSILON, toFiniteNumber(threshold, RESOLVE_SNR_THRESHOLD));
+    return signatureResults.some(([, signature, noise]) => calculateSnr(signature, noise) >= resolvedThreshold);
+}
+/**
+ * Preserve the real signature mix while ensuring the client presents a
+ * signature rather than a resolved ball. This is required for contacts that
+ * are detectable but outside the configured object-resolution range: merely
+ * omitting them from `resolved` is not enough when their CombinedScanResult
+ * already reports a 100%+ signal.
+ */
+function capSignatureResultsBelowResolutionThreshold(signatureResults, threshold = RESOLVE_SNR_THRESHOLD) {
+    const resolvedThreshold = Math.max(Number.EPSILON, toFiniteNumber(threshold, RESOLVE_SNR_THRESHOLD));
+    const maximumUnresolvedSnr = Math.max(0, resolvedThreshold - Math.max(UNRESOLVED_SNR_MARGIN, resolvedThreshold * UNRESOLVED_SNR_MARGIN));
+    return (Array.isArray(signatureResults) ? signatureResults : []).map(([signatureType, signature, noise]) => {
+        const numericNoise = Math.max(0, toFiniteNumber(noise, 0));
+        const numericSignature = Math.max(0, toFiniteNumber(signature, 0));
+        if (numericNoise > 0 &&
+            calculateSnr(numericSignature, numericNoise) >= resolvedThreshold) {
+            return [
+                signatureType,
+                numericNoise * maximumUnresolvedSnr,
+                numericNoise,
+            ];
+        }
+        return [signatureType, numericSignature, numericNoise];
+    });
 }
 function getPresentedSignatureResults(signatureResults, hasLineOfSight = true) {
     const entries = Array.isArray(signatureResults) ? signatureResults : [];
@@ -447,13 +500,14 @@ function buildScanId(ballID) {
  * solar system (the caller supplies live ballpark entities). Returns the
  * data the service layer marshals into the client's response shape.
  */
-function performDirectionalScan({ originPosition, angleDegrees, direction, moduleTypeID, scannerProfile = null, candidates, previousScanIds = [], }) {
+function performDirectionalScan({ originPosition, angleDegrees, direction, moduleTypeID, scannerProfile = null, resolutionConfig = null, candidates, previousScanIds = [], }) {
     const origin = normalizeVector(originPosition) || { x: 0, y: 0, z: 0 };
     const halfAngleRadians = (angleDegrees * Math.PI) / 180;
     const cosineThreshold = Math.cos(halfAngleRadians);
     const resolvedScannerProfile = resolveDirectionalScannerProfile(moduleTypeID, scannerProfile);
     const multipliers = resolvedScannerProfile.multipliers;
     const durationMs = resolvedScannerProfile.durationMs;
+    const resolvedScanningConfig = resolveScanningConfig(resolutionConfig);
     const combinedResults = [];
     const resolvedIds = [];
     for (const candidate of Array.isArray(candidates) ? candidates : []) {
@@ -467,7 +521,13 @@ function performDirectionalScan({ originPosition, angleDegrees, direction, modul
             z: position.z - origin.z,
         };
         const distanceMeters = magnitude(offset);
-        if (distanceMeters <= 0 || distanceMeters > MAXIMUM_SCAN_DISTANCE_METERS) {
+        if (distanceMeters <= 0 ||
+            distanceMeters > resolvedScanningConfig.detectionRangeMeters) {
+            continue;
+        }
+        const outsideResolutionRange = distanceMeters > resolvedScanningConfig.resolutionRangeMeters;
+        if (outsideResolutionRange &&
+            resolvedScanningConfig.renderOutOfRangeSignatures !== true) {
             continue;
         }
         const offsetDirection = unitVector(offset);
@@ -490,7 +550,12 @@ function performDirectionalScan({ originPosition, angleDegrees, direction, modul
             emSignatureMultiplier: candidate && candidate.emSignatureMultiplier,
             thermalSignatureMultiplier: candidate && candidate.thermalSignatureMultiplier,
         });
-        const presentedSignatureResults = getPresentedSignatureResults(signatureResults, candidate && candidate.hasLineOfSight);
+        const rawPresentedSignatureResults = getPresentedSignatureResults(signatureResults, candidate && candidate.hasLineOfSight);
+        const forceUnresolved = outsideResolutionRange ||
+            resolvedScanningConfig.renderResolvedObjects !== true;
+        const presentedSignatureResults = forceUnresolved
+            ? capSignatureResultsBelowResolutionThreshold(rawPresentedSignatureResults, resolvedScanningConfig.resolutionSnrThreshold)
+            : rawPresentedSignatureResults;
         const scanId = buildScanId(candidate.itemID);
         combinedResults.push({
             center: [position.x, position.y, position.z],
@@ -500,8 +565,14 @@ function performDirectionalScan({ originPosition, angleDegrees, direction, modul
             estimated_number: 1,
             estimated_number_uncertainty: 0,
             signature_results: presentedSignatureResults,
+            resolution_state: outsideResolutionRange
+                ? "unresolved-out-of-range"
+                : resolvedScanningConfig.renderResolvedObjects !== true
+                    ? "unresolved-signature-only"
+                    : "in-resolution-range",
         });
-        if (isResolved(presentedSignatureResults)) {
+        if (!forceUnresolved &&
+            isResolved(presentedSignatureResults, resolvedScanningConfig.resolutionSnrThreshold)) {
             resolvedIds.push(toInt(candidate.itemID, 0));
         }
     }
@@ -517,6 +588,7 @@ function performDirectionalScan({ originPosition, angleDegrees, direction, modul
         updatedScans: combinedResults,
         resolvedIds,
         scanIds: currentIds,
+        resolutionConfig: resolvedScanningConfig,
     };
 }
 module.exports = {
@@ -541,6 +613,7 @@ module.exports = {
     buildScanId,
     buildSignatureResultsForTarget,
     calculateSnr,
+    capSignatureResultsBelowResolutionThreshold,
     getPresentedSignatureResults,
     getResolvedScanningContactMap,
     isResolved,
@@ -553,6 +626,7 @@ module.exports = {
     resolveBaseSignature,
     resolveGravimetricSignatureMultiplier,
     resolveScanDurationMs,
+    resolveScanningConfig,
     resolveSignatureMultipliers,
     resolveEntityEmSignatureMultiplier,
     resetScanningStaticDataForTests,

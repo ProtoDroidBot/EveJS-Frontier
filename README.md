@@ -582,6 +582,12 @@ Use `evejs.config.local.json` for gameplay, economy, NPC, feature, and logging s
 
 Rust market runtime and seeder tuning are separate from the Node JSON configuration. Routine seed selection belongs in the `market-tools rebuild` arguments; advanced defaults live in `docker/market-server.toml`, `docker/market-seed.toml`, and `docker/market-seed-v2.toml` and require an image rebuild.
 
+### Configuring Frontier directional scanning
+
+Frontier directional scanning separates contact detection from object resolution. `frontierScanningDetectionRangeMeters` controls how far a contact can appear in the scan response, while `frontierScanningResolutionRangeMeters` controls how far a sufficiently strong contact can resolve into its real ballpark object. Keep the resolution range below the detection range to leave the outer part of the scan envelope visible as unresolved signatures. The build-3502403 client-authored ceiling is 100,000 km.
+
+`frontierScanningResolutionSnrThreshold` sets the signal-to-noise ratio required for resolution. `frontierScanningRenderResolvedObjects` controls the Frontier-specific delayed object reveal, and `frontierScanningRenderOutOfRangeSignatures` controls whether contacts outside the resolution range remain in the scan result or are omitted. These settings affect both fitted Creation scanners and the module-less `scanningService` path. Changes require a server restart.
+
 ### Configuring NPC behavior
 
 The root `npc-behavior.config.json` is the shared behavior-policy layer for every native NPC definition. It is applied at the common materialization path, so direct profile spawns, pools, groups, belt rats, startup rules, dungeon waves, CONCORD, capital NPCs, Drifters, and reinforcement spawns all receive a resolved role and activity.

@@ -28,3 +28,11 @@ test("login activity extends a deterministic background deferral deadline", () =
   gate.noteLoginActivity(2_000, 2_500);
   assert.equal(gate.getBackgroundDeferralDelayMs(3_000), 1_500);
 });
+
+test("character selection protects the full client scene-bootstrap window", () => {
+  const deadline = gate.noteSessionBootstrapActivity(30_000, 1_000);
+
+  assert.equal(deadline, 31_000);
+  assert.equal(gate.getBackgroundDeferralDelayMs(30_999), 1);
+  assert.equal(gate.shouldDeferBackgroundWork(31_000), false);
+});

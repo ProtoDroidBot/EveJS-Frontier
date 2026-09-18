@@ -11,6 +11,16 @@ const frontierDungeonSpawns = require(path.join(
   __dirname,
   "../../config/frontierDungeonSpawns",
 ));
+const frontierDungeonLoot = require(path.join(
+  __dirname,
+  "../../config/frontierDungeonLoot",
+));
+const {
+  getNpcLootTable,
+} = require(path.join(__dirname, "../../space/npc/npcData"));
+const {
+  rollNpcLootEntries,
+} = require(path.join(__dirname, "../../space/npc/npcLoot"));
 const {
   entityIDsEqual,
   getEntityIDText,
@@ -1214,6 +1224,16 @@ function buildCombatLootGrantEntries(seed, tags, context: Record<string, any> = 
   return mergeLootGrantEntries(entries.slice(0, SITE_CONTENT_MAX_LOOT_ENTRIES));
 }
 
+function resolveConfiguredContainerLootTable(containerEntity) {
+  const configuredLoot = frontierDungeonLoot.resolveCargoContainerLootTable(
+    containerEntity && containerEntity.typeID,
+  );
+  if (!configuredLoot) {
+    return null;
+  }
+  return getNpcLootTable(configuredLoot.lootTableID) || configuredLoot.lootTable;
+}
+
 function buildLootGrantEntriesForContainer(containerEntity, populationHints, context: Record<string, any> = {}) {
   // Explicit, golden-derived contents (e.g. a fetch mission's cargo container seeded with the exact
   // objective item, or a hacked mission container yielding its data chip) take precedence over any
@@ -1228,6 +1248,12 @@ function buildLootGrantEntriesForContainer(containerEntity, populationHints, con
         quantity: Math.max(1, toInt(entry && entry.quantity, 1)),
       }))
       .filter((entry) => entry.itemType > 0);
+  }
+  const configuredLootTable = resolveConfiguredContainerLootTable(containerEntity);
+  if (configuredLootTable) {
+    return mergeLootGrantEntries(
+      rollNpcLootEntries(configuredLootTable).slice(0, SITE_CONTENT_MAX_LOOT_ENTRIES),
+    );
   }
   const profileKey = normalizeText(
     containerEntity &&
@@ -1880,8 +1906,17 @@ function buildFrontierDungeonDerivedPopulationHints(template) {
     !spawnGuardObjectIDs.has(entry.objectID) &&
     normalizeLowerText(entry.object && entry.object.role, "scenery") === "scenery"
   ));
-  const resourceObjects = initialSceneObjects.filter((entry) => entry.categoryID === 25);
-  const structuralObjects = initialSceneObjects.filter((entry) => (
+  const lootContainerObjects = initialSceneObjects.filter((entry) => (
+    Boolean(frontierDungeonLoot.resolveCargoContainerLootTable(entry.typeID))
+  ));
+  const lootContainerObjectIDs = new Set(
+    lootContainerObjects.map((entry) => entry.objectID),
+  );
+  const nonLootSceneObjects = initialSceneObjects.filter(
+    (entry) => !lootContainerObjectIDs.has(entry.objectID),
+  );
+  const resourceObjects = nonLootSceneObjects.filter((entry) => entry.categoryID === 25);
+  const structuralObjects = nonLootSceneObjects.filter((entry) => (
     entry.categoryID !== 25 &&
     (
       entry.categoryID === 11 ||
@@ -1898,7 +1933,7 @@ function buildFrontierDungeonDerivedPopulationHints(template) {
     SITE_CONTENT_MAX_EXACT_ENVIRONMENT_PROPS - selected.length,
   );
   selected.push(...selectEvenlySpacedEntries(
-    initialSceneObjects.filter((entry) => !selectedObjects.has(entry)),
+    nonLootSceneObjects.filter((entry) => !selectedObjects.has(entry)),
     remainingCapacity,
   ));
   selected.sort((left, right) => left.authoredIndex - right.authoredIndex);
@@ -1952,11 +1987,28 @@ function buildFrontierDungeonDerivedPopulationHints(template) {
       typeID: entry.typeID,
     };
   });
+  const containers = lootContainerObjects
+    .slice(0, SITE_CONTENT_MAX_CONTAINER_COUNT)
+    .map((entry) => {
+      const typeName = resolveTypeRecordName(entry.typeRecord, "Frontier Loot Container");
+      const localName = normalizeText(entry.object && entry.object.localName, "");
+      return {
+        count: 1,
+        dunObjectID: entry.objectID,
+        exact: true,
+        label: localName || typeName,
+        positionOffset: subtractVectors(entry.absolutePosition, entryPosition),
+        role: "loot",
+        typeID: entry.typeID,
+      };
+    });
 
   return {
     exactContentCaps: {
+      containers: containers.length,
       environmentProps: environmentProps.length,
     },
+    containers,
     environmentProps,
     frontierDungeonScene: true,
     roomCount: rooms.length,
@@ -1984,6 +2036,9 @@ function mergeFrontierDungeonPopulationHints(baseHints, derivedHints) {
       ...normalizeArray(derivedHints && derivedHints.environmentProps),
       ...configuredEnvironmentProps,
     ];
+  const baseContainers = normalizeArray(clonedBase && clonedBase.containers);
+  const derivedContainers = normalizeArray(derivedHints && derivedHints.containers);
+  const containers = baseContainers.length > 0 ? baseContainers : derivedContainers;
   const baseCaps = normalizeObject(clonedBase && clonedBase.exactContentCaps);
   const derivedCaps = normalizeObject(derivedHints && derivedHints.exactContentCaps);
   return {
@@ -1992,12 +2047,18 @@ function mergeFrontierDungeonPopulationHints(baseHints, derivedHints) {
     exactContentCaps: {
       ...derivedCaps,
       ...baseCaps,
+      containers: Math.max(
+        containers.length,
+        toInt(baseCaps.containers, 0),
+        toInt(derivedCaps.containers, 0),
+      ),
       environmentProps: Math.max(
         environmentProps.length,
         toInt(baseCaps.environmentProps, 0),
         toInt(derivedCaps.environmentProps, 0),
       ),
     },
+    containers,
     environmentProps,
     frontierDungeonScene: true,
     roomCount: Math.max(
@@ -3814,7 +3875,7 @@ function buildContainerEntities(instance, siteEntity, populationHints) {
   const instanceID = Math.max(0, toInt(instance && instance.instanceID, 0));
   const containerSpecs = populationHints.containers
     .filter((container) => container && typeof container === "object")
-    .flatMap((container) => {
+    .flatMap((container, sourceIndex) => {
       const count = Math.max(
         0,
         Math.min(
@@ -3843,6 +3904,10 @@ function buildContainerEntities(instance, siteEntity, populationHints) {
             quantity: Math.max(1, toInt(entry && entry.quantity, 1)),
           }))
           .filter((entry) => entry.typeID > 0),
+        dunObjectID: Math.max(0, toInt(container && container.dunObjectID, 0)) || null,
+        exact: container && container.exact === true,
+        positionOffset: clonePosition(container && container.positionOffset),
+        sourceIndex,
         ordinal: index + 1,
       }));
     })
@@ -3855,8 +3920,10 @@ function buildContainerEntities(instance, siteEntity, populationHints) {
   return containerSpecs.map((container, index) => {
     const typeRecord = resolveContainerTypeRecord(container);
     const displayName = resolveContainerDisplayName(container, typeRecord, container.ordinal);
+    const containerIdentity = container.dunObjectID ||
+      `${container.sourceIndex + 1}:${container.ordinal}`;
     const contentKey = normalizeText(
-      `container:${container.role}:${container.ordinal}:${displayName}`,
+      `container:${container.role}:${containerIdentity}:${displayName}`,
       `container:${index + 1}`,
     ).toLowerCase();
     return {
@@ -3877,8 +3944,11 @@ function buildContainerEntities(instance, siteEntity, populationHints) {
       dungeonSiteContentExplicitLoot:
         container.explicitLoot && container.explicitLoot.length > 0 ? container.explicitLoot : null,
       dungeonSiteContentHackingDifficulty: container.hackingDifficulty,
+      dunObjectID: container.dunObjectID,
       itemID: SITE_CONTENT_CONTAINER_ID_BASE + (siteID * 100) + index + 1,
-      typeID: toInt(typeRecord && typeRecord.typeID, 23) || 23,
+      typeID: typeRecord
+        ? toInt(typeRecord.typeID, Math.max(0, toInt(container.typeID, 0)) || 23) || 23
+        : Math.max(0, toInt(container.typeID, 0)) || 23,
       groupID: toInt(typeRecord && typeRecord.groupID, 12) || 12,
       categoryID: toInt(typeRecord && typeRecord.categoryID, 2) || 2,
       graphicID: toInt(typeRecord && typeRecord.graphicID, 0) || null,
@@ -3887,7 +3957,9 @@ function buildContainerEntities(instance, siteEntity, populationHints) {
       slimName: displayName,
       position: addVectors(
         clonePosition(siteEntity && siteEntity.position),
-        buildContentOffset(`${siteID}:${container.role}`, index, total),
+        container.exact === true
+          ? container.positionOffset
+          : buildContentOffset(`${siteID}:${container.role}`, index, total),
       ),
       velocity: { x: 0, y: 0, z: 0 },
       direction: { x: 1, y: 0, z: 0 },
@@ -8757,6 +8829,7 @@ DungeonUniverseSiteService._testing = {
   maybeGrantFetchObjectiveItems,
   materializeFetchObjectiveContainer,
   buildLootGrantEntriesForContainer,
+  resolveConfiguredContainerLootTable,
   handleRuntimeChange,
   anyPlayerShipPresentAtSite,
   drainPendingSiteTeardowns,

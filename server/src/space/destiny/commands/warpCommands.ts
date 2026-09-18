@@ -521,7 +521,12 @@ function createMovementWarpCommands(deps: Record<string, any> = {}) {
         options.ignoreDeadspaceWarpRestriction !== true
       ) {
         try {
-          const decision = deadspaceWarpPolicy.evaluateDeadspaceWarp(entity, point, options);
+          const decision = deadspaceWarpPolicy.evaluateDeadspaceWarp(
+            entity,
+            point,
+            options,
+            runtime,
+          );
           if (decision && decision.action === "block") {
             logMovementDebug("warp.requested.deadspace-blocked", entity);
             return { success: false, errorMsg: decision.errorMsg || "DunCannotWarpWithinComplex" };

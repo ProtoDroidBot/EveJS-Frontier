@@ -23,7 +23,132 @@ const {
   findLandscapeSitesWithinRange,
   materializeLandscapeSite,
   materializeNearbyLandscapeSite,
+  _testing: landscapeSceneTesting,
 } = require("../src/space/frontierLandscapeSceneService");
+const frontierLandscapeSpawns = require("../src/config/frontierLandscapeSpawns");
+
+test("landscape spawn config composes disjoint NPC families into site-specific encounters", () => {
+  const config = frontierLandscapeSpawns.getConfig();
+  const summary = frontierLandscapeSpawns.getConfigSummary();
+
+  assert.equal(summary.ecosystemCount, 20);
+  assert.equal(summary.dungeonOverrideCount, 12);
+  assert.equal(summary.npcFamilyCount, 7);
+  assert.equal(summary.npcProfileCount, 47);
+  assert.deepEqual(config.npcFamilies.mooneater_entities.groupIDs, [4770]);
+  assert.deepEqual(config.npcFamilies.feral_support.groupIDs, [759, 1764]);
+  assert.deepEqual(config.npcFamilies.generative_entities.groupIDs, [4860]);
+  assert.deepEqual(config.npcFamilies.constructing_battleship.groupIDs, [1814]);
+  assert.deepEqual(config.npcFamilies.xeroti_tidofiza.groupIDs, [4963]);
+  assert.deepEqual(config.npcFamilies.conservator.groupIDs, [5033]);
+  assert.deepEqual(config.npcFamilies.allotrope.groupIDs, [5130]);
+  const profiles = frontierLandscapeSpawns.getGeneratedNpcRows("npcProfiles");
+  assert.equal(profiles.length, 47);
+  assert.equal(
+    profiles.find((entry) => entry.shipTypeID === 92_096)
+      .frontierLandscapeExpectedGroupID,
+    5033,
+  );
+  assert.equal(
+    profiles.find((entry) => entry.shipTypeID === 94_167)
+      .frontierLandscapeExpectedGroupID,
+    5130,
+  );
+
+  const plan = frontierLandscapeSpawns.buildSpawnPlan(
+    { itemID: 900_439_900 },
+    { ecosystemID: 21 },
+    [{ dungeonID: 13_659 }],
+  );
+  assert.equal(plan.activated, true);
+  assert.ok(plan.npcs.some((entry) => entry.familyKey === "generative_entities"));
+  assert.ok(plan.npcs.some((entry) => entry.familyKey === "conservator"));
+  assert.ok(plan.npcs.some((entry) => entry.familyKey === "allotrope"));
+  assert.equal(plan.wrecks.length, 4);
+  assert.deepEqual(
+    frontierLandscapeSpawns.buildSpawnPlan(
+      { itemID: 900_439_900 },
+      { ecosystemID: 21 },
+      [{ dungeonID: 13_659 }],
+    ),
+    plan,
+  );
+
+  const mooneater = frontierLandscapeSpawns.buildDungeonSpawnPlan(13_870);
+  assert.equal(mooneater.spawnTableID, "mooneater_site");
+  assert.ok(mooneater.npcs.some((entry) => entry.familyKey === "mooneater_entities"));
+  assert.ok(mooneater.npcs.some((entry) => entry.familyKey === "feral_support"));
+  assert.ok(mooneater.npcs
+    .filter((entry) => entry.familyKey === "feral_support")
+    .every((entry) => [83_914, 88_091, 87_536].includes(entry.typeID)));
+
+  const generative = frontierLandscapeSpawns.buildDungeonSpawnPlan(12_707);
+  assert.equal(generative.spawnTableID, "generative_site");
+  assert.ok(generative.npcs.some((entry) => entry.familyKey === "generative_entities"));
+  assert.ok(generative.npcs.some((entry) => entry.familyKey === "feral_support"));
+
+  const shipyard = frontierLandscapeSpawns.buildDungeonSpawnPlan(12_560);
+  assert.equal(shipyard.spawnTableID, "derelict_autonomous_shipyard");
+  assert.equal(shipyard.parentSpawnTableID, "generative_site");
+  assert.ok(shipyard.npcs.some((entry) => entry.familyKey === "generative_entities"));
+  assert.ok(shipyard.npcs.some(
+    (entry) => entry.typeID === 88_566 && entry.boss === true,
+  ));
+
+  const stackedStorage = frontierLandscapeSpawns.buildDungeonSpawnPlan(13_583);
+  assert.equal(stackedStorage.spawnTableID, "xeroti_stacked_storage");
+  assert.ok(stackedStorage.npcs.length >= 2);
+  assert.ok(stackedStorage.npcs.every(
+    (entry) => entry.familyKey === "xeroti_tidofiza" && entry.groupID === 4963,
+  ));
+
+  const selectedOverride = frontierLandscapeSpawns.buildSpawnPlan(
+    { itemID: 700_013_583 },
+    { ecosystemID: 21 },
+    [{ dungeonID: 13_583 }],
+  );
+  assert.equal(selectedOverride.spawnTableID, "xeroti_stacked_storage");
+  assert.ok(selectedOverride.npcs.every((entry) => entry.familyKey === "xeroti_tidofiza"));
+});
+
+test("configured landscape NPCs spawn at deterministic offsets", () => {
+  const plan = frontierLandscapeSpawns.buildSpawnPlan(
+    { itemID: 900_439_900 },
+    { ecosystemID: 21 },
+    [{ dungeonID: 13_659 }],
+  );
+  const calls: any[] = [];
+  const result = landscapeSceneTesting.spawnConfiguredLandscapeNpcs(
+    { systemID: 30_000_001 },
+    {
+      itemID: 900_439_900,
+      position: { x: 1_000_000, y: 2_000_000, z: 3_000_000 },
+    },
+    plan,
+    {
+      npcService: {
+        spawnNpcBatchInSystem(systemID, options) {
+          calls.push({ systemID, options });
+          return {
+            success: true,
+            data: { spawned: [{ entity: { itemID: 980_000_000_000 + calls.length } }] },
+          };
+        },
+      },
+    },
+  );
+
+  assert.equal(calls.length, plan.npcs.length);
+  assert.equal(result.entityIDs.length, plan.npcs.length);
+  assert.deepEqual(result.failures, []);
+  assert.equal(calls[0].options.profileQuery, plan.npcs[0].profileID);
+  assert.equal(calls[0].options.runtimeKind, "frontierLandscape");
+  assert.deepEqual(calls[0].options.spawnStateOverride.position, {
+    x: 1_000_000 + plan.npcs[0].positionOffset.x,
+    y: 2_000_000 + plan.npcs[0].positionOffset.y,
+    z: 3_000_000 + plan.npcs[0].positionOffset.z,
+  });
+});
 
 test("Frontier landscape proximity lookup returns several nearby sites in distance order", () => {
   const anchor: Record<string, any> = { position: { x: 0, y: 0, z: 0 } };
@@ -560,18 +685,26 @@ test("Frontier landscape materialization promotes salvageable wreckage into mine
   );
 
   assert.equal(result.success, true);
-  assert.equal(result.data.propsSpawned, 3);
-  assert.equal(result.data.resourcesSpawned, 2);
-  assert.equal(resources.length, 2);
-  assert.deepEqual(resources.map((entity) => entity.miningYieldTypeID).sort(), [88764, 99003]);
-  assert.deepEqual(resources.map((entity) => entity.resourceQuantity).sort((a, b) => a - b), [7, 18]);
+  assert.equal(result.data.propsSpawned, 6);
+  assert.equal(result.data.resourcesSpawned, 3);
+  assert.equal(result.data.wrecksSpawned, 3);
+  assert.equal(result.data.spawnPlan.npcs.length, 2);
+  assert.equal(resources.length, 3);
+  assert.deepEqual(
+    resources.map((entity) => entity.miningYieldTypeID).sort(),
+    [88764, 99003, 99003],
+  );
+  assert.deepEqual(
+    resources.map((entity) => entity.resourceQuantity).sort((a, b) => a - b),
+    [7, 18, 18],
+  );
   assert.ok(resources.every((entity) => entity.skipMiningTemplateResolution === true));
-  assert.equal(registered.length, 2);
+  assert.equal(registered.length, 3);
 
   const removed = dematerializeLandscapeSite(scene, site.itemID, {
     broadcast: false,
     miningRuntimeState,
   });
-  assert.equal(removed.data.removedCount, 3);
-  assert.equal(cleared.length, 2);
+  assert.equal(removed.data.removedCount, 6);
+  assert.equal(cleared.length, 3);
 });

@@ -10,6 +10,7 @@ const { getNpcLootTable, } = require(path.join(__dirname, "./npcData"));
 const { rollNpcLootEntries, } = require(path.join(__dirname, "./npcLoot"));
 const { getControllerByEntityID, unregisterController, } = require(path.join(__dirname, "./npcRegistry"));
 const nativeNpcStore = require(path.join(__dirname, "./nativeNpcStore"));
+const frontierDungeonLoot = require(path.join(__dirname, "../../config/frontierDungeonLoot"));
 const { buildDunRotationFromDirection, resolveEntityWreckType, } = require(path.join(__dirname, "../wreckUtils"));
 const DESTRUCTION_EFFECT_EXPLOSION = 3;
 function toPositiveInt(value, fallback = 0) {
@@ -32,6 +33,12 @@ function cloneVector(vector, fallback = { x: 0, y: 0, z: 0 }) {
 }
 function normalizeWreckSingleton(value) {
     return value === true || Number(value) === 1;
+}
+function resolveNativeWreckLootTableID(wreckTypeID, npcLootTableID = null) {
+    const configured = frontierDungeonLoot.resolveWreckLootTable(wreckTypeID);
+    return configured
+        ? configured.lootTableID
+        : String(npcLootTableID || "").trim() || null;
 }
 function buildNativeWreckRuntimeEntity(wreckRecord, options = {}) {
     const scopeResolution = nativeNpcStore.validateStoredEntityScopeMetadata(wreckRecord, { projectAirInstanceToDungeonSite: true });
@@ -421,13 +428,14 @@ function destroyNativeNpcEntityWithWreck(systemID, shipEntity, options = {}) {
         return wreckIDResult;
     }
     const entityScopeMetadata = scopeResolution.data.metadata;
+    const lootTableID = resolveNativeWreckLootTableID(wreckType.typeID, nativeEntityRecord && nativeEntityRecord.lootTableID);
     const wreckRecord = {
         wreckID: wreckIDResult.data,
         sourceEntityID: entityID,
         systemID: normalizedSystemID,
         profileID: nativeEntityRecord && nativeEntityRecord.profileID || null,
         loadoutID: nativeEntityRecord && nativeEntityRecord.loadoutID || null,
-        lootTableID: nativeEntityRecord && nativeEntityRecord.lootTableID || null,
+        lootTableID,
         npcEntityType: nativeEntityRecord && nativeEntityRecord.npcEntityType || null,
         typeID: toPositiveInt(wreckType.typeID, 0),
         groupID: toPositiveInt(wreckType.groupID, 0),
@@ -499,8 +507,8 @@ function destroyNativeNpcEntityWithWreck(systemID, shipEntity, options = {}) {
             return writeResult;
         }
     }
-    const lootTable = nativeEntityRecord && nativeEntityRecord.lootTableID
-        ? getNpcLootTable(nativeEntityRecord.lootTableID)
+    const lootTable = wreckRecord.lootTableID
+        ? getNpcLootTable(wreckRecord.lootTableID)
         : null;
     const rolledLootEntries = rollNpcLootEntries(lootTable);
     for (const lootEntry of rolledLootEntries) {
@@ -571,5 +579,8 @@ module.exports = {
     destroyNativeWreck,
     transferNativeWreckItemToCharacterLocation,
     destroyNativeNpcEntityWithWreck,
+    _testing: {
+        resolveNativeWreckLootTableID,
+    },
 };
 //# sourceMappingURL=nativeNpcWreckService.js.map

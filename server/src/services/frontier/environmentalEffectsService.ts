@@ -18,6 +18,10 @@ const {
 const {
   getTypeAttributeValue,
 } = require(path.join(__dirname, "../fitting/liveFittingState"));
+const serverConfig = require(path.join(__dirname, "../../config"));
+const {
+  applyDamageToEntity,
+} = require(path.join(__dirname, "../../space/combat/damage"));
 const {
   CRUDE_MATTER_GROUP_ID,
   CRUDE_RIFT_GROUP_ID,
@@ -83,6 +87,86 @@ function clamp(value, minimum, maximum) {
 
 function round6(value) {
   return Number(toFiniteNumber(value, 0).toFixed(6));
+}
+
+function resolveEnvironmentalEffectsConfig(options: Record<string, any> = {}) {
+  const heatWarningThresholdKelvin = Math.max(
+    0,
+    toFiniteNumber(
+      options.heatWarningThresholdKelvin ?? options.overheatedTemperatureK,
+      serverConfig.frontierEnvironmentalHeatWarningThresholdKelvin ??
+        OVERHEATED_TEMPERATURE_K,
+    ),
+  );
+  const configuredCriticalThreshold = Math.max(
+    0,
+    toFiniteNumber(
+      options.heatCriticalThresholdKelvin ?? options.criticalTemperatureK,
+      serverConfig.frontierEnvironmentalHeatCriticalThresholdKelvin ??
+        CRITICAL_TEMPERATURE_K,
+    ),
+  );
+
+  return {
+    damageDelaySeconds: Math.max(
+      0,
+      toFiniteNumber(
+        options.damageDelaySeconds,
+        serverConfig.frontierEnvironmentalDamageDelaySeconds ?? 0,
+      ),
+    ),
+    feralizationThresholdRatio: Math.max(
+      Number.EPSILON,
+      toFiniteNumber(
+        options.feralizationThresholdRatio,
+        serverConfig.frontierEnvironmentalFeralizationThresholdRatio ?? 1,
+      ),
+    ),
+    heatCriticalThresholdKelvin: Math.max(
+      heatWarningThresholdKelvin + 0.001,
+      configuredCriticalThreshold,
+    ),
+    heatWarningThresholdKelvin,
+    hitpointDamagePerEffectPerSecond: Math.max(
+      0,
+      toFiniteNumber(
+        options.hitpointDamagePerEffectPerSecond,
+        serverConfig.frontierEnvironmentalHitpointDamagePerEffectPerSecond ?? 0,
+      ),
+    ),
+    riftTemporalDriftMultiplier: Math.max(
+      Number.EPSILON,
+      toFiniteNumber(
+        options.riftTemporalDriftMultiplier,
+        serverConfig.frontierEnvironmentalRiftDriftMultiplier ??
+          RIFT_TEMPORAL_DRIFT_MULTIPLIER,
+      ),
+    ),
+    riftTemporalizationRadiusMeters: Math.max(
+      Number.EPSILON,
+      toFiniteNumber(
+        options.riftTemporalizationRadiusMeters,
+        serverConfig.frontierEnvironmentalRiftRadiusMeters ??
+          RIFT_TEMPORALIZATION_RADIUS_METERS,
+      ),
+    ),
+    temporalDriftThresholdRatio: Math.max(
+      Number.EPSILON,
+      toFiniteNumber(
+        options.temporalDriftThresholdRatio,
+        serverConfig.frontierEnvironmentalTemporalDriftThresholdRatio ?? 1,
+      ),
+    ),
+    vitalityDamagePerEffectPerSecond: Math.max(
+      0,
+      toFiniteNumber(
+        options.vitalityDamagePerEffectPerSecond ??
+          options.vitalityDrainPerEffectPerSecond,
+        serverConfig.frontierEnvironmentalVitalityDamagePerEffectPerSecond ??
+          DEFAULT_VITALITY_DRAIN_PER_EFFECT_PER_SECOND,
+      ),
+    ),
+  };
 }
 
 function normalizeStatusEffectKey(value) {
@@ -188,12 +272,10 @@ function resolveRiftTemporalization(
   entity,
   options: Record<string, any> = {},
 ) {
+  const effectConfig = resolveEnvironmentalEffectsConfig(options);
   const radius = Math.max(
     1,
-    toFiniteNumber(
-      options.riftTemporalizationRadiusMeters,
-      RIFT_TEMPORALIZATION_RADIUS_METERS,
-    ),
+    effectConfig.riftTemporalizationRadiusMeters,
   );
   let nearestRift = null;
   let nearestDistance = Number.POSITIVE_INFINITY;
@@ -232,6 +314,7 @@ function buildEffectState() {
   return {
     active: false,
     armed: false,
+    damageExposureSeconds: 0,
     grace: 0,
     lastNotifiedActive: false,
     lastNotifiedArmed: false,
@@ -250,6 +333,7 @@ function createCharacterState(characterID, entity = null, nowMs = Date.now()) {
   );
   return {
     characterID,
+    cloneDeathTriggered: false,
     effects: {
       [STATUS_EFFECT_KEYS.HEAT]: buildEffectState(),
       [STATUS_EFFECT_KEYS.FERALIZATION]: buildEffectState(),
@@ -295,6 +379,7 @@ function cloneEffectState(effect) {
   return {
     active: effect && effect.active === true,
     armed: effect && effect.armed === true,
+    damageExposureSeconds: round6(effect && effect.damageExposureSeconds),
     grace: round6(effect && effect.grace),
   };
 }
@@ -308,6 +393,7 @@ function snapshotCharacterState(characterID, options: Record<string, any> = {}) 
   }
   return {
     characterID: state.characterID,
+    cloneDeathTriggered: state.cloneDeathTriggered === true,
     effects: Object.fromEntries(
       Object.entries(state.effects).map(([key, effect]) => [
         key,
@@ -385,12 +471,20 @@ function resolveTemperature(entity, nowMs = Date.now()) {
   );
 }
 
-function resolveHeatGrace(entity, nowMs = Date.now()) {
+function resolveHeatGrace(
+  entity,
+  nowMs = Date.now(),
+  options: Record<string, any> = {},
+) {
+  const effectConfig = resolveEnvironmentalEffectsConfig(options);
   const temperature = resolveTemperature(entity, nowMs);
   return {
     grace: clamp(
-      (temperature - OVERHEATED_TEMPERATURE_K) /
-        (CRITICAL_TEMPERATURE_K - OVERHEATED_TEMPERATURE_K),
+      (temperature - effectConfig.heatWarningThresholdKelvin) /
+        (
+          effectConfig.heatCriticalThresholdKelvin -
+          effectConfig.heatWarningThresholdKelvin
+        ),
       0,
       1,
     ),
@@ -407,6 +501,66 @@ function updateEffectState(effect, grace, armed) {
     effect.active = true;
   }
   return effect;
+}
+
+function advanceEffectDamageExposure(
+  effect,
+  elapsedSeconds,
+  damageDelaySeconds,
+) {
+  if (!effect || effect.active !== true) {
+    return 0;
+  }
+  const previousExposureSeconds = Math.max(
+    0,
+    toFiniteNumber(effect.damageExposureSeconds, 0),
+  );
+  const nextExposureSeconds = previousExposureSeconds + Math.max(
+    0,
+    toFiniteNumber(elapsedSeconds, 0),
+  );
+  effect.damageExposureSeconds = round6(nextExposureSeconds);
+  const delaySeconds = Math.max(0, toFiniteNumber(damageDelaySeconds, 0));
+  return Math.max(0, nextExposureSeconds - delaySeconds) -
+    Math.max(0, previousExposureSeconds - delaySeconds);
+}
+
+function getAppliedHitpointDamage(damageResult) {
+  const perLayer = damageResult &&
+    damageResult.success === true &&
+    damageResult.data &&
+    Array.isArray(damageResult.data.perLayer)
+      ? damageResult.data.perLayer
+      : [];
+  return round6(perLayer.reduce(
+    (total, layer) => total + Math.max(
+      0,
+      toFiniteNumber(layer && layer.appliedEffective, 0),
+    ),
+    0,
+  ));
+}
+
+function applyEnvironmentalHitpointDamage(
+  entity,
+  rawDamage,
+  metadata: Record<string, any> = {},
+  options: Record<string, any> = {},
+) {
+  if (toFiniteNumber(rawDamage && rawDamage.thermal, 0) <= 0) {
+    return null;
+  }
+  if (typeof options.applyHitpointDamage === "function") {
+    const callbackResult = options.applyHitpointDamage(
+      entity,
+      rawDamage,
+      metadata,
+    );
+    return callbackResult && callbackResult.damageResult
+      ? callbackResult.damageResult
+      : callbackResult;
+  }
+  return applyDamageToEntity(entity, rawDamage);
 }
 
 function collectClientNotifications(
@@ -545,6 +699,7 @@ function advanceEntityEnvironmentalEffects(
   }
 
   const currentTimeMs = toFiniteNumber(nowMs, Date.now());
+  const effectConfig = resolveEnvironmentalEffectsConfig(options);
   const state = ensureCharacterState(characterID, entity, currentTimeMs);
   const elapsedSeconds = Math.min(
     MAX_ADVANCE_SECONDS,
@@ -600,7 +755,11 @@ function advanceEntityEnvironmentalEffects(
     elapsedSeconds,
   ));
 
-  const temporalization = resolveRiftTemporalization(scene, entity, options);
+  const temporalization = resolveRiftTemporalization(
+    scene,
+    entity,
+    effectConfig,
+  );
   const nominalMaxTemporalDrift = Math.max(
     1,
     getEntityOrTypeAttributeValue(
@@ -613,13 +772,7 @@ function advanceEntityEnvironmentalEffects(
   const externalTemporalDrift = round6(
     temporalization.intensity *
       nominalMaxTemporalDrift *
-      Math.max(
-        1,
-        toFiniteNumber(
-          options.riftTemporalDriftMultiplier,
-          RIFT_TEMPORAL_DRIFT_MULTIPLIER,
-        ),
-      ),
+      effectConfig.riftTemporalDriftMultiplier,
   );
   const temporalDriftCapacity = Math.max(
     0,
@@ -657,39 +810,91 @@ function advanceEntityEnvironmentalEffects(
   setAttributeValue(entity, ATTRIBUTE_EXTERNAL_TEMPORAL_DRIFT, externalTemporalDrift);
   setAttributeValue(entity, ATTRIBUTE_TEMPORAL_DRIFT, state.temporalDrift);
 
-  const heat = resolveHeatGrace(entity, currentTimeMs);
+  const heat = resolveHeatGrace(entity, currentTimeMs, effectConfig);
   updateEffectState(
     state.effects[STATUS_EFFECT_KEYS.HEAT],
     heat.grace,
-    heat.temperature >= OVERHEATED_TEMPERATURE_K,
+    heat.temperature >= effectConfig.heatWarningThresholdKelvin,
   );
   updateEffectState(
     state.effects[STATUS_EFFECT_KEYS.FERALIZATION],
-    state.feralization / nominalMaxFeralization,
+    state.feralization /
+      (nominalMaxFeralization * effectConfig.feralizationThresholdRatio),
     state.feralization > 0 || externalFeralization > 0 || continuousFeralization > 0,
   );
   updateEffectState(
     state.effects[STATUS_EFFECT_KEYS.TEMPORAL_DRIFT],
-    state.temporalDrift / nominalMaxTemporalDrift,
+    state.temporalDrift /
+      (nominalMaxTemporalDrift * effectConfig.temporalDriftThresholdRatio),
     temporalization.intensity > 0 || state.temporalDrift > 0,
   );
 
   const activeEffectCount = Object.values<any>(state.effects)
     .filter((effect) => effect.active === true)
     .length;
-  const vitalityDrainRate = Math.max(
-    0,
-    toFiniteNumber(
-      options.vitalityDrainPerEffectPerSecond,
-      DEFAULT_VITALITY_DRAIN_PER_EFFECT_PER_SECOND,
-    ),
+  const damagingEffects = Object.entries<any>(state.effects).map(
+    ([statusEffectKey, effect]) => ({
+      statusEffectKey,
+      damageSeconds: advanceEffectDamageExposure(
+        effect,
+        elapsedSeconds,
+        effectConfig.damageDelaySeconds,
+      ),
+      grace: round6(effect.grace),
+    }),
   );
-  if (activeEffectCount > 0 && elapsedSeconds > 0 && state.vitality > 0) {
+  const damagingEffectSeconds = damagingEffects.reduce(
+    (total, effect) => total + effect.damageSeconds,
+    0,
+  );
+  const vitalityDamageApplied = round6(Math.min(
+    state.vitality,
+    damagingEffectSeconds * effectConfig.vitalityDamagePerEffectPerSecond,
+  ));
+  if (vitalityDamageApplied > 0) {
     state.vitality = round6(Math.max(
       0,
-      state.vitality -
-        (activeEffectCount * vitalityDrainRate * elapsedSeconds),
+      state.vitality - vitalityDamageApplied,
     ));
+  }
+  const hitpointDamageRequested = round6(
+    damagingEffectSeconds * effectConfig.hitpointDamagePerEffectPerSecond,
+  );
+  const deathStatusEffect = damagingEffects
+    .filter((effect) => effect.damageSeconds > 0)
+    .sort((left, right) => (
+      right.damageSeconds - left.damageSeconds ||
+      right.grace - left.grace
+    ))[0] || null;
+  const hitpointDamageResult = applyEnvironmentalHitpointDamage(
+    entity,
+    { thermal: hitpointDamageRequested },
+    {
+      statusEffectKey:
+        deathStatusEffect && deathStatusEffect.statusEffectKey || null,
+    },
+    options,
+  );
+  const hitpointDamageApplied = getAppliedHitpointDamage(hitpointDamageResult);
+  const hullDestroyed = Boolean(
+    hitpointDamageResult &&
+    hitpointDamageResult.success === true &&
+    hitpointDamageResult.data &&
+    hitpointDamageResult.data.destroyed === true
+  );
+  let cloneDeath = null;
+  if (
+    state.cloneDeathTriggered !== true &&
+    deathStatusEffect &&
+    (hullDestroyed || state.vitality <= 0)
+  ) {
+    state.cloneDeathTriggered = true;
+    cloneDeath = {
+      characterID,
+      reason: hullDestroyed ? "hull" : "vitality",
+      shipID: toPositiveInt(entity.itemID, 0),
+      statusEffectKey: deathStatusEffect.statusEffectKey,
+    };
   }
   state.lastUpdatedAtMs = currentTimeMs;
 
@@ -703,17 +908,33 @@ function advanceEntityEnvironmentalEffects(
     supported: true,
     activeEffectCount,
     characterID,
+    cloneDeath,
+    damageDelaySeconds: effectConfig.damageDelaySeconds,
+    damagingEffectSeconds: round6(damagingEffectSeconds),
     externalTemporalDrift,
     feralization: state.feralization,
     heatGrace: round6(heat.grace),
     temperature: round6(heat.temperature),
     temporalDrift: state.temporalDrift,
     temporalization,
+    hitpointDamageApplied,
+    hitpointDamageRequested,
+    hitpointDamageResult,
     vitality: state.vitality,
     vitalityCapacity: state.vitalityCapacity,
+    vitalityDamageApplied,
     vitalityDamage: round6(state.vitalityCapacity - state.vitality),
     ...notifications,
   };
+}
+
+function releaseCloneDeathTrigger(characterID) {
+  const state = characterStates.get(toPositiveInt(characterID, 0));
+  if (!state) {
+    return false;
+  }
+  state.cloneDeathTriggered = false;
+  return true;
 }
 
 function applyNpcFeralization(
@@ -930,11 +1151,14 @@ module.exports.RIFT_TEMPORALIZATION_RADIUS_METERS = RIFT_TEMPORALIZATION_RADIUS_
 module.exports.STATUS_EFFECT_KEYS = STATUS_EFFECT_KEYS;
 module.exports.advanceEntityEnvironmentalEffects = advanceEntityEnvironmentalEffects;
 module.exports.approachEnvironmentalValue = approachEnvironmentalValue;
+module.exports.applyEnvironmentalHitpointDamage = applyEnvironmentalHitpointDamage;
 module.exports.applyNpcFeralization = applyNpcFeralization;
 module.exports.buildServiceState = buildServiceState;
 module.exports.deliverClientNotifications = deliverClientNotifications;
 module.exports.normalizeStatusEffectKey = normalizeStatusEffectKey;
+module.exports.releaseCloneDeathTrigger = releaseCloneDeathTrigger;
 module.exports.resetCharacterState = resetCharacterState;
+module.exports.resolveEnvironmentalEffectsConfig = resolveEnvironmentalEffectsConfig;
 module.exports.resolveCharacterID = resolveCharacterID;
 module.exports.resolveHeatGrace = resolveHeatGrace;
 module.exports.resolveRiftTemporalization = resolveRiftTemporalization;

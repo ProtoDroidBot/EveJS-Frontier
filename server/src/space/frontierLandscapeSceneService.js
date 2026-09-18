@@ -4,6 +4,7 @@ const path = require("path");
 const log = require(path.join(__dirname, "../utils/logger"));
 const { DEFAULT_MAX_SCENERY_PROPS, DEFAULT_MAX_RESOURCE_PROPS, buildLandscapeScenePlan, } = require(path.join(__dirname, "./frontierLandscapeScenePlan"));
 const { resolveFrontierSalvageResourceProfile, } = require(path.join(__dirname, "../services/mining/frontierSalvageResources"));
+const frontierLandscapeSpawns = require(path.join(__dirname, "../config/frontierLandscapeSpawns"));
 const DEFAULT_MATERIALIZE_RANGE_METERS = 1_000_000;
 const DEFAULT_MAX_NEARBY_SITES = 4;
 const MAX_EXACT_LANDSCAPE_PROPS = 96;
@@ -30,6 +31,13 @@ function distanceSquared(left, right) {
     const dy = left.y - right.y;
     const dz = left.z - right.z;
     return (dx * dx) + (dy * dy) + (dz * dz);
+}
+function addVectors(left, right) {
+    return {
+        x: toFiniteNumber(left && left.x, 0) + toFiniteNumber(right && right.x, 0),
+        y: toFiniteNumber(left && left.y, 0) + toFiniteNumber(right && right.y, 0),
+        z: toFiniteNumber(left && left.z, 0) + toFiniteNumber(right && right.z, 0),
+    };
 }
 function findNearestLandscapeSite(scene, anchorEntity, rangeMeters) {
     return findLandscapeSitesWithinRange(scene, anchorEntity, rangeMeters, 1)[0] || null;
@@ -77,8 +85,115 @@ function resolveDependencies(options = {}) {
         classifyResourceObject: options.classifyResourceObject || resolveFrontierSalvageResourceProfile,
         dungeonService: options.dungeonService || require(path.join(__dirname, "../services/dungeon/dungeonUniverseSiteService")),
         miningRuntimeState: options.miningRuntimeState || null,
+        nativeNpcService: options.nativeNpcService || null,
+        npcService: options.npcService || null,
         worldData: options.worldData || require(path.join(__dirname, "./worldData")),
     };
+}
+function buildConfiguredLandscapeWreckProps(spawnPlan) {
+    return (Array.isArray(spawnPlan && spawnPlan.wrecks) ? spawnPlan.wrecks : [])
+        .map((wreck, index) => ({
+        dunObjectID: 2_100_000_000 + index + 1,
+        exact: true,
+        key: String(wreck && wreck.key || `landscape-configured-wreck:${index + 1}`),
+        label: String(wreck && wreck.name || "Salvageable Wreckage"),
+        landscapeConfiguredWreck: true,
+        landscapeResource: true,
+        positionOffset: {
+            x: toFiniteNumber(wreck && wreck.positionOffset && wreck.positionOffset.x, 0),
+            y: toFiniteNumber(wreck && wreck.positionOffset && wreck.positionOffset.y, 0),
+            z: toFiniteNumber(wreck && wreck.positionOffset && wreck.positionOffset.z, 0),
+        },
+        suppressSlimGraphicID: false,
+        suppressSlimName: false,
+        typeID: Math.max(0, toInt(wreck && wreck.typeID, 0)),
+    }))
+        .filter((entry) => entry.typeID > 0);
+}
+function spawnConfiguredLandscapeNpcs(scene, siteEntity, spawnPlan, options = {}) {
+    const npcs = Array.isArray(spawnPlan && spawnPlan.npcs) ? spawnPlan.npcs : [];
+    if (!scene || !siteEntity || npcs.length <= 0) {
+        return { entityIDs: [], failures: [] };
+    }
+    const hasLiveDynamicRuntime = scene.dynamicEntities instanceof Map &&
+        typeof scene.addDynamicEntity === "function";
+    const npcService = options.npcService || (hasLiveDynamicRuntime ? require(path.join(__dirname, "./npc/npcService")) : null);
+    if (!npcService || typeof npcService.spawnNpcBatchInSystem !== "function") {
+        return {
+            entityIDs: [],
+            failures: npcs.map((npc) => ({
+                profileID: npc.profileID,
+                errorMsg: "LANDSCAPE_NPC_RUNTIME_UNAVAILABLE",
+            })),
+        };
+    }
+    const entityIDs = [];
+    const failures = [];
+    for (const npc of npcs) {
+        const spawnResult = npcService.spawnNpcBatchInSystem(scene.systemID, {
+            amount: 1,
+            anchorEntity: siteEntity,
+            broadcast: options.broadcast === true,
+            excludedSession: options.excludedSession || null,
+            operatorKind: "landscape",
+            preferPools: false,
+            profileQuery: npc.profileID,
+            runtimeKind: "frontierLandscape",
+            spawnGroupID: `frontier-landscape:${siteEntity.itemID}`,
+            spawnSiteID: String(siteEntity.itemID),
+            spawnStateOverride: {
+                position: addVectors(siteEntity.position, npc.positionOffset),
+                velocity: { x: 0, y: 0, z: 0 },
+                direction: { x: 1, y: 0, z: 0 },
+                mode: "STOP",
+            },
+            transient: true,
+        });
+        const spawned = spawnResult && spawnResult.success && spawnResult.data &&
+            Array.isArray(spawnResult.data.spawned)
+            ? spawnResult.data.spawned
+            : [];
+        const spawnedIDs = spawned
+            .map((entry) => toInt(entry && entry.entity && entry.entity.itemID, 0))
+            .filter((entityID) => entityID > 0);
+        entityIDs.push(...spawnedIDs);
+        if (spawnedIDs.length <= 0) {
+            failures.push({
+                profileID: npc.profileID,
+                errorMsg: String(spawnResult && spawnResult.errorMsg || "LANDSCAPE_NPC_SPAWN_FAILED"),
+            });
+        }
+    }
+    return { entityIDs, failures };
+}
+function destroyConfiguredLandscapeNpcs(scene, siteEntity, options = {}) {
+    const entityIDs = Array.isArray(siteEntity && siteEntity.landscapeNpcEntityIDs)
+        ? siteEntity.landscapeNpcEntityIDs
+        : [];
+    if (!scene || entityIDs.length <= 0) {
+        return [];
+    }
+    const hasLiveDynamicRuntime = scene.dynamicEntities instanceof Map &&
+        typeof scene.removeDynamicEntity === "function";
+    const nativeNpcService = options.nativeNpcService || (hasLiveDynamicRuntime
+        ? require(path.join(__dirname, "./npc/nativeNpcService"))
+        : null);
+    if (!nativeNpcService || typeof nativeNpcService.destroyNativeNpcController !== "function") {
+        return [];
+    }
+    const removedEntityIDs = [];
+    for (const entityID of entityIDs) {
+        const result = nativeNpcService.destroyNativeNpcController(entityID, {
+            broadcast: options.broadcast !== false,
+            excludedSession: options.excludedSession || null,
+            nowMs: options.nowMs,
+            removeContents: true,
+        });
+        if (result && result.success === true) {
+            removedEntityIDs.push(entityID);
+        }
+    }
+    return removedEntityIDs;
 }
 function ensureSceneState(scene) {
     if (!(scene._frontierLandscapeMaterializedSiteIDs instanceof Set)) {
@@ -158,7 +273,11 @@ function materializeLandscapeSite(scene, siteEntity, options = {}) {
         maxResourceProps,
         maxSceneryProps,
     });
+    const spawnPlan = frontierLandscapeSpawns.buildSpawnPlan(siteEntity, ecosystem, plan.selectedPatterns);
+    const configuredWreckProps = buildConfiguredLandscapeWreckProps(spawnPlan);
+    const configuredWreckObjectIDs = new Set(configuredWreckProps.map((entry) => entry.dunObjectID));
     const exactProps = [
+        ...configuredWreckProps,
         ...(Array.isArray(plan.resourceProps) ? plan.resourceProps : []),
         ...(Array.isArray(plan.environmentProps) ? plan.environmentProps : []),
     ].slice(0, MAX_EXACT_LANDSCAPE_PROPS);
@@ -178,6 +297,7 @@ function materializeLandscapeSite(scene, siteEntity, options = {}) {
         entity.landscapeSiteID = siteID;
         entity.landscapeEcosystemID = toInt(siteEntity.ecosystemID, 0);
         entity.landscapeDunObjectID = toInt(entity.dunObjectID, 0) || null;
+        entity.landscapeConfiguredWreck = configuredWreckObjectIDs.has(toInt(entity.dunObjectID, 0));
         if (resourceProfile) {
             const visualTypeID = Math.max(0, toInt(resourceProfile.typeID, entity.typeID));
             const visualTypeRecord = resourceProfile.typeRecord || {};
@@ -222,6 +342,21 @@ function materializeLandscapeSite(scene, siteEntity, options = {}) {
     siteEntity.landscapeSalvageResourceEntityIDs = resourceEntities
         .map((entity) => toInt(entity && entity.itemID, 0))
         .filter((entityID) => entityID > 0);
+    siteEntity.landscapeConfiguredWreckEntityIDs = addedEntities
+        .filter((entity) => entity.landscapeConfiguredWreck === true)
+        .map((entity) => toInt(entity && entity.itemID, 0))
+        .filter((entityID) => entityID > 0);
+    const npcSpawnResult = spawnConfiguredLandscapeNpcs(scene, siteEntity, spawnPlan, {
+        ...options,
+        npcService: dependencies.npcService,
+    });
+    siteEntity.landscapeNpcEntityIDs = npcSpawnResult.entityIDs;
+    siteEntity.landscapeNpcSpawnFailures = npcSpawnResult.failures;
+    siteEntity.landscapeSpawnConfigVersion = spawnPlan.configured
+        ? spawnPlan.schemaVersion
+        : null;
+    siteEntity.landscapeSpawnTableID = spawnPlan.spawnTableID || null;
+    siteEntity.landscapeSpawnFamilyTags = spawnPlan.familyTags || [];
     materializedSiteIDs.add(siteID);
     if (options.broadcast === true &&
         addedEntities.length > 0 &&
@@ -230,7 +365,8 @@ function materializeLandscapeSite(scene, siteEntity, options = {}) {
     }
     log.info(`[FrontierLandscape] Materialized site=${siteID} ecosystem=${toInt(siteEntity.ecosystemID, 0)} ` +
         `patterns=${plan.selectedPatterns.length} props=${addedEntities.length} ` +
-        `resources=${resourceEntities.length} locators=${plan.locators.length}`);
+        `resources=${resourceEntities.length} locators=${plan.locators.length} ` +
+        `npcs=${npcSpawnResult.entityIDs.length} wrecks=${siteEntity.landscapeConfiguredWreckEntityIDs.length}`);
     return {
         success: true,
         data: {
@@ -238,9 +374,13 @@ function materializeLandscapeSite(scene, siteEntity, options = {}) {
             ecosystemID: toInt(siteEntity.ecosystemID, 0),
             locators: plan.locators,
             patterns: plan.selectedPatterns,
+            npcSpawnFailures: npcSpawnResult.failures,
+            npcsSpawned: npcSpawnResult.entityIDs.length,
             propsSpawned: addedEntities.length,
             resourcesSpawned: resourceEntities.length,
+            spawnPlan,
             siteID,
+            wrecksSpawned: siteEntity.landscapeConfiguredWreckEntityIDs.length,
         },
     };
 }
@@ -252,6 +392,11 @@ function dematerializeLandscapeSite(scene, siteID, options = {}) {
             errorMsg: "INVALID_LANDSCAPE_SITE_ID",
         };
     }
+    const siteEntity = (Array.isArray(scene.staticEntities) ? scene.staticEntities : [])
+        .find((entity) => (entity &&
+        String(entity.kind || "") === "landscapeSite" &&
+        toInt(entity.itemID, 0) === numericSiteID)) || null;
+    const removedNpcEntityIDs = destroyConfiguredLandscapeNpcs(scene, siteEntity, options);
     const entities = (Array.isArray(scene.staticEntities) ? scene.staticEntities : [])
         .filter((entity) => (entity &&
         ["landscapeEnvironmentProp", "landscapeSalvageResource"].includes(String(entity.kind || "")) &&
@@ -279,12 +424,21 @@ function dematerializeLandscapeSite(scene, siteID, options = {}) {
         }
     }
     ensureSceneState(scene).delete(numericSiteID);
+    if (siteEntity) {
+        siteEntity.landscapeConfiguredWreckEntityIDs = [];
+        siteEntity.landscapeNpcEntityIDs = [];
+        siteEntity.landscapeNpcSpawnFailures = [];
+        siteEntity.landscapeSpawnFamilyTags = [];
+        siteEntity.landscapeSpawnTableID = null;
+    }
     return {
         success: true,
         errorMsg: null,
         data: {
             removedCount: removedEntityIDs.length,
             removedEntityIDs,
+            removedNpcCount: removedNpcEntityIDs.length,
+            removedNpcEntityIDs,
             siteID: numericSiteID,
         },
     };
@@ -299,5 +453,10 @@ module.exports = {
     materializeLandscapeSite,
     materializeNearbyLandscapeSite,
     materializeNearbyLandscapeSites,
+    _testing: {
+        buildConfiguredLandscapeWreckProps,
+        destroyConfiguredLandscapeNpcs,
+        spawnConfiguredLandscapeNpcs,
+    },
 };
 //# sourceMappingURL=frontierLandscapeSceneService.js.map

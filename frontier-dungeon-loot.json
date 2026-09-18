@@ -1,0 +1,669 @@
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "source": {
+    "clientBuild": 3502403,
+    "notes": "Type-ID mappings are exact. Explicit mission cargo takes precedence over mapped container loot. Authored wreck-like dungeon objects use cargoContainers because the server materializes them as lootable containers; native NPC wreck types use wrecks. Related visual variants may share a family table, while cargo, authored wreckage, and native wreck families remain independently editable."
+  },
+  "lootTables": {
+    "frontier_container_creche_salvage_a": {
+      "name": "Creche Salvage A Container",
+      "description": "Loot for type 99006.",
+      "minEntries": 1,
+      "maxEntries": 1,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99002, "itemName": "Creche Salvage A", "weight": 1, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_container_generic_salvage_a": {
+      "name": "Generic Salvage A Container",
+      "description": "Mixed common salvage for type 99007.",
+      "minEntries": 1,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25598, "itemName": "Tripped Power Circuit", "weight": 5, "minQuantity": 1, "maxQuantity": 4 },
+        { "typeID": 25599, "itemName": "Charred Micro Circuit", "weight": 5, "minQuantity": 1, "maxQuantity": 4 },
+        { "typeID": 25600, "itemName": "Burned Logic Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25601, "itemName": "Fried Interface Circuit", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_container_utility_component_a": {
+      "name": "Utility Component A Container",
+      "description": "Loot for type 99008.",
+      "minEntries": 1,
+      "maxEntries": 1,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99004, "itemName": "Utility Component A", "weight": 1, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_container_sensor_component_a": {
+      "name": "Sensor Component A Container",
+      "description": "Loot for type 99009.",
+      "minEntries": 1,
+      "maxEntries": 1,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99005, "itemName": "Sensor Component A", "weight": 1, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_container_unstable_fuel": {
+      "name": "Unstable Fuel Container",
+      "description": "Loot for type 99011.",
+      "minEntries": 1,
+      "maxEntries": 1,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 77818, "itemName": "Unstable Fuel", "weight": 1, "minQuantity": 1, "maxQuantity": 3 }
+      ]
+    },
+    "frontier_container_industrial_waste": {
+      "name": "Industrial Waste Container",
+      "description": "Loot for type 99021.",
+      "minEntries": 1,
+      "maxEntries": 1,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99012, "itemName": "Industrial Waste", "weight": 1, "minQuantity": 1, "maxQuantity": 4 }
+      ]
+    },
+    "frontier_container_crystalline_refuse": {
+      "name": "Crystalline Refuse Container",
+      "description": "Loot for type 99022.",
+      "minEntries": 1,
+      "maxEntries": 1,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99013, "itemName": "Crystalline Refuse", "weight": 1, "minQuantity": 1, "maxQuantity": 4 }
+      ]
+    },
+    "frontier_container_debris": {
+      "name": "Debris Container",
+      "description": "Loot for type 99023.",
+      "minEntries": 1,
+      "maxEntries": 1,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99014, "itemName": "Debris", "weight": 1, "minQuantity": 1, "maxQuantity": 4 }
+      ]
+    },
+    "frontier_container_sensor_component_b": {
+      "name": "Sensor Component B Container",
+      "description": "Loot for type 99024.",
+      "minEntries": 1,
+      "maxEntries": 1,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99015, "itemName": "Sensor Component B", "weight": 1, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_container_insulated": {
+      "name": "Insulated Container",
+      "description": "Defensive component loot for type 99025.",
+      "minEntries": 1,
+      "maxEntries": 2,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 87571, "itemName": "Insulated Plates", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_container_weapon_component_a": {
+      "name": "Weapon Component A Container",
+      "description": "Loot for type 99026.",
+      "minEntries": 1,
+      "maxEntries": 1,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99017, "itemName": "Weapon Component A", "weight": 1, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_container_support_component_a": {
+      "name": "Support Component A Container",
+      "description": "Loot for type 99027.",
+      "minEntries": 1,
+      "maxEntries": 1,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99018, "itemName": "Support Component A", "weight": 1, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_container_shelter_component_a": {
+      "name": "Shelter Component A Container",
+      "description": "Loot for type 99028.",
+      "minEntries": 1,
+      "maxEntries": 1,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99019, "itemName": "Shelter Component A", "weight": 1, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_container_transport_supplies": {
+      "name": "Transport Container Supplies",
+      "description": "General Frontier supplies recovered from reinforced transport containers.",
+      "minEntries": 1,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99004, "itemName": "Utility Component A", "weight": 4, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 99018, "itemName": "Support Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99019, "itemName": "Shelter Component A", "weight": 2, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_container_ore_storage": {
+      "name": "Ore Storage Silo",
+      "description": "Processed and unprocessed material held in ore-storage scenery containers.",
+      "minEntries": 1,
+      "maxEntries": 2,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99001, "itemName": "Palladium", "weight": 4, "minQuantity": 2, "maxQuantity": 8 },
+        { "typeID": 99013, "itemName": "Crystalline Refuse", "weight": 2, "minQuantity": 1, "maxQuantity": 4 },
+        { "typeID": 99014, "itemName": "Debris", "weight": 1, "minQuantity": 1, "maxQuantity": 3 }
+      ]
+    },
+    "frontier_container_shielded_storage": {
+      "name": "Shielded Storage Silo",
+      "description": "Protected material and armor salvage from shielded silos.",
+      "minEntries": 1,
+      "maxEntries": 2,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 87571, "itemName": "Insulated Plates", "weight": 4, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 1, "minQuantity": 1, "maxQuantity": 1 },
+        { "typeID": 99019, "itemName": "Shelter Component A", "weight": 2, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_container_material_storage": {
+      "name": "Material Transport Container",
+      "description": "Mixed industrial material from material transport containers.",
+      "minEntries": 1,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99012, "itemName": "Industrial Waste", "weight": 4, "minQuantity": 1, "maxQuantity": 5 },
+        { "typeID": 99013, "itemName": "Crystalline Refuse", "weight": 3, "minQuantity": 1, "maxQuantity": 4 },
+        { "typeID": 99014, "itemName": "Debris", "weight": 3, "minQuantity": 1, "maxQuantity": 4 }
+      ]
+    },
+    "frontier_container_ejected_components": {
+      "name": "Ejected Components",
+      "description": "Loose Frontier components ejected from damaged machinery.",
+      "minEntries": 1,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99004, "itemName": "Utility Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99005, "itemName": "Sensor Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99017, "itemName": "Weapon Component A", "weight": 2, "minQuantity": 1, "maxQuantity": 1 },
+        { "typeID": 99018, "itemName": "Support Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_container_storage_silo": {
+      "name": "Storage Silo",
+      "description": "Common industrial storage-silo contents.",
+      "minEntries": 1,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99012, "itemName": "Industrial Waste", "weight": 5, "minQuantity": 1, "maxQuantity": 6 },
+        { "typeID": 99013, "itemName": "Crystalline Refuse", "weight": 4, "minQuantity": 1, "maxQuantity": 5 },
+        { "typeID": 99014, "itemName": "Debris", "weight": 4, "minQuantity": 1, "maxQuantity": 5 },
+        { "typeID": 99004, "itemName": "Utility Component A", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_container_unusual_storage_silo": {
+      "name": "Unusual Storage Silo",
+      "description": "Unusual biological and sensor material held in a storage silo.",
+      "minEntries": 1,
+      "maxEntries": 2,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99020, "itemName": "Contaminated Neuron", "weight": 2, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99005, "itemName": "Sensor Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99013, "itemName": "Crystalline Refuse", "weight": 4, "minQuantity": 1, "maxQuantity": 4 }
+      ]
+    },
+    "frontier_container_secured_storage_silo": {
+      "name": "Secured Storage Silo",
+      "description": "Higher-value protected components from secured storage silos.",
+      "minEntries": 2,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99001, "itemName": "Palladium", "weight": 4, "minQuantity": 2, "maxQuantity": 6 },
+        { "typeID": 99005, "itemName": "Sensor Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99017, "itemName": "Weapon Component A", "weight": 2, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99018, "itemName": "Support Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_container_unremarkable_storage_silo": {
+      "name": "Unremarkable Storage Silo",
+      "description": "Low-value but lootable contents for all known Unremarkable Storage Silo variants.",
+      "minEntries": 1,
+      "maxEntries": 2,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99012, "itemName": "Industrial Waste", "weight": 5, "minQuantity": 1, "maxQuantity": 5 },
+        { "typeID": 99014, "itemName": "Debris", "weight": 5, "minQuantity": 1, "maxQuantity": 5 },
+        { "typeID": 25598, "itemName": "Tripped Power Circuit", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_container_drifting_cache": {
+      "name": "Drifting Cache",
+      "description": "Mixed components recovered from drifting and damaged drifting caches.",
+      "minEntries": 1,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99004, "itemName": "Utility Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99005, "itemName": "Sensor Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99015, "itemName": "Sensor Component B", "weight": 2, "minQuantity": 1, "maxQuantity": 1 },
+        { "typeID": 25599, "itemName": "Charred Micro Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 3 }
+      ]
+    },
+    "frontier_container_cache": {
+      "name": "Frontier Cache",
+      "description": "General cache contents.",
+      "minEntries": 1,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99004, "itemName": "Utility Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99018, "itemName": "Support Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 25598, "itemName": "Tripped Power Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25601, "itemName": "Fried Interface Circuit", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_container_repository": {
+      "name": "Frontier Repository",
+      "description": "Sensor and archival components from repositories.",
+      "minEntries": 1,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99005, "itemName": "Sensor Component A", "weight": 4, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99015, "itemName": "Sensor Component B", "weight": 2, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99020, "itemName": "Contaminated Neuron", "weight": 1, "minQuantity": 1, "maxQuantity": 1 },
+        { "typeID": 25601, "itemName": "Fried Interface Circuit", "weight": 3, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_container_material_bunker": {
+      "name": "Material Storage Bunker",
+      "description": "Industrial and defensive components stored in material bunkers.",
+      "minEntries": 2,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99012, "itemName": "Industrial Waste", "weight": 4, "minQuantity": 1, "maxQuantity": 5 },
+        { "typeID": 99018, "itemName": "Support Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99019, "itemName": "Shelter Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 87571, "itemName": "Insulated Plates", "weight": 2, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_container_feralized_archive": {
+      "name": "Feralized Archive",
+      "description": "Corrupted biological and sensor material from feralized archives.",
+      "minEntries": 1,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99020, "itemName": "Contaminated Neuron", "weight": 4, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99005, "itemName": "Sensor Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99015, "itemName": "Sensor Component B", "weight": 2, "minQuantity": 1, "maxQuantity": 1 },
+        { "typeID": 28363, "itemName": "Drone Cerebral Fragment", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_container_component_locker": {
+      "name": "Component Locker",
+      "description": "Assorted functional components from component lockers.",
+      "minEntries": 1,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99004, "itemName": "Utility Component A", "weight": 4, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99005, "itemName": "Sensor Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99017, "itemName": "Weapon Component A", "weight": 2, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99018, "itemName": "Support Component A", "weight": 3, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_container_fuel_cell": {
+      "name": "Fuel Cell",
+      "description": "Fuel recovered from authored fuel-cell containers.",
+      "minEntries": 1,
+      "maxEntries": 1,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 77818, "itemName": "Unstable Fuel", "weight": 1, "minQuantity": 1, "maxQuantity": 4 }
+      ]
+    },
+    "frontier_salvage_ship_wreck": {
+      "name": "Authored Ship Wreckage",
+      "description": "Loot for frigate-sized and named ship wreck objects authored as dungeon containers.",
+      "minEntries": 1,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25598, "itemName": "Tripped Power Circuit", "weight": 5, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25599, "itemName": "Charred Micro Circuit", "weight": 5, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25600, "itemName": "Burned Logic Circuit", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 25601, "itemName": "Fried Interface Circuit", "weight": 2, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_salvage_hauler_wreck": {
+      "name": "Authored Hauler Wreckage",
+      "description": "Loot for derelict and wrecked hauler objects authored as dungeon containers.",
+      "minEntries": 2,
+      "maxEntries": 4,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25598, "itemName": "Tripped Power Circuit", "weight": 5, "minQuantity": 1, "maxQuantity": 4 },
+        { "typeID": 25599, "itemName": "Charred Micro Circuit", "weight": 5, "minQuantity": 1, "maxQuantity": 4 },
+        { "typeID": 25600, "itemName": "Burned Logic Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 1, "minQuantity": 1, "maxQuantity": 1 },
+        { "typeID": 99014, "itemName": "Debris", "weight": 4, "minQuantity": 1, "maxQuantity": 5 }
+      ]
+    },
+    "frontier_salvage_freighter_wreck": {
+      "name": "Authored Freighter Wreckage",
+      "description": "Large salvage table for freighter wreck and derelict-freighter dungeon objects.",
+      "minEntries": 3,
+      "maxEntries": 5,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25598, "itemName": "Tripped Power Circuit", "weight": 5, "minQuantity": 2, "maxQuantity": 6 },
+        { "typeID": 25600, "itemName": "Burned Logic Circuit", "weight": 5, "minQuantity": 1, "maxQuantity": 5 },
+        { "typeID": 25601, "itemName": "Fried Interface Circuit", "weight": 3, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 30259, "itemName": "Melted Nanoribbons", "weight": 1, "minQuantity": 1, "maxQuantity": 1 },
+        { "typeID": 99018, "itemName": "Support Component A", "weight": 2, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_salvage_relay_wreck": {
+      "name": "Relay Wreckage",
+      "description": "Circuit and sensor salvage from relay wreckage.",
+      "minEntries": 1,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25598, "itemName": "Tripped Power Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25601, "itemName": "Fried Interface Circuit", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99005, "itemName": "Sensor Component A", "weight": 2, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99015, "itemName": "Sensor Component B", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_salvage_superstructure_wreck": {
+      "name": "Superstructure Wreckage",
+      "description": "Heavy armor and structural salvage from superstructure wreckage.",
+      "minEntries": 2,
+      "maxEntries": 4,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 87571, "itemName": "Insulated Plates", "weight": 4, "minQuantity": 1, "maxQuantity": 4 },
+        { "typeID": 30259, "itemName": "Melted Nanoribbons", "weight": 2, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99014, "itemName": "Debris", "weight": 5, "minQuantity": 2, "maxQuantity": 8 }
+      ]
+    },
+    "frontier_salvage_drone_wreck": {
+      "name": "Inert Drone Salvage",
+      "description": "Drone electronics recovered from inert drone objects.",
+      "minEntries": 1,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25615, "itemName": "Drone Transceiver", "weight": 4, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 28363, "itemName": "Drone Cerebral Fragment", "weight": 2, "minQuantity": 1, "maxQuantity": 1 },
+        { "typeID": 25599, "itemName": "Charred Micro Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25601, "itemName": "Fried Interface Circuit", "weight": 2, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_salvage_hull_remnants": {
+      "name": "Hull Remnants",
+      "description": "Structural salvage from hull-remnant objects.",
+      "minEntries": 1,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 87571, "itemName": "Insulated Plates", "weight": 4, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 2, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99014, "itemName": "Debris", "weight": 5, "minQuantity": 1, "maxQuantity": 5 }
+      ]
+    },
+    "frontier_salvage_armor_flank": {
+      "name": "Shattered Armor Flank",
+      "description": "Armor-focused salvage from shattered armor flanks.",
+      "minEntries": 1,
+      "maxEntries": 2,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 87571, "itemName": "Insulated Plates", "weight": 4, "minQuantity": 1, "maxQuantity": 4 },
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 2, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 30259, "itemName": "Melted Nanoribbons", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_salvage_directive_core": {
+      "name": "Ruptured Directive Core",
+      "description": "High-value electronics and drone material from ruptured directive cores.",
+      "minEntries": 2,
+      "maxEntries": 4,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25601, "itemName": "Fried Interface Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25615, "itemName": "Drone Transceiver", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 28363, "itemName": "Drone Cerebral Fragment", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99020, "itemName": "Contaminated Neuron", "weight": 2, "minQuantity": 1, "maxQuantity": 1 },
+        { "typeID": 30259, "itemName": "Melted Nanoribbons", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_wreck_freighter_standard": {
+      "name": "Standard Freighter Wreck",
+      "description": "Native wreck loot shared by standard freighter wreck type variants.",
+      "minEntries": 2,
+      "maxEntries": 4,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25598, "itemName": "Tripped Power Circuit", "weight": 5, "minQuantity": 2, "maxQuantity": 5 },
+        { "typeID": 25600, "itemName": "Burned Logic Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 4 },
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 2, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 30259, "itemName": "Melted Nanoribbons", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_wreck_freighter_mission": {
+      "name": "Mission Freighter Wreck",
+      "description": "Native wreck loot for the mission freighter wreck type.",
+      "minEntries": 2,
+      "maxEntries": 4,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25599, "itemName": "Charred Micro Circuit", "weight": 5, "minQuantity": 2, "maxQuantity": 5 },
+        { "typeID": 25601, "itemName": "Fried Interface Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 2, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99018, "itemName": "Support Component A", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_wreck_freighter_elite": {
+      "name": "Elite Freighter Wreck",
+      "description": "Native wreck loot shared by elite freighter wreck variants.",
+      "minEntries": 3,
+      "maxEntries": 5,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25600, "itemName": "Burned Logic Circuit", "weight": 5, "minQuantity": 2, "maxQuantity": 5 },
+        { "typeID": 25601, "itemName": "Fried Interface Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 4 },
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 3, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 30259, "itemName": "Melted Nanoribbons", "weight": 2, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 99017, "itemName": "Weapon Component A", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_wreck_freighter_ore": {
+      "name": "ORE Freighter Wreck",
+      "description": "Native wreck loot for the ORE freighter wreck variant.",
+      "minEntries": 2,
+      "maxEntries": 4,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 99001, "itemName": "Palladium", "weight": 4, "minQuantity": 2, "maxQuantity": 8 },
+        { "typeID": 25598, "itemName": "Tripped Power Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 4 },
+        { "typeID": 25600, "itemName": "Burned Logic Circuit", "weight": 3, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 2, "minQuantity": 1, "maxQuantity": 2 }
+      ]
+    },
+    "frontier_wreck_rogue_small": {
+      "name": "Rogue Small Wreck",
+      "description": "Loot for wreck type 26591.",
+      "minEntries": 1,
+      "maxEntries": 1,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25598, "itemName": "Tripped Power Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 25599, "itemName": "Charred Micro Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 25600, "itemName": "Burned Logic Circuit", "weight": 2, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_wreck_rogue_medium": {
+      "name": "Rogue Medium Wreck",
+      "description": "Loot for wreck type 26592.",
+      "minEntries": 1,
+      "maxEntries": 2,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25598, "itemName": "Tripped Power Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25600, "itemName": "Burned Logic Circuit", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 25615, "itemName": "Drone Transceiver", "weight": 2, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_wreck_rogue_large": {
+      "name": "Rogue Large Wreck",
+      "description": "Loot for wreck type 26593.",
+      "minEntries": 2,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25600, "itemName": "Burned Logic Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25615, "itemName": "Drone Transceiver", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 2, "minQuantity": 1, "maxQuantity": 1 },
+        { "typeID": 28363, "itemName": "Drone Cerebral Fragment", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_wreck_rogue_elite_small": {
+      "name": "Rogue Elite Small Wreck",
+      "description": "Loot for wreck type 26594.",
+      "minEntries": 1,
+      "maxEntries": 2,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25601, "itemName": "Fried Interface Circuit", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 25615, "itemName": "Drone Transceiver", "weight": 3, "minQuantity": 1, "maxQuantity": 1 },
+        { "typeID": 28363, "itemName": "Drone Cerebral Fragment", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_wreck_rogue_elite_medium": {
+      "name": "Rogue Elite Medium Wreck",
+      "description": "Loot for wreck type 26595.",
+      "minEntries": 2,
+      "maxEntries": 3,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25601, "itemName": "Fried Interface Circuit", "weight": 4, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 25615, "itemName": "Drone Transceiver", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 2, "minQuantity": 1, "maxQuantity": 1 },
+        { "typeID": 28363, "itemName": "Drone Cerebral Fragment", "weight": 2, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    },
+    "frontier_wreck_rogue_officer": {
+      "name": "Rogue Officer Wreck",
+      "description": "Loot for wreck type 26596.",
+      "minEntries": 3,
+      "maxEntries": 4,
+      "allowDuplicates": false,
+      "entries": [
+        { "typeID": 25615, "itemName": "Drone Transceiver", "weight": 4, "minQuantity": 1, "maxQuantity": 3 },
+        { "typeID": 25624, "itemName": "Intact Armor Plates", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 28363, "itemName": "Drone Cerebral Fragment", "weight": 3, "minQuantity": 1, "maxQuantity": 2 },
+        { "typeID": 30259, "itemName": "Melted Nanoribbons", "weight": 1, "minQuantity": 1, "maxQuantity": 1 }
+      ]
+    }
+  },
+  "typeMappings": {
+    "cargoContainers": {
+      "82167": "frontier_container_secured_storage_silo",
+      "86442": "frontier_salvage_ship_wreck",
+      "86447": "frontier_salvage_ship_wreck",
+      "86449": "frontier_salvage_ship_wreck",
+      "86829": "frontier_container_transport_supplies",
+      "86830": "frontier_container_ore_storage",
+      "86831": "frontier_container_shielded_storage",
+      "86833": "frontier_container_material_storage",
+      "86834": "frontier_container_ejected_components",
+      "86985": "frontier_salvage_hauler_wreck",
+      "86986": "frontier_salvage_hauler_wreck",
+      "86987": "frontier_salvage_hauler_wreck",
+      "86988": "frontier_salvage_hauler_wreck",
+      "87371": "frontier_salvage_ship_wreck",
+      "87372": "frontier_salvage_hauler_wreck",
+      "87373": "frontier_salvage_freighter_wreck",
+      "87427": "frontier_salvage_relay_wreck",
+      "87446": "frontier_container_storage_silo",
+      "87447": "frontier_container_unusual_storage_silo",
+      "87448": "frontier_salvage_superstructure_wreck",
+      "88089": "frontier_salvage_drone_wreck",
+      "88282": "frontier_container_drifting_cache",
+      "88315": "frontier_container_cache",
+      "88316": "frontier_container_repository",
+      "88453": "frontier_salvage_freighter_wreck",
+      "88807": "frontier_salvage_ship_wreck",
+      "88808": "frontier_salvage_hauler_wreck",
+      "88809": "frontier_salvage_hauler_wreck",
+      "88827": "frontier_container_secured_storage_silo",
+      "88864": "frontier_container_material_bunker",
+      "88865": "frontier_container_feralized_archive",
+      "89076": "frontier_salvage_superstructure_wreck",
+      "89114": "frontier_container_transport_supplies",
+      "90707": "frontier_container_drifting_cache",
+      "91216": "frontier_salvage_hull_remnants",
+      "91217": "frontier_salvage_armor_flank",
+      "91218": "frontier_salvage_directive_core",
+      "91230": "frontier_container_unremarkable_storage_silo",
+      "91533": "frontier_container_unremarkable_storage_silo",
+      "91550": "frontier_container_unremarkable_storage_silo",
+      "95460": "frontier_container_utility_component_a",
+      "95461": "frontier_container_component_locker",
+      "95462": "frontier_container_fuel_cell",
+      "99006": "frontier_container_creche_salvage_a",
+      "99007": "frontier_container_generic_salvage_a",
+      "99008": "frontier_container_utility_component_a",
+      "99009": "frontier_container_sensor_component_a",
+      "99011": "frontier_container_unstable_fuel",
+      "99021": "frontier_container_industrial_waste",
+      "99022": "frontier_container_crystalline_refuse",
+      "99023": "frontier_container_debris",
+      "99024": "frontier_container_sensor_component_b",
+      "99025": "frontier_container_insulated",
+      "99026": "frontier_container_weapon_component_a",
+      "99027": "frontier_container_support_component_a",
+      "99028": "frontier_container_shelter_component_a"
+    },
+    "wrecks": {
+      "26483": "frontier_wreck_freighter_standard",
+      "26505": "frontier_wreck_freighter_standard",
+      "26527": "frontier_wreck_freighter_standard",
+      "26549": "frontier_wreck_freighter_standard",
+      "26591": "frontier_wreck_rogue_small",
+      "26592": "frontier_wreck_rogue_medium",
+      "26593": "frontier_wreck_rogue_large",
+      "26594": "frontier_wreck_rogue_elite_small",
+      "26595": "frontier_wreck_rogue_elite_medium",
+      "26596": "frontier_wreck_rogue_officer",
+      "28255": "frontier_wreck_freighter_mission",
+      "29033": "frontier_wreck_freighter_elite",
+      "29034": "frontier_wreck_freighter_elite",
+      "29035": "frontier_wreck_freighter_elite",
+      "29036": "frontier_wreck_freighter_elite",
+      "34884": "frontier_wreck_freighter_ore"
+    }
+  }
+}

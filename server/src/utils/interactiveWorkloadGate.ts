@@ -1,6 +1,12 @@
 "use strict";
 
 const DEFAULT_LOGIN_GRACE_MS = 2_000;
+// Character selection is only the start of login from the client's point of
+// view.  The station/structure scene continues issuing serial RPCs while it
+// creates the hangar presentation.  Keep cold background authority work out of
+// that window; otherwise a reconcile slice can make an otherwise instant
+// station call miss the client's scene-loading window.
+const DEFAULT_SESSION_BOOTSTRAP_GRACE_MS = 30_000;
 const ACTIVE_LOGIN_POLL_MS = 250;
 
 let activeLoginCount = 0;
@@ -37,6 +43,13 @@ function beginLogin() {
   };
 }
 
+function noteSessionBootstrapActivity(
+  graceMs = DEFAULT_SESSION_BOOTSTRAP_GRACE_MS,
+  nowMs = Date.now(),
+) {
+  return noteLoginActivity(graceMs, nowMs);
+}
+
 function getBackgroundDeferralDelayMs(nowMs = Date.now()) {
   const normalizedNowMs = toNonNegativeInt(nowMs, Date.now());
   if (activeLoginCount > 0) {
@@ -65,10 +78,12 @@ function resetForTests() {
 module.exports = {
   ACTIVE_LOGIN_POLL_MS,
   DEFAULT_LOGIN_GRACE_MS,
+  DEFAULT_SESSION_BOOTSTRAP_GRACE_MS,
   beginLogin,
   getBackgroundDeferralDelayMs,
   getSnapshot,
   noteLoginActivity,
+  noteSessionBootstrapActivity,
   shouldDeferBackgroundWork,
   _testing: {
     resetForTests,

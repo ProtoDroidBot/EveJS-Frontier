@@ -22,6 +22,7 @@ const {
   getCreationTemplate,
 } = require("../src/services/frontier/creationStaticData");
 const iffRuntime = require("../src/services/frontier/iffRuntime");
+const serverConfig = require("../src/config");
 const scanningRuntime = require("../src/services/frontier/scanningRuntime");
 const ScanningService = require("../src/services/frontier/scanningService");
 const MachoNetService = require("../src/services/machoNet/machoNetService");
@@ -1664,6 +1665,128 @@ test("scanner enforces the client-authored maximum range", () => {
 
   const scan = runScan([withinRange, beyondRange, zeroDistance]);
   assert.deepEqual(scan.updatedScans.map((result) => result.scan_id), [5001]);
+});
+
+test("Frontier scan detection and object-resolution ranges are validated config", () => {
+  const definitions = new Map<string, any>(
+    serverConfig.getConfigDefinitions().map((definition) => [
+      definition.key,
+      definition,
+    ]),
+  );
+  assert.equal(
+    definitions.get("frontierScanningDetectionRangeMeters").defaultValue,
+    scanningRuntime.MAXIMUM_SCAN_DISTANCE_METERS,
+  );
+  assert.equal(
+    definitions.get("frontierScanningResolutionRangeMeters").defaultValue,
+    scanningRuntime.MAXIMUM_SCAN_DISTANCE_METERS,
+  );
+  assert.equal(
+    definitions.get("frontierScanningResolutionSnrThreshold").defaultValue,
+    1,
+  );
+  assert.equal(
+    definitions.get("frontierScanningRenderResolvedObjects").defaultValue,
+    true,
+  );
+  assert.equal(
+    definitions.get("frontierScanningRenderOutOfRangeSignatures").defaultValue,
+    true,
+  );
+
+  const validBaseValues = Object.fromEntries(
+    [...definitions.entries()].map(([key, definition]) => [
+      key,
+      definition.defaultValue === "" ? "test" : definition.defaultValue,
+    ]),
+  );
+  assert.throws(
+    () => serverConfig.buildValidatedConfigValues({
+      frontierScanningDetectionRangeMeters: 1_000,
+      frontierScanningResolutionRangeMeters: 1_001,
+    }, { baseValues: validBaseValues }),
+    /ResolutionRangeMeters must be less than or equal to.*DetectionRangeMeters/,
+  );
+});
+
+test("contacts outside resolution range stay unresolved signatures", () => {
+  const scan = runScan([
+    {
+      itemID: 5101,
+      typeID: TYPE_SIGNATURE_TARGET,
+      position: { x: 0, y: 0, z: 400 },
+    },
+    {
+      itemID: 5102,
+      typeID: TYPE_SIGNATURE_TARGET,
+      position: { x: 0, y: 0, z: 750 },
+    },
+    {
+      itemID: 5103,
+      typeID: TYPE_SIGNATURE_TARGET,
+      position: { x: 0, y: 0, z: 1_250 },
+    },
+  ], {
+    scannerProfile: {
+      durationMs: 6_000,
+      multipliers: [[scanningRuntime.SIGNATURE_TYPE_GRAVIMETRIC, 1_000]],
+    },
+    resolutionConfig: {
+      detectionRangeMeters: 1_000,
+      resolutionRangeMeters: 500,
+      resolutionSnrThreshold: 1,
+      renderResolvedObjects: true,
+      renderOutOfRangeSignatures: true,
+    },
+  });
+
+  assert.deepEqual(scan.updatedScans.map((result) => result.scan_id), [5101, 5102]);
+  assert.deepEqual(scan.resolvedIds, [5101]);
+  assert.equal(scan.updatedScans[0].resolution_state, "in-resolution-range");
+  assert.equal(scan.updatedScans[1].resolution_state, "unresolved-out-of-range");
+  assert.ok(scan.updatedScans[1].signature_results.every(
+    ([, signature, noise]) =>
+      scanningRuntime.calculateSnr(signature, noise) < 1,
+  ));
+  frontierMarshals(buildScanResponse(scan));
+});
+
+test("out-of-resolution contacts can be omitted or all contacts kept signature-only", () => {
+  const candidate = {
+    itemID: 5201,
+    typeID: TYPE_SIGNATURE_TARGET,
+    position: { x: 0, y: 0, z: 750 },
+  };
+  const scannerProfile = {
+    durationMs: 6_000,
+    multipliers: [[scanningRuntime.SIGNATURE_TYPE_GRAVIMETRIC, 1_000]],
+  };
+  const omitted = runScan([candidate], {
+    scannerProfile,
+    resolutionConfig: {
+      detectionRangeMeters: 1_000,
+      resolutionRangeMeters: 500,
+      renderOutOfRangeSignatures: false,
+    },
+  });
+  assert.deepEqual(omitted.updatedScans, []);
+
+  const signatureOnly = runScan([
+    { ...candidate, position: { x: 0, y: 0, z: 400 } },
+  ], {
+    scannerProfile,
+    resolutionConfig: {
+      detectionRangeMeters: 1_000,
+      resolutionRangeMeters: 500,
+      renderResolvedObjects: false,
+    },
+  });
+  assert.deepEqual(signatureOnly.resolvedIds, []);
+  assert.equal(
+    signatureOnly.updatedScans[0].resolution_state,
+    "unresolved-signature-only",
+  );
 });
 
 test("scan ids are stable and deltas report added/removed", () => {

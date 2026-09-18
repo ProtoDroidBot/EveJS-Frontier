@@ -8,6 +8,8 @@ const { getTrigDrifterGeneratedRows, } = require(path.join(__dirname, "./trigDri
 const { getEmpireSecurityGeneratedRows, } = require(path.join(__dirname, "./empireSecurity/empireSecurityNpcCatalog"));
 const { augmentNpcLoadoutWithHostileUtilities, } = require(path.join(__dirname, "./npcHostileUtilityCatalog"));
 const frontierDungeonSpawns = require(path.join(__dirname, "../../config/frontierDungeonSpawns"));
+const frontierDungeonLoot = require(path.join(__dirname, "../../config/frontierDungeonLoot"));
+const frontierLandscapeSpawns = require(path.join(__dirname, "../../config/frontierLandscapeSpawns"));
 const { applyNpcBehaviorConfig, } = require(path.join(__dirname, "../../config/npcBehaviorConfig"));
 const NPC_TABLE = Object.freeze({
     PROFILES: "npcProfiles",
@@ -183,6 +185,8 @@ function getRawNpcRows(tableName) {
     const generatedRows = getCapitalNpcGeneratedRows(tableName);
     const trigDrifterGeneratedRows = getTrigDrifterGeneratedRows(tableName);
     const frontierDungeonGeneratedRows = frontierDungeonSpawns.getGeneratedNpcRows(tableName);
+    const frontierDungeonLootRows = frontierDungeonLoot.getGeneratedNpcRows(tableName);
+    const frontierLandscapeGeneratedRows = frontierLandscapeSpawns.getGeneratedNpcRows(tableName);
     const normalizedAuthoredRows = tableName === NPC_TABLE.LOADOUTS
         ? ensureCanonicalNpcLoadoutRows(authoredRows)
         : (Array.isArray(authoredRows) ? authoredRows : []);
@@ -196,6 +200,8 @@ function getRawNpcRows(tableName) {
         ...(Array.isArray(generatedRows) ? generatedRows : []),
         ...(Array.isArray(trigDrifterGeneratedRows) ? trigDrifterGeneratedRows : []),
         ...(Array.isArray(frontierDungeonGeneratedRows) ? frontierDungeonGeneratedRows : []),
+        ...(Array.isArray(frontierDungeonLootRows) ? frontierDungeonLootRows : []),
+        ...(Array.isArray(frontierLandscapeGeneratedRows) ? frontierLandscapeGeneratedRows : []),
     ];
 }
 function getNpcTableIndex(tableName) {

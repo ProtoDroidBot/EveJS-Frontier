@@ -1,0 +1,279 @@
+{
+  "schemaVersion": 2,
+  "enabled": true,
+  "source": {
+    "clientBuild": 3502403,
+    "notes": "Landscape encounters are deterministic per site. Authoritative NPC families are separated by SDE group ID, while encounter tables compose primary and support families. Mooneater and Generative encounters share Echeinaus/Petraklao support; Derelict Autonomous Shipyards inherit Generative entities and may add a Constructing Battleship boss; Stacked Storage Stations use Xeroti Tidofiza. Conservator Drone group 5033 and Allotrope Drone group 5130 remain separate."
+  },
+  "defaults": {
+    "npcFactionID": 500025,
+    "npcCorporationID": 1000287,
+    "npcLoadoutID": "retail_empty_npc_entity_loadout",
+    "npcLootTableID": "generic_random_any",
+    "maxNpcsPerSite": 8,
+    "maxWrecksPerSite": 6,
+    "npcDistanceMeters": { "min": 18000, "max": 85000 },
+    "wreckDistanceMeters": { "min": 10000, "max": 120000 }
+  },
+  "npcBehaviorPresets": {
+    "skirmisher": {
+      "behaviorProfileID": "frontier_landscape_skirmisher",
+      "name": "Frontier Landscape Skirmisher",
+      "thinkIntervalMs": 180,
+      "movementMode": "orbit",
+      "orbitDistanceMeters": 9000,
+      "followRangeMeters": 9000,
+      "aggressionRangeMeters": 90000,
+      "leashRangeMeters": 300000,
+      "cruiseSpeedMetersPerSecond": 450,
+      "chaseMaxVelocityMetersPerSecond": 1800
+    },
+    "support": {
+      "behaviorProfileID": "frontier_landscape_support",
+      "name": "Frontier Landscape Support Drone",
+      "thinkIntervalMs": 220,
+      "movementMode": "orbit",
+      "orbitDistanceMeters": 18000,
+      "followRangeMeters": 18000,
+      "aggressionRangeMeters": 110000,
+      "leashRangeMeters": 320000,
+      "cruiseSpeedMetersPerSecond": 320,
+      "chaseMaxVelocityMetersPerSecond": 1300
+    },
+    "heavy": {
+      "behaviorProfileID": "frontier_landscape_heavy",
+      "name": "Frontier Landscape Heavy Drone",
+      "thinkIntervalMs": 280,
+      "movementMode": "orbit",
+      "orbitDistanceMeters": 32000,
+      "followRangeMeters": 32000,
+      "aggressionRangeMeters": 150000,
+      "leashRangeMeters": 400000,
+      "cruiseSpeedMetersPerSecond": 210,
+      "chaseMaxVelocityMetersPerSecond": 900
+    }
+  },
+  "npcFamilies": {
+    "mooneater_entities": {
+      "displayName": "Mooneater Entities",
+      "tag": "frontier-landscape-family:mooneater",
+      "groupIDs": [4770],
+      "members": [
+        { "profileID": "frontier_landscape_mooneater_83487", "typeID": 83487, "groupID": 4770, "name": "Feral Mooneater", "behaviorPreset": "heavy", "bounty": 1500000, "weight": 4 },
+        { "profileID": "frontier_landscape_mooneater_85278", "typeID": 85278, "groupID": 4770, "name": "Defective Mooneater", "behaviorPreset": "heavy", "bounty": 900000, "weight": 2 }
+      ]
+    },
+    "feral_support": {
+      "displayName": "Feral Support Drones",
+      "tag": "frontier-landscape-family:feral-support",
+      "groupIDs": [759, 1764],
+      "members": [
+        { "profileID": "frontier_landscape_support_87536", "typeID": 87536, "groupID": 759, "name": "Echeinaus", "behaviorPreset": "skirmisher", "bounty": 25000, "weight": 5 },
+        { "profileID": "frontier_landscape_support_83914", "typeID": 83914, "groupID": 1764, "name": "Petraklao", "behaviorPreset": "support", "bounty": 100000, "weight": 4 },
+        { "profileID": "frontier_landscape_support_88091", "typeID": 88091, "groupID": 1764, "name": "Petraklao", "behaviorPreset": "support", "bounty": 120000, "weight": 3 }
+      ]
+    },
+    "generative_entities": {
+      "displayName": "Generative Site Entities",
+      "tag": "frontier-landscape-family:generative",
+      "groupIDs": [4860],
+      "members": [
+        { "profileID": "frontier_landscape_generative_87581", "typeID": 87581, "groupID": 4860, "name": "Oikiaepopths", "behaviorPreset": "heavy", "bounty": 600000, "weight": 2 },
+        { "profileID": "frontier_landscape_generative_87582", "typeID": 87582, "groupID": 4860, "name": "Eirhdizhmai", "behaviorPreset": "support", "bounty": 180000, "weight": 4 },
+        { "profileID": "frontier_landscape_generative_87583", "typeID": 87583, "groupID": 4860, "name": "Bihepopths", "behaviorPreset": "skirmisher", "bounty": 70000, "weight": 5 },
+        { "profileID": "frontier_landscape_generative_87588", "typeID": 87588, "groupID": 4860, "name": "Arosteukthr", "behaviorPreset": "heavy", "bounty": 500000, "weight": 2 },
+        { "profileID": "frontier_landscape_generative_87980", "typeID": 87980, "groupID": 4860, "name": "Lithoklao", "behaviorPreset": "support", "bounty": 200000, "weight": 4 },
+        { "profileID": "frontier_landscape_generative_87981", "typeID": 87981, "groupID": 4860, "name": "Ulwolhforos", "behaviorPreset": "heavy", "bounty": 700000, "weight": 2 },
+        { "profileID": "frontier_landscape_generative_88276", "typeID": 88276, "groupID": 4860, "name": "Static Manager", "behaviorPreset": "support", "bounty": 250000, "weight": 3 },
+        { "profileID": "frontier_landscape_generative_89077", "typeID": 89077, "groupID": 4860, "name": "Koyekhzukh", "behaviorPreset": "skirmisher", "bounty": 90000, "weight": 5 },
+        { "profileID": "frontier_landscape_generative_89755", "typeID": 89755, "groupID": 4860, "name": "Ondenkzukh", "behaviorPreset": "skirmisher", "bounty": 90000, "weight": 5 },
+        { "profileID": "frontier_landscape_generative_89756", "typeID": 89756, "groupID": 4860, "name": "Ondenkzukh", "behaviorPreset": "skirmisher", "bounty": 100000, "weight": 4 },
+        { "profileID": "frontier_landscape_generative_89757", "typeID": 89757, "groupID": 4860, "name": "Ondenkzukh", "behaviorPreset": "skirmisher", "bounty": 110000, "weight": 4 },
+        { "profileID": "frontier_landscape_generative_89758", "typeID": 89758, "groupID": 4860, "name": "Ondenkzukh", "behaviorPreset": "skirmisher", "bounty": 120000, "weight": 4 },
+        { "profileID": "frontier_landscape_generative_89759", "typeID": 89759, "groupID": 4860, "name": "Ondenkzukh", "behaviorPreset": "support", "bounty": 140000, "weight": 3 },
+        { "profileID": "frontier_landscape_generative_89760", "typeID": 89760, "groupID": 4860, "name": "Ondenkzukh", "behaviorPreset": "support", "bounty": 160000, "weight": 3 },
+        { "profileID": "frontier_landscape_generative_89761", "typeID": 89761, "groupID": 4860, "name": "Ondenkzukh", "behaviorPreset": "support", "bounty": 180000, "weight": 3 },
+        { "profileID": "frontier_landscape_generative_89762", "typeID": 89762, "groupID": 4860, "name": "Ondenkzukh", "behaviorPreset": "heavy", "bounty": 350000, "weight": 2 },
+        { "profileID": "frontier_landscape_generative_89763", "typeID": 89763, "groupID": 4860, "name": "Ondenkzukh", "behaviorPreset": "heavy", "bounty": 450000, "weight": 2 },
+        { "profileID": "frontier_landscape_generative_89764", "typeID": 89764, "groupID": 4860, "name": "Ondenkzukh", "behaviorPreset": "heavy", "bounty": 550000, "weight": 1 },
+        { "profileID": "frontier_landscape_generative_89774", "typeID": 89774, "groupID": 4860, "name": "Fidespraestes", "behaviorPreset": "heavy", "bounty": 850000, "weight": 1 }
+      ]
+    },
+    "constructing_battleship": {
+      "displayName": "Derelict Shipyard Boss",
+      "tag": "frontier-landscape-family:constructing-battleship",
+      "groupIDs": [1814],
+      "members": [
+        { "profileID": "frontier_landscape_constructing_battleship_88566", "typeID": 88566, "groupID": 1814, "name": "Constructing Battleship", "behaviorPreset": "heavy", "bounty": 2000000, "weight": 1 }
+      ]
+    },
+    "xeroti_tidofiza": {
+      "displayName": "Xeroti Tidofiza",
+      "tag": "frontier-landscape-family:xeroti-tidofiza",
+      "groupIDs": [4963],
+      "members": [
+        { "profileID": "frontier_landscape_xeroti_91011", "typeID": 91011, "groupID": 4963, "name": "Xeroti Tidofiza", "behaviorPreset": "heavy", "bounty": 700000, "weight": 3 },
+        { "profileID": "frontier_landscape_xeroti_91368", "typeID": 91368, "groupID": 4963, "name": "Xeroti Tidofiza", "behaviorPreset": "skirmisher", "bounty": 100000, "weight": 5 },
+        { "profileID": "frontier_landscape_xeroti_91369", "typeID": 91369, "groupID": 4963, "name": "Xeroti Tidofiza", "behaviorPreset": "support", "bounty": 200000, "weight": 4 },
+        { "profileID": "frontier_landscape_xeroti_91370", "typeID": 91370, "groupID": 4963, "name": "Xeroti Tidofiza", "behaviorPreset": "heavy", "bounty": 500000, "weight": 2 },
+        { "profileID": "frontier_landscape_xeroti_91371", "typeID": 91371, "groupID": 4963, "name": "Xeroti Tidofiza", "behaviorPreset": "heavy", "bounty": 850000, "weight": 1 }
+      ]
+    },
+    "conservator": {
+      "displayName": "Conservator",
+      "tag": "frontier-landscape-family:conservator",
+      "groupIDs": [5033],
+      "members": [
+        { "profileID": "frontier_landscape_conservator_92096", "typeID": 92096, "groupID": 5033, "name": "Caird", "behaviorPreset": "support", "bounty": 110000, "weight": 5 },
+        { "profileID": "frontier_landscape_conservator_92097", "typeID": 92097, "groupID": 5033, "name": "Luthier", "behaviorPreset": "support", "bounty": 110000, "weight": 5 },
+        { "profileID": "frontier_landscape_conservator_92098", "typeID": 92098, "groupID": 5033, "name": "Ostler", "behaviorPreset": "support", "bounty": 110000, "weight": 5 },
+        { "profileID": "frontier_landscape_conservator_92099", "typeID": 92099, "groupID": 5033, "name": "Wright", "behaviorPreset": "support", "bounty": 125000, "weight": 4 },
+        { "profileID": "frontier_landscape_conservator_92100", "typeID": 92100, "groupID": 5033, "name": "Shambler", "behaviorPreset": "support", "bounty": 125000, "weight": 4 },
+        { "profileID": "frontier_landscape_conservator_92101", "typeID": 92101, "groupID": 5033, "name": "Dowser", "behaviorPreset": "support", "bounty": 140000, "weight": 4 },
+        { "profileID": "frontier_landscape_conservator_92102", "typeID": 92102, "groupID": 5033, "name": "Scrivener", "behaviorPreset": "support", "bounty": 150000, "weight": 3 },
+        { "profileID": "frontier_landscape_conservator_92271", "typeID": 92271, "groupID": 5033, "name": "Grave Caird", "behaviorPreset": "support", "bounty": 190000, "weight": 2 },
+        { "profileID": "frontier_landscape_conservator_92272", "typeID": 92272, "groupID": 5033, "name": "Grave Luthier", "behaviorPreset": "support", "bounty": 190000, "weight": 2 },
+        { "profileID": "frontier_landscape_conservator_92273", "typeID": 92273, "groupID": 5033, "name": "Grave Ostler", "behaviorPreset": "support", "bounty": 190000, "weight": 2 },
+        { "profileID": "frontier_landscape_conservator_92274", "typeID": 92274, "groupID": 5033, "name": "Grave Wright", "behaviorPreset": "support", "bounty": 210000, "weight": 2 },
+        { "profileID": "frontier_landscape_conservator_92275", "typeID": 92275, "groupID": 5033, "name": "Grave Shambler", "behaviorPreset": "support", "bounty": 210000, "weight": 2 },
+        { "profileID": "frontier_landscape_conservator_93871", "typeID": 93871, "groupID": 5033, "name": "Hellier", "behaviorPreset": "heavy", "bounty": 500000, "weight": 1 }
+      ]
+    },
+    "allotrope": {
+      "displayName": "Allotrope",
+      "tag": "frontier-landscape-family:allotrope",
+      "groupIDs": [5130],
+      "members": [
+        { "profileID": "frontier_landscape_allotrope_94167", "typeID": 94167, "groupID": 5130, "name": "Mycena", "behaviorPreset": "skirmisher", "bounty": 75000, "weight": 5 },
+        { "profileID": "frontier_landscape_allotrope_95283", "typeID": 95283, "groupID": 5130, "name": "Dermestid", "behaviorPreset": "heavy", "bounty": 650000, "weight": 1 },
+        { "profileID": "frontier_landscape_allotrope_95291", "typeID": 95291, "groupID": 5130, "name": "Chrysalis", "behaviorPreset": "support", "bounty": 220000, "weight": 3 },
+        { "profileID": "frontier_landscape_allotrope_95504", "typeID": 95504, "groupID": 5130, "name": "Mycena", "behaviorPreset": "skirmisher", "bounty": 85000, "weight": 4 }
+      ]
+    }
+  },
+  "wreckPools": {
+    "light_salvage": {
+      "entries": [
+        { "typeID": 95349, "name": "Salvageable Wreckage", "groupID": 5133, "weight": 5 },
+        { "typeID": 95350, "name": "Salvageable Cargo Debris", "groupID": 5133, "weight": 4 },
+        { "typeID": 95360, "name": "Debris", "groupID": 5133, "weight": 3 }
+      ]
+    },
+    "mixed_salvage": {
+      "entries": [
+        { "typeID": 95349, "name": "Salvageable Wreckage", "groupID": 5133, "weight": 5 },
+        { "typeID": 95350, "name": "Salvageable Cargo Debris", "groupID": 5133, "weight": 5 },
+        { "typeID": 95359, "name": "Crystalline Refuse", "groupID": 5133, "weight": 2 },
+        { "typeID": 95360, "name": "Debris", "groupID": 5133, "weight": 3 },
+        { "typeID": 95361, "name": "Industrial Waste", "groupID": 5133, "weight": 2 }
+      ]
+    }
+  },
+  "spawnTables": {
+    "natural_patrol": {
+      "activationChance": 0.55,
+      "npcCount": { "min": 1, "max": 3 },
+      "wreckCount": { "min": 0, "max": 2 },
+      "familyWeights": { "generative_entities": 5, "conservator": 4, "allotrope": 1 },
+      "wreckPool": "light_salvage"
+    },
+    "broken_world": {
+      "activationChance": 0.85,
+      "npcCount": { "min": 2, "max": 6 },
+      "wreckCount": { "min": 1, "max": 4 },
+      "familyWeights": { "generative_entities": 5, "conservator": 4, "allotrope": 2 },
+      "wreckPool": "mixed_salvage"
+    },
+    "transitional_hub": {
+      "activationChance": 0.7,
+      "npcCount": { "min": 2, "max": 5 },
+      "wreckCount": { "min": 1, "max": 3 },
+      "familyWeights": { "generative_entities": 3, "conservator": 5, "allotrope": 2 },
+      "wreckPool": "mixed_salvage"
+    },
+    "starter_creche": {
+      "activationChance": 1,
+      "npcCount": { "min": 1, "max": 3 },
+      "wreckCount": { "min": 1, "max": 3 },
+      "familyWeights": { "generative_entities": 7, "conservator": 2, "allotrope": 1 },
+      "wreckPool": "light_salvage"
+    },
+    "starter_ruins": {
+      "activationChance": 0.75,
+      "npcCount": { "min": 1, "max": 4 },
+      "wreckCount": { "min": 2, "max": 5 },
+      "familyWeights": { "generative_entities": 5, "conservator": 3, "allotrope": 2 },
+      "wreckPool": "mixed_salvage"
+    },
+    "mooneater_site": {
+      "activationChance": 1,
+      "npcCount": { "min": 3, "max": 6 },
+      "wreckCount": { "min": 0, "max": 2 },
+      "requiredFamilies": [{ "family": "mooneater_entities", "count": 1 }, { "family": "feral_support", "count": 1 }],
+      "familyWeights": { "mooneater_entities": 3, "feral_support": 5 },
+      "wreckPool": "light_salvage"
+    },
+    "generative_site": {
+      "activationChance": 1,
+      "npcCount": { "min": 2, "max": 6 },
+      "wreckCount": { "min": 1, "max": 4 },
+      "requiredFamilies": [{ "family": "generative_entities", "count": 1 }, { "family": "feral_support", "count": 1 }],
+      "familyWeights": { "generative_entities": 6, "feral_support": 2 },
+      "wreckPool": "mixed_salvage"
+    },
+    "derelict_autonomous_shipyard": {
+      "parentSpawnTable": "generative_site",
+      "activationChance": 1,
+      "npcCount": { "min": 3, "max": 7 },
+      "wreckCount": { "min": 2, "max": 5 },
+      "requiredFamilies": [{ "family": "generative_entities", "count": 1 }, { "family": "feral_support", "count": 1 }],
+      "familyWeights": { "generative_entities": 6, "feral_support": 2 },
+      "bossSpawn": { "profileID": "frontier_landscape_constructing_battleship_88566", "chance": 0.35 },
+      "wreckPool": "mixed_salvage"
+    },
+    "xeroti_stacked_storage": {
+      "activationChance": 1,
+      "npcCount": { "min": 2, "max": 5 },
+      "wreckCount": { "min": 1, "max": 4 },
+      "requiredFamilies": [{ "family": "xeroti_tidofiza", "count": 1 }],
+      "familyWeights": { "xeroti_tidofiza": 1 },
+      "wreckPool": "mixed_salvage"
+    }
+  },
+  "dungeonOverrides": {
+    "12560": { "name": "Derelict Autonomous Shipyard", "spawnFrequency": 1, "spawnTable": "derelict_autonomous_shipyard", "tags": ["site:generative", "site:derelict-autonomous-shipyard"] },
+    "12707": { "name": "Shipyard Ruins", "spawnFrequency": 1, "spawnTable": "generative_site", "tags": ["site:generative", "site:shipyard-ruins"] },
+    "12708": { "name": "Shipyard Archive Wreckage", "spawnFrequency": 1, "spawnTable": "generative_site", "tags": ["site:generative", "site:shipyard-ruins"] },
+    "12709": { "name": "Destroyed Shipyard", "spawnFrequency": 1, "spawnTable": "generative_site", "tags": ["site:generative", "site:shipyard-ruins"] },
+    "13582": { "name": "Feral Moon Tumor P2", "spawnFrequency": 1, "spawnTable": "mooneater_site", "tags": ["site:mooneater"] },
+    "13583": { "name": "Stacked Storage Stations", "spawnFrequency": 1, "spawnTable": "xeroti_stacked_storage", "tags": ["site:stacked-storage", "site:xeroti"] },
+    "13742": { "name": "Stacked Storage Stations", "spawnFrequency": 1, "spawnTable": "xeroti_stacked_storage", "tags": ["site:stacked-storage", "site:xeroti"] },
+    "13743": { "name": "Stacked Storage Stations", "spawnFrequency": 1, "spawnTable": "xeroti_stacked_storage", "tags": ["site:stacked-storage", "site:xeroti"] },
+    "13744": { "name": "Stacked Storage Stations", "spawnFrequency": 1, "spawnTable": "xeroti_stacked_storage", "tags": ["site:stacked-storage", "site:xeroti"] },
+    "13745": { "name": "Stacked Storage Stations", "spawnFrequency": 1, "spawnTable": "xeroti_stacked_storage", "tags": ["site:stacked-storage", "site:xeroti"] },
+    "13828": { "name": "Stacked Storage Stations", "spawnFrequency": 1, "spawnTable": "xeroti_stacked_storage", "tags": ["site:stacked-storage", "site:xeroti"] },
+    "13870": { "name": "Mooneater Prefab", "spawnFrequency": 1, "spawnTable": "mooneater_site", "tags": ["site:mooneater", "site:locator-pattern"] }
+  },
+  "ecosystems": {
+    "2": { "name": "Broken World - Inner Belt - Derelict Quarry", "spawnFrequency": 1, "spawnTable": "broken_world" },
+    "3": { "name": "Broken World - Inner Belt - Derelict Bay", "spawnFrequency": 1, "spawnTable": "broken_world" },
+    "4": { "name": "Natural World - Inner Belt - Stone Cluster", "spawnFrequency": 1, "spawnTable": "natural_patrol" },
+    "5": { "name": "Natural World - Inner Belt - Ancient Cluster", "spawnFrequency": 1, "spawnTable": "natural_patrol" },
+    "6": { "name": "Broken World - Inner Asteroid field - Ruins", "spawnFrequency": 1, "spawnTable": "broken_world" },
+    "7": { "name": "Broken World - Outer Belt - Vestiges", "spawnFrequency": 1, "spawnTable": "broken_world" },
+    "8": { "name": "Natural World - Outer Belt - Shale", "spawnFrequency": 1, "spawnTable": "natural_patrol" },
+    "9": { "name": "Natural World - Outer Belt - Grove", "spawnFrequency": 1, "spawnTable": "natural_patrol" },
+    "10": { "name": "Broken World - Outer Belt - Blue Drift", "spawnFrequency": 1, "spawnTable": "broken_world" },
+    "11": { "name": "Broken World - Outer Belt - Abandoned Foundry", "spawnFrequency": 1, "spawnTable": "broken_world" },
+    "12": { "name": "Natural World - Trojan - Garden", "spawnFrequency": 1, "spawnTable": "natural_patrol" },
+    "13": { "name": "Broken World - Trojans - Drifting Annex", "spawnFrequency": 1, "spawnTable": "broken_world" },
+    "20": { "name": "Transitional Belt - Trade Hub", "spawnFrequency": 1, "spawnTable": "transitional_hub" },
+    "21": { "name": "Transitional Belt - Broken", "spawnFrequency": 1, "spawnTable": "broken_world" },
+    "22": { "name": "Transitional - Natural", "spawnFrequency": 1, "spawnTable": "natural_patrol" },
+    "23": { "name": "Starter Creche", "spawnFrequency": 1, "spawnTable": "starter_creche" },
+    "24": { "name": "Broken World - Inner Belt - Starter Megastructure Ruins", "spawnFrequency": 1, "spawnTable": "starter_ruins" },
+    "25": { "name": "Broken World - Inner Belt - Starter Mining Colony", "spawnFrequency": 1, "spawnTable": "starter_ruins" },
+    "26": { "name": "Broken World - Inner Belt - Starter Armory", "spawnFrequency": 1, "spawnTable": "starter_ruins" },
+    "27": { "name": "Broken World - Any Belt - Starter Supply Station", "spawnFrequency": 1, "spawnTable": "starter_ruins" }
+  }
+}

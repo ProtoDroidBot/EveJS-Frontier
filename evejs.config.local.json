@@ -1427,6 +1427,105 @@
 
   "crimewatchConcordPodKillEnabled": false,
 
+  // Hull temperature at which the Frontier heat effect becomes armed and starts building grace.
+  // The critical threshold must remain greater than this warning threshold.
+  // Valid values: Non-negative temperature in kelvin below the critical threshold.
+  // Default: 500.
+
+  "frontierEnvironmentalHeatWarningThresholdKelvin": 500,
+
+  // Hull temperature at which the Frontier heat effect becomes active and its damage-delay timer starts.
+  // Valid values: Positive temperature in kelvin above the heat warning threshold.
+  // Default: 1500.
+
+  "frontierEnvironmentalHeatCriticalThresholdKelvin": 1500,
+
+  // Fraction of a ship's nominal maximum feralization that activates the feralization effect and starts its damage-delay timer.
+  // Valid values: Positive ratio. 1 activates at 100% of nominal maximum; 0.5 activates at 50%.
+  // Default: 1.
+
+  "frontierEnvironmentalFeralizationThresholdRatio": 1,
+
+  // Fraction of a ship's nominal maximum temporal drift that activates the temporal-drift effect and starts its damage-delay timer.
+  // Valid values: Positive ratio. 1 activates at 100% of nominal maximum; 0.5 activates at 50%.
+  // Default: 1.
+
+  "frontierEnvironmentalTemporalDriftThresholdRatio": 1,
+
+  // Continuous time an individual environmental effect must remain active before that effect deals vitality or ship hitpoint damage.
+  // Each heat, feralization, and temporal-drift effect tracks this grace period independently.
+  // Valid values: Non-negative number of seconds. 0 applies damage immediately.
+  // Default: 30.
+
+  "frontierEnvironmentalDamageDelaySeconds": 30,
+
+  // Delay between a confirmed hull or shell death and the session change that opens the Frontier intermediary death report.
+  // The death notification is sent immediately so the stock client can begin its explosion or shell-expiration presentation before clone locations appear.
+  // Valid values: Non-negative number of seconds. 0 opens the death report immediately.
+  // Default: 5.
+
+  "frontierCloneDeathTransitionDelaySeconds": 5,
+
+  // Shell vitality removed per second by each environmental effect after its configured damage delay.
+  // Valid values: Non-negative vitality damage per active effect per second. 0 disables vitality damage.
+  // Default: 1.
+
+  "frontierEnvironmentalVitalityDamagePerEffectPerSecond": 1,
+
+  // Raw thermal ship damage dealt per second by each environmental effect after its configured damage delay.
+  // Damage uses the normal shield, armor, structure, resistance, notification, persistence, and destruction paths.
+  // Valid values: Non-negative hitpoint damage per active effect per second. 0 disables ship damage.
+  // Default: 1.
+
+  "frontierEnvironmentalHitpointDamagePerEffectPerSecond": 1,
+
+  // Surface-distance radius around Crude Matter rifts over which temporal drift is generated.
+  // Valid values: Positive radius in meters.
+  // Default: 100000.
+
+  "frontierEnvironmentalRiftRadiusMeters": 100000,
+
+  // Multiplier applied to nominal maximum temporal drift at the center of a Crude Matter rift.
+  // Valid values: Positive multiplier.
+  // Default: 2.
+
+  "frontierEnvironmentalRiftDriftMultiplier": 2,
+
+  // Maximum distance at which Frontier directional scanning returns a contact signature.
+  // The upper bound is the build-3502403 client scanner's authored 100,000 km limit.
+  // Valid values: Positive distance in meters up to 100000000.
+  // Default: 100000000.
+
+  "frontierScanningDetectionRangeMeters": 100000000,
+
+  // Maximum distance at which a strong Frontier directional-scan contact may resolve into its real ballpark object.
+  // Contacts beyond this range can remain visible as unresolved signatures up to the detection range.
+  // Valid values: Positive distance in meters no greater than frontierScanningDetectionRangeMeters.
+  // Default: 100000000.
+
+  "frontierScanningResolutionRangeMeters": 100000000,
+
+  // Signal-to-noise ratio required for a Frontier directional-scan contact to resolve.
+  // 1 preserves the client's 100% signal threshold; larger values require a stronger return.
+  // Valid values: Positive signal-to-noise ratio.
+  // Default: 1.
+
+  "frontierScanningResolutionSnrThreshold": 1,
+
+  // Uses Frontier's delayed scan-contact visibility path to add a resolved contact's real ballpark object.
+  // Disable to keep every directional-scan contact signature-only.
+  // Valid values: true or false.
+  // Default: true.
+
+  "frontierScanningRenderResolvedObjects": true,
+
+  // Keeps contacts outside the configured resolution range in the Frontier scan response as unresolved signatures.
+  // Disable to omit those contacts instead.
+  // Valid values: true or false.
+  // Default: true.
+
+  "frontierScanningRenderOutOfRangeSignatures": true,
+
   // Proxy node ID reported to the client and used when generating bound object IDs.
   // Valid values: Integer node ID. 65450 matches the traditional 0xFFAA value.
   // Default: 65450.

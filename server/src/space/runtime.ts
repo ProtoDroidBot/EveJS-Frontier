@@ -16796,6 +16796,8 @@ function applyWeaponDamageToTarget(
         {
           ...buildCombatDestructionOwnerContext(attackerEntity),
           destructionNowMs: whenMs,
+          environmentalStatusEffectKey:
+            options.environmentalStatusEffectKey || null,
         },
       );
       if (
@@ -17088,11 +17090,13 @@ function destroyCombatEntity(scene, entity, options: Record<string, any> = {}) {
 
   if (entity.kind === "ship") {
     const {
-      destroySessionShip,
+      destroySessionShipAndClone,
       destroyShipEntityWithWreck,
     } = lazyRequire("./shipDestruction");
     if (entity.session) {
-      return destroySessionShip(entity.session, {
+      return destroySessionShipAndClone(entity.session, {
+        environmentalStatusEffectKey: options.environmentalStatusEffectKey,
+        nowMs: options.destructionNowMs,
         sessionChangeReason: "combat",
       });
     }
@@ -41529,6 +41533,22 @@ class SolarSystemScene {
       tickProfiler.section(
         "environmentalEffects",
         () => environmentalEffectsRuntime.tickScene(this, now, {
+          applyHitpointDamage: (
+            entity,
+            rawDamage,
+            metadata: Record<string, any> = {},
+          ) =>
+            applyWeaponDamageToTarget(
+              this,
+              null,
+              entity,
+              rawDamage,
+              now,
+              {
+                environmentalStatusEffectKey: metadata.statusEffectKey,
+                skipWeaponOcclusion: true,
+              },
+            ),
           onAdvanced: (entity, result) => {
             const ownerSession = getOwningSessionForEntity(this, entity);
             if (ownerSession && isReadyForDestiny(ownerSession)) {
@@ -41538,6 +41558,36 @@ class SolarSystemScene {
                 result,
                 now,
               );
+            }
+            if (
+              result &&
+              result.cloneDeath &&
+              result.cloneDeath.reason === "vitality"
+            ) {
+              const { destroySessionClonePreservingShip } = lazyRequire(
+                "./shipDestruction",
+              );
+              const cloneDeathResult = ownerSession
+                ? destroySessionClonePreservingShip(ownerSession, {
+                    nowMs: now,
+                    sessionChangeReason: "environmental",
+                    statusEffectKey: result.cloneDeath.statusEffectKey,
+                  })
+                : {
+                    success: false,
+                    errorMsg: "SESSION_NOT_FOUND",
+                  };
+              if (!cloneDeathResult || cloneDeathResult.success !== true) {
+                environmentalEffectsRuntime.releaseCloneDeathTrigger(
+                  result.cloneDeath.characterID,
+                );
+                log.warn(
+                  `[SpaceRuntime] Environmental clone death failed ` +
+                    `char=${result.cloneDeath.characterID} ` +
+                    `effect=${result.cloneDeath.statusEffectKey} ` +
+                    `error=${cloneDeathResult && cloneDeathResult.errorMsg || "UNKNOWN"}`,
+                );
+              }
             }
           },
         }),
