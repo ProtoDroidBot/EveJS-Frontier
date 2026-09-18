@@ -1,4 +1,4 @@
-"""Regression coverage for the build-3502403 map-view lifecycle patch."""
+"""Regression coverage for the build-3502403 Frontier system-view patches."""
 
 import hashlib
 import importlib.util
@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 import zipfile
@@ -27,6 +28,28 @@ def member_for(code):
     sys.version_info[:2] == (3, 12), "Native code patch requires Python 3.12"
 )
 class MapViewPatchTests(unittest.TestCase):
+    def system_view_modules(self):
+        resolved_module = types.ModuleType(
+            "frontier.crdata.client.resolved_celestial"
+        )
+        system_module = types.ModuleType(
+            "frontier.hud.system_view.scene_new.area_controller.system"
+        )
+
+        class ResolvedDungeon:
+            pass
+
+        class SystemAreaController:
+            def _is_bracket_visible(self, resolved_celestial, selected_key):
+                return "retail-result"
+
+        resolved_module.ResolvedDungeon = ResolvedDungeon
+        system_module.SystemAreaController = SystemAreaController
+        return {
+            resolved_module.__name__: resolved_module,
+            system_module.__name__: system_module,
+        }, ResolvedDungeon, SystemAreaController
+
     def test_patch_activates_brackets_before_changing_filter_mode(self):
         code = compile(
             "class BracketState:\n"
@@ -49,17 +72,51 @@ class MapViewPatchTests(unittest.TestCase):
         self.assertEqual(patcher.inspect_member(source, expected)[0], "source")
         self.assertEqual(patcher.inspect_member(patched, expected)[0], "patched")
 
+        modules, _, _ = self.system_view_modules()
         namespace = {}
-        exec(marshal.loads(patched[16:]), namespace)
-        state = namespace["BracketState"]()
-        state.set_bracket_filter_mode("system")
-        state.set_bracket_filter_mode("default")
+        with mock.patch.dict(sys.modules, modules):
+            exec(marshal.loads(patched[16:]), namespace)
+            state = namespace["BracketState"]()
+            state.set_bracket_filter_mode("system")
+            state.set_bracket_filter_mode("default")
         self.assertEqual(state.activations, 1)
         self.assertEqual(state.modes, ["system", "default"])
 
         active_state = namespace["BracketState"](active=True)
-        active_state.set_bracket_filter_mode("system")
+        with mock.patch.dict(sys.modules, modules):
+            active_state.set_bracket_filter_mode("system")
         self.assertEqual(active_state.activations, 0)
+
+    def test_patch_admits_every_resolved_dungeon_to_system_view(self):
+        code = compile(
+            "class BracketState:\n"
+            " def __init__(self): self._active = True\n"
+            " def set_bracket_filter_mode(self, mode): return mode\n",
+            "fixture.py",
+            "exec",
+        )
+        modules, ResolvedDungeon, SystemAreaController = self.system_view_modules()
+        namespace = {}
+        with mock.patch.dict(sys.modules, modules):
+            exec(marshal.loads(patcher.patched_member(member_for(code))[16:]), namespace)
+            state = namespace["BracketState"]()
+            self.assertEqual(state.set_bracket_filter_mode("system"), "system")
+
+        area = SystemAreaController()
+        self.assertIs(
+            area._is_bracket_visible(ResolvedDungeon(), selected_key=None),
+            True,
+        )
+        self.assertEqual(
+            area._is_bracket_visible(object(), selected_key=None),
+            "retail-result",
+        )
+
+        # Re-entering the view must not stack wrappers.
+        patched_method = SystemAreaController._is_bracket_visible
+        with mock.patch.dict(sys.modules, modules):
+            state.set_bracket_filter_mode("system")
+        self.assertIs(SystemAreaController._is_bracket_visible, patched_method)
 
     def test_tampered_and_unknown_members_fail_closed(self):
         code = compile("class BracketState: pass\n", "fixture.py", "exec")

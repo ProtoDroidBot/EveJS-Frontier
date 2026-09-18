@@ -21,6 +21,7 @@ const CLOSE_TIMEOUT_MS = 1000;
 const PENDING_WRITE_INDEX = 0;
 const FAILED_WRITE_INDEX = 1;
 const SHARED_COUNTER_SLOTS = 2;
+const DEFAULT_MAX_PENDING_WRITES = 256;
 function errorMessage(error, fallback) {
     if (error && typeof error.message === "string" && error.message.length > 0) {
         return error.message;
@@ -38,6 +39,10 @@ function errorMessage(error, fallback) {
 }
 function timeoutValue(value, fallback) {
     return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+function positiveInteger(value, fallback) {
+    const numeric = Number(value);
+    return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : fallback;
 }
 function copyUpserts(upserts) {
     if (!Array.isArray(upserts)) {
@@ -113,6 +118,7 @@ function createController(options = {}) {
     const defaultDrainTimeoutMs = timeoutValue(options.drainTimeoutMs, DRAIN_TIMEOUT_MS);
     const defaultCloseTimeoutMs = timeoutValue(options.closeTimeoutMs, CLOSE_TIMEOUT_MS);
     const defaultExitTimeoutMs = timeoutValue(options.exitTimeoutMs, defaultCloseTimeoutMs);
+    const maxPendingWrites = positiveInteger(options.maxPendingWrites ?? process.env.EVEJS_PERSISTENCE_MAX_PENDING, DEFAULT_MAX_PENDING_WRITES);
     /**
      * Test controllers may inject a journal with the same synchronous surface as
      * sqliteStore: optional init(dbPath), enqueue/get/list/apply/acknowledge/
@@ -748,6 +754,11 @@ function createController(options = {}) {
             error.code = "PERSISTENCE_TABLE_WRITE_PENDING";
             error.operationId = existingOperationId;
             error.table = normalizedTable;
+            throw error;
+        }
+        if (pendingWrites.size >= maxPendingWrites) {
+            const error = new Error(`persistence worker queue is full (${maxPendingWrites})`);
+            error.code = "PERSISTENCE_WORKER_QUEUE_FULL";
             throw error;
         }
         initializeJournal(dbPath);

@@ -686,6 +686,28 @@ function buildInstanceRecordFromOptions(instanceID, template, options = {}, nowM
     const gateStatesByKey = buildDefaultGateStates(template, nowMs, options);
     const objectiveState = buildDefaultObjectiveState(template, nowMs, options);
     const environmentState = buildDefaultEnvironmentState(template, nowMs, options);
+    const spawnState = options.spawnState && typeof options.spawnState === "object"
+        ? cloneValue(options.spawnState)
+        : {};
+    const metadata = options.metadata && typeof options.metadata === "object"
+        ? cloneValue(options.metadata)
+        : {};
+    const dungeonTags = [...new Set([
+            ...(Array.isArray(options.dungeonTags) ? options.dungeonTags : []),
+            ...(Array.isArray(metadata.dungeonTags) ? metadata.dungeonTags : []),
+            ...(Array.isArray(spawnState.dungeonTags) ? spawnState.dungeonTags : []),
+            ...(Array.isArray(template && template.frontierDungeonTags)
+                ? template.frontierDungeonTags
+                : Array.isArray(template && template.tags) ? template.tags : []),
+        ].map((entry) => normalizeText(entry, "").toLowerCase()).filter(Boolean))];
+    const dungeonFactionKey = normalizeText(options.dungeonFactionKey ||
+        metadata.dungeonFactionKey ||
+        spawnState.dungeonFactionKey ||
+        (template && template.frontierFactionKey), "").toLowerCase() || null;
+    const dungeonFactionTag = normalizeText(options.dungeonFactionTag ||
+        metadata.dungeonFactionTag ||
+        spawnState.dungeonFactionTag ||
+        (template && template.frontierFactionTag), "").toLowerCase() || null;
     return {
         instanceID,
         templateID: template.templateID,
@@ -704,6 +726,9 @@ function buildInstanceRecordFromOptions(instanceID, template, options = {}, nowM
         difficulty: template.difficulty || null,
         entryObjectTypeID: template.entryObjectTypeID || null,
         dungeonNameID: template.dungeonNameID || null,
+        dungeonTags,
+        dungeonFactionKey,
+        dungeonFactionTag,
         position,
         ownership,
         timers: {
@@ -720,15 +745,11 @@ function buildInstanceRecordFromOptions(instanceID, template, options = {}, nowM
             ? cloneValue(options.hazardState)
             : {},
         environmentState,
-        spawnState: options.spawnState && typeof options.spawnState === "object"
-            ? cloneValue(options.spawnState)
-            : {},
+        spawnState,
         runtimeFlags: options.runtimeFlags && typeof options.runtimeFlags === "object"
             ? cloneValue(options.runtimeFlags)
             : {},
-        metadata: options.metadata && typeof options.metadata === "object"
-            ? cloneValue(options.metadata)
-            : {},
+        metadata,
     };
 }
 function createInstance(options = {}) {
@@ -781,6 +802,198 @@ function normalizeTextFilterSet(values = []) {
             .map((entry) => normalizeText(entry, "").toLowerCase())
             .filter(Boolean))];
     return normalized.length > 0 ? new Set(normalized) : null;
+}
+function normalizeUniverseReconcileOptions(options = {}) {
+    return {
+        systemIDs: (Array.isArray(options.systemIDs) ? options.systemIDs : [])
+            .map((entry) => Math.max(0, toInt(entry, 0)))
+            .filter((entry) => entry > 0),
+        siteFamilyFilter: Array.isArray(options.siteFamilyFilter)
+            ? options.siteFamilyFilter.map((entry) => normalizeText(entry, "").toLowerCase()).filter(Boolean)
+            : [],
+        spawnFamilyFilter: Array.isArray(options.spawnFamilyFilter)
+            ? options.spawnFamilyFilter.map((entry) => normalizeText(entry, "").toLowerCase()).filter(Boolean)
+            : [],
+        siteOriginFilter: Array.isArray(options.siteOriginFilter)
+            ? options.siteOriginFilter.map((entry) => normalizeText(entry, "").toLowerCase()).filter(Boolean)
+            : [],
+        preserveSiteKeys: Array.isArray(options.preserveSiteKeys)
+            ? options.preserveSiteKeys.map((entry) => normalizeText(entry, "")).filter(Boolean)
+            : [],
+        nowMs: Math.max(0, toInt(options.nowMs, Date.now())),
+    };
+}
+function listUniverseSeededReconcileInstances(options = {}) {
+    const normalizedOptions = normalizeUniverseReconcileOptions(options);
+    const targetedSystemIDs = new Set(normalizedOptions.systemIDs);
+    const candidateSummaries = (targetedSystemIDs.size > 0 &&
+        targetedSystemIDs.size <= INDEXED_RECONCILE_SYSTEM_LIMIT)
+        ? [...targetedSystemIDs].flatMap((systemID) => (runtimeState.listInstanceSummariesBySystem(systemID)))
+        : runtimeState.listAllInstanceSummaries().filter((summary) => (targetedSystemIDs.size <= 0 ||
+            targetedSystemIDs.has(Math.max(0, toInt(summary && summary.solarSystemID, 0)))));
+    return candidateSummaries
+        .map((summary) => runtimeState.getInstanceSnapshot(summary.instanceID))
+        .filter((instance) => (instance &&
+        instance.runtimeFlags &&
+        instance.runtimeFlags.universeSeeded === true))
+        .map((instance) => cloneValue(instance))
+        .sort((left, right) => toInt(left.instanceID, 0) - toInt(right.instanceID, 0));
+}
+function buildUniverseReconcileSnapshotFingerprint(instances = [], nextInstanceSequence = 1) {
+    return JSON.stringify({
+        nextInstanceSequence: Math.max(1, toInt(nextInstanceSequence, 1)),
+        instances: (Array.isArray(instances) ? instances : [])
+            .map((instance) => cloneValue(instance))
+            .sort((left, right) => toInt(left.instanceID, 0) - toInt(right.instanceID, 0)),
+    });
+}
+function snapshotUniverseSeededReconcileState(options = {}) {
+    const normalizedOptions = normalizeUniverseReconcileOptions(options);
+    const instances = listUniverseSeededReconcileInstances(normalizedOptions);
+    const nextInstanceSequence = runtimeState.getNextInstanceSequence();
+    return {
+        options: normalizedOptions,
+        instances,
+        nextInstanceSequence,
+        fingerprint: buildUniverseReconcileSnapshotFingerprint(instances, nextInstanceSequence),
+    };
+}
+function buildUniverseSeededReconcilePlan(definitions = [], snapshot = {}, options = {}) {
+    const normalizedOptions = normalizeUniverseReconcileOptions({
+        ...(snapshot.options || {}),
+        ...options,
+    });
+    const normalizedDefinitions = (Array.isArray(definitions) ? definitions : [])
+        .filter((definition) => definition && definition.templateID && definition.siteKey)
+        .map((definition) => ({
+        ...cloneValue(definition),
+        solarSystemID: Math.max(0, toInt(definition.solarSystemID, 0)),
+        siteKey: normalizeText(definition.siteKey, ""),
+        templateID: normalizeText(definition.templateID, ""),
+    }))
+        .filter((definition) => definition.solarSystemID > 0 && definition.siteKey && definition.templateID);
+    const targetedSystemIDs = new Set(normalizedOptions.systemIDs.length > 0
+        ? normalizedOptions.systemIDs
+        : normalizedDefinitions.map((definition) => definition.solarSystemID));
+    const siteFamilyFilter = normalizeTextFilterSet(normalizedOptions.siteFamilyFilter);
+    const spawnFamilyFilter = normalizeTextFilterSet(normalizedOptions.spawnFamilyFilter);
+    const siteOriginFilter = normalizeTextFilterSet(normalizedOptions.siteOriginFilter);
+    const preserveSiteKeys = new Set(normalizedOptions.preserveSiteKeys);
+    const desiredBySiteKey = new Map(normalizedDefinitions.map((definition) => [definition.siteKey, definition]));
+    const templatesByID = new Map();
+    for (const definition of normalizedDefinitions) {
+        if (!templatesByID.has(definition.templateID)) {
+            templatesByID.set(definition.templateID, requireTemplate(definition.templateID));
+        }
+    }
+    const existingBySiteKey = new Map();
+    for (const instance of Array.isArray(snapshot.instances) ? snapshot.instances : []) {
+        if (!instance ||
+            !(instance.runtimeFlags && instance.runtimeFlags.universeSeeded === true) ||
+            (targetedSystemIDs.size > 0 &&
+                !targetedSystemIDs.has(Math.max(0, toInt(instance.solarSystemID, 0))))) {
+            continue;
+        }
+        if (siteFamilyFilter &&
+            !siteFamilyFilter.has(normalizeText(instance.siteFamily, "").toLowerCase())) {
+            continue;
+        }
+        const instanceSpawnFamilyKey = normalizeText(instance && instance.metadata && instance.metadata.spawnFamilyKey, normalizeText(instance && instance.spawnState && instance.spawnState.spawnFamilyKey, instance && instance.siteFamily)).toLowerCase();
+        if (spawnFamilyFilter && !spawnFamilyFilter.has(instanceSpawnFamilyKey)) {
+            continue;
+        }
+        if (siteOriginFilter &&
+            !siteOriginFilter.has(normalizeText(instance.siteOrigin, "").toLowerCase())) {
+            continue;
+        }
+        existingBySiteKey.set(instance.siteKey, instance);
+    }
+    const removedBefore = [];
+    const createdAfter = [];
+    const retainedInstanceIDs = [];
+    const preservedInstanceIDs = [];
+    const removeInstanceIDs = new Set();
+    let replacedInstances = 0;
+    for (const [siteKey, instance] of existingBySiteKey.entries()) {
+        if (!desiredBySiteKey.has(siteKey) && !preserveSiteKeys.has(siteKey)) {
+            removedBefore.push(cloneValue(instance));
+            removeInstanceIDs.add(instance.instanceID);
+        }
+    }
+    const baseNextInstanceSequence = Math.max(1, toInt(snapshot.nextInstanceSequence, 1));
+    let nextInstanceSequence = baseNextInstanceSequence;
+    const upsertInstances = [];
+    for (const definition of normalizedDefinitions) {
+        const template = templatesByID.get(definition.templateID);
+        if (!template) {
+            continue;
+        }
+        const existing = existingBySiteKey.get(definition.siteKey) || null;
+        if (existing && preserveSiteKeys.has(definition.siteKey)) {
+            retainedInstanceIDs.push(existing.instanceID);
+            preservedInstanceIDs.push(existing.instanceID);
+            continue;
+        }
+        if (existing && definitionsMatchActiveUniverseInstance(existing, definition, template)) {
+            retainedInstanceIDs.push(existing.instanceID);
+            continue;
+        }
+        if (existing) {
+            removedBefore.push(cloneValue(existing));
+            removeInstanceIDs.add(existing.instanceID);
+            replacedInstances += 1;
+        }
+        const created = buildInstanceRecordFromOptions(nextInstanceSequence, template, definition, normalizedOptions.nowMs);
+        nextInstanceSequence += 1;
+        upsertInstances.push(created);
+        createdAfter.push(cloneValue(created));
+    }
+    return {
+        baseFingerprint: snapshot.fingerprint || buildUniverseReconcileSnapshotFingerprint(snapshot.instances, baseNextInstanceSequence),
+        options: normalizedOptions,
+        mutation: {
+            removeInstanceIDs: [...removeInstanceIDs],
+            upsertInstances,
+            nextInstanceSequence,
+        },
+        removedBefore,
+        createdAfter,
+        summary: {
+            desiredCount: normalizedDefinitions.length,
+            createdCount: createdAfter.length,
+            retainedCount: retainedInstanceIDs.length,
+            preservedCount: preservedInstanceIDs.length,
+            preservedInstanceIDs,
+            replacedCount: replacedInstances,
+            removedCount: Math.max(0, removedBefore.length - replacedInstances),
+        },
+    };
+}
+function applyUniverseSeededReconcilePlan(plan) {
+    if (!plan || !plan.mutation || !plan.options) {
+        throw new TypeError("universe reconcile plan is required");
+    }
+    const currentSnapshot = snapshotUniverseSeededReconcileState(plan.options);
+    if (currentSnapshot.fingerprint !== plan.baseFingerprint) {
+        const error = new Error("universe reconcile plan is stale");
+        error.code = "STALE_DUNGEON_RECONCILE_PLAN";
+        throw error;
+    }
+    const mutation = runtimeState.applyInstanceChanges(plan.mutation);
+    if (!mutation || mutation.success !== true) {
+        throw new Error("failed to persist universe-seeded dungeon instance changes");
+    }
+    for (const removed of plan.removedBefore || []) {
+        emitInstanceChange("removed", removed, null, {
+            source: "applyUniverseSeededReconcilePlan",
+        });
+    }
+    for (const created of plan.createdAfter || []) {
+        emitInstanceChange("created", null, created, {
+            source: "applyUniverseSeededReconcilePlan",
+        });
+    }
+    return cloneValue(plan.summary || {});
 }
 function reconcileUniverseSeededInstances(definitions = [], options = {}) {
     const normalizedDefinitions = (Array.isArray(definitions) ? definitions : [])
@@ -1566,6 +1779,8 @@ function resetRuntimeForTests() {
     runtimeState.resetRuntimeStateForTests();
 }
 module.exports = {
+    applyUniverseSeededReconcilePlan,
+    buildUniverseSeededReconcilePlan,
     clearRuntimeCache,
     createInstance,
     activateRoom,
@@ -1590,6 +1805,7 @@ module.exports = {
     purgeShadowProviderInstances,
     registerInstanceChangeListener,
     reconcileUniverseSeededInstances,
+    snapshotUniverseSeededReconcileState,
     rotateUniversePersistentInstances,
     recordGateUse,
     resetRuntimeForTests,

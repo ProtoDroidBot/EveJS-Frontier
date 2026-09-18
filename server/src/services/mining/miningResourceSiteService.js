@@ -922,7 +922,7 @@ function resolveSiteCenter(scene, definition, anchorCandidates) {
         (rawSiteIndex * 257) +
         (family === "gas" ? 17 : 5))), siteRadiusMeters + 50_000);
 }
-function buildSiteEntitiesFromDefinition(scene, definition, anchorCandidates) {
+function buildSiteEntitiesFromDefinition(scene, definition, anchorCandidates, options = {}) {
     const systemID = toInt(scene && scene.systemID, 0);
     const family = String(definition && definition.family || "").trim().toLowerCase();
     const rawSiteIndex = Math.max(0, toInt(definition && definition.rawSiteIndex, 0));
@@ -962,12 +962,14 @@ function buildSiteEntitiesFromDefinition(scene, definition, anchorCandidates) {
         entity.position = clampPositionOutsideSun(scene, entity.position, Math.max(10_000, toFiniteNumber(entity.radius, 0) + 25_000));
         entities.push(entity);
     }
-    recordGeneratedSiteBootstrap(scene, {
-        kind: family,
-        siteIndex: rawSiteIndex,
-        securityBand: String(definition && definition.securityBand || getSecurityBand(systemID)),
-        mineableCount: members.length,
-    });
+    if (options.recordBootstrap !== false) {
+        recordGeneratedSiteBootstrap(scene, {
+            kind: family,
+            siteIndex: rawSiteIndex,
+            securityBand: String(definition && definition.securityBand || getSecurityBand(systemID)),
+            mineableCount: members.length,
+        });
+    }
     return entities;
 }
 function getChildCountForKind(kind) {
@@ -1011,7 +1013,7 @@ function buildSiteEntities(scene, kind, siteIndex, securityBand, anchorCandidate
     });
     return entities;
 }
-function buildGeneratedResourceSitePlan(scene) {
+function captureGeneratedResourceSiteDefinitions(scene) {
     const systemID = toInt(scene && scene.systemID, 0);
     if (!scene || systemID <= 0) {
         return [];
@@ -1035,17 +1037,62 @@ function buildGeneratedResourceSitePlan(scene) {
             : [];
     }
     const dungeonGasDefinitions = listActiveDungeonGasSiteDefinitions(systemID);
-    if (generatedDefinitions.length <= 0 && dungeonGasDefinitions.length <= 0) {
+    return [...generatedDefinitions, ...dungeonGasDefinitions];
+}
+function buildGeneratedResourceSitePlanFromDefinitions(scene, definitions = [], options = {}) {
+    const systemID = toInt(scene && scene.systemID, 0);
+    if (!scene || systemID <= 0 || !Array.isArray(definitions) || definitions.length <= 0) {
         return [];
     }
     const anchorCandidates = getAnchorCandidates(scene);
     if (anchorCandidates.length <= 0) {
         return [];
     }
-    return [
-        ...generatedDefinitions.flatMap((definition) => (buildSiteEntitiesFromDefinition(scene, definition, anchorCandidates))),
-        ...dungeonGasDefinitions.flatMap((definition) => (buildSiteEntitiesFromDefinition(scene, definition, anchorCandidates))),
-    ];
+    return definitions.flatMap((definition) => (buildSiteEntitiesFromDefinition(scene, definition, anchorCandidates, options)));
+}
+function buildGeneratedResourceSitePlan(scene) {
+    return buildGeneratedResourceSitePlanFromDefinitions(scene, captureGeneratedResourceSiteDefinitions(scene), { recordBootstrap: false });
+}
+function applyGeneratedResourceSitePlan(scene, entities = []) {
+    const spawned = [];
+    if (!scene) {
+        return spawned;
+    }
+    for (const entity of Array.isArray(entities) ? entities : []) {
+        if (scene.addStaticEntity(entity)) {
+            spawned.push(entity);
+        }
+    }
+    finalizeGeneratedResourceSitePlan(scene, spawned);
+    return spawned;
+}
+function finalizeGeneratedResourceSitePlan(scene, spawned = []) {
+    if (!scene) {
+        return false;
+    }
+    scene._miningResourceSitesInitialized = true;
+    const bootstrapBySite = new Map();
+    for (const entity of spawned) {
+        const kind = String(entity && entity.generatedMiningSiteKind || "").trim().toLowerCase();
+        const siteIndex = toInt(entity && entity.generatedMiningSiteIndex, -1);
+        if (!kind || siteIndex < 0) {
+            continue;
+        }
+        const key = `${kind}:${siteIndex}`;
+        const current = bootstrapBySite.get(key) || { kind, siteIndex, mineableCount: 0 };
+        if (entity.generatedMiningSiteAnchor !== true) {
+            current.mineableCount += 1;
+        }
+        bootstrapBySite.set(key, current);
+    }
+    for (const bootstrap of bootstrapBySite.values()) {
+        recordGeneratedSiteBootstrap(scene, {
+            ...bootstrap,
+            securityBand: getSecurityBand(scene.systemID),
+        });
+    }
+    notifySignalTrackerAnomalyDelta(scene);
+    return true;
 }
 function listGeneratedResourceSiteEntities(scene) {
     return (Array.isArray(scene && scene.staticEntities) ? scene.staticEntities : [])
@@ -1066,14 +1113,7 @@ function handleSceneCreated(scene) {
             },
         };
     }
-    scene._miningResourceSitesInitialized = true;
-    const spawned = [];
-    for (const entity of buildGeneratedResourceSitePlan(scene)) {
-        if (scene.addStaticEntity(entity)) {
-            spawned.push(entity);
-        }
-    }
-    notifySignalTrackerAnomalyDelta(scene);
+    const spawned = applyGeneratedResourceSitePlan(scene, buildGeneratedResourceSitePlan(scene));
     return {
         success: true,
         data: {
@@ -1121,6 +1161,10 @@ class MiningResourceSiteService extends BaseService {
     }
 }
 module.exports = MiningResourceSiteService;
+module.exports.applyGeneratedResourceSitePlan = applyGeneratedResourceSitePlan;
+module.exports.finalizeGeneratedResourceSitePlan = finalizeGeneratedResourceSitePlan;
+module.exports.buildGeneratedResourceSitePlanFromDefinitions = buildGeneratedResourceSitePlanFromDefinitions;
+module.exports.captureGeneratedResourceSiteDefinitions = captureGeneratedResourceSiteDefinitions;
 module.exports.handleSceneCreated = handleSceneCreated;
 module.exports.resetSceneGeneratedResourceSites = resetSceneGeneratedResourceSites;
 module.exports.buildGeneratedResourceSiteDefinitionsForSystem = buildGeneratedResourceSiteDefinitionsForSystem;
@@ -1132,6 +1176,8 @@ module.exports._testing = {
     buildGeneratedResourceSiteDefinition,
     buildGeneratedResourceSiteDefinitionsForSystem,
     buildGeneratedResourceSitePlan,
+    buildGeneratedResourceSitePlanFromDefinitions,
+    captureGeneratedResourceSiteDefinitions,
     getSecurityBand,
     getConfiguredSiteCount,
     getAnchorCandidates,

@@ -64,6 +64,8 @@ const MARSHAL_HEADER = 0x7e;
 const SAVE_MASK = 0x40;
 const OPCODE_MASK = 0x3f;
 const UNKNOWN_MASK = 0x80;
+const DEFAULT_MAX_MARSHAL_DEPTH = 256;
+const DEFAULT_MAX_MARSHAL_NODES = 1_000_000;
 const DBTYPE: Record<string, any> = {
   EMPTY: 0x00,
   I2: 0x02,
@@ -115,6 +117,7 @@ const DBTYPE: Record<string, any> = {
  *   { type: 'substream', value: ... }        → PySubStream
  */
 function marshalEncode(value, options: Record<string, any> = {}) {
+  validateMarshalComplexity(value, options);
   const chunks: any[] = [];
   const context: Record<string, any> = {
     frontierText:
@@ -133,6 +136,71 @@ function marshalEncode(value, options: Record<string, any> = {}) {
   encodeValue(value, chunks, context);
 
   return Buffer.concat(chunks);
+}
+
+function normalizeMarshalLimit(value, fallback) {
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : fallback;
+}
+
+function marshalLimitError(message) {
+  const error: Error & Record<string, any> = new Error(message);
+  error.code = "MARSHAL_LIMIT_EXCEEDED";
+  return error;
+}
+
+/** Guard recursive encoding before it reaches the call stack. */
+function validateMarshalComplexity(value, options: Record<string, any> = {}) {
+  const maxDepth = normalizeMarshalLimit(
+    options.maxDepth,
+    DEFAULT_MAX_MARSHAL_DEPTH,
+  );
+  const maxNodes = normalizeMarshalLimit(
+    options.maxNodes,
+    DEFAULT_MAX_MARSHAL_NODES,
+  );
+  const stack: any[] = [{ value, depth: 1, exiting: false }];
+  const active = new WeakSet();
+  let nodeCount = 0;
+
+  while (stack.length > 0) {
+    const entry = stack.pop();
+    const current = entry.value;
+    if (entry.exiting) {
+      active.delete(current);
+      continue;
+    }
+    nodeCount += 1;
+    if (nodeCount > maxNodes) {
+      throw marshalLimitError(`Marshal value exceeds ${maxNodes} nodes`);
+    }
+    if (entry.depth > maxDepth) {
+      throw marshalLimitError(`Marshal value exceeds depth ${maxDepth}`);
+    }
+    if (
+      current === null ||
+      typeof current !== "object" ||
+      Buffer.isBuffer(current) ||
+      ArrayBuffer.isView(current)
+    ) {
+      continue;
+    }
+    if (active.has(current)) {
+      throw marshalLimitError("Marshal value contains a cycle");
+    }
+    active.add(current);
+    stack.push({ value: current, depth: entry.depth, exiting: true });
+    const children = Array.isArray(current) ? current : Object.values(current);
+    for (let index = children.length - 1; index >= 0; index--) {
+      stack.push({
+        value: children[index],
+        depth: entry.depth + 1,
+        exiting: false,
+      });
+    }
+  }
+
+  return nodeCount;
 }
 
 function putSizeEx(size, chunks) {
@@ -1223,6 +1291,16 @@ function decodeMarshalStream(buffer, requireExactEnd, options: Record<string, an
     compatibilityProfile: String(options.compatibilityProfile || "")
       .trim()
       .toLowerCase(),
+    depth: Math.max(0, Number(options.initialDepth) || 0),
+    maxDepth: normalizeMarshalLimit(
+      options.maxDepth,
+      DEFAULT_MAX_MARSHAL_DEPTH,
+    ),
+    maxNodes: normalizeMarshalLimit(
+      options.maxNodes,
+      DEFAULT_MAX_MARSHAL_NODES,
+    ),
+    limitState: options.limitState || { nodeCount: 0 },
   };
 
   // Read and verify header
@@ -1333,6 +1411,11 @@ function readDoubleLE(state) {
 }
 
 function readBytes(state, len) {
+  if (!Number.isSafeInteger(len) || len < 0 || state.pos + len > state.buf.length) {
+    throw new Error(
+      `Invalid marshal byte length ${len} at position ${state.pos}`,
+    );
+  }
   const slice = state.buf.slice(state.pos, state.pos + len);
   state.pos += len;
   return slice;
@@ -1380,6 +1463,23 @@ function readSizeEx(state) {
 }
 
 function decodeValue(state) {
+  state.limitState.nodeCount += 1;
+  if (state.limitState.nodeCount > state.maxNodes) {
+    throw marshalLimitError(`Marshal stream exceeds ${state.maxNodes} nodes`);
+  }
+  state.depth += 1;
+  if (state.depth > state.maxDepth) {
+    state.depth -= 1;
+    throw marshalLimitError(`Marshal stream exceeds depth ${state.maxDepth}`);
+  }
+  try {
+    return decodeValueUnchecked(state);
+  } finally {
+    state.depth -= 1;
+  }
+}
+
+function decodeValueUnchecked(state) {
   if (state.pos >= state.buf.length) {
     throw new Error("Unexpected end of marshal data during decodeValue");
   }
@@ -1637,9 +1737,16 @@ function decodeValue(state) {
           type: "substream",
           value: marshalDecode(data, {
             compatibilityProfile: state.compatibilityProfile,
+            initialDepth: state.depth,
+            maxDepth: state.maxDepth,
+            maxNodes: state.maxNodes,
+            limitState: state.limitState,
           }),
         };
       } catch (e) {
+        if (e && e.code === "MARSHAL_LIMIT_EXCEEDED") {
+          throw e;
+        }
         result = { type: "substream", raw: data };
       }
       break;
@@ -1787,4 +1894,7 @@ module.exports = {
   MARSHAL_HEADER,
   SAVE_MASK,
   OPCODE_MASK,
+  validateMarshalComplexity,
+  DEFAULT_MAX_MARSHAL_DEPTH,
+  DEFAULT_MAX_MARSHAL_NODES,
 };

@@ -6824,7 +6824,7 @@ class InvBrokerService extends BaseService {
     return result;
   }
 
-  Handle_ImportExportWithPlanet(args, session) {
+  async Handle_ImportExportWithPlanet(args, session) {
     const boundContext = this._getBoundContext(session);
     const customsOfficeID = this._normalizeInventoryId(
       boundContext && (boundContext.inventoryID ?? boundContext.locationID),
@@ -6857,7 +6857,10 @@ class InvBrokerService extends BaseService {
       throwWrappedUserError("TaxChanged");
     }
 
-    const colony = planetRuntimeStore.getColonyByPin(characterID, spaceportPinID);
+    const colony = await planetRuntimeStore.getColonyByPinAsync(
+      characterID,
+      spaceportPinID,
+    );
     if (!colony) {
       throwWrappedUserError("CannotImportEndpointNotFound");
     }

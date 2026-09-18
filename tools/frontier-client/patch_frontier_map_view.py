@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the verified build-3502403 map-view lifecycle fix."""
+"""Install the verified build-3502403 Frontier system-view fixes."""
 
 import argparse
 import hashlib
@@ -19,6 +19,9 @@ SOURCE_MEMBER_SHA256 = "55ac03aed94839e454c947aab18fc5fbfe7a7eddc5178dbf7fad59ba
 ADAPTER = Path(__file__).with_name("map_view_lifecycle_adapter.py")
 SOURCE_SENTINEL = b"EVEJS_MAP_VIEW_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_MAP_VIEW_ADAPTER_CODE_V1"
+LEGACY_ADAPTER_CODE_SHA256 = (
+    "d8bdf08c29f3191bca104f92ded4c83fb4b5011cd350587c9ac18db9a7e9170e"
+)
 
 
 class MapViewPatchError(RuntimeError):
@@ -71,6 +74,17 @@ def inspect_member(member, expected=SOURCE_MEMBER_SHA256):
         ]
         if len(originals) == 1 and patched_member(originals[0]) == member:
             return "patched", originals[0]
+        adapters = [
+            value
+            for value in wrapper.co_consts
+            if isinstance(value, bytes)
+            and hashlib.sha256(value).hexdigest() == LEGACY_ADAPTER_CODE_SHA256
+        ]
+        if len(originals) == 1 and len(adapters) == 1:
+            # Treat the lifecycle-only adapter as an upgradeable source.  This
+            # lets an already completed 3502403 stage receive the site marker
+            # fix through the normal transactional stage-upgrade path.
+            return "source", originals[0]
     except (EOFError, TypeError, ValueError):
         pass
     raise MapViewPatchError(

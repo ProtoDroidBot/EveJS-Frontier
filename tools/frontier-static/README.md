@@ -93,6 +93,37 @@ Creation validation checks that every modular hull template references known
 parts and modules, and that its initial interior placements and hardpoints are
 complete enough to reconstruct the client management model.
 
+## Audit references
+
+Run the referential-integrity audit when you need every broken relationship,
+rather than the snapshot validator's first failure:
+
+```powershell
+npm run frontier:references -- --snapshot _local/frontier-sde/3502403
+```
+
+The audit streams every JSONL table twice: once to index its `_key` values and
+once to check references. Built-in rules cover type dogma attributes/effects,
+types/groups/categories, map topology, NPC data, dungeons and landscapes,
+creation data, type lists/materials, and type-bearing space components. It also
+recognizes references encoded as object keys, such as accepted cargo type IDs.
+
+Broken references are all counted even when output examples are capped. Use
+`--max-issues 0` for summaries only, `--json` for machine-readable output, and
+`--show-unmapped` to inventory numeric ID-shaped fields that have no declared
+target in the exported SDE. `--strict-unmapped` additionally makes those
+unmapped paths fail the command. Run `--list-rules` to inspect the complete
+built-in relationship registry.
+
+Every audit also writes a complete JSON artifact containing every broken
+reference occurrence. By default it is written beside the build directories as
+`_local/frontier-sde/<build>-broken-references.json`. Use `--output <path>` to
+select another destination or `--no-output` to suppress the artifact. The
+console `--max-issues` limit does not truncate this file.
+
+The command exits with status `1` when a checked reference is broken (or strict
+unmapped coverage fails), and status `2` for malformed input or CLI errors.
+
 ## Client Contracts
 
 The copied Frontier `code.ccp` archive also carries generated public protobuf

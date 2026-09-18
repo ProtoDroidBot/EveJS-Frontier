@@ -91,6 +91,8 @@ const NATIVE_SCOPE_BOOLEAN_FIELDS = Object.freeze([
 const NATIVE_SCOPE_TEXT_FIELDS = Object.freeze([
   "airNpeHostileWave",
   "dungeonEncounterKey",
+  "dungeonFactionKey",
+  "dungeonFactionTag",
   "dungeonSiteContentKey",
   "dungeonSiteContentRole",
   "dungeonSiteContentAnalyzer",
@@ -99,6 +101,7 @@ const NATIVE_SCOPE_TEXT_FIELDS = Object.freeze([
   "dungeonSiteContentHackingDifficulty",
 ]);
 const NATIVE_SCOPE_ARRAY_FIELDS = Object.freeze([
+  "dungeonTags",
   "dungeonSiteContentExplicitLoot",
   "dungeonSiteContentLootTags",
 ]);
@@ -111,6 +114,8 @@ const NATIVE_DUNGEON_BOOLEAN_MARKERS = new Set([
 ]);
 const NATIVE_DUNGEON_TEXT_MARKERS = new Set([
   "dungeonEncounterKey",
+  "dungeonFactionKey",
+  "dungeonFactionTag",
   "dungeonSiteContentKey",
   "dungeonSiteContentRole",
   "dungeonSiteContentAnalyzer",

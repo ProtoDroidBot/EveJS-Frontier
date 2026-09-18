@@ -391,7 +391,6 @@ function sendEnteringDungeonRoomNotification(session, instance, roomKey, options
     info[1],
     positionTuple(options.roomPosition),
     info[2],
-    info[3],
   ]);
   return true;
 }

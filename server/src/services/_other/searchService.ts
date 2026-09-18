@@ -26,6 +26,7 @@ const {
   TABLE,
   readStaticRows,
 } = require(path.join(__dirname, "../_shared/referenceData"));
+const searchIndexPool = require(path.join(__dirname, "./searchIndexPool"));
 
 const MATCH_BY = {
   PARTIAL_TERMS: 0,
@@ -501,10 +502,37 @@ function searchGroup(groupID, search, exactMode, options: Record<string, any> = 
     .slice(0, MAX_RESULT_COUNT);
 }
 
+async function searchGroupAsync(groupID, search, exactMode, options: Record<string, any> = {}) {
+  const normalizedGroupID = Number(groupID) || 0;
+  if ([
+    RESULT_TYPE.CONSTELLATION,
+    RESULT_TYPE.SOLAR_SYSTEM,
+    RESULT_TYPE.REGION,
+    RESULT_TYPE.STATION,
+    RESULT_TYPE.ITEM_TYPE,
+  ].includes(normalizedGroupID)) {
+    return await searchIndexPool.searchStaticGroup(
+      normalizedGroupID,
+      search,
+      exactMode,
+      MAX_RESULT_COUNT,
+    ) || [];
+  }
+  const entries = collectSearchableOwners(normalizedGroupID, options)
+    .map((entry) => ({ id: entry.id, name: entry.name }));
+  return searchIndexPool.searchEntries(
+    entries,
+    search,
+    exactMode,
+    MAX_RESULT_COUNT,
+  );
+}
+
 function clearSearchCaches() {
   staticSearchIndexCache.clear();
   staticQueryResultCache.clear();
   frontierLocationRowsCache.clear();
+  void searchIndexPool.clear().catch(() => {});
 }
 
 class SearchService extends BaseService {
@@ -512,7 +540,7 @@ class SearchService extends BaseService {
     super("search");
   }
 
-  Handle_Query(args, session, kwargs) {
+  async Handle_Query(args, session, kwargs) {
     const search = normalizeText(args && args[0], "");
     const groupIDs = extractList(args && args[1])
       .map((groupID) => Number(groupID))
@@ -520,15 +548,14 @@ class SearchService extends BaseService {
     const exactMode = Number(extractKwargValue(kwargs, "exact", 0)) || 0;
     const hideNPC = Boolean(Number(extractKwargValue(kwargs, "hideNPC", 0)) || 0);
 
-    return buildDict(
-      groupIDs.map((groupID) => [
-        groupID,
-        buildList(searchGroup(groupID, search, exactMode, { hideNPC })),
-      ]),
-    );
+    const results = await Promise.all(groupIDs.map(async (groupID) => [
+      groupID,
+      buildList(await searchGroupAsync(groupID, search, exactMode, { hideNPC })),
+    ]));
+    return buildDict(results);
   }
 
-  Handle_QuickQuery(args, session, kwargs) {
+  async Handle_QuickQuery(args, session, kwargs) {
     const search = normalizeText(args && args[0], "");
     const groupIDs = extractList(args && args[1])
       .map((groupID) => Number(groupID))
@@ -539,7 +566,7 @@ class SearchService extends BaseService {
     const seen = new Set<any>();
 
     for (const groupID of groupIDs) {
-      for (const ownerID of searchGroup(groupID, search, exactMode, { hideNPC })) {
+      for (const ownerID of await searchGroupAsync(groupID, search, exactMode, { hideNPC })) {
         const numericOwnerID = Number(ownerID) || 0;
         if (numericOwnerID > 0 && !seen.has(numericOwnerID)) {
           seen.add(numericOwnerID);
@@ -557,6 +584,7 @@ module.exports._testing = {
   buildStaticSearchIndexFromRows,
   clearSearchCaches,
   getStaticGroupEntryNames,
+  getStaticGroupEntryID,
   getStaticGroupSourceRows,
   searchStaticGroup,
 };

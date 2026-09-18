@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
+import { SuiJsonRpcClient, type JsonRpcTransport } from "@mysten/sui/jsonRpc";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { buildSuiAssemblySnapshot, type SuiAssemblySnapshotInput } from "./suiAssemblySnapshot";
 import { createSuiAssemblyChain, suiAssemblyFields, suiAssemblyOption } from "./suiAssemblyChain";
@@ -12,6 +12,7 @@ import { readSuiIndustryDeployment, assertSuiIndustryDeploymentCurrent } from ".
 import { createSuiIndustrySyncWorkerBridge, registerSuiIndustrySyncBridge, reconcileSuiIndustryFacilities } from "./suiIndustrySync";
 import { registerSuiIndustryStorageSnapshotReader } from "./suiIndustryStorageSync";
 import { createAssemblyTransactionExecutor } from "./suiAssemblyTransactions";
+import { createSuiAssemblySupervisor } from "./suiAssemblySupervisor";
 import { registerSuiStorageSyncBridge, type SuiStorageSyncRequest } from "./suiStorageSync";
 import { registerSuiGateSyncBridge, type SuiGateSyncBridge } from "./suiGateSync";
 import { createSponsoredAssemblyAdmin, registerSuiAssemblyAdminBridge } from "./suiAssemblyAdmin";
@@ -115,6 +116,8 @@ export function createAssemblySyncWorker(options: {
   reconcile: () => Promise<unknown>;
   report: (message: string) => void;
   intervalMs?: number;
+  maxPending?: number;
+  admission?: { runExclusive: <T>(label: string, action: () => Promise<T>) => Promise<T> };
 }) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = true;
@@ -122,18 +125,34 @@ export function createAssemblySyncWorker(options: {
   let generation = 0;
   let running: Promise<void> | null = null;
   let exclusiveTail: Promise<void> | null = null;
+  const activeOperations = new Set<Promise<unknown>>();
+  let pendingOperations = 0;
   let lastError = "";
   function runExclusive<T>(action: () => Promise<T>): Promise<T> {
     if (closing) return Promise.reject(new Error("Assembly synchronization worker is stopped"));
+    const maxPending = options.maxPending ?? 64;
+    if (pendingOperations >= maxPending) {
+      return Promise.reject(Object.assign(new Error(`Assembly synchronization queue is full (${maxPending})`), {
+        code: "ASSEMBLY_SYNC_BUSY",
+      }));
+    }
+    pendingOperations += 1;
     // Inventory status reads can resolve Character capabilities. Keep them on
     // the same queue as reconciliation and its single durable transaction log.
     // Invoke immediately when idle, but convert synchronous throws to rejected
     // promises just like errors from actions already waiting in the queue.
     const invoke = async () => action();
-    const next = exclusiveTail ? exclusiveTail.then(invoke, invoke) : invoke();
+    const admitted = options.admission
+      ? Promise.resolve().then(() => options.admission!.runExclusive("assembly-operation", invoke))
+      : (exclusiveTail ? exclusiveTail.then(invoke, invoke) : invoke());
+    const next = admitted.finally(() => { pendingOperations -= 1; });
     const settled = next.then(() => {}, () => {});
-    exclusiveTail = settled;
-    void settled.then(() => { if (exclusiveTail === settled) exclusiveTail = null; });
+    activeOperations.add(settled);
+    void settled.then(() => activeOperations.delete(settled));
+    if (!options.admission) {
+      exclusiveTail = settled;
+      void settled.then(() => { if (exclusiveTail === settled) exclusiveTail = null; });
+    }
     return next;
   }
   async function runOnce() {
@@ -160,7 +179,13 @@ export function createAssemblySyncWorker(options: {
   }
   return {
     start() { if (stopped) { closing = false; stopped = false; void tick(++generation); } },
-    stop() { closing = true; stopped = true; generation++; if (timer) clearTimeout(timer); return exclusiveTail ?? Promise.resolve(); },
+    stop() {
+      closing = true; stopped = true; generation++;
+      if (timer) clearTimeout(timer);
+      return options.admission
+        ? Promise.allSettled([...activeOperations]).then(() => {})
+        : exclusiveTail ?? Promise.resolve();
+    },
     runOnce,
     runExclusive,
     getLastError() { return lastError; },
@@ -479,6 +504,7 @@ export function startSuiAssemblySync() {
     fs.unlinkSync(lockPath);
   }
   fs.writeFileSync(lockPath, String(process.pid), { flag: "wx", mode: 0o600 });
+  const supervisor = createSuiAssemblySupervisor({ log });
   let context: any = null;
   let lastSummary = "";
   trackedNetworkNodeBinding = itemId => {
@@ -522,7 +548,24 @@ export function startSuiAssemblySync() {
       gateConfigId: deployment.world.gateConfig, serverAddressRegistryId: deployment.world.serverAddressRegistry,
       locationRegistryId,
     };
-    const client = new SuiJsonRpcClient({ url: "http://127.0.0.1:9000", network: "localnet" });
+    const rpcUrl = "http://127.0.0.1:9000";
+    const rpcDeadlineMs = Math.max(1_000, Number(process.env.EVEJS_SUI_ASSEMBLY_RPC_TIMEOUT_MS) || 10_000);
+    const transport: JsonRpcTransport = {
+      request(input) {
+        const rpc = supervisor.requestSuiRpc(rpcUrl, input.method, input.params, rpcDeadlineMs);
+        if (!input.signal) return rpc;
+        if (input.signal.aborted) return Promise.reject(input.signal.reason);
+        return Promise.race([
+          rpc,
+          new Promise((_, reject) => input.signal!.addEventListener(
+            "abort",
+            () => reject(input.signal!.reason),
+            { once: true },
+          )),
+        ]);
+      },
+    };
+    const client = new SuiJsonRpcClient({ transport, network: "localnet" });
     const locationRegistry = await client.getObject({ id: locationRegistryId, options: { showType: true } });
     if (locationRegistry.data?.type !== `${synced.packageId}::location::LocationRegistry`) {
       throw new Error("The deployed LocationRegistry does not exist on the current chain");
@@ -555,9 +598,11 @@ export function startSuiAssemblySync() {
       const seed = createHash("sha512").update(`dev:${character.accountId}`, "utf8").digest("hex");
       return Ed25519Keypair.deriveKeypairFromSeed(seed);
     }
+    const journalPath = path.join(root, `${synced.chainId}-${synced.packageId}.transactions.json`);
+    const journalStore = await supervisor.openJournal(journalPath, synced.chainId, synced.packageId);
     const executor = createAssemblyTransactionExecutor({
       client, chainId: synced.chainId, packageId: synced.packageId, adminSigner, getSigner, assertCurrent,
-      journalPath: path.join(root, `${synced.chainId}-${synced.packageId}.transactions.json`),
+      journalPath, journalStore,
       onCommitted: (digest, label) => log.info(`[SuiAssemblySync] ${label}: ${digest}`),
       reconcileSponsored: async metadata => { deploymentRuntime.reconcileSponsoredAssemblyState(metadata); },
       reconcileCommitted: async label => {
@@ -641,6 +686,7 @@ export function startSuiAssemblySync() {
     await assertCurrent();
     return {
       synced, world, chain, contents, industry, industryDeployment, executor, state, assertCurrent, getCharacter,
+      supervisorGeneration: journalStore.generation,
       statusAuthority: true,
       fuelAuthority: true,
       initializeFuel(assembly: any) {
@@ -752,6 +798,8 @@ export function startSuiAssemblySync() {
     await refreshSuiAssemblyChainStates(context, currentSnapshotInput, assemblyID, { settleFuel });
   }
   const worker = createAssemblySyncWorker({
+    admission: supervisor,
+    maxPending: Math.max(1, Number(process.env.EVEJS_SUI_ASSEMBLY_MAX_PENDING) || 64),
     report: (message) => log.warn(`[SuiAssemblySync] ${message}`),
     async reconcile() {
       const synced = readSyncedSuiWorldConfig(env);
@@ -761,7 +809,8 @@ export function startSuiAssemblySync() {
         throw new Error("Run FrontierWorld.ps1 sync to enable automatic Smart Assembly synchronization");
       }
       const industryDeployment = readSuiIndustryDeployment(synced, industryEnv());
-      if (!context || context.synced.chainId !== synced.chainId || context.synced.packageId !== synced.packageId ||
+      if (!context || context.supervisorGeneration !== supervisor.getGeneration() ||
+          context.synced.chainId !== synced.chainId || context.synced.packageId !== synced.packageId ||
           context.synced.objectRegistryId !== synced.objectRegistryId || context.synced.adminAclId !== synced.adminAclId ||
           context.industryDeployment.fingerprint !== industryDeployment.fingerprint) {
         clearAssemblyEnergyConfig();
@@ -911,6 +960,10 @@ export function startSuiAssemblySync() {
     const stopped = worker.stop();
     clearAssemblyEnergyConfig();
     energyRuntime.clearSuiNetworkNodeEnergy();
-    return stopped.finally(() => { clearAssemblyEnergyConfig(); energyRuntime.clearSuiNetworkNodeEnergy(); });
+    return stopped.finally(async () => {
+      await supervisor.close();
+      try { if (fs.readFileSync(lockPath, "utf8") === String(process.pid)) fs.unlinkSync(lockPath); } catch { /* already removed */ }
+      clearAssemblyEnergyConfig(); energyRuntime.clearSuiNetworkNodeEnergy();
+    });
   } };
 }

@@ -1,6 +1,9 @@
 const crypto = require("crypto");
-const fs = require("fs");
 const path = require("path");
+const {
+  enqueueAppendFile,
+  flushAsyncFileQueue,
+} = require(path.join(__dirname, "../../utils/asyncFileQueue"));
 const { getTypeName } = require(path.join(
   __dirname,
   "../../common/packetTypes",
@@ -113,17 +116,19 @@ function appendFileEntry(entry, options) {
     };
     return;
   }
-  try {
-    fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
-    fs.appendFileSync(resolvedPath, `${JSON.stringify(entry)}\n`, "utf8");
-  } catch (error) {
+  enqueueAppendFile(resolvedPath, `${JSON.stringify(entry)}\n`, {
+    encoding: "utf8",
+    maxPending: 2048,
+  }).catch((error) => {
     lastWriteError = {
-      code: "WRITE_FAILED",
+      code: error && error.code === "ASYNC_FILE_QUEUE_FULL"
+        ? "WRITE_QUEUE_FULL"
+        : "WRITE_FAILED",
       name: error && error.name ? error.name : "Error",
       messageHash: hashText(error && error.message ? error.message : ""),
       messageLength: String(error && error.message ? error.message : "").length,
     };
-  }
+  });
 }
 
 function mapEntries(entries: any[] = []) {
@@ -748,6 +753,13 @@ function getLastWriteError() {
   return lastWriteError ? { ...lastWriteError } : null;
 }
 
+function flushWritesForTests() {
+  const options = resolveOptions();
+  return options.filePath
+    ? flushAsyncFileQueue(path.resolve(options.filePath))
+    : Promise.resolve();
+}
+
 module.exports = {
   captureNotificationShape,
   capturePacketShape,
@@ -755,6 +767,7 @@ module.exports = {
   configureForTests,
   getCapturedEntries,
   getLastWriteError,
+  flushWritesForTests,
   isEnabled,
   resetForTests,
   summarizeValue,

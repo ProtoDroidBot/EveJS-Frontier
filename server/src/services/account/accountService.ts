@@ -25,7 +25,7 @@ const {
   getCorporationRecord,
 } = require(path.join(__dirname, "../corporation/corporationState"));
 const {
-  buildCachedMethodCallResult,
+  buildCachedMethodCallResultAsync: buildCachedMethodCallResult,
 } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 
 const JOURNAL_HEADERS = [

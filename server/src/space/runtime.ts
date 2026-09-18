@@ -26,6 +26,9 @@ const rotatingLog = require(path.join(__dirname, "../utils/rotatingLog"));
 const syncLedger = require(path.join(__dirname, "../network/syncLedger"));
 const spatialTrace = require(path.join(__dirname, "../network/spatialTrace"));
 const tickProfiler = require(path.join(__dirname, "tickProfiler"));
+const worldPlanningPool = require(path.join(__dirname, "./worldPlanningPool"));
+const DEFAULT_SCENE_BOOTSTRAP_COMMIT_BATCH_SIZE = 24;
+const DEFAULT_SCENE_BOOTSTRAP_TIMEOUT_MS = 30_000;
 
 function traceVisibilityEligibilityResult(
   scene,
@@ -7478,6 +7481,8 @@ function applyRuntimeEntityScopeMetadata(entity, scopeMetadata: Record<string, a
   for (const key of [
     "airNpeHostileWave",
     "dungeonEncounterKey",
+    "dungeonFactionKey",
+    "dungeonFactionTag",
     "dungeonSiteContentKey",
     "dungeonSiteContentRole",
     "dungeonSiteContentAnalyzer",
@@ -7493,6 +7498,7 @@ function applyRuntimeEntityScopeMetadata(entity, scopeMetadata: Record<string, a
     }
   }
   for (const key of [
+    "dungeonTags",
     "dungeonSiteContentExplicitLoot",
     "dungeonSiteContentLootTags",
   ]) {
@@ -7604,6 +7610,8 @@ function serializeRuntimeEntityScopeMetadata(entity) {
   for (const key of [
     "airNpeHostileWave",
     "dungeonEncounterKey",
+    "dungeonFactionKey",
+    "dungeonFactionTag",
     "dungeonSiteContentKey",
     "dungeonSiteContentRole",
     "dungeonSiteContentAnalyzer",
@@ -7617,6 +7625,7 @@ function serializeRuntimeEntityScopeMetadata(entity) {
     }
   }
   for (const key of [
+    "dungeonTags",
     "dungeonSiteContentExplicitLoot",
     "dungeonSiteContentLootTags",
   ]) {
@@ -21190,6 +21199,8 @@ function popMinHeapEntry(heap, compareEntries) {
 }
 
 class SolarSystemScene {
+  declare _bootstrapGeneration: any;
+  declare _bootstrapReady: any;
   declare _dungeonUniversePendingSiteTeardowns: Map<any, any>;
   declare _activeDestinyDeliveryFlush: any;
   declare deferredInitialVisibilityEntityIDs: any;
@@ -25214,6 +25225,8 @@ class SolarSystemScene {
       entity.dungeonSiteContentPersistsAfterResponse === true ||
       [
         "dungeonEncounterKey",
+        "dungeonFactionKey",
+        "dungeonFactionTag",
         "dungeonSiteContentKey",
         "dungeonSiteContentRole",
         "dungeonSiteContentAnalyzer",
@@ -25221,6 +25234,7 @@ class SolarSystemScene {
         "dungeonSiteContentLootProfile",
         "dungeonSiteContentHackingDifficulty",
       ].some((fieldName) => String(entity[fieldName] || "").trim()) ||
+      Array.isArray(entity.dungeonTags) ||
       Array.isArray(entity.dungeonSiteContentExplicitLoot) ||
       Array.isArray(entity.dungeonSiteContentLootTags)
     );
@@ -41686,6 +41700,8 @@ class SpaceRuntime {
   declare _lastTickStartedAtMonotonicMs: any;
   declare _lastTickSummary: any;
   declare _pendingAttachUniverseSiteReconciles: any;
+  declare _sceneBootstrapGeneration: any;
+  declare _sceneBootstrapPromises: any;
   declare _recentTickSummaries: any;
   declare _tickHandle: any;
   declare _tickIntervalMs: any;
@@ -41698,6 +41714,8 @@ class SpaceRuntime {
     this.solarSystemGateActivationOverrides = new Map();
     this.stargateActivationOverrides = new Map();
     this._pendingAttachUniverseSiteReconciles = new Map();
+    this._sceneBootstrapGeneration = 0;
+    this._sceneBootstrapPromises = new Map();
     this._tickIntervalMs = RUNTIME_TICK_INTERVAL_MS;
     this._lastTickStartedAtMonotonicMs = getMonotonicTimeMs();
     this._lastTickSummary = null;
@@ -42014,7 +42032,10 @@ class SpaceRuntime {
     let created = false;
     if (!this.scenes.has(numericSystemID)) {
       const sceneConstructionStartedAtMs = bootstrapMetrics ? Date.now() : 0;
-      this.scenes.set(numericSystemID, new SolarSystemScene(numericSystemID));
+      const createdScene = new SolarSystemScene(numericSystemID);
+      createdScene._bootstrapGeneration = ++this._sceneBootstrapGeneration;
+      createdScene._bootstrapReady = false;
+      this.scenes.set(numericSystemID, createdScene);
       if (bootstrapMetrics) {
         bootstrapMetrics.sceneConstructionElapsedMs =
           Date.now() - sceneConstructionStartedAtMs;
@@ -42022,12 +42043,26 @@ class SpaceRuntime {
       created = true;
     }
     const scene = this.scenes.get(numericSystemID);
+    let initializeBootstrap = created && options.deferBootstrap !== true;
+    if (
+      !created &&
+      scene &&
+      scene._bootstrapReady === false &&
+      options.allowPendingBootstrap !== true
+    ) {
+      // A legacy synchronous caller cannot await an in-flight bootstrap. Preserve
+      // correctness by invalidating the worker generation and completing through
+      // the established synchronous path. Player entry uses ensureSceneReady and
+      // therefore never takes this fallback.
+      scene._bootstrapGeneration = ++this._sceneBootstrapGeneration;
+      initializeBootstrap = true;
+    }
     if (created && options.refreshStargates !== false) {
       this.refreshStargateActivationStates({
         broadcast: options.broadcastStargateChanges !== false,
       });
     }
-    if (created && options.reconcileUniverseSites !== false) {
+    if (initializeBootstrap && options.reconcileUniverseSites !== false) {
       try {
         const startupStartedAtMs = bootstrapMetrics ? Date.now() : 0;
         const dungeonUniverseRuntime = lazyRequire("../services/dungeon/dungeonUniverseRuntime");
@@ -42062,7 +42097,7 @@ class SpaceRuntime {
         );
       }
     }
-    if (created) {
+    if (initializeBootstrap) {
       if (config.asteroidFieldsEnabled === true) {
         try {
           const startupStartedAtMs = bootstrapMetrics ? Date.now() : 0;
@@ -42224,6 +42259,7 @@ class SpaceRuntime {
           );
         }
       }
+      scene._bootstrapReady = true;
     }
     if (bootstrapMetrics) {
       bootstrapMetrics.created = created;
@@ -42231,6 +42267,334 @@ class SpaceRuntime {
       bootstrapMetrics.systemID = numericSystemID;
     }
     return scene;
+  }
+
+  _isSceneBootstrapCurrent(scene, generation) {
+    return Boolean(
+      scene &&
+      this.scenes.get(toInt(scene.systemID, 0)) === scene &&
+      toInt(scene._bootstrapGeneration, 0) === toInt(generation, -1),
+    );
+  }
+
+  async _commitSceneBootstrapEntities(
+    scene,
+    generation,
+    entities: any[] = [],
+    options: Record<string, any> = {},
+  ) {
+    const batchSize = Math.max(
+      1,
+      toInt(options.batchSize, DEFAULT_SCENE_BOOTSTRAP_COMMIT_BATCH_SIZE),
+    );
+    const spawned: any[] = [];
+    for (let index = 0; index < entities.length; index += batchSize) {
+      if (!this._isSceneBootstrapCurrent(scene, generation)) {
+        const error: Error & Record<string, any> = new Error(
+          `stale scene bootstrap plan for system ${scene && scene.systemID}`,
+        );
+        error.code = "STALE_SCENE_BOOTSTRAP";
+        throw error;
+      }
+      for (const entity of entities.slice(index, index + batchSize)) {
+        if (scene.addStaticEntity(entity)) {
+          spawned.push(entity);
+        }
+      }
+      if (index + batchSize < entities.length) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+    return spawned;
+  }
+
+  async _finishPlannedSceneBootstrap(scene, generation, options: Record<string, any> = {}) {
+    if (!this._isSceneBootstrapCurrent(scene, generation)) {
+      const error: Error & Record<string, any> = new Error(
+        `scene bootstrap generation changed for system ${scene && scene.systemID}`,
+      );
+      error.code = "STALE_SCENE_BOOTSTRAP";
+      throw error;
+    }
+
+    if (options.reconcileUniverseSites !== false) {
+      try {
+        const dungeonUniverseRuntime = lazyRequire("../services/dungeon/dungeonUniverseRuntime");
+        if (
+          options.synchronousUniverseSiteReconcile === true &&
+          dungeonUniverseRuntime &&
+          typeof dungeonUniverseRuntime.ensureSystemUniversePersistentSites === "function"
+        ) {
+          dungeonUniverseRuntime.ensureSystemUniversePersistentSites(scene.systemID, {
+            reason: options.universeSiteReconcileReason || "scene-created-async",
+            nowMs: options.nowMs,
+            force: options.forceUniverseSiteReconcile === true,
+          });
+        } else if (
+          options.scheduleUniverseSiteReconcile === true &&
+          dungeonUniverseRuntime &&
+          typeof dungeonUniverseRuntime.scheduleSystemUniversePersistentSitesReconcile === "function"
+        ) {
+          dungeonUniverseRuntime.scheduleSystemUniversePersistentSitesReconcile(scene.systemID, {
+            reason: options.universeSiteReconcileReason || "scene-created-async",
+            nowMs: options.nowMs,
+            force: options.forceUniverseSiteReconcile === true,
+            initialDelayMs: options.universeSiteReconcileInitialDelayMs,
+          });
+        }
+      } catch (error) {
+        log.warn(
+          `[SpaceRuntime] Dungeon universe reconcile failed for system=${scene.systemID}: ${error.message}`,
+        );
+      }
+    }
+
+    if (config.miningEnabled === true) {
+      try {
+        const miningRuntime = lazyRequire("../services/mining/miningRuntime");
+        if (miningRuntime && typeof miningRuntime.handleSceneCreatedAsync === "function") {
+          await miningRuntime.handleSceneCreatedAsync(scene, {
+            batchSize: options.miningBatchSize,
+            resourceSitesPlanned: true,
+          });
+        } else if (miningRuntime && typeof miningRuntime.handleSceneCreated === "function") {
+          miningRuntime.handleSceneCreated(scene);
+        }
+      } catch (error) {
+        log.warn(
+          `[SpaceRuntime] Mining scene startup failed for system=${scene.systemID}: ${error.message}`,
+        );
+      }
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    if (!this._isSceneBootstrapCurrent(scene, generation)) {
+      const error: Error & Record<string, any> = new Error(
+        `scene bootstrap generation changed for system ${scene && scene.systemID}`,
+      );
+      error.code = "STALE_SCENE_BOOTSTRAP";
+      throw error;
+    }
+
+    if (process.env.EVEJS_SKIP_NPC_STARTUP !== "1") {
+      try {
+        const npcService = lazyRequire("./npc");
+        if (npcService && typeof npcService.handleSceneCreated === "function") {
+          npcService.handleSceneCreated(scene);
+        }
+      } catch (error) {
+        log.warn(
+          `[SpaceRuntime] NPC scene startup failed for system=${scene.systemID}: ${error.message}`,
+        );
+      }
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    if (!this._isSceneBootstrapCurrent(scene, generation)) {
+      const error: Error & Record<string, any> = new Error(
+        `scene bootstrap generation changed for system ${scene && scene.systemID}`,
+      );
+      error.code = "STALE_SCENE_BOOTSTRAP";
+      throw error;
+    }
+
+    if (options.materializeUniverseSites !== false) {
+      try {
+        const dungeonUniverseSiteService = lazyRequire(
+          "../services/dungeon/dungeonUniverseSiteService",
+        );
+        if (
+          dungeonUniverseSiteService &&
+          typeof dungeonUniverseSiteService.handleSceneCreated === "function"
+        ) {
+          dungeonUniverseSiteService.handleSceneCreated(scene);
+        }
+      } catch (error) {
+        log.warn(
+          `[SpaceRuntime] Dungeon universe site startup failed for system=${scene.systemID}: ${error.message}`,
+        );
+      }
+    }
+
+    try {
+      const frontierRiftSceneService = lazyRequire("./frontierRiftSceneService");
+      if (
+        frontierRiftSceneService &&
+        typeof frontierRiftSceneService.handleSceneCreated === "function"
+      ) {
+        frontierRiftSceneService.handleSceneCreated(scene);
+      }
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Frontier Rift scene startup failed for system=${scene.systemID}: ${error.message}`,
+      );
+    }
+
+    if (config.wormholesEnabled === true) {
+      try {
+        const wormholeRuntime = lazyRequire(
+          "../services/exploration/wormholes/wormholeRuntime",
+        );
+        if (wormholeRuntime && typeof wormholeRuntime.handleSceneCreated === "function") {
+          wormholeRuntime.handleSceneCreated(scene);
+        }
+      } catch (error) {
+        log.warn(
+          `[SpaceRuntime] Wormhole scene startup failed for system=${scene.systemID}: ${error.message}`,
+        );
+      }
+    }
+
+    if (process.env.EVEJS_SKIP_NPC_STARTUP !== "1") {
+      try {
+        const npcService = lazyRequire("./npc");
+        if (npcService && typeof npcService.refreshStartupRulesForScene === "function") {
+          npcService.refreshStartupRulesForScene(scene);
+        }
+      } catch (error) {
+        log.warn(
+          `[SpaceRuntime] NPC post-static startup sweep failed for system=${scene.systemID}: ${error.message}`,
+        );
+      }
+    }
+  }
+
+  ensureSceneReady(systemID, options: Record<string, any> = {}) {
+    const numericSystemID = toInt(systemID, 0);
+    if (numericSystemID <= 0) {
+      return Promise.resolve(null);
+    }
+    const existing = this.scenes.get(numericSystemID) || null;
+    if (existing && existing._bootstrapReady !== false) {
+      return Promise.resolve(existing);
+    }
+    const pending = this._sceneBootstrapPromises.get(numericSystemID);
+    if (pending) {
+      return pending;
+    }
+
+    const scene = existing || this.ensureScene(numericSystemID, {
+      ...options,
+      allowPendingBootstrap: true,
+      deferBootstrap: true,
+      reconcileUniverseSites: false,
+    });
+    if (!scene) {
+      return Promise.resolve(null);
+    }
+    const generation = toInt(scene._bootstrapGeneration, 0);
+    const planningPromise = (async () => {
+      const miningResourceSiteService = lazyRequire(
+        "../services/mining/miningResourceSiteService",
+      );
+      const resourceSiteDefinitions = config.miningEnabled === true &&
+        miningResourceSiteService &&
+        typeof miningResourceSiteService.captureGeneratedResourceSiteDefinitions === "function"
+        ? miningResourceSiteService.captureGeneratedResourceSiteDefinitions(scene)
+        : [];
+      const staticEntities = (Array.isArray(scene.staticEntities) ? scene.staticEntities : [])
+        .filter((entity) => entity && entity.position)
+        .map((entity) => ({
+          itemID: entity.itemID,
+          itemName: entity.itemName,
+          kind: entity.kind,
+          groupID: entity.groupID,
+          radius: entity.radius,
+          generatedMiningSite: entity.generatedMiningSite === true,
+          position: {
+            x: toFiniteNumber(entity.position.x, 0),
+            y: toFiniteNumber(entity.position.y, 0),
+            z: toFiniteNumber(entity.position.z, 0),
+          },
+        }));
+      const plan = await worldPlanningPool.buildSceneBootstrapPlan(
+          {
+            systemID: numericSystemID,
+            generation,
+            staticEntities,
+            resourceSiteDefinitions,
+            asteroidsEnabled: config.asteroidFieldsEnabled === true,
+            miningEnabled: config.miningEnabled === true,
+          },
+        {
+          timeoutMs: Math.max(
+            1_000,
+            toInt(options.workerTimeoutMs, DEFAULT_SCENE_BOOTSTRAP_TIMEOUT_MS),
+          ),
+        },
+      );
+      if (
+        !plan ||
+        toInt(plan.systemID, 0) !== numericSystemID ||
+        toInt(plan.generation, -1) !== generation ||
+        !this._isSceneBootstrapCurrent(scene, generation)
+      ) {
+        const error: Error & Record<string, any> = new Error(
+          `scene bootstrap worker returned a stale plan for system ${numericSystemID}`,
+        );
+        error.code = "STALE_SCENE_BOOTSTRAP";
+        throw error;
+      }
+
+      const asteroidService = lazyRequire("./asteroids");
+      if (config.asteroidFieldsEnabled === true) {
+        const spawnedCounts: any[] = [];
+        for (const field of Array.isArray(plan.asteroidPlan && plan.asteroidPlan.fields)
+          ? plan.asteroidPlan.fields
+          : []) {
+          const spawned = await this._commitSceneBootstrapEntities(
+            scene,
+            generation,
+            Array.isArray(field && field.entities) ? field.entities : [],
+            options,
+          );
+          spawnedCounts.push(spawned.length);
+        }
+        asteroidService.finalizeSceneAsteroidFieldPlan(
+          scene,
+          plan.asteroidPlan,
+          spawnedCounts,
+        );
+      } else {
+        scene._asteroidFieldsInitialized = true;
+      }
+
+      if (config.miningEnabled === true) {
+        const spawnedResources = await this._commitSceneBootstrapEntities(
+          scene,
+          generation,
+          Array.isArray(plan.resourceSiteEntities) ? plan.resourceSiteEntities : [],
+          options,
+        );
+        miningResourceSiteService.finalizeGeneratedResourceSitePlan(
+          scene,
+          spawnedResources,
+        );
+      }
+
+      await this._finishPlannedSceneBootstrap(scene, generation, options);
+      if (!this._isSceneBootstrapCurrent(scene, generation)) {
+        const error: Error & Record<string, any> = new Error(
+          `scene bootstrap changed before commit for system ${numericSystemID}`,
+        );
+        error.code = "STALE_SCENE_BOOTSTRAP";
+        throw error;
+      }
+      scene._bootstrapReady = true;
+      return scene;
+    })();
+
+    this._sceneBootstrapPromises.set(numericSystemID, planningPromise);
+    return planningPromise.finally(() => {
+      if (this._sceneBootstrapPromises.get(numericSystemID) === planningPromise) {
+        this._sceneBootstrapPromises.delete(numericSystemID);
+      }
+      if (
+        scene._bootstrapReady !== true &&
+        this.scenes.get(numericSystemID) === scene &&
+        toInt(scene._bootstrapGeneration, 0) === generation
+      ) {
+        this.scenes.delete(numericSystemID);
+      }
+    });
   }
 
   getSceneActivityState(systemID, wallclockNow = Date.now()) {
@@ -44593,6 +44957,9 @@ class SpaceRuntime {
     structureState.tickStructures(now);
     let tickedSceneCount = 0;
     for (const scene of this.scenes.values()) {
+      if (scene && scene._bootstrapReady === false) {
+        continue;
+      }
       const sceneActivity = getSceneActivityState(scene, now);
       if (!sceneActivity.shouldTick) {
         continue;

@@ -25,6 +25,13 @@ type Journal = {
   }>;
 };
 
+type AssemblyJournalStore = {
+  initialJournal: Journal;
+  initialRevision: number;
+  assertLease: () => Promise<void>;
+  save: (expectedRevision: number, journal: Journal) => Promise<{ revision: number }>;
+};
+
 type AssemblyRpcClient = Pick<SuiJsonRpcClient,
   "getTransactionBlock" | "executeTransactionBlock" | "waitForTransaction" | "getObject">;
 const resultOptions = { showEffects: true, showEvents: true };
@@ -60,15 +67,25 @@ export function createAssemblyTransactionExecutor(options: {
   reconcileSponsored?: (metadata: Record<string, any>, digest: string) => Promise<void>;
   /** Idempotently persist confirmed intent changes before clearing the pending transaction. */
   reconcileCommitted?: (label: string, digest: string) => Promise<void>;
+  /** Production uses the supervised process as the journal's sole writer. */
+  journalStore?: AssemblyJournalStore;
 }) {
-  let journal: Journal = { version: 1, chainId: options.chainId, packageId: options.packageId };
-  if (fs.existsSync(options.journalPath)) {
+  let journal: Journal = options.journalStore?.initialJournal ??
+    { version: 1, chainId: options.chainId, packageId: options.packageId };
+  let journalRevision = options.journalStore?.initialRevision ?? 0;
+  if (!options.journalStore && fs.existsSync(options.journalPath)) {
     journal = JSON.parse(fs.readFileSync(options.journalPath, "utf8"));
-    if (journal.version !== 1 || journal.chainId !== options.chainId || journal.packageId !== options.packageId) {
-      throw new Error("Assembly transaction journal belongs to a different deployment");
-    }
   }
-  function save(next: Journal) {
+  if (journal.version !== 1 || journal.chainId !== options.chainId || journal.packageId !== options.packageId) {
+    throw new Error("Assembly transaction journal belongs to a different deployment");
+  }
+  async function save(next: Journal) {
+    if (options.journalStore) {
+      const saved = await options.journalStore.save(journalRevision, next);
+      journalRevision = saved.revision;
+      journal = next;
+      return;
+    }
     fs.mkdirSync(path.dirname(options.journalPath), { recursive: true });
     const temporary = `${options.journalPath}.${process.pid}.tmp`;
     const fd = fs.openSync(temporary, "w", 0o600);
@@ -101,7 +118,7 @@ export function createAssemblyTransactionExecutor(options: {
       await options.reconcileSponsored(pending.sponsored, pending.digest);
     }
     if (status === "success") await options.reconcileCommitted?.(pending.label, pending.digest);
-    save({
+    await save({
       ...journal, pending: undefined,
       lastTransaction: { label: pending.label, digest: pending.digest, status },
       confirmedGas: confirmedGas(result),
@@ -190,7 +207,7 @@ export function createAssemblyTransactionExecutor(options: {
     catch { return; } // Unavailable or incomplete evidence must leave the original write pending.
     if (!proof) return;
     await options.assertCurrent();
-    save({
+    await save({
       ...journal, pending: undefined, confirmedGas: undefined,
       rejectedTransactions: [...(journal.rejectedTransactions ?? []), {
         ...pending, conflictingDigest: proof.result.digest,
@@ -216,6 +233,7 @@ export function createAssemblyTransactionExecutor(options: {
     } catch {
       // Replaying identical bytes/signatures is idempotent even after a lost response.
       await options.assertCurrent();
+      await options.journalStore?.assertLease();
       try {
         result = await options.client.executeTransactionBlock({
           transactionBlock: bytes, signature: pending.signatures, options: resultOptions,
@@ -258,7 +276,7 @@ export function createAssemblyTransactionExecutor(options: {
     // more immediately before persisting the immutable submission. Recovery must
     // always replay that saved submission, even if local state later changes.
     assertSnapshotCurrent?.();
-    save({ ...journal, pending }); // Must succeed before sending anything to the chain.
+    await save({ ...journal, pending }); // Must succeed before sending anything to the chain.
     return recover();
   }
   async function prepareSponsored(transaction: any, sender: string) {
@@ -286,7 +304,7 @@ export function createAssemblyTransactionExecutor(options: {
     const sponsorSignature = (await options.adminSigner.signTransaction(bytes)).signature;
     await options.assertCurrent();
     assertSnapshotCurrent();
-    save({ ...journal, pending: {
+    await save({ ...journal, pending: {
       label: `sponsored:${metadata.transactionUUID}`, digest: TransactionDataBuilder.getDigestFromBytes(bytes),
       bytes: encodedBytes, signatures: metadata.walletAddress === options.adminSigner.toSuiAddress()
         ? [signature] : [signature, sponsorSignature], sponsored: metadata,

@@ -65,12 +65,39 @@ function findAllianceLogoPath(allianceID, size = null) {
     }
     return null;
 }
+async function findAllianceLogoPathAsync(allianceID, size = null) {
+    const numericAllianceID = toNumber(allianceID, 0);
+    if (numericAllianceID <= 0)
+        return null;
+    const candidates = [];
+    for (const root of listAllianceLogoRoots()) {
+        if (size !== null && size !== undefined) {
+            candidates.push(buildAllianceLogoPath(root, numericAllianceID, size));
+        }
+        for (const candidateSize of ALLIANCE_IMAGE_SIZES) {
+            candidates.push(buildAllianceLogoPath(root, numericAllianceID, candidateSize));
+        }
+    }
+    for (const candidate of candidates) {
+        try {
+            const stat = await fs.promises.stat(candidate);
+            if (stat.isFile())
+                return candidate;
+        }
+        catch (error) {
+            if (!(error && error.code === "ENOENT"))
+                throw error;
+        }
+    }
+    return null;
+}
 module.exports = {
     DEFAULT_ALLIANCE_LOGO_PATH,
     ALLIANCE_IMAGE_SIZES,
     LEGACY_ALLIANCE_ROOT,
     ensureDirectory,
     findAllianceLogoPath,
+    findAllianceLogoPathAsync,
     getAllianceLogoFilePath,
     getAllianceLogoRoot,
     getLegacyAllianceLogoFilePath,

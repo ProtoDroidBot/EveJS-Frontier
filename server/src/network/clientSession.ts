@@ -17,13 +17,11 @@ const serviceCallShapeCapture = require(path.join(
   __dirname,
   "../services/_shared/serviceCallShapeCapture",
 ));
-const { marshalEncode, marshalDecode, encodePacket } = require(
-  path.join(__dirname, "./tcp/utils/marshal"),
-);
 const { framePayload } = require(path.join(
   __dirname,
   "./tcp/packetFraming",
 ));
+const packetCodecPool = require(path.join(__dirname, "./tcp/packetCodecPool"));
 const { MACHONETMSG_TYPE } = require(
   path.join(__dirname, "../common/packetTypes"),
 );
@@ -276,6 +274,8 @@ class ClientSession {
   declare _notificationSequenceNumber: any;
   declare _pendingBootstrapPacketPerf: any;
   declare _pendingClientCallRequests: any;
+  declare _outboundWriteTail: Promise<any>;
+  declare _queuedOutboundPackets: number;
   declare accountRole: any;
   declare address: any;
   declare allianceID: any;
@@ -394,6 +394,8 @@ class ClientSession {
     this.connectTime = Date.now();
     this.lastActivity = Date.now();
     this._notificationSequenceNumber = -1;
+    this._outboundWriteTail = Promise.resolve();
+    this._queuedOutboundPackets = 0;
     syncLedger.trackSocketLifecycle(this);
   }
 
@@ -401,7 +403,7 @@ class ClientSession {
    * Send a marshaled packet to this client.
    * The value is encoded, optionally encrypted, and framed with a 4-byte length.
    */
-  sendPacket(value, spatialTraceContext = null) {
+  sendPacket(value, spatialTraceContext = null, codecOptions: Record<string, any> = {}) {
     const pendingPerfMeta = this._pendingBootstrapPacketPerf || null;
     this._pendingBootstrapPacketPerf = null;
     const packetPerfMeta = summarizeOutgoingPacket(value, pendingPerfMeta);
@@ -415,83 +417,128 @@ class ClientSession {
       return;
     }
 
+    if (this._queuedOutboundPackets >= 256) {
+      log.err(`[Session] Closing ${this.address}: outbound packet queue limit exceeded`);
+      this.socket.destroy();
+      return Promise.reject(new Error("outbound packet queue limit exceeded"));
+    }
+
     this.lastActivity = Date.now();
     const packetLedger = syncLedger.recordSyncLedgerEvent(
       this,
       "packet.begin",
       packetPerfMeta || {},
     );
-
-    // Marshal the value
     const encodeStartedAtMs = Date.now();
-    const marshaled = marshalEncode(value, {
+    this._queuedOutboundPackets += 1;
+    const encodedPacket = packetCodecPool.encodeOutboundPacket(value, {
       compatibilityProfile: this.compatibilityProfile,
+      maxDepth: 128,
+      maxNodes: 500_000,
+      maxEncodedBytes: 32 * 1024 * 1024,
+      innerMarshals: Array.isArray(codecOptions.innerMarshals)
+        ? codecOptions.innerMarshals
+        : [],
     });
-    const encodeElapsedMs = Date.now() - encodeStartedAtMs;
-    serviceCallShapeCapture.capturePacketShape({
-      direction: "outbound",
-      rawDecoded: value,
-      context: packetPerfMeta,
-      session: this,
-      encodedBytes: marshaled.length,
-      encrypted: this.encrypted === true,
-    });
-
-    if (log.isPacketPayloadDebugEnabled()) {
-      log.debug(`[Session] Sending packet (${marshaled.length} bytes)`);
-      log.debug(
-        `[Session] Outgoing hex: ${marshaled.toString("hex").substring(0, 160)}...`,
-      );
-    }
-
-    const writeStartedAtMs = Date.now();
-    const writeResult = this._writePayload(marshaled);
-    const writeElapsedMs = Date.now() - writeStartedAtMs;
-
-    if (spatialTraceContext) {
-      spatialTrace.recordNotificationSent(this, spatialTraceContext, {
-        outerMarshalByteLength: marshaled.length,
-        bodyByteLength: writeResult ? writeResult.bodyBytes : null,
-        framedByteLength: writeResult ? writeResult.framedBytes : null,
+    const queuedWrite = this._outboundWriteTail.then(async () => {
+      const encodedResult = await encodedPacket;
+      const encoded = encodedResult && encodedResult.encoded
+        ? encodedResult.encoded
+        : encodedResult;
+      const innerPayloads = encodedResult && Array.isArray(encodedResult.innerPayloads)
+        ? encodedResult.innerPayloads.map((entry) => (
+          entry instanceof Uint8Array && !Buffer.isBuffer(entry)
+            ? Buffer.from(entry)
+            : entry
+        ))
+        : [];
+      const marshaled = Buffer.isBuffer(encoded) ? encoded : Buffer.from(encoded);
+      let activeSpatialTraceContext = spatialTraceContext;
+      if (typeof codecOptions.onEncoded === "function") {
+        const callbackResult = codecOptions.onEncoded({
+          marshaled,
+          innerPayloads,
+          encodeElapsedMs: Date.now() - encodeStartedAtMs,
+          packetPerfMeta,
+        });
+        if (callbackResult) activeSpatialTraceContext = callbackResult;
+      }
+      if (!this.socket || this.socket.destroyed) return;
+      const encodeElapsedMs = Date.now() - encodeStartedAtMs;
+      serviceCallShapeCapture.capturePacketShape({
+        direction: "outbound",
+        rawDecoded: value,
+        context: packetPerfMeta,
+        session: this,
+        encodedBytes: marshaled.length,
         encrypted: this.encrypted === true,
-        socketWriteAccepted:
-          writeResult && Object.prototype.hasOwnProperty.call(writeResult, "writeAccepted")
-            ? writeResult.writeAccepted
-            : null,
       });
-    }
-
-    syncLedger.recordSyncLedgerEvent(this, "packet.sent", {
-      ...(packetPerfMeta || {}),
-      packetSeq: packetLedger.seq,
-      bytes: marshaled.length,
-      encodeMs: encodeElapsedMs,
-      writeMs: writeElapsedMs,
-      encrypted: this.encrypted === true,
-      writeAccepted:
-        writeResult && Object.prototype.hasOwnProperty.call(writeResult, "writeAccepted")
-          ? writeResult.writeAccepted
-          : null,
-      framedBytes: writeResult ? writeResult.framedBytes : null,
-      socketWritableLength: this.socket ? Number(this.socket.writableLength || 0) : null,
-    });
-
-    if (packetPerfMeta) {
-      recordSpaceBootstrapTrace(this, "outgoing-packet", {
-        ...packetPerfMeta,
+      if (log.isPacketPayloadDebugEnabled()) {
+        log.debug(`[Session] Sending packet (${marshaled.length} bytes)`);
+        log.debug(
+          `[Session] Outgoing hex: ${marshaled.toString("hex").substring(0, 160)}...`,
+        );
+      }
+      const writeStartedAtMs = Date.now();
+      const writeResult = this._writePayload(marshaled);
+      const writeElapsedMs = Date.now() - writeStartedAtMs;
+      if (activeSpatialTraceContext) {
+        spatialTrace.recordNotificationSent(this, activeSpatialTraceContext, {
+          outerMarshalByteLength: marshaled.length,
+          bodyByteLength: writeResult ? writeResult.bodyBytes : null,
+          framedByteLength: writeResult ? writeResult.framedBytes : null,
+          encrypted: this.encrypted === true,
+          socketWriteAccepted:
+            writeResult && Object.prototype.hasOwnProperty.call(writeResult, "writeAccepted")
+              ? writeResult.writeAccepted
+              : null,
+        });
+      }
+      syncLedger.recordSyncLedgerEvent(this, "packet.sent", {
+        ...(packetPerfMeta || {}),
+        packetSeq: packetLedger.seq,
         bytes: marshaled.length,
         encodeMs: encodeElapsedMs,
         writeMs: writeElapsedMs,
         encrypted: this.encrypted === true,
+        writeAccepted:
+          writeResult && Object.prototype.hasOwnProperty.call(writeResult, "writeAccepted")
+            ? writeResult.writeAccepted
+            : null,
+        framedBytes: writeResult ? writeResult.framedBytes : null,
+        socketWritableLength: this.socket ? Number(this.socket.writableLength || 0) : null,
       });
-      if (encodeElapsedMs >= 100 || writeElapsedMs >= 25) {
-        log.info(
-          `[SessionPerf] packet kind=${packetPerfMeta.kind || "unknown"} ` +
-          `service=${packetPerfMeta.service || "?"} callID=${Number(packetPerfMeta.callID) || 0} ` +
-          `bytes=${marshaled.length} encodeMs=${encodeElapsedMs} writeMs=${writeElapsedMs}`,
-        );
+      if (packetPerfMeta) {
+        recordSpaceBootstrapTrace(this, "outgoing-packet", {
+          ...packetPerfMeta,
+          bytes: marshaled.length,
+          encodeMs: encodeElapsedMs,
+          writeMs: writeElapsedMs,
+          encrypted: this.encrypted === true,
+        });
+        if (encodeElapsedMs >= 100 || writeElapsedMs >= 25) {
+          log.info(
+            `[SessionPerf] packet kind=${packetPerfMeta.kind || "unknown"} ` +
+            `service=${packetPerfMeta.service || "?"} callID=${Number(packetPerfMeta.callID) || 0} ` +
+            `bytes=${marshaled.length} encodeMs=${encodeElapsedMs} writeMs=${writeElapsedMs}`,
+          );
+        }
       }
-    }
+    });
+    this._outboundWriteTail = queuedWrite
+      .catch((error) => {
+        log.err(`[Session] isolated packet encode failed for ${this.address}: ${error.message}`);
+        syncLedger.recordSyncLedgerEvent(this, "packet.dropped", {
+          ...(packetPerfMeta || {}),
+          packetSeq: packetLedger.seq,
+          reason: "encode-failed",
+        });
+        if (this.socket && !this.socket.destroyed) this.socket.destroy();
+      })
+      .finally(() => {
+        this._queuedOutboundPackets = Math.max(0, this._queuedOutboundPackets - 1);
+      });
+    return queuedWrite;
   }
 
   /**
@@ -514,6 +561,12 @@ class ClientSession {
       throw new TypeError("sendRawPayload expects a Buffer payload");
     }
 
+    if (this._queuedOutboundPackets >= 256) {
+      log.err(`[Session] Closing ${this.address}: outbound packet queue limit exceeded`);
+      this.socket.destroy();
+      return Promise.reject(new Error("outbound packet queue limit exceeded"));
+    }
+
     this.lastActivity = Date.now();
 
     const label = options.label || "raw";
@@ -524,6 +577,7 @@ class ClientSession {
       );
     }
 
+    const rawPayload = Buffer.from(payload);
     const startedAtMs = Date.now();
     const ledger = syncLedger.recordSyncLedgerEvent(this, "packet.begin", {
       kind: "raw",
@@ -531,21 +585,33 @@ class ClientSession {
       bytes: payload.length,
       encrypted: this.encrypted === true,
     });
-    const writeResult = this._writePayload(payload);
-    syncLedger.recordSyncLedgerEvent(this, "packet.sent", {
-      kind: "raw",
-      label,
-      packetSeq: ledger.seq,
-      bytes: payload.length,
-      writeMs: Date.now() - startedAtMs,
-      encrypted: this.encrypted === true,
-      writeAccepted:
-        writeResult && Object.prototype.hasOwnProperty.call(writeResult, "writeAccepted")
-          ? writeResult.writeAccepted
-          : null,
-      framedBytes: writeResult ? writeResult.framedBytes : null,
-      socketWritableLength: this.socket ? Number(this.socket.writableLength || 0) : null,
+    this._queuedOutboundPackets += 1;
+    const queuedWrite = this._outboundWriteTail.then(() => {
+      if (!this.socket || this.socket.destroyed) return;
+      const writeResult = this._writePayload(rawPayload);
+      syncLedger.recordSyncLedgerEvent(this, "packet.sent", {
+        kind: "raw",
+        label,
+        packetSeq: ledger.seq,
+        bytes: rawPayload.length,
+        writeMs: Date.now() - startedAtMs,
+        encrypted: this.encrypted === true,
+        writeAccepted:
+          writeResult && Object.prototype.hasOwnProperty.call(writeResult, "writeAccepted")
+            ? writeResult.writeAccepted
+            : null,
+        framedBytes: writeResult ? writeResult.framedBytes : null,
+        socketWritableLength: this.socket ? Number(this.socket.writableLength || 0) : null,
+      });
     });
+    this._outboundWriteTail = queuedWrite
+      .catch((error) => {
+        log.err(`[Session] raw packet write failed for ${this.address}: ${error.message}`);
+      })
+      .finally(() => {
+        this._queuedOutboundPackets = Math.max(0, this._queuedOutboundPackets - 1);
+      });
+    return queuedWrite;
   }
 
   _writePayload(payload) {
@@ -742,18 +808,13 @@ class ClientSession {
     // TQ broadcast notifications wrap the object/RPC body in a leading 0
     // before the [1, args] call tuple.
     const unpickledPayload: any[] = [0, [1, payloadTuple]];
-    const innerMarshalStartedAtMs = Date.now();
-    const marshalledPayload = marshalEncode(unpickledPayload, {
-      compatibilityProfile: this.compatibilityProfile,
-    });
-    const innerMarshalElapsedMs = Date.now() - innerMarshalStartedAtMs;
 
     const responseTuple: any[] = [
       MACHONETMSG_TYPE.NOTIFICATION,
       sourceAddr,
       destAddr,
       this.userid || null,
-      [[0, marshalledPayload]], // payload argument: must double wrap because the Notification packet has 1 param 'payload'
+      [[0, null]], // worker fills the marshaled payload before outer encoding
       { type: "dict", entries: buildNotificationNamedPayloadEntries(this) }, // named payload
       null, // contextKey
       null, // traceID/bssid (8th element required)
@@ -770,40 +831,46 @@ class ClientSession {
       name: "carbon.common.script.net.machoNetPacket.Notification",
       args: responseTuple,
     };
-    const spatialTraceContext =
-      (notifyType || "Notification") === "DoDestinyUpdate" && spatialTrace.isEnabled()
-        ? spatialTrace.recordSerializedNotification(
-          this,
-          payloadTuple,
-          marshalledPayload,
-        )
-        : null;
-
     log.pktOut(
       notifyType || "Notification",
       buildNotificationLogMessage(notifyType, idType, payloadTuple),
     );
-    this._pendingBootstrapPacketPerf = {
+    const packetPerfMeta: Record<string, any> = {
       kind: "notification",
       notifyType: notifyType || "Notification",
       idType: idType || "ownerid",
-      innerBytes: marshalledPayload.length,
-      innerMarshalMs: innerMarshalElapsedMs,
       ...syncLedger.summarizeNotificationPayload(
         notifyType || "Notification",
         payloadTuple,
       ),
     };
-    serviceCallShapeCapture.captureNotificationShape({
-      lane: "broadcast",
-      notifyType: notifyType || "Notification",
-      idType: idType || "ownerid",
-      payload: payloadTuple,
-      session: this,
-      innerBytes: marshalledPayload.length,
-      innerMarshalMs: innerMarshalElapsedMs,
+    this._pendingBootstrapPacketPerf = packetPerfMeta;
+    this.sendPacket(packet, null, {
+      innerMarshals: [{
+        path: ["args", 4, 0, 1],
+        value: unpickledPayload,
+        returnEncoded:
+          (notifyType || "Notification") === "DoDestinyUpdate" && spatialTrace.isEnabled(),
+      }],
+      onEncoded: ({ innerPayloads, encodeElapsedMs }) => {
+        const inner = innerPayloads[0];
+        const innerBytes = Buffer.isBuffer(inner) ? inner.length : Number(inner) || 0;
+        packetPerfMeta.innerBytes = innerBytes;
+        packetPerfMeta.codecMs = encodeElapsedMs;
+        serviceCallShapeCapture.captureNotificationShape({
+          lane: "broadcast",
+          notifyType: notifyType || "Notification",
+          idType: idType || "ownerid",
+          payload: payloadTuple,
+          session: this,
+          innerBytes,
+          codecMs: encodeElapsedMs,
+        });
+        return Buffer.isBuffer(inner)
+          ? spatialTrace.recordSerializedNotification(this, payloadTuple, inner)
+          : null;
+      },
     });
-    this.sendPacket(packet, spatialTraceContext);
   }
 
   /**
@@ -838,18 +905,13 @@ class ClientSession {
     const unpickledPayload = kwargs
       ? [1, methodName, payloadTuple, kwargs]
       : [1, methodName, payloadTuple];
-    const innerMarshalStartedAtMs = Date.now();
-    const marshalledPayload = marshalEncode(unpickledPayload, {
-      compatibilityProfile: this.compatibilityProfile,
-    });
-    const innerMarshalElapsedMs = Date.now() - innerMarshalStartedAtMs;
 
     const responseTuple: any[] = [
       MACHONETMSG_TYPE.NOTIFICATION,
       sourceAddr,
       destAddr,
       this.userid || null,
-      [[0, marshalledPayload]],
+      [[0, null]],
       { type: "dict", entries: buildNotificationNamedPayloadEntries(this) },
       null,
       null,
@@ -868,25 +930,34 @@ class ClientSession {
     };
 
     log.pktOut(serviceName || "Notification", `${methodName}()`);
-    this._pendingBootstrapPacketPerf = {
+    const packetPerfMeta: Record<string, any> = {
       kind: "service-notification",
       service: serviceName || null,
       method: methodName,
-      innerBytes: marshalledPayload.length,
-      innerMarshalMs: innerMarshalElapsedMs,
       argCount: Array.isArray(payloadTuple) ? payloadTuple.length : 0,
     };
-    serviceCallShapeCapture.captureNotificationShape({
-      lane: "service",
-      service: serviceName || null,
-      method: methodName,
-      payload: payloadTuple,
-      kwargs,
-      session: this,
-      innerBytes: marshalledPayload.length,
-      innerMarshalMs: innerMarshalElapsedMs,
+    this._pendingBootstrapPacketPerf = packetPerfMeta;
+    this.sendPacket(packet, null, {
+      innerMarshals: [{
+        path: ["args", 4, 0, 1],
+        value: unpickledPayload,
+      }],
+      onEncoded: ({ innerPayloads, encodeElapsedMs }) => {
+        const innerBytes = Number(innerPayloads[0]) || 0;
+        packetPerfMeta.innerBytes = innerBytes;
+        packetPerfMeta.codecMs = encodeElapsedMs;
+        serviceCallShapeCapture.captureNotificationShape({
+          lane: "service",
+          service: serviceName || null,
+          method: methodName,
+          payload: payloadTuple,
+          kwargs,
+          session: this,
+          innerBytes,
+          codecMs: encodeElapsedMs,
+        });
+      },
     });
-    this.sendPacket(packet);
   }
 
   /**
@@ -1060,9 +1131,6 @@ class ClientSession {
     const objectPayload = kwargs
       ? [objectID, methodName, payloadTuple, kwargs]
       : [objectID, methodName, payloadTuple];
-    const marshalledObjectPayload = marshalEncode(objectPayload, {
-      compatibilityProfile: this.compatibilityProfile,
-    });
     const objectRegistrationRefID = resolveBoundObjectRegistrationRefID(
       this,
       objectID,
@@ -1081,7 +1149,7 @@ class ClientSession {
       sourceAddr,
       destAddr,
       this.userid || null,
-      [[1, marshalledObjectPayload]],
+      [[1, null]],
       { type: "dict", entries: namedPayloadEntries },
       null,
       null,
@@ -1100,23 +1168,34 @@ class ClientSession {
     };
 
     log.pktOut(objectID, `${methodName}()`);
-    this._pendingBootstrapPacketPerf = {
+    const packetPerfMeta: Record<string, any> = {
       kind: "object-notification",
       objectID,
       method: methodName,
-      innerBytes: marshalledObjectPayload.length,
       argCount: Array.isArray(payloadTuple) ? payloadTuple.length : 0,
     };
-    serviceCallShapeCapture.captureNotificationShape({
-      lane: "object",
-      objectID,
-      method: methodName,
-      payload: payloadTuple,
-      kwargs,
-      session: this,
-      innerBytes: marshalledObjectPayload.length,
+    this._pendingBootstrapPacketPerf = packetPerfMeta;
+    this.sendPacket(packet, null, {
+      innerMarshals: [{
+        path: ["args", 4, 0, 1],
+        value: objectPayload,
+      }],
+      onEncoded: ({ innerPayloads, encodeElapsedMs }) => {
+        const innerBytes = Number(innerPayloads[0]) || 0;
+        packetPerfMeta.innerBytes = innerBytes;
+        packetPerfMeta.codecMs = encodeElapsedMs;
+        serviceCallShapeCapture.captureNotificationShape({
+          lane: "object",
+          objectID,
+          method: methodName,
+          payload: payloadTuple,
+          kwargs,
+          session: this,
+          innerBytes,
+          codecMs: encodeElapsedMs,
+        });
+      },
     });
-    this.sendPacket(packet);
   }
 
   /**

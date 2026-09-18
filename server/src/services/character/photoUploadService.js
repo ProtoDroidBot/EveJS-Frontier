@@ -4,7 +4,7 @@ const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
 const { getCharacterRecord, updateCharacterRecord, } = require(path.join(__dirname, "./characterState"));
-const { storeCharacterPortrait, } = require(path.join(__dirname, "./portraitImageStore"));
+const { storeCharacterPortraitAsync, } = require(path.join(__dirname, "./portraitImageStore"));
 function toNumber(value, fallback = 0) {
     if (value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, "value")) {
         return toNumber(value.value, fallback);
@@ -37,7 +37,7 @@ class PhotoUploadService extends BaseService {
     constructor() {
         super("photoUploadSvc");
     }
-    Handle_Upload(args, session) {
+    async Handle_Upload(args, session) {
         const { charId, photoBytes } = resolveUploadPayload(args, session);
         if (charId <= 0 || photoBytes.length === 0) {
             log.warn(`[PhotoUploadSvc] Rejected upload with invalid payload char=${charId} bytes=${photoBytes.length}`);
@@ -52,7 +52,7 @@ class PhotoUploadService extends BaseService {
             log.warn(`[PhotoUploadSvc] Rejected portrait upload for char=${charId} user=${session ? session.userid : 0}`);
             return false;
         }
-        const storeResult = storeCharacterPortrait(charId, photoBytes);
+        const storeResult = await storeCharacterPortraitAsync(charId, photoBytes);
         if (!storeResult.success) {
             log.warn(`[PhotoUploadSvc] Failed to store portrait for char=${charId}: ${storeResult.errorMsg}`);
             return false;

@@ -1074,6 +1074,54 @@ function ensureSceneMiningState(scene) {
   return cache;
 }
 
+function yieldToEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function ensureSceneMiningStateAsync(scene, options: Record<string, any> = {}) {
+  if (!scene) {
+    return null;
+  }
+  if (scene._miningRuntimeStateInitializationPromise) {
+    return scene._miningRuntimeStateInitializationPromise;
+  }
+  if (scene._miningRuntimeState) {
+    return scene._miningRuntimeState;
+  }
+
+  const batchSize = Math.max(1, toInt(options.batchSize, 32));
+  const initializationPromise = (async () => {
+    const persistedByEntityID = readPersistedSystemState(scene.systemID);
+    const cache = buildSceneCache(scene, persistedByEntityID);
+    const presentationSummary = createMiningPresentationSummary(scene.systemID);
+    scene._miningRuntimeState = cache;
+    const entities = [...(scene.staticEntities || [])];
+    for (let index = 0; index < entities.length; index += batchSize) {
+      for (const entity of entities.slice(index, index + batchSize)) {
+        registerMineableEntityInCache(scene, entity, cache, {
+          broadcast: false,
+          nowMs: Date.now(),
+          presentationSummary,
+        });
+      }
+      if (index + batchSize < entities.length) {
+        await yieldToEventLoop();
+      }
+    }
+    logMiningPresentationSummary(scene, presentationSummary);
+    return cache;
+  })();
+  scene._miningRuntimeStateInitializationPromise = initializationPromise;
+  try {
+    return await initializationPromise;
+  } catch (error) {
+    scene._miningRuntimeState = null;
+    throw error;
+  } finally {
+    scene._miningRuntimeStateInitializationPromise = null;
+  }
+}
+
 function registerMineableEntity(scene, entity, options: Record<string, any> = {}) {
   const cache = ensureSceneMiningState(scene);
   return registerMineableEntityInCache(scene, entity, cache, options);
@@ -1964,6 +2012,7 @@ module.exports = {
   MINING_RUNTIME_TABLE,
   DEPLETED_MINEABLE_RESPAWN_DELAY_MS,
   ensureSceneMiningState,
+  ensureSceneMiningStateAsync,
   registerMineableEntity,
   getMineableState,
   updateMineableState,

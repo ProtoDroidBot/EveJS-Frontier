@@ -26,7 +26,7 @@ const {
   getStationRecord,
 } = require(path.join(__dirname, "../_shared/stationStaticData"));
 const {
-  buildCachedMethodCallResult,
+  buildCachedMethodCallResultAsync: buildCachedMethodCallResult,
 } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 const {
   buildList,

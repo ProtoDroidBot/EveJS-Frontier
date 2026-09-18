@@ -44,12 +44,35 @@ function findFactionLogoPath(factionID, size = null) {
     }
     return null;
 }
+async function findFactionLogoPathAsync(factionID, size = null) {
+    const numericFactionID = toNumber(factionID, 0);
+    if (numericFactionID <= 0)
+        return null;
+    const candidates = [];
+    if (size !== null && size !== undefined) {
+        candidates.push(getFactionLogoFilePath(numericFactionID, size));
+    }
+    candidates.push(...listFactionLogoPaths(numericFactionID).map(({ filePath }) => filePath));
+    for (const candidate of candidates) {
+        try {
+            const stat = await fs.promises.stat(candidate);
+            if (stat.isFile())
+                return candidate;
+        }
+        catch (error) {
+            if (!(error && error.code === "ENOENT"))
+                throw error;
+        }
+    }
+    return null;
+}
 module.exports = {
     DEFAULT_FACTION_LOGO_PATH,
     FACTION_IMAGE_SIZES,
     FACTION_ROOT,
     ensureDirectory,
     findFactionLogoPath,
+    findFactionLogoPathAsync,
     getFactionLogoFilePath,
     listFactionLogoPaths,
 };

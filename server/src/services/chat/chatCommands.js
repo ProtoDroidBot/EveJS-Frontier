@@ -27,7 +27,7 @@ const { getExpertSystemByTypeID, listExpertSystems, resolveExpertSystemQuery: re
 const { clearExpertSystemsForCharacter, consumeExpertSystemItem, getExpertSystemStatus, installExpertSystemForCharacter, removeExpertSystemFromCharacter, } = require("../skills/expertSystems/expertSystemRuntime");
 const { createCustomAllianceForCorporation, createCustomCorporation, findCorporationByName, getOwnerLookupRecord, joinCorporationToAllianceByName, getCorporationRecord, } = require("../corporation/corporationState");
 const { ENTITY_TYPE, } = require(path.join(__dirname, "../../space/entityConstants"));
-const { jumpSessionToSolarSystem, jumpSessionToStation, } = require("../../space/transitions");
+const { jumpSessionToSolarSystemAsync, jumpSessionToStation, } = require("../../space/transitions");
 const { destroySessionShip, spawnShipDeathTestField, } = require("../../space/shipDestruction");
 const worldData = require("../../space/worldData");
 const spaceRuntime = require("../../space/runtime");
@@ -2918,7 +2918,7 @@ function buildTransportDestinationFromSession(session) {
             `solar system ${solarSystemID}`,
     };
 }
-function executeSessionTransportTarget(requestSession, targetDescriptor, destination, chatHub, options) {
+async function executeSessionTransportTarget(requestSession, targetDescriptor, destination, chatHub, options) {
     const targetLabel = formatTransportTargetLabel(targetDescriptor);
     const destinationLabel = formatTransportDestinationLabel(destination);
     const targetSession = targetDescriptor && targetDescriptor.session;
@@ -2927,9 +2927,8 @@ function executeSessionTransportTarget(requestSession, targetDescriptor, destina
     }
     let crossedLocationBoundary = false;
     if (destination.kind === "solarSystem") {
-        const result = jumpSessionToSolarSystem(targetSession, destination.solarSystemID, 
         // A GM transport is not a jump the pilot made.
-        { countsTowardJumpGoal: false });
+        const result = await jumpSessionToSolarSystemAsync(targetSession, destination.solarSystemID, { countsTowardJumpGoal: false });
         if (!result.success) {
             return handledResult(chatHub, requestSession, options, formatTransportTransitionError(result, `Failed to transport ${targetLabel} to ${destinationLabel}.`));
         }
@@ -2952,9 +2951,8 @@ function executeSessionTransportTarget(requestSession, targetDescriptor, destina
         if (currentTargetStationID ||
             !targetSession._space ||
             currentTargetSystemID !== destinationSystemID) {
-            const jumpResult = jumpSessionToSolarSystem(targetSession, destinationSystemID, 
             // A GM transport is not a jump the pilot made.
-            { countsTowardJumpGoal: false });
+            const jumpResult = await jumpSessionToSolarSystemAsync(targetSession, destinationSystemID, { countsTowardJumpGoal: false });
             if (!jumpResult.success) {
                 return handledResult(chatHub, requestSession, options, formatTransportTransitionError(jumpResult, `Failed to transport ${targetLabel} to ${destinationLabel}.`));
             }
@@ -6438,7 +6436,7 @@ function handleGmWeaponsCommand(session, chatHub, options) {
         sample ? `Sample: ${sample}.` : null,
     ].filter(Boolean).join(" "));
 }
-function handleSolarTeleport(session, argumentText, chatHub, options) {
+async function handleSolarTeleport(session, argumentText, chatHub, options) {
     if (!session || !session.characterID) {
         return handledResult(chatHub, session, options, "Select a character before using /solar.");
     }
@@ -6453,7 +6451,7 @@ function handleSolarTeleport(session, argumentText, chatHub, options) {
         return handledResult(chatHub, session, options, message.trim());
     }
     // A GM jump command is not a jump the pilot made.
-    const result = jumpSessionToSolarSystem(session, lookup.match.solarSystemID, {
+    const result = await jumpSessionToSolarSystemAsync(session, lookup.match.solarSystemID, {
         countsTowardJumpGoal: false,
     });
     if (!result.success) {

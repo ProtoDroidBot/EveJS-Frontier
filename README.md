@@ -107,6 +107,21 @@ Discovery is automatic, or pass the actual build directory explicitly with
 .\SetupFrontierWindows.ps1 -NonInteractive -SourceRoot 'C:\CCP\EVE Frontier\stillness'
 ```
 
+An exact-build modified or merged client can also be the selected client/server
+data target. Its executable patch inputs (`blue.pyd`, `code.ccp`, manifest, CA
+bundles, and `exefile.exe`) must still match the supported build profile, while
+its merged `resfileindex.txt` and `ResFiles` cache are preserved. When switching
+an existing same-build stage from another source, request a verified rebuild and
+refresh the extracted server data:
+
+```powershell
+$target = 'D:\clients\ef\3502403-MOD3-TEST\EVE Frontier\stillness'
+.\SetupFrontierWindows.ps1 -NonInteractive -SourceRoot $target -ForceData -CleanStage
+```
+
+`-CleanStage` removes only a validated marker-owned stage; it will not silently
+retarget an existing `ResFiles` junction.
+
 The setup installs only missing prerequisites, runs the locked npm installs,
 proves `better-sqlite3` under the active Node ABI, creates the ignored
 `_local\frontier-python312` environment, extracts and validates build-numbered
@@ -120,7 +135,7 @@ The default stage is:
 %LOCALAPPDATA%\EveJS-Frontier\windows\staged-client\3502403
 ```
 
-By default its `ResFiles` entry is a junction to the official shared cache.
+By default its `ResFiles` entry is a junction to the selected source cache.
 That saves roughly the size of a second resource cache, but it is shared and
 not OS-enforced read-only. Add `-CopyResFiles` for a complete copy. Every other
 client file is copied before mutation, and the stage marker records the
@@ -567,6 +582,21 @@ Use `evejs.config.local.json` for gameplay, economy, NPC, feature, and logging s
 
 Rust market runtime and seeder tuning are separate from the Node JSON configuration. Routine seed selection belongs in the `market-tools rebuild` arguments; advanced defaults live in `docker/market-server.toml`, `docker/market-seed.toml`, and `docker/market-seed-v2.toml` and require an image rebuild.
 
+### Configuring NPC behavior
+
+The root `npc-behavior.config.json` is the shared behavior-policy layer for every native NPC definition. It is applied at the common materialization path, so direct profile spawns, pools, groups, belt rats, startup rules, dungeon waves, CONCORD, capital NPCs, Drifters, and reinforcement spawns all receive a resolved role and activity.
+
+The shipped policy defines four roles:
+
+- `guard` fills missing combat, movement, leash, and aggression settings while preserving the more specific values authored in `npcBehaviorProfiles`;
+- `passive` preserves non-combat traffic and utility hulls;
+- `miner` keeps weapons and automatic aggression disabled and automatically enrolls matching hulls in the mining controller, including miners created through a generic NPC spawn path;
+- `hauler` keeps mining-operation transports passive and makes them eligible for automatic mining-fleet attachment.
+
+Rules are evaluated by ascending `priority`; later matching rules win the role and can add behavior overrides. Matchers support exact IDs, ID prefixes and fragments for profiles, behavior profiles, and loadouts, plus entity type and authored `behaviorAutoAggro`. Global and role `behaviorDefaults` only fill missing authored values. `behaviorOverrides` intentionally replace authored values, so use overrides only where the role must enforce a setting.
+
+The file is validated at server startup. Invalid schemas, unknown roles, empty match rules, or attempts to replace the reserved `behaviorProfileID` and `name` fields stop startup with the exact config error. Changes require a server restart; Docker users must rebuild and recreate the backend so the changed file is copied into the image.
+
 ### Docker persistence
 
 Both SQLite databases, retained market backups, downloaded snapshots, generated static data, and uploaded character portraits and alliance logos live in the named volume `evejs-data`. Normal `stop`, `down`, image rebuild, and container replacement operations preserve it. See [Upgrading and moving your server](#upgrading-and-moving-your-server) for the steps to carry it to a new version, folder, or PC.
@@ -673,6 +703,7 @@ Everything your server remembers — accounts, characters, ships, wallets, uploa
 | `_local\gameStore\` | game database, characters, and uploaded portraits and alliance logos |
 | `externalservices\market-server\data\generated\` | market database |
 | `evejs.config.local.json` | your server settings |
+| `npc-behavior.config.json` | shared NPC role, aggression, mining, and hauling policy |
 
 > **Upgrading from a version released before 25 July 2026:** uploaded character portraits used to be written into the program files, at `server\src\_secondary\image\generated\Character`. That is why they were left behind whenever an install was copied to a new folder, and why rebuilding a Docker container erased them. They now live in `_local\gameStore\images`, beside the game database, so they travel with everything else. The steps below include the one-time copy that brings old portraits across; the server keeps reading the old location in the meantime, so nothing breaks if you upgrade first and migrate later.
 
@@ -712,6 +743,7 @@ Check that your characters are there before deleting the old folder.
    - `_local\gameStore\`
    - `externalservices\market-server\data\generated\`
    - `evejs.config.local.json`
+   - `npc-behavior.config.json` — if you customized NPC roles or behavior rules.
    - `server\src\_secondary\image\generated\Character\` — only if the old version has this folder (see the note above). `StartServer.bat` moves its contents into `_local\gameStore\images` on the next start.
 4. Run `StartMarketServer.bat`, then `StartServer.bat`, in the new folder.
 

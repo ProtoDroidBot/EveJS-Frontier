@@ -45,6 +45,7 @@ const CLOSE_TIMEOUT_MS = 1000;
 const PENDING_WRITE_INDEX = 0;
 const FAILED_WRITE_INDEX = 1;
 const SHARED_COUNTER_SLOTS = 2;
+const DEFAULT_MAX_PENDING_WRITES = 256;
 
 function errorMessage(error, fallback) {
   if (error && typeof error.message === "string" && error.message.length > 0) {
@@ -64,6 +65,11 @@ function errorMessage(error, fallback) {
 
 function timeoutValue(value, fallback) {
   return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function positiveInteger(value, fallback) {
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : fallback;
 }
 
 function copyUpserts(upserts: unknown): [string, string][] {
@@ -162,6 +168,10 @@ function createController(options: Record<string, any> = {}) {
   const defaultExitTimeoutMs = timeoutValue(
     options.exitTimeoutMs,
     defaultCloseTimeoutMs,
+  );
+  const maxPendingWrites = positiveInteger(
+    options.maxPendingWrites ?? process.env.EVEJS_PERSISTENCE_MAX_PENDING,
+    DEFAULT_MAX_PENDING_WRITES,
   );
 
   /**
@@ -977,6 +987,13 @@ function createController(options: Record<string, any> = {}) {
       error.code = "PERSISTENCE_TABLE_WRITE_PENDING";
       error.operationId = existingOperationId;
       error.table = normalizedTable;
+      throw error;
+    }
+    if (pendingWrites.size >= maxPendingWrites) {
+      const error: Error & Record<string, any> = new Error(
+        `persistence worker queue is full (${maxPendingWrites})`,
+      );
+      error.code = "PERSISTENCE_WORKER_QUEUE_FULL";
       throw error;
     }
 

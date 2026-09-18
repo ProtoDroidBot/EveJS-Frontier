@@ -2,7 +2,7 @@ const path = require("path");
 
 const BaseService = require(path.join(__dirname, "../baseService"));
 const {
-  buildCachedMethodCallResult,
+  buildCachedMethodCallResultAsync: buildCachedMethodCallResult,
 } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 const {
   buildObservedTalesDict,

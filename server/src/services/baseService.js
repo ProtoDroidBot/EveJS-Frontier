@@ -9,7 +9,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const log = require(path.join(__dirname, "../utils/logger"));
 const serviceCallShapeCapture = require(path.join(__dirname, "_shared/serviceCallShapeCapture"));
-const serviceTaskPool = require(path.join(__dirname, "../utils/serviceTaskPool"));
 function normalizeMethodName(method) {
     if (typeof method === "string") {
         return method;
@@ -37,10 +36,14 @@ class BaseService {
     /**
      * Run a pure CPU-heavy calculation outside the main networking/simulation
      * thread. The task must not mutate live service state; apply its returned
-     * plan from the calling service after awaiting it.
+     * plan from the calling service after awaiting it. Callers must supply their
+     * workload's dedicated pool; there is intentionally no global fallback.
      */
-    runIsolatedTask(modulePath, exportName, args = [], options = {}) {
-        return serviceTaskPool.run({
+    runIsolatedTask(taskPool, modulePath, exportName, args = [], options = {}) {
+        if (!taskPool || typeof taskPool.run !== "function") {
+            throw new TypeError("runIsolatedTask requires a dedicated task pool");
+        }
+        return taskPool.run({
             modulePath,
             exportName,
             args,

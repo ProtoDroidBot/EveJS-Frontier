@@ -9,6 +9,8 @@
 !tsconfig.browser.json
 !tsconfig.tools.json
 !evejs.config.local.json
+!npc-behavior.config.json
+!frontier-dungeon-spawns.json
 !server/
 !server/**
 !tools/

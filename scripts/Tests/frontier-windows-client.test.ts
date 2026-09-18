@@ -47,6 +47,7 @@ function createFrontierDiscoveryFixture(fixtureBase, build) {
     "code.ccp",
     "manifest.dat",
     "resfileindex.txt",
+    path.join("bin64", "bundle.collision"),
     path.join("bin64", "staticdata", "mapObjects.db"),
     path.join("bin64", "cacert.pem"),
     path.join("bin64", "packages", "certifi", "cacert.pem"),
@@ -292,6 +293,7 @@ test("stage cleanup refuses a retargeted ResFiles junction", {
     "code.ccp",
     "manifest.dat",
     "resfileindex.txt",
+    path.join("bin64", "bundle.collision"),
     path.join("bin64", "staticdata", "mapObjects.db"),
     path.join("bin64", "cacert.pem"),
     path.join("bin64", "packages", "certifi", "cacert.pem"),
@@ -344,6 +346,74 @@ test("stage cleanup refuses a retargeted ResFiles junction", {
   assert.match(`${result.stderr}\n${result.stdout}`, /Junction target changed/);
   assert.equal(fs.existsSync(stageRoot), true);
   assert.equal(fs.readFileSync(sentinel, "utf8"), "owned by the wrong target");
+});
+
+test("stage clean can replace a verified stage from another source client", {
+  skip: !canRunPowerShell,
+}, (t) => {
+  const fixtureBase = fs.mkdtempSync(
+    path.join(os.tmpdir(), "evejs frontier source switch "),
+  );
+  t.after(() => fs.rmSync(fixtureBase, { force: true, recursive: true }));
+  const build = 9994416;
+  const sourceA = createFrontierDiscoveryFixture(
+    path.join(fixtureBase, "source A"),
+    build,
+  );
+  const sourceB = createFrontierDiscoveryFixture(
+    path.join(fixtureBase, "source B"),
+    build,
+  );
+  const stagingBase = path.join(fixtureBase, "staged-client");
+  const stageRoot = path.join(stagingBase, String(build));
+  fs.mkdirSync(stageRoot, { recursive: true });
+  writeCopyStageMarker({
+    build,
+    officialResFiles: sourceA.officialResFiles,
+    sourceRoot: sourceA.sourceRoot,
+    stageRoot,
+    stagingBase,
+  });
+  const oldSentinel = path.join(stageRoot, "old-source.txt");
+  fs.writeFileSync(oldSentinel, "old source stage");
+
+  const result = spawnSync(
+    POWERSHELL,
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-File",
+      path.join(REPO_ROOT, "StageFrontierClient.ps1"),
+      "-SourceRoot",
+      sourceB.sourceRoot,
+      "-Build",
+      String(build),
+      "-StagingBase",
+      stagingBase,
+      "-Clean",
+      "-NoPatch",
+    ],
+    { encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Removed marker-owned stage/);
+  assert.equal(fs.existsSync(oldSentinel), false);
+  const marker = JSON.parse(fs.readFileSync(
+    path.join(stageRoot, ".evejs-frontier-stage.json"),
+    "utf8",
+  ));
+  assert.equal(path.resolve(marker.sourceRoot), path.resolve(sourceB.sourceRoot));
+  assert.equal(marker.resFiles.mode, "junction");
+  assert.equal(
+    path.resolve(marker.resFiles.target),
+    path.resolve(sourceB.officialResFiles),
+  );
+  assert.equal(
+    fs.realpathSync(path.join(stageRoot, "ResFiles")),
+    fs.realpathSync(sourceB.officialResFiles),
+  );
 });
 
 test("stage preflight rejects a staging-base ancestor junction before writing", {

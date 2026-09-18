@@ -1,7 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
-const { TABLE, readStaticTable, } = require(path.join(__dirname, "../_shared/referenceData"));
+const { TABLE, readStaticTable, readStaticRows, } = require(path.join(__dirname, "../_shared/referenceData"));
+const dungeonSpawnEligibility = require(path.join(__dirname, "./dungeonSpawnEligibility"));
+const frontierDungeonSpawns = require(path.join(__dirname, "../../config/frontierDungeonSpawns"));
 const { isDisabledMissionIdentifier, isDisabledMissionSourceURL, isDisabledMissionTemplateIdentifier, productionMissionPolicy, } = require(path.join(__dirname, "../../config/productionMissionPolicy"));
 let cache = null;
 const BANNED_DUNGEON_TEMPLATE_IDS = new Set(productionMissionPolicy.disabledMissions
@@ -93,8 +95,139 @@ function sanitizePayload(payload = {}) {
         indexes,
     };
 }
+function addTemplateIndex(index, key, templateID) {
+    const normalizedKey = String(key == null ? "" : key).trim();
+    if (!normalizedKey) {
+        return;
+    }
+    if (!Array.isArray(index[normalizedKey])) {
+        index[normalizedKey] = [];
+    }
+    if (!index[normalizedKey].includes(templateID)) {
+        index[normalizedKey].push(templateID);
+        index[normalizedKey].sort((left, right) => String(left).localeCompare(String(right)));
+    }
+}
+function hydrateExistingFrontierDungeonTemplates(templatesByID, frontierDungeonTemplates, itemTypes) {
+    const dungeonRows = Array.isArray(frontierDungeonTemplates)
+        ? frontierDungeonTemplates
+        : Object.values(normalizeObject(frontierDungeonTemplates));
+    const typeRows = Array.isArray(itemTypes)
+        ? itemTypes
+        : Object.values(normalizeObject(itemTypes));
+    const dungeonByID = new Map();
+    for (const dungeon of dungeonRows) {
+        const dungeonID = Math.max(0, toInt(dungeon && (dungeon.dungeonID ?? dungeon._key), 0));
+        if (dungeonID > 0) {
+            dungeonByID.set(dungeonID, dungeon);
+        }
+    }
+    const groupIDByTypeID = new Map();
+    for (const type of typeRows) {
+        const typeID = Math.max(0, toInt(type && (type.typeID ?? type._key), 0));
+        if (typeID > 0) {
+            groupIDByTypeID.set(typeID, Math.max(0, toInt(type && type.groupID, 0)));
+        }
+    }
+    const supportedGroupIDs = new Set(dungeonSpawnEligibility.FRONTIER_DUNGEON_SPAWN_GROUP_IDS);
+    let hydratedTemplateCount = 0;
+    for (const [templateID, template] of Object.entries(templatesByID)) {
+        const sourceDungeonID = Math.max(0, toInt(template && template.sourceDungeonID, 0));
+        const dungeon = dungeonByID.get(sourceDungeonID) || null;
+        const entryObjectTypeID = Math.max(0, toInt(template && template.entryObjectTypeID, toInt(dungeon && dungeon.entryTypeID, 0)));
+        const entryObjectGroupID = Math.max(0, toInt(template && template.entryObjectGroupID, groupIDByTypeID.get(entryObjectTypeID) || 0));
+        const presentation = dungeonSpawnEligibility.FRONTIER_DUNGEON_SPAWN_PRESENTATION_BY_GROUP_ID[entryObjectGroupID] || null;
+        if (!dungeon || !supportedGroupIDs.has(entryObjectGroupID) || !presentation) {
+            continue;
+        }
+        templatesByID[templateID] = {
+            ...template,
+            dungeonID: Math.max(0, toInt(template && template.dungeonID, sourceDungeonID)) || sourceDungeonID,
+            dungeonName: template && template.dungeonName || dungeon.dungeonName || null,
+            entryObjectGroupID,
+            entryObjectID: Math.max(0, toInt(template && template.entryObjectID, toInt(dungeon.entryObjectID, 0))) || null,
+            entryObjectTypeID,
+            entryTypeID: Math.max(0, toInt(template && template.entryTypeID, toInt(dungeon.entryTypeID, entryObjectTypeID))) || entryObjectTypeID,
+            frontierDungeonHydrated: true,
+            // Existing client-derived templates must use the same allocation path as
+            // synthesized Frontier templates. Otherwise an old 4871 row remains in
+            // the sparse ore index while 4872-4874 use the visible 4873 baseline.
+            siteFamily: presentation.siteFamily,
+            siteKind: presentation.siteKind,
+            difficulty: Math.max(1, toInt(template && template.difficulty, toInt(dungeon && dungeon.difficulty, 1))),
+            rooms: Array.isArray(template && template.rooms) && template.rooms.length > 0
+                ? template.rooms
+                : clone(Array.isArray(dungeon.rooms) ? dungeon.rooms : []),
+            siteOrigin: template && template.siteOrigin || "frontier_dungeon",
+            triggers: Array.isArray(template && template.triggers) && template.triggers.length > 0
+                ? template.triggers
+                : clone(Array.isArray(dungeon.triggers) ? dungeon.triggers : []),
+        };
+        hydratedTemplateCount += 1;
+    }
+    return hydratedTemplateCount;
+}
+function mergeFrontierDungeonSpawnTemplates(payload, frontierDungeonTemplates = readStaticRows(TABLE.FRONTIER_DUNGEON_TEMPLATES), itemTypes = readStaticRows(TABLE.ITEM_TYPES)) {
+    const templatesByID = {
+        ...normalizeObject(payload && payload.templatesByID),
+    };
+    const hydratedTemplateCount = hydrateExistingFrontierDungeonTemplates(templatesByID, frontierDungeonTemplates, itemTypes);
+    const generatedTemplates = dungeonSpawnEligibility.buildFrontierDungeonSpawnTemplates({ frontierDungeonTemplates }, itemTypes, templatesByID);
+    const indexes = clone(normalizeObject(payload && payload.indexes));
+    // Family indexes are derived state. Rebuild them after hydration because a
+    // supported Frontier template may have moved from a legacy family (notably
+    // 4871/ore) onto the shared visible-site allocation path.
+    indexes.templateIDsByFamily = {};
+    indexes.templateIDsBySource = normalizeObject(indexes.templateIDsBySource);
+    indexes.templateIDsByArchetypeID = normalizeObject(indexes.templateIDsByArchetypeID);
+    indexes.templateIDsBySourceDungeonID = normalizeObject(indexes.templateIDsBySourceDungeonID);
+    for (const template of generatedTemplates) {
+        const templateID = String(template.templateID);
+        templatesByID[templateID] = template;
+        addTemplateIndex(indexes.templateIDsBySource, template.source, templateID);
+        if (toInt(template.archetypeID, 0) > 0) {
+            addTemplateIndex(indexes.templateIDsByArchetypeID, toInt(template.archetypeID, 0), templateID);
+        }
+        indexes.templateIDsBySourceDungeonID[String(template.sourceDungeonID)] = templateID;
+    }
+    let frontierDungeonConfiguredTemplateCount = 0;
+    for (const [templateID, template] of Object.entries(templatesByID)) {
+        const configuredTemplate = frontierDungeonSpawns.decorateTemplate(template);
+        templatesByID[templateID] = configuredTemplate;
+        if (configuredTemplate && configuredTemplate.frontierDungeonSpawnConfigured === true) {
+            frontierDungeonConfiguredTemplateCount += 1;
+        }
+    }
+    for (const template of Object.values(templatesByID)) {
+        const templateID = String(template && template.templateID || "").trim();
+        if (templateID) {
+            addTemplateIndex(indexes.templateIDsByFamily, template.siteFamily, templateID);
+        }
+    }
+    const totalTemplatesByFamily = {};
+    for (const template of Object.values(templatesByID)) {
+        const siteFamily = String(template && template.siteFamily || "unknown").trim().toLowerCase() || "unknown";
+        totalTemplatesByFamily[siteFamily] = (totalTemplatesByFamily[siteFamily] || 0) + 1;
+    }
+    return {
+        ...payload,
+        counts: {
+            ...normalizeObject(payload && payload.counts),
+            templateCount: Object.keys(templatesByID).length,
+            frontierDungeonHydratedTemplateCount: hydratedTemplateCount,
+            frontierDungeonSynthesizedTemplateCount: generatedTemplates.length,
+            frontierDungeonConfiguredTemplateCount,
+        },
+        coverage: {
+            ...normalizeObject(payload && payload.coverage),
+            totalTemplatesByFamily,
+        },
+        templatesByID,
+        indexes,
+    };
+}
 function buildCache() {
-    const payload = sanitizePayload(normalizePayload(readStaticTable(TABLE.DUNGEON_AUTHORITY)));
+    const payload = mergeFrontierDungeonSpawnTemplates(sanitizePayload(normalizePayload(readStaticTable(TABLE.DUNGEON_AUTHORITY))));
     const templatesByID = new Map();
     const templatesBySourceDungeonID = new Map();
     const templatesBySource = new Map();
@@ -314,6 +447,8 @@ module.exports = {
     listTemplatesByFamily,
     listTemplatesByResourceTypeID,
     listTemplatesBySource,
+    hydrateExistingFrontierDungeonTemplates,
+    mergeFrontierDungeonSpawnTemplates,
     sanitizePayload,
 };
 //# sourceMappingURL=dungeonAuthority.js.map

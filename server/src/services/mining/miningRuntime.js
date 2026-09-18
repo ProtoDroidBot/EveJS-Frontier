@@ -29,7 +29,7 @@ const { computeMiningResult, } = require("./miningMath");
 const { isMiningEffectRecord, buildMiningModuleSnapshot, } = require("./miningDogma");
 const commandBurstRuntime = require(path.join(__dirname, "../../space/modules/commandBurstRuntime"));
 const { getLocationModifierSourcesForSystem, } = require(path.join(__dirname, "../exploration/wormholes/wormholeEnvironmentRuntime"));
-const { ensureSceneMiningState, getMineableState, applyMiningDelta, isMineableStaticEntity, respawnDepletedMineables, } = require("./miningRuntimeState");
+const { ensureSceneMiningState, ensureSceneMiningStateAsync, getMineableState, applyMiningDelta, isMineableStaticEntity, respawnDepletedMineables, } = require("./miningRuntimeState");
 const { getNpcFittedModuleItems, getNpcLoadedChargeForModule, isNativeNpcEntity, } = require(path.join(__dirname, "../../space/npc/npcEquipment"));
 const { buildKeyVal, currentFileTime, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const INV_UPDATE_LOCATION = 3;
@@ -904,6 +904,21 @@ function handleSceneCreated(scene) {
         miningNpcOperations.handleSceneCreated(scene);
     }
 }
+async function handleSceneCreatedAsync(scene, options = {}) {
+    const miningResourceSiteService = require("./miningResourceSiteService");
+    if (options.resourceSitesPlanned !== true &&
+        miningResourceSiteService &&
+        typeof miningResourceSiteService.handleSceneCreated === "function") {
+        miningResourceSiteService.handleSceneCreated(scene);
+    }
+    await ensureSceneMiningStateAsync(scene, {
+        batchSize: options.batchSize,
+    });
+    const miningNpcOperations = require("./miningNpcOperations");
+    if (typeof miningNpcOperations.handleSceneCreated === "function") {
+        miningNpcOperations.handleSceneCreated(scene);
+    }
+}
 function tickScene(scene, now) {
     ensureSceneMiningState(scene);
     respawnDepletedMineables(scene, Date.now());
@@ -934,6 +949,7 @@ function tickScene(scene, now) {
 }
 module.exports = {
     handleSceneCreated,
+    handleSceneCreatedAsync,
     tickScene,
     isMiningEffectRecord,
     isMiningEffectState,

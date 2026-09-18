@@ -1,0 +1,481 @@
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "source": {
+    "clientBuild": 3502403,
+    "analysis": "../_analysis/frontier-dungeon-spawner-inventory-3502403.md",
+    "notes": "Controller counts and activation labels come from the build-3502403 analysis. Raw trigger values are retained as metadata and are not interpreted as NPC counts. Add exact entity descriptors to sites.<dungeonID>.entities or spawnerTypes.<typeID>.entityComposition when a controller has a known entity output."
+  },
+  "defaults": {
+    "factionTagPrefix": "frontier-faction:",
+    "maxNpcEntriesPerController": 8,
+    "formationSpacingMeters": 1800,
+    "npcFactionID": 500025,
+    "npcCorporationID": 1000287,
+    "npcLoadoutID": "retail_empty_npc_entity_loadout"
+  },
+  "siteTypes": {
+    "4871": {
+      "key": "mining-asteroid",
+      "name": "Mining / Asteroid Site",
+      "allowsNpcWaves": true,
+      "allowsEntitySpawns": true
+    },
+    "4872": {
+      "key": "crude-rift",
+      "name": "Crude Rift",
+      "allowsNpcWaves": true,
+      "allowsEntitySpawns": true
+    },
+    "4873": {
+      "key": "wreck-ruin-debris",
+      "name": "Wreck, Ruin & Debris",
+      "allowsNpcWaves": true,
+      "allowsEntitySpawns": true
+    },
+    "4874": {
+      "key": "landmark",
+      "name": "Landmark",
+      "allowsNpcWaves": true,
+      "allowsEntitySpawns": true
+    }
+  },
+  "npcBehaviorPresets": {
+    "frigate": {
+      "behaviorProfileID": "frontier_dungeon_frigate",
+      "name": "Frontier Dungeon Frigate",
+      "thinkIntervalMs": 180,
+      "movementMode": "orbit",
+      "orbitDistanceMeters": 8000,
+      "followRangeMeters": 8000,
+      "aggressionRangeMeters": 90000,
+      "leashRangeMeters": 250000,
+      "cruiseSpeedMetersPerSecond": 420,
+      "chaseMaxVelocityMetersPerSecond": 1800
+    },
+    "cruiser": {
+      "behaviorProfileID": "frontier_dungeon_cruiser",
+      "name": "Frontier Dungeon Cruiser",
+      "thinkIntervalMs": 220,
+      "movementMode": "orbit",
+      "orbitDistanceMeters": 15000,
+      "followRangeMeters": 15000,
+      "aggressionRangeMeters": 110000,
+      "leashRangeMeters": 250000,
+      "cruiseSpeedMetersPerSecond": 300,
+      "chaseMaxVelocityMetersPerSecond": 1300
+    },
+    "battleship": {
+      "behaviorProfileID": "frontier_dungeon_battleship",
+      "name": "Frontier Dungeon Battleship",
+      "thinkIntervalMs": 280,
+      "movementMode": "orbit",
+      "orbitDistanceMeters": 30000,
+      "followRangeMeters": 30000,
+      "aggressionRangeMeters": 140000,
+      "leashRangeMeters": 300000,
+      "cruiseSpeedMetersPerSecond": 190,
+      "chaseMaxVelocityMetersPerSecond": 850
+    },
+    "commander": {
+      "behaviorProfileID": "frontier_dungeon_commander",
+      "name": "Frontier Dungeon Commander",
+      "thinkIntervalMs": 160,
+      "movementMode": "orbit",
+      "orbitDistanceMeters": 24000,
+      "followRangeMeters": 24000,
+      "aggressionRangeMeters": 150000,
+      "leashRangeMeters": 300000,
+      "cruiseSpeedMetersPerSecond": 260,
+      "chaseMaxVelocityMetersPerSecond": 1200
+    }
+  },
+  "factions": {
+    "osa": {
+      "displayName": "Osa",
+      "tag": "frontier-faction:osa",
+      "npcRoles": {
+        "frigate": [
+          { "profileID": "frontier_osa_frigate", "typeID": 72207, "name": "Osa Frigate", "behaviorPreset": "frigate", "bounty": 30000 }
+        ],
+        "cruiser": [
+          { "profileID": "frontier_osa_cruiser", "typeID": 72374, "name": "Osa Cruiser", "behaviorPreset": "cruiser", "bounty": 150000 }
+        ],
+        "battleship": [
+          { "profileID": "frontier_osa_battleship", "typeID": 72375, "name": "Osa Battleship", "behaviorPreset": "battleship", "bounty": 650000 }
+        ],
+        "frigateSupport": [
+          { "profileID": "frontier_osa_auxiliary_frigate", "typeID": 78380, "name": "Osa Auxiliary Frigate", "behaviorPreset": "frigate", "bounty": 60000 }
+        ],
+        "cruiserSupport": [
+          { "profileID": "frontier_osa_escort_cruiser", "typeID": 78377, "name": "Osa Escort Cruiser", "behaviorPreset": "cruiser", "bounty": 250000 }
+        ],
+        "battleshipSupport": [
+          { "profileID": "frontier_osa_escort_cruiser_bs_support", "typeID": 78377, "name": "Osa Escort Cruiser", "behaviorPreset": "cruiser", "bounty": 250000 }
+        ],
+        "commander": [
+          { "profileID": "frontier_osa_overseer", "typeID": 78374, "name": "Osa Overseer", "behaviorPreset": "commander", "bounty": 1200000 }
+        ],
+        "surveyor": [
+          { "profileID": "frontier_osa_surveyor", "typeID": 72207, "name": "Osa Surveyor", "behaviorPreset": "frigate", "bounty": 40000 }
+        ]
+      }
+    },
+    "okryda": {
+      "displayName": "Okryda",
+      "tag": "frontier-faction:okryda",
+      "npcRoles": {
+        "frigate": [
+          { "profileID": "frontier_okryda_frigate", "typeID": 73019, "name": "Okryda Frigate", "behaviorPreset": "frigate", "bounty": 30000 }
+        ],
+        "cruiser": [
+          { "profileID": "frontier_okryda_cruiser", "typeID": 73020, "name": "Okryda Cruiser", "behaviorPreset": "cruiser", "bounty": 150000 }
+        ],
+        "battleship": [
+          { "profileID": "frontier_okryda_battleship", "typeID": 73021, "name": "Okryda Battleship", "behaviorPreset": "battleship", "bounty": 650000 }
+        ],
+        "frigateSupport": [
+          { "profileID": "frontier_okryda_auxiliary", "typeID": 78381, "name": "Okryda Auxiliary Battlecruiser", "behaviorPreset": "cruiser", "bounty": 250000 }
+        ],
+        "cruiserSupport": [
+          { "profileID": "frontier_okryda_escort", "typeID": 78378, "name": "Okryda Escort Battlecruiser", "behaviorPreset": "cruiser", "bounty": 275000 }
+        ],
+        "battleshipSupport": [
+          { "profileID": "frontier_okryda_auxiliary_bs_support", "typeID": 78381, "name": "Okryda Auxiliary Battlecruiser", "behaviorPreset": "cruiser", "bounty": 250000 }
+        ],
+        "commander": [
+          { "profileID": "frontier_okryda_overseer", "typeID": 78375, "name": "Okryda Overseer", "behaviorPreset": "commander", "bounty": 1200000 }
+        ],
+        "surveyor": [
+          { "profileID": "frontier_okryda_surveyor", "typeID": 73019, "name": "Okryda Surveyor", "behaviorPreset": "frigate", "bounty": 40000 }
+        ]
+      }
+    },
+    "termit": {
+      "displayName": "Termit",
+      "tag": "frontier-faction:termit",
+      "npcRoles": {
+        "frigate": [
+          { "profileID": "frontier_termit_frigate", "typeID": 73151, "name": "Termit Frigate", "behaviorPreset": "frigate", "bounty": 30000 }
+        ],
+        "cruiser": [
+          { "profileID": "frontier_termit_cruiser", "typeID": 73152, "name": "Termit Cruiser", "behaviorPreset": "cruiser", "bounty": 150000 }
+        ],
+        "battleship": [
+          { "profileID": "frontier_termit_battleship", "typeID": 73153, "name": "Termit Battleship", "behaviorPreset": "battleship", "bounty": 650000 }
+        ],
+        "frigateSupport": [
+          { "profileID": "frontier_termit_escort", "typeID": 78379, "name": "Termit Escort Battleship", "behaviorPreset": "battleship", "bounty": 700000 }
+        ],
+        "cruiserSupport": [
+          { "profileID": "frontier_termit_escort_cruiser_support", "typeID": 78379, "name": "Termit Escort Battleship", "behaviorPreset": "battleship", "bounty": 700000 }
+        ],
+        "battleshipSupport": [
+          { "profileID": "frontier_termit_auxiliary_battleship", "typeID": 78382, "name": "Termit Auxiliary Battleship", "behaviorPreset": "battleship", "bounty": 800000 }
+        ],
+        "commander": [
+          { "profileID": "frontier_termit_overseer", "typeID": 78376, "name": "Termit Overseer", "behaviorPreset": "commander", "bounty": 1200000 }
+        ],
+        "surveyor": [
+          { "profileID": "frontier_termit_seeker", "typeID": 88938, "name": "Termit Seeker", "behaviorPreset": "frigate", "bounty": 40000 }
+        ]
+      }
+    },
+    "tsikada": {
+      "displayName": "Tsikada",
+      "tag": "frontier-faction:tsikada",
+      "npcRoles": {
+        "frigate": [
+          { "profileID": "frontier_tsikada_frigate", "typeID": 82321, "name": "Tsikada Frigate", "behaviorPreset": "frigate", "bounty": 30000 }
+        ],
+        "cruiser": [
+          { "profileID": "frontier_tsikada_cruiser", "typeID": 82328, "name": "Tsikada Cruiser", "behaviorPreset": "cruiser", "bounty": 150000 }
+        ],
+        "battleship": [
+          { "profileID": "frontier_tsikada_battleship", "typeID": 82327, "name": "Tsikada Battleship", "behaviorPreset": "battleship", "bounty": 650000 }
+        ],
+        "frigateSupport": [
+          { "profileID": "frontier_tsikada_escort_frigate", "typeID": 82324, "name": "Tsikada Escort Frigate", "behaviorPreset": "frigate", "bounty": 60000 }
+        ],
+        "cruiserSupport": [
+          { "profileID": "frontier_tsikada_escort_cruiser_support", "typeID": 82324, "name": "Tsikada Escort Frigate", "behaviorPreset": "frigate", "bounty": 60000 }
+        ],
+        "battleshipSupport": [
+          { "profileID": "frontier_tsikada_auxiliary_frigate", "typeID": 82326, "name": "Tsikada Auxiliary Frigate", "behaviorPreset": "frigate", "bounty": 70000 }
+        ],
+        "commander": [
+          { "profileID": "frontier_tsikada_overseer", "typeID": 82325, "name": "Tsikada Overseer", "behaviorPreset": "commander", "bounty": 1200000 }
+        ],
+        "surveyor": [
+          { "profileID": "frontier_tsikada_surveyor", "typeID": 82321, "name": "Tsikada Surveyor", "behaviorPreset": "frigate", "bounty": 40000 }
+        ]
+      }
+    },
+    "sarana": {
+      "displayName": "Sarana",
+      "tag": "frontier-faction:sarana",
+      "npcRoles": {
+        "frigate": [
+          { "profileID": "frontier_sarana_frigate", "typeID": 83966, "name": "Sarana Infesting Frigate", "behaviorPreset": "frigate", "bounty": 35000 }
+        ],
+        "cruiser": [
+          { "profileID": "frontier_sarana_cruiser_fallback", "typeID": 83966, "name": "Sarana Infesting Frigate", "behaviorPreset": "frigate", "bounty": 35000 }
+        ],
+        "battleship": [
+          { "profileID": "frontier_sarana_battleship", "typeID": 78390, "name": "Infesting Sarana Battleship", "behaviorPreset": "battleship", "bounty": 700000 }
+        ],
+        "frigateSupport": [
+          { "profileID": "frontier_sarana_support_frigate", "typeID": 83966, "name": "Sarana Infesting Frigate", "behaviorPreset": "frigate", "bounty": 35000 }
+        ],
+        "cruiserSupport": [
+          { "profileID": "frontier_sarana_support_cruiser", "typeID": 83966, "name": "Sarana Infesting Frigate", "behaviorPreset": "frigate", "bounty": 35000 }
+        ],
+        "battleshipSupport": [
+          { "profileID": "frontier_sarana_support_battleship", "typeID": 78391, "name": "Infesting Sarana Battleship", "behaviorPreset": "battleship", "bounty": 700000 }
+        ],
+        "commander": [
+          { "profileID": "frontier_sarana_commander", "typeID": 78391, "name": "Infesting Sarana Battleship", "behaviorPreset": "commander", "bounty": 1000000 }
+        ],
+        "surveyor": [
+          { "profileID": "frontier_sarana_surveyor", "typeID": 83966, "name": "Sarana Surveyor", "behaviorPreset": "frigate", "bounty": 40000 }
+        ]
+      }
+    },
+    "feral": {
+      "displayName": "Feral",
+      "tag": "frontier-faction:feral",
+      "npcRoles": {
+        "miner": [
+          { "profileID": "frontier_feral_miner_echeinaus", "typeID": 87536, "name": "Echeinaus", "behaviorPreset": "frigate", "bounty": 25000 },
+          { "profileID": "frontier_feral_miner_petraklao", "typeID": 83914, "name": "Petraklao", "behaviorPreset": "cruiser", "bounty": 100000 }
+        ],
+        "frigate": [
+          { "profileID": "frontier_feral_scout", "typeID": 78364, "name": "Feral Drone Scout", "behaviorPreset": "frigate", "bounty": 25000 }
+        ]
+      }
+    }
+  },
+  "hiveSpawns": {
+    "60244": {
+      "name": "CONCORD Rogue Analysis Beacon",
+      "droneTypes": ["osa"],
+      "roles": ["surveyor"]
+    },
+    "77950": {
+      "name": "Osa Hive",
+      "droneTypes": ["osa"],
+      "roles": ["*"]
+    },
+    "82333": {
+      "name": "Okryda Hive",
+      "droneTypes": ["okryda"],
+      "roles": ["*"]
+    },
+    "82334": {
+      "name": "Termit Hive",
+      "droneTypes": ["termit"],
+      "roles": ["*"]
+    },
+    "82335": {
+      "name": "Tsikada Hive",
+      "droneTypes": ["tsikada"],
+      "roles": ["*"]
+    },
+    "83833": {
+      "name": "Sarana Hive",
+      "droneTypes": ["sarana"],
+      "roles": ["*"]
+    },
+    "83963": {
+      "name": "Test Hive",
+      "droneTypes": ["osa", "okryda", "termit", "tsikada", "sarana"],
+      "roles": ["*"]
+    }
+  },
+  "spawnerTypes": {
+    "82967": {
+      "typeID": 82967,
+      "name": "Zarquis Pocket Spawner",
+      "category": "named_controller",
+      "spawnKind": "entity",
+      "isNpcWave": false
+    },
+    "83552": {
+      "typeID": 83552,
+      "name": "Feral Drone Frigate Spawner",
+      "category": "npc_feral_drone_controller",
+      "spawnKind": "npc_wave",
+      "isNpcWave": true,
+      "composition": [
+        { "role": "frigate", "count": 3 }
+      ]
+    },
+    "83553": {
+      "typeID": 83553,
+      "name": "Feral Drone - Frigate, support and Rare Spawner",
+      "category": "npc_feral_drone_controller",
+      "spawnKind": "npc_wave",
+      "isNpcWave": true,
+      "composition": [
+        { "role": "frigate", "count": 2 },
+        { "role": "frigateSupport", "count": 1 },
+        { "role": "commander", "count": 1 }
+      ]
+    },
+    "83554": {
+      "typeID": 83554,
+      "name": "Feral Drone - Cruiser Spawner",
+      "category": "npc_feral_drone_controller",
+      "spawnKind": "npc_wave",
+      "isNpcWave": true,
+      "composition": [
+        { "role": "cruiser", "count": 2 }
+      ]
+    },
+    "83555": {
+      "typeID": 83555,
+      "name": "Feral Drone - Cruiser, support, rare",
+      "category": "npc_feral_drone_controller",
+      "spawnKind": "npc_wave",
+      "isNpcWave": true,
+      "composition": [
+        { "role": "cruiser", "count": 2 },
+        { "role": "cruiserSupport", "count": 1 },
+        { "role": "commander", "count": 1 }
+      ]
+    },
+    "83556": {
+      "typeID": 83556,
+      "name": "Feral Drone - Battleship only",
+      "category": "npc_feral_drone_controller",
+      "spawnKind": "npc_wave",
+      "isNpcWave": true,
+      "composition": [
+        { "role": "battleship", "count": 1 }
+      ]
+    },
+    "83557": {
+      "typeID": 83557,
+      "name": "Feral Drone - Battleship, support, rare and commander",
+      "category": "npc_feral_drone_controller",
+      "spawnKind": "npc_wave",
+      "isNpcWave": true,
+      "composition": [
+        { "role": "battleship", "count": 2 },
+        { "role": "battleshipSupport", "count": 1 },
+        { "role": "commander", "count": 1 }
+      ]
+    },
+    "83916": {
+      "typeID": 83916,
+      "name": "Feral Miner spawner",
+      "category": "npc_feral_miner_controller",
+      "spawnKind": "npc_wave",
+      "isNpcWave": true,
+      "defaultFaction": "feral",
+      "composition": [
+        { "role": "miner", "count": 2 }
+      ]
+    },
+    "85745": {
+      "typeID": 85745,
+      "name": "Feral Drone Surveyor Spawner",
+      "category": "npc_feral_drone_controller",
+      "spawnKind": "npc_wave",
+      "isNpcWave": true,
+      "composition": [
+        { "role": "surveyor", "count": 1 }
+      ]
+    },
+    "88390": {
+      "typeID": 88390,
+      "name": "NPE Step Up Spawner",
+      "category": "named_controller",
+      "spawnKind": "entity",
+      "isNpcWave": false
+    },
+    "89766": {
+      "typeID": 89766,
+      "name": "Frontier - Summer Event Spawner",
+      "category": "event_controller",
+      "spawnKind": "event",
+      "isNpcWave": false
+    },
+    "91211": {
+      "typeID": 91211,
+      "name": "Invisible Locator Beacon - Resource Spawner",
+      "category": "resource_locator",
+      "spawnKind": "locator",
+      "isNpcWave": false
+    },
+    "91212": {
+      "typeID": 91212,
+      "name": "Invisible Locator Beacon - Event Spawner",
+      "category": "event_locator",
+      "spawnKind": "locator",
+      "isNpcWave": false
+    },
+    "91213": {
+      "typeID": 91213,
+      "name": "Invisible Locator Beacon - Threat spawner",
+      "category": "threat_locator",
+      "spawnKind": "locator",
+      "isNpcWave": false
+    },
+    "91214": {
+      "typeID": 91214,
+      "name": "Invisible Locator Beacon - NPC Spawner",
+      "category": "npc_locator",
+      "spawnKind": "locator",
+      "isNpcWave": false
+    },
+    "91264": {
+      "typeID": 91264,
+      "name": "Frontier - Summer Event Spawner (Eimur Site)",
+      "category": "event_controller",
+      "spawnKind": "event",
+      "isNpcWave": false
+    }
+  },
+  "sites": {
+    "10444": { "name": "Osa Infesting Hive", "siteTypeID": 4873, "entryBeaconTypeID": 83875, "faction": "osa", "tags": ["site:infesting-hive"], "spawners": [{ "typeID": 83552, "count": 2, "activation": "initial", "rawTriggerValues": [12, 16] }, { "typeID": 83554, "count": 1, "activation": "initial", "rawTriggerValues": [10] }, { "typeID": 83556, "count": 2, "activation": "initial", "rawTriggerValues": [12] }] },
+    "10645": { "name": "Minor Osa Drone Nest", "siteTypeID": 4873, "entryBeaconTypeID": 83872, "faction": "osa", "tags": ["site:minor-drone-nest"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [2] }, { "typeID": 83552, "count": 3, "activation": "triggered", "rawTriggerValues": [2, 3, 4] }, { "typeID": 83553, "count": 2, "activation": "triggered", "rawTriggerValues": [2, 4] }] },
+    "10646": { "name": "Osa Feral Enclave", "siteTypeID": 4873, "entryBeaconTypeID": 83884, "faction": "osa", "tags": ["site:feral-enclave"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [4] }, { "typeID": 83554, "count": 3, "activation": "triggered", "rawTriggerValues": [4, 5, 6] }, { "typeID": 83555, "count": 1, "activation": "triggered", "rawTriggerValues": [6] }] },
+    "10650": { "name": "Osa Domination Cluster", "siteTypeID": 4873, "entryBeaconTypeID": 83888, "faction": "osa", "tags": ["site:domination-cluster"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [4] }, { "typeID": 83554, "count": 1, "activation": "initial", "rawTriggerValues": [4] }, { "typeID": 83556, "count": 3, "activation": "triggered", "rawTriggerValues": [6, 7] }, { "typeID": 83557, "count": 1, "activation": "triggered", "rawTriggerValues": [7] }] },
+    "10684": { "name": "Abandoned Mining Operation", "siteTypeID": 4871, "entryBeaconTypeID": 83738, "tags": ["character:zarquis"], "spawners": [{ "typeID": 82967, "count": 1, "activation": "initial" }] },
+    "11097": { "name": "Okryda Infesting Hive", "siteTypeID": 4873, "entryBeaconTypeID": 83876, "faction": "okryda", "tags": ["site:infesting-hive"], "spawners": [{ "typeID": 83552, "count": 3, "activation": "initial" }, { "typeID": 83554, "count": 2, "activation": "initial" }, { "typeID": 83556, "count": 1, "activation": "initial" }] },
+    "11098": { "name": "Termit Infesting Hive", "siteTypeID": 4873, "entryBeaconTypeID": 83877, "faction": "termit", "tags": ["site:infesting-hive"], "spawners": [{ "typeID": 83552, "count": 2, "activation": "initial" }, { "typeID": 83554, "count": 1, "activation": "initial" }, { "typeID": 83556, "count": 4, "activation": "initial" }] },
+    "11099": { "name": "Tsikada Infesting Hive", "siteTypeID": 4873, "entryBeaconTypeID": 83878, "faction": "tsikada", "tags": ["site:infesting-hive"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "locator" }, { "typeID": 83554, "count": 4, "activation": "locator" }, { "typeID": 83556, "count": 2, "activation": "locator" }] },
+    "11114": { "name": "Minor Okryda Drone Nest", "siteTypeID": 4873, "entryBeaconTypeID": 83873, "faction": "okryda", "tags": ["site:minor-drone-nest"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [3] }, { "typeID": 83552, "count": 2, "activation": "triggered", "rawTriggerValues": [3, 4] }, { "typeID": 83553, "count": 2, "activation": "triggered", "rawTriggerValues": [4, 6] }] },
+    "11115": { "name": "Minor Termit Drone Nest", "siteTypeID": 4873, "entryBeaconTypeID": 83882, "faction": "termit", "tags": ["site:minor-drone-nest"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [3] }, { "typeID": 83552, "count": 3, "activation": "triggered", "rawTriggerValues": [4, 6] }, { "typeID": 83553, "count": 2, "activation": "triggered", "rawTriggerValues": [4, 5] }] },
+    "11116": { "name": "Minor Tsikada Drone Nest", "siteTypeID": 4873, "entryBeaconTypeID": 83883, "faction": "tsikada", "tags": ["site:minor-drone-nest"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [3] }, { "typeID": 83552, "count": 2, "activation": "triggered", "rawTriggerValues": [4] }, { "typeID": 83553, "count": 2, "activation": "triggered", "rawTriggerValues": [5] }] },
+    "11122": { "name": "Okryda Domination Cluster", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "faction": "okryda", "tags": ["site:domination-cluster"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [5] }, { "typeID": 83554, "count": 1, "activation": "initial", "rawTriggerValues": [4] }, { "typeID": 83556, "count": 3, "activation": "triggered", "rawTriggerValues": [5, 6, 7] }, { "typeID": 83557, "count": 1, "activation": "triggered", "rawTriggerValues": [7] }] },
+    "11123": { "name": "Termit Domination Cluster", "siteTypeID": 4873, "entryBeaconTypeID": 83890, "faction": "termit", "tags": ["site:domination-cluster"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [4] }, { "typeID": 83554, "count": 1, "activation": "initial", "rawTriggerValues": [5] }, { "typeID": 83556, "count": 3, "activation": "triggered", "rawTriggerValues": [6, 7] }, { "typeID": 83557, "count": 1, "activation": "triggered", "rawTriggerValues": [7] }] },
+    "11124": { "name": "Tsikada Domination Cluster", "siteTypeID": 4873, "entryBeaconTypeID": 83874, "faction": "tsikada", "tags": ["site:domination-cluster"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [4] }, { "typeID": 83554, "count": 1, "activation": "initial", "rawTriggerValues": [5] }, { "typeID": 83556, "count": 3, "activation": "triggered", "rawTriggerValues": [6, 7] }, { "typeID": 83557, "count": 1, "activation": "triggered", "rawTriggerValues": [7] }] },
+    "11125": { "name": "Okryda Feral Enclave", "siteTypeID": 4873, "entryBeaconTypeID": 83885, "faction": "okryda", "tags": ["site:feral-enclave"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [4] }, { "typeID": 83554, "count": 3, "activation": "triggered", "rawTriggerValues": [5, 6] }, { "typeID": 83555, "count": 1, "activation": "triggered", "rawTriggerValues": [6] }] },
+    "11126": { "name": "Termit Feral Enclave", "siteTypeID": 4873, "entryBeaconTypeID": 83886, "faction": "termit", "tags": ["site:feral-enclave"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [4] }, { "typeID": 83554, "count": 3, "activation": "triggered", "rawTriggerValues": [5, 6] }, { "typeID": 83555, "count": 1, "activation": "triggered", "rawTriggerValues": [6] }] },
+    "11127": { "name": "Tsikada Feral Enclave", "siteTypeID": 4873, "entryBeaconTypeID": 83887, "faction": "tsikada", "tags": ["site:feral-enclave"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [4] }, { "typeID": 83554, "count": 3, "activation": "triggered", "rawTriggerValues": [4, 5, 6] }, { "typeID": 83555, "count": 1, "activation": "triggered", "rawTriggerValues": [6] }] },
+    "11128": { "name": "Abandoned Mining Operation", "siteTypeID": 4871, "entryBeaconTypeID": 83738, "faction": "feral", "tags": ["site:mining-operation"], "spawners": [{ "typeID": 83916, "count": 1, "activation": "initial" }] },
+    "11137": { "name": "Sarana Infesting Hive", "siteTypeID": 4873, "entryBeaconTypeID": 83965, "faction": "sarana", "tags": ["site:infesting-hive", "site:no-authored-spawner"], "spawners": [] },
+    "12345": { "name": "Osa Surveyors", "siteTypeID": 4873, "entryBeaconTypeID": 85743, "faction": "osa", "tags": ["site:surveyors"], "spawners": [{ "typeID": 85745, "count": 1, "activation": "initial", "rawTriggerValues": [1] }] },
+    "12349": { "name": "Okryda Surveyors", "siteTypeID": 4873, "entryBeaconTypeID": 85744, "faction": "okryda", "tags": ["site:surveyors"], "spawners": [{ "typeID": 85745, "count": 1, "activation": "initial", "rawTriggerValues": [1] }] },
+    "12560": { "name": "Derelict Autonomous Shipyard", "siteTypeID": 4874, "entryBeaconTypeID": 88013, "tags": ["event:summer"], "spawners": [{ "typeID": 89766, "count": 1, "activation": "initial", "rawTriggerValues": [1] }, { "typeID": 89766, "count": 3, "activation": "triggered", "rawTriggerValues": [1] }] },
+    "12673": { "name": "Ruined Processing Plant", "siteTypeID": 4873, "entryBeaconTypeID": 86825, "tags": ["site:locator-pattern"], "spawners": [{ "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
+    "12700": { "name": "Installation Wreckage", "siteTypeID": 4873, "entryBeaconTypeID": 88383, "tags": ["site:npe-step-up"], "spawners": [{ "typeID": 88390, "count": 1, "activation": "initial", "rawTriggerValues": [1] }] },
+    "13118": { "name": "Crystalline Shear Field", "siteTypeID": 4871, "entryBeaconTypeID": 88328, "faction": "feral", "tags": ["site:mining-field"], "spawners": [{ "typeID": 83916, "count": 2, "activation": "initial" }] },
+    "13294": { "name": "Hydrosulphide Formation", "siteTypeID": 4871, "entryBeaconTypeID": 89064, "faction": "feral", "tags": ["site:mining-field"], "spawners": [{ "typeID": 83916, "count": 2, "activation": "initial" }] },
+    "13295": { "name": "Platinum Mass Cluster", "siteTypeID": 4871, "entryBeaconTypeID": 89065, "faction": "feral", "tags": ["site:mining-field"], "spawners": [{ "typeID": 83916, "count": 2, "activation": "initial" }] },
+    "13443": { "name": "Sanguine Assembly Ruins", "siteTypeID": 4873, "entryBeaconTypeID": 89990, "tags": ["event:eimur", "site:sanguine-assembly"], "spawners": [{ "typeID": 91264, "count": 6, "activation": "locator" }] },
+    "13723": { "name": "Landscape Refinery 02", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:resource-locators"], "spawners": [{ "typeID": 91211, "count": 50, "activation": "locator" }] },
+    "13870": { "name": "Mooneater Prefab", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:locator-pattern"], "spawners": [{ "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
+    "13871": { "name": "Termit Prefab", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:locator-pattern"], "spawners": [{ "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
+    "13872": { "name": "Tsikada Hive Prefab", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:locator-pattern"], "spawners": [{ "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
+    "13873": { "name": "Sarana Hive Prefab", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:locator-pattern"], "spawners": [{ "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
+    "13938": { "name": "13316 Pulverized Asteroid", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:locator-pattern"], "spawners": [{ "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
+    "14140": { "name": "KotH", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:resource-locators"], "spawners": [{ "typeID": 91211, "count": 49, "activation": "locator" }] },
+    "14187": { "name": "<unnamed>", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:resource-locators"], "spawners": [{ "typeID": 91211, "count": 50, "activation": "locator" }] },
+    "14203": { "name": "Creche Exterior Pattern", "siteTypeID": 4873, "entryBeaconTypeID": 92666, "tags": ["site:locator-pattern", "site:resource-locators"], "spawners": [{ "typeID": 91211, "count": 20, "activation": "locator" }, { "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
+    "14229": { "name": "RuinsPattern", "siteTypeID": 4873, "entryBeaconTypeID": 92666, "tags": ["site:locator-pattern", "site:resource-locators"], "spawners": [{ "typeID": 91211, "count": 20, "activation": "locator" }, { "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
+    "14238": { "name": "AsteroidDebris1", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:resource-locators"], "spawners": [{ "typeID": 91211, "count": 40, "activation": "locator" }] }
+  }
+}

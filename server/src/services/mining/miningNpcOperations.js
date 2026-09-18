@@ -1201,6 +1201,158 @@ function createMiningFleetRecord(options = {}) {
     miningFleetStateByID.set(fleetRecord.fleetID, fleetRecord);
     return fleetRecord;
 }
+function getConfiguredNpcActivity(controller) {
+    return String(controller && (controller.behaviorActivity ||
+        (controller.behaviorPolicy && controller.behaviorPolicy.activity)) || "").trim().toLowerCase();
+}
+function isConfiguredNpcActivityAutoEnrollEnabled(controller) {
+    const activityOptions = controller &&
+        controller.behaviorPolicy &&
+        controller.behaviorPolicy.activityOptions &&
+        typeof controller.behaviorPolicy.activityOptions === "object"
+        ? controller.behaviorPolicy.activityOptions
+        : {};
+    return activityOptions.autoEnroll === true;
+}
+function buildConfiguredActivityGroupKey(controller) {
+    const startupRuleID = String(controller && controller.startupRuleID || "").trim();
+    if (startupRuleID) {
+        return `startup:${startupRuleID}`;
+    }
+    const spawnSiteID = String(controller && controller.spawnSiteID || "").trim();
+    if (spawnSiteID) {
+        return `site:${spawnSiteID}`;
+    }
+    const spawnGroupID = String(controller && controller.spawnGroupID || "").trim();
+    if (spawnGroupID) {
+        return `group:${spawnGroupID}`;
+    }
+    const anchorID = normalizePositiveInteger(controller && controller.anchorID, 0);
+    if (anchorID > 0) {
+        return `anchor:${anchorID}`;
+    }
+    const selectionID = String(controller && controller.selectionID || "").trim();
+    if (selectionID) {
+        return `selection:${selectionID}`;
+    }
+    return `entity:${normalizePositiveInteger(controller && controller.entityID, 0)}`;
+}
+function buildConfiguredMiningOriginAnchor(scene, controller) {
+    const entity = scene && typeof scene.getEntityByID === "function"
+        ? scene.getEntityByID(normalizePositiveInteger(controller && controller.entityID, 0))
+        : null;
+    return {
+        kind: "coordinates",
+        itemID: normalizePositiveInteger(controller && controller.anchorID, 0),
+        name: String(controller && controller.anchorName || "Configured NPC Mining Origin"),
+        position: {
+            ...(controller && controller.homePosition || entity && entity.position || { x: 0, y: 0, z: 0 }),
+        },
+        direction: {
+            ...(controller && controller.homeDirection || entity && entity.direction || { x: 1, y: 0, z: 0 }),
+        },
+    };
+}
+function collectTrackedMiningNpcEntityIDs() {
+    const trackedEntityIDs = new Set();
+    for (const fleetRecord of miningFleetStateByID.values()) {
+        for (const entityID of [
+            ...(Array.isArray(fleetRecord && fleetRecord.minerEntityIDs) ? fleetRecord.minerEntityIDs : []),
+            ...(Array.isArray(fleetRecord && fleetRecord.haulerEntityIDs) ? fleetRecord.haulerEntityIDs : []),
+            ...(Array.isArray(fleetRecord && fleetRecord.responseEntityIDs) ? fleetRecord.responseEntityIDs : []),
+        ]) {
+            const normalizedEntityID = normalizePositiveInteger(entityID, 0);
+            if (normalizedEntityID > 0) {
+                trackedEntityIDs.add(normalizedEntityID);
+            }
+        }
+    }
+    return trackedEntityIDs;
+}
+function autoEnrollConfiguredMiningNpcs(scene) {
+    if (!scene ||
+        typeof npcService.listControllersBySystem !== "function") {
+        return [];
+    }
+    const trackedEntityIDs = collectTrackedMiningNpcEntityIDs();
+    const candidates = npcService.listControllersBySystem(scene.systemID)
+        .filter((controller) => (controller &&
+        normalizePositiveInteger(controller.entityID, 0) > 0 &&
+        !trackedEntityIDs.has(normalizePositiveInteger(controller.entityID, 0)) &&
+        isConfiguredNpcActivityAutoEnrollEnabled(controller)));
+    const miners = candidates.filter((controller) => (getConfiguredNpcActivity(controller) === "mining"));
+    if (miners.length <= 0) {
+        return [];
+    }
+    const haulers = candidates.filter((controller) => (getConfiguredNpcActivity(controller) === "hauling"));
+    const minersByGroup = new Map();
+    for (const controller of miners) {
+        const groupKey = buildConfiguredActivityGroupKey(controller);
+        if (!minersByGroup.has(groupKey)) {
+            minersByGroup.set(groupKey, []);
+        }
+        minersByGroup.get(groupKey).push(controller);
+    }
+    const haulersByGroup = new Map();
+    for (const controller of haulers) {
+        const groupKey = buildConfiguredActivityGroupKey(controller);
+        if (!haulersByGroup.has(groupKey)) {
+            haulersByGroup.set(groupKey, []);
+        }
+        haulersByGroup.get(groupKey).push(controller);
+    }
+    const adoptedFleets = [];
+    const singleMinerGroup = minersByGroup.size === 1;
+    for (const [groupKey, groupMiners] of minersByGroup.entries()) {
+        const firstMiner = groupMiners[0];
+        let groupHaulers = (haulersByGroup.get(groupKey) || []).filter((controller) => (!trackedEntityIDs.has(normalizePositiveInteger(controller && controller.entityID, 0))));
+        if (groupHaulers.length <= 0) {
+            const anchorID = normalizePositiveInteger(firstMiner && firstMiner.anchorID, 0);
+            if (anchorID > 0) {
+                groupHaulers = haulers.filter((controller) => (!trackedEntityIDs.has(normalizePositiveInteger(controller && controller.entityID, 0)) &&
+                    normalizePositiveInteger(controller && controller.anchorID, 0) === anchorID));
+            }
+            else if (singleMinerGroup) {
+                groupHaulers = haulers.filter((controller) => (!trackedEntityIDs.has(normalizePositiveInteger(controller && controller.entityID, 0))));
+            }
+        }
+        for (const controller of groupMiners) {
+            applyPassiveMiningFleetOverrides(controller.entityID, {
+                movementMode: "orbit",
+                orbitDistanceMeters: 1_200,
+                followRangeMeters: 800,
+                idleAnchorOrbit: false,
+                issueStopOrder: false,
+                clearCombatPreference: true,
+            });
+        }
+        for (const controller of groupHaulers) {
+            applyPassiveMiningFleetOverrides(controller.entityID, {
+                movementMode: "stop",
+                orbitDistanceMeters: 500,
+                followRangeMeters: 500,
+                idleAnchorOrbit: false,
+                idleAnchorOrbitDistanceMeters: 500,
+                clearCombatPreference: true,
+            });
+        }
+        const fleetRecord = createMiningFleetRecord({
+            source: "npc-behavior-config",
+            startupKey: groupKey,
+            systemID: scene.systemID,
+            targetShipID: 0,
+            minerEntityIDs: groupMiners.map((controller) => controller.entityID),
+            haulerEntityIDs: groupHaulers.map((controller) => controller.entityID),
+            originAnchor: buildConfiguredMiningOriginAnchor(scene, firstMiner),
+            spawnSelectionName: String(firstMiner && (firstMiner.selectionName || firstMiner.profileID) || groupKey),
+        });
+        adoptedFleets.push(fleetRecord);
+        for (const controller of groupHaulers) {
+            trackedEntityIDs.add(normalizePositiveInteger(controller.entityID, 0));
+        }
+    }
+    return adoptedFleets;
+}
 function getMiningFleetsForSystem(systemID) {
     const normalizedSystemID = normalizePositiveInteger(systemID, 0);
     const fleets = [];
@@ -2310,6 +2462,7 @@ function tickMiningFleet(scene, fleetRecord, now, hooks) {
     fleetRecord.activeAsteroidID = primaryTargetEntry ? toInt(primaryTargetEntry[0], 0) : 0;
 }
 function tickScene(scene, now, hooks = {}) {
+    autoEnrollConfiguredMiningNpcs(scene);
     const fleets = getMiningFleetsForSystem(scene && scene.systemID)
         .map((fleetRecord) => pruneMiningFleet(fleetRecord))
         .filter(Boolean);
@@ -2337,6 +2490,8 @@ module.exports = {
     tickScene,
     _testing: {
         createMiningFleetRecord,
+        autoEnrollConfiguredMiningNpcs,
+        buildConfiguredActivityGroupKey,
         getSecurityBandForSystemID,
         resolveMiningFleetQuery,
         resolveMiningHaulerQuery,

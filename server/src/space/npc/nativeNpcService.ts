@@ -48,6 +48,9 @@ const nativeNpcStore = require(path.join(__dirname, "./nativeNpcStore"));
 const {
   ENTITY_TYPE,
 } = require(path.join(__dirname, "../entityConstants"));
+const {
+  applyNpcBehaviorConfig,
+} = require(path.join(__dirname, "../../config/npcBehaviorConfig"));
 
 function toFiniteNumber(value, fallback = 0) {
   const numeric = Number(value);
@@ -688,6 +691,9 @@ function buildNativeControllerRecord(context, definition, entityRecord, spawnSta
     profileID: definition.profile.profileID,
     loadoutID: definition.loadout.loadoutID,
     behaviorProfileID: definition.behaviorProfile.behaviorProfileID,
+    behaviorRole: String(definition.behaviorPolicy && definition.behaviorPolicy.role || "authored"),
+    behaviorActivity: String(definition.behaviorPolicy && definition.behaviorPolicy.activity || "authored"),
+    behaviorPolicy: cloneValue(definition.behaviorPolicy || null),
     lootTableID: definition.lootTable ? definition.lootTable.lootTableID : null,
     definitionSnapshot: definition ? cloneValue(definition) : null,
     behaviorOverrides: normalizeBehaviorOverrides(options.behaviorOverrides),
@@ -744,6 +750,8 @@ function buildNativeRuntimeShipSpec(entityRecord) {
     securityStatus: entityRecord.securityStatus,
     bounty: entityRecord.bounty,
     npcEntityType: entityRecord.npcEntityType,
+    npcBehaviorRole: entityRecord.behaviorRole || null,
+    npcBehaviorActivity: entityRecord.behaviorActivity || null,
     capitalNpc: entityRecord.capitalNpc === true,
     capitalClassID: entityRecord.capitalClassID || null,
     capitalRarity: entityRecord.capitalRarity || null,
@@ -818,6 +826,12 @@ function applyNativeRuntimeNpcPresentation(entity, entityRecord, definition = nu
   entity.securityStatus = entityRecord.securityStatus;
   entity.bounty = entityRecord.bounty;
   entity.npcEntityType = entityRecord.npcEntityType;
+  entity.npcBehaviorRole = entityRecord.behaviorRole ||
+    definition && definition.behaviorPolicy && definition.behaviorPolicy.role ||
+    null;
+  entity.npcBehaviorActivity = entityRecord.behaviorActivity ||
+    definition && definition.behaviorPolicy && definition.behaviorPolicy.activity ||
+    null;
   entity.capitalNpc = entityRecord.capitalNpc === true;
   entity.capitalClassID = entityRecord.capitalClassID || null;
   entity.capitalRarity = entityRecord.capitalRarity || null;
@@ -922,6 +936,9 @@ function registerNativeRuntimeController(entityRecord, controllerRecord, definit
   return registerController({
     ...cloneValue(controllerRecord),
     behaviorProfile: cloneValue(definition && definition.behaviorProfile || {}),
+    behaviorRole: String(definition && definition.behaviorPolicy && definition.behaviorPolicy.role || "authored"),
+    behaviorActivity: String(definition && definition.behaviorPolicy && definition.behaviorPolicy.activity || "authored"),
+    behaviorPolicy: cloneValue(definition && definition.behaviorPolicy || null),
     behaviorOverrides: normalizeBehaviorOverrides(controllerRecord.behaviorOverrides),
     preferredTargetID: toPositiveInt(controllerRecord.preferredTargetID, 0),
     currentTargetID: toPositiveInt(controllerRecord.currentTargetID, 0),
@@ -943,6 +960,7 @@ function registerNativeRuntimeController(entityRecord, controllerRecord, definit
 }
 
 function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, definition, options: Record<string, any> = {}) {
+  definition = applyNpcBehaviorConfig(definition);
   const storedScopeResolution = nativeNpcStore.validateStoredEntityScopeMetadata(
     entityRecord,
   );
@@ -1258,6 +1276,7 @@ function dematerializeNativeController(controller, options: Record<string, any> 
 }
 
 function spawnNativeNpcEntityInContext(context, definition, options: Record<string, any> = {}) {
+  definition = applyNpcBehaviorConfig(definition);
   const scopeResolution = nativeNpcStore.validateStoredEntityScopeMetadata(
     options.entityScopeMetadata,
   );
@@ -1332,6 +1351,8 @@ function spawnNativeNpcEntityInContext(context, definition, options: Record<stri
     securityStatus: identity.securityStatus,
     bounty: identity.bounty,
     npcEntityType: identity.npcEntityType,
+    behaviorRole: String(definition.behaviorPolicy && definition.behaviorPolicy.role || "authored"),
+    behaviorActivity: String(definition.behaviorPolicy && definition.behaviorPolicy.activity || "authored"),
     capitalNpc: definition.profile.capitalNpc === true,
     capitalClassID: String(definition.profile.capitalClassID || "").trim() || null,
     capitalRarity: String(definition.profile.capitalRarity || "").trim() || null,

@@ -141,7 +141,7 @@ const {
   ENTITY_TYPE,
 } = require(path.join(__dirname, "../../space/entityConstants"));
 const {
-  jumpSessionToSolarSystem,
+  jumpSessionToSolarSystemAsync,
   jumpSessionToStation,
 } = require("../../space/transitions");
 const {
@@ -3717,7 +3717,7 @@ function buildTransportDestinationFromSession(session) {
   };
 }
 
-function executeSessionTransportTarget(
+async function executeSessionTransportTarget(
   requestSession,
   targetDescriptor,
   destination,
@@ -3739,10 +3739,10 @@ function executeSessionTransportTarget(
   let crossedLocationBoundary = false;
 
   if (destination.kind === "solarSystem") {
-    const result = jumpSessionToSolarSystem(
+    // A GM transport is not a jump the pilot made.
+    const result = await jumpSessionToSolarSystemAsync(
       targetSession,
       destination.solarSystemID,
-      // A GM transport is not a jump the pilot made.
       { countsTowardJumpGoal: false },
     );
     if (!result.success) {
@@ -3792,10 +3792,10 @@ function executeSessionTransportTarget(
       !targetSession._space ||
       currentTargetSystemID !== destinationSystemID
     ) {
-      const jumpResult = jumpSessionToSolarSystem(
+      // A GM transport is not a jump the pilot made.
+      const jumpResult = await jumpSessionToSolarSystemAsync(
         targetSession,
         destinationSystemID,
-        // A GM transport is not a jump the pilot made.
         { countsTowardJumpGoal: false },
       );
       if (!jumpResult.success) {
@@ -9239,7 +9239,7 @@ function handleGmWeaponsCommand(session, chatHub, options) {
   );
 }
 
-function handleSolarTeleport(session, argumentText, chatHub, options) {
+async function handleSolarTeleport(session, argumentText, chatHub, options) {
   if (!session || !session.characterID) {
     return handledResult(
       chatHub,
@@ -9268,7 +9268,7 @@ function handleSolarTeleport(session, argumentText, chatHub, options) {
   }
 
   // A GM jump command is not a jump the pilot made.
-  const result = jumpSessionToSolarSystem(session, lookup.match.solarSystemID, {
+  const result = await jumpSessionToSolarSystemAsync(session, lookup.match.solarSystemID, {
     countsTowardJumpGoal: false,
   });
   if (!result.success) {

@@ -6,7 +6,7 @@ const log = require(path.join(__dirname, "../../utils/logger"));
 const { ACCOUNT_KEY, ACCOUNT_KEY_NAME, JOURNAL_ENTRY_TYPE, adjustCharacterBalance, getCharacterWallet, getCharacterWalletJournal, getCharacterWalletTransactions, transferCharacterBalance, } = require(path.join(__dirname, "./walletState"));
 const { getCorporationWalletBalance, getCorporationWalletDivisionsInfo, getCorporationWalletJournal, getCorporationWalletTransactions, getCorporationWalletKeyName, normalizeCorporationWalletKey, adjustCorporationWalletDivisionBalance, } = require(path.join(__dirname, "../corporation/corpWalletState"));
 const { getCorporationRecord, } = require(path.join(__dirname, "../corporation/corporationState"));
-const { buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
+const { buildCachedMethodCallResultAsync: buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 const JOURNAL_HEADERS = [
     "transactionID",
     "transactionDate",

@@ -7,7 +7,7 @@ const { throwWrappedUserError, } = require(path.join(__dirname, "../../common/ma
 const { getCharacterRecord, syncInventoryItemForSession, } = require(path.join(__dirname, "../character/characterState"));
 const { ITEM_FLAGS, consumeInventoryItemQuantity, findItemById, getActiveShipItem, grantItemsToCharacterLocation, createSpaceItemForCharacter, removeInventoryItem, } = require(path.join(__dirname, "../inventory/itemStore"));
 const { buildBoundObjectResponse, buildDbRowset, buildDict, buildKeyVal, buildList, currentFileTime, normalizeNumber, resolveBoundNodeId, unwrapMarshalValue, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
-const { buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
+const { buildCachedMethodCallResultAsync: buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 const { TABLE, readStaticRows, } = require(path.join(__dirname, "../_shared/referenceData"));
 const { JOURNAL_ENTRY_TYPE, adjustCharacterBalance, buildNotEnoughMoneyUserErrorValues, getCharacterWallet, } = require(path.join(__dirname, "../account/walletState"));
 const planetStaticData = require("./planetStaticData");
@@ -720,20 +720,20 @@ class PlanetMgrService extends BaseService {
         }
         return toInt(session && session._planetMgrLastPlanetID, 0);
     }
-    Handle_GetPlanetsForChar(args, session) {
+    async Handle_GetPlanetsForChar(args, session) {
         log.debug("[PlanetMgr] GetPlanetsForChar");
         const characterRecord = getCharacterRecord(session && session.characterID);
-        const runtimeColonies = planetRuntimeStore.listColoniesForCharacter(session && session.characterID);
+        const runtimeColonies = await planetRuntimeStore.listColoniesForCharacterAsync(session && session.characterID);
         return buildPlanetRowsetForCharacter({
             ...(characterRecord || {}),
             runtimeColonies,
         });
     }
-    Handle_GetPlanetInfo(args, session) {
+    async Handle_GetPlanetInfo(args, session) {
         const planetID = this._resolvePlanetID(args, session, { allowArgs: true });
         log.debug(`[PlanetMgr] GetPlanetInfo planetID=${planetID || "unknown"}`);
         const planetMeta = getPlanetMeta(planetID);
-        const colony = planetRuntimeStore.getColony(planetID, session && session.characterID);
+        const colony = await planetRuntimeStore.getColonyAsync(planetID, session && session.characterID);
         return buildPlanetInfo(planetMeta, colony);
     }
     Handle_GetPlanetResourceInfo(args, session) {
@@ -778,11 +778,11 @@ class PlanetMgrService extends BaseService {
         log.debug(`[PlanetMgr] GMGetLocalDistributionReport planetID=${planetID || "unknown"}`);
         return buildLocalDistributionReport(getPlanetMeta(planetID), surfacePoint);
     }
-    Handle_GMGetSynchedServerState(args, session) {
+    async Handle_GMGetSynchedServerState(args, session) {
         const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
         const ownerID = getOptionalOwnerID(args, 0, session);
         const startMs = Date.now();
-        const colony = planetRuntimeStore.getColony(planetID, ownerID) || {
+        const colony = await planetRuntimeStore.getColonyAsync(planetID, ownerID) || {
             ownerID,
             pins: [],
             links: [],
@@ -794,10 +794,10 @@ class PlanetMgrService extends BaseService {
         log.debug(`[PlanetMgr] GMGetSynchedServerState planetID=${planetID || "unknown"} ownerID=${ownerID || "unknown"}`);
         return [duration, buildSerializedColony(colony)];
     }
-    Handle_GetFullNetworkForOwner(args, session) {
+    async Handle_GetFullNetworkForOwner(args, session) {
         const planetID = this._resolvePlanetID(args, session, { allowArgs: true });
         const ownerID = toInt(Array.isArray(args) && args.length > 1 ? normalizeNumber(args[1], 0) : 0, 0);
-        const colony = planetRuntimeStore.getColony(planetID, ownerID);
+        const colony = await planetRuntimeStore.getColonyAsync(planetID, ownerID);
         if (!colony) {
             return [buildList([]), buildList([])];
         }
@@ -806,11 +806,11 @@ class PlanetMgrService extends BaseService {
             .map((link) => buildList([toInt(link.endpoint1, 0), toInt(link.endpoint2, 0)]));
         return [buildList(pins), buildList(links)];
     }
-    Handle_GetCommandPinsForPlanet(args, session) {
+    async Handle_GetCommandPinsForPlanet(args, session) {
         const planetID = this._resolvePlanetID(args, session, { allowArgs: true });
         const entries = [];
         const seenOwnerIDs = new Set();
-        for (const colony of planetRuntimeStore.listColoniesForPlanet(planetID)) {
+        for (const colony of await planetRuntimeStore.listColoniesForPlanetAsync(planetID)) {
             const ownerID = toInt(colony.ownerID, 0);
             const commandPin = (Array.isArray(colony.pins) ? colony.pins : [])
                 .find((pin) => (getItemTypeGroupID(pin && pin.typeID) === planetStaticData.GROUP.COMMAND_PINS));
@@ -821,10 +821,10 @@ class PlanetMgrService extends BaseService {
         }
         return buildDict(entries);
     }
-    Handle_GetExtractorsForPlanet(args, session) {
+    async Handle_GetExtractorsForPlanet(args, session) {
         const planetID = this._resolvePlanetID(args, session, { allowArgs: true });
         const extractors = [];
-        for (const colony of planetRuntimeStore.listColoniesForPlanet(planetID)) {
+        for (const colony of await planetRuntimeStore.listColoniesForPlanetAsync(planetID)) {
             const ownerID = toInt(colony.ownerID, 0);
             for (const pin of Array.isArray(colony.pins) ? colony.pins : []) {
                 if (getItemTypeGroupID(pin && pin.typeID) ===
@@ -835,13 +835,18 @@ class PlanetMgrService extends BaseService {
         }
         return buildList(extractors);
     }
-    Handle_UserUpdateNetwork(args, session) {
+    async Handle_UserUpdateNetwork(args, session) {
         const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
         const planetMeta = getPlanetMeta(planetID);
         const ownerID = getSessionCharacterID(session);
         const serializedChanges = unwrapMarshalValue(Array.isArray(args) ? args[0] : []);
         const commandCount = Array.isArray(serializedChanges) ? serializedChanges.length : 0;
         log.debug(`[PlanetMgr] UserUpdateNetwork planetID=${planetID || "unknown"} commands=${commandCount}`);
+        await planetRuntimeStore.ensureColonyCaughtUpAsync(planetID, ownerID, {
+            solarSystemID: planetMeta.solarSystemID,
+            planetTypeID: planetMeta.typeID,
+            planetRadius: planetMeta.radius,
+        });
         const editHash = planetCostCalculator.buildNetworkEditHash({
             planetID,
             ownerID,
@@ -904,7 +909,7 @@ class PlanetMgrService extends BaseService {
         consumePlacedCommandCenterItems(colony, session);
         return buildSerializedColony(colony);
     }
-    Handle_UserLaunchCommodities(args, session) {
+    async Handle_UserLaunchCommodities(args, session) {
         const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
         const planetMeta = getPlanetMeta(planetID);
         const ownerID = getSessionCharacterID(session);
@@ -920,6 +925,10 @@ class PlanetMgrService extends BaseService {
             commodities: commoditiesToLaunch,
             planetMeta,
         };
+        await planetRuntimeStore.ensureColonyCaughtUpAsync(planetID, ownerID, {
+            solarSystemID: planetMeta.solarSystemID,
+            planetTypeID: planetMeta.typeID,
+        });
         const preview = planetRuntimeStore.previewLaunchCommodities(launchOptions);
         if (!preview.success) {
             throwWrappedUserError(preview.errorMsg || "CannotLaunchCommoditiesNotFound");
@@ -943,13 +952,18 @@ class PlanetMgrService extends BaseService {
         sendPlanetNotification(session, "OnPILaunchesChange", []);
         return result.lastLaunchTime ? BigInt(result.lastLaunchTime) : currentFileTime();
     }
-    Handle_UserTransferCommodities(args, session) {
+    async Handle_UserTransferCommodities(args, session) {
         const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
         const planetMeta = getPlanetMeta(planetID);
         const ownerID = getSessionCharacterID(session);
         const pathArg = unwrapMarshalValue(Array.isArray(args) ? args[0] : []);
         const commoditiesArg = unwrapMarshalValue(Array.isArray(args) ? args[1] : {}) || {};
         log.debug(`[PlanetMgr] UserTransferCommodities planetID=${planetID || "unknown"} path=${Array.isArray(pathArg) ? pathArg.length : 0}`);
+        await planetRuntimeStore.ensureColonyCaughtUpAsync(planetID, ownerID, {
+            solarSystemID: planetMeta.solarSystemID,
+            planetTypeID: planetMeta.typeID,
+            planetRadius: planetMeta.radius,
+        });
         const result = planetRuntimeStore.transferCommodities({
             planetID,
             ownerID,
@@ -1027,11 +1041,12 @@ class PlanetMgrService extends BaseService {
         }
         return buildKeyValFromObject(result);
     }
-    Handle_GMAddCommodity(args, session) {
+    async Handle_GMAddCommodity(args, session) {
         const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
         const pinID = toInt(unwrapMarshalValue(Array.isArray(args) ? args[0] : 0), 0);
         const typeID = toInt(unwrapMarshalValue(Array.isArray(args) ? args[1] : 0), 0);
         const quantity = toInt(unwrapMarshalValue(Array.isArray(args) ? args[2] : 0), 0);
+        await planetRuntimeStore.ensureColonyCaughtUpAsync(planetID, getSessionCharacterID(session));
         const result = planetRuntimeStore.addCommodityToColonyPin({
             planetID,
             ownerID: getSessionCharacterID(session),

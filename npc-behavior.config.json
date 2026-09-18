@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "defaults": {
+    "role": "guard",
+    "behaviorDefaults": {
+      "thinkIntervalMs": 250,
+      "autoAggroTargetClasses": [
+        "player"
+      ],
+      "targetPreference": "preferredTargetThenNearestPlayer",
+      "autoAggro": true,
+      "movementMode": "orbit",
+      "orbitDistanceMeters": 3500,
+      "followRangeMeters": 2200,
+      "aggressionRangeMeters": 150000,
+      "leashRangeMeters": 250000,
+      "returnToHomeWhenIdle": true,
+      "homeArrivalMeters": 2000,
+      "autoActivateWeapons": true
+    }
+  },
+  "roles": {
+    "guard": {
+      "activity": "guard",
+      "description": "Default combat role. Authored/SDE behavior remains authoritative; these values only fill missing fields.",
+      "behaviorDefaults": {}
+    },
+    "passive": {
+      "activity": "idle",
+      "description": "Non-combat traffic and utility hulls retain their authored passive behavior.",
+      "behaviorOverrides": {
+        "autoAggro": false,
+        "autoActivateWeapons": false
+      }
+    },
+    "miner": {
+      "activity": "mining",
+      "description": "Mining-capable hulls are automatically enrolled in the mining controller and mine available local resources.",
+      "behaviorOverrides": {
+        "autoAggro": false,
+        "autoAggroTargetClasses": [],
+        "targetPreference": "none",
+        "autoActivateWeapons": false,
+        "movementMode": "orbit",
+        "orbitDistanceMeters": 1200,
+        "followRangeMeters": 800
+      },
+      "activityOptions": {
+        "autoEnroll": true
+      }
+    },
+    "hauler": {
+      "activity": "hauling",
+      "description": "Mining-operation haulers remain passive and can be attached to configured mining fleets.",
+      "behaviorOverrides": {
+        "autoAggro": false,
+        "autoAggroTargetClasses": [],
+        "targetPreference": "none",
+        "autoActivateWeapons": false,
+        "movementMode": "stop"
+      },
+      "activityOptions": {
+        "autoEnroll": true
+      }
+    }
+  },
+  "rules": [
+    {
+      "id": "authored-passive-npcs",
+      "priority": 100,
+      "match": {
+        "behaviorAutoAggro": false
+      },
+      "role": "passive"
+    },
+    {
+      "id": "ore-mining-hulls",
+      "priority": 200,
+      "match": {
+        "profileIDPrefixes": [
+          "ore_mining_"
+        ],
+        "loadoutIDPrefixes": [
+          "ore_mining_"
+        ],
+        "excludeProfileIDContains": [
+          "hauler"
+        ]
+      },
+      "role": "miner"
+    },
+    {
+      "id": "ore-mining-haulers",
+      "priority": 210,
+      "match": {
+        "profileIDPrefixes": [
+          "ore_mining_"
+        ],
+        "profileIDContains": [
+          "hauler"
+        ]
+      },
+      "role": "hauler"
+    },
+    {
+      "id": "mining-response-guards",
+      "priority": 220,
+      "match": {
+        "behaviorProfileIDs": [
+          "npc_mining_response_fleet"
+        ]
+      },
+      "role": "guard"
+    }
+  ]
+}

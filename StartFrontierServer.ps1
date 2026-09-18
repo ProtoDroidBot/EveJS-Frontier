@@ -679,6 +679,7 @@ function Get-ServerEnvironment {
     $logLevel = if ($Quiet) { '1' } else { '2' }
     return [ordered]@{
         EVEJS_GAMESTORE_DATA_DIR = $RuntimeData
+        EVEJS_PERSISTENCE_WORKER = '1'
         EVEJS_COLLISION_BUNDLE_REQUIRED = '1'
         EVEJS_STATIC_JSONL_ROOT = $StaticRoot
         EVEJS_CLIENT_COMPATIBILITY_PROFILE = 'frontier'

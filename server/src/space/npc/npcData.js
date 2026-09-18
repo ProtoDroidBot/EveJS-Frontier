@@ -7,6 +7,8 @@ const { getCapitalNpcGeneratedRows, } = require(path.join(__dirname, "./capitals
 const { getTrigDrifterGeneratedRows, } = require(path.join(__dirname, "./trigDrifter/trigDrifterNpcCatalog"));
 const { getEmpireSecurityGeneratedRows, } = require(path.join(__dirname, "./empireSecurity/empireSecurityNpcCatalog"));
 const { augmentNpcLoadoutWithHostileUtilities, } = require(path.join(__dirname, "./npcHostileUtilityCatalog"));
+const frontierDungeonSpawns = require(path.join(__dirname, "../../config/frontierDungeonSpawns"));
+const { applyNpcBehaviorConfig, } = require(path.join(__dirname, "../../config/npcBehaviorConfig"));
 const NPC_TABLE = Object.freeze({
     PROFILES: "npcProfiles",
     LOADOUTS: "npcLoadouts",
@@ -180,6 +182,7 @@ function getRawNpcRows(tableName) {
     const empireSecurityGeneratedRows = getEmpireSecurityGeneratedRows(tableName);
     const generatedRows = getCapitalNpcGeneratedRows(tableName);
     const trigDrifterGeneratedRows = getTrigDrifterGeneratedRows(tableName);
+    const frontierDungeonGeneratedRows = frontierDungeonSpawns.getGeneratedNpcRows(tableName);
     const normalizedAuthoredRows = tableName === NPC_TABLE.LOADOUTS
         ? ensureCanonicalNpcLoadoutRows(authoredRows)
         : (Array.isArray(authoredRows) ? authoredRows : []);
@@ -192,6 +195,7 @@ function getRawNpcRows(tableName) {
         ...(Array.isArray(empireSecurityGeneratedRows) ? empireSecurityGeneratedRows : []),
         ...(Array.isArray(generatedRows) ? generatedRows : []),
         ...(Array.isArray(trigDrifterGeneratedRows) ? trigDrifterGeneratedRows : []),
+        ...(Array.isArray(frontierDungeonGeneratedRows) ? frontierDungeonGeneratedRows : []),
     ];
 }
 function getNpcTableIndex(tableName) {
@@ -400,18 +404,17 @@ function buildNpcDefinition(profileID) {
     if (!profile) {
         return null;
     }
-    const hostileUtilityAugmentResult = augmentNpcLoadoutWithHostileUtilities({
+    const configuredDefinition = applyNpcBehaviorConfig({
         profile,
         loadout: baseLoadout,
         behaviorProfile,
         lootTable,
-    }, baseLoadout);
+    });
+    const hostileUtilityAugmentResult = augmentNpcLoadoutWithHostileUtilities(configuredDefinition, baseLoadout);
     const loadout = hostileUtilityAugmentResult.loadout;
     return {
-        profile,
+        ...configuredDefinition,
         loadout,
-        behaviorProfile,
-        lootTable,
         hostileUtilityTemplateIDs: hostileUtilityAugmentResult.appliedTemplateIDs,
     };
 }

@@ -6,7 +6,7 @@ const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
 const config = require(path.join(__dirname, "../../config"));
 const { buildBoundObjectResponse, buildDict, extractDictEntries, normalizeNumber, normalizeText, unwrapMarshalValue, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
-const { buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
+const { buildCachedMethodCallResultAsync: buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 const { throwWrappedUserError, } = require(path.join(__dirname, "../../common/machoErrors"));
 const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
 const { normalizePersistentEntityID, } = require(path.join(__dirname, "../../space/destiny/identity/entityID"));
@@ -15,7 +15,7 @@ const mobileAnalysisBeaconRuntime = require(path.join(__dirname, "./mobileAnalys
 const mobileMicroJumpUnitRuntime = require(path.join(__dirname, "./mobileMicroJumpUnitRuntime"));
 const mobileSiphonUnitRuntime = require(path.join(__dirname, "./mobileSiphonUnitRuntime"));
 const frontierDeploymentRuntime = require(path.join(__dirname, "../frontier/deploymentRuntime"));
-const { jumpSessionViaStargate, jumpSessionToSolarSystem, } = require(path.join(__dirname, "../../space/transitions"));
+const { jumpSessionViaStargateAsync, jumpSessionToSolarSystem, } = require(path.join(__dirname, "../../space/transitions"));
 const { consumeFuelFromShipStorage, } = require(path.join(__dirname, "../../space/modules/sharedFuelRuntime"));
 const { getActiveShipRecord, findCharacterShip, syncInventoryItemForSession, } = require(path.join(__dirname, "../character/characterState"));
 const { buildEffectiveItemAttributeMap, buildShipResourceState, getTypeDogmaAttributes, isEffectivelyOnlineModule, } = require(path.join(__dirname, "../fitting/liveFittingState"));
@@ -2479,7 +2479,7 @@ class BeyonceService extends BaseService {
         }
         return result.data.acceptedAtFileTime || null;
     }
-    Handle_CmdStargateJump(args, session) {
+    async Handle_CmdStargateJump(args, session) {
         const fromStargateID = normalizeNumber(args && args[0], 0);
         const toStargateID = normalizeNumber(args && args[1], 0);
         const requestedShipID = args && args.length > 2 ? normalizeNumber(args[2], 0) : 0;
@@ -2494,7 +2494,7 @@ class BeyonceService extends BaseService {
             log.warn(`[Beyonce] CmdStargateJump rejected ship mismatch char=${session && session.characterID} requested=${requestedShipID} active=${activeShipID}`);
             this._throwStargateJumpUserError("SHIP_ID_MISMATCH");
         }
-        const result = jumpSessionViaStargate(session, fromStargateID, toStargateID);
+        const result = await jumpSessionViaStargateAsync(session, fromStargateID, toStargateID);
         if (!result.success) {
             log.warn(`[Beyonce] CmdStargateJump failed for char=${session && session.characterID}: ${result.errorMsg}`);
             this._throwStargateJumpUserError(result.errorMsg);

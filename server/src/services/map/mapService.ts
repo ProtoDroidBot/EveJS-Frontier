@@ -60,7 +60,7 @@ const {
 const mapTelemetryState = require(path.join(__dirname, "./mapTelemetryState"));
 const fleetHelpers = require(path.join(__dirname, "../fleets/fleetHelpers"));
 const {
-  buildCachedMethodCallResult,
+  buildCachedMethodCallResultAsync: buildCachedMethodCallResult,
 } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 const {
   listIndustryJobsOverLast24Hours,

@@ -34,7 +34,7 @@ const {
   resolveCharacterCreationSchoolIDForRace,
   resolveCharacterCreationSchoolProfile,
 } = require("./characterCreationData");
-const { restoreSpaceSession } = require("../../space/transitions");
+const { restoreSpaceSessionAsync } = require("../../space/transitions");
 const {
   getCharacterSkillPointTotal,
 } = require("../skills/skillState");
@@ -1844,7 +1844,7 @@ class CharService extends BaseService {
     return null;
   }
 
-  Handle_SelectCharacterID(args, session, kwargs) {
+  async Handle_SelectCharacterID(args, session, kwargs) {
     const charId = resolveCharacterRequestId(args, kwargs, 0);
     const skipTutorial = resolveSkipTutorial(args, kwargs);
     const previousCharacterID = Number(
@@ -1997,7 +1997,7 @@ class CharService extends BaseService {
           `[CharService] Restoring space session for ${session.characterName || charId} ` +
           `system=${Number(session.solarsystemid2 || session.solarsystemid || 0) || 0}`,
         );
-        const restored = restoreSpaceSession(session);
+        const restored = await restoreSpaceSessionAsync(session);
         log.info(
           `[CharService] Space restore ${restored ? "completed" : "skipped"} for ` +
           `${session.characterName || charId} in ${Date.now() - restoreStartedAtMs}ms`,

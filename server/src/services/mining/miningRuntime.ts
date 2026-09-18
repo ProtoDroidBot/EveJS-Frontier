@@ -81,6 +81,7 @@ const {
 ));
 const {
   ensureSceneMiningState,
+  ensureSceneMiningStateAsync,
   getMineableState,
   applyMiningDelta,
   isMineableStaticEntity,
@@ -1271,6 +1272,24 @@ function handleSceneCreated(scene) {
   }
 }
 
+async function handleSceneCreatedAsync(scene, options: Record<string, any> = {}) {
+  const miningResourceSiteService = require("./miningResourceSiteService");
+  if (
+    options.resourceSitesPlanned !== true &&
+    miningResourceSiteService &&
+    typeof miningResourceSiteService.handleSceneCreated === "function"
+  ) {
+    miningResourceSiteService.handleSceneCreated(scene);
+  }
+  await ensureSceneMiningStateAsync(scene, {
+    batchSize: options.batchSize,
+  });
+  const miningNpcOperations = require("./miningNpcOperations");
+  if (typeof miningNpcOperations.handleSceneCreated === "function") {
+    miningNpcOperations.handleSceneCreated(scene);
+  }
+}
+
 function tickScene(scene, now) {
   ensureSceneMiningState(scene);
   respawnDepletedMineables(scene, Date.now());
@@ -1302,6 +1321,7 @@ function tickScene(scene, now) {
 
 module.exports = {
   handleSceneCreated,
+  handleSceneCreatedAsync,
   tickScene,
   isMiningEffectRecord,
   isMiningEffectState,

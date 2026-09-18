@@ -3,7 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const BaseService = require("../baseService");
 const log = require("../../utils/logger");
 const { buildDbRowset, buildFiletimeLong, buildKeyVal, } = require("../_shared/serviceHelpers");
-const { buildCachedMethodCallResult, } = require("../cache/objectCacheRuntime");
+const { buildCachedMethodCallResultAsync: buildCachedMethodCallResult, } = require("../cache/objectCacheRuntime");
 const standingRuntime = require("./standingRuntime");
 // Standings use real Rowsets so the client can call both .Index() and .Filter().
 // Only valid owner IDs may be present here: cfg.eveowners.Get(None) crashes the

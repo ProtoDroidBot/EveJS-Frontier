@@ -13,7 +13,7 @@ const {
   unwrapMarshalValue,
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const {
-  buildCachedMethodCallResult,
+  buildCachedMethodCallResultAsync: buildCachedMethodCallResult,
 } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 const {
   throwWrappedUserError,
@@ -34,7 +34,7 @@ const frontierDeploymentRuntime = require(path.join(
   "../frontier/deploymentRuntime",
 ));
 const {
-  jumpSessionViaStargate,
+  jumpSessionViaStargateAsync,
   jumpSessionToSolarSystem,
 } = require(path.join(__dirname, "../../space/transitions"));
 const {
@@ -3376,7 +3376,7 @@ class BeyonceService extends BaseService {
     return result.data.acceptedAtFileTime || null;
   }
 
-  Handle_CmdStargateJump(args, session) {
+  async Handle_CmdStargateJump(args, session) {
     const fromStargateID = normalizeNumber(args && args[0], 0);
     const toStargateID = normalizeNumber(args && args[1], 0);
     const requestedShipID =
@@ -3404,7 +3404,11 @@ class BeyonceService extends BaseService {
       this._throwStargateJumpUserError("SHIP_ID_MISMATCH");
     }
 
-    const result = jumpSessionViaStargate(session, fromStargateID, toStargateID);
+    const result = await jumpSessionViaStargateAsync(
+      session,
+      fromStargateID,
+      toStargateID,
+    );
     if (!result.success) {
       log.warn(
         `[Beyonce] CmdStargateJump failed for char=${session && session.characterID}: ${result.errorMsg}`,

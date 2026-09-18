@@ -2002,6 +2002,20 @@ function restoreSpaceSession(session) {
     }
     return true;
 }
+async function restoreSpaceSessionAsync(session) {
+    if (!session || !session.characterID || isDockedSession(session)) {
+        return false;
+    }
+    const activeShip = getActiveShipRecord(session.characterID);
+    const systemID = toInt(activeShip && activeShip.spaceState && activeShip.spaceState.systemID, toInt(session.solarsystemid2 || session.solarsystemid, 0));
+    if (systemID > 0 && typeof spaceRuntime.ensureSceneReady === "function") {
+        await spaceRuntime.ensureSceneReady(systemID, {
+            reconcileUniverseSites: false,
+            materializeUniverseSites: true,
+        });
+    }
+    return restoreSpaceSession(session);
+}
 function ejectSession(session, options = {}) {
     if (!session || !session.characterID || !session._space) {
         return {
@@ -2740,6 +2754,46 @@ function jumpSessionViaStargate(session, fromStargateID, toStargateID) {
         },
     };
 }
+async function jumpSessionViaStargateAsync(session, fromStargateID, toStargateID) {
+    if (!session || !session.characterID || !session._space) {
+        return jumpSessionViaStargate(session, fromStargateID, toStargateID);
+    }
+    if (isPilotWarpLandingPending(session)) {
+        return buildWarpLandingPendingResult();
+    }
+    const sourceGate = worldData.getStargateByID(fromStargateID);
+    const destinationGate = worldData.getStargateByID(toStargateID || (sourceGate && sourceGate.destinationID));
+    if (!sourceGate ||
+        !destinationGate ||
+        Number(sourceGate.destinationID || 0) !== Number(destinationGate.itemID || 0) ||
+        Number(sourceGate.solarSystemID || 0) !== Number(session._space.systemID || 0)) {
+        return jumpSessionViaStargate(session, fromStargateID, toStargateID);
+    }
+    const targetSolarSystemID = toInt(destinationGate && destinationGate.solarSystemID, 0);
+    if (sourceGate &&
+        destinationGate &&
+        targetSolarSystemID > 0 &&
+        typeof spaceRuntime.ensureSceneReady === "function") {
+        try {
+            await spaceRuntime.ensureSceneReady(targetSolarSystemID, {
+                reconcileUniverseSites: false,
+                materializeUniverseSites: true,
+            });
+        }
+        catch (error) {
+            log.warn(`[SpaceTransition] Destination scene preparation failed for stargate jump ` +
+                `system=${targetSolarSystemID}: ${error.message}`);
+            return {
+                success: false,
+                errorMsg: "DESTINATION_SCENE_UNAVAILABLE",
+            };
+        }
+    }
+    // Re-run all authoritative validation after the await. The session, active
+    // ship, source system, range, and gate topology may have changed while the
+    // destination scene was being prepared.
+    return jumpSessionViaStargate(session, fromStargateID, toStargateID);
+}
 function rebuildDockedSessionAtStation(session, stationID, options = {}) {
     if (!session || !session.characterID) {
         return {
@@ -3173,6 +3227,16 @@ function jumpSessionToSolarSystem(session, solarSystemID, options = {}) {
         endTransition(session, "solar-jump");
     }
 }
+async function jumpSessionToSolarSystemAsync(session, solarSystemID, options = {}) {
+    const targetSolarSystemID = toInt(solarSystemID, 0);
+    if (targetSolarSystemID > 0 && typeof spaceRuntime.ensureSceneReady === "function") {
+        await spaceRuntime.ensureSceneReady(targetSolarSystemID, {
+            reconcileUniverseSites: false,
+            materializeUniverseSites: true,
+        });
+    }
+    return jumpSessionToSolarSystem(session, targetSolarSystemID, options);
+}
 function jumpSessionToShipCloneBay(session, targetShipID) {
     if (!session || !session.characterID) {
         return {
@@ -3396,15 +3460,18 @@ module.exports = {
     undockSession,
     dockSession,
     restoreSpaceSession,
+    restoreSpaceSessionAsync,
     ejectSession,
     ejectSessionForShipDestruction,
     boardSpaceShip,
     getStrategicCruiserTransitionUseError,
     jumpSessionViaStargate,
+    jumpSessionViaStargateAsync,
     rebuildDockedSessionAtStation,
     jumpSessionToStation,
     jumpSessionToShipCloneBay,
     jumpSessionToSolarSystem,
+    jumpSessionToSolarSystemAsync,
     resolveSameSceneEgoAddBallsStamp,
     repairSameSceneSessionViewState,
 };

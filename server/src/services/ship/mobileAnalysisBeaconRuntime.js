@@ -9,6 +9,7 @@ const worldData = require(path.join(__dirname, "../../space/worldData"));
 const { getCachedCharacterSkillMap, } = require(path.join(__dirname, "../skills/skillState"));
 const { isTriglavianSolarSystemID, isWormholeSolarSystemID, } = require(path.join(__dirname, "../chat/channelRules"));
 const { matchesTypeList, } = require(path.join(__dirname, "../inventory/typeListAuthority"));
+const frontierDungeonSpawns = require(path.join(__dirname, "../../config/frontierDungeonSpawns"));
 const CATEGORY_DEPLOYABLE = 22;
 const CATEGORY_UPWELL_STRUCTURE = 65;
 const GROUP_CONTROL_TOWER = 365;
@@ -164,6 +165,12 @@ function getStateFromCustomInfo(customInfo) {
         linkState: toInt(state.linkState, LINKSTATE_IDLE),
         linkCompleteAtMs: toInt(state.linkCompleteAtMs, 0),
         linkedShipID: toInt(state.linkedShipID, 0),
+        hiveSpawnedAtMs: toInt(state.hiveSpawnedAtMs, 0),
+        hiveSpawnProfileIDs: Array.isArray(state.hiveSpawnProfileIDs)
+            ? state.hiveSpawnProfileIDs
+                .map((profileID) => String(profileID || "").trim())
+                .filter(Boolean)
+            : [],
     };
 }
 function getMobileAnalysisBeaconStateFromItem(item) {
@@ -192,6 +199,12 @@ function buildCustomInfoWithState(customInfo, state) {
         linkState: toInt(state.linkState, LINKSTATE_IDLE),
         linkCompleteAtMs: toInt(state.linkCompleteAtMs, 0),
         linkedShipID: toInt(state.linkedShipID, 0),
+        hiveSpawnedAtMs: toInt(state.hiveSpawnedAtMs, 0),
+        hiveSpawnProfileIDs: Array.isArray(state.hiveSpawnProfileIDs)
+            ? state.hiveSpawnProfileIDs
+                .map((profileID) => String(profileID || "").trim())
+                .filter(Boolean)
+            : [],
     };
     return JSON.stringify(parsed);
 }
@@ -518,6 +531,186 @@ function setUnrefTimeout(callback, delayMs) {
     }
     return timer;
 }
+function normalizeHiveLinkState(rawState, defaults = {}) {
+    const state = rawState && typeof rawState === "object" && !Array.isArray(rawState)
+        ? rawState
+        : {};
+    return {
+        active: state.active !== false,
+        solarSystemID: toInt(state.solarSystemID, toInt(defaults.solarSystemID, 0)),
+        beaconID: toInt(state.beaconID, toInt(defaults.beaconID, 0)),
+        linkState: Math.max(LINKSTATE_IDLE, Math.min(LINKSTATE_COMPLETED, toInt(state.linkState, LINKSTATE_IDLE))),
+        linkCompleteAtMs: toInt(state.linkCompleteAtMs, 0),
+        linkedShipID: toInt(state.linkedShipID, 0),
+        hiveSpawnedAtMs: toInt(state.hiveSpawnedAtMs, 0),
+        hiveSpawnProfileIDs: Array.isArray(state.hiveSpawnProfileIDs)
+            ? state.hiveSpawnProfileIDs
+                .map((profileID) => String(profileID || "").trim())
+                .filter(Boolean)
+            : [],
+    };
+}
+function applyConfiguredHiveLinkPresentation(entity, state) {
+    if (!entity) {
+        return entity;
+    }
+    const normalizedState = normalizeHiveLinkState(state, {
+        beaconID: entity.itemID,
+        solarSystemID: entity.systemID,
+    });
+    entity.frontierHiveLinkState = normalizedState;
+    entity.component_activate = [normalizedState.active, null];
+    entity.activate_comp_durationSeconds = 0;
+    entity.component_linkWithShip = [
+        null,
+        normalizedState.linkState,
+        normalizedState.linkCompleteAtMs > 0
+            ? normalizedState.linkCompleteAtMs
+            : null,
+        normalizedState.linkedShipID > 0 ? normalizedState.linkedShipID : null,
+    ];
+    return entity;
+}
+function resolveConfiguredHiveAnchor(item, state) {
+    const systemID = toInt(state && state.solarSystemID, toInt(item && item.locationID, 0));
+    const itemID = toInt(item && item.itemID, toInt(state && state.beaconID, 0));
+    if (systemID > 0 && itemID > 0) {
+        const scene = getSpaceRuntime().ensureScene(systemID);
+        const liveEntity = scene && typeof scene.getEntityByID === "function"
+            ? scene.getEntityByID(itemID)
+            : null;
+        if (liveEntity && liveEntity.position) {
+            return liveEntity;
+        }
+    }
+    const position = getObjectPosition(item);
+    if (!position) {
+        return null;
+    }
+    return {
+        ...item,
+        kind: item && item.kind || "mobileAnalysisBeacon",
+        itemID,
+        position,
+    };
+}
+function spawnConfiguredHiveNpcs(anchorEntity, state, options = {}) {
+    const configuration = frontierDungeonSpawns.resolveHiveSpawnConfiguration(anchorEntity && anchorEntity.typeID);
+    if (!configuration) {
+        return {
+            success: true,
+            data: {
+                configuration: null,
+                spawned: [],
+                failures: [],
+            },
+        };
+    }
+    const systemID = toInt(state && state.solarSystemID, toInt(anchorEntity && anchorEntity.systemID, toInt(anchorEntity && anchorEntity.locationID, 0)));
+    if (systemID <= 0 || !anchorEntity || !anchorEntity.position) {
+        return {
+            success: false,
+            errorMsg: "HIVE_SPAWN_ANCHOR_NOT_FOUND",
+            data: {
+                configuration,
+                spawned: [],
+                failures: [],
+            },
+        };
+    }
+    const npcService = options.npcService || require(path.join(__dirname, "../../space/npc/npcService"));
+    const spawned = [];
+    const failures = [];
+    const total = configuration.spawnEntries.length;
+    configuration.spawnEntries.forEach((entry, index) => {
+        const spawnResult = npcService.spawnNpcBatchInSystem(systemID, {
+            profileQuery: entry.profileID,
+            amount: 1,
+            anchorEntity,
+            entityScopeMetadata: buildChildEntityScopeMetadata(anchorEntity),
+            preferredTargetID: toInt(state && state.linkedShipID, 0),
+            transient: true,
+            runtimeKind: "frontierHive",
+            selectionKind: "hive",
+            selectionID: String(configuration.hiveTypeID),
+            selectionName: configuration.name,
+            spawnDistanceMeters: Math.max(1_000, 6_000 + (index * Math.max(500, toInt(frontierDungeonSpawns.getConfig().defaults.formationSpacingMeters, 1_800)))),
+            hiveSpawnIndex: index,
+            hiveSpawnTotal: total,
+            hiveDroneType: entry.droneType,
+            hiveDroneRole: entry.role,
+        });
+        if (!spawnResult || spawnResult.success !== true) {
+            failures.push({
+                ...entry,
+                errorMsg: spawnResult && spawnResult.errorMsg || "HIVE_NPC_SPAWN_FAILED",
+            });
+            return;
+        }
+        spawned.push({
+            ...entry,
+            result: spawnResult.data || null,
+        });
+    });
+    return {
+        success: failures.length === 0,
+        ...(failures.length > 0 ? { errorMsg: "HIVE_NPC_SPAWN_PARTIAL_FAILURE" } : {}),
+        data: {
+            configuration,
+            spawned,
+            failures,
+        },
+    };
+}
+function broadcastConfiguredHiveLinkState(scene, entity) {
+    if (scene && entity && typeof scene.broadcastSlimItemChanges === "function") {
+        scene.broadcastSlimItemChanges([entity]);
+    }
+}
+function completeConfiguredHiveEntityLink(scene, entity) {
+    if (!scene || !entity) {
+        return false;
+    }
+    const liveEntity = typeof scene.getEntityByID === "function"
+        ? scene.getEntityByID(entity.itemID)
+        : entity;
+    if (liveEntity !== entity) {
+        clearTimers(entity.itemID);
+        return false;
+    }
+    const state = normalizeHiveLinkState(entity.frontierHiveLinkState, {
+        beaconID: entity.itemID,
+        solarSystemID: scene.systemID,
+    });
+    if (state.linkState !== LINKSTATE_RUNNING) {
+        return false;
+    }
+    const now = Date.now();
+    if (state.linkCompleteAtMs > now) {
+        return false;
+    }
+    const spawnResult = state.hiveSpawnedAtMs > 0
+        ? null
+        : spawnConfiguredHiveNpcs(entity, state);
+    const nextState = {
+        ...state,
+        linkState: LINKSTATE_COMPLETED,
+        hiveSpawnedAtMs: state.hiveSpawnedAtMs || now,
+        hiveSpawnProfileIDs: spawnResult && spawnResult.data && spawnResult.data.configuration
+            ? spawnResult.data.configuration.spawnEntries.map((entry) => entry.profileID)
+            : state.hiveSpawnProfileIDs,
+    };
+    applyConfiguredHiveLinkPresentation(entity, nextState);
+    clearTimers(entity.itemID);
+    broadcastConfiguredHiveLinkState(scene, entity);
+    if (spawnResult && !spawnResult.success) {
+        log.warn(`[MobileAnalysisBeacon] Hive spawn partially failed beacon=${entity.itemID} ` +
+            `failures=${spawnResult.data.failures.length}`);
+    }
+    log.info(`[MobileAnalysisBeacon] Hive link completed beacon=${entity.itemID} ` +
+        `ship=${state.linkedShipID} system=${state.solarSystemID}`);
+    return true;
+}
 function clearMobileAnalysisBeacon(itemOrID, reason = "cleared") {
     const itemID = toInt(itemOrID && itemOrID.itemID ? itemOrID.itemID : itemOrID, 0);
     if (!itemID) {
@@ -587,12 +780,24 @@ function completeMobileAnalysisBeaconLink(itemID) {
         scheduleMobileAnalysisBeaconTimers(itemID);
         return false;
     }
+    const hiveAnchor = resolveConfiguredHiveAnchor(item, state);
+    const spawnResult = state.hiveSpawnedAtMs > 0 || !hiveAnchor
+        ? null
+        : spawnConfiguredHiveNpcs(hiveAnchor, state);
     updateMobileAnalysisBeaconState(itemID, (currentState) => ({
         ...currentState,
         linkState: LINKSTATE_COMPLETED,
+        hiveSpawnedAtMs: currentState.hiveSpawnedAtMs || now,
+        hiveSpawnProfileIDs: spawnResult && spawnResult.data && spawnResult.data.configuration
+            ? spawnResult.data.configuration.spawnEntries.map((entry) => entry.profileID)
+            : currentState.hiveSpawnProfileIDs,
     }));
     getSpaceRuntime().refreshInventoryBackedEntityPresentation(state.solarSystemID, itemID);
     scheduleMobileAnalysisBeaconTimers(itemID);
+    if (spawnResult && !spawnResult.success) {
+        log.warn(`[MobileAnalysisBeacon] Hive spawn partially failed beacon=${itemID} ` +
+            `failures=${spawnResult.data.failures.length}`);
+    }
     log.info(`[MobileAnalysisBeacon] Link completed beacon=${itemID} ship=${state.linkedShipID} system=${state.solarSystemID}`);
     return true;
 }
@@ -870,6 +1075,93 @@ function launchMobileAnalysisBeaconFromShip(session, itemID, options = {}) {
         },
     };
 }
+function initiateConfiguredHiveEntityLink(session, beaconID, context, options = {}) {
+    const scene = getSpaceRuntime().getSceneForSession(session);
+    const hiveEntity = getSpaceRuntime().getEntity(session, beaconID);
+    const configuration = frontierDungeonSpawns.resolveHiveSpawnConfiguration(hiveEntity);
+    if (!scene || !hiveEntity || !configuration) {
+        return {
+            success: false,
+            errorMsg: "MOBILE_ANALYSIS_BEACON_NOT_FOUND",
+        };
+    }
+    const state = normalizeHiveLinkState(hiveEntity.frontierHiveLinkState, {
+        beaconID,
+        solarSystemID: context.systemID,
+    });
+    if (!state.active) {
+        return {
+            success: false,
+            errorMsg: "MOBILE_ANALYSIS_BEACON_NOT_ACTIVE",
+        };
+    }
+    if (state.linkState !== LINKSTATE_IDLE ||
+        state.linkedShipID > 0 ||
+        state.hiveSpawnedAtMs > 0) {
+        return {
+            success: false,
+            errorMsg: "MOBILE_ANALYSIS_BEACON_ALREADY_LINKED",
+        };
+    }
+    const shipEntity = getSpaceRuntime().getEntity(session, context.shipID);
+    const shipItem = findShipItemById(context.shipID) || findItemById(context.shipID);
+    const shipValidationError = validateLinkingShip(hiveEntity, shipEntity, shipItem);
+    if (shipValidationError) {
+        return {
+            success: false,
+            errorMsg: shipValidationError,
+        };
+    }
+    const currentEnergyState = characterEnergyMgrService.getCharacterEnergyStateNow(session);
+    if (currentEnergyState.energyLevel - MOBILE_ANALYSIS_BEACON_CHARACTER_ENERGY_COST <
+        currentEnergyState.minEnergyLevel) {
+        return {
+            success: false,
+            errorMsg: "INSUFFICIENT_CHARACTER_ENERGY",
+        };
+    }
+    const energyResult = characterEnergyMgrService.spendCharacterEnergy(session, MOBILE_ANALYSIS_BEACON_CHARACTER_ENERGY_COST);
+    if (!energyResult.success) {
+        return {
+            success: false,
+            errorMsg: energyResult.errorMsg || "INSUFFICIENT_CHARACTER_ENERGY",
+        };
+    }
+    const now = Date.now();
+    const linkCompleteAtMs = now + MOBILE_ANALYSIS_BEACON_LINK_DURATION_MS;
+    const nextState = {
+        ...state,
+        active: true,
+        solarSystemID: context.systemID,
+        beaconID: toInt(beaconID, 0),
+        linkState: LINKSTATE_RUNNING,
+        linkCompleteAtMs,
+        linkedShipID: context.shipID,
+    };
+    applyConfiguredHiveLinkPresentation(hiveEntity, nextState);
+    clearTimers(beaconID);
+    timersByBeaconID.set(toInt(beaconID, 0), {
+        activationTimer: null,
+        expiryTimer: null,
+        linkTimer: setUnrefTimeout(() => completeConfiguredHiveEntityLink(scene, hiveEntity), linkCompleteAtMs - now),
+    });
+    broadcastConfiguredHiveLinkState(scene, hiveEntity);
+    applyLinkRestrictionsToShip(session, shipEntity, beaconID, linkCompleteAtMs);
+    log.info(`[MobileAnalysisBeacon] Hive link started char=${context.characterID} ` +
+        `ship=${context.shipID} beacon=${beaconID} typeID=${configuration.hiveTypeID} ` +
+        `method=${options.quick ? "InitiateLinkQuick" : "InitiateLink"}`);
+    return {
+        success: true,
+        data: {
+            beaconID: toInt(beaconID, 0),
+            linkedShipID: context.shipID,
+            linkCompleteAtMs,
+            characterEnergyCost: MOBILE_ANALYSIS_BEACON_CHARACTER_ENERGY_COST,
+            hiveTypeID: configuration.hiveTypeID,
+            hiveDroneTypes: configuration.droneTypes,
+        },
+    };
+}
 function initiateMobileAnalysisBeaconLink(session, beaconID, options = {}) {
     const item = findItemById(beaconID);
     const state = getMobileAnalysisBeaconStateFromItem(item);
@@ -882,10 +1174,7 @@ function initiateMobileAnalysisBeaconLink(session, beaconID, options = {}) {
         };
     }
     if (!item || !state) {
-        return {
-            success: false,
-            errorMsg: "MOBILE_ANALYSIS_BEACON_NOT_FOUND",
-        };
+        return initiateConfiguredHiveEntityLink(session, beaconID, context, options);
     }
     const now = Date.now();
     if (!isActiveMobileAnalysisBeaconState(state, now)) {
@@ -996,6 +1285,10 @@ module.exports = {
         getLinkableShipTypeListIDForBeaconType,
         isShipTypeLinkableForBeaconType,
         validateLinkingShip,
+        normalizeHiveLinkState,
+        applyConfiguredHiveLinkPresentation,
+        spawnConfiguredHiveNpcs,
+        completeConfiguredHiveEntityLink,
     },
 };
 //# sourceMappingURL=mobileAnalysisBeaconRuntime.js.map

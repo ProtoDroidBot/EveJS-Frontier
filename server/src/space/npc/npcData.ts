@@ -16,6 +16,13 @@ const {
 const {
   augmentNpcLoadoutWithHostileUtilities,
 } = require(path.join(__dirname, "./npcHostileUtilityCatalog"));
+const frontierDungeonSpawns = require(path.join(
+  __dirname,
+  "../../config/frontierDungeonSpawns",
+));
+const {
+  applyNpcBehaviorConfig,
+} = require(path.join(__dirname, "../../config/npcBehaviorConfig"));
 
 const NPC_TABLE = Object.freeze({
   PROFILES: "npcProfiles",
@@ -206,6 +213,7 @@ function getRawNpcRows(tableName) {
   const empireSecurityGeneratedRows = getEmpireSecurityGeneratedRows(tableName);
   const generatedRows = getCapitalNpcGeneratedRows(tableName);
   const trigDrifterGeneratedRows = getTrigDrifterGeneratedRows(tableName);
+  const frontierDungeonGeneratedRows = frontierDungeonSpawns.getGeneratedNpcRows(tableName);
   const normalizedAuthoredRows = tableName === NPC_TABLE.LOADOUTS
     ? ensureCanonicalNpcLoadoutRows(authoredRows)
     : (Array.isArray(authoredRows) ? authoredRows : []);
@@ -218,6 +226,7 @@ function getRawNpcRows(tableName) {
     ...(Array.isArray(empireSecurityGeneratedRows) ? empireSecurityGeneratedRows : []),
     ...(Array.isArray(generatedRows) ? generatedRows : []),
     ...(Array.isArray(trigDrifterGeneratedRows) ? trigDrifterGeneratedRows : []),
+    ...(Array.isArray(frontierDungeonGeneratedRows) ? frontierDungeonGeneratedRows : []),
   ];
 }
 
@@ -480,22 +489,21 @@ function buildNpcDefinition(profileID) {
     return null;
   }
 
+  const configuredDefinition = applyNpcBehaviorConfig({
+    profile,
+    loadout: baseLoadout,
+    behaviorProfile,
+    lootTable,
+  });
   const hostileUtilityAugmentResult = augmentNpcLoadoutWithHostileUtilities(
-    {
-      profile,
-      loadout: baseLoadout,
-      behaviorProfile,
-      lootTable,
-    },
+    configuredDefinition,
     baseLoadout,
   );
   const loadout = hostileUtilityAugmentResult.loadout;
 
   return {
-    profile,
+    ...configuredDefinition,
     loadout,
-    behaviorProfile,
-    lootTable,
     hostileUtilityTemplateIDs: hostileUtilityAugmentResult.appliedTemplateIDs,
   };
 }

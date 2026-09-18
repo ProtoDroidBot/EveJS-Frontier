@@ -5,7 +5,7 @@ const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
 const signatureRuntime = require(path.join(__dirname, "../exploration/signatures/signatureRuntime"));
 const { buildDict, buildKeyVal, buildList, buildRowset, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
-const { buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
+const { buildCachedMethodCallResultAsync: buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 const ESCALATING_PATH_HEADER = Object.freeze([
     "instanceID",
     "dungeon",

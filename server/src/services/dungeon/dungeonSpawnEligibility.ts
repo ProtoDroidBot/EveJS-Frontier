@@ -1,8 +1,26 @@
-const LANDSCAPE_SPAWN_EXCLUSION_VERSION = 1;
-const FRONTIER_DUNGEON_SPAWN_AUTHORITY_VERSION = 1;
+const FRONTIER_DUNGEON_SPAWN_AUTHORITY_VERSION = 5;
+const FRONTIER_DUNGEON_SPAWN_GROUP_IDS = Object.freeze([
+  4871, // Asteroid Site
+  4872, // Crude Rift
+  4873, // Wreck, Ruin & Debris
+  4874, // Landmark
+]);
+const FRONTIER_DUNGEON_SPAWN_GROUP_ID_SET = new Set(FRONTIER_DUNGEON_SPAWN_GROUP_IDS);
+const FRONTIER_DUNGEON_SPAWN_PRESENTATION_BY_GROUP_ID = Object.freeze({
+  // Frontier's four authored entry-beacon groups are all public, directly
+  // warpable solar-system-view sites. Keep them on the same persistent
+  // combat-anomaly allocation path so mining/rift/landmark rows cannot fall
+  // into sparse family-specific allocators and disappear from most systems.
+  4871: Object.freeze({ siteFamily: "combat", siteKind: "anomaly" }),
+  4872: Object.freeze({ siteFamily: "combat", siteKind: "anomaly" }),
+  4873: Object.freeze({ siteFamily: "combat", siteKind: "anomaly" }),
+  4874: Object.freeze({ siteFamily: "combat", siteKind: "anomaly" }),
+});
 const LIGHT_SECOND_METERS = 299_792_458;
-const MINIMUM_LARGE_ANCHOR_OFFSET_METERS = LIGHT_SECOND_METERS * 0.01;
-const MAXIMUM_LARGE_ANCHOR_OFFSET_METERS = LIGHT_SECOND_METERS * 0.5;
+const MINIMUM_LARGE_ANCHOR_OFFSET_METERS = LIGHT_SECOND_METERS;
+const MAXIMUM_LARGE_ANCHOR_OFFSET_METERS = LIGHT_SECOND_METERS * 50;
+const MINIMUM_UNIVERSE_DUNGEON_SITES_PER_SYSTEM = 3;
+const MAXIMUM_UNIVERSE_DUNGEON_SITES_PER_SYSTEM = 5;
 
 const PRIMARY_DUNGEON_CELESTIAL_GROUP_IDS = Object.freeze([
   7, // planets
@@ -38,6 +56,41 @@ function normalizeRows(value) {
   return value && typeof value === "object" ? Object.values(value) : [];
 }
 
+function normalizeText(value, fallback = "") {
+  if (typeof value === "string") {
+    return value.trim() || fallback;
+  }
+  if (value && typeof value === "object") {
+    const localized = typeof value.en === "string"
+      ? value.en
+      : Object.values<any>(value).find((entry) => typeof entry === "string");
+    return String(localized || "").trim() || fallback;
+  }
+  return fallback;
+}
+
+function buildItemTypeGroupMap(itemTypes) {
+  const groupIDByTypeID = new Map();
+  for (const itemType of normalizeRows(itemTypes)) {
+    const typeID = Math.max(0, toInt(itemType && (itemType.typeID ?? itemType._key), 0));
+    if (typeID > 0) {
+      groupIDByTypeID.set(typeID, Math.max(0, toInt(itemType && itemType.groupID, 0)));
+    }
+  }
+  return groupIDByTypeID;
+}
+
+function resolveFrontierDungeonEntryGroupID(dungeon, groupIDByTypeID) {
+  const entryTypeID = Math.max(0, toInt(dungeon && dungeon.entryTypeID, 0));
+  return Math.max(
+    0,
+    toInt(
+      dungeon && dungeon.entryTypeGroupID,
+      groupIDByTypeID.get(entryTypeID) || 0,
+    ),
+  );
+}
+
 function addDungeonID(target, value) {
   const dungeonID = Math.max(0, toInt(value, 0));
   if (dungeonID > 0) {
@@ -45,47 +98,123 @@ function addDungeonID(target, value) {
   }
 }
 
-/**
- * Landscape dungeon templates are placement ingredients, not standalone
- * exploration sites. Keep every ID owned or referenced by the landscape
- * authority out of the universe dungeon allocator.
- */
-function collectLandscapeDungeonSpawnExclusionIDs(source: Record<string, any> = {}) {
-  const excluded = new Set<any>();
-
-  for (const dungeon of normalizeRows(source.landscapeDungeonTemplates)) {
-    addDungeonID(excluded, dungeon && (dungeon.dungeonID ?? dungeon._key));
-  }
-
-  for (const ecosystem of normalizeRows(source.landscapeEcosystems)) {
-    addDungeonID(excluded, ecosystem && ecosystem.entryDungeonID);
-    for (const patternName of ["naturalWorldPatterns", "brokenWorldPatterns"]) {
-      for (const pattern of normalizeRows(ecosystem && ecosystem[patternName])) {
-        addDungeonID(excluded, pattern && pattern.dungeonID);
-      }
-    }
-  }
-
-  for (const site of normalizeRows(source.landscapeSites)) {
-    addDungeonID(excluded, site && site.dungeonID);
-  }
-
-  return [...excluded].sort((left, right) => left - right);
+function resolveUniverseDungeonSiteCount(systemID) {
+  const numericSystemID = Math.max(0, toInt(systemID, 0));
+  const countRange =
+    MAXIMUM_UNIVERSE_DUNGEON_SITES_PER_SYSTEM -
+    MINIMUM_UNIVERSE_DUNGEON_SITES_PER_SYSTEM +
+    1;
+  let state = numericSystemID >>> 0;
+  state = Math.imul(state ^ (state >>> 16), 0x45d9f3b);
+  state = Math.imul(state ^ (state >>> 16), 0x45d9f3b);
+  state ^= state >>> 16;
+  return MINIMUM_UNIVERSE_DUNGEON_SITES_PER_SYSTEM + ((state >>> 0) % countRange);
 }
 
 /**
- * Universe dungeon generation is Frontier-only. Treat the extracted
- * frontierDungeonTemplates table as a positive authority rather than trying
- * to infer compatibility from the legacy dungeonAuthority metadata.
+ * Universe dungeon generation is Frontier-site-only. A dungeon is eligible
+ * when its entry object's item type belongs to one of the four authored site
+ * groups. Landscape and ecosystem references are intentionally not excluded;
+ * they use the same site groups and can spawn through the normal allocator.
  */
-function collectFrontierDungeonSpawnAuthorityIDs(source: Record<string, any> = {}) {
+function collectFrontierDungeonSpawnAuthorityIDs(
+  source: Record<string, any> = {},
+  itemTypes = source.itemTypes,
+) {
   const included = new Set<any>();
+  const groupIDByTypeID = buildItemTypeGroupMap(itemTypes);
 
   for (const dungeon of normalizeRows(source.frontierDungeonTemplates)) {
-    addDungeonID(included, dungeon && (dungeon.dungeonID ?? dungeon._key));
+    const entryGroupID = resolveFrontierDungeonEntryGroupID(dungeon, groupIDByTypeID);
+    if (FRONTIER_DUNGEON_SPAWN_GROUP_ID_SET.has(entryGroupID)) {
+      addDungeonID(included, dungeon && (dungeon.dungeonID ?? dungeon._key));
+    }
   }
 
   return [...included].sort((left, right) => left - right);
+}
+
+/**
+ * The client dungeon authority predates many Frontier-authored dungeon rows.
+ * Promote every dungeon with one of the four supported entry-beacon groups to
+ * a first-class runtime template while retaining the exact authored rooms,
+ * triggers and entry object. Existing exact client templates win by source ID.
+ */
+function buildFrontierDungeonSpawnTemplates(
+  source: Record<string, any> = {},
+  itemTypes = source.itemTypes,
+  existingTemplates: any = [],
+) {
+  const groupIDByTypeID = buildItemTypeGroupMap(itemTypes);
+  const existingSourceDungeonIDs = new Set(
+    normalizeRows(existingTemplates)
+      .map((template) => Math.max(0, toInt(template && template.sourceDungeonID, 0)))
+      .filter((dungeonID) => dungeonID > 0),
+  );
+  const generated: any[] = [];
+
+  const dungeons = normalizeRows(source.frontierDungeonTemplates)
+    .slice()
+    .sort((left, right) => (
+      toInt(left && (left.dungeonID ?? left._key), Number.MAX_SAFE_INTEGER) -
+      toInt(right && (right.dungeonID ?? right._key), Number.MAX_SAFE_INTEGER)
+    ));
+  for (const dungeon of dungeons) {
+    const sourceDungeonID = Math.max(
+      0,
+      toInt(dungeon && (dungeon.dungeonID ?? dungeon._key), 0),
+    );
+    const entryObjectTypeID = Math.max(0, toInt(dungeon && dungeon.entryTypeID, 0));
+    const entryObjectGroupID = resolveFrontierDungeonEntryGroupID(
+      dungeon,
+      groupIDByTypeID,
+    );
+    const presentation = FRONTIER_DUNGEON_SPAWN_PRESENTATION_BY_GROUP_ID[entryObjectGroupID];
+    if (
+      sourceDungeonID <= 0 ||
+      entryObjectTypeID <= 0 ||
+      !presentation ||
+      existingSourceDungeonIDs.has(sourceDungeonID)
+    ) {
+      continue;
+    }
+
+    const resolvedName = normalizeText(
+      dungeon && dungeon.dungeonName,
+      `Frontier Dungeon ${sourceDungeonID}`,
+    );
+    const authoredDifficulty = Math.max(0, toInt(dungeon && dungeon.difficulty, 0));
+    generated.push({
+      ...dungeon,
+      templateID: `frontier-dungeon:${sourceDungeonID}`,
+      source: "frontier",
+      sourcePriority: 100,
+      sourceConfidence: {
+        label: "Exact Frontier Dungeon Extract",
+        score: 100,
+      },
+      siteFamily: presentation.siteFamily,
+      siteKind: presentation.siteKind,
+      siteOrigin: "frontier_dungeon",
+      sourceDungeonID,
+      resolvedName,
+      archetypeID: Math.max(0, toInt(dungeon && dungeon.archetypeID, 0)) || null,
+      dungeonNameID: Math.max(0, toInt(dungeon && dungeon.dungeonNameID, 0)) || null,
+      factionID: Math.max(0, toInt(dungeon && dungeon.factionID, 0)) || null,
+      difficulty: authoredDifficulty || 1,
+      entryObjectTypeID,
+      entryObjectGroupID,
+      resourceComposition: dungeon && dungeon.resourceComposition || {
+        oreTypeIDs: [],
+        gasTypeIDs: [],
+        iceTypeIDs: [],
+        hasAnyResources: false,
+      },
+    });
+    existingSourceDungeonIDs.add(sourceDungeonID);
+  }
+
+  return generated;
 }
 
 function isTemplateFromFrontierDungeonDataset(template, frontierDungeonIDs) {
@@ -99,24 +228,11 @@ function isTemplateFromFrontierDungeonDataset(template, frontierDungeonIDs) {
   return authority.has(sourceDungeonID);
 }
 
-function isTemplateExcludedFromUniverseSpawning(template, excludedDungeonIDs) {
-  const sourceDungeonID = Math.max(0, toInt(template && template.sourceDungeonID, 0));
-  if (sourceDungeonID <= 0) {
-    return false;
-  }
-  const exclusions = excludedDungeonIDs instanceof Set
-    ? excludedDungeonIDs
-    : new Set(collectLandscapeDungeonSpawnExclusionIDs(excludedDungeonIDs || {}));
-  return exclusions.has(sourceDungeonID);
-}
-
 function isTemplateEligibleForUniverseSpawning(
   template,
   frontierDungeonIDs,
-  excludedLandscapeDungeonIDs,
 ) {
-  return isTemplateFromFrontierDungeonDataset(template, frontierDungeonIDs) &&
-    !isTemplateExcludedFromUniverseSpawning(template, excludedLandscapeDungeonIDs);
+  return isTemplateFromFrontierDungeonDataset(template, frontierDungeonIDs);
 }
 
 function rankPrimaryCelestial(left, right) {
@@ -134,7 +250,7 @@ function getUniverseDungeonAnchorDistanceRange(candidate) {
   const anchorKind = String(candidate && candidate.anchorKind || "").trim().toLowerCase();
   const groupID = toInt(candidate && candidate.groupID, 0);
   if (
-    ["station", "stargate"].includes(anchorKind) ||
+    ["celestial", "station", "stargate"].includes(anchorKind) ||
     [...PRIMARY_DUNGEON_CELESTIAL_GROUP_IDS, 4870].includes(groupID)
   ) {
     return {
@@ -164,7 +280,11 @@ function orderUniverseDungeonAnchorCandidates(
   candidates: Record<string, any> = {},
   family = "",
 ) {
-  const celestials = normalizeRows(candidates.celestials);
+  const celestials = normalizeRows(candidates.celestials)
+    .map((entry) => ({
+      ...entry,
+      anchorKind: normalizeText(entry && entry.anchorKind, "celestial"),
+    }));
   const primaryGroupIDs = new Set(PRIMARY_DUNGEON_CELESTIAL_GROUP_IDS);
   const primaryCelestials = celestials
     .filter((entry) => primaryGroupIDs.has(toInt(entry && entry.groupID, 0)))
@@ -215,18 +335,21 @@ function orderUniverseDungeonAnchorCandidates(
 
 module.exports = {
   FRONTIER_DUNGEON_SPAWN_AUTHORITY_VERSION,
-  LANDSCAPE_SPAWN_EXCLUSION_VERSION,
+  FRONTIER_DUNGEON_SPAWN_GROUP_IDS,
+  FRONTIER_DUNGEON_SPAWN_PRESENTATION_BY_GROUP_ID,
   LIGHT_SECOND_METERS,
   MINIMUM_LARGE_ANCHOR_OFFSET_METERS,
   MAXIMUM_LARGE_ANCHOR_OFFSET_METERS,
+  MINIMUM_UNIVERSE_DUNGEON_SITES_PER_SYSTEM,
+  MAXIMUM_UNIVERSE_DUNGEON_SITES_PER_SYSTEM,
   PRIMARY_DUNGEON_CELESTIAL_GROUP_IDS,
   GENERAL_ANCHOR_CLASS_WEIGHTS,
   RESOURCE_ANCHOR_CLASS_WEIGHTS,
+  buildFrontierDungeonSpawnTemplates,
   collectFrontierDungeonSpawnAuthorityIDs,
-  collectLandscapeDungeonSpawnExclusionIDs,
   getUniverseDungeonAnchorDistanceRange,
   isTemplateEligibleForUniverseSpawning,
-  isTemplateExcludedFromUniverseSpawning,
   isTemplateFromFrontierDungeonDataset,
   orderUniverseDungeonAnchorCandidates,
+  resolveUniverseDungeonSiteCount,
 };

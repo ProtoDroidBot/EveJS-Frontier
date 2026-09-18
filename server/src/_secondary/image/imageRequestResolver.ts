@@ -3,10 +3,12 @@ const path = require("path");
 const {
   DEFAULT_CHARACTER_PORTRAIT_PATH,
   findCharacterPortraitPath,
+  findCharacterPortraitPathAsync,
 } = require("../../services/character/portraitImageStore");
 const {
   DEFAULT_FACTION_LOGO_PATH,
   findFactionLogoPath,
+  findFactionLogoPathAsync,
 } = require("../../services/faction/factionImageStore");
 const {
   getFactionIDForCorporation,
@@ -14,6 +16,7 @@ const {
 } = require("../../services/faction/factionState");
 const {
   findAllianceLogoPath,
+  findAllianceLogoPathAsync,
 } = require("../../services/corporation/allianceImageStore");
 
 const IMAGE_ROOT = __dirname;
@@ -208,6 +211,91 @@ function resolveImageRequest(requestUrl) {
   };
 }
 
+async function resolveCharacterImagePathAsync(characterID, size, extension) {
+  const localPath = await findCharacterPortraitPathAsync(characterID, size);
+  return localPath || (
+    String(extension || "").toLowerCase() === "png"
+      ? DEFAULT_PNG_PATH
+      : DEFAULT_CHARACTER_PORTRAIT_PATH
+  );
+}
+
+async function resolveCorporationLogoPathAsync(corporationID, size) {
+  const directFactionRecord = getFactionRecord(corporationID);
+  if (directFactionRecord) {
+    return await findFactionLogoPathAsync(directFactionRecord.factionID, size) ||
+      DEFAULT_FACTION_LOGO_PATH;
+  }
+  const factionID = getFactionIDForCorporation(corporationID);
+  if (factionID) {
+    return await findFactionLogoPathAsync(factionID, size) || DEFAULT_FACTION_LOGO_PATH;
+  }
+  return DEFAULT_CORPORATION_LOGO_PATH;
+}
+
+async function resolveImageRequestAsync(requestUrl) {
+  const url = buildRequestUrl(requestUrl);
+  const legacy = String(url.pathname || "").match(
+    /^\/(Character|Corporation|Alliance|Faction)\/(\d+)(?:_(\d+))?\.(png|jpg|jpeg)$/i,
+  );
+  if (legacy) {
+    const kind = String(legacy[1] || "").toLowerCase();
+    const entityID = toNumber(legacy[2], 0);
+    const size = toNumber(legacy[3], null);
+    const extension = String(legacy[4] || "png").toLowerCase();
+    let filePath;
+    if (kind === "character") {
+      filePath = await resolveCharacterImagePathAsync(entityID, size, extension);
+    } else if (kind === "corporation") {
+      filePath = await resolveCorporationLogoPathAsync(entityID, size);
+    } else if (kind === "alliance") {
+      filePath = await findAllianceLogoPathAsync(entityID, size) || DEFAULT_ALLIANCE_LOGO_PATH;
+    } else {
+      filePath = await findFactionLogoPathAsync(entityID, size) || DEFAULT_FACTION_LOGO_PATH;
+    }
+    return {
+      filePath,
+      contentType: getContentTypeForFilePath(filePath, extension),
+    };
+  }
+
+  const rest = String(url.pathname || "").match(
+    /^\/(characters|corporations|alliances|factions)\/(\d+)\/(portrait|logo)$/i,
+  );
+  if (rest) {
+    const resourceKind = String(rest[1] || "").toLowerCase();
+    const entityID = toNumber(rest[2], 0);
+    const requestedAsset = String(rest[3] || "").toLowerCase();
+    const size = toNumber(url.searchParams.get("size"), null);
+    const extension = String(url.searchParams.get("ext") || "png").toLowerCase();
+    if (resourceKind === "characters" && requestedAsset === "portrait") {
+      const filePath = await resolveCharacterImagePathAsync(entityID, size, extension);
+      return {
+        filePath,
+        contentType: getContentTypeForFilePath(filePath, extension),
+      };
+    }
+    if (requestedAsset === "logo") {
+      let filePath;
+      if (resourceKind === "corporations") {
+        filePath = await resolveCorporationLogoPathAsync(entityID, size);
+      } else if (resourceKind === "alliances") {
+        filePath = await findAllianceLogoPathAsync(entityID, size) || DEFAULT_ALLIANCE_LOGO_PATH;
+      } else if (resourceKind === "factions") {
+        filePath = await findFactionLogoPathAsync(entityID, size) || DEFAULT_FACTION_LOGO_PATH;
+      }
+      if (filePath) return { filePath, contentType: "image/png" };
+    }
+  }
+
+  const fallbackExtension = path.extname(url.pathname || "").replace(/^\./, "");
+  return {
+    filePath: getDefaultImagePath(fallbackExtension),
+    contentType: getExtensionContentType(fallbackExtension),
+  };
+}
+
 module.exports = {
   resolveImageRequest,
+  resolveImageRequestAsync,
 };

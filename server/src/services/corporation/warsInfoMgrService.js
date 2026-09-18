@@ -3,7 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const { buildDbRowset, buildDict, buildFiletimeLong, buildKeyVal, buildList, extractList, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
-const { buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
+const { buildCachedMethodCallResultAsync: buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 const { getWarRecord, listAllWars, listAllWarsDescending, listWarsForStructure, listWarsForOwner, } = require(path.join(__dirname, "./warRuntimeState"));
 const WARS_PER_PAGE = 50;
 const WAR_HEADER = [

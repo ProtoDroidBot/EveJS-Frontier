@@ -151,6 +151,12 @@ function normalizeIDList(value) {
     .filter((entry) => entry > 0))].sort((left, right) => left - right);
 }
 
+function normalizeTextList(value) {
+  return [...new Set((Array.isArray(value) ? value : [value])
+    .map((entry) => normalizeLowerText(entry, ""))
+    .filter(Boolean))];
+}
+
 function normalizeStateName(value, fallback) {
   const normalized = normalizeLowerText(value, fallback);
   return normalized || fallback;
@@ -314,6 +320,9 @@ function normalizeInstanceRecord(record: Record<string, any> = {}) {
     difficulty: toOptionalInt(record.difficulty),
     entryObjectTypeID: toOptionalInt(record.entryObjectTypeID),
     dungeonNameID: toOptionalInt(record.dungeonNameID),
+    dungeonTags: normalizeTextList(record.dungeonTags),
+    dungeonFactionKey: normalizeLowerText(record.dungeonFactionKey, "") || null,
+    dungeonFactionTag: normalizeLowerText(record.dungeonFactionTag, "") || null,
     position: normalizePosition(record.position),
     ownership: normalizeOwnership(record.ownership),
     timers: normalizeTimers(record.timers || {}, lifecycleState),
@@ -401,6 +410,9 @@ function buildInstanceSummary(instance) {
     difficulty: instance.difficulty,
     entryObjectTypeID: instance.entryObjectTypeID,
     dungeonNameID: instance.dungeonNameID,
+    dungeonTags: cloneValue(instance.dungeonTags || []),
+    dungeonFactionKey: instance.dungeonFactionKey || null,
+    dungeonFactionTag: instance.dungeonFactionTag || null,
     position: instance.position,
     ownership: cloneValue(instance.ownership),
     timers: cloneValue(instance.timers),

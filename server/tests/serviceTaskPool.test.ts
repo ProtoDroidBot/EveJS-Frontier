@@ -7,6 +7,12 @@ const test = require("node:test");
 const {
   ServiceTaskPool,
 } = require("../src/utils/serviceTaskPool");
+const serviceTaskPoolModule = require("../src/utils/serviceTaskPool");
+
+test("generic task-pool module exposes no process-wide shared queue", () => {
+  assert.equal(serviceTaskPoolModule.run, undefined);
+  assert.equal(typeof serviceTaskPoolModule.ServiceTaskPool, "function");
+});
 
 test("CPU-heavy service planning runs in a worker without starving the main loop", async () => {
   const pool = new ServiceTaskPool({ poolSize: 1, taskTimeoutMs: 10_000 });
@@ -31,6 +37,39 @@ test("CPU-heavy service planning runs in a worker without starving the main loop
     );
   } finally {
     clearInterval(heartbeat);
+    await pool.close();
+  }
+});
+
+test("worker pools reject excess admission before an unbounded backlog forms", async () => {
+  const pool = new ServiceTaskPool({
+    poolSize: 1,
+    taskTimeoutMs: 10_000,
+    maxPendingTasks: 1,
+  });
+  try {
+    const first = pool.run({
+      modulePath: path.join(__dirname, "fixtures/serviceTaskFixture.js"),
+      exportName: "spinFor",
+      args: [100],
+    });
+    await assert.rejects(
+      pool.run({
+        modulePath: path.join(__dirname, "fixtures/serviceTaskFixture.js"),
+        exportName: "spinFor",
+        args: [1],
+      }),
+      (error) => error && error.code === "SERVICE_TASK_QUEUE_FULL",
+    );
+    await first;
+    assert.deepEqual(pool.getStats(), {
+      workers: 1,
+      active: 0,
+      queued: 0,
+      maxPendingTasks: 1,
+      taskTimeoutMs: 10_000,
+    });
+  } finally {
     await pool.close();
   }
 });

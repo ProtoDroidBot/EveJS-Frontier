@@ -1845,7 +1845,7 @@ function handleGroupMessage(client, xml) {
         return;
     }
     if (body.startsWith("/") || body.startsWith(".")) {
-        const result = session
+        const commandResult = session
             ? executeChatCommand(session, body, null, {
                 emitChatFeedback: false,
             })
@@ -1853,15 +1853,20 @@ function handleGroupMessage(client, xml) {
                 handled: true,
                 message: "Command unavailable: no active game session matched this chat connection.",
             };
-        const responseMessage = result.message ||
-            (result.handled
-                ? "Command executed."
-                : `Unknown command: ${body}. Use /help.`);
-        if (result.refreshChatRolePresence) {
-            refreshSessionChatRolePresence(session);
-        }
-        log.debug(`[XMPP] Command from ${client.userName}: ${body}`);
-        sendSystemMessageToClient(client, roomJid, responseMessage);
+        Promise.resolve(commandResult).then((result) => {
+            const responseMessage = result.message ||
+                (result.handled
+                    ? "Command executed."
+                    : `Unknown command: ${body}. Use /help.`);
+            if (result.refreshChatRolePresence) {
+                refreshSessionChatRolePresence(session);
+            }
+            log.debug(`[XMPP] Command from ${client.userName}: ${body}`);
+            sendSystemMessageToClient(client, roomJid, responseMessage);
+        }).catch((error) => {
+            log.warn(`[XMPP] Command failed for ${client.userName}: ${error.message}`);
+            sendSystemMessageToClient(client, roomJid, "Command failed before it could be completed.");
+        });
         return;
     }
     if (!session) {

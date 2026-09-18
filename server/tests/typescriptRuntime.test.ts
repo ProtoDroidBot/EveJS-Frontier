@@ -103,3 +103,36 @@ test("emitted persistence worker commits journaled writes and closes cleanly", {
   sqliteStore.init(dbPath);
   assert.deepEqual(sqliteStore.loadTableObject("characters"), { "42": record });
 });
+
+test("persistence worker applies bounded admission across tables", { timeout: 10_000 }, async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "evejs-worker-capacity-"));
+  const dbPath = path.join(directory, "runtime.sqlite");
+  const controller = _createControllerForTests({
+    maxPendingWrites: 1,
+    drainTimeoutMs: 5000,
+    closeTimeoutMs: 2000,
+    exitTimeoutMs: 2000,
+  });
+  t.after(async () => {
+    await controller.shutdown();
+    sqliteStore.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+
+  controller.submitWrite(
+    dbPath,
+    "characters",
+    [["42", JSON.stringify({ characterID: 42 })]],
+    [],
+  );
+  assert.throws(
+    () => controller.submitWrite(
+      dbPath,
+      "accounts",
+      [["7", JSON.stringify({ accountID: 7 })]],
+      [],
+    ),
+    (error: any) => error.code === "PERSISTENCE_WORKER_QUEUE_FULL",
+  );
+  assert.equal(controller.drain(5000).drained, true);
+});

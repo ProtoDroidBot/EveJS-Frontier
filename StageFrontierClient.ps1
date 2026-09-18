@@ -128,7 +128,7 @@ function Assert-NoUnexpectedReparsePoints {
                     throw "Unexpected reparse point in marker-owned stage: $($item.FullName)"
                 }
                 # Never traverse even the one allowed junction. Its final target is
-                # checked separately against the discovered official ResFiles root.
+                # checked separately against the source recorded by the stage marker.
                 continue
             }
             if ($item.Attributes -band [IO.FileAttributes]::Directory) {
@@ -142,7 +142,7 @@ function Get-ValidatedStageMarker {
     param(
         [Parameter(Mandatory)] [string]$StageRoot,
         [Parameter(Mandatory)] [int]$ExpectedBuild,
-        [Parameter(Mandatory)] [string]$ExpectedResFilesTarget
+        [string]$ExpectedResFilesTarget
     )
     Assert-NoReparsePathChain -Path $StageRoot -RequireLeafDirectory
     $resFilesPath = Join-Path $StageRoot 'ResFiles'
@@ -157,17 +157,32 @@ function Get-ValidatedStageMarker {
         throw 'Marker ResFiles path does not match the marker-owned stage.'
     }
 
+    if ([string]::IsNullOrWhiteSpace([string]$marker.sourceRoot) -or
+        -not [IO.Path]::IsPathFullyQualified([string]$marker.sourceRoot)) {
+        throw 'Marker source root is missing or is not an absolute path.'
+    }
+
     if ($marker.resFiles.mode -eq 'junction') {
-        if (-not (Test-FrontierSamePath `
-                ([string]$marker.resFiles.target) $ExpectedResFilesTarget)) {
-            throw 'Marker ResFiles target does not match the discovered official cache.'
+        $recordedTarget = [string]$marker.resFiles.target
+        if ([string]::IsNullOrWhiteSpace($recordedTarget) -or
+            -not [IO.Path]::IsPathFullyQualified($recordedTarget)) {
+            throw 'Marker ResFiles junction target is missing or is not an absolute path.'
         }
         Assert-JunctionTarget -JunctionPath $resFilesPath `
-            -ExpectedTarget $ExpectedResFilesTarget
+            -ExpectedTarget $recordedTarget
+        if ($ExpectedResFilesTarget -and -not (Test-FrontierSamePath `
+                $recordedTarget $ExpectedResFilesTarget)) {
+            throw 'Marker ResFiles target does not match the selected source client cache.'
+        }
     } elseif ($marker.resFiles.mode -eq 'copy') {
-        if (-not (Test-FrontierSamePath `
-                ([string]$marker.resFiles.sourceTarget) $ExpectedResFilesTarget)) {
-            throw 'Marker copied ResFiles source does not match the discovered official cache.'
+        $recordedTarget = [string]$marker.resFiles.sourceTarget
+        if ([string]::IsNullOrWhiteSpace($recordedTarget) -or
+            -not [IO.Path]::IsPathFullyQualified($recordedTarget)) {
+            throw 'Marker copied ResFiles source is missing or is not an absolute path.'
+        }
+        if ($ExpectedResFilesTarget -and -not (Test-FrontierSamePath `
+                $recordedTarget $ExpectedResFilesTarget)) {
+            throw 'Marker copied ResFiles source does not match the selected source client cache.'
         }
         if (-not (Test-Path -LiteralPath $resFilesPath -PathType Container)) {
             throw 'Marker declares copied ResFiles, but the directory is missing.'
@@ -227,14 +242,13 @@ function Assert-StagedClientNotRunning {
 function Remove-OwnedStage {
     param(
         [string]$StageRoot,
-        [int]$ExpectedBuild,
-        [string]$ExpectedResFilesTarget
+        [int]$ExpectedBuild
     )
     # A client can start while marker and layout validation is in progress.
     # Recheck at the last possible point before the first deletion.
     Assert-StagedClientNotRunning -StageRoot $StageRoot -ExpectedBuild $ExpectedBuild
     $marker = Get-ValidatedStageMarker -StageRoot $StageRoot `
-        -ExpectedBuild $ExpectedBuild -ExpectedResFilesTarget $ExpectedResFilesTarget
+        -ExpectedBuild $ExpectedBuild
     $resFilesPath = Join-Path $StageRoot 'ResFiles'
     $allowed = if ($marker.resFiles.mode -eq 'junction') { $resFilesPath } else { $null }
     if ($allowed) {
@@ -260,9 +274,18 @@ if ($stageExists -and -not (Test-Path -LiteralPath $StageRoot -PathType Containe
     throw "Frontier stage path exists but is not a directory: $StageRoot"
 }
 $existingMarker = $null
+$stageMatchesSelectedSource = $false
 if ($stageExists) {
     $existingMarker = Get-ValidatedStageMarker -StageRoot $StageRoot `
-        -ExpectedBuild $Build -ExpectedResFilesTarget $SourceResFiles
+        -ExpectedBuild $Build
+    $recordedResFilesTarget = if ($existingMarker.resFiles.mode -eq 'junction') {
+        [string]$existingMarker.resFiles.target
+    } else {
+        [string]$existingMarker.resFiles.sourceTarget
+    }
+    $stageMatchesSelectedSource =
+        (Test-FrontierSamePath ([string]$existingMarker.sourceRoot) $SourceBuild) -and
+        (Test-FrontierSamePath $recordedResFilesTarget $SourceResFiles)
 }
 
 if ($Status) {
@@ -273,22 +296,36 @@ if ($Status) {
     }
     Write-Output "[evejs-frontier] Stage: $($existingMarker.patchState) ($StageRoot)"
     Write-Output "[evejs-frontier] ResFiles: $($existingMarker.resFiles.mode)"
+    Write-Output "[evejs-frontier] Stage source: $($existingMarker.sourceRoot)"
+    if (-not $stageMatchesSelectedSource) {
+        Write-Warning 'The existing stage belongs to a different source client. Use -Clean to replace it with the selected target.'
+    }
     return
 }
 
 if ($DryRun) {
     $retail = Get-RetailHashes -BuildRoot $SourceBuild -NativeBlue $NativeBlue
-    Write-Output "[evejs-frontier] Dry run: validated $($retail.Count) official-client hashes."
+    Write-Output "[evejs-frontier] Dry run: validated $($retail.Count) source-client hashes."
     Write-Output "[evejs-frontier] Dry run: would stage build $Build at $StageRoot"
     Write-Output "[evejs-frontier] Dry run: ResFiles mode $(if ($CopyResFiles) { 'copy' } else { 'junction' })"
     Write-Output "[evejs-frontier] Dry run: patch=$(if ($NoPatch) { 'disabled' } else { 'exact-build transaction' })"
+    if ($existingMarker -and -not $stageMatchesSelectedSource) {
+        if ($Clean) {
+            Write-Output '[evejs-frontier] Dry run: would replace the verified stage from the previous source client.'
+        } else {
+            Write-Warning 'The existing stage belongs to a different source client; an actual run requires -Clean.'
+        }
+    }
     return
+}
+
+if ($existingMarker -and -not $stageMatchesSelectedSource -and -not $Clean) {
+    throw "Existing stage targets another source client ($($existingMarker.sourceRoot)). Rerun with -Clean after review to replace it with $SourceBuild."
 }
 
 if ($Clean -and $existingMarker) {
     Assert-StagedClientNotRunning -StageRoot $StageRoot -ExpectedBuild $Build
-    Remove-OwnedStage -StageRoot $StageRoot -ExpectedBuild $Build `
-        -ExpectedResFilesTarget $SourceResFiles
+    Remove-OwnedStage -StageRoot $StageRoot -ExpectedBuild $Build
     Write-Host "[evejs-frontier] Removed marker-owned stage: $StageRoot"
     $existingMarker = $null
 }
@@ -297,13 +334,13 @@ if ($existingMarker) {
     $marker = Get-ValidatedStageMarker -StageRoot $StageRoot `
         -ExpectedBuild $Build -ExpectedResFilesTarget $SourceResFiles
     if (-not (Test-FrontierSamePath $marker.sourceRoot $SourceBuild)) {
-        throw 'Existing stage was copied from another official client root. Use -Clean after review.'
+        throw 'Existing stage was copied from another source client root. Use -Clean after review.'
     }
     $before = $marker.retailHashesBefore
     foreach ($property in $before.PSObject.Properties) {
         $actual = Get-FrontierSha256 (Join-Path $SourceBuild $property.Name.Replace('/', '\'))
         if ($actual -ne [string]$property.Value) {
-            throw "Official client changed since staging: $($property.Name)"
+            throw "Source client changed since staging: $($property.Name)"
         }
     }
     if ($marker.patchState -eq 'complete') {
@@ -365,7 +402,7 @@ if ($existingMarker) {
         $retailAfterStage = Get-RetailHashes -BuildRoot $SourceBuild -NativeBlue $NativeBlue
         foreach ($property in $retailBefore.GetEnumerator()) {
             if ($retailAfterStage[$property.Key] -ne $property.Value) {
-                throw "Official client changed during staging: $($property.Key)"
+                throw "Source client changed during staging: $($property.Key)"
             }
         }
         $originalHashes = [ordered]@{}
