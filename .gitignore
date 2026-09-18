@@ -73,3 +73,4 @@ server/tidi_probe.log
 /tools/Launch-*
 /tools/EveOnlineImporter*
 tools/FRONTIER-COMPATIBILITY.md
+decompiled___init__.py
