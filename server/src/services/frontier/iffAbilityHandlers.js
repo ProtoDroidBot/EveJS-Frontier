@@ -27,6 +27,7 @@ const { ABILITY_ACTIVATE_EFFECT, ABILITY_DEACTIVATE_EFFECT, ABILITY_IFF_RECONFIG
 const { isCreationModuleOnline, } = require(path.join(__dirname, "./creationRuntime"));
 const { findItemById } = require(path.join(__dirname, "../inventory/itemStore"));
 let registered = false;
+const scheduledVerdictSystemIDs = new Set();
 const IFF_BROADCAST_EFFECT_NAME = "iffBroadcast";
 const IFF_BEACON_EFFECT_NAME = "iffBeacon";
 function toInt(value, fallback = 0) {
@@ -91,24 +92,51 @@ function buildVerdictsForViewer(viewer, shipsInSystem) {
         if (!other.transponder || !viewer.transponder) {
             continue;
         }
-        let friendly = false;
-        if (other.transponder.channel === iffRuntime.IFF_CHANNEL_TRIBE &&
-            viewer.transponder.channel === iffRuntime.IFF_CHANNEL_TRIBE) {
-            friendly =
-                toInt(viewer.corporationID, 0) > 0 &&
-                    toInt(viewer.corporationID, 0) === toInt(other.corporationID, 0);
-        }
-        else if (other.transponder.channel === iffRuntime.IFF_CHANNEL_CODE &&
-            viewer.transponder.channel === iffRuntime.IFF_CHANNEL_CODE) {
-            friendly =
-                Boolean(viewer.transponder.code) &&
-                    viewer.transponder.code === other.transponder.code;
-        }
+        const friendly = iffRuntime.transpondersMatch(viewer.transponder, other.transponder, viewer, other);
         if (friendly) {
             verdicts.push([toInt(other.shipID, 0), true]);
         }
     }
     return verdicts;
+}
+function buildNpcTransponderShipsForSystem(solarSystemID, options = {}) {
+    const numericSystemID = toInt(solarSystemID, 0);
+    if (numericSystemID <= 0) {
+        return [];
+    }
+    const runtime = options.spaceRuntime || getSpaceRuntime();
+    const scene = options.scene || (runtime && runtime.scenes instanceof Map
+        ? runtime.scenes.get(numericSystemID) || null
+        : null);
+    if (!scene) {
+        return [];
+    }
+    const entities = typeof scene.getDynamicEntities === "function"
+        ? scene.getDynamicEntities()
+        : scene.dynamicEntities instanceof Map
+            ? [...scene.dynamicEntities.values()]
+            : [];
+    const ships = [];
+    for (const entity of entities) {
+        if (!entity ||
+            entity.kind !== "ship" ||
+            (entity.nativeNpc !== true && entity.nativeNpcOccupied !== true)) {
+            continue;
+        }
+        const shipID = toInt(entity.itemID || entity.entityID, 0);
+        const transponder = iffRuntime.resolveNpcTransponder(entity);
+        if (shipID <= 0 || !transponder) {
+            continue;
+        }
+        ships.push({
+            shipID,
+            characterID: 0,
+            corporationID: toInt(entity.corporationID || entity.ownerID, 0),
+            transponder,
+            nativeNpc: true,
+        });
+    }
+    return ships;
 }
 function notifyIffVerdicts(solarSystemID) {
     const numericSystemID = toInt(solarSystemID, 0);
@@ -121,7 +149,7 @@ function notifyIffVerdicts(solarSystemID) {
         : []).filter((session) => session &&
         typeof session.sendNotification === "function" &&
         resolveSessionSolarSystemID(session) === numericSystemID);
-    const ships = sessions.map((session) => {
+    const playerShips = sessions.map((session) => {
         const shipID = toInt(session.activeShipID || session.shipid || session.shipID, 0);
         const characterID = toInt(session.charid || session.characterID, 0);
         return {
@@ -133,10 +161,14 @@ function notifyIffVerdicts(solarSystemID) {
                 : null,
         };
     });
+    const playerShipIDs = new Set(playerShips.map((ship) => toInt(ship.shipID, 0)).filter((shipID) => shipID > 0));
+    const npcShips = buildNpcTransponderShipsForSystem(numericSystemID)
+        .filter((ship) => !playerShipIDs.has(toInt(ship.shipID, 0)));
+    const ships = [...playerShips, ...npcShips];
     let notified = 0;
     for (let index = 0; index < sessions.length; index += 1) {
         const session = sessions[index];
-        const verdicts = buildVerdictsForViewer(ships[index], ships);
+        const verdicts = buildVerdictsForViewer(playerShips[index], ships);
         try {
             session.sendNotification("OnIffVerdicts", "clientID", [{
                     type: "dict",
@@ -150,6 +182,27 @@ function notifyIffVerdicts(solarSystemID) {
         }
     }
     return notified;
+}
+function scheduleIffVerdicts(solarSystemID) {
+    const numericSystemID = toInt(solarSystemID, 0);
+    if (numericSystemID <= 0) {
+        return false;
+    }
+    if (scheduledVerdictSystemIDs.has(numericSystemID)) {
+        return true;
+    }
+    scheduledVerdictSystemIDs.add(numericSystemID);
+    setImmediate(() => {
+        scheduledVerdictSystemIDs.delete(numericSystemID);
+        try {
+            notifyIffVerdicts(numericSystemID);
+        }
+        catch (error) {
+            log.warn(`[iff] scheduled verdict refresh failed system=${numericSystemID}: ` +
+                `${error && error.message ? error.message : error}`);
+        }
+    });
+    return true;
 }
 function notifyIffStateChanged(solarSystemID, reason) {
     notifyIffMapChanged(solarSystemID, reason);
@@ -396,9 +449,11 @@ function registerIffAbilityHandlers() {
 }
 module.exports = {
     buildVerdictsForViewer,
+    buildNpcTransponderShipsForSystem,
     notifyIffMapChanged,
     notifyIffStateChanged,
     notifyIffVerdicts,
     registerIffAbilityHandlers,
+    scheduleIffVerdicts,
 };
 //# sourceMappingURL=iffAbilityHandlers.js.map

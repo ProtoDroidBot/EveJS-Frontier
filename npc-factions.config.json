@@ -1,0 +1,225 @@
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "transponder": {
+    "enabled": true,
+    "channel": "code",
+    "defaultSignal": "NPC",
+    "groupIdentityFields": [
+      "spawnGroupID",
+      "profileID",
+      "faction"
+    ]
+  },
+  "defaults": {
+    "sameFactionDisposition": "friendly",
+    "sameCorporationDisposition": "friendly",
+    "unlistedNpcDisposition": "neutral",
+    "unidentifiedDisposition": "suspicious",
+    "retaliateAgainstAggressors": true
+  },
+  "factions": [
+    {
+      "factionID": 500001,
+      "name": "Caldari State",
+      "transponderSignal": "CALDARI",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionID": 500002,
+      "name": "Minmatar Republic",
+      "transponderSignal": "MINMATAR",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionID": 500003,
+      "name": "Amarr Empire",
+      "transponderSignal": "AMARR",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionID": 500004,
+      "name": "Gallente Federation",
+      "transponderSignal": "GALLENTE",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionID": 500006,
+      "name": "CONCORD Assembly",
+      "transponderSignal": "CONCORD",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionID": 500010,
+      "name": "Guristas Pirates",
+      "transponderSignal": "GURISTAS",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionID": 500011,
+      "name": "Angel Cartel",
+      "transponderSignal": "ANGEL",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionID": 500012,
+      "name": "Blood Raider Covenant",
+      "transponderSignal": "BLOOD",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionID": 500014,
+      "name": "Outer Ring Excavations",
+      "transponderSignal": "ORE",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionID": 500019,
+      "name": "Sansha's Nation",
+      "transponderSignal": "SANSHA",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionID": 500020,
+      "name": "Serpentis",
+      "transponderSignal": "SERPENTIS",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionID": 500024,
+      "name": "Drifters",
+      "transponderSignal": "DRIFTER",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionID": 500025,
+      "name": "Rogue Drones",
+      "transponderSignal": "ROGUE",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionID": 500026,
+      "name": "Triglavian Collective",
+      "transponderSignal": "TRIGLAVIAN",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionKey": "osa",
+      "name": "Osa",
+      "transponderSignal": "OSA",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionKey": "okryda",
+      "name": "Okryda",
+      "transponderSignal": "OKRYDA",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionKey": "termit",
+      "name": "Termit",
+      "transponderSignal": "TERMIT",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionKey": "tsikada",
+      "name": "Tsikada",
+      "transponderSignal": "TSIKADA",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionKey": "sarana",
+      "name": "Sarana",
+      "transponderSignal": "SARANA",
+      "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionKey": "feral",
+      "name": "Feral",
+      "transponderSignal": "FERAL",
+      "unidentifiedDisposition": "suspicious"
+    }
+  ],
+  "relations": [
+    {
+      "id": "empire-war-coalitions",
+      "sourceFactionIDs": [
+        500001,
+        500003
+      ],
+      "targetFactionIDs": [
+        500002,
+        500004
+      ],
+      "disposition": "hostile",
+      "reciprocal": true
+    },
+    {
+      "id": "security-and-industry-versus-outlaws",
+      "sourceFactionIDs": [
+        500001,
+        500002,
+        500003,
+        500004,
+        500006,
+        500014
+      ],
+      "targetFactionIDs": [
+        500010,
+        500011,
+        500012,
+        500019,
+        500020,
+        500024,
+        500025,
+        500026
+      ],
+      "disposition": "hostile",
+      "reciprocal": true
+    },
+    {
+      "id": "outlaw-rivalries",
+      "sourceFactionIDs": [
+        500010,
+        500011,
+        500012,
+        500019,
+        500020,
+        500024,
+        500025,
+        500026
+      ],
+      "targetFactionIDs": [
+        500010,
+        500011,
+        500012,
+        500019,
+        500020,
+        500025
+      ],
+      "disposition": "hostile",
+      "reciprocal": true
+    },
+    {
+      "id": "frontier-faction-rivalries",
+      "sourceFactionKeys": [
+        "osa",
+        "okryda",
+        "termit",
+        "tsikada",
+        "sarana",
+        "feral"
+      ],
+      "targetFactionKeys": [
+        "osa",
+        "okryda",
+        "termit",
+        "tsikada",
+        "sarana",
+        "feral"
+      ],
+      "disposition": "hostile",
+      "reciprocal": true
+    }
+  ]
+}

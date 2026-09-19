@@ -212,12 +212,16 @@ function readNpcRows(tableName) {
   return index.rows.map((row) => cloneValue(row));
 }
 
-function getRawNpcRows(tableName) {
+function readAuthoredNpcRows(tableName) {
   const result = database.read(tableName, "/");
-  const authoredRows =
+  return (
     result.success && result.data && typeof result.data === "object"
       ? result.data[ROW_KEY[tableName]]
-      : [];
+      : []
+  );
+}
+
+function buildNpcRows(tableName, authoredRows) {
   const empireSecurityGeneratedRows = getEmpireSecurityGeneratedRows(tableName);
   const generatedRows = getCapitalNpcGeneratedRows(tableName);
   const trigDrifterGeneratedRows = getTrigDrifterGeneratedRows(tableName);
@@ -242,17 +246,35 @@ function getRawNpcRows(tableName) {
   ];
 }
 
-function getNpcTableIndex(tableName) {
-  const rows = getRawNpcRows(tableName);
+function getNpcTableIndex(tableName, dependencies: Record<string, any> = {}) {
   const idFieldName = ID_FIELD[tableName];
+  const readAuthoredRows =
+    typeof dependencies.readAuthoredNpcRows === "function"
+      ? dependencies.readAuthoredNpcRows
+      : readAuthoredNpcRows;
+  const buildCombinedRows =
+    typeof dependencies.buildNpcRows === "function"
+      ? dependencies.buildNpcRows
+      : buildNpcRows;
+  const authoredRows = readAuthoredRows(tableName);
   const cached = TABLE_INDEX_CACHE[tableName];
   if (
     cached &&
-    cached.rowsRef === rows &&
+    cached.authoredRowsRef === authoredRows &&
+    cached.authoredRowsLength === (Array.isArray(authoredRows) ? authoredRows.length : 0) &&
     cached.idFieldName === idFieldName
   ) {
     return cached;
   }
+
+  // Generated NPC catalogs are expensive: Frontier, Triglavian, Drifter,
+  // capital, and empire-security rows all have to be composed before an index
+  // can be built. The previous cache compared the combined array by identity,
+  // but that array was freshly allocated on every lookup, making a cache hit
+  // impossible. Key the index by the game-store-owned authored rows instead;
+  // that reference is stable until the table (or its rows collection) is
+  // replaced, while generated catalogs are immutable for the process lifetime.
+  const rows = buildCombinedRows(tableName, authoredRows);
 
   const byID = new Map();
   const byExactToken = new Map();
@@ -275,7 +297,8 @@ function getNpcTableIndex(tableName) {
   }
 
   const nextIndex = {
-    rowsRef: rows,
+    authoredRowsRef: authoredRows,
+    authoredRowsLength: Array.isArray(authoredRows) ? authoredRows.length : 0,
     rows,
     idFieldName,
     byID,
@@ -544,4 +567,16 @@ module.exports = {
   getNpcStartupRule,
   resolveNpcStartupRule,
   buildNpcDefinition,
+  _testing: {
+    clearTableIndexCache(tableName = null) {
+      if (tableName) {
+        delete TABLE_INDEX_CACHE[tableName];
+        return;
+      }
+      for (const cachedTableName of Object.keys(TABLE_INDEX_CACHE)) {
+        delete TABLE_INDEX_CACHE[cachedTableName];
+      }
+    },
+    getNpcTableIndex,
+  },
 };

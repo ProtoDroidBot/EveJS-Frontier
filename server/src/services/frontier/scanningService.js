@@ -3,7 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 /**
  * Frontier's module-less directional scanner Macho service.
  *
- * Client build 3467658 calls exactly:
+ * Client build 3502403 calls exactly:
  *   RemoteSvc("scanningService").directional_scan(
  *     scan_angle=<degrees>, scan_direction=<vec3>)
  *
@@ -73,6 +73,9 @@ function collectScanCandidates(spaceRuntime, session, shipID) {
                 : true,
             emSignatureMultiplier: scanningRuntime.resolveEntityEmSignatureMultiplier(entity, nowMs),
             thermalSignatureMultiplier: temperatureRuntime.resolveEntityThermalSignatureMultiplier(entity, nowMs),
+            ...(scanningRuntime.isCombatResolvedScanningContact(session, itemID, nowMs)
+                ? { forceCombatResolved: true }
+                : {}),
         });
     }
     return candidates;
@@ -139,7 +142,10 @@ class ScanningService extends BaseService {
         if (this._spaceRuntime &&
             typeof this._spaceRuntime.updateResolvedScanningContactsForSession ===
                 "function") {
-            const resolution = this._spaceRuntime.updateResolvedScanningContactsForSession(session, scan.resolvedIds, { delayMs: scan.durationMs });
+            const resolution = this._spaceRuntime.updateResolvedScanningContactsForSession(session, scan.resolvedIds, {
+                delayMs: scan.durationMs,
+                delayMsByEntityID: scan.resolvedDelayMsById,
+            });
             if (resolution && resolution.delayMsByEntityID instanceof Map) {
                 scan.resolvedDelayMsById = resolution.delayMsByEntityID;
             }

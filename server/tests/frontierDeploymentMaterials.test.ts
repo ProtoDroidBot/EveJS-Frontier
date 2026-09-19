@@ -141,7 +141,7 @@ test("direct placement consumes each required type from ship cargo and publishes
   const result = f.place(DIRECT_TYPE_ID);
 
   assert.equal(result.success, true, result.errorMsg);
-  assert.deepEqual(quantities(f.ship.itemID), {
+  assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), {
     [MATERIAL_A]: 3, [MATERIAL_B]: 3, [OTHER_MATERIAL]: 3,
   });
   assert.equal(result.data.item.typeID, DIRECT_TYPE_ID);
@@ -175,7 +175,7 @@ test("fully consumed stacks leave the store and client inventory, and cannot fun
   const materials = itemStore.listContainerItems(OWNER_ID, f.ship.itemID, CARGO_FLAG);
   const result = f.place(DIRECT_TYPE_ID);
   assert.equal(result.success, true, result.errorMsg);
-  assert.deepEqual(quantities(f.ship.itemID), {});
+  assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), {});
   const updates = inventoryUpdates(f.notifications);
   for (const material of materials) {
     assert.equal(itemStore.findItemById(material.itemID), null);
@@ -215,7 +215,7 @@ test("character inventory can supply the remaining cost after ship cargo", t => 
   grant(OWNER_ID, MATERIAL_B, 7, {}, 4);
   const result = f.place(DIRECT_TYPE_ID);
   assert.equal(result.success, true, result.errorMsg);
-  assert.deepEqual(quantities(f.ship.itemID), {});
+  assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), {});
   const playerInventory = quantities(OWNER_ID, 4);
   assert.equal(playerInventory[MATERIAL_A], 3);
   assert.equal(playerInventory[MATERIAL_B], 3);
@@ -244,13 +244,13 @@ test("construction-site assemblies retain their deposit-then-construct workflow 
   assert.equal(state.assemblyStatus, deployment.ASSEMBLY_STATUS_UNDER_CONSTRUCTION);
   assert.equal(state.completeAtMs, 0);
   assert.deepEqual(deployment.getDepositedItemsByType(f.session, result.data.item.itemID).data, {});
-  assert.deepEqual(quantities(f.ship.itemID), { [MATERIAL_A]: 9, [MATERIAL_B]: 7 });
+  assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), { [MATERIAL_A]: 9, [MATERIAL_B]: 7 });
 
   const siteID = result.data.item.itemID;
   f.notifications.length = 0;
   const deposited = deployment.depositItems(f.session, siteID, f.ship.itemID, COST);
   assert.equal(deposited.success, true, deposited.errorMsg);
-  assert.deepEqual(quantities(f.ship.itemID), { [MATERIAL_A]: 3, [MATERIAL_B]: 3 });
+  assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), { [MATERIAL_A]: 3, [MATERIAL_B]: 3 });
   const complete = deployment.completeConstruction(siteID, { force: true, session: f.session });
   assert.equal(complete.success, true, complete.errorMsg);
   assert.equal(complete.data.alreadyComplete, true);
@@ -264,7 +264,7 @@ test("construction-site assemblies retain their deposit-then-construct workflow 
     assert.equal(removed.previous.get(3), siteID);
   }
   assert.deepEqual(quantities(siteID), {});
-  assert.deepEqual(quantities(f.ship.itemID), { [MATERIAL_A]: 3, [MATERIAL_B]: 3 });
+  assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), { [MATERIAL_A]: 3, [MATERIAL_B]: 3 });
 });
 
 test("failed deployment refunds character inventory to its original location and flag", t => {
@@ -277,7 +277,7 @@ test("failed deployment refunds character inventory to its original location and
   assert.equal(result.success, false);
   assert.equal(result.errorMsg, "TEST_SPAWN_FAILED");
   assert.deepEqual(itemStore.listOwnedItems(OWNER_ID), beforeItems);
-  assert.deepEqual(quantities(f.ship.itemID), {});
+  assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), {});
 });
 
 test("failed item creation restores all placement materials", t => {

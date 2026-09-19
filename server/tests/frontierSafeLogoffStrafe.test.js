@@ -13,6 +13,9 @@ const { createDestinyMovementSimulator, } = require("../src/space/destiny/simula
 const { getPayloadPrimaryEntityID, } = require("../src/space/destiny/protocol/payloadIdentity");
 const { isDestinyPayload, } = require("../src/space/destiny/protocol/payloads");
 const spaceRuntime = require("../src/space/runtime");
+const itemStore = require("../src/services/inventory/itemStore");
+const CREATION_SHIP_TYPE_ID = 95276;
+const PERSISTENCE_TEST_SYSTEM_ID = 30000004;
 function createVectorHelpers() {
     const toFiniteNumber = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
     const cloneVector = (value, fallback = { x: 0, y: 0, z: 0 }) => ({
@@ -228,7 +231,7 @@ test("Safe Logoff activates then invokes canonical cleanup with scoped persisten
     assert.equal(getSafeLogoffState(session), null);
 });
 test("Safe Logoff persistence consumes the scoped token and keeps exact space state", () => {
-    const characterID = 140000005;
+    const characterID = 140000004;
     const activeShip = getActiveShipRecord(characterID);
     assert.ok(activeShip && Number(activeShip.itemID) > 0);
     const shipID = Number(activeShip.itemID);
@@ -271,6 +274,206 @@ test("Safe Logoff persistence consumes the scoped token and keeps exact space st
     const persistedShip = getActiveShipRecord(characterID);
     assert.deepEqual(persistedShip.spaceState.position, liveSpaceState.position);
     assert.equal(getEmergencyWarpReturnState(persistedShip.spaceState), null);
+});
+test("Creation hull damage and position survive disconnect/reconnect while Safe Logoff de-instances", (t) => {
+    const characterID = 140000004;
+    const previousScene = spaceRuntime.scenes.get(PERSISTENCE_TEST_SYSTEM_ID);
+    let shipID = 0;
+    t.after(() => {
+        if (shipID > 0) {
+            itemStore.removeInventoryItem(shipID, { removeContents: true });
+        }
+        if (previousScene) {
+            spaceRuntime.scenes.set(PERSISTENCE_TEST_SYSTEM_ID, previousScene);
+        }
+        else {
+            spaceRuntime.scenes.delete(PERSISTENCE_TEST_SYSTEM_ID);
+        }
+    });
+    const grant = itemStore.grantItemToCharacterLocation(characterID, PERSISTENCE_TEST_SYSTEM_ID, 0, CREATION_SHIP_TYPE_ID, 1, {
+        individualItems: true,
+        singleton: 1,
+        spaceState: {
+            systemID: PERSISTENCE_TEST_SYSTEM_ID,
+            position: { x: 112_233, y: -44_556, z: 778_899 },
+            velocity: { x: 0, y: 0, z: 0 },
+            direction: { x: 1, y: 0, z: 0 },
+            mode: "STOP",
+        },
+    });
+    assert.equal(grant.success, true, grant.errorMsg);
+    shipID = Number(grant.data.items[0].itemID);
+    const session = {
+        characterID,
+        charid: characterID,
+        clientID: 91_004,
+        corporationID: 1000442,
+        solarsystemid: PERSISTENCE_TEST_SYSTEM_ID,
+        solarsystemid2: PERSISTENCE_TEST_SYSTEM_ID,
+        socket: { destroyed: false },
+        sendNotification() { return true; },
+    };
+    const scene = new spaceRuntime._testing.SolarSystemScene(PERSISTENCE_TEST_SYSTEM_ID);
+    spaceRuntime.scenes.set(PERSISTENCE_TEST_SYSTEM_ID, scene);
+    const entity = spaceRuntime._testing.buildShipEntityForTesting(session, itemStore.findShipItemById(shipID), PERSISTENCE_TEST_SYSTEM_ID);
+    entity.position = { x: 112_233, y: -44_556, z: 778_899 };
+    entity.targetPoint = { ...entity.position };
+    entity.conditionState = {
+        ...entity.conditionState,
+        shieldCharge: 0.37,
+        armorDamage: 0.42,
+        damage: 0.18,
+    };
+    scene.dynamicEntities.set(shipID, entity);
+    session._space = {
+        systemID: PERSISTENCE_TEST_SYSTEM_ID,
+        shipID,
+    };
+    scene.sessions.set(session.clientID, session);
+    scene.detachSession(session, {
+        preserveShipInSpace: true,
+        broadcast: false,
+        lifecycleReason: "disconnect",
+    });
+    const offlineEntity = scene.getEntityByID(shipID);
+    assert.equal(offlineEntity, entity);
+    assert.equal(offlineEntity.session, null);
+    assert.equal(offlineEntity.offlinePersistent, true);
+    assert.deepEqual(offlineEntity.position, {
+        x: 112_233,
+        y: -44_556,
+        z: 778_899,
+    });
+    assert.equal(offlineEntity.conditionState.shieldCharge, 0.37);
+    assert.equal(offlineEntity.conditionState.armorDamage, 0.42);
+    assert.equal(offlineEntity.conditionState.damage, 0.18);
+    const persistedOfflineShip = itemStore.findShipItemById(shipID);
+    assert.equal(persistedOfflineShip.spaceState.offlinePersistent, true);
+    assert.deepEqual(persistedOfflineShip.spaceState.position, offlineEntity.position);
+    assert.equal(persistedOfflineShip.conditionState.shieldCharge, 0.37);
+    assert.equal(persistedOfflineShip.conditionState.armorDamage, 0.42);
+    assert.equal(persistedOfflineShip.conditionState.damage, 0.18);
+    const resumedSession = {
+        ...session,
+        clientID: 91_005,
+        socket: { destroyed: false },
+        _space: null,
+    };
+    const resumed = scene.attachSessionToExistingEntity(resumedSession, persistedOfflineShip, offlineEntity, { broadcast: false });
+    assert.equal(resumed, offlineEntity);
+    assert.equal(resumed.conditionState.shieldCharge, 0.37);
+    assert.equal(resumed.conditionState.armorDamage, 0.42);
+    assert.equal(resumed.conditionState.damage, 0.18);
+    scene.detachSession(resumedSession, {
+        preserveShipInSpace: false,
+        broadcast: false,
+        lifecycleReason: "safe_logoff",
+    });
+    assert.equal(scene.getEntityByID(shipID), null);
+    const safelyLoggedOffShip = itemStore.findShipItemById(shipID);
+    assert.equal(safelyLoggedOffShip.spaceState.offlinePersistent, false);
+    assert.equal(safelyLoggedOffShip.conditionState.shieldCharge, 0.37);
+    assert.equal(safelyLoggedOffShip.conditionState.armorDamage, 0.42);
+    assert.equal(safelyLoggedOffShip.conditionState.damage, 0.18);
+});
+test("conventional hull damage and position also survive disconnect/reconnect", (t) => {
+    const characterID = 140000003;
+    const previousScene = spaceRuntime.scenes.get(PERSISTENCE_TEST_SYSTEM_ID);
+    let shipID = 0;
+    t.after(() => {
+        if (shipID > 0) {
+            itemStore.removeInventoryItem(shipID, { removeContents: true });
+        }
+        if (previousScene) {
+            spaceRuntime.scenes.set(PERSISTENCE_TEST_SYSTEM_ID, previousScene);
+        }
+        else {
+            spaceRuntime.scenes.delete(PERSISTENCE_TEST_SYSTEM_ID);
+        }
+    });
+    const grant = itemStore.grantItemToCharacterLocation(characterID, PERSISTENCE_TEST_SYSTEM_ID, 0, 670, 1, {
+        individualItems: true,
+        singleton: 1,
+        spaceState: {
+            systemID: PERSISTENCE_TEST_SYSTEM_ID,
+            position: { x: -90_000, y: 12_500, z: 3_250 },
+            velocity: { x: 0, y: 0, z: 0 },
+            direction: { x: 0, y: 1, z: 0 },
+            mode: "STOP",
+        },
+    });
+    assert.equal(grant.success, true, grant.errorMsg);
+    shipID = Number(grant.data.items[0].itemID);
+    const session = {
+        characterID,
+        charid: characterID,
+        clientID: 92_003,
+        corporationID: 1000442,
+        solarsystemid: PERSISTENCE_TEST_SYSTEM_ID,
+        solarsystemid2: PERSISTENCE_TEST_SYSTEM_ID,
+        socket: { destroyed: false },
+        sendNotification() { return true; },
+    };
+    const scene = new spaceRuntime._testing.SolarSystemScene(PERSISTENCE_TEST_SYSTEM_ID);
+    spaceRuntime.scenes.set(PERSISTENCE_TEST_SYSTEM_ID, scene);
+    const entity = spaceRuntime._testing.buildShipEntityForTesting(session, itemStore.findShipItemById(shipID), PERSISTENCE_TEST_SYSTEM_ID);
+    entity.position = { x: -90_000, y: 12_500, z: 3_250 };
+    entity.targetPoint = { ...entity.position };
+    entity.conditionState = {
+        ...entity.conditionState,
+        shieldCharge: 0.21,
+        armorDamage: 0.33,
+        damage: 0.12,
+    };
+    scene.dynamicEntities.set(shipID, entity);
+    session._space = {
+        systemID: PERSISTENCE_TEST_SYSTEM_ID,
+        shipID,
+    };
+    scene.sessions.set(session.clientID, session);
+    scene.detachSession(session, {
+        preserveShipInSpace: true,
+        broadcast: false,
+        lifecycleReason: "disconnect",
+    });
+    const offlineEntity = scene.getEntityByID(shipID);
+    assert.ok(offlineEntity);
+    assert.deepEqual(offlineEntity.position, {
+        x: -90_000,
+        y: 12_500,
+        z: 3_250,
+    });
+    assert.deepEqual({
+        shieldCharge: offlineEntity.conditionState.shieldCharge,
+        armorDamage: offlineEntity.conditionState.armorDamage,
+        damage: offlineEntity.conditionState.damage,
+    }, { shieldCharge: 0.21, armorDamage: 0.33, damage: 0.12 });
+    const persistedShip = itemStore.findShipItemById(shipID);
+    assert.equal(persistedShip.spaceState.offlinePersistent, true);
+    const rebuiltScene = new spaceRuntime._testing.SolarSystemScene(PERSISTENCE_TEST_SYSTEM_ID);
+    spaceRuntime.scenes.set(PERSISTENCE_TEST_SYSTEM_ID, rebuiltScene);
+    const rebuiltOfflineEntity = rebuiltScene.getEntityByID(shipID);
+    assert.ok(rebuiltOfflineEntity);
+    assert.equal(rebuiltOfflineEntity.conditionState.shieldCharge, 0.21);
+    assert.equal(rebuiltOfflineEntity.conditionState.armorDamage, 0.33);
+    assert.equal(rebuiltOfflineEntity.conditionState.damage, 0.12);
+    const resumedSession = {
+        ...session,
+        clientID: 92_004,
+        socket: { destroyed: false },
+        _space: null,
+    };
+    const resumed = spaceRuntime.attachSession(resumedSession, persistedShip, {
+        systemID: PERSISTENCE_TEST_SYSTEM_ID,
+        broadcast: false,
+        reconcileUniverseSites: false,
+        spawnAsteroidBeltRats: false,
+    });
+    assert.ok(resumed);
+    assert.equal(resumed, rebuiltOfflineEntity);
+    assert.equal(resumed.conditionState.shieldCharge, 0.21);
+    assert.equal(resumed.conditionState.armorDamage, 0.33);
+    assert.equal(resumed.conditionState.damage, 0.12);
 });
 test("Safe Logoff revalidation aborts when the pilot starts moving", () => {
     resetSafeLogoffRuntimeForTests();

@@ -19,6 +19,7 @@ const {
   getTypeAttributeValue,
 } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const serverConfig = require(path.join(__dirname, "../../config"));
+const berthingRuntime = require(path.join(__dirname, "./berthingRuntime"));
 const {
   applyDamageToEntity,
 } = require(path.join(__dirname, "../../space/combat/damage"));
@@ -701,6 +702,34 @@ function advanceEntityEnvironmentalEffects(
   const currentTimeMs = toFiniteNumber(nowMs, Date.now());
   const effectConfig = resolveEnvironmentalEffectsConfig(options);
   const state = ensureCharacterState(characterID, entity, currentTimeMs);
+  if (berthingRuntime.isShipEntityBerthed(entity)) {
+    state.lastUpdatedAtMs = currentTimeMs;
+    return {
+      supported: true,
+      protected: true,
+      activeEffectCount: Object.values<any>(state.effects)
+        .filter((effect) => effect.active === true)
+        .length,
+      characterID,
+      cloneDeath: null,
+      damagingEffectSeconds: 0,
+      externalTemporalDrift: Math.max(
+        0,
+        getAttributeValue(entity, ATTRIBUTE_EXTERNAL_TEMPORAL_DRIFT, 0),
+      ),
+      feralization: state.feralization,
+      hitpointDamageApplied: 0,
+      hitpointDamageRequested: 0,
+      temporalDrift: state.temporalDrift,
+      vitality: state.vitality,
+      vitalityCapacity: state.vitalityCapacity,
+      vitalityDamageApplied: 0,
+      vitalityDamage: round6(state.vitalityCapacity - state.vitality),
+      attributeChanges: [],
+      effectNotifications: [],
+      vitalityNotification: null,
+    };
+  }
   const elapsedSeconds = Math.min(
     MAX_ADVANCE_SECONDS,
     Math.max(
@@ -963,6 +992,14 @@ function applyNpcFeralization(
     String(targetEntity.kind || "").trim().toLowerCase() !== "ship"
   ) {
     return { supported: false, applied: false, amount: 0 };
+  }
+  if (berthingRuntime.isShipEntityBerthed(targetEntity)) {
+    return {
+      supported: true,
+      protected: true,
+      applied: false,
+      amount: 0,
+    };
   }
   if (
     normalizedKind === "hit" &&

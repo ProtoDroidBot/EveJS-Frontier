@@ -67,11 +67,9 @@ const TRIG_TYPE_IDS = Object.freeze({
   lightEntropicDisintegratorII: 47914,
   heavyEntropicDisintegratorII: 47918,
   supratidalEntropicDisintegratorII: 47922,
-  ultratidalEntropicDisintegratorII: 92514,
   baryonExoticPlasmaS: 47924,
   baryonExoticPlasmaM: 47928,
   baryonExoticPlasmaL: 47932,
-  baryonExoticPlasmaXL: 52916,
   warpScramblerII: 448,
   stasisWebifierII: 527,
   smallEnergyNeutralizerII: 13003,
@@ -179,18 +177,6 @@ const TRIG_VARIANTS = Object.freeze([
     spawnDistanceMeters: 12_000,
     formationSpacingMeters: 220,
     aliases: ["leshak", "trig", "liminal leshak"],
-  }),
-  buildTrigVariant({
-    key: "liminal_zirnitra",
-    label: "Liminal Zirnitra",
-    roleLabel: "Liminal",
-    hullLabel: "Zirnitra",
-    npcShipTypeID: 52701,
-    weaponTypeID: TRIG_TYPE_IDS.ultratidalEntropicDisintegratorII,
-    chargeTypeID: TRIG_TYPE_IDS.baryonExoticPlasmaXL,
-    spawnDistanceMeters: 16_000,
-    formationSpacingMeters: 260,
-    aliases: ["zirnitra", "ultratidal", "liminal zirnitra"],
   }),
   buildTrigVariant({
     key: "anchoring_damavik",
@@ -501,7 +487,6 @@ const TRIG_VARIANT_KEY_BY_PRESET = Object.freeze({
   trigzarmazd: "liminal_rodiva",
   trigdrekavac: "liminal_drekavac",
   trigleshak: "liminal_leshak",
-  trigzirnitra: "liminal_zirnitra",
 });
 
 const DRIFTER_VARIANTS = Object.freeze(

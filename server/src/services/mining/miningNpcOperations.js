@@ -1202,10 +1202,33 @@ function createMiningFleetRecord(options = {}) {
     return fleetRecord;
 }
 function getConfiguredNpcActivity(controller) {
-    return String(controller && (controller.behaviorActivity ||
+    const configuredActivity = String(controller && (controller.behaviorActivity ||
         (controller.behaviorPolicy && controller.behaviorPolicy.activity)) || "").trim().toLowerCase();
+    const behaviorProfile = {
+        ...(controller && controller.behaviorProfile || {}),
+        ...(controller && controller.behaviorOverrides || {}),
+    };
+    if (behaviorProfile.mineAsteroids === true) {
+        return "mining";
+    }
+    if (behaviorProfile.mineAsteroids === false && configuredActivity === "mining") {
+        return "idle";
+    }
+    return configuredActivity;
 }
 function isConfiguredNpcActivityAutoEnrollEnabled(controller) {
+    const behaviorProfile = {
+        ...(controller && controller.behaviorProfile || {}),
+        ...(controller && controller.behaviorOverrides || {}),
+    };
+    if (behaviorProfile.mineAsteroids === true) {
+        return true;
+    }
+    if (behaviorProfile.mineAsteroids === false &&
+        String(controller && (controller.behaviorActivity ||
+            (controller.behaviorPolicy && controller.behaviorPolicy.activity)) || "").trim().toLowerCase() === "mining") {
+        return false;
+    }
     const activityOptions = controller &&
         controller.behaviorPolicy &&
         controller.behaviorPolicy.activityOptions &&

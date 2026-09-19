@@ -3,7 +3,7 @@
 /**
  * Frontier's module-less directional scanner Macho service.
  *
- * Client build 3467658 calls exactly:
+ * Client build 3502403 calls exactly:
  *   RemoteSvc("scanningService").directional_scan(
  *     scan_angle=<degrees>, scan_direction=<vec3>)
  *
@@ -96,6 +96,13 @@ function collectScanCandidates(spaceRuntime, session, shipID) {
         scanningRuntime.resolveEntityEmSignatureMultiplier(entity, nowMs),
       thermalSignatureMultiplier:
         temperatureRuntime.resolveEntityThermalSignatureMultiplier(entity, nowMs),
+      ...(scanningRuntime.isCombatResolvedScanningContact(
+        session,
+        itemID,
+        nowMs,
+      )
+        ? { forceCombatResolved: true }
+        : {}),
     });
   }
   return candidates;
@@ -180,7 +187,10 @@ class ScanningService extends BaseService {
         this._spaceRuntime.updateResolvedScanningContactsForSession(
           session,
           scan.resolvedIds,
-          { delayMs: scan.durationMs },
+          {
+            delayMs: scan.durationMs,
+            delayMsByEntityID: scan.resolvedDelayMsById,
+          },
         );
       if (resolution && resolution.delayMsByEntityID instanceof Map) {
         scan.resolvedDelayMsById = resolution.delayMsByEntityID;

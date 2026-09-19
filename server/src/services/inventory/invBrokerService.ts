@@ -37,6 +37,7 @@ const {
 const {
   ITEM_FLAGS,
   FIGHTER_TUBE_FLAGS,
+  ensureFreeStationFuelSupply,
   listContainerItems,
   findItemById,
   findShipItemById,
@@ -5835,6 +5836,16 @@ class InvBrokerService extends BaseService {
         this._isStructureOwnerBayFlag(numericFlag)
       ) {
         return listContainerItems(structureOwnerID, containerID, numericFlag);
+      }
+
+      if (
+        charId > 0 &&
+        stationId > 0 &&
+        (numericFlag === null ||
+          numericFlag === 0 ||
+          numericFlag === ITEM_FLAGS.HANGAR)
+      ) {
+        ensureFreeStationFuelSupply(charId, stationId);
       }
 
       return listContainerItems(

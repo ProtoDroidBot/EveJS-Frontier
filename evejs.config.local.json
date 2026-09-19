@@ -1295,6 +1295,76 @@
 
   "tidiAutoscaler": false,
 
+  // Enables CPU- and memory-aware adjustment of the authoritative space-runtime tick interval.
+  // High resource pressure lowers the tick rate; sustained headroom raises it again within the configured bounds.
+  // Valid values: true or false.
+  // Default: false.
+
+  "adaptiveTickRateEnabled": false,
+
+  // Fastest allowed adaptive space-runtime cadence in milliseconds. 50ms is 20 ticks per second.
+  // Valid values: Number from 10 through 1000, no greater than the maximum interval.
+  // Default: 50.
+
+  "adaptiveTickRateMinIntervalMs": 50,
+
+  // Slowest allowed adaptive space-runtime cadence in milliseconds. 250ms is 4 ticks per second.
+  // Valid values: Number from 10 through 5000, no less than the minimum interval.
+  // Default: 250.
+
+  "adaptiveTickRateMaxIntervalMs": 250,
+
+  // Space-runtime tick interval used at startup and as the fixed interval when adaptive tick rate is disabled.
+  // 100ms preserves the historical 10-ticks-per-second cadence.
+  // Valid values: Number within the configured minimum and maximum interval bounds.
+  // Default: 100.
+
+  "adaptiveTickRateInitialIntervalMs": 100,
+
+  // Milliseconds added to or removed from the tick interval on each resource sample that crosses a threshold.
+  // Valid values: Number from 1 through 1000.
+  // Default: 10.
+
+  "adaptiveTickRateStepMs": 10,
+
+  // Minimum time between process CPU and memory samples used by the adaptive tick-rate controller.
+  // Valid values: Number from 250 through 60000 milliseconds.
+  // Default: 2000.
+
+  "adaptiveTickRateSampleIntervalMs": 2000,
+
+  // Process CPU level at or below which CPU is considered to have headroom.
+  // 100 percent represents one fully utilized logical CPU core; worker activity can make the measured value exceed 100.
+  // Valid values: Number from 0 through 100, below the high CPU threshold.
+  // Default: 35.
+
+  "adaptiveTickRateCpuLowPercent": 35,
+
+  // Process CPU level at or above which the controller lowers the tick rate.
+  // Valid values: Number from 0 through 100, above the low CPU threshold.
+  // Default: 75.
+
+  "adaptiveTickRateCpuHighPercent": 75,
+
+  // Process RSS level at or below which memory is considered to have headroom.
+  // Valid values: Number from 0 through 100, below the high memory threshold.
+  // Default: 60.
+
+  "adaptiveTickRateMemoryLowPercent": 60,
+
+  // Process RSS level at or above which the controller lowers the tick rate.
+  // Valid values: Number from 0 through 100, above the low memory threshold.
+  // Default: 80.
+
+  "adaptiveTickRateMemoryHighPercent": 80,
+
+  // Memory budget used to turn process RSS into a pressure percentage.
+  // Set to 0 to automatically use the lower of the V8 heap limit and any process/container memory constraint exposed by Node.js.
+  // Valid values: 0 for automatic detection, or a positive memory budget in MiB.
+  // Default: 0.
+
+  "adaptiveTickRateMemoryLimitMb": 0,
+
   // Controls which solar-system scenes are created during server startup.
   // 1 = current lazy/default boot: only Jita, New Caldari, and Manifest are preloaded so the existing startup behavior stays the same.
   // 2 = preload every high-security system by checking the solar-system security data for displayed security `0.5+` at startup, so newly added systems are picked up automatically.

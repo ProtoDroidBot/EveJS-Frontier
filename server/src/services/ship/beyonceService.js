@@ -2585,6 +2585,10 @@ class BeyonceService extends BaseService {
         return response;
     }
     afterCallResponse(methodName, session) {
+        if ((methodName === "GetFormations" || methodName === "MachoBindObject") &&
+            typeof spaceRuntime.flushPendingInitialBallparkPostBootstrap === "function") {
+            spaceRuntime.flushPendingInitialBallparkPostBootstrap(session);
+        }
         if (methodName === "MachoBindObject") {
             flushPendingCommandSessionEffects(session);
             return;

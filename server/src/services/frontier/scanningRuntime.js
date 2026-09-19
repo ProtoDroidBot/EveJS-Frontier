@@ -4,8 +4,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * Frontier directional scanner runtime (fitted Creation scanners and classic
  * ships' built-in sensors).
  *
- * Client contract (build 3467658 bytecode; the Creation path is unchanged
- * from 3455996):
+ * Client contract (build 3502403 bytecode):
  * - `creation.activate_ability(ship, module, "directional_scan",
  *   scan_angle=<degrees>, scan_direction=<vec3>)`; the adapter converts its
  *   internal radians with math.degrees() before sending. The result dict is
@@ -17,7 +16,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *   datetimeutils.filetime_delta_to_timedelta). `duration` is returned as an
  *   actual datetime.timedelta because the client passes it directly into
  *   ScanPulsePhase and performs datetime arithmetic with it.
- * - `added`/`removed` are dict[int, tuple|None] keyed by ball id.
+ * - `added`/`removed` are dict[int, tuple|None] keyed by scan id.
  * - `updated_scans` entries are CombinedScanResult states:
  *   (center, radius, scan_id, distance_range, estimated_number,
  *    estimated_number_uncertainty, signature_results), where each
@@ -62,9 +61,22 @@ const SCAN_ANGLE_DEFAULT_DEGREES = 15.0;
 const MAXIMUM_SCAN_DISTANCE_METERS = 100000000.0;
 const DEFAULT_ACTIVE_SCAN_DURATION_MS = 6000;
 const RESOLVE_SNR_THRESHOLD = 1.0;
-const SIGNATURE_TYPE_GRAVIMETRIC = 1;
-const SIGNATURE_TYPE_ELECTROMAGNETIC = 2;
-const SIGNATURE_TYPE_THERMAL = 3;
+// Frontier common/signature.pyc (build 3502403) enum values. BASE is a
+// generic signature; the active scanner emits the three physical types.
+const SIGNATURE_TYPE_BASE = 1;
+const SIGNATURE_TYPE_MASS = 2;
+const SIGNATURE_TYPE_GRAVIMETRIC = SIGNATURE_TYPE_MASS;
+const SIGNATURE_TYPE_ELECTROMAGNETIC = 3;
+const SIGNATURE_TYPE_THERMAL = 4;
+// Frontier common/scanning.pyc update-reason values. The numeric values are
+// intentionally shared between the corresponding origin/fate variants.
+const UPDATE_RESOLVED_TO_ITEM = 1;
+const UPDATE_ADDED_FROM_ITEM = 1;
+const UPDATE_RESOLVED_TO_SIGNATURES = 2;
+const UPDATE_MERGED_FROM_SIGNATURES = 2;
+const UPDATE_COMBINED_WITH_SIGNATURE = 3;
+const UPDATE_RESOLVED_FROM_SIGNATURE = 3;
+const SCAN_TIME_SHIFT_FRACTION = 0.025;
 // A typical small hull and the runtime's default ship mass. Normalizing here
 // keeps existing mass-less scan candidates neutral while allowing live mass
 // changes and large structures to produce proportionally stronger gravity
@@ -369,6 +381,27 @@ function isResolved(signatureResults, threshold = RESOLVE_SNR_THRESHOLD) {
     return signatureResults.some(([, signature, noise]) => calculateSnr(signature, noise) >= resolvedThreshold);
 }
 /**
+ * Frontier common/scanning.ScanTimeCalculator.distance_to_time, expressed in
+ * milliseconds for the server. The same delay is used for the resolved map
+ * sent to the reveal scheduler and for ballpark visibility materialization.
+ */
+function calculateScanRevealDelayMs(distanceMeters, totalScanTimeMs) {
+    const durationMs = Math.max(0, toFiniteNumber(totalScanTimeMs, 0));
+    if (!(durationMs > 0)) {
+        return 0;
+    }
+    const distance = Math.max(0, toFiniteNumber(distanceMeters, 0));
+    if (distance >= MAXIMUM_SCAN_DISTANCE_METERS) {
+        return durationMs;
+    }
+    const totalScanTime = durationMs / 1000;
+    const t0 = totalScanTime * SCAN_TIME_SHIFT_FRACTION;
+    const v0 = (3 * MAXIMUM_SCAN_DISTANCE_METERS) / (Math.pow(totalScanTime + t0, 3) - Math.pow(t0, 3));
+    const d0 = -(v0 / 3) * Math.pow(t0, 3);
+    const revealTime = Math.cbrt((3 * (distance - d0)) / v0) - t0;
+    return Math.min(durationMs, Math.max(0, revealTime * 1000));
+}
+/**
  * Preserve the real signature mix while ensuring the client presents a
  * signature rather than a resolved ball. This is required for contacts that
  * are detectable but outside the configured object-resolution range: merely
@@ -425,6 +458,55 @@ function isScanningContactResolved(session, rawEntityID, nowMs = Date.now()) {
         toFiniteNumber(contact.resolveAtMs, Number.POSITIVE_INFINITY) <=
             toFiniteNumber(nowMs, Date.now()));
 }
+function isCombatResolvedScanningContact(session, rawEntityID, nowMs = Date.now()) {
+    const entityID = getEntityMapKey(rawEntityID);
+    const contacts = getResolvedScanningContactMap(session, false);
+    if (entityID === null || !(contacts instanceof Map)) {
+        return false;
+    }
+    const contact = contacts.get(entityID);
+    return Boolean(contact &&
+        Number.isFinite(Number(contact.combatResolvedAtMs)) &&
+        toFiniteNumber(contact.resolveAtMs, Number.POSITIVE_INFINITY) <=
+            toFiniteNumber(nowMs, Date.now()));
+}
+/**
+ * Immediately resolve one contact without replacing the contacts maintained by
+ * the latest directional scan. Combat uses this when a hidden ship identifies
+ * itself by attacking the observer.
+ */
+function forceResolveScanningContact(session, rawEntityID, options = {}) {
+    const entityID = getEntityMapKey(rawEntityID);
+    const contacts = getResolvedScanningContactMap(session, true);
+    if (entityID === null || !(contacts instanceof Map)) {
+        return null;
+    }
+    const nowMs = toFiniteNumber(options.nowMs, Date.now());
+    const previous = contacts.get(entityID) || null;
+    const contact = {
+        entityID,
+        detectedAtMs: previous && Number.isFinite(Number(previous.detectedAtMs))
+            ? Number(previous.detectedAtMs)
+            : nowMs,
+        resolveAtMs: Math.min(nowMs, previous && Number.isFinite(Number(previous.resolveAtMs))
+            ? Number(previous.resolveAtMs)
+            : nowMs),
+        lastScannedAtMs: previous && Number.isFinite(Number(previous.lastScannedAtMs))
+            ? Number(previous.lastScannedAtMs)
+            : nowMs,
+        combatResolvedAtMs: nowMs,
+    };
+    contacts.set(entityID, contact);
+    return contact;
+}
+function forgetResolvedScanningContact(session, rawEntityID) {
+    const entityID = getEntityMapKey(rawEntityID);
+    const contacts = getResolvedScanningContactMap(session, false);
+    if (entityID === null || !(contacts instanceof Map)) {
+        return false;
+    }
+    return contacts.delete(entityID);
+}
 /**
  * Replace the contacts resolved by the latest directional scan.
  *
@@ -444,6 +526,9 @@ function replaceResolvedScanningContacts(session, rawEntityIDs, options = {}) {
     }
     const nowMs = toFiniteNumber(options.nowMs, Date.now());
     const delayMs = Math.max(0, toFiniteNumber(options.delayMs, 0));
+    const configuredDelayMsByEntityID = options.delayMsByEntityID instanceof Map
+        ? options.delayMsByEntityID
+        : null;
     const previous = getResolvedScanningContactMap(session, false);
     const next = new Map();
     const delayMsByEntityID = new Map();
@@ -455,10 +540,14 @@ function replaceResolvedScanningContacts(session, rawEntityIDs, options = {}) {
         const previousContact = previous instanceof Map
             ? previous.get(entityID)
             : null;
+        const configuredDelayMs = configuredDelayMsByEntityID &&
+            configuredDelayMsByEntityID.has(entityID)
+            ? Math.max(0, toFiniteNumber(configuredDelayMsByEntityID.get(entityID), delayMs))
+            : delayMs;
         const resolveAtMs = previousContact &&
             Number.isFinite(Number(previousContact.resolveAtMs))
             ? Number(previousContact.resolveAtMs)
-            : nowMs + delayMs;
+            : nowMs + configuredDelayMs;
         next.set(entityID, {
             entityID,
             detectedAtMs: previousContact &&
@@ -469,6 +558,20 @@ function replaceResolvedScanningContacts(session, rawEntityIDs, options = {}) {
             lastScannedAtMs: nowMs,
         });
         delayMsByEntityID.set(entityID, Math.max(0, resolveAtMs - nowMs));
+    }
+    // A hostile source stays resolved after identifying itself. A later scan in
+    // another direction must not turn that already-materialized attacker back
+    // into an anonymous signature or evict its server-side resolution state.
+    if (previous instanceof Map) {
+        for (const [entityID, previousContact] of previous.entries()) {
+            if (next.has(entityID) ||
+                !previousContact ||
+                !Number.isFinite(Number(previousContact.combatResolvedAtMs))) {
+                continue;
+            }
+            next.set(entityID, previousContact);
+            delayMsByEntityID.set(entityID, 0);
+        }
     }
     const removedIDs = previous instanceof Map
         ? [...previous.keys()].filter((entityID) => !next.has(entityID))
@@ -510,6 +613,7 @@ function performDirectionalScan({ originPosition, angleDegrees, direction, modul
     const resolvedScanningConfig = resolveScanningConfig(resolutionConfig);
     const combinedResults = [];
     const resolvedIds = [];
+    const resolvedDelayMsById = new Map();
     for (const candidate of Array.isArray(candidates) ? candidates : []) {
         const position = normalizeVector(candidate && candidate.position);
         if (!position) {
@@ -526,7 +630,9 @@ function performDirectionalScan({ originPosition, angleDegrees, direction, modul
             continue;
         }
         const outsideResolutionRange = distanceMeters > resolvedScanningConfig.resolutionRangeMeters;
+        const forceCombatResolved = candidate && candidate.forceCombatResolved === true;
         if (outsideResolutionRange &&
+            !forceCombatResolved &&
             resolvedScanningConfig.renderOutOfRangeSignatures !== true) {
             continue;
         }
@@ -551,13 +657,14 @@ function performDirectionalScan({ originPosition, angleDegrees, direction, modul
             thermalSignatureMultiplier: candidate && candidate.thermalSignatureMultiplier,
         });
         const rawPresentedSignatureResults = getPresentedSignatureResults(signatureResults, candidate && candidate.hasLineOfSight);
-        const forceUnresolved = outsideResolutionRange ||
-            resolvedScanningConfig.renderResolvedObjects !== true;
+        const forceUnresolved = !forceCombatResolved &&
+            (outsideResolutionRange ||
+                resolvedScanningConfig.renderResolvedObjects !== true);
         const presentedSignatureResults = forceUnresolved
             ? capSignatureResultsBelowResolutionThreshold(rawPresentedSignatureResults, resolvedScanningConfig.resolutionSnrThreshold)
             : rawPresentedSignatureResults;
         const scanId = buildScanId(candidate.itemID);
-        combinedResults.push({
+        const combinedResult = {
             center: [position.x, position.y, position.z],
             radius: distanceMeters * Math.sin(halfAngleRadians),
             scan_id: scanId,
@@ -565,21 +672,42 @@ function performDirectionalScan({ originPosition, angleDegrees, direction, modul
             estimated_number: 1,
             estimated_number_uncertainty: 0,
             signature_results: presentedSignatureResults,
-            resolution_state: outsideResolutionRange
-                ? "unresolved-out-of-range"
-                : resolvedScanningConfig.renderResolvedObjects !== true
-                    ? "unresolved-signature-only"
-                    : "in-resolution-range",
-        });
-        if (!forceUnresolved &&
-            isResolved(presentedSignatureResults, resolvedScanningConfig.resolutionSnrThreshold)) {
-            resolvedIds.push(toInt(candidate.itemID, 0));
+            resolution_state: forceCombatResolved
+                ? "combat-resolved"
+                : outsideResolutionRange
+                    ? "unresolved-out-of-range"
+                    : resolvedScanningConfig.renderResolvedObjects !== true
+                        ? "unresolved-signature-only"
+                        : "in-resolution-range",
+        };
+        const resolvesToBall = forceCombatResolved ||
+            (!forceUnresolved &&
+                isResolved(presentedSignatureResults, resolvedScanningConfig.resolutionSnrThreshold));
+        if (resolvesToBall) {
+            const ballID = toInt(candidate.itemID, 0);
+            resolvedIds.push(ballID);
+            resolvedDelayMsById.set(ballID, forceCombatResolved
+                ? 0
+                : calculateScanRevealDelayMs(distanceMeters, durationMs));
+        }
+        else {
+            // Resolved objects are delivered through `resolved` and materialize as
+            // ballpark targets. Only unresolved contacts belong in the signature
+            // repository's `updated_scans` stream.
+            combinedResults.push(combinedResult);
         }
     }
     const currentIds = combinedResults.map((result) => result.scan_id);
     const previous = new Set((Array.isArray(previousScanIds) ? previousScanIds : []).map((value) => toInt(value, 0)));
     const added = currentIds.filter((scanId) => !previous.has(scanId));
     const removed = [...previous].filter((scanId) => !currentIds.includes(scanId));
+    const resolvedIdSet = new Set(resolvedIds);
+    const removedReasonsByScanId = new Map();
+    for (const scanId of removed) {
+        if (resolvedIdSet.has(scanId)) {
+            removedReasonsByScanId.set(scanId, [UPDATE_RESOLVED_TO_ITEM, scanId]);
+        }
+    }
     return {
         origin: [origin.x, origin.y, origin.z],
         durationMs,
@@ -587,7 +715,9 @@ function performDirectionalScan({ originPosition, angleDegrees, direction, modul
         removed,
         updatedScans: combinedResults,
         resolvedIds,
+        resolvedDelayMsById,
         scanIds: currentIds,
+        removedReasonsByScanId,
         resolutionConfig: resolvedScanningConfig,
     };
 }
@@ -600,9 +730,17 @@ module.exports = {
     SCAN_ANGLE_MIN_DEGREES,
     RESOLVED_SCANNING_CONTACTS_KEY,
     GRAVIMETRIC_REFERENCE_MASS_KG,
+    SIGNATURE_TYPE_BASE,
+    SIGNATURE_TYPE_MASS,
     SIGNATURE_TYPE_ELECTROMAGNETIC,
     SIGNATURE_TYPE_GRAVIMETRIC,
     SIGNATURE_TYPE_THERMAL,
+    UPDATE_ADDED_FROM_ITEM,
+    UPDATE_COMBINED_WITH_SIGNATURE,
+    UPDATE_MERGED_FROM_SIGNATURES,
+    UPDATE_RESOLVED_FROM_SIGNATURE,
+    UPDATE_RESOLVED_TO_ITEM,
+    UPDATE_RESOLVED_TO_SIGNATURES,
     ACTIVE_MODULE_EM_BONUS,
     BUILT_IN_SENSOR_STRENGTH_ATTRIBUTES,
     BUILT_IN_SENSOR_TO_SCAN_MULTIPLIER,
@@ -612,11 +750,15 @@ module.exports = {
     WEAPON_ACTIVITY_EM_DECAY_MS,
     buildScanId,
     buildSignatureResultsForTarget,
+    calculateScanRevealDelayMs,
     calculateSnr,
     capSignatureResultsBelowResolutionThreshold,
     getPresentedSignatureResults,
     getResolvedScanningContactMap,
+    forceResolveScanningContact,
+    forgetResolvedScanningContact,
     isResolved,
+    isCombatResolvedScanningContact,
     isScanningContactResolved,
     normalizeScanRequest,
     performDirectionalScan,

@@ -591,6 +591,7 @@ function createVisibilityGenerationState(options = {}) {
         .slice(-maxJournalEntries)
         .map((entry) => (entry && typeof entry === "object" ? { ...entry } : entry));
     return {
+        combatRevealedDynamicEntityIDs: normalizeVisibilityEntityIDSet(options.combatRevealedDynamicEntityIDs),
         freshlyVisibleDynamicEntityIDs: normalizeVisibilityEntityIDSet(options.freshlyVisibleDynamicEntityIDs),
         freshlyVisibleDynamicEntityReleaseStampByID: releaseStampByID,
         presentedEgoEntityID: getEntityMapKey(options.presentedEgoEntityID),

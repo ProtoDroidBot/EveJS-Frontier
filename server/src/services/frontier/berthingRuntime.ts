@@ -18,13 +18,27 @@ const BERTHING_PHASE_DEPARTING = "departing";
 const DEFAULT_SMART_HANGAR_ACCESS_RANGE = 5_000;
 const BERTH_SHIP_CUSTOM_INFO_PREFIX = "Berth:";
 const BERTHING_STATE_KEY = "evejsFrontierBerthing";
+const BERTHING_HOST_ENTITY_FIELD = "frontierBerthingHostAssemblyID";
 const CREATION_SHIP_TYPE_ID = 95276;
+const REFUGE_SHIP_TYPE_ID = 95735;
+const REIVER_SHIP_TYPE_ID = 95968;
 const REFUGE_TYPE_ID = 87160;
 const REFUGE_INTERIOR_RADIUS = 169;
 const BERTH_DEPARTURE_PADDING = 250;
 
 const ACCEPTED_SHIP_TYPE_OVERRIDES = new Map([
-  [REFUGE_TYPE_ID, new Set([CREATION_SHIP_TYPE_ID])],
+  [REFUGE_TYPE_ID, new Set([
+    CREATION_SHIP_TYPE_ID,
+    REFUGE_SHIP_TYPE_ID,
+    REIVER_SHIP_TYPE_ID,
+  ])],
+]);
+
+const ACCEPTED_SHIP_GROUP_OVERRIDES = new Map([
+  // The client-authored Refuge SmartHangar supports both of these groups.
+  // Keep them as server guarantees in case a partial static-data extraction
+  // omits either entry.
+  [REFUGE_TYPE_ID, new Set([31, 237])],
 ]);
 
 const contractsByCharacterID = new Map();
@@ -154,6 +168,34 @@ function clearBerthHostIDFromCustomInfo(value) {
   return Object.keys(parsed).length > 0 ? JSON.stringify(parsed) : "";
 }
 
+function getBerthHostIDForShipEntity(entity) {
+  return toInt(
+    entity && entity[BERTHING_HOST_ENTITY_FIELD],
+    readBerthHostIDFromCustomInfo(entity && entity.customInfo),
+  );
+}
+
+function isShipEntityBerthed(entity) {
+  return Boolean(
+    entity &&
+      String(entity.kind || "").trim().toLowerCase() === "ship" &&
+      getBerthHostIDForShipEntity(entity) > 0,
+  );
+}
+
+function setShipEntityBerthHost(entity, hostAssemblyID) {
+  if (!entity || typeof entity !== "object") {
+    return 0;
+  }
+  const hostID = toInt(hostAssemblyID, 0);
+  if (hostID > 0) {
+    entity[BERTHING_HOST_ENTITY_FIELD] = hostID;
+    return hostID;
+  }
+  delete entity[BERTHING_HOST_ENTITY_FIELD];
+  return 0;
+}
+
 function getCharacterID(session) {
   return toInt(session && (session.characterID || session.charid), 0);
 }
@@ -211,9 +253,17 @@ function buildSmartHangarDefinitions(rows) {
     if (typeID <= 0 || !smartHangar || typeof smartHangar !== "object") {
       continue;
     }
+    const acceptedGroupIDs = normalizeAcceptedGroupIDs(
+      smartHangar.acceptedGroupIDs,
+    );
+    if (acceptedGroupIDs !== null) {
+      for (const groupID of ACCEPTED_SHIP_GROUP_OVERRIDES.get(typeID) || []) {
+        acceptedGroupIDs.add(groupID);
+      }
+    }
     definitions.set(typeID, {
       typeID,
-      acceptedGroupIDs: normalizeAcceptedGroupIDs(smartHangar.acceptedGroupIDs),
+      acceptedGroupIDs,
       acceptedTypeIDs: new Set(ACCEPTED_SHIP_TYPE_OVERRIDES.get(typeID) || []),
       accessRange: Math.max(
         0,
@@ -434,6 +484,14 @@ function relocateShipIntoBerth(validationData, dependencies: Record<string, any>
     return { success: false as const, errorMsg: "BERTHING_STATE_WRITE_FAILED" };
   }
 
+  const previousEntityHostID = getBerthHostIDForShipEntity(
+    validationData.shipEntity,
+  );
+  setShipEntityBerthHost(
+    validationData.shipEntity,
+    validationData.hostItem.itemID,
+  );
+
   if (typeof validationData.spaceRuntime.stop === "function") {
     validationData.spaceRuntime.stop(validationData.session);
   }
@@ -443,6 +501,10 @@ function relocateShipIntoBerth(validationData, dependencies: Record<string, any>
     { direction: berthDirection, refreshOwnerSession: true },
   );
   if (!relocation || relocation.success !== true) {
+    setShipEntityBerthHost(
+      validationData.shipEntity,
+      previousEntityHostID,
+    );
     if (!hadMarker) {
       clearShipBerthMarker(validationData.activeShip, dependencies);
     }
@@ -621,6 +683,8 @@ function clearContract(session, hostAssemblyID, phase, dependencies: Record<stri
   if (!markerResult || markerResult.success !== true) {
     return { success: false as const, errorMsg: "BERTHING_STATE_WRITE_FAILED" };
   }
+  const previousEntityHostID = getBerthHostIDForShipEntity(shipEntity);
+  setShipEntityBerthHost(shipEntity, 0);
   const departure = buildBerthDepartureState(
     contract,
     hostItem,
@@ -634,6 +698,7 @@ function clearContract(session, hostAssemblyID, phase, dependencies: Record<stri
   );
   if (!relocation || relocation.success !== true) {
     writeShipBerthMarker(activeShip, contract.hostAssemblyID, dependencies);
+    setShipEntityBerthHost(shipEntity, previousEntityHostID);
     return {
       success: false as const,
       errorMsg: "BERTHING_RELOCATION_FAILED",
@@ -685,18 +750,23 @@ function hasActiveContractForHostAssembly(hostAssemblyID) {
 }
 
 module.exports = {
+  BERTHING_HOST_ENTITY_FIELD,
   BERTHING_PHASE_APPROACHING,
   BERTHING_PHASE_BERTHED,
   BERTHING_PHASE_DEPARTING,
   CREATION_SHIP_TYPE_ID,
+  REFUGE_SHIP_TYPE_ID,
+  REIVER_SHIP_TYPE_ID,
   REFUGE_TYPE_ID,
   beginBerth,
   berth,
   completeBerth,
   ejectOccupiedShip,
   getContractForSession,
+  getBerthHostIDForShipEntity,
   getSmartHangarDefinition,
   hasActiveContractForHostAssembly,
+  isShipEntityBerthed,
   readBerthHostIDFromCustomInfo,
   smartHangarAcceptsShip,
   undockBerth,
@@ -709,6 +779,9 @@ module.exports = {
       smartHangarsByTypeID = null;
     },
     normalizeAcceptedGroupIDs,
+    getBerthHostIDForShipEntity,
+    isShipEntityBerthed,
+    setShipEntityBerthHost,
     readBerthHostIDFromCustomInfo,
     writeBerthHostIDToCustomInfo,
     clearBerthHostIDFromCustomInfo,

@@ -5,6 +5,26 @@ const test = require("node:test");
 
 const dungeonTrackingRuntime = require("../src/services/dungeon/dungeonTrackingRuntime");
 
+test("current dungeon login payload matches the client's three-value unpack", () => {
+  const info = dungeonTrackingRuntime.buildCurrentDungeonInfo(
+    {
+      instanceID: 46,
+      sourceDungeonID: 13_118,
+      roomStatesByKey: {},
+    },
+    "room:entry",
+  );
+
+  assert.deepEqual(info, [
+    13_118,
+    0,
+    {
+      type: "dict",
+      entries: [],
+    },
+  ]);
+});
+
 test("dungeon room entry notification matches the build 3502403 client handler", () => {
   const notifications = [];
   const session = {

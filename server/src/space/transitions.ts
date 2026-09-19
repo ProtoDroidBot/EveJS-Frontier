@@ -224,15 +224,15 @@ function isScriptedHicStargateBlockedShip(ship) {
   return SCRIPTED_HIC_STARGATE_BLOCKED_GROUP_IDS.has(groupID);
 }
 
-function topOffShipShieldAndCapacitorForDockingTransition(shipId) {
-  return updateShipItem(shipId, (currentShip) => ({
+function preserveShipConditionStateForTransition(currentShip) {
+  return {
     ...currentShip,
-    conditionState: normalizeShipConditionState({
-      ...(currentShip.conditionState || {}),
-      charge: 1.0,
-      shieldCharge: 1.0,
-    }),
-  }));
+    conditionState: normalizeShipConditionState(currentShip.conditionState),
+  };
+}
+
+function preserveShipConditionForDockingTransition(shipId) {
+  return updateShipItem(shipId, preserveShipConditionStateForTransition);
 }
 
 function deactivateActiveModulesForSpaceTransition(session, reason) {
@@ -2209,19 +2209,22 @@ function undockSession(session, options: Record<PropertyKey, any> = {}) {
       return moveResult;
     }
 
-    const restoreResult = topOffShipShieldAndCapacitorForDockingTransition(
+    const preserveConditionResult = preserveShipConditionForDockingTransition(
       moveResult.data.itemID,
     );
-    if (restoreResult && restoreResult.success) {
-      moveResult.data = restoreResult.data;
+    if (preserveConditionResult && preserveConditionResult.success) {
+      moveResult.data = preserveConditionResult.data;
     }
 
-    const itemChangeData = dockable.kind === "structure"
-      ? {
-          ...moveResult.data,
-          clientCustomInfo: "UndockingStructure:",
-        }
-      : moveResult.data;
+    // Undock markers are client-only inventory hints. Keeping the marker on
+    // this notification instead of the durable item row preserves Creation
+    // layout metadata and other ship-owned customInfo across transitions.
+    const itemChangeData = {
+      ...moveResult.data,
+      clientCustomInfo: dockable.kind === "structure"
+        ? "UndockingStructure:"
+        : `Undocking:${dockedLocationID}`,
+    };
     emitItemsChangedForSession(
       session,
       itemChangeData,
@@ -2403,11 +2406,11 @@ function dockSession(session, stationID) {
     if (!dockResult.success) {
       return dockResult;
     }
-    const topOffResult = topOffShipShieldAndCapacitorForDockingTransition(
+    const preserveConditionResult = preserveShipConditionForDockingTransition(
       dockResult.data.itemID,
     );
-    if (topOffResult && topOffResult.success) {
-      dockResult.data = topOffResult.data;
+    if (preserveConditionResult && preserveConditionResult.success) {
+      dockResult.data = preserveConditionResult.data;
     }
 
     syncDockedShipTransitionForSession(session, dockResult, {
@@ -3825,24 +3828,50 @@ function rebuildDockedSessionAtStation(session, stationID, options: Record<Prope
     0,
   ) || 0;
 
-  const capsuleResult = ensureCapsuleForCharacter(
-    session.characterID,
-    station.stationID,
-  );
-  if (!capsuleResult.success || !capsuleResult.data) {
-    return {
-      success: false,
-      errorMsg: capsuleResult.errorMsg || "CAPSULE_NOT_FOUND",
-    };
-  }
+  let capsuleResult = null;
+  let capsuleShip = null;
+  let newbieShipResult = null;
+  if (options.boardNewbieShip === true) {
+    const {
+      spawnRookieShipForCharacter,
+    } = require(path.join(__dirname, "../services/ship/rookieShipRuntime"));
+    newbieShipResult = spawnRookieShipForCharacter(
+      session.characterID,
+      station.stationID,
+      {
+        characterRecord: getCharacterRecord(session.characterID) || {},
+        emitNotifications: false,
+        logLabel: options.newbieShipLogLabel || "PodRespawn",
+        setActiveShip: true,
+      },
+    );
+    if (
+      !newbieShipResult.success ||
+      !newbieShipResult.data ||
+      !newbieShipResult.data.ship
+    ) {
+      return newbieShipResult;
+    }
+  } else {
+    capsuleResult = ensureCapsuleForCharacter(
+      session.characterID,
+      station.stationID,
+    );
+    if (!capsuleResult.success || !capsuleResult.data) {
+      return {
+        success: false,
+        errorMsg: capsuleResult.errorMsg || "CAPSULE_NOT_FOUND",
+      };
+    }
 
-  const capsuleShip = capsuleResult.data;
-  const activeShipResult = setActiveShipForCharacter(
-    session.characterID,
-    capsuleShip.itemID,
-  );
-  if (!activeShipResult.success) {
-    return activeShipResult;
+    capsuleShip = capsuleResult.data;
+    const activeShipResult = setActiveShipForCharacter(
+      session.characterID,
+      capsuleShip.itemID,
+    );
+    if (!activeShipResult.success) {
+      return activeShipResult;
+    }
   }
 
   const currentRecord = getCharacterRecord(session.characterID);
@@ -3882,8 +3911,7 @@ function rebuildDockedSessionAtStation(session, stationID, options: Record<Prope
     return applyResult;
   }
 
-  let newbieShipResult = null;
-  if (options.boardNewbieShip === true) {
+  if (options.boardNewbieShip === true && !newbieShipResult) {
     const DogmaService = require(path.join(
       __dirname,
       "../services/dogma/dogmaService",
@@ -4684,6 +4712,8 @@ module.exports = {
 };
 module.exports._testing = {
   applyUndockSessionChangeShapeForTesting: applyUndockSessionChangeShape,
+  preserveShipConditionStateForTransitionForTesting:
+    preserveShipConditionStateForTransition,
   buildBoundResultForTesting: buildBoundResult,
   buildGateSpawnState,
   completeStargateJumpForTesting: completeStargateJump,

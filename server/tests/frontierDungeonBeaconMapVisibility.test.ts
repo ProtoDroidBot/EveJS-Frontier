@@ -79,6 +79,52 @@ test("solar-system map rows include one connector row for a public dungeon beaco
   ]]);
 });
 
+test("solar-system map rows retain an interacted but incomplete dungeon warp-in", () => {
+  const buildCalls: any[] = [];
+  const rows = buildDungeonBeaconMapRows(
+    SOLAR_SYSTEM_ID,
+    { characterID: 140_000_005 },
+    buildOptions([buildInstance({
+      lifecycleState: "active",
+      objectiveState: {
+        state: "in_progress",
+        completedAtMs: 0,
+      },
+      spawnState: {
+        firstPlayerEnteredAtMs: 25_000,
+        lastPlayerProgressAtMs: 30_000,
+      },
+    })], buildCalls),
+  );
+
+  assert.equal(rows.length, 1);
+  assert.deepEqual(buildCalls, [INSTANCE_ID]);
+});
+
+test("solar-system map rows expose only the oldest anchor for a duplicated site key", () => {
+  const siteKey = "sceneanomalysite:30000005:5380000005002";
+  const buildCalls: any[] = [];
+  const rows = buildDungeonBeaconMapRows(
+    SOLAR_SYSTEM_ID,
+    { characterID: 140_000_005 },
+    buildOptions([
+      buildInstance({
+        instanceID: INSTANCE_ID,
+        siteKey,
+        position: { x: 10, y: 20, z: 30 },
+      }),
+      buildInstance({
+        instanceID: INSTANCE_ID + 1,
+        siteKey,
+        position: { x: 900, y: 800, z: 700 },
+      }),
+    ], buildCalls),
+  );
+
+  assert.equal(rows.length, 1);
+  assert.deepEqual(buildCalls, [INSTANCE_ID]);
+});
+
 test("solar-system map rows expose only authorized private dungeon beacons", () => {
   const ownerCharacterID = 140_000_005;
   const instance = buildInstance({

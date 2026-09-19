@@ -1,5 +1,8 @@
 "use strict";
 
+const path = require("path");
+const berthingRuntime = require(path.join(__dirname, "./berthingRuntime"));
+
 /**
  * Authoritative Frontier ship-temperature simulation.
  *
@@ -289,6 +292,7 @@ function advanceShipTemperature(
     };
   }
 
+  const protectedByBerth = berthingRuntime.isShipEntityBerthed(entity);
   const attributes = getEntityAttributeMap(entity);
   const conditionState = entity.conditionState &&
     typeof entity.conditionState === "object"
@@ -361,7 +365,9 @@ function advanceShipTemperature(
     massKg,
   });
   const previousTargetTemperature = calculateTargetTemperature(
-    previousExternalTemperature,
+    protectedByBerth
+      ? STATION_TEMPERATURE_K
+      : previousExternalTemperature,
     continuousHeat,
     thermalProperties.effectiveHeatConductance,
   );
@@ -371,7 +377,15 @@ function advanceShipTemperature(
     (currentTimeMs - lastUpdatedAtMs) / 1000,
     thermalProperties.timeScaleSeconds,
   ));
-  const environment = resolveExternalTemperature(scene, entity, options);
+  const environment = protectedByBerth
+    ? {
+        distanceFromStar: null,
+        externalTemperature: STATION_TEMPERATURE_K,
+        frostlineRadius: null,
+        occluder: null,
+        shadowed: false,
+      }
+    : resolveExternalTemperature(scene, entity, options);
   const externalTemperature = roundTemperature(
     environment.externalTemperature,
   );
@@ -455,6 +469,7 @@ function advanceShipTemperature(
 
   return {
     supported: true,
+    protected: protectedByBerth,
     ...entity.temperatureState,
     notification,
   };

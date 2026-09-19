@@ -5,6 +5,7 @@ const test = require("node:test");
 
 const {
   buildFrontierDungeonSpawnTemplates,
+  collectFrontierDungeonSiteGroupIDs,
   collectFrontierDungeonSpawnAuthorityIDs,
   FRONTIER_DUNGEON_SPAWN_GROUP_IDS,
   GENERAL_ANCHOR_CLASS_WEIGHTS,
@@ -15,6 +16,7 @@ const {
   MINIMUM_UNIVERSE_DUNGEON_SITES_PER_SYSTEM,
   RESOURCE_ANCHOR_CLASS_WEIGHTS,
   getUniverseDungeonAnchorDistanceRange,
+  hasMatchingAuthoredEntryObject,
   isTemplateEligibleForUniverseSpawning,
   isTemplateFromFrontierDungeonDataset,
   orderUniverseDungeonAnchorCandidates,
@@ -51,6 +53,12 @@ test("universe spawning accepts only Frontier dungeons in the four site groups",
       { dungeonID: 104, entryTypeID: 1004 },
       { dungeonID: 105, entryTypeID: 1005 },
       { dungeonID: 106, entryTypeID: 9999 },
+      {
+        dungeonID: 107,
+        entryObjectID: 7001,
+        entryTypeID: 1004,
+        rooms: [{ roomID: 1, objects: [{ objectID: 7001, typeID: 9999 }] }],
+      },
     ],
     itemTypes: [
       { typeID: 1001, groupID: 4871 },
@@ -61,8 +69,10 @@ test("universe spawning accepts only Frontier dungeons in the four site groups",
     ],
   };
   const authority = new Set(collectFrontierDungeonSpawnAuthorityIDs(source));
+  const advertisedSiteGroupRows = collectFrontierDungeonSiteGroupIDs(source);
 
   assert.deepEqual(FRONTIER_DUNGEON_SPAWN_GROUP_IDS, [4871, 4872, 4873, 4874]);
+  assert.deepEqual(advertisedSiteGroupRows, [101, 102, 103, 104, 107]);
   assert.deepEqual([...authority], [101, 102, 103, 104]);
   assert.equal(isTemplateFromFrontierDungeonDataset({ sourceDungeonID: 101 }, authority), true);
   assert.equal(isTemplateEligibleForUniverseSpawning({ sourceDungeonID: 104 }, authority), true);
@@ -80,6 +90,11 @@ test("universe spawning accepts only Frontier dungeons in the four site groups",
     isTemplateEligibleForUniverseSpawning({}, authority),
     false,
     "synthetic templates without a Frontier dungeon ID must fail closed",
+  );
+  assert.equal(authority.has(107), false, "mismatched authored entry objects must fail closed");
+  assert.equal(
+    hasMatchingAuthoredEntryObject(source.frontierDungeonTemplates[6]),
+    false,
   );
 });
 
@@ -109,6 +124,13 @@ test("missing client authority rows are promoted from all four Frontier site gro
       { dungeonID: 203, dungeonName: "Wreck Site", entryTypeID: 1003 },
       { dungeonID: 204, dungeonName: "Landmark Site", entryTypeID: 1004 },
       { dungeonID: 205, dungeonName: "Legacy Signature", entryTypeID: 1005 },
+      {
+        dungeonID: 206,
+        dungeonName: "Invalid Prefab Wrapper",
+        entryObjectID: 7002,
+        entryTypeID: 1004,
+        rooms: [{ roomID: 9002, objects: [{ objectID: 7003, typeID: 1004 }] }],
+      },
     ],
   };
   const itemTypes = [

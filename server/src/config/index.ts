@@ -2034,6 +2034,136 @@ const CONFIG_ENTRY_DEFINITIONS: any[] = [
     validValues: "true or false.",
   },
   {
+    key: "adaptiveTickRateEnabled",
+    // Dynamic cadence is opt-in. Destiny stamps and combat presentation are
+    // authored against a stable scene cadence; automatically accelerating an
+    // idle server before a dungeon login can double the amount of work just as
+    // the active grid and its NPCs are restored.
+    defaultValue: false,
+    envVar: "EVEJS_ADAPTIVE_TICK_RATE_ENABLED",
+    envType: "boolean",
+    description: [
+      "Enables CPU- and memory-aware adjustment of the authoritative space-runtime tick interval.",
+      "High resource pressure lowers the tick rate; sustained headroom raises it again within the configured bounds.",
+    ],
+    validValues: "true or false.",
+  },
+  {
+    key: "adaptiveTickRateMinIntervalMs",
+    defaultValue: 50,
+    envVar: "EVEJS_ADAPTIVE_TICK_RATE_MIN_INTERVAL_MS",
+    envType: "number",
+    minValue: 10,
+    maxValue: 1000,
+    description:
+      "Fastest allowed adaptive space-runtime cadence in milliseconds. 50ms is 20 ticks per second.",
+    validValues: "Number from 10 through 1000, no greater than the maximum interval.",
+  },
+  {
+    key: "adaptiveTickRateMaxIntervalMs",
+    defaultValue: 250,
+    envVar: "EVEJS_ADAPTIVE_TICK_RATE_MAX_INTERVAL_MS",
+    envType: "number",
+    minValue: 10,
+    maxValue: 5000,
+    description:
+      "Slowest allowed adaptive space-runtime cadence in milliseconds. 250ms is 4 ticks per second.",
+    validValues: "Number from 10 through 5000, no less than the minimum interval.",
+  },
+  {
+    key: "adaptiveTickRateInitialIntervalMs",
+    defaultValue: 100,
+    envVar: "EVEJS_ADAPTIVE_TICK_RATE_INITIAL_INTERVAL_MS",
+    envType: "number",
+    minValue: 10,
+    maxValue: 5000,
+    description: [
+      "Space-runtime tick interval used at startup and as the fixed interval when adaptive tick rate is disabled.",
+      "100ms preserves the historical 10-ticks-per-second cadence.",
+    ],
+    validValues: "Number within the configured minimum and maximum interval bounds.",
+  },
+  {
+    key: "adaptiveTickRateStepMs",
+    defaultValue: 10,
+    envVar: "EVEJS_ADAPTIVE_TICK_RATE_STEP_MS",
+    envType: "number",
+    minValue: 1,
+    maxValue: 1000,
+    description:
+      "Milliseconds added to or removed from the tick interval on each resource sample that crosses a threshold.",
+    validValues: "Number from 1 through 1000.",
+  },
+  {
+    key: "adaptiveTickRateSampleIntervalMs",
+    defaultValue: 2000,
+    envVar: "EVEJS_ADAPTIVE_TICK_RATE_SAMPLE_INTERVAL_MS",
+    envType: "number",
+    minValue: 250,
+    maxValue: 60000,
+    description:
+      "Minimum time between process CPU and memory samples used by the adaptive tick-rate controller.",
+    validValues: "Number from 250 through 60000 milliseconds.",
+  },
+  {
+    key: "adaptiveTickRateCpuLowPercent",
+    defaultValue: 35,
+    envVar: "EVEJS_ADAPTIVE_TICK_RATE_CPU_LOW_PERCENT",
+    envType: "number",
+    minValue: 0,
+    maxValue: 100,
+    description: [
+      "Process CPU level at or below which CPU is considered to have headroom.",
+      "100 percent represents one fully utilized logical CPU core; worker activity can make the measured value exceed 100.",
+    ],
+    validValues: "Number from 0 through 100, below the high CPU threshold.",
+  },
+  {
+    key: "adaptiveTickRateCpuHighPercent",
+    defaultValue: 75,
+    envVar: "EVEJS_ADAPTIVE_TICK_RATE_CPU_HIGH_PERCENT",
+    envType: "number",
+    minValue: 0,
+    maxValue: 100,
+    description:
+      "Process CPU level at or above which the controller lowers the tick rate.",
+    validValues: "Number from 0 through 100, above the low CPU threshold.",
+  },
+  {
+    key: "adaptiveTickRateMemoryLowPercent",
+    defaultValue: 60,
+    envVar: "EVEJS_ADAPTIVE_TICK_RATE_MEMORY_LOW_PERCENT",
+    envType: "number",
+    minValue: 0,
+    maxValue: 100,
+    description:
+      "Process RSS level at or below which memory is considered to have headroom.",
+    validValues: "Number from 0 through 100, below the high memory threshold.",
+  },
+  {
+    key: "adaptiveTickRateMemoryHighPercent",
+    defaultValue: 80,
+    envVar: "EVEJS_ADAPTIVE_TICK_RATE_MEMORY_HIGH_PERCENT",
+    envType: "number",
+    minValue: 0,
+    maxValue: 100,
+    description:
+      "Process RSS level at or above which the controller lowers the tick rate.",
+    validValues: "Number from 0 through 100, above the low memory threshold.",
+  },
+  {
+    key: "adaptiveTickRateMemoryLimitMb",
+    defaultValue: 0,
+    envVar: "EVEJS_ADAPTIVE_TICK_RATE_MEMORY_LIMIT_MB",
+    envType: "number",
+    minValue: 0,
+    description: [
+      "Memory budget used to turn process RSS into a pressure percentage.",
+      "Set to 0 to automatically use the lower of the V8 heap limit and any process/container memory constraint exposed by Node.js.",
+    ],
+    validValues: "0 for automatic detection, or a positive memory budget in MiB.",
+  },
+  {
     key: "NewEdenSystemLoading",
     defaultValue: 1,
     allowedValues: [1, 2, 3, 4],
@@ -3052,6 +3182,48 @@ function buildValidatedConfigValues(rawValues: Record<string, any> = {}, options
     throw new Error(
       "frontierScanningResolutionRangeMeters must be less than or equal to " +
         "frontierScanningDetectionRangeMeters.",
+    );
+  }
+
+  if (
+    nextValues.adaptiveTickRateMinIntervalMs >
+    nextValues.adaptiveTickRateMaxIntervalMs
+  ) {
+    throw new Error(
+      "adaptiveTickRateMinIntervalMs must be less than or equal to " +
+        "adaptiveTickRateMaxIntervalMs.",
+    );
+  }
+
+  if (
+    nextValues.adaptiveTickRateInitialIntervalMs <
+      nextValues.adaptiveTickRateMinIntervalMs ||
+    nextValues.adaptiveTickRateInitialIntervalMs >
+      nextValues.adaptiveTickRateMaxIntervalMs
+  ) {
+    throw new Error(
+      "adaptiveTickRateInitialIntervalMs must be within the configured " +
+        "adaptive tick-rate interval bounds.",
+    );
+  }
+
+  if (
+    nextValues.adaptiveTickRateCpuLowPercent >=
+    nextValues.adaptiveTickRateCpuHighPercent
+  ) {
+    throw new Error(
+      "adaptiveTickRateCpuLowPercent must be less than " +
+        "adaptiveTickRateCpuHighPercent.",
+    );
+  }
+
+  if (
+    nextValues.adaptiveTickRateMemoryLowPercent >=
+    nextValues.adaptiveTickRateMemoryHighPercent
+  ) {
+    throw new Error(
+      "adaptiveTickRateMemoryLowPercent must be less than " +
+        "adaptiveTickRateMemoryHighPercent.",
     );
   }
 

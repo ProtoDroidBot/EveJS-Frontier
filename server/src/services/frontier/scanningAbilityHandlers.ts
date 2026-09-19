@@ -3,7 +3,7 @@
 /**
  * Directional scanner Creation ability handler (behavior "directional_scan").
  *
- * Wire shape notes (build 3455996):
+ * Wire shape notes (build 3502403):
  * - The client reads `result.get("scan_response")` from the activate_ability
  *   return value, then accesses the response BY ATTRIBUTE, so the response is
  *   marshalled as util.KeyVal rather than a plain dict.
@@ -11,8 +11,9 @@
  *   client converts with datetimeutils.filetime_delta_to_timedelta.  In
  *   contrast, `duration` is passed directly into ScanPulsePhase and must
  *   already be a datetime.timedelta instance.
- * - `added`/`removed` are dicts keyed by ball id with a tuple|None value;
- *   we send None (no per-ball payload is read for directional scans).
+ * - `added`/`removed` are dicts keyed by scan id with a tuple|None value.
+ *   When an unresolved signature resolves into a ball, removed carries the
+ *   client's `(UPDATE_RESOLVED_TO_ITEM, ball_id)` fate tuple.
  * - `updated_scans` are CombinedScanResult states: (center, radius, scan_id,
  *   distance_range, estimated_number, estimated_number_uncertainty,
  *   signature_results).
@@ -155,6 +156,13 @@ function collectScanCandidates(session, shipID) {
         scanningRuntime.resolveEntityEmSignatureMultiplier(entity, nowMs),
       thermalSignatureMultiplier:
         temperatureRuntime.resolveEntityThermalSignatureMultiplier(entity, nowMs),
+      ...(scanningRuntime.isCombatResolvedScanningContact(
+        session,
+        entity.itemID,
+        nowMs,
+      )
+        ? { forceCombatResolved: true }
+        : {}),
     });
   }
   return candidates;
@@ -172,17 +180,37 @@ function buildCombinedScanState(result) {
   ];
 }
 
+function buildScanUpdateReason(reason) {
+  return Array.isArray(reason)
+    ? { type: "tuple", items: reason }
+    : null;
+}
+
 function buildScanResponse(scan) {
   return buildKeyVal([
     ["origin", scan.origin],
     ["duration", buildPythonTimedeltaPayload(scan.durationMs)],
     [
       "added",
-      buildDict(scan.added.map((scanId) => [scanId, null])),
+      buildDict(scan.added.map((scanId) => [
+        scanId,
+        buildScanUpdateReason(
+          scan.addedReasonsByScanId instanceof Map
+            ? scan.addedReasonsByScanId.get(scanId)
+            : null,
+        ),
+      ])),
     ],
     [
       "removed",
-      buildDict(scan.removed.map((scanId) => [scanId, null])),
+      buildDict(scan.removed.map((scanId) => [
+        scanId,
+        buildScanUpdateReason(
+          scan.removedReasonsByScanId instanceof Map
+            ? scan.removedReasonsByScanId.get(scanId)
+            : null,
+        ),
+      ])),
     ],
     [
       "updated_scans",
@@ -266,7 +294,10 @@ function registerScanningAbilityHandlers() {
         const resolution = runtime.updateResolvedScanningContactsForSession(
           session,
           scan.resolvedIds,
-          { delayMs: scan.durationMs },
+          {
+            delayMs: scan.durationMs,
+            delayMsByEntityID: scan.resolvedDelayMsById,
+          },
         );
         if (resolution && resolution.delayMsByEntityID instanceof Map) {
           scan.resolvedDelayMsById = resolution.delayMsByEntityID;

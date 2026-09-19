@@ -330,7 +330,16 @@ function buildSlimItemDict(entity) {
             buildWallclockFiletimeFromMs(startTimeMs),
         ]);
     }
-    if (entity.kind === "ship") {
+    // Native NPC vessels move and fight as runtime ships, while their SDE
+    // category is Entity. Frontier therefore constructs CREntity for them and
+    // accepts only the entity standings/signature fields, not CRShip fields.
+    if (slimCategoryID === 11) {
+        entries.push([
+            "signatureRadius",
+            Math.max(1, toFiniteNumber(entity.signatureRadius, entity.radius || 1)),
+        ]);
+    }
+    else if (entity.kind === "ship") {
         entries.push(["corpID", entity.corporationID || 0]);
         entries.push(["allianceID", entity.allianceID || 0]);
         entries.push(["warFactionID", entity.warFactionID || 0]);

@@ -582,6 +582,12 @@ Use `evejs.config.local.json` for gameplay, economy, NPC, feature, and logging s
 
 Rust market runtime and seeder tuning are separate from the Node JSON configuration. Routine seed selection belongs in the `market-tools rebuild` arguments; advanced defaults live in `docker/market-server.toml`, `docker/market-seed.toml`, and `docker/market-seed-v2.toml` and require an image rebuild.
 
+### Configuring the adaptive space tick rate
+
+The space runtime uses the fixed `adaptiveTickRateInitialIntervalMs` cadence (100 ms / 10 Hz by default). Dynamic cadence is disabled by default because Destiny stamps, movement, and combat presentation require a stable authoritative tick interval. Set `adaptiveTickRateEnabled` to `true` only to opt into resource-based cadence experiments; when enabled, the runtime samples this Node process every `adaptiveTickRateSampleIntervalMs`. CPU pressure at or above `adaptiveTickRateCpuHighPercent`, or RSS memory pressure at or above `adaptiveTickRateMemoryHighPercent`, increases the interval by `adaptiveTickRateStepMs` and therefore lowers the tick rate. The interval decreases again only when both CPU and memory are at or below their low thresholds. This high/low gap prevents the timer from repeatedly switching direction near one threshold.
+
+`adaptiveTickRateMinIntervalMs` and `adaptiveTickRateMaxIntervalMs` set the hard cadence bounds used only while adaptive cadence is enabled. `adaptiveTickRateMemoryLimitMb` is the RSS budget; leave it at `0` to use the strictest V8 or process/container limit Node can detect. Every adaptive adjustment is written to the server log with the old/new Hz, triggering resource, CPU percentage, memory percentage, and RSS. The corresponding `EVEJS_ADAPTIVE_TICK_RATE_*` environment variables can override every setting.
+
 ### Configuring Frontier directional scanning
 
 Frontier directional scanning separates contact detection from object resolution. `frontierScanningDetectionRangeMeters` controls how far a contact can appear in the scan response, while `frontierScanningResolutionRangeMeters` controls how far a sufficiently strong contact can resolve into its real ballpark object. Keep the resolution range below the detection range to leave the outer part of the scan envelope visible as unresolved signatures. The build-3502403 client-authored ceiling is 100,000 km.
@@ -601,7 +607,29 @@ The shipped policy defines four roles:
 
 Rules are evaluated by ascending `priority`; later matching rules win the role and can add behavior overrides. Matchers support exact IDs, ID prefixes and fragments for profiles, behavior profiles, and loadouts, plus entity type and authored `behaviorAutoAggro`. Global and role `behaviorDefaults` only fill missing authored values. `behaviorOverrides` intentionally replace authored values, so use overrides only where the role must enforce a setting.
 
+Each authored NPC behavior profile can also set these independent boolean capabilities:
+
+- `chaseTargets` lets autonomous combat movement follow or orbit a target; disabling it makes the NPC hold position while it can still lock and fire;
+- `mineAsteroids` enrolls the NPC as a miner even when it arrived through a generic spawn path, while an explicit `false` keeps a mining-role profile out of the mining controller;
+- `guardAnchor` enables the spawn anchor/home leash and idle return behavior used to guard the object the NPC was spawned around;
+- `retainTargetLockWhenOccluded` preserves an already completed lock when a physical object moves into the line of fire, but does not permit acquiring a new lock through that object;
+- `fireThroughOccluders` permits that NPC's direct weapons and missiles to pass through physical line-of-fire blockers. It is separate from lock retention, so an NPC normally needs both occlusion flags to keep firing after its target becomes hidden.
+
+The shipped role defaults preserve existing behavior: guards chase and defend their anchor, miners mine, and all roles obey target occlusion unless a profile explicitly opts out. These fields can be authored directly in `npcBehaviorProfiles` or supplied through `behaviorDefaults`/`behaviorOverrides` in `npc-behavior.config.json`.
+
 The file is validated at server startup. Invalid schemas, unknown roles, empty match rules, or attempts to replace the reserved `behaviorProfileID` and `name` fields stop startup with the exact config error. Changes require a server restart; Docker users must rebuild and recreate the backend so the changed file is copied into the image.
+
+### Configuring NPC faction interactions
+
+The root `npc-factions.config.json` controls how NPC factions treat players and one another. Native NPCs use the `factionID` already authored on their NPC profile; at runtime it is exposed as `npcFactionID` and retained in the existing `warFactionID` compatibility field. Profiles can also provide `npcFactionKey` (the Frontier-generated profiles already expose `frontierFactionKey`) when several distinct groups share one legacy numeric ID. The string key takes precedence for disposition checks. Faction relations remain available as a fallback policy, while the shipped transponder policy makes IFF identification authoritative.
+
+Each entry in `factions` can set `unidentifiedDisposition` to `suspicious`, `inherit`, `hostile`, `retaliate`, or `ignore`. A player or NPC broadcasting the exact code expected by the source NPC group is identified as an ally before faction or aggression rules are evaluated. The shipped factions use `suspicious`: an NPC acquires and investigates a missing or incorrect transponder code while withholding weapons. A successful offensive-module activation against that NPC or a locally visible transponder-matched ally immediately promotes the contact to hostile, before the first damage cycle lands. `inherit` preserves the existing NPC behavior/faction policy, `hostile` permits immediate aggression, `retaliate` waits until that target or owner attacks, and `ignore` prevents IFF-driven combat.
+
+The same file configures native-NPC transponders. `transponder.groupIdentityFields` selects the stable identity used for a broadcast in priority order (spawn group, NPC profile, then faction by default), while each faction's `transponderSignal` supplies its namespace. The server emits a deterministic `code`-channel value for every materialized NPC group, shortens long catalog identities with a stable digest, and refreshes `OnIffVerdicts` when NPCs appear or leave. A player transponder configured to the same code therefore receives the friendly IFF verdict for that NPC group.
+
+Relations are directional rules over `sourceFactionIDs`/`targetFactionIDs` and/or `sourceFactionKeys`/`targetFactionKeys`. Set `reciprocal` to `true` for a two-way relation; later rules override an earlier relation for the same ordered faction pair. Valid NPC dispositions are `friendly`, `neutral`, and `hostile`. The shipped matrix enables empire-war opponents, security/industrial factions versus outlaw factions, rival outlaw factions, and distinct Frontier-faction rivalries. Same-faction friendliness takes precedence so a broad rivalry rule does not create friendly fire inside one faction.
+
+Faction disposition controls target eligibility, while `npc-behavior.config.json` continues to control whether an NPC automatically aggresses, its range, movement, weapons, mining, guarding, and occlusion behavior. Both files are validated at startup and changes require a server restart.
 
 ### Docker persistence
 
@@ -710,6 +738,7 @@ Everything your server remembers — accounts, characters, ships, wallets, uploa
 | `externalservices\market-server\data\generated\` | market database |
 | `evejs.config.local.json` | your server settings |
 | `npc-behavior.config.json` | shared NPC role, aggression, mining, and hauling policy |
+| `npc-factions.config.json` | NPC faction identities, transponder signals, player responses, and inter-faction relations |
 
 > **Upgrading from a version released before 25 July 2026:** uploaded character portraits used to be written into the program files, at `server\src\_secondary\image\generated\Character`. That is why they were left behind whenever an install was copied to a new folder, and why rebuilding a Docker container erased them. They now live in `_local\gameStore\images`, beside the game database, so they travel with everything else. The steps below include the one-time copy that brings old portraits across; the server keeps reading the old location in the meantime, so nothing breaks if you upgrade first and migrate later.
 
@@ -750,6 +779,7 @@ Check that your characters are there before deleting the old folder.
    - `externalservices\market-server\data\generated\`
    - `evejs.config.local.json`
    - `npc-behavior.config.json` — if you customized NPC roles or behavior rules.
+   - `npc-factions.config.json` — if you customized NPC faction relations, transponder signals, or unidentified-target responses.
    - `server\src\_secondary\image\generated\Character\` — only if the old version has this folder (see the note above). `StartServer.bat` moves its contents into `_local\gameStore\images` on the next start.
 4. Run `StartMarketServer.bat`, then `StartServer.bat`, in the new folder.
 

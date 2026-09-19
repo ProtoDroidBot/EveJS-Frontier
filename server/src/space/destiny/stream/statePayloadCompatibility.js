@@ -7,6 +7,7 @@ const FRONTIER_STARGATE_JUMP_COLUMNS = [
     ["locationID", 0x14],
 ];
 const FRONTIER_ASSEMBLY_STATUS_UNDER_CONSTRUCTION = 5;
+const FRONTIER_ENTITY_CATEGORY_ID = 11;
 const BASE_CR_DATA_KEYS = [
     "itemID",
     "typeID",
@@ -146,7 +147,16 @@ function normalizeCrDataDictionaryForProfile(crData, entity, compatibilityProfil
         !Array.isArray(crData.entries)) {
         return crData;
     }
-    const kind = String(entity && entity.kind || "").trim().toLowerCase();
+    // Runtime NPC vessels deliberately use the ship movement/combat model, but
+    // their SDE types are category Entity (11).  Frontier selects the CR class
+    // from the type's SDE category, not from our runtime implementation kind.
+    // Feeding CRShip-only attributes to a CREntity prevents the client from
+    // installing usable CR data for the ball (and leaves damage messages as
+    // "Unknown" with no bracket/model for dependent effects).
+    const categoryID = Number(entity && (entity.slimCategoryID ?? entity.categoryID));
+    const kind = categoryID === FRONTIER_ENTITY_CATEGORY_ID
+        ? "entity"
+        : String(entity && entity.kind || "").trim().toLowerCase();
     const allowedKeys = new Set([
         ...BASE_CR_DATA_KEYS,
         ...(KIND_CR_DATA_KEYS[kind] || []),

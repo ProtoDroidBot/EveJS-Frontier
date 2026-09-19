@@ -19,9 +19,17 @@ SOURCE_MEMBER_SHA256 = "55ac03aed94839e454c947aab18fc5fbfe7a7eddc5178dbf7fad59ba
 ADAPTER = Path(__file__).with_name("map_view_lifecycle_adapter.py")
 SOURCE_SENTINEL = b"EVEJS_MAP_VIEW_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_MAP_VIEW_ADAPTER_CODE_V1"
-LEGACY_ADAPTER_CODE_SHA256 = (
-    "d8bdf08c29f3191bca104f92ded4c83fb4b5011cd350587c9ac18db9a7e9170e"
-)
+UPGRADEABLE_ADAPTER_CODE_SHA256S = {
+    # Original lifecycle-only adapter.
+    "d8bdf08c29f3191bca104f92ded4c83fb4b5011cd350587c9ac18db9a7e9170e",
+    # Lifecycle + resolved-dungeon visibility adapter shipped before the
+    # model-only NPC/ship presentation rule.
+    "4354158b8b749032c1bbd719e7d2cf97a9d4c7ec14205f20ec4017e1463546c3",
+    # Short-lived model-only NPC/ship adapter. It hid the resolved ball bracket
+    # after ScanResolvedPendingCriteria released it, so upgrade it back to the
+    # client's native unresolved-signature -> resolved-bracket lifecycle.
+    "6af08856aebd188b0b0df7198ef4002f5712f5f1e061d7f3d0b948121dac6931",
+}
 
 
 class MapViewPatchError(RuntimeError):
@@ -78,7 +86,8 @@ def inspect_member(member, expected=SOURCE_MEMBER_SHA256):
             value
             for value in wrapper.co_consts
             if isinstance(value, bytes)
-            and hashlib.sha256(value).hexdigest() == LEGACY_ADAPTER_CODE_SHA256
+            and hashlib.sha256(value).hexdigest()
+            in UPGRADEABLE_ADAPTER_CODE_SHA256S
         ]
         if len(originals) == 1 and len(adapters) == 1:
             # Treat the lifecycle-only adapter as an upgradeable source.  This

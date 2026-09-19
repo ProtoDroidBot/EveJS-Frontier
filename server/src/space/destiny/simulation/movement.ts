@@ -21,6 +21,10 @@ const {
 const {
   integrateCarbonMotion: integrateDefaultCarbonMotion,
 } = require("./carbonIntegration");
+const {
+  resolveMassAccelerationMultiplier,
+  resolveMassAdjustedAngularSpeed,
+} = require("./massDynamics");
 
 const DEFAULT_WORLD_UP: Readonly<Vector3> = Object.freeze({ x: 0, y: 1, z: 0 });
 
@@ -172,24 +176,11 @@ function createDestinyMovementSimulator(deps: Record<string, any> = {}) {
       };
     }
 
-    // Destiny turns much faster than it changes speed, and from near-rest the
-    // client effectively snaps to the requested heading before accelerating.
-    if (currentSpeedFraction <= 0.1) {
-      return {
-        direction: target,
-        degrees,
-        turnFraction: turnMetrics.turnFraction,
-        turnPercent: 1,
-        degPerTick: 0,
-        maxStepDegrees: 0,
-        turnSeconds: 0,
-        snapped: true,
-      };
-    }
-
     // Match the classic destiny turn shape more closely than a slow exponential
     // blend: heading changes in noticeable per-tick steps and large turns begin
-    // by shedding speed while the nose swings through the arc.
+    // by shedding speed while the nose swings through the arc. Mass and the
+    // dogma inertia modifier are already folded into agilitySeconds, including
+    // while turning from rest.
     const degPerTick = deriveTurnDegreesPerTick(agilitySeconds);
     const tickScale = Math.max(deltaSeconds / 0.1, 0.05);
     const maxStepDegrees = degPerTick * tickScale;
@@ -253,12 +244,7 @@ function createDestinyMovementSimulator(deps: Record<string, any> = {}) {
       agilitySeconds,
       currentSpeedFraction,
     );
-    entity.direction =
-      hasManualStrafingThrust(entity)
-        ? turnStep.direction
-        : nextSpeed > 0.05
-        ? normalizeVector(integration.nextVelocity, turnStep.direction)
-        : turnStep.direction;
+    entity.direction = turnStep.direction;
     entity.velocity =
       nextSpeed <= 0.05
         ? { x: 0, y: 0, z: 0 }
@@ -715,10 +701,14 @@ function createDestinyMovementSimulator(deps: Record<string, any> = {}) {
       crossProduct(horizontalDirection, forwardDirection),
       DEFAULT_WORLD_UP,
     );
-    const acceleration = addVectors(
+    const massAccelerationMultiplier = resolveMassAccelerationMultiplier(
+      entity.mass,
+      entity.baseMass,
+    );
+    const acceleration = scaleVector(addVectors(
       scaleVector(verticalDirection, thrust.x),
       scaleVector(horizontalDirection, thrust.y),
-    );
+    ), massAccelerationMultiplier);
     const velocityDelta = scaleVector(acceleration, delta);
     const positionDelta = scaleVector(acceleration, 0.5 * delta * delta);
     entity.velocity = addVectors(entity.velocity, velocityDelta);
@@ -727,6 +717,10 @@ function createDestinyMovementSimulator(deps: Record<string, any> = {}) {
     entity.lastMotionDebug = {
       ...(entity.lastMotionDebug || {}),
       manualStrafingThrust: summarizeVector(thrust),
+      manualStrafingMassMultiplier: roundNumber(
+        massAccelerationMultiplier,
+        6,
+      ),
       manualStrafingAcceleration: summarizeVector(acceleration),
       manualStrafingVelocityDelta: summarizeVector(velocityDelta),
       manualStrafingPositionDelta: summarizeVector(positionDelta),
@@ -745,9 +739,11 @@ function createDestinyMovementSimulator(deps: Record<string, any> = {}) {
 
     const delta = Math.max(0, toFiniteNumber(deltaSeconds, 0));
     const currentDirection = normalizeVector(entity.direction, DEFAULT_RIGHT);
-    const maxAngularSpeed = Math.max(
-      0,
-      toFiniteNumber(entity.maxAngularSpeed, 0.25),
+    const maxAngularSpeed = resolveMassAdjustedAngularSpeed(
+      Math.max(0, toFiniteNumber(entity.maxAngularSpeed, 0.25)),
+      entity.mass,
+      entity.baseMass,
+      entity.angularAgility,
     );
     const pitchTarget = clamp(
       toFiniteNumber(entity.manualPitch, 0),

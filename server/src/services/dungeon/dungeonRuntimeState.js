@@ -423,8 +423,11 @@ function buildCache(sourceState = null) {
         if (instance.siteKey) {
             appendIndex(instanceIDsBySiteKey, instance.siteKey, instance.instanceID);
             const existing = instanceIDBySiteKey.get(instance.siteKey) || null;
+            const existingIsActive = isActiveLifecycleState(summariesByID.get(existing) && summariesByID.get(existing).lifecycleState);
+            const candidateIsActive = isActiveLifecycleState(instance.lifecycleState);
             if (!existing ||
-                !isActiveLifecycleState(summariesByID.get(existing) && summariesByID.get(existing).lifecycleState)) {
+                (candidateIsActive && !existingIsActive) ||
+                (candidateIsActive === existingIsActive && instance.instanceID < existing)) {
                 instanceIDBySiteKey.set(instance.siteKey, instance.instanceID);
             }
         }
@@ -527,9 +530,12 @@ function refreshSiteKeyIndex(cacheState, siteKey) {
         if (!instance) {
             continue;
         }
+        const selected = cacheState.instancesByID.get(selectedInstanceID) || null;
+        const selectedIsActive = isActiveLifecycleState(selected && selected.lifecycleState);
+        const candidateIsActive = isActiveLifecycleState(instance.lifecycleState);
         if (selectedInstanceID <= 0 ||
-            !isActiveLifecycleState(cacheState.summariesByID.get(selectedInstanceID) &&
-                cacheState.summariesByID.get(selectedInstanceID).lifecycleState)) {
+            (candidateIsActive && !selectedIsActive) ||
+            (candidateIsActive === selectedIsActive && instanceID < selectedInstanceID)) {
             selectedInstanceID = instanceID;
         }
     }
@@ -594,8 +600,12 @@ function addInstanceToCache(cacheState, rawInstance) {
     if (instance.siteKey) {
         const existingInstanceID = cacheState.instanceIDBySiteKey.get(instance.siteKey) || 0;
         const existingSummary = cacheState.summariesByID.get(existingInstanceID) || null;
+        const existingIsActive = isActiveLifecycleState(existingSummary && existingSummary.lifecycleState);
+        const candidateIsActive = isActiveLifecycleState(instance.lifecycleState);
         if (existingInstanceID <= 0 ||
-            !isActiveLifecycleState(existingSummary && existingSummary.lifecycleState)) {
+            (candidateIsActive && !existingIsActive) ||
+            (candidateIsActive === existingIsActive &&
+                instanceID < existingInstanceID)) {
             cacheState.instanceIDBySiteKey.set(instance.siteKey, instanceID);
         }
     }

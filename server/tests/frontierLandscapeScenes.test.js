@@ -11,7 +11,8 @@ test("landscape spawn config composes disjoint NPC families into site-specific e
     const config = frontierLandscapeSpawns.getConfig();
     const summary = frontierLandscapeSpawns.getConfigSummary();
     assert.equal(summary.ecosystemCount, 20);
-    assert.equal(summary.dungeonOverrideCount, 12);
+    assert.equal(summary.dungeonOverrideCount, 17);
+    assert.equal(config.dungeonOverrides["13582"], undefined);
     assert.equal(summary.npcFamilyCount, 7);
     assert.equal(summary.npcProfileCount, 47);
     assert.deepEqual(config.npcFamilies.mooneater_entities.groupIDs, [4770]);
@@ -34,6 +35,14 @@ test("landscape spawn config composes disjoint NPC families into site-specific e
     assert.ok(plan.npcs.some((entry) => entry.familyKey === "allotrope"));
     assert.equal(plan.wrecks.length, 4);
     assert.deepEqual(frontierLandscapeSpawns.buildSpawnPlan({ itemID: 900_439_900 }, { ecosystemID: 21 }, [{ dungeonID: 13_659 }]), plan);
+    const pulverizedAsteroidCluster = frontierLandscapeSpawns.buildDungeonSpawnPlan(10_659);
+    assert.equal(pulverizedAsteroidCluster.spawnTableID, "mooneater_site");
+    assert.deepEqual(pulverizedAsteroidCluster.encounterTags, [
+        "site:mining-field",
+        "site:mooneater",
+    ]);
+    assert.ok(pulverizedAsteroidCluster.npcs.some((entry) => entry.familyKey === "mooneater_entities"));
+    assert.ok(pulverizedAsteroidCluster.npcs.some((entry) => entry.familyKey === "feral_support"));
     const mooneater = frontierLandscapeSpawns.buildDungeonSpawnPlan(13_870);
     assert.equal(mooneater.spawnTableID, "mooneater_site");
     assert.ok(mooneater.npcs.some((entry) => entry.familyKey === "mooneater_entities"));
@@ -41,10 +50,21 @@ test("landscape spawn config composes disjoint NPC families into site-specific e
     assert.ok(mooneater.npcs
         .filter((entry) => entry.familyKey === "feral_support")
         .every((entry) => [83_914, 88_091, 87_536].includes(entry.typeID)));
-    const generative = frontierLandscapeSpawns.buildDungeonSpawnPlan(12_707);
-    assert.equal(generative.spawnTableID, "generative_site");
-    assert.ok(generative.npcs.some((entry) => entry.familyKey === "generative_entities"));
-    assert.ok(generative.npcs.some((entry) => entry.familyKey === "feral_support"));
+    for (const dungeonID of [
+        12_700,
+        12_701,
+        12_704,
+        12_705,
+        12_706,
+        12_707,
+        12_708,
+        12_709,
+    ]) {
+        const generative = frontierLandscapeSpawns.buildDungeonSpawnPlan(dungeonID);
+        assert.equal(generative.spawnTableID, "generative_site");
+        assert.ok(generative.npcs.some((entry) => entry.familyKey === "generative_entities"));
+        assert.ok(generative.npcs.some((entry) => entry.familyKey === "feral_support"));
+    }
     const shipyard = frontierLandscapeSpawns.buildDungeonSpawnPlan(12_560);
     assert.equal(shipyard.spawnTableID, "derelict_autonomous_shipyard");
     assert.equal(shipyard.parentSpawnTableID, "generative_site");

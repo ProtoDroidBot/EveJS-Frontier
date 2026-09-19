@@ -119,10 +119,12 @@ function buildCurrentDungeonInfo(instance, roomKey, options = {}) {
     }
     const normalizedRoomKey = normalizeText(roomKey, "room:entry");
     const roomState = resolveRoomState(instance, normalizedRoomKey);
+    // dungeonTracking.OnCharacterSessionChanged unpacks exactly
+    // (dungeonID, roomID, dungeonValues). The runtime instance ID belongs to
+    // OnEnteringDungeonRoom instead and must not be inserted into this RPC.
     return [
         dungeonID,
         resolveRoomID(normalizedRoomKey, roomState),
-        Math.max(0, toInt(instance.instanceID, 0)),
         buildDungeonValues(instance, normalizedRoomKey, { template }),
     ];
 }
@@ -297,7 +299,8 @@ function sendEnteringDungeonRoomNotification(session, instance, roomKey, options
         info[0],
         info[1],
         positionTuple(options.roomPosition),
-        info[2],
+        // This notification has a separate four-field client contract.
+        Math.max(0, toInt(instance.instanceID, 0)),
     ]);
     return true;
 }

@@ -4215,12 +4215,13 @@ function tickDroneCombat(scene, droneEntity, controllerEntity, now) {
 
   let damageResult = null;
   let destroyResult = null;
+  let weaponDamageResult = null;
   if (
     shotResult &&
     shotResult.hit === true &&
     typeof droneInterop.applyWeaponDamageToTarget === "function"
   ) {
-    const weaponDamageResult = droneInterop.applyWeaponDamageToTarget(
+    weaponDamageResult = droneInterop.applyWeaponDamageToTarget(
       scene,
       droneEntity,
       targetEntity,
@@ -4237,13 +4238,15 @@ function tickDroneCombat(scene, droneEntity, controllerEntity, now) {
       typeof droneInterop.getAppliedDamageAmount === "function"
         ? droneInterop.getAppliedDamageAmount(damageResult)
         : 0;
+    const damageTargetEntity =
+      weaponDamageResult && weaponDamageResult.impactTargetEntity || targetEntity;
     if (
       appliedDamageAmount > 0 &&
       typeof droneInterop.noteKillmailDamage === "function"
     ) {
       droneInterop.noteKillmailDamage(
         combatSourceEntity,
-        targetEntity,
+        damageTargetEntity,
         appliedDamageAmount,
         {
           whenMs: now,
@@ -4261,7 +4264,7 @@ function tickDroneCombat(scene, droneEntity, controllerEntity, now) {
       destroyResult.success === true &&
       typeof droneInterop.recordKillmailFromDestruction === "function"
     ) {
-      droneInterop.recordKillmailFromDestruction(targetEntity, destroyResult, {
+      droneInterop.recordKillmailFromDestruction(damageTargetEntity, destroyResult, {
         attackerEntity: combatSourceEntity,
         victimSession: weaponDamageResult && weaponDamageResult.victimSession,
         whenMs: now,
@@ -4276,9 +4279,11 @@ function tickDroneCombat(scene, droneEntity, controllerEntity, now) {
   }
 
   if (typeof droneInterop.notifyWeaponDamageMessages === "function") {
+    const damageTargetEntity =
+      weaponDamageResult && weaponDamageResult.impactTargetEntity || targetEntity;
     droneInterop.notifyWeaponDamageMessages(
       combatSourceEntity,
-      targetEntity,
+      damageTargetEntity,
       pseudoModuleItem,
       shotResult && shotResult.shotDamage,
       typeof droneInterop.getAppliedDamageAmount === "function"
@@ -4287,6 +4292,13 @@ function tickDroneCombat(scene, droneEntity, controllerEntity, now) {
       typeof droneInterop.getCombatMessageHitQuality === "function"
         ? droneInterop.getCombatMessageHitQuality(shotResult)
         : 0,
+      {
+        suppress: Boolean(
+          weaponDamageResult &&
+          weaponDamageResult.occlusion &&
+          !weaponDamageResult.damageResult
+        ),
+      },
     );
   }
 

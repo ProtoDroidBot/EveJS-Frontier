@@ -5,10 +5,19 @@ const CONFIG_PATH = path.resolve(
   __dirname,
   "../../../npc-behavior.config.json",
 );
-const SUPPORTED_SCHEMA_VERSION = 1;
+const SUPPORTED_SCHEMA_VERSION = 2;
 const RESERVED_BEHAVIOR_FIELDS = new Set([
   "behaviorProfileID",
   "name",
+]);
+const BOOLEAN_BEHAVIOR_FIELDS = new Set([
+  "chaseTargets",
+  "mineAsteroids",
+  "guardAnchor",
+  "retainTargetLockWhenOccluded",
+  "fireThroughOccluders",
+  "passiveRoaming",
+  "passiveWarping",
 ]);
 
 function isRecord(value) {
@@ -70,6 +79,9 @@ function normalizeBehaviorFields(value, fieldName) {
   for (const key of Object.keys(source)) {
     if (RESERVED_BEHAVIOR_FIELDS.has(key)) {
       throw new TypeError(`${fieldName}.${key} is reserved`);
+    }
+    if (BOOLEAN_BEHAVIOR_FIELDS.has(key) && typeof source[key] !== "boolean") {
+      throw new TypeError(`${fieldName}.${key} must be a boolean`);
     }
   }
   return cloneValue(source);

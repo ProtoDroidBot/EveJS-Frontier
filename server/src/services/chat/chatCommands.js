@@ -2506,6 +2506,144 @@ function cloneSpaceVector(vector, fallback = { x: 0, y: 0, z: 0 }) {
         z: Number.isFinite(Number(vector && vector.z)) ? Number(vector.z) : fallback.z,
     };
 }
+// Keep coordinate teleports aligned with the deadspace site's spatial model.
+// Authored rooms can sit tens of millions of meters from the entry beacon.
+const TRANSPORT_DUNGEON_INITIALIZE_RANGE_METERS = 1_000_000_000;
+function resolveTransportDungeonIdentity(value) {
+    if (!value || typeof value !== "object") {
+        return null;
+    }
+    const instanceID = normalizePositiveInteger(value.destinationStaticInstanceID) ||
+        normalizePositiveInteger(value.dungeonSiteInstanceID) ||
+        normalizePositiveInteger(value.dungeonCurrentInstanceID) ||
+        normalizePositiveInteger(value.dungeonInstanceID);
+    if (!instanceID) {
+        return null;
+    }
+    return {
+        instanceID,
+        roomKey: String(value.destinationDungeonRoomKey ||
+            value.dungeonCurrentRoomKey ||
+            value.dungeonRoomKey ||
+            "room:entry").trim() || "room:entry",
+        siteID: normalizePositiveInteger(value.destinationDungeonSiteID) ||
+            normalizePositiveInteger(value.dungeonSiteID) ||
+            normalizePositiveInteger(value.dungeonCurrentSiteID) ||
+            null,
+    };
+}
+function transportDistanceSquared(left, right) {
+    const dx = Number(left && left.x || 0) - Number(right && right.x || 0);
+    const dy = Number(left && left.y || 0) - Number(right && right.y || 0);
+    const dz = Number(left && left.z || 0) - Number(right && right.z || 0);
+    return (dx * dx) + (dy * dy) + (dz * dz);
+}
+function findTransportDestinationDungeonIdentity(scene, destination) {
+    const explicitIdentity = resolveTransportDungeonIdentity(destination);
+    if (explicitIdentity) {
+        return explicitIdentity;
+    }
+    const point = destination && destination.kind === "point"
+        ? destination.point
+        : null;
+    if (!scene || !point) {
+        return null;
+    }
+    const candidates = new Map();
+    for (const entity of Array.isArray(scene.staticEntities) ? scene.staticEntities : []) {
+        if (entity && entity.itemID !== null && entity.itemID !== undefined) {
+            candidates.set(String(entity.itemID), entity);
+        }
+    }
+    if (scene.staticEntitiesByID instanceof Map) {
+        for (const entity of scene.staticEntitiesByID.values()) {
+            if (entity && entity.itemID !== null && entity.itemID !== undefined) {
+                candidates.set(String(entity.itemID), entity);
+            }
+        }
+    }
+    const maximumDistanceSquared = TRANSPORT_DUNGEON_INITIALIZE_RANGE_METERS ** 2;
+    let nearest = null;
+    let nearestDistanceSquared = Number.POSITIVE_INFINITY;
+    for (const entity of candidates.values()) {
+        const identity = resolveTransportDungeonIdentity(entity);
+        if (!identity || !entity.position) {
+            continue;
+        }
+        const candidateDistanceSquared = transportDistanceSquared(point, entity.position);
+        if (candidateDistanceSquared <= maximumDistanceSquared &&
+            candidateDistanceSquared < nearestDistanceSquared) {
+            nearest = identity;
+            nearestDistanceSquared = candidateDistanceSquared;
+        }
+    }
+    return nearest;
+}
+function initializeTransportDestinationDungeon(scene, destination, session = null, options = {}) {
+    if (!scene || !destination || destination.kind !== "point" || !destination.point) {
+        return {
+            success: false,
+            errorMsg: "DUNGEON_DESTINATION_INVALID",
+        };
+    }
+    const dependencies = options.dependencies || {};
+    const landscapeSceneService = dependencies.landscapeSceneService || require(path.join(__dirname, "../../space/frontierLandscapeSceneService"));
+    const identity = findTransportDestinationDungeonIdentity(scene, destination);
+    let universeResult = null;
+    if (identity) {
+        const dungeonService = dependencies.dungeonService || require(path.join(__dirname, "../dungeon/dungeonUniverseSiteService"));
+        if (!dungeonService || typeof dungeonService.ensureSiteContentsMaterialized !== "function") {
+            return {
+                success: false,
+                errorMsg: "DUNGEON_SITE_SERVICE_UNAVAILABLE",
+            };
+        }
+        universeResult = dungeonService.ensureSiteContentsMaterialized(scene, {
+            instanceID: identity.instanceID,
+            ...(identity.siteID ? { itemID: identity.siteID, siteID: identity.siteID } : {}),
+        }, {
+            broadcast: true,
+            excludedSession: session || null,
+            markCurrentDungeonRoom: false,
+            nowMs: options.nowMs,
+            resyncSession: false,
+            roomKey: identity.roomKey,
+            roomPosition: cloneSpaceVector(destination.point),
+            session: session || null,
+            siteID: identity.siteID,
+        });
+        if (!universeResult || universeResult.success !== true) {
+            return universeResult || {
+                success: false,
+                errorMsg: "DUNGEON_DESTINATION_INITIALIZATION_FAILED",
+            };
+        }
+    }
+    let landscapeResult = null;
+    const materializeLandscape = landscapeSceneService && (typeof landscapeSceneService.materializeNearbyLandscapeSites === "function"
+        ? landscapeSceneService.materializeNearbyLandscapeSites
+        : landscapeSceneService.materializeNearbyLandscapeSite);
+    if (typeof materializeLandscape === "function") {
+        landscapeResult = materializeLandscape(scene, { position: cloneSpaceVector(destination.point), session: session || null }, {
+            broadcast: true,
+            excludedSession: session || null,
+            nowMs: options.nowMs,
+            session: session || null,
+        });
+        if (landscapeResult && landscapeResult.success !== true) {
+            return landscapeResult;
+        }
+    }
+    return {
+        success: true,
+        data: {
+            initialized: Boolean(universeResult || landscapeResult),
+            identity,
+            landscapeResult,
+            universeResult,
+        },
+    };
+}
 function parseTransportVectorTag(token, prefix) {
     const trimmed = String(token || "").trim();
     if (!trimmed) {
@@ -2574,11 +2712,21 @@ function buildTransportPointAnchor(entity, fallbackSystemID = null) {
     if (!systemID) {
         return null;
     }
+    const dungeonIdentity = resolveTransportDungeonIdentity(entity);
     return {
         kind: "point",
         systemID,
         point: cloneSpaceVector(entity.position),
         direction: cloneSpaceVector(entity.direction, { x: 1, y: 0, z: 0 }),
+        ...(dungeonIdentity
+            ? {
+                destinationStaticInstanceID: dungeonIdentity.instanceID,
+                destinationDungeonRoomKey: dungeonIdentity.roomKey,
+                ...(dungeonIdentity.siteID
+                    ? { destinationDungeonSiteID: dungeonIdentity.siteID }
+                    : {}),
+            }
+            : {}),
         label: entity.stationName ||
             entity.stargateName ||
             entity.celestialName ||
@@ -2958,6 +3106,13 @@ async function executeSessionTransportTarget(requestSession, targetDescriptor, d
             }
             crossedLocationBoundary = true;
         }
+        const destinationScene = spaceRuntime.getSceneForSession(targetSession);
+        const dungeonInitialization = initializeTransportDestinationDungeon(destinationScene, destination, targetSession, {
+            dependencies: options && options.transportDungeonInitializationDependencies,
+        });
+        if (!dungeonInitialization.success) {
+            return handledResult(chatHub, requestSession, options, `Failed to initialize the dungeon at ${destinationLabel}: ${dungeonInitialization.errorMsg || "unknown error"}.`);
+        }
         const teleportResult = spaceRuntime.teleportSessionShipToPoint(targetSession, destination.point, {
             direction: destination.direction,
             refreshOwnerSession: true,
@@ -2966,6 +3121,25 @@ async function executeSessionTransportTarget(requestSession, targetDescriptor, d
             return handledResult(chatHub, requestSession, options, teleportResult.errorMsg === "NOT_IN_SPACE"
                 ? `Failed to transport ${targetLabel}: target is not in space.`
                 : `Failed to teleport ${targetLabel} in space.`);
+        }
+        const destinationDungeonIdentity = dungeonInitialization.data && dungeonInitialization.data.identity;
+        if (destinationDungeonIdentity &&
+            destinationScene &&
+            typeof destinationScene.commitAcceptedPilotWarpDungeonContext === "function") {
+            try {
+                destinationScene.commitAcceptedPilotWarpDungeonContext(teleportResult.data && teleportResult.data.entity, {
+                    destinationStaticInstanceID: destinationDungeonIdentity.instanceID,
+                    destinationDungeonRoomKey: destinationDungeonIdentity.roomKey,
+                    destinationDungeonSiteID: destinationDungeonIdentity.siteID,
+                    roomPosition: destination.point,
+                });
+                if (typeof destinationScene.requestFinalSceneVisibilityReconciliation === "function") {
+                    destinationScene.requestFinalSceneVisibilityReconciliation();
+                }
+            }
+            catch (error) {
+                log.warn(`[ChatCommands] Teleport dungeon context commit failed for character=${Number(targetSession.characterID) || 0} instance=${destinationDungeonIdentity.instanceID}: ${error.message}`);
+            }
         }
     }
     else {
@@ -6589,6 +6763,13 @@ function handleTransportCommand(session, argumentText, chatHub, options) {
         normalizePositiveInteger(targetDescriptor.systemID)) {
         return handledResult(chatHub, session, options, "Runtime entities can only be moved within their current solar system.");
     }
+    const destinationScene = spaceRuntime.ensureScene(targetDescriptor.systemID);
+    const dungeonInitialization = initializeTransportDestinationDungeon(destinationScene, destination, null, {
+        dependencies: options && options.transportDungeonInitializationDependencies,
+    });
+    if (!dungeonInitialization.success) {
+        return handledResult(chatHub, session, options, `Failed to initialize the dungeon at ${destinationLabel}: ${dungeonInitialization.errorMsg || "unknown error"}.`);
+    }
     const entityMoveResult = spaceRuntime.teleportDynamicEntityToPoint(targetDescriptor.systemID, targetDescriptor.entity.itemID, destination.point, {
         direction: destination.direction,
         refreshOwnerSession: false,
@@ -7772,6 +7953,13 @@ module.exports = {
     executeChatCommand,
     getGmWeaponsSeedPlan,
     getPropulsionCommandItemTypes,
+    _testing: {
+        buildTransportPointAnchor,
+        executeSessionTransportTarget,
+        findTransportDestinationDungeonIdentity,
+        initializeTransportDestinationDungeon,
+        resolveTransportDungeonIdentity,
+    },
     //testing: exported for runtime.js to send TiDi notifications on system entry/leave
     sendTimeDilationNotificationToSession,
     sendTimeDilationNotificationToSystem,

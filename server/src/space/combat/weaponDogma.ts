@@ -120,6 +120,18 @@ const WEAPON_FAMILY_BY_MODULE_GROUP_ID = Object.freeze({
   [PRECURSOR_WEAPON_GROUP_ID]: "precursorTurret",
   [VORTON_PROJECTOR_GROUP_ID]: "vortonProjector",
 });
+// Frontier Creation weapons use module and charge groups which deliberately do
+// not overlap the legacy EVE turret groups.  Their client-side skill-shot
+// profiles still consume the ordinary turret damage/capacitor snapshot, so
+// identify them by their stable SDE type IDs before applying the legacy group
+// classification below.
+const WEAPON_FAMILY_BY_SKILL_SHOT_TYPE_ID = Object.freeze({
+  94076: "projectileTurret", // Skill-Shot Cannon
+  95317: "laserTurret", // Cutting Laser / Knife
+  95503: "laserTurret", // Crude Extractor
+  95753: "projectileTurret", // Stuttergun
+  95778: "laserTurret", // Needle
+});
 const WEAPON_FAMILY_BY_CHARGE_GROUP_ID = Object.freeze({
   [PROJECTILE_AMMO_GROUP_ID]: "projectileTurret",
   [HYBRID_CHARGE_GROUP_ID]: "hybridTurret",
@@ -829,6 +841,10 @@ function resolveWeaponFamily(moduleItem, chargeItem = null) {
   const moduleTypeID = toInt(effectiveModuleItem && effectiveModuleItem.typeID, 0);
   if (moduleTypeID <= 0) {
     return null;
+  }
+  const skillShotFamily = WEAPON_FAMILY_BY_SKILL_SHOT_TYPE_ID[moduleTypeID] || null;
+  if (skillShotFamily) {
+    return skillShotFamily;
   }
   const moduleGroupID = toInt(effectiveModuleItem && effectiveModuleItem.groupID, 0);
   const chargeGroupID = toInt(chargeItem && chargeItem.groupID, 0);

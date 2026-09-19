@@ -35,6 +35,9 @@ const SITE_ACTIVATIONS = new Set([
   "triggered",
   "locator",
 ]);
+const SITE_BUILDUP_KINDS = new Set([
+  "inculcator_foundation",
+]);
 
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -114,20 +117,6 @@ function normalizeSeparationLightSeconds(value, fieldName) {
   return { min, max };
 }
 
-function normalizeWarpIn(value, fieldName) {
-  const source = assertRecord(value, fieldName);
-  return {
-    boundaryRadiusMeters: positiveNumber(
-      source.boundaryRadiusMeters,
-      `${fieldName}.boundaryRadiusMeters`,
-    ),
-    collisionClearanceMeters: nonNegativeNumber(
-      source.collisionClearanceMeters,
-      `${fieldName}.collisionClearanceMeters`,
-    ),
-  };
-}
-
 function requiredBoolean(value, fieldName) {
   if (typeof value !== "boolean") {
     throw new TypeError(`${fieldName} must be a boolean`);
@@ -201,6 +190,50 @@ function normalizeOptionalEntityDescriptors(value, fieldName) {
   ));
 }
 
+function normalizeSiteBuildup(value, fieldName) {
+  if (value == null) {
+    return null;
+  }
+  const source = assertRecord(value, fieldName);
+  const kind = nonEmptyText(source.kind, `${fieldName}.kind`).toLowerCase();
+  if (!SITE_BUILDUP_KINDS.has(kind)) {
+    throw new TypeError(`${fieldName}.kind is unsupported: ${kind}`);
+  }
+  const seenPhaseKeys = new Set();
+  const phases = assertArray(source.phases, `${fieldName}.phases`)
+    .map((rawPhase, phaseIndex) => {
+      const phaseField = `${fieldName}.phases[${phaseIndex}]`;
+      const phase = assertRecord(rawPhase, phaseField);
+      const key = nonEmptyText(phase.key, `${phaseField}.key`).toLowerCase();
+      if (seenPhaseKeys.has(key)) {
+        throw new TypeError(`${fieldName}.phases contains duplicate key: ${key}`);
+      }
+      seenPhaseKeys.add(key);
+      return {
+        key,
+        durationSeconds: positiveNumber(
+          phase.durationSeconds,
+          `${phaseField}.durationSeconds`,
+        ),
+      };
+    });
+  if (phases.length <= 0) {
+    throw new TypeError(`${fieldName}.phases must contain at least one phase`);
+  }
+  const completionEntity = normalizeEntityDescriptor(
+    source.completionEntity,
+    `${fieldName}.completionEntity`,
+  );
+  if (completionEntity.count !== 1) {
+    throw new TypeError(`${fieldName}.completionEntity.count must be 1`);
+  }
+  return {
+    kind,
+    phases,
+    completionEntity,
+  };
+}
+
 function deepFreeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) {
     return value;
@@ -269,9 +302,9 @@ function validateConfig(rawConfig) {
       rawDefaults.siteSeparationLightSeconds,
       "defaults.siteSeparationLightSeconds",
     ),
-    warpIn: normalizeWarpIn(
-      rawDefaults.warpIn,
-      "defaults.warpIn",
+    siteWarpInDistanceMeters: positiveNumber(
+      rawDefaults.siteWarpInDistanceMeters,
+      "defaults.siteWarpInDistanceMeters",
     ),
     maxNpcEntriesPerController: positiveInteger(
       rawDefaults.maxNpcEntriesPerController,
@@ -321,9 +354,6 @@ function validateConfig(rawConfig) {
           siteType.separationLightSeconds,
           `${fieldName}.separationLightSeconds`,
         ),
-      warpIn: siteType.warpIn == null
-        ? cloneValue(defaults.warpIn)
-        : normalizeWarpIn(siteType.warpIn, `${fieldName}.warpIn`),
       allowsNpcWaves: requiredBoolean(
         siteType.allowsNpcWaves,
         `${fieldName}.allowsNpcWaves`,
@@ -694,8 +724,12 @@ function validateConfig(rawConfig) {
       site.entities,
       `${fieldName}.entities`,
     );
+    const buildup = normalizeSiteBuildup(site.buildup, `${fieldName}.buildup`);
     if (entities.length > 0 && !siteType.allowsEntitySpawns) {
       throw new TypeError(`${fieldName}.entities are disallowed for this site type`);
+    }
+    if (buildup && !siteType.allowsEntitySpawns) {
+      throw new TypeError(`${fieldName}.buildup is disallowed for this site type`);
     }
     sites[String(dungeonID)] = {
       name: nonEmptyText(site.name, `${fieldName}.name`),
@@ -715,9 +749,12 @@ function validateConfig(rawConfig) {
           site.separationLightSeconds,
           `${fieldName}.separationLightSeconds`,
         ),
-      warpIn: site.warpIn == null
-        ? cloneValue(siteType.warpIn)
-        : normalizeWarpIn(site.warpIn, `${fieldName}.warpIn`),
+      warpInDistanceMeters: site.warpInDistanceMeters == null
+        ? defaults.siteWarpInDistanceMeters
+        : positiveNumber(
+          site.warpInDistanceMeters,
+          `${fieldName}.warpInDistanceMeters`,
+        ),
       entryBeaconTypeID: positiveInteger(
         site.entryBeaconTypeID,
         `${fieldName}.entryBeaconTypeID`,
@@ -726,6 +763,7 @@ function validateConfig(rawConfig) {
       tags: normalizeStringArray(site.tags, `${fieldName}.tags`),
       spawners,
       ...(site.entities != null ? { entities } : {}),
+      ...(buildup ? { buildup } : {}),
     };
   }
   if (Object.keys(sites).length <= 0) {
@@ -1149,6 +1187,51 @@ function buildConfiguredEntityProps(
     pushDescriptor(descriptor, { x: 0, y: 0, z: 0 }, "site", descriptorIndex);
   });
 
+  // A configured entity spawner may be intentionally added to a site even
+  // when the retail template does not contain the controller object. Expand
+  // only the missing configured instances so authored controllers remain the
+  // positional authority and are never duplicated.
+  const authoredControllerCountByTypeID = new Map();
+  for (const controller of flattenedObjects) {
+    const typeID = toPositiveInt(controller && controller.typeID, 0);
+    if (typeID <= 0) {
+      continue;
+    }
+    authoredControllerCountByTypeID.set(
+      typeID,
+      (authoredControllerCountByTypeID.get(typeID) || 0) + 1,
+    );
+  }
+  const configuredSpawners = Array.isArray(siteConfiguration.spawners)
+    ? siteConfiguration.spawners
+    : [];
+  configuredSpawners.forEach((configuredSpawner, configuredSpawnerIndex) => {
+    const typeID = toPositiveInt(configuredSpawner && configuredSpawner.typeID, 0);
+    const spawnerType = config.spawnerTypes[String(typeID)] || null;
+    const composition = spawnerType && Array.isArray(spawnerType.entityComposition)
+      ? spawnerType.entityComposition
+      : [];
+    if (composition.length <= 0) {
+      return;
+    }
+    const missingCount = Math.max(
+      0,
+      toPositiveInt(configuredSpawner.count, 0) -
+        (authoredControllerCountByTypeID.get(typeID) || 0),
+    );
+    for (let instanceIndex = 0; instanceIndex < missingCount; instanceIndex += 1) {
+      const baseOffset = formationOffset(instanceIndex, missingCount, spacing);
+      composition.forEach((descriptor, descriptorIndex) => {
+        pushDescriptor(
+          descriptor,
+          baseOffset,
+          `configured-spawner-${configuredSpawnerIndex + 1}-${typeID}-${instanceIndex + 1}`,
+          descriptorIndex,
+        );
+      });
+    }
+  });
+
   for (const controller of flattenedObjects) {
     const spawnerType = config.spawnerTypes[String(controller.typeID)] || null;
     const composition = spawnerType && Array.isArray(spawnerType.entityComposition)
@@ -1275,6 +1358,89 @@ function buildConfiguredPopulationHints(template, resolvedSiteConfiguration = nu
     })
     .filter((entry) => entry.faction);
 
+  // The config is also the fallback authority for synthesized or partially
+  // decoded templates. Preserve every authored controller, then create only
+  // the missing configured NPC-wave instances so each listed spawner has a
+  // reachable runtime encounter without double-spawning retail content.
+  const remainingAuthoredCountByTypeID = new Map();
+  for (const controller of controllers) {
+    remainingAuthoredCountByTypeID.set(
+      controller.typeID,
+      (remainingAuthoredCountByTypeID.get(controller.typeID) || 0) + 1,
+    );
+  }
+  const syntheticControllerSpecs: any[] = [];
+  const configuredSpawners = Array.isArray(siteConfiguration.spawners)
+    ? siteConfiguration.spawners
+    : [];
+  configuredSpawners.forEach((configuredSpawner, configuredSpawnerIndex) => {
+    const spawnerType = config.spawnerTypes[String(configuredSpawner.typeID)] || null;
+    if (!spawnerType || spawnerType.isNpcWave !== true) {
+      return;
+    }
+    const configuredCount = toPositiveInt(configuredSpawner.count, 0);
+    const authoredCount = remainingAuthoredCountByTypeID.get(spawnerType.typeID) || 0;
+    const consumedAuthoredCount = Math.min(configuredCount, authoredCount);
+    remainingAuthoredCountByTypeID.set(
+      spawnerType.typeID,
+      authoredCount - consumedAuthoredCount,
+    );
+    for (
+      let configuredCopyIndex = consumedAuthoredCount;
+      configuredCopyIndex < configuredCount;
+      configuredCopyIndex += 1
+    ) {
+      syntheticControllerSpecs.push({
+        configuredSpawner,
+        configuredSpawnerIndex,
+        configuredCopyIndex,
+        spawnerType,
+      });
+    }
+  });
+  const syntheticControllerCount = syntheticControllerSpecs.length;
+  syntheticControllerSpecs.forEach((spec, syntheticIndex) => {
+    const factionKey = spec.spawnerType.defaultFaction || siteConfiguration.factionKey;
+    const faction = factionKey ? config.factions[factionKey] || null : null;
+    if (!faction) {
+      return;
+    }
+    const slotsPerRing = 12;
+    const ringIndex = Math.floor(syntheticIndex / slotsPerRing);
+    const slotIndex = syntheticIndex % slotsPerRing;
+    const slotCount = Math.min(
+      slotsPerRing,
+      Math.max(1, syntheticControllerCount - (ringIndex * slotsPerRing)),
+    );
+    const angle = (Math.PI * 2 * slotIndex) / slotCount;
+    const radius = 25_000 + (ringIndex * 10_000);
+    const syntheticKey = `configured-${spec.configuredSpawnerIndex + 1}-` +
+      `${spec.spawnerType.typeID}-${spec.configuredCopyIndex + 1}`;
+    controllers.push({
+      object: {
+        guardCommand: {
+          objectTriggerSpawn: spec.configuredSpawner.activation === "triggered" ? 1 : 0,
+        },
+      },
+      objectID: 0,
+      authoredIndex: syntheticKey,
+      roomID: null,
+      typeID: spec.spawnerType.typeID,
+      absolutePosition: addPositions(entryPosition, {
+        x: Math.cos(angle) * radius,
+        y: ((syntheticIndex % 3) - 1) * config.defaults.formationSpacingMeters,
+        z: Math.sin(angle) * radius,
+      }),
+      key: `frontier-controller:${siteConfiguration.dungeonID}:${syntheticKey}`,
+      spawnerType: spec.spawnerType,
+      factionKey,
+      faction,
+      configuredActivation: spec.configuredSpawner.activation,
+      configuredRawTriggerValues: cloneValue(spec.configuredSpawner.rawTriggerValues || []),
+      frontierDungeonSyntheticController: true,
+    });
+  });
+
   const controllerByObjectID = new Map();
   for (const controller of controllers) {
     if (controller.objectID > 0) {
@@ -1297,6 +1463,39 @@ function buildConfiguredPopulationHints(template, resolvedSiteConfiguration = nu
       .find((entry) => entry && entry.key !== controller.key) || null;
     if (prerequisite) {
       prerequisiteByControllerKey.set(controller.key, prerequisite);
+    }
+  }
+
+  let previousReachableController = null;
+  for (const controller of controllers) {
+    if (
+      controller.frontierDungeonSyntheticController === true &&
+      controller.configuredActivation === "triggered" &&
+      previousReachableController
+    ) {
+      prerequisiteByControllerKey.set(controller.key, previousReachableController);
+    }
+    previousReachableController = controller;
+  }
+
+  // Retail trigger graphs occasionally contain malformed cycles. A cycle has
+  // no first wave, so none of its controllers can ever fire. Promote the first
+  // controller encountered on every cyclic/unrooted path to on-load; the
+  // remaining prerequisite edges then retain their authored wave ordering.
+  for (const controller of controllers) {
+    const visited = new Set([controller.key]);
+    let current = controller;
+    while (current) {
+      const prerequisite = prerequisiteByControllerKey.get(current.key) || null;
+      if (!prerequisite) {
+        break;
+      }
+      if (visited.has(prerequisite.key)) {
+        prerequisiteByControllerKey.delete(controller.key);
+        break;
+      }
+      visited.add(prerequisite.key);
+      current = prerequisite;
     }
   }
 
@@ -1333,10 +1532,13 @@ function buildConfiguredPopulationHints(template, resolvedSiteConfiguration = nu
     );
     const rawTriggerValues = controller.objectID > 0
       ? triggerAuthority.rawTinyIntValuesByObjectID.get(controller.objectID) || []
-      : [];
+      : cloneValue(controller.configuredRawTriggerValues || []);
     const notes = [
-      `Authored Frontier controller typeID=${controller.typeID} ` +
-        `objectID=${controller.objectID || "unknown"}.`,
+      controller.frontierDungeonSyntheticController === true
+        ? `Configured fallback controller typeID=${controller.typeID} ` +
+          `activation=${controller.configuredActivation || "initial"}.`
+        : `Authored Frontier controller typeID=${controller.typeID} ` +
+          `objectID=${controller.objectID || "unknown"}.`,
     ];
     if (rawTriggerValues.length > 0) {
       notes.push(
@@ -1402,10 +1604,14 @@ function buildConfiguredPopulationHints(template, resolvedSiteConfiguration = nu
     frontierDungeonSeparationLightSeconds: cloneValue(
       siteConfiguration.separationLightSeconds,
     ),
-    frontierDungeonWarpIn: cloneValue(siteConfiguration.warpIn),
+    frontierDungeonWarpInDistanceMeters:
+      siteConfiguration.warpInDistanceMeters,
     frontierFactionKey: siteConfiguration.factionKey,
     frontierFactionTag: siteConfiguration.factionTag,
     frontierDungeonTags: cloneValue(siteConfiguration.tags),
+    ...(siteConfiguration.buildup
+      ? { frontierDungeonBuildup: cloneValue(siteConfiguration.buildup) }
+      : {}),
     encounters,
     ...(environmentProps.length > 0
       ? {
@@ -1493,6 +1699,13 @@ function decorateTemplate(template) {
 
   return {
     ...template,
+    // The authored entry object and its display name are frequently reused by
+    // unrelated Frontier dungeons. Once a dungeon has an exact config row,
+    // that row is the naming authority; retaining the authored resolvedName
+    // can otherwise surface labels such as "Landscape Refinery 02" on an
+    // Okryda Domination Cluster that merely shares entry type 83889.
+    resolvedName: siteConfiguration.name,
+    dungeonName: siteConfiguration.name,
     frontierDungeonSpawnConfigured: true,
     frontierDungeonSpawnConfigVersion: config.schemaVersion,
     frontierDungeonSpawnFrequency: siteConfiguration.spawnFrequency,
@@ -1502,7 +1715,8 @@ function decorateTemplate(template) {
     frontierDungeonSeparationLightSeconds: cloneValue(
       siteConfiguration.separationLightSeconds,
     ),
-    frontierDungeonWarpIn: cloneValue(siteConfiguration.warpIn),
+    frontierDungeonWarpInDistanceMeters:
+      siteConfiguration.warpInDistanceMeters,
     frontierFactionKey: siteConfiguration.factionKey,
     frontierFactionTag: siteConfiguration.factionTag,
     frontierDungeonTags: cloneValue(siteConfiguration.tags),

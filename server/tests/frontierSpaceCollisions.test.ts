@@ -29,6 +29,7 @@ const {
 } = require("../src/space/destiny/presentation/specialFxPayloads");
 const destinyActions = require("../src/space/destiny/stream/actions");
 const runtime = require("../src/space/runtime");
+const npcBehaviorLoop = require("../src/space/npc/npcBehaviorLoop");
 
 const getStationUndockSpawnState =
   runtime._testing.getStationUndockSpawnStateForTesting;
@@ -335,7 +336,7 @@ test("direct weapons are occluded by the nearest physical entity", () => {
     position: { x: 0, y: 0, z: 0 },
     radius: 10,
   });
-  const target = buildShip({
+  const target: any = buildShip({
     itemID: 1002,
     position: { x: 100, y: 0, z: 0 },
     radius: 10,
@@ -364,6 +365,167 @@ test("direct weapons are occluded by the nearest physical entity", () => {
   assert.equal(occlusion.entityID, nearestBlocker.itemID);
   assert.equal(occlusion.kind, "structure");
   assert.ok(Math.abs(occlusion.position.x - 35) < 1e-9);
+});
+
+test("weapon occlusion rotates dungeon collision compounds with dunRotation", () => {
+  const source = buildShip({
+    itemID: 1051,
+    position: { x: 0, y: 0, z: 0 },
+    radius: 1,
+  });
+  const target: any = buildShip({
+    itemID: 1052,
+    position: { x: 100, y: 0, z: 0 },
+    radius: 1,
+  });
+  const rotatedWall = {
+    itemID: 1053,
+    kind: "siteEnvironmentProp",
+    position: { x: 50, y: 20, z: 0 },
+    radius: 60,
+    dunRotation: [0, 0, 90],
+    collisionProfile: {
+      boundingRadius: 60,
+      balls: [],
+      capsules: [],
+      boxes: [{
+        corner: { x: -50, y: -2, z: -2 },
+        edgeX: { x: 100, y: 0, z: 0 },
+        edgeY: { x: 0, y: 4, z: 0 },
+        edgeZ: { x: 0, y: 0, z: 4 },
+      }],
+    },
+  };
+  const scene = {
+    staticEntities: [rotatedWall],
+    dynamicEntities: new Map([
+      [source.itemID, source],
+      [target.itemID, target],
+    ]),
+  };
+
+  const occlusion = findWeaponLineOccluder(scene, source, target);
+
+  assert.equal(occlusion.entityID, rotatedWall.itemID);
+  assert.equal(occlusion.primitiveType, "box");
+});
+
+test("authoritative weapon lines include the bounded visual hull of dungeon structures", () => {
+  const source = buildShip({
+    itemID: 1061,
+    nativeNpc: true,
+    position: { x: 0, y: 0, z: 0 },
+    radius: 1,
+  });
+  const target = buildShip({
+    itemID: 1062,
+    position: { x: 10_000, y: 0, z: 0 },
+    radius: 1,
+  });
+  const dungeonWall = {
+    itemID: 1063,
+    kind: "siteEnvironmentProp",
+    dungeonMaterializedEnvironment: true,
+    position: { x: 5_000, y: 5_300, z: 0 },
+    radius: 500,
+    collisionProfile: {
+      boundingRadius: 5_000,
+      balls: [],
+      boxes: [],
+      capsules: [],
+      hasConvexMeshes: true,
+    },
+  };
+  const scene = {
+    staticEntities: [dungeonWall],
+    dynamicEntities: new Map([
+      [source.itemID, source],
+      [target.itemID, target],
+    ]),
+  };
+
+  const occlusion = findWeaponLineOccluder(scene, source, target);
+
+  assert.equal(occlusion.entityID, dungeonWall.itemID);
+  assert.equal(occlusion.primitiveType, "sphereFallback");
+  assert.equal(occlusion.occlusionPaddingMeters, 500);
+  const playerWeaponOcclusion = findWeaponLineOccluder(
+    scene,
+    { ...source, nativeNpc: false },
+    target,
+    { includeDungeonVisualHull: true },
+  );
+  assert.equal(playerWeaponOcclusion.entityID, dungeonWall.itemID);
+  assert.equal(playerWeaponOcclusion.occlusionPaddingMeters, 500);
+  assert.equal(
+    findWeaponLineOccluder(scene, { ...source, nativeNpc: false }, target),
+    null,
+    "visibility rays must retain exact authored collision geometry",
+  );
+});
+
+test("authoritative weapon lines use authored bounds after sparse dungeon primitives miss", () => {
+  const source = buildShip({
+    itemID: 1064,
+    nativeNpc: true,
+    position: { x: 0, y: 0, z: 0 },
+    radius: 1,
+  });
+  const target = buildShip({
+    itemID: 1065,
+    position: { x: 10_000, y: 0, z: 0 },
+    radius: 1,
+  });
+  const sparseDungeonStructure = {
+    itemID: 1066,
+    kind: "siteEnvironmentProp",
+    dungeonMaterializedEnvironment: true,
+    position: { x: 5_000, y: 4_000, z: 0 },
+    radius: 500,
+    collisionProfile: {
+      boundingRadius: 5_000,
+      balls: [],
+      boxes: [{
+        corner: { x: -100, y: 900, z: -100 },
+        edgeX: { x: 200, y: 0, z: 0 },
+        edgeY: { x: 0, y: 200, z: 0 },
+        edgeZ: { x: 0, y: 0, z: 200 },
+      }],
+      capsules: [],
+    },
+  };
+  const scene = {
+    staticEntities: [sparseDungeonStructure],
+    dynamicEntities: new Map([
+      [source.itemID, source],
+      [target.itemID, target],
+    ]),
+  };
+
+  const occlusion = findWeaponLineOccluder(scene, source, target);
+
+  assert.equal(occlusion.entityID, sparseDungeonStructure.itemID);
+  assert.equal(occlusion.primitiveType, "profileBoundsFallback");
+  assert.equal(
+    findWeaponLineOccluder(
+      scene,
+      { ...source, nativeNpc: false },
+      target,
+      { includeDungeonVisualHull: true },
+    ).entityID,
+    sparseDungeonStructure.itemID,
+    "player and NPC damage rays share the conservative authored envelope",
+  );
+
+  const sourceInsideEnvelope = {
+    ...source,
+    position: { ...sparseDungeonStructure.position },
+  };
+  assert.equal(
+    findWeaponLineOccluder(scene, sourceInsideEnvelope, target),
+    null,
+    "weapons fired from inside the envelope must keep using precise primitives",
+  );
 });
 
 test("direct weapon occlusion ignores off-axis and explicitly non-physical objects", () => {
@@ -402,30 +564,204 @@ test("direct weapon occlusion ignores off-axis and explicitly non-physical objec
   assert.equal(findWeaponLineOccluder(scene, source, target), null);
 });
 
-test("the shared weapon damage path rejects damage through an occluder", () => {
+test("NPC target selection and locking obey physical line-of-fire obstruction", () => {
+  const {
+    SolarSystemScene,
+  } = require("../src/space/runtime")._testing;
+  const npc: any = buildShip({
+    itemID: 1101,
+    npcEntityType: "npc",
+    nativeNpc: true,
+    pilotCharacterID: 0,
+    characterID: 0,
+    ownerID: 1000125,
+    bubbleID: 7,
+    systemID: 30000001,
+    position: { x: 0, y: 0, z: 0 },
+    maxTargetRange: 1_000,
+    maxLockedTargets: 2,
+    scanResolution: 1_000,
+  });
+  const eventOrder: string[] = [];
+  const targetSession: Record<string, any> = {
+    characterID: 90000002,
+    sendNotification() {
+      eventOrder.push("target-notification");
+    },
+    _space: {
+      shipID: 1102,
+      initialStateSent: true,
+    },
+  };
+  const target = buildShip({
+    itemID: 1102,
+    pilotCharacterID: targetSession.characterID,
+    session: targetSession,
+    bubbleID: 7,
+    systemID: 30000001,
+    position: { x: 100, y: 0, z: 0 },
+    signatureRadius: 40,
+  });
+  const blocker = {
+    itemID: 1103,
+    kind: "authoredSpaceProp",
+    bubbleID: 7,
+    systemID: 30000001,
+    position: { x: 50, y: 0, z: 0 },
+    radius: 15,
+  };
+  const scene = Object.create(SolarSystemScene.prototype);
+  scene.dynamicEntities = new Map([
+    [npc.itemID, npc],
+    [target.itemID, target],
+  ]);
+  scene.staticEntities = [blocker];
+  scene.staticEntitiesByID = new Map([[blocker.itemID, blocker]]);
+  scene.sessions = new Map([[1, targetSession]]);
+  scene.nextTargetSequence = 1;
+  scene._tickTargetingStatsCache = new Map();
+  scene.getCurrentSimTimeMs = () => 1_000;
+  scene.canSessionDetectDynamicEntity = () => true;
+  scene.revealCombatSourceToTargetSession = (source, victim, options) => {
+    eventOrder.push("combat-reveal");
+    assert.equal(source, npc);
+    assert.equal(victim, target);
+    assert.equal(options.reason, "npc-target-lock");
+    return { revealed: true, materialized: true, delivered: true };
+  };
+
+  assert.equal(
+    npcBehaviorLoop.__testing.isValidCombatTarget(npc, target, { scene }),
+    false,
+  );
+  const pseudoSession = {
+    _space: { shipID: npc.itemID, systemID: 30000001 },
+  };
+  const blockedLock = scene.validateTargetLockRequest(
+    pseudoSession,
+    npc,
+    target,
+  );
+  assert.equal(blockedLock.success, false);
+  assert.equal(blockedLock.errorMsg, "TARGET_OBSTRUCTED");
+  assert.equal(blockedLock.data.occluderID, blocker.itemID);
+
+  blocker.position.y = 100;
+  assert.equal(
+    npcBehaviorLoop.__testing.isValidCombatTarget(npc, target, { scene }),
+    true,
+  );
+  const lock = scene.finalizeTargetLock(npc, target, { nowMs: 1_000 });
+  assert.equal(lock.success, true);
+  assert.deepEqual(
+    eventOrder,
+    ["combat-reveal", "target-notification"],
+    "the attacker ball must resolve before the victim receives target events",
+  );
+
+  npc.activeModuleEffects = new Map([[9001, {
+    moduleID: 9001,
+    targetID: target.itemID,
+    isGeneric: false,
+  }]]);
+  blocker.position.y = 0;
+  scene.validateNpcTargetLocksBeforeCombat(1_001);
+  assert.deepEqual(scene.getTargetsForEntity(npc), []);
+  assert.equal(
+    npc.activeModuleEffects.size,
+    0,
+    "occluded NPC effects must stop before their next combat cycle",
+  );
+
+  blocker.position.y = 100;
+  assert.equal(scene.finalizeTargetLock(npc, target, { nowMs: 1_002 }).success, true);
+  npc.npcBehaviorProfile = {
+    retainTargetLockWhenOccluded: true,
+    fireThroughOccluders: false,
+  };
+  npc.activeModuleEffects = new Map([[9001, {
+    moduleID: 9001,
+    targetID: target.itemID,
+    isGeneric: false,
+  }]]);
+  blocker.position.y = 0;
+  scene.canSessionDetectDynamicEntity = () => false;
+  assert.equal(
+    npcBehaviorLoop.__testing.isValidCombatTarget(npc, target, {
+      scene,
+      allowOccluded: true,
+    }),
+    true,
+  );
+  scene.validateNpcTargetLocksBeforeCombat(1_003);
+  assert.deepEqual(
+    scene.getTargetsForEntity(npc),
+    [target.itemID],
+    "the profile can preserve an already completed occluded target lock",
+  );
+  assert.equal(
+    npc.activeModuleEffects.size,
+    1,
+    "retaining the lock keeps the active effect alive without granting fire-through",
+  );
+
+  scene.canSessionDetectDynamicEntity = () => true;
+  const blockedReacquisition = scene.validateTargetLockRequest(
+    pseudoSession,
+    npc,
+    target,
+  );
+  assert.equal(
+    blockedReacquisition.errorMsg,
+    "TARGET_OBSTRUCTED",
+    "lock retention does not permit acquiring a new lock through an occluder",
+  );
+});
+
+test("the shared weapon damage path redirects damage and reports the obstruction", () => {
   const {
     applyWeaponDamageToTargetForTesting,
   } = require("../src/space/runtime")._testing;
+  const attackerNotifications: any[] = [];
+  const defenderNotifications: any[] = [];
   const source = buildShip({
     itemID: 1001,
     position: { x: 0, y: 0, z: 0 },
     radius: 10,
+    session: {
+      sendNotification(...args) {
+        attackerNotifications.push(args);
+      },
+    },
   });
-  const target = buildShip({
+  const target: any = buildShip({
     itemID: 1002,
     position: { x: 100, y: 0, z: 0 },
     radius: 10,
     shieldCapacity: 100,
     armorHP: 100,
     structureHP: 100,
+    session: {
+      sendNotification(...args) {
+        defenderNotifications.push(args);
+      },
+    },
   });
-  const blocker = buildShip({
+  const blocker: any = buildShip({
     itemID: 1003,
     position: { x: 50, y: 0, z: 0 },
     radius: 10,
+    itemName: "Bulkhead",
+    shieldCapacity: 100,
+    armorHP: 100,
+    structureHP: 100,
   });
   const scene = {
     getAllVisibleEntities: () => [source, target, blocker],
+    getCurrentSimTimeMs: () => 1_000,
+    getCurrentDestinyStamp: () => 10,
+    sessions: new Map(),
+    staticEntitiesByID: new Map(),
   };
 
   const result = applyWeaponDamageToTargetForTesting(
@@ -436,9 +772,175 @@ test("the shared weapon damage path rejects damage through an occluder", () => {
     1_000,
   );
 
+  assert.equal(result.damageResult.success, true);
+  assert.equal(result.destroyResult, null);
+  assert.equal(result.occlusion.entityID, blocker.itemID);
+  assert.equal(result.impactTargetEntity, blocker);
+  assert.equal(result.intendedTargetEntity, target);
+  assert.equal(result.redirected, true);
+  assert.ok(blocker.conditionState.shieldCharge < 1);
+  assert.equal(target.conditionState, undefined);
+  assert.equal(attackerNotifications.length, 1);
+  assert.equal(attackerNotifications[0][0], "OnRemoteMessage");
+  assert.equal(attackerNotifications[0][2][0], "CustomNotify");
+  assert.match(
+    attackerNotifications[0][2][1].entries.find(([key]) => key === "notify")[1],
+    /Weapon fire obstructed by Bulkhead/,
+  );
+  assert.equal(defenderNotifications.length, 1);
+  assert.match(
+    defenderNotifications[0][2][1].entries.find(([key]) => key === "notify")[1],
+    /Incoming weapon fire was obstructed by Bulkhead/,
+  );
+});
+
+test("NPC behavior profiles cannot permit firing through physical occluders", () => {
+  const {
+    applyWeaponDamageToTargetForTesting,
+    buildMissileDynamicEntityForTesting,
+  } = require("../src/space/runtime")._testing;
+  const source = buildShip({
+    itemID: 1011,
+    nativeNpc: true,
+    npcBehaviorProfile: {
+      fireThroughOccluders: true,
+      retainTargetLockWhenOccluded: false,
+    },
+    position: { x: 0, y: 0, z: 0 },
+    radius: 10,
+  });
+  const target: any = buildShip({
+    itemID: 1012,
+    position: { x: 100, y: 0, z: 0 },
+    radius: 10,
+    shieldCapacity: 100,
+    armorHP: 100,
+    structureHP: 100,
+  });
+  const blocker: any = buildShip({
+    itemID: 1013,
+    position: { x: 50, y: 0, z: 0 },
+    radius: 10,
+    shieldCapacity: 100,
+    armorHP: 100,
+    structureHP: 100,
+  });
+  const scene = {
+    getAllVisibleEntities: () => [source, target, blocker],
+    getCurrentSimTimeMs: () => 1_000,
+    getCurrentDestinyStamp: () => 10,
+    sessions: new Map(),
+    staticEntitiesByID: new Map(),
+  };
+
+  const result = applyWeaponDamageToTargetForTesting(
+    scene,
+    source,
+    target,
+    { em: 50 },
+    1_000,
+  );
+
+  assert.equal(result.occlusion.entityID, blocker.itemID);
+  assert.equal(result.damageResult.success, true);
+  assert.equal(result.impactTargetEntity, blocker);
+  assert.equal(target.conditionState, undefined);
+  assert.ok(blocker.conditionState.shieldCharge < 1);
+
+  const missile = buildMissileDynamicEntityForTesting(
+    source,
+    target,
+    {
+      chargeTypeID: 5_001,
+      maxVelocity: 1_000,
+      flightTimeMs: 10_000,
+    },
+    1_000,
+  );
+  assert.equal(missile.npcFireThroughOccluders, false);
+});
+
+test("native NPC damage cannot bypass the shared occlusion gate", () => {
+  const {
+    applyWeaponDamageToTargetForTesting,
+  } = require("../src/space/runtime")._testing;
+  const source = buildShip({
+    itemID: 1071,
+    nativeNpc: true,
+    position: { x: 0, y: 0, z: 0 },
+    radius: 10,
+  });
+  const target: any = buildShip({
+    itemID: 1072,
+    position: { x: 100, y: 0, z: 0 },
+    radius: 10,
+    shieldCapacity: 100,
+    armorHP: 100,
+    structureHP: 100,
+  });
+  const blocker = {
+    itemID: 1073,
+    kind: "siteEnvironmentProp",
+    position: { x: 50, y: 0, z: 0 },
+    radius: 10,
+  };
+  const scene = {
+    getAllVisibleEntities: () => [source, target, blocker],
+  };
+
+  const result = applyWeaponDamageToTargetForTesting(
+    scene,
+    source,
+    target,
+    { em: 50 },
+    1_000,
+    { skipWeaponOcclusion: true },
+  );
+
   assert.equal(result.damageResult, null);
   assert.equal(result.destroyResult, null);
   assert.equal(result.occlusion.entityID, blocker.itemID);
+  assert.equal(result.impactTargetEntity, blocker);
+  assert.equal(target.conditionState, undefined);
+});
+
+test("the shared weapon damage path reveals a source that can hit the player", () => {
+  const {
+    applyWeaponDamageToTargetForTesting,
+  } = require("../src/space/runtime")._testing;
+  const source = buildShip({ itemID: 1001 });
+  const target = buildShip({
+    itemID: 1002,
+    shieldCapacity: 100,
+    armorHP: 100,
+    structureHP: 100,
+  });
+  const revealCalls: any[] = [];
+  const scene = {
+    getCurrentSimTimeMs: () => 1000,
+    getCurrentDestinyStamp: () => 10,
+    sessions: new Map(),
+    staticEntitiesByID: new Map(),
+    revealCombatSourceToTargetSession(attacker, victim, options) {
+      revealCalls.push({ attacker, victim, options });
+      return { revealed: true, delivered: true };
+    },
+  };
+
+  const result = applyWeaponDamageToTargetForTesting(
+    scene,
+    source,
+    target,
+    { em: 10 },
+    1000,
+    { skipWeaponOcclusion: true },
+  );
+
+  assert.equal(result.damageResult.success, true);
+  assert.equal(revealCalls.length, 1);
+  assert.equal(revealCalls[0].attacker, source);
+  assert.equal(revealCalls[0].victim, target);
+  assert.equal(revealCalls[0].options.reason, "weapon-damage");
 });
 
 test("server-resolved skillshots can damage an unresolved contact", () => {
@@ -533,6 +1035,47 @@ test("missile sweeps collide with intervening targets without tunneling", () => 
   assert.equal(occlusion.entityID, blocker.itemID);
   assert.ok(Math.abs(occlusion.fraction - 0.39) < 1e-12);
   assert.ok(Math.abs(occlusion.position.x - 39) < 1e-9);
+});
+
+test("missile sweeps include the bounded rendered hull of dungeon structures", () => {
+  const dungeonWall = {
+    itemID: 1010,
+    kind: "siteEnvironmentProp",
+    dungeonMaterializedEnvironment: true,
+    position: { x: 5_000, y: 5_300, z: 0 },
+    radius: 500,
+    collisionProfile: {
+      boundingRadius: 5_000,
+      balls: [],
+      boxes: [],
+      capsules: [],
+      hasConvexMeshes: true,
+    },
+  };
+  const missile = {
+    itemID: 2010,
+    kind: "missile",
+    radius: 1,
+    position: { x: 10_000, y: 0, z: 0 },
+  };
+  const scene = {
+    staticEntities: [dungeonWall],
+    dynamicEntities: new Map([[missile.itemID, missile]]),
+  };
+
+  assert.equal(
+    findSweptWeaponOccluder(missile, scene, { x: 0, y: 0, z: 0 }),
+    null,
+    "an exact visibility-style sweep must not gain weapon-only padding",
+  );
+  const occlusion = findSweptWeaponOccluder(
+    missile,
+    scene,
+    { x: 0, y: 0, z: 0 },
+    { includeDungeonVisualHull: true },
+  );
+  assert.equal(occlusion.entityID, dungeonWall.itemID);
+  assert.equal(occlusion.occlusionPaddingMeters, 500);
 });
 
 test("an occluded missile resolves against the blocker instead of its intended target", () => {
@@ -700,28 +1243,65 @@ test("session line of sight hides occluded targets until scanning resolves them"
   ]);
   assert.equal(scene.canSessionSeeDynamicEntity(session, target, 1999), false);
   assert.equal(scene.canSessionSeeDynamicEntity(session, target, 2000), true);
+
+  session._space.frontierResolvedScanningContactsByID = new Map();
+  session._space.combatRevealedDynamicEntityIDs = new Set([target.itemID]);
+  assert.equal(
+    scene.canSessionSeeDynamicEntity(session, target, 2000),
+    true,
+    "an active combat reveal is independent of directional-scan resolution",
+  );
 });
 
-test("unresolved weapon fire is presented without materializing its source", () => {
+test("an unresolved attacker resolves for its victim while bystanders get anonymous FX endpoints", () => {
   const {
     SolarSystemScene,
   } = require("../src/space/runtime")._testing;
-  const observer = buildShip({ itemID: 1001 });
-  const unresolvedSource = buildShip({ itemID: 1002 });
-  const session: Record<string, any> = {
+  const victim = buildShip({ itemID: 1001 });
+  const unresolvedSource: Record<string, any> = buildShip({
+    itemID: 1002,
+    nativeNpc: true,
+    itemName: "Hostile Refuge Ship",
+    slimName: "",
+    suppressSlimName: true,
+    nameID: 123456,
+  });
+  const bystander = buildShip({ itemID: 1003 });
+  const victimSession: Record<string, any> = {
+    clientID: 1,
     socket: { destroyed: false },
     _space: {
-      shipID: observer.itemID,
+      shipID: victim.itemID,
       initialStateSent: true,
-      visibleDynamicEntityIDs: new Set([observer.itemID]),
+      visibleDynamicEntityIDs: new Set([victim.itemID]),
+      frontierResolvedScanningContactsByID: new Map([
+        [1777, { entityID: 1777, resolveAtMs: 500, detectedAtMs: 500 }],
+      ]),
     },
   };
-  const delivered: any[] = [];
+  const bystanderSession: Record<string, any> = {
+    clientID: 2,
+    socket: { destroyed: false },
+    _space: {
+      shipID: bystander.itemID,
+      initialStateSent: true,
+      visibleDynamicEntityIDs: new Set([bystander.itemID]),
+    },
+  };
+  const delivered = new Map([
+    [victimSession, [] as any[]],
+    [bystanderSession, [] as any[]],
+  ]);
+  const acquiredEntities: any[] = [];
   const scene = Object.create(SolarSystemScene.prototype);
-  scene.sessions = new Map([[1, session]]);
+  scene.sessions = new Map([
+    [1, victimSession],
+    [2, bystanderSession],
+  ]);
   scene.dynamicEntities = new Map([
-    [observer.itemID, observer],
+    [victim.itemID, victim],
     [unresolvedSource.itemID, unresolvedSource],
+    [bystander.itemID, bystander],
   ]);
   scene.staticEntities = [];
   scene.staticEntitiesByID = new Map();
@@ -729,9 +1309,27 @@ test("unresolved weapon fire is presented without materializing its source", () 
   scene.getCurrentDestinyStamp = () => 10;
   scene.getNextDestinyStamp = () => 11;
   scene.canSessionSeeDynamicEntity = () => false;
-  scene.sendDestinyUpdates = (_session, updates) => {
-    delivered.push(...updates);
+  scene.sendDestinyUpdates = (targetSession, updates) => {
+    delivered.get(targetSession).push(...updates);
     return updates[0] && updates[0].stamp;
+  };
+  scene.sendAddBallsToSession = (
+    targetSession,
+    entities,
+    options: Record<string, any> = {},
+  ) => {
+    acquiredEntities.push(...entities);
+    const update = {
+      stamp: 20,
+      payload: ["AddBalls2", entities.map((entity) => entity.itemID)],
+    };
+    delivered.get(targetSession).push(update);
+    if (options.visibilityAcquisition === true) {
+      for (const entity of entities) {
+        targetSession._space.visibleDynamicEntityIDs.add(entity.itemID);
+      }
+    }
+    return { delivered: true, stamp: update.stamp };
   };
 
   const quietModule = scene.broadcastSpecialFx(
@@ -741,31 +1339,360 @@ test("unresolved weapon fire is presented without materializing its source", () 
     unresolvedSource,
   );
   assert.equal(quietModule.deliveredCount, 0);
-  assert.equal(delivered.length, 0);
+  assert.equal(delivered.get(victimSession).length, 0);
+  assert.equal(delivered.get(bystanderSession).length, 0);
 
   const weaponFire = scene.broadcastSpecialFx(
     unresolvedSource.itemID,
     "effects.TriglavianBeam",
     {
       moduleID: 2002,
-      targetID: observer.itemID,
+      targetID: victim.itemID,
       start: true,
       active: true,
       isOffensive: true,
     },
     unresolvedSource,
   );
-  assert.equal(weaponFire.deliveredCount, 1);
-  assert.ok(delivered.some((update) => update.payload[0] === "OnSpecialFX"));
-  assert.equal(
-    delivered.some((update) => update.payload[0] === "AddBalls2"),
-    false,
+  assert.equal(weaponFire.deliveredCount, 2);
+  assert.deepEqual(
+    delivered.get(victimSession).map((update) => update.payload[0]),
+    ["AddBalls2", "OnSpecialFX"],
+    "the attacker ball must arrive before its weapon effect",
   );
   assert.deepEqual(
-    [...session._space.visibleDynamicEntityIDs],
-    [observer.itemID],
-    "weapon FX must not resolve or materialize the hidden ship",
+    delivered.get(victimSession).map((update) => update.stamp),
+    [20, 21],
+    "the first weapon effect must execute after its source ball acquire",
   );
+  assert.equal(acquiredEntities[0].suppressSlimName, false);
+  assert.equal(acquiredEntities[0].slimName, "Hostile Refuge Ship");
+  assert.equal(acquiredEntities[0].nameID, null);
+  assert.equal(
+    unresolvedSource.suppressSlimName,
+    true,
+    "combat presentation must not globally reveal the authored NPC identity",
+  );
+  assert.deepEqual(
+    delivered.get(bystanderSession).map((update) => update.payload[0]),
+    ["AddBalls2", "OnSpecialFX"],
+    "the observer must receive anonymous endpoint balls before the weapon effect",
+  );
+  assert.deepEqual(
+    delivered.get(bystanderSession).map((update) => update.stamp),
+    [20, 21],
+    "observer endpoint balls must exist before their first weapon effect",
+  );
+  const bystanderProxyIDs = delivered.get(bystanderSession)[0].payload[1];
+  const bystanderFxArgs = delivered.get(bystanderSession)[1].payload[1];
+  assert.equal(bystanderProxyIDs.length, 2);
+  assert.equal(bystanderFxArgs[0], bystanderProxyIDs[0]);
+  assert.equal(bystanderFxArgs[3], bystanderProxyIDs[1]);
+  assert.equal(bystanderProxyIDs.includes(unresolvedSource.itemID), false);
+  assert.equal(bystanderProxyIDs.includes(victim.itemID), false);
+  assert.equal(acquiredEntities[1].omitSlimItem, true);
+  assert.equal(acquiredEntities[2].omitSlimItem, true);
+  assert.equal(
+    victimSession._space.visibleDynamicEntityIDs.has(unresolvedSource.itemID),
+    true,
+  );
+  assert.equal(
+    victimSession._space.combatRevealedDynamicEntityIDs.has(
+      unresolvedSource.itemID,
+    ),
+    true,
+  );
+  assert.equal(
+    victimSession._space.frontierResolvedScanningContactsByID
+      .get(unresolvedSource.itemID).resolveAtMs,
+    1000,
+    "hostile fire must immediately resolve the attacker in scanning state",
+  );
+  assert.equal(
+    victimSession._space.frontierResolvedScanningContactsByID.has(1777),
+    true,
+    "combat resolution must not replace contacts from the latest scan",
+  );
+  assert.equal(
+    bystanderSession._space.visibleDynamicEntityIDs.has(unresolvedSource.itemID),
+    false,
+    "unrelated observers must keep the out-of-range source unresolved",
+  );
+  assert.equal(
+    bystanderSession._space.visibleDynamicEntityIDs.has(victim.itemID),
+    false,
+    "rendering the attack must not reveal its defender to an observer",
+  );
+  assert.equal(
+    bystanderSession._space.frontierResolvedScanningContactsByID,
+    undefined,
+    "effect-only proxy balls must not mutate scanning resolution",
+  );
+});
+
+test("weapon fire from an unresolved player source waits for its victim-side ball acquire", () => {
+  const {
+    SolarSystemScene,
+  } = require("../src/space/runtime")._testing;
+  const victim = buildShip({ itemID: 2001 });
+  const attackerSession = { clientID: 12 };
+  const unresolvedPlayer = buildShip({
+    itemID: 2002,
+    characterID: 90000002,
+    pilotCharacterID: 90000002,
+    itemName: "Hidden Player Ship",
+    slimName: "Hidden Player Ship",
+    session: attackerSession,
+  });
+  const victimSession: Record<string, any> = {
+    clientID: 11,
+    socket: { destroyed: false },
+    _space: {
+      shipID: victim.itemID,
+      initialStateSent: true,
+      visibleDynamicEntityIDs: new Set([victim.itemID]),
+    },
+  };
+  const delivered: any[] = [];
+  const scene = Object.create(SolarSystemScene.prototype);
+  scene.sessions = new Map([[victimSession.clientID, victimSession]]);
+  scene.dynamicEntities = new Map([
+    [victim.itemID, victim],
+    [unresolvedPlayer.itemID, unresolvedPlayer],
+  ]);
+  scene.staticEntities = [];
+  scene.staticEntitiesByID = new Map();
+  scene.getCurrentSimTimeMs = () => 2000;
+  scene.getCurrentDestinyStamp = () => 20;
+  scene.getNextDestinyStamp = () => 21;
+  scene.canSessionSeeDynamicEntity = () => false;
+  scene.sendAddBallsToSession = (targetSession, entities) => {
+    for (const entity of entities) {
+      targetSession._space.visibleDynamicEntityIDs.add(entity.itemID);
+    }
+    return { delivered: true, stamp: 30 };
+  };
+  scene.sendDestinyUpdates = (_targetSession, updates, _waitForBubble, options) => {
+    delivered.push(...updates.map((update) => ({ update, options })));
+    return updates[0] && updates[0].stamp;
+  };
+
+  const result = scene.sendSpecialFxToSession(
+    victimSession,
+    unresolvedPlayer.itemID,
+    "effects.TriglavianBeam",
+    {
+      moduleID: 3002,
+      targetID: victim.itemID,
+      start: true,
+      active: true,
+      isOffensive: true,
+    },
+    unresolvedPlayer,
+  );
+
+  assert.equal(result.delivered, true);
+  assert.equal(delivered.length, 1);
+  assert.equal(delivered[0].update.payload[0], "OnSpecialFX");
+  assert.equal(delivered[0].update.stamp, 31);
+  assert.equal(delivered[0].options.translateStamps, false);
+  assert.equal(delivered[0].options.destinyAuthorityAllowPostHeldFuture, true);
+  assert.equal(
+    victimSession._space.visibleDynamicEntityIDs.has(unresolvedPlayer.itemID),
+    true,
+  );
+  assert.equal(
+    victimSession._space.frontierResolvedScanningContactsByID.has(
+      unresolvedPlayer.itemID,
+    ),
+    true,
+  );
+});
+
+test("combat reveal refreshes a preloaded unresolved NPC before delivering its effect", () => {
+  const {
+    SolarSystemScene,
+  } = require("../src/space/runtime")._testing;
+  const victim = buildShip({ itemID: 2051 });
+  const source: Record<string, any> = buildShip({
+    itemID: 2052,
+    nativeNpc: true,
+    categoryID: 11,
+    slimCategoryID: 11,
+    itemName: "Preloaded Hostile",
+    slimName: "",
+    suppressSlimName: true,
+    nameID: 987654,
+  });
+  const session: Record<string, any> = {
+    clientID: 15,
+    socket: { destroyed: false },
+    _space: {
+      shipID: victim.itemID,
+      initialStateSent: true,
+      // The physical ball was acquired while unresolved. Server membership
+      // alone must not be mistaken for resolved client CR/HUD presentation.
+      visibleDynamicEntityIDs: new Set([victim.itemID, source.itemID]),
+    },
+  };
+  const addCalls: any[] = [];
+  const delivered: any[] = [];
+  const scene = Object.create(SolarSystemScene.prototype);
+  scene.sessions = new Map([[session.clientID, session]]);
+  scene.dynamicEntities = new Map([
+    [victim.itemID, victim],
+    [source.itemID, source],
+  ]);
+  scene.staticEntities = [];
+  scene.staticEntitiesByID = new Map();
+  scene.getCurrentSimTimeMs = () => 2100;
+  scene.getCurrentDestinyStamp = () => 21;
+  scene.getNextDestinyStamp = () => 22;
+  scene.canSessionSeeDynamicEntity = () => false;
+  scene.sendAddBallsToSession = (_targetSession, entities, options) => {
+    addCalls.push({ entities, options });
+    return { delivered: true, stamp: 40 };
+  };
+  scene.sendDestinyUpdates = (_targetSession, updates, _wait, options) => {
+    delivered.push(...updates.map((update) => ({ update, options })));
+    return updates[0] && updates[0].stamp;
+  };
+
+  const result = scene.sendSpecialFxToSession(
+    session,
+    source.itemID,
+    "effects.Laser",
+    {
+      moduleID: 3003,
+      targetID: victim.itemID,
+      start: true,
+      active: true,
+      isOffensive: true,
+    },
+    source,
+  );
+
+  assert.equal(result.delivered, true);
+  assert.equal(addCalls.length, 1);
+  assert.equal(addCalls[0].options.visibilityAcquisition, false);
+  assert.equal(addCalls[0].options.freshAcquire, true);
+  assert.equal(addCalls[0].entities[0].slimName, "Preloaded Hostile");
+  assert.equal(addCalls[0].entities[0].nameID, null);
+  assert.equal(delivered.length, 1);
+  assert.equal(delivered[0].update.payload[0], "OnSpecialFX");
+  assert.equal(delivered[0].update.stamp, 41);
+  assert.equal(delivered[0].options.translateStamps, false);
+  assert.equal(delivered[0].options.destinyAuthorityAllowPostHeldFuture, true);
+  assert.equal(
+    session._space.combatRevealPresentationEntityIDs.has(source.itemID),
+    true,
+  );
+});
+
+test("bystander weapon FX retain a visible source and proxy only the hidden defender", () => {
+  const {
+    SolarSystemScene,
+  } = require("../src/space/runtime")._testing;
+  const source = buildShip({
+    itemID: 2101,
+    position: { x: 0, y: 0, z: 0 },
+  });
+  const hiddenDefender = buildShip({
+    itemID: 2102,
+    position: { x: 10_000, y: 0, z: 0 },
+  });
+  const bystander = buildShip({
+    itemID: 2103,
+    position: { x: 5_000, y: 1_000, z: 0 },
+  });
+  const session: Record<string, any> = {
+    clientID: 21,
+    socket: { destroyed: false },
+    _space: {
+      shipID: bystander.itemID,
+      initialStateSent: true,
+      visibleDynamicEntityIDs: new Set([bystander.itemID, source.itemID]),
+    },
+  };
+  const delivered: any[] = [];
+  const scene = Object.create(SolarSystemScene.prototype);
+  scene.sessions = new Map([[session.clientID, session]]);
+  scene.dynamicEntities = new Map([
+    [source.itemID, source],
+    [hiddenDefender.itemID, hiddenDefender],
+    [bystander.itemID, bystander],
+  ]);
+  scene.staticEntities = [];
+  scene.staticEntitiesByID = new Map();
+  scene.getCurrentSimTimeMs = () => 2500;
+  scene.getCurrentDestinyStamp = () => 25;
+  scene.getNextDestinyStamp = () => 26;
+  scene.canSessionSeeDynamicEntity = () => false;
+  scene.sendDestinyUpdates = (_targetSession, updates) => {
+    delivered.push(...updates);
+    return updates[0] && updates[0].stamp;
+  };
+  scene.sendAddBallsToSession = (_targetSession, entities) => {
+    const update = {
+      stamp: 30,
+      payload: ["AddBalls2", entities.map((entity) => entity.itemID)],
+    };
+    delivered.push(update);
+    return { delivered: true, stamp: update.stamp };
+  };
+
+  const start = scene.broadcastSpecialFx(
+    source.itemID,
+    "effects.TriglavianBeam",
+    {
+      moduleID: 2201,
+      targetID: hiddenDefender.itemID,
+      start: true,
+      active: true,
+      isOffensive: true,
+    },
+    source,
+  );
+  assert.equal(start.deliveredCount, 1);
+  assert.deepEqual(
+    delivered.map((update) => update.payload[0]),
+    ["AddBalls2", "OnSpecialFX"],
+  );
+  const proxyID = delivered[0].payload[1][0];
+  assert.equal(delivered[1].payload[1][0], source.itemID);
+  assert.equal(delivered[1].payload[1][3], proxyID);
+  assert.notEqual(proxyID, hiddenDefender.itemID);
+  assert.equal(
+    session._space.visibleDynamicEntityIDs.has(hiddenDefender.itemID),
+    false,
+  );
+
+  // Resolving the defender while the effect is active can replay the same FX
+  // on real ball IDs. The stop path must end both forms before proxy teardown.
+  session._space.visibleDynamicEntityIDs.add(hiddenDefender.itemID);
+  const stop = scene.broadcastSpecialFx(
+    source.itemID,
+    "effects.TriglavianBeam",
+    {
+      moduleID: 2201,
+      targetID: hiddenDefender.itemID,
+      start: false,
+      active: false,
+      isOffensive: true,
+    },
+    source,
+  );
+  assert.equal(stop.deliveredCount, 1);
+  assert.deepEqual(
+    delivered.slice(2).map((update) => update.payload[0]),
+    ["OnSpecialFX", "OnSpecialFX", "RemoveBalls"],
+    "the stop effect must run before its anonymous endpoint is discarded",
+  );
+  assert.equal(delivered[2].payload[1][0], source.itemID);
+  assert.equal(delivered[2].payload[1][3], proxyID);
+  assert.equal(delivered[3].payload[1][0], source.itemID);
+  assert.equal(delivered[3].payload[1][3], hiddenDefender.itemID);
+  assert.equal(session._space.combatEffectProxyState.entriesByRealEntityID.size, 0);
 });
 
 test("weapon FX use the fitting-slot key expected by client hardpoints", () => {

@@ -14,7 +14,7 @@ const { resolveSessionCharacterID, } = require(path.join(__dirname, "../_shared/
 const { throwWrappedUserError } = require(path.join(__dirname, "../../common/machoErrors"));
 const { resolveShipByTypeID } = require(path.join(__dirname, "../chat/shipTypeRegistry"));
 const { getCharacterShips, findCharacterShip, getActiveShipRecord, shouldFlushDeferredDockedShipSessionChange, flushDeferredDockedShipSessionChange, completeDockedFittingBootstrap, syncInventoryItemForSession, syncShipFittingStateForSession, emitStripFittingDogmaMultiEventForSession, emitItemsChangedBatchForSession, emitFittingTransactionForSession, buildInventoryDogmaPrimeEntry, } = require(path.join(__dirname, "../character/characterState"));
-const { ITEM_FLAGS, FIGHTER_TUBE_FLAGS, listContainerItems, findItemById, findShipItemById, getItemMetadata, getInventoryItemUnitVolume, grantItemToCharacterLocation, moveItemToLocation, removeInventoryItem, takeItemTypeFromCharacterLocation, transferItemToOwnerLocation, mergeItemStacks, updateInventoryItem, } = require(path.join(__dirname, "./itemStore"));
+const { ITEM_FLAGS, FIGHTER_TUBE_FLAGS, ensureFreeStationFuelSupply, listContainerItems, findItemById, findShipItemById, getItemMetadata, getInventoryItemUnitVolume, grantItemToCharacterLocation, moveItemToLocation, removeInventoryItem, takeItemTypeFromCharacterLocation, transferItemToOwnerLocation, mergeItemStacks, updateInventoryItem, } = require(path.join(__dirname, "./itemStore"));
 const { SHELL_EQUIPMENT_FLAG_ID, SHELL_EQUIPMENT_KIND, getShellEquipmentKind, listActiveShellEquipment, } = require(path.join(__dirname, "../frontier/shellEquipmentRuntime"));
 const { CORP_ROLE_DIRECTOR, toRoleMaskBigInt, getCorporationOfficeByInventoryID, getCorporationOffices, } = require(path.join(__dirname, "../corporation/corporationRuntimeState"));
 const { resolveItemByTypeID, } = require(path.join(__dirname, "./itemTypeRegistry"));
@@ -3953,6 +3953,13 @@ class InvBrokerService extends BaseService {
                 structureOwnerID > 0 &&
                 this._isStructureOwnerBayFlag(numericFlag)) {
                 return listContainerItems(structureOwnerID, containerID, numericFlag);
+            }
+            if (charId > 0 &&
+                stationId > 0 &&
+                (numericFlag === null ||
+                    numericFlag === 0 ||
+                    numericFlag === ITEM_FLAGS.HANGAR)) {
+                ensureFreeStationFuelSupply(charId, stationId);
             }
             return listContainerItems(charId, stationId, numericFlag === null || numericFlag === 0
                 ? ITEM_FLAGS.HANGAR

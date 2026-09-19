@@ -5,6 +5,8 @@ const worldData = require(path.join(__dirname, "../worldData"));
 const spaceRuntime = require(path.join(__dirname, "../runtime"));
 const {
   buildChildEntityScopeMetadata,
+  canEntitiesInteractLocally,
+  resolveEntityInteractionScope,
 } = require(path.join(__dirname, "../destiny/identity/interactionScope"));
 const wormholeAuthority = require(path.join(
   __dirname,
@@ -35,6 +37,8 @@ const {
   setBehaviorOverrides,
   normalizeBehaviorOverrides,
   noteIncomingAggression,
+  noteDungeonArrivalResponse,
+  resolveNpcDungeonArrivalDisposition,
 } = require(path.join(__dirname, "./npcBehaviorLoop"));
 const {
   GATE_OPERATOR_KIND,
@@ -76,6 +80,9 @@ const {
 const {
   ENTITY_TYPE,
 } = require(path.join(__dirname, "../entityConstants"));
+const {
+  resolveNpcTargetIdentification,
+} = require(path.join(__dirname, "../../config/npcFactionConfig"));
 
 const DRIFTER_FACTION_ID = 500024;
 
@@ -1816,7 +1823,75 @@ function propagateDrifterAggressionToPack(targetEntity, attackerEntity, now) {
   return propagatedEntityIDs;
 }
 
-function noteNpcIncomingAggression(targetEntity, attackerEntity, now) {
+function propagateAggressionToTransponderAllies(
+  targetEntity,
+  attackerEntity,
+  now,
+  options: Record<string, any> = {},
+) {
+  const targetEntityID = toPositiveInt(targetEntity && targetEntity.itemID, 0);
+  const attackerEntityID = toPositiveInt(attackerEntity && attackerEntity.itemID, 0);
+  const attackerOwnerID = toPositiveInt(
+    attackerEntity && attackerEntity.ownerID,
+    toPositiveInt(
+      attackerEntity && attackerEntity.pilotCharacterID,
+      toPositiveInt(attackerEntity && attackerEntity.characterID, 0),
+    ),
+  );
+  const systemID = toPositiveInt(
+    targetEntity && targetEntity.systemID,
+    toPositiveInt(attackerEntity && attackerEntity.systemID, 0),
+  );
+  if (!targetEntityID || !attackerEntityID || !systemID) {
+    return [];
+  }
+
+  const scene = options.scene || spaceRuntime.ensureScene(systemID);
+  if (!scene || typeof scene.getEntityByID !== "function") {
+    return [];
+  }
+
+  const propagatedEntityIDs: any[] = [];
+  for (const candidateController of listControllersBySystem(systemID)) {
+    const candidateEntityID = toPositiveInt(
+      candidateController && candidateController.entityID,
+      0,
+    );
+    if (
+      !candidateEntityID ||
+      candidateEntityID === targetEntityID ||
+      candidateEntityID === attackerEntityID
+    ) {
+      continue;
+    }
+    const candidateEntity = scene.getEntityByID(candidateEntityID);
+    if (
+      !candidateEntity ||
+      !canEntitiesInteractLocally(candidateEntity, targetEntity) ||
+      resolveNpcTargetIdentification(candidateEntity, targetEntity) !== "ally"
+    ) {
+      continue;
+    }
+
+    const result = noteIncomingAggression(
+      candidateEntityID,
+      attackerEntityID,
+      now,
+      { attackerOwnerID },
+    );
+    if (result && result.success) {
+      propagatedEntityIDs.push(candidateEntityID);
+    }
+  }
+  return propagatedEntityIDs;
+}
+
+function noteNpcIncomingAggression(
+  targetEntity,
+  attackerEntity,
+  now,
+  options: Record<string, any> = {},
+) {
   const targetEntityID = toPositiveInt(targetEntity && targetEntity.itemID, 0);
   const attackerEntityID = toPositiveInt(attackerEntity && attackerEntity.itemID, 0);
   const attackerOwnerID = toPositiveInt(
@@ -1841,22 +1916,114 @@ function noteNpcIncomingAggression(targetEntity, attackerEntity, now) {
       attackerOwnerID,
     },
   );
-  if (!noteResult.success) {
+  const propagatedEntityIDs = [
+    ...(noteResult.success
+      ? propagateDrifterAggressionToPack(targetEntity, attackerEntity, now)
+      : []),
+    ...propagateAggressionToTransponderAllies(
+      targetEntity,
+      attackerEntity,
+      now,
+      options,
+    ),
+  ].filter((entityID, index, values) => values.indexOf(entityID) === index);
+  if (!noteResult.success && propagatedEntityIDs.length === 0) {
     return noteResult;
   }
-
-  const propagatedEntityIDs = propagateDrifterAggressionToPack(
-    targetEntity,
-    attackerEntity,
-    now,
-  );
   return {
-    ...noteResult,
+    success: true,
     data: {
       ...(noteResult.data && typeof noteResult.data === "object"
         ? noteResult.data
         : {}),
+      directlyNoted: noteResult.success === true,
       propagatedEntityIDs,
+    },
+  };
+}
+
+function notifyNpcDungeonArrival(scene, arrivingEntity, now = Date.now()) {
+  const arrivingEntityID = toPositiveInt(arrivingEntity && arrivingEntity.itemID, 0);
+  const arrivingScope = resolveEntityInteractionScope(arrivingEntity);
+  if (
+    !scene ||
+    !arrivingEntityID ||
+    !arrivingScope.valid ||
+    !arrivingScope.hasDungeonScope ||
+    arrivingScope.dungeonInstanceID === null
+  ) {
+    return {
+      success: false,
+      errorMsg: "DUNGEON_ARRIVAL_SCOPE_NOT_FOUND",
+    };
+  }
+
+  const normalizedNow = Math.max(0, toFiniteNumber(now, Date.now()));
+  const arrivingOwnerID = toPositiveInt(
+    arrivingEntity.ownerID,
+    toPositiveInt(
+      arrivingEntity.pilotCharacterID,
+      toPositiveInt(arrivingEntity.characterID, 0),
+    ),
+  );
+  const responses = [];
+  for (const controller of listControllersBySystem(scene.systemID)) {
+    const responderEntityID = toPositiveInt(controller && controller.entityID, 0);
+    if (!responderEntityID || responderEntityID === arrivingEntityID) {
+      continue;
+    }
+    const responderEntity = scene.getEntityByID(responderEntityID);
+    const responderScope = resolveEntityInteractionScope(responderEntity);
+    if (
+      !responderEntity ||
+      !responderScope.valid ||
+      !responderScope.hasDungeonScope ||
+      responderScope.dungeonInstanceID === null ||
+      !canEntitiesInteractLocally(responderEntity, arrivingEntity)
+    ) {
+      continue;
+    }
+
+    const disposition = resolveNpcDungeonArrivalDisposition(
+      responderEntity,
+      arrivingEntity,
+      controller,
+    );
+    if (
+      disposition !== "hostile" &&
+      disposition !== "friendly" &&
+      disposition !== "suspicious"
+    ) {
+      continue;
+    }
+    const response = noteDungeonArrivalResponse(
+      responderEntityID,
+      arrivingEntityID,
+      disposition,
+      normalizedNow,
+      { arrivingOwnerID },
+    );
+    if (response && response.success) {
+      responses.push({ entityID: responderEntityID, disposition });
+    }
+  }
+
+  return {
+    success: true,
+    data: {
+      arrivingEntityID,
+      dungeonInstanceID: arrivingScope.dungeonInstanceID,
+      responseCount: responses.length,
+      hostileResponseCount: responses.filter(
+        (response) => response.disposition === "hostile",
+      ).length,
+      suspiciousResponseCount: responses.filter(
+        (response) => response.disposition === "suspicious",
+      ).length,
+      friendlyResponseCount: responses.filter(
+        (response) => response.disposition === "friendly",
+      ).length,
+      responses,
     },
   };
 }
@@ -1926,6 +2093,7 @@ module.exports = {
   toggleCharacterNpcInvulnerability,
   isCharacterInvulnerable,
   noteNpcIncomingAggression,
+  notifyNpcDungeonArrival,
   getControllerByEntityID,
   listControllersBySystem,
   destroyNpcControllerByEntityID,

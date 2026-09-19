@@ -3,14 +3,57 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
+const config = require("../src/config");
 const spaceRuntime = require("../src/space/runtime");
+const asteroidService = require("../src/space/asteroids");
 const dungeonAuthority = require("../src/services/dungeon/dungeonAuthority");
+const dungeonRuntime = require("../src/services/dungeon/dungeonRuntime");
 const dungeonUniverseRuntime = require(
   "../src/services/dungeon/dungeonUniverseRuntime",
 );
 const dungeonUniverseSiteService = require(
   "../src/services/dungeon/dungeonUniverseSiteService",
 );
+const miningResourceSiteService = require(
+  "../src/services/mining/miningResourceSiteService",
+);
+const miningRuntimeState = require(
+  "../src/services/mining/miningRuntimeState",
+);
+const {
+  resolveMiningResourceIdentity,
+} = require("../src/services/mining/miningVisuals");
+
+test("Frontier resource outputs resolve to their default mineable carrier identity", () => {
+  const charIdentity = resolveMiningResourceIdentity({
+    typeID: 77_800,
+    groupID: 5_012,
+    categoryID: 25,
+    name: "Feldspar Crystals",
+  });
+  const slagIdentity = resolveMiningResourceIdentity({
+    typeID: 77_810,
+    groupID: 5_013,
+    categoryID: 25,
+    name: "Platinum-Palladium Matrix",
+  });
+
+  assert.equal(charIdentity.carrierTypeRecord.typeID, 91_374);
+  assert.equal(charIdentity.carrierTypeRecord.name, "Char");
+  assert.equal(charIdentity.yieldTypeRecord.typeID, 77_800);
+  assert.equal(slagIdentity.carrierTypeRecord.typeID, 91_375);
+  assert.equal(slagIdentity.carrierTypeRecord.name, "Slag");
+  assert.equal(slagIdentity.yieldTypeRecord.typeID, 77_810);
+
+  const carrierIdentity = resolveMiningResourceIdentity({
+    typeID: 91_374,
+    groupID: 5_004,
+    categoryID: 25,
+    name: "Char",
+  });
+  assert.equal(carrierIdentity.carrierTypeRecord.name, "Char");
+  assert.equal(carrierIdentity.yieldTypeRecord.typeID, 77_800);
+});
 
 test("player entry materializes cached dungeons while reconciliation remains scheduled", () => {
   const originalHandleSceneCreated = dungeonUniverseSiteService.handleSceneCreated;
@@ -45,6 +88,127 @@ test("player entry materializes cached dungeons while reconciliation remains sch
     });
   } finally {
     dungeonUniverseSiteService.handleSceneCreated = originalHandleSceneCreated;
+  }
+});
+
+test("an NPC warp target initializes its exact dungeon without a player session", () => {
+  const originalGetInstance = dungeonRuntime.getInstance;
+  const originalIsManaged =
+    dungeonUniverseSiteService.isManagedMaterializedSiteInstance;
+  const originalEnsure = dungeonUniverseSiteService.ensureSiteContentsMaterialized;
+  const instanceID = 7_100_000_000_101;
+  const siteID = 7_200_000_000_101;
+  const siteEntity = {
+    itemID: siteID,
+    kind: "universeAnomalySite",
+    signalTrackerUniverseSeededSite: true,
+    dungeonSiteInstanceID: instanceID,
+    dungeonSiteID: siteID,
+    position: { x: 2_000_000, y: 0, z: 0 },
+  };
+  const scene = {
+    systemID: 30_000_142,
+    _asteroidFieldsInitialized: true,
+    _miningResourceSitesInitialized: true,
+    _miningRuntimeState: {},
+    getCurrentSimTimeMs: () => 75_000,
+    getEntityByID: (entityID) => entityID === siteID ? siteEntity : null,
+  };
+  const materializeCalls: any[] = [];
+
+  dungeonRuntime.getInstance = (receivedInstanceID) => (
+    receivedInstanceID === instanceID ? { instanceID } : null
+  );
+  dungeonUniverseSiteService.isManagedMaterializedSiteInstance = () => true;
+  dungeonUniverseSiteService.ensureSiteContentsMaterialized = (
+    receivedScene,
+    instance,
+    options,
+  ) => {
+    materializeCalls.push({ receivedScene, instance, options });
+    return { success: true, data: { spawned: [] } };
+  };
+
+  try {
+    const result = spaceRuntime._testing
+      .initializeSessionlessWarpDestinationForTesting(
+        scene,
+        { itemID: 9_000_000_101, kind: "ship" },
+        siteEntity.position,
+        { targetEntityID: siteID, nowMs: 75_000 },
+      );
+
+    assert.equal(result.success, true);
+    assert.equal(result.data.dungeonInstanceID, instanceID);
+    assert.equal(materializeCalls.length, 1);
+    assert.equal(materializeCalls[0].receivedScene, scene);
+    assert.equal(materializeCalls[0].instance.instanceID, instanceID);
+    assert.equal(materializeCalls[0].options.session, null);
+    assert.equal(materializeCalls[0].options.broadcast, true);
+    assert.equal(materializeCalls[0].options.spawnEncounters, true);
+  } finally {
+    dungeonRuntime.getInstance = originalGetInstance;
+    dungeonUniverseSiteService.isManagedMaterializedSiteInstance =
+      originalIsManaged;
+    dungeonUniverseSiteService.ensureSiteContentsMaterialized = originalEnsure;
+  }
+});
+
+test("an NPC warp to a celestial initializes lazy asteroid and mining state", () => {
+  const originalMiningEnabled = config.miningEnabled;
+  const originalAsteroidHandle = asteroidService.handleSceneCreated;
+  const originalMiningSiteHandle = miningResourceSiteService.handleSceneCreated;
+  const originalEnsureMiningState = miningRuntimeState.ensureSceneMiningState;
+  const celestialID = 40_000_001;
+  const celestial = {
+    itemID: celestialID,
+    kind: "planet",
+    position: { x: 4_000_000, y: 0, z: 0 },
+  };
+  const scene: Record<string, any> = {
+    systemID: 30_000_142,
+    staticEntities: [celestial],
+    getCurrentSimTimeMs: () => 80_000,
+    getEntityByID: (entityID) => entityID === celestialID ? celestial : null,
+  };
+  const calls: string[] = [];
+
+  config.miningEnabled = true;
+  asteroidService.handleSceneCreated = (receivedScene) => {
+    calls.push("asteroids");
+    receivedScene._asteroidFieldsInitialized = true;
+    return { success: true, data: { spawned: [] } };
+  };
+  miningResourceSiteService.handleSceneCreated = (receivedScene) => {
+    calls.push("mining-sites");
+    receivedScene._miningResourceSitesInitialized = true;
+    return { success: true, data: { spawned: [] } };
+  };
+  miningRuntimeState.ensureSceneMiningState = (receivedScene) => {
+    calls.push("mining-state");
+    receivedScene._miningRuntimeState = { byEntityID: new Map() };
+    return receivedScene._miningRuntimeState;
+  };
+
+  try {
+    const result = spaceRuntime._testing
+      .initializeSessionlessWarpDestinationForTesting(
+        scene,
+        { itemID: 9_000_000_102, kind: "ship" },
+        celestial.position,
+        { targetEntityID: celestialID, nowMs: 80_000 },
+      );
+
+    assert.equal(result.success, true);
+    assert.deepEqual(calls, ["asteroids", "mining-sites", "mining-state"]);
+    assert.equal(result.data.asteroidFieldsInitialized, true);
+    assert.equal(result.data.miningSitesInitialized, true);
+    assert.equal(result.data.miningStateInitialized, true);
+  } finally {
+    config.miningEnabled = originalMiningEnabled;
+    asteroidService.handleSceneCreated = originalAsteroidHandle;
+    miningResourceSiteService.handleSceneCreated = originalMiningSiteHandle;
+    miningRuntimeState.ensureSceneMiningState = originalEnsureMiningState;
   }
 });
 
@@ -96,6 +260,49 @@ test("materialized dungeon roots remain visible as system-view warp anchors", ()
   assert.equal(missionRoot.kind, "missionSite");
   assert.equal(missionRoot.staticVisibilityScope, "system");
   assert.equal(missionRoot.dungeonMaterializedSiteContent, true);
+});
+
+test("scene startup materializes the same oldest duplicate anchor used by the map", () => {
+  const originalListActiveInstancesBySystem = dungeonRuntime.listActiveInstancesBySystem;
+  const siteKey = "sceneanomalysite:30000142:5380000142001";
+  const siteID = 5_380_000_142_001;
+  const older = {
+    instanceID: 81,
+    siteKey,
+    solarSystemID: 30_000_142,
+    lifecycleState: "active",
+    runtimeFlags: { universeSeeded: true },
+    siteKind: "anomaly",
+    siteFamily: "combat",
+    position: { x: 101, y: 202, z: 303 },
+    metadata: { siteID, label: "Stable Dungeon" },
+  };
+  const newer = {
+    ...older,
+    instanceID: 82,
+    position: { x: 901, y: 902, z: 903 },
+  };
+  const spawned: any[] = [];
+  const scene = {
+    systemID: 30_000_142,
+    addStaticEntity(entity) {
+      spawned.push(entity);
+      return true;
+    },
+  };
+
+  dungeonRuntime.listActiveInstancesBySystem = () => [newer, older];
+  try {
+    const result = dungeonUniverseSiteService.handleSceneCreated(scene, { force: true });
+
+    assert.equal(result.success, true);
+    assert.equal(spawned.length, 1);
+    assert.equal(spawned[0].itemID, siteID);
+    assert.equal(spawned[0].dungeonSiteInstanceID, older.instanceID);
+    assert.deepEqual(spawned[0].position, older.position);
+  } finally {
+    dungeonRuntime.listActiveInstancesBySystem = originalListActiveInstancesBySystem;
+  }
 });
 
 test("incompatible dungeon entry objects use a CRDungeon marker type", () => {
@@ -159,7 +366,7 @@ test("unnamed dungeon spawn labels use the associated entry type name", () => {
   assert.equal(label, "Acceleration Gate");
 });
 
-test("runtime authority indexes every missing Frontier site-group dungeon", () => {
+test("runtime authority retains extracted Frontier templates but indexes only unified-config sites", () => {
   const payload = dungeonAuthority.mergeFrontierDungeonSpawnTemplates(
     {
       counts: { templateCount: 1 },
@@ -217,6 +424,7 @@ test("runtime authority indexes every missing Frontier site-group dungeon", () =
     "frontier-dungeon:204",
   );
   assert.equal(payload.counts.frontierDungeonHydratedTemplateCount, 1);
+  assert.equal(payload.counts.frontierDungeonConfiguredTemplateCount, 0);
   assert.equal(payload.templatesByID["client-dungeon:201"].frontierDungeonHydrated, true);
   assert.equal(payload.templatesByID["client-dungeon:201"].entryObjectGroupID, 4871);
   assert.equal(payload.templatesByID["client-dungeon:201"].siteFamily, "combat");
@@ -225,16 +433,51 @@ test("runtime authority indexes every missing Frontier site-group dungeon", () =
   assert.equal(payload.templatesByID["client-dungeon:201"].entryObjectID, 8_001);
   assert.equal(payload.templatesByID["client-dungeon:201"].rooms.length, 1);
   assert.equal(payload.templatesByID["client-dungeon:201"].triggers.length, 1);
-  assert.deepEqual(
-    payload.indexes.templateIDsByFamily.combat,
-    [
-      "client-dungeon:201",
-      "frontier-dungeon:202",
-      "frontier-dungeon:203",
-      "frontier-dungeon:204",
-    ],
-  );
+  assert.equal(payload.indexes.templateIDsByFamily.combat, undefined);
   assert.equal(payload.indexes.templateIDsByFamily.ore, undefined);
+});
+
+test("invalid Frontier prefab wrappers never enter world-spawn family indexes", () => {
+  const templateID = "client-dungeon:13582";
+  const payload = dungeonAuthority.mergeFrontierDungeonSpawnTemplates(
+    {
+      counts: { templateCount: 1 },
+      coverage: {},
+      indexes: {},
+      templatesByID: {
+        [templateID]: {
+          templateID,
+          source: "client",
+          sourceDungeonID: 13_582,
+          siteFamily: "combat",
+          siteKind: "anomaly",
+          entryObjectTypeID: 88_328,
+        },
+      },
+    },
+    [{
+      dungeonID: 13_582,
+      dungeonName: "Feral Moon Tumor P2",
+      entryObjectID: 1_265_243,
+      entryTypeID: 88_328,
+      rooms: [{
+        roomID: 29_704,
+        objects: [{ objectID: 1_233_317, typeID: 83_407, role: "scenery" }],
+      }],
+    }],
+    [{ typeID: 88_328, groupID: 4871 }],
+  );
+
+  assert.ok(payload.templatesByID[templateID], "exact references remain resolvable");
+  assert.equal(payload.templatesByID[templateID].frontierDungeonHydrated, undefined);
+  assert.equal(payload.templatesByID[templateID].frontierDungeonSpawnConfigured, undefined);
+  assert.equal(
+    Object.values<any>(payload.indexes.templateIDsByFamily || {})
+      .flat()
+      .includes(templateID),
+    false,
+    "invalid standalone templates must not be selectable or queued for world spawning",
+  );
 });
 
 test("raw Frontier rooms compile into initial site content for all supported dungeon groups", () => {
@@ -309,7 +552,7 @@ test("raw Frontier rooms compile into initial site content for all supported dun
       frontierRiftYieldTier: null,
       key: `frontier-dungeon:${sourceDungeonID}:501:102`,
       miningYieldTypeID: null,
-      positionOffset: { x: 50, y: -20, z: 30 },
+      positionOffset: { x: 0, y: 0, z: 0 },
       resourceQuantity: null,
       suppressSlimGraphicID: true,
       suppressSlimName: true,
@@ -317,6 +560,189 @@ test("raw Frontier rooms compile into initial site content for all supported dun
     });
     assert.equal(hints.exactContentCaps.environmentProps, 1);
   }
+});
+
+test("initial Frontier scenery triggers materialize props without exposing deferred or NPC targets", () => {
+  const template = {
+    sourceDungeonID: 12_709,
+    entryObjectGroupID: 4_873,
+    entryObjectID: 101,
+    rooms: [{
+      roomID: 501,
+      objects: [
+        { objectID: 101, typeID: 1_001, role: "scenery" },
+        { objectID: 102, typeID: 87_998, role: "scenery" },
+        {
+          objectID: 103,
+          typeID: 84_666,
+          role: "scenery",
+          guardCommand: { objectTriggerSpawn: 0 },
+        },
+        {
+          objectID: 104,
+          typeID: 89_076,
+          role: "scenery",
+          guardCommand: { objectTriggerSpawn: 1 },
+        },
+        {
+          objectID: 105,
+          typeID: 89_076,
+          role: "scenery",
+          guardCommand: { objectTriggerSpawn: 1 },
+        },
+        {
+          objectID: 106,
+          typeID: 83_552,
+          role: "scenery",
+          guardCommand: { objectTriggerSpawn: 1 },
+        },
+        { objectID: 107, typeID: 54_266, role: "eventLocator" },
+      ],
+    }],
+    triggers: [
+      {
+        triggerID: 7_001,
+        triggerTypeID: 8,
+        objectID: 107,
+        groupTag: "Entry Roll",
+        usageChance: 100,
+        triggerEvents: [
+          { eventID: 8_001, eventTypeID: 15, objectID: 103, usageChance: 100 },
+          { eventID: 8_002, eventTypeID: 3, objectID: 104, usageChance: 100 },
+          { eventID: 8_003, eventTypeID: 3, objectID: 106, usageChance: 100 },
+        ],
+      },
+      {
+        triggerID: 7_002,
+        triggerTypeID: 31,
+        objectID: 107,
+        groupTag: "Completion",
+        usageChance: 100,
+        triggerEvents: [
+          { eventID: 8_004, eventTypeID: 3, objectID: 105, usageChance: 100 },
+        ],
+      },
+    ],
+  };
+  const instance = {
+    instanceID: 7_100_000_127_009,
+    metadata: { siteID: 7_200_000_127_009 },
+  };
+
+  const first = dungeonUniverseSiteService._testing.resolvePopulationHints(
+    instance,
+    template,
+  );
+  const second = dungeonUniverseSiteService._testing.resolvePopulationHints(
+    instance,
+    template,
+  );
+  const environmentObjectIDs = first.environmentProps.map((entry) => entry.dunObjectID);
+  const containerObjectIDs = first.containers.map((entry) => entry.dunObjectID);
+  const materializedObjectIDs = [...environmentObjectIDs, ...containerObjectIDs];
+
+  assert.deepEqual(environmentObjectIDs, [102]);
+  assert.deepEqual(containerObjectIDs, [104]);
+  assert.equal(materializedObjectIDs.includes(103), false, "despawn event removes the default cloud");
+  assert.equal(materializedObjectIDs.includes(105), false, "completion prop remains deferred");
+  assert.equal(materializedObjectIDs.includes(106), false, "NPC controller remains encounter-only");
+  assert.deepEqual(second.environmentProps, first.environmentProps);
+});
+
+test("Frontier mining dungeon asteroids have stable variable sizes and size-weighted material", () => {
+  const resources = [201, 202, 203].map((objectID) => ({
+    objectID,
+    roomID: 501,
+    categoryID: 25,
+    groupID: 5_005,
+    typeRecord: {
+      radius: 1,
+      volume: 1,
+    },
+    object: {
+      objectID,
+      radius: 100_000,
+    },
+  }));
+  const first = dungeonUniverseSiteService._testing
+    .buildFrontierDungeonMiningResourceSizing(resources, 91_871);
+  const second = dungeonUniverseSiteService._testing
+    .buildFrontierDungeonMiningResourceSizing(resources, 91_871);
+  const sortedByRadius = [...first.entries()]
+    .map(([objectID, sizing]) => ({ objectID, ...sizing }))
+    .sort((left, right) => left.radius - right.radius);
+  const config = require("../src/config");
+  const baselineQuantity = Math.round(
+    Math.min(
+      config.miningBeltMaximumAsteroidVolumeM3,
+      Math.max(
+        config.miningBeltMinimumAsteroidVolumeM3,
+        (100_000 ** 2) * config.miningBeltQuantityScale,
+      ),
+    ),
+  );
+
+  assert.deepEqual(second, first);
+  assert.deepEqual(
+    sortedByRadius.map((entry) => entry.radius),
+    [75_000, 100_000, 125_000],
+  );
+  assert.ok(
+    sortedByRadius[0].resourceQuantity < sortedByRadius[1].resourceQuantity,
+  );
+  assert.ok(
+    sortedByRadius[1].resourceQuantity < sortedByRadius[2].resourceQuantity,
+  );
+  assert.equal(
+    sortedByRadius.reduce((sum, entry) => sum + entry.resourceQuantity, 0),
+    baselineQuantity * resources.length,
+  );
+});
+
+test("Frontier mining dungeon resources preserve their derived size during mining registration", () => {
+  const siteEntity = {
+    itemID: 7_200_000_000_321,
+    position: { x: 1_000, y: 2_000, z: 3_000 },
+  };
+  const environmentEntities = dungeonUniverseSiteService._testing
+    .buildEnvironmentEntities(
+      { instanceID: 7_100_000_000_321 },
+      siteEntity,
+      {},
+      {
+        frontierDungeonScene: true,
+        exactContentCaps: { environmentProps: 1 },
+        environmentProps: [{
+          exact: true,
+          key: "frontier-dungeon:mining-resource:1",
+          // Type 34 is present in the minimal item-registry fallback used by
+          // isolated tests; the explicit resource marker drives this policy.
+          typeID: 34,
+          miningYieldTypeID: 34,
+          frontierDungeonResource: true,
+          authoredRadius: 75_000,
+          resourceQuantity: 150_000,
+          positionOffset: { x: 10, y: 20, z: 30 },
+          suppressSlimGraphicID: true,
+          suppressSlimName: true,
+        }],
+      },
+    );
+
+  assert.equal(environmentEntities.length, 1);
+  assert.equal(environmentEntities[0].radius, 75_000);
+  assert.notEqual(environmentEntities[0].typeID, 34);
+  assert.equal(environmentEntities[0].graphicID, 26_271);
+  assert.equal(environmentEntities[0].slimTypeID, 34);
+  assert.equal(environmentEntities[0].slimGroupID, 18);
+  assert.equal(environmentEntities[0].slimCategoryID, 4);
+  assert.equal(environmentEntities[0].itemName, "Tritanium [Type ID 34]");
+  assert.equal(environmentEntities[0].slimName, "Tritanium [Type ID 34]");
+  assert.equal(environmentEntities[0].suppressSlimName, false);
+  assert.ok(environmentEntities[0].collisionScale > 1);
+  assert.equal(environmentEntities[0].resourceQuantity, 150_000);
+  assert.equal(environmentEntities[0].skipMiningTemplateResolution, true);
+  assert.equal(environmentEntities[0].preserveMiningVisualPresentation, true);
 });
 
 test("an explicit exact Frontier content plan takes precedence over raw room derivation", () => {

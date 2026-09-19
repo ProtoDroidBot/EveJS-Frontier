@@ -1,4 +1,4 @@
-const FRONTIER_DUNGEON_SPAWN_AUTHORITY_VERSION = 5;
+const FRONTIER_DUNGEON_SPAWN_AUTHORITY_VERSION = 7;
 const FRONTIER_DUNGEON_SPAWN_GROUP_IDS = Object.freeze([
   4871, // Asteroid Site
   4872, // Crude Rift
@@ -91,6 +91,37 @@ function resolveFrontierDungeonEntryGroupID(dungeon, groupIDByTypeID) {
   );
 }
 
+/**
+ * A standalone universe site must own the entry object advertised by the
+ * dungeon row. Some Frontier rows are prefab/locator wrappers whose
+ * entryObjectID is absent from their authored rooms (or points at a different
+ * type). They are valid building blocks, but invalid standalone destinations.
+ *
+ * Older partial fixtures may omit entryObjectID entirely; those retain the
+ * legacy group-only eligibility behavior. Full client rows always declare it.
+ */
+function hasMatchingAuthoredEntryObject(dungeon) {
+  const entryObjectID = Math.max(0, toInt(dungeon && dungeon.entryObjectID, 0));
+  if (entryObjectID <= 0) {
+    return true;
+  }
+  const entryTypeID = Math.max(0, toInt(dungeon && dungeon.entryTypeID, 0));
+  if (entryTypeID <= 0) {
+    return false;
+  }
+  for (const room of normalizeRows(dungeon && dungeon.rooms)) {
+    for (const object of normalizeRows(room && room.objects)) {
+      if (
+        toInt(object && object.objectID, 0) === entryObjectID &&
+        toInt(object && object.typeID, 0) === entryTypeID
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function addDungeonID(target, value) {
   const dungeonID = Math.max(0, toInt(value, 0));
   if (dungeonID > 0) {
@@ -126,7 +157,34 @@ function collectFrontierDungeonSpawnAuthorityIDs(
 
   for (const dungeon of normalizeRows(source.frontierDungeonTemplates)) {
     const entryGroupID = resolveFrontierDungeonEntryGroupID(dungeon, groupIDByTypeID);
-    if (FRONTIER_DUNGEON_SPAWN_GROUP_ID_SET.has(entryGroupID)) {
+    if (
+      FRONTIER_DUNGEON_SPAWN_GROUP_ID_SET.has(entryGroupID) &&
+      hasMatchingAuthoredEntryObject(dungeon)
+    ) {
+      addDungeonID(included, dungeon && (dungeon.dungeonID ?? dungeon._key));
+    }
+  }
+
+  return [...included].sort((left, right) => left - right);
+}
+
+/**
+ * Return every row which advertises one of the standalone Frontier site
+ * groups, including malformed prefab wrappers. Comparing this set with the
+ * spawn-authority set lets callers retain invalid rows for exact references
+ * without publishing them through world-spawn indexes.
+ */
+function collectFrontierDungeonSiteGroupIDs(
+  source: Record<string, any> = {},
+  itemTypes = source.itemTypes,
+) {
+  const included = new Set<any>();
+  const groupIDByTypeID = buildItemTypeGroupMap(itemTypes);
+
+  for (const dungeon of normalizeRows(source.frontierDungeonTemplates)) {
+    if (FRONTIER_DUNGEON_SPAWN_GROUP_ID_SET.has(
+      resolveFrontierDungeonEntryGroupID(dungeon, groupIDByTypeID),
+    )) {
       addDungeonID(included, dungeon && (dungeon.dungeonID ?? dungeon._key));
     }
   }
@@ -174,6 +232,7 @@ function buildFrontierDungeonSpawnTemplates(
       sourceDungeonID <= 0 ||
       entryObjectTypeID <= 0 ||
       !presentation ||
+      !hasMatchingAuthoredEntryObject(dungeon) ||
       existingSourceDungeonIDs.has(sourceDungeonID)
     ) {
       continue;
@@ -346,7 +405,9 @@ module.exports = {
   GENERAL_ANCHOR_CLASS_WEIGHTS,
   RESOURCE_ANCHOR_CLASS_WEIGHTS,
   buildFrontierDungeonSpawnTemplates,
+  collectFrontierDungeonSiteGroupIDs,
   collectFrontierDungeonSpawnAuthorityIDs,
+  hasMatchingAuthoredEntryObject,
   getUniverseDungeonAnchorDistanceRange,
   isTemplateEligibleForUniverseSpawning,
   isTemplateFromFrontierDungeonDataset,

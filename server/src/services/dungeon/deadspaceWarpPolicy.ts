@@ -15,20 +15,15 @@
 //       mission bookmark deep in a pocket) is clamped to that site's warp-in point, so you can
 //       never land past the gate you haven't taken.
 //
-// Spatial model (parity shortcut, per the "shortcuts OK" latitude): a dungeon's logical deadspace
-// region remains a broad sphere used to reject gate-skipping. Its physical warp-in boundary is a
-// much smaller, configurable grid perimeter. Inbound ships land on the approach-facing side of
-// that perimeter, and the point is pushed outward when it intersects a materialized or authored
-// site object. This keeps the broad deadspace rule without dropping a ship on the entry beacon.
+// Spatial model (parity shortcut, per the "shortcuts OK" latitude): a dungeon site occupies a
+// sphere of radius DEADSPACE_SITE_RADIUS_METERS around the instance's anchor position. Mission
+// pockets sit ~5.5e9 m off a celestial while their rooms span only ~3e7 m from the anchor, so a
+// ~1e9 m radius contains every room yet excludes the parent celestial and unrelated grids.
 
 const path = require("path");
 
 // Radius around a dungeon instance anchor that counts as "inside the site".
 const DEADSPACE_SITE_RADIUS_METERS = 1_000_000_000; // ~3.34 light-seconds
-const DUNGEON_SITE_WARP_IN_BOUNDARY_METERS = 250_000;
-const DUNGEON_WARP_IN_COLLISION_CLEARANCE_METERS = 10_000;
-const DEFAULT_AUTHORED_OBJECT_RADIUS_METERS = 2_500;
-const MAX_WARP_IN_COLLISION_PASSES = 128;
 
 function toFiniteNumber(value, fallback = 0) {
   const numeric = Number(value);
@@ -63,62 +58,9 @@ function distanceMeters(a, b) {
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-function addVectors(a, b) {
-  return {
-    x: toFiniteNumber(a && a.x, 0) + toFiniteNumber(b && b.x, 0),
-    y: toFiniteNumber(a && a.y, 0) + toFiniteNumber(b && b.y, 0),
-    z: toFiniteNumber(a && a.z, 0) + toFiniteNumber(b && b.z, 0),
-  };
-}
-
-function subtractVectors(a, b) {
-  return {
-    x: toFiniteNumber(a && a.x, 0) - toFiniteNumber(b && b.x, 0),
-    y: toFiniteNumber(a && a.y, 0) - toFiniteNumber(b && b.y, 0),
-    z: toFiniteNumber(a && a.z, 0) - toFiniteNumber(b && b.z, 0),
-  };
-}
-
-function scaleVector(vector, scale) {
-  return {
-    x: toFiniteNumber(vector && vector.x, 0) * scale,
-    y: toFiniteNumber(vector && vector.y, 0) * scale,
-    z: toFiniteNumber(vector && vector.z, 0) * scale,
-  };
-}
-
-function dotVectors(a, b) {
-  return (
-    toFiniteNumber(a && a.x, 0) * toFiniteNumber(b && b.x, 0) +
-    toFiniteNumber(a && a.y, 0) * toFiniteNumber(b && b.y, 0) +
-    toFiniteNumber(a && a.z, 0) * toFiniteNumber(b && b.z, 0)
-  );
-}
-
-function normalizeVector(vector, fallback = { x: 1, y: 0, z: 0 }) {
-  const point = pointFromVector(vector);
-  const length = point ? distanceMeters(point, { x: 0, y: 0, z: 0 }) : 0;
-  if (length > 0.000001) {
-    return scaleVector(point, 1 / length);
-  }
-  const fallbackPoint = pointFromVector(fallback) || { x: 1, y: 0, z: 0 };
-  const fallbackLength = distanceMeters(fallbackPoint, { x: 0, y: 0, z: 0 });
-  return fallbackLength > 0.000001
-    ? scaleVector(fallbackPoint, 1 / fallbackLength)
-    : { x: 1, y: 0, z: 0 };
-}
-
 function requireDungeonRuntime() {
   try {
     return require(path.join(__dirname, "../../services/dungeon/dungeonRuntime"));
-  } catch (_error) {
-    return null;
-  }
-}
-
-function requireDungeonAuthority() {
-  try {
-    return require(path.join(__dirname, "../../services/dungeon/dungeonAuthority"));
   } catch (_error) {
     return null;
   }
@@ -147,217 +89,33 @@ function isPointInsideInstance(point, instance) {
   return distanceMeters(point, anchor) <= DEADSPACE_SITE_RADIUS_METERS;
 }
 
-function resolveSiteWarpInProfile(instance) {
-  let template = null;
-  const dungeonAuthority = requireDungeonAuthority();
-  if (dungeonAuthority && typeof dungeonAuthority.getTemplateByID === "function") {
-    try {
-      template = dungeonAuthority.getTemplateByID(instance && instance.templateID) || null;
-    } catch (_error) {
-      template = null;
-    }
+// Only gated/deadspace complexes need the intra-site warp prohibition. The
+// dungeon runtime also backs ordinary combat anomalies and other single-room
+// sites; treating every runtime instance as deadspace prevents pilots from
+// warping back to those public site beacons even though there is no gate to
+// skip. Runtime-created gated instances carry their authored gate states.
+function isWarpRestrictedInstance(instance) {
+  if (!instance || typeof instance !== "object") {
+    return false;
   }
-  const candidates = [
-    instance && instance.frontierDungeonWarpIn,
-    instance && instance.metadata && instance.metadata.frontierDungeonWarpIn,
-    instance && instance.spawnState && instance.spawnState.frontierDungeonWarpIn,
-    instance && instance.spawnState && instance.spawnState.populationHints &&
-      instance.spawnState.populationHints.frontierDungeonWarpIn,
-    template && template.frontierDungeonWarpIn,
-    template && template.populationHints && template.populationHints.frontierDungeonWarpIn,
-  ].filter((entry) => entry && typeof entry === "object");
-  const configured = candidates[0] || {};
-  return {
-    boundaryRadiusMeters: Math.max(
-      1,
-      toFiniteNumber(
-        configured.boundaryRadiusMeters,
-        DUNGEON_SITE_WARP_IN_BOUNDARY_METERS,
-      ),
-    ),
-    collisionClearanceMeters: Math.max(
-      0,
-      toFiniteNumber(
-        configured.collisionClearanceMeters,
-        DUNGEON_WARP_IN_COLLISION_CLEARANCE_METERS,
-      ),
-    ),
-    template,
-  };
-}
-
-function listSceneEntities(scene) {
-  if (!scene || typeof scene !== "object") {
-    return [];
+  const explicit = [
+    instance.deadspaceWarpRestricted,
+    instance.metadata && instance.metadata.deadspaceWarpRestricted,
+    instance.spawnState && instance.spawnState.deadspaceWarpRestricted,
+  ].find((value) => value === true || value === false);
+  if (explicit !== undefined) {
+    return explicit === true;
   }
-  const entities: any[] = [];
-  const seenObjects = new Set<any>();
-  const seenIDs = new Set<any>();
-  const addEntity = (entity) => {
-    if (!entity || typeof entity !== "object" || seenObjects.has(entity)) {
-      return;
-    }
-    const entityID = toInt(entity.itemID, 0);
-    if (entityID > 0 && seenIDs.has(entityID)) {
-      return;
-    }
-    seenObjects.add(entity);
-    if (entityID > 0) {
-      seenIDs.add(entityID);
-    }
-    entities.push(entity);
-  };
-  for (const entity of Array.isArray(scene.staticEntities) ? scene.staticEntities : []) {
-    addEntity(entity);
+  if (
+    instance.gateStatesByKey &&
+    typeof instance.gateStatesByKey === "object" &&
+    Object.keys(instance.gateStatesByKey).length > 0
+  ) {
+    return true;
   }
-  if (scene.staticEntitiesByID instanceof Map) {
-    for (const entity of scene.staticEntitiesByID.values()) {
-      addEntity(entity);
-    }
-  }
-  if (scene.dynamicEntities instanceof Map) {
-    for (const entity of scene.dynamicEntities.values()) {
-      addEntity(entity);
-    }
-  } else if (Array.isArray(scene.dynamicEntities)) {
-    for (const entity of scene.dynamicEntities) {
-      addEntity(entity);
-    }
-  }
-  return entities;
-}
-
-function listMaterializedSiteObstacles(instance, scene, excludedEntityID = 0) {
-  const instanceID = Math.max(0, toInt(instance && instance.instanceID, 0));
-  if (instanceID <= 0) {
-    return [];
-  }
-  return listSceneEntities(scene).flatMap((entity) => {
-    const entityInstanceID = Math.max(
-      0,
-      toInt(
-        entity && (
-          entity.dungeonSiteInstanceID ||
-          entity.airNpeInstanceID ||
-          entity.dungeonCurrentInstanceID
-        ),
-        0,
-      ),
-    );
-    if (
-      entityInstanceID !== instanceID ||
-      (excludedEntityID > 0 && toInt(entity && entity.itemID, 0) === excludedEntityID)
-    ) {
-      return [];
-    }
-    const position = pointFromVector(entity && entity.position);
-    if (!position) {
-      return [];
-    }
-    return [{
-      position,
-      radius: Math.max(0, toFiniteNumber(entity && entity.radius, 0)),
-    }];
-  });
-}
-
-function listAuthoredSiteObstacles(instance, template) {
-  if (!template || typeof template !== "object") {
-    return [];
-  }
-  const anchor = resolveInstanceAnchor(instance);
-  if (!anchor) {
-    return [];
-  }
-  const rooms = Array.isArray(template.rooms) ? template.rooms : [];
-  const entryObjectID = Math.max(
-    0,
-    toInt(
-      template.entryObjectID ||
-      template.dungeonEntryObjectID ||
-      template.entryDungeonObjectID,
-      0,
-    ),
-  );
-  let entryRoom = null;
-  let entryPosition = null;
-  for (const room of rooms) {
-    const roomPosition = pointFromVector(room && room.position) || { x: 0, y: 0, z: 0 };
-    for (const object of Array.isArray(room && room.objects) ? room.objects : []) {
-      if (entryObjectID > 0 && toInt(object && object.objectID, 0) === entryObjectID) {
-        entryRoom = room;
-        entryPosition = addVectors(
-          roomPosition,
-          pointFromVector(object && object.position) || { x: 0, y: 0, z: 0 },
-        );
-        break;
-      }
-    }
-    if (entryRoom) {
-      break;
-    }
-  }
-  entryRoom = entryRoom || rooms[0] || null;
-  if (!entryRoom) {
-    return [];
-  }
-  const roomPosition = pointFromVector(entryRoom && entryRoom.position) || { x: 0, y: 0, z: 0 };
-  entryPosition = entryPosition || roomPosition;
-  return (Array.isArray(entryRoom && entryRoom.objects) ? entryRoom.objects : []).flatMap((object) => {
-    const absolutePosition = addVectors(
-      roomPosition,
-      pointFromVector(object && object.position) || { x: 0, y: 0, z: 0 },
-    );
-    return [{
-      position: addVectors(anchor, subtractVectors(absolutePosition, entryPosition)),
-      radius: Math.max(
-        0,
-        toFiniteNumber(object && object.radius, DEFAULT_AUTHORED_OBJECT_RADIUS_METERS),
-      ),
-    }];
-  });
-}
-
-function resolveCollisionSafeRadialDistance(anchor, direction, initialDistance, obstacles, clearance, shipRadius) {
-  let radialDistance = initialDistance;
-  for (let pass = 0; pass < MAX_WARP_IN_COLLISION_PASSES; pass += 1) {
-    let nextDistance = radialDistance;
-    for (const obstacle of obstacles) {
-      const obstaclePosition = pointFromVector(obstacle && obstacle.position);
-      if (!obstaclePosition) {
-        continue;
-      }
-      const offset = subtractVectors(obstaclePosition, anchor);
-      const alongRay = dotVectors(offset, direction);
-      const offsetLengthSquared = dotVectors(offset, offset);
-      const perpendicularSquared = Math.max(
-        0,
-        offsetLengthSquared - (alongRay * alongRay),
-      );
-      const exclusionRadius = Math.max(
-        0,
-        toFiniteNumber(obstacle && obstacle.radius, 0),
-      ) + shipRadius + clearance;
-      const exclusionRadiusSquared = exclusionRadius * exclusionRadius;
-      if (perpendicularSquared > exclusionRadiusSquared) {
-        continue;
-      }
-      const halfChord = Math.sqrt(Math.max(0, exclusionRadiusSquared - perpendicularSquared));
-      const nearIntersection = alongRay - halfChord;
-      const farIntersection = alongRay + halfChord;
-      if (
-        radialDistance >= nearIntersection - 1 &&
-        radialDistance <= farIntersection + 1
-      ) {
-        nextDistance = Math.max(nextDistance, farIntersection + 1);
-      }
-    }
-    if (nextDistance <= radialDistance + 0.000001) {
-      break;
-    }
-    radialDistance = nextDistance;
-  }
-  return radialDistance;
+  const siteFamily = String(instance.siteFamily || "").trim().toLowerCase();
+  const siteKind = String(instance.siteKind || "").trim().toLowerCase();
+  return siteFamily === "mission" || siteKind === "mission";
 }
 
 // Evaluate a warp against the deadspace policy.
@@ -367,7 +125,7 @@ function resolveCollisionSafeRadialDistance(anchor, direction, initialDistance, 
 //   { action: "clamp", point, siteInstanceID }       — redirect the warp to a site warp-in point
 //
 // options.dungeonGateTransit === true bypasses the in-pocket block (the gate warp itself).
-function evaluateDeadspaceWarp(entity, destinationPoint, options: Record<string, any> = {}, scene = null) {
+function evaluateDeadspaceWarp(entity, destinationPoint, options: Record<string, any> = {}, _scene = null) {
   const point = pointFromVector(destinationPoint);
   if (!entity || !point) {
     return { action: "allow" };
@@ -387,7 +145,11 @@ function evaluateDeadspaceWarp(entity, destinationPoint, options: Record<string,
   // (A) Ship is inside a pocket — block warps that stay inside the same site.
   if (currentInstanceID > 0 && dungeonRuntime && typeof dungeonRuntime.getInstance === "function") {
     const instance = dungeonRuntime.getInstance(currentInstanceID);
-    if (instance && isPointInsideInstance(point, instance)) {
+    if (
+      instance &&
+      isWarpRestrictedInstance(instance) &&
+      isPointInsideInstance(point, instance)
+    ) {
       return {
         action: "block",
         errorMsg: "DunCannotWarpWithinComplex",
@@ -410,6 +172,9 @@ function evaluateDeadspaceWarp(entity, destinationPoint, options: Record<string,
           if (Math.max(0, toInt(instance && instance.instanceID, 0)) === currentInstanceID) {
             continue;
           }
+          if (!isWarpRestrictedInstance(instance)) {
+            continue;
+          }
           if (isPointInsideInstance(point, instance)) {
             const anchor = resolveInstanceAnchor(instance);
             const candidateDistance = distanceMeters(point, anchor);
@@ -423,7 +188,7 @@ function evaluateDeadspaceWarp(entity, destinationPoint, options: Record<string,
         containing = null;
       }
       if (containing) {
-        const warpInPoint = resolveSiteWarpInPoint(containing, entity, scene);
+        const warpInPoint = resolveSiteWarpInPoint(containing);
         if (warpInPoint && distanceMeters(warpInPoint, point) > 1) {
           return {
             action: "clamp",
@@ -438,47 +203,17 @@ function evaluateDeadspaceWarp(entity, destinationPoint, options: Record<string,
   return { action: "allow" };
 }
 
-// Resolve the deterministic approach-side landing point. The site boundary prevents an inbound
-// warp from landing in the active grid, while the obstacle pass prevents an unusually large or
-// explicitly placed object from enveloping that boundary point.
-function resolveSiteWarpInPoint(instance, shipEntity = null, scene = null) {
-  const anchor = resolveInstanceAnchor(instance);
-  if (!anchor) {
-    return null;
-  }
-  const profile = resolveSiteWarpInProfile(instance);
-  const shipPosition = pointFromVector(shipEntity && shipEntity.position);
-  const direction = normalizeVector(
-    shipPosition ? subtractVectors(shipPosition, anchor) : null,
-    { x: 1, y: 0, z: 0 },
-  );
-  const shipRadius = Math.max(0, toFiniteNumber(shipEntity && shipEntity.radius, 0));
-  const obstacles = [
-    ...listMaterializedSiteObstacles(
-      instance,
-      scene,
-      Math.max(0, toInt(shipEntity && shipEntity.itemID, 0)),
-    ),
-    ...listAuthoredSiteObstacles(instance, profile.template),
-  ];
-  const radialDistance = resolveCollisionSafeRadialDistance(
-    anchor,
-    direction,
-    profile.boundaryRadiusMeters + profile.collisionClearanceMeters + shipRadius,
-    obstacles,
-    profile.collisionClearanceMeters,
-    shipRadius,
-  );
-  return addVectors(anchor, scaleVector(direction, radialDistance));
+// The warp-in point of a site is its anchor (the entry-room / beacon position). Landing scatter is
+// applied downstream; this is the deterministic warp-in reference the client already uses.
+function resolveSiteWarpInPoint(instance) {
+  return resolveInstanceAnchor(instance);
 }
 
 module.exports = {
   DEADSPACE_SITE_RADIUS_METERS,
-  DUNGEON_SITE_WARP_IN_BOUNDARY_METERS,
-  DUNGEON_WARP_IN_COLLISION_CLEARANCE_METERS,
   evaluateDeadspaceWarp,
   isPointInsideInstance,
+  isWarpRestrictedInstance,
   resolveInstanceAnchor,
-  resolveSiteWarpInProfile,
   resolveSiteWarpInPoint,
 };

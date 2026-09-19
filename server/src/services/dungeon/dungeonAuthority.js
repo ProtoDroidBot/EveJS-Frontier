@@ -137,7 +137,10 @@ function hydrateExistingFrontierDungeonTemplates(templatesByID, frontierDungeonT
         const entryObjectTypeID = Math.max(0, toInt(template && template.entryObjectTypeID, toInt(dungeon && dungeon.entryTypeID, 0)));
         const entryObjectGroupID = Math.max(0, toInt(template && template.entryObjectGroupID, groupIDByTypeID.get(entryObjectTypeID) || 0));
         const presentation = dungeonSpawnEligibility.FRONTIER_DUNGEON_SPAWN_PRESENTATION_BY_GROUP_ID[entryObjectGroupID] || null;
-        if (!dungeon || !supportedGroupIDs.has(entryObjectGroupID) || !presentation) {
+        if (!dungeon ||
+            !supportedGroupIDs.has(entryObjectGroupID) ||
+            !presentation ||
+            !dungeonSpawnEligibility.hasMatchingAuthoredEntryObject(dungeon)) {
             continue;
         }
         templatesByID[templateID] = {
@@ -168,6 +171,9 @@ function hydrateExistingFrontierDungeonTemplates(templatesByID, frontierDungeonT
     return hydratedTemplateCount;
 }
 function mergeFrontierDungeonSpawnTemplates(payload, frontierDungeonTemplates = readStaticRows(TABLE.FRONTIER_DUNGEON_TEMPLATES), itemTypes = readStaticRows(TABLE.ITEM_TYPES)) {
+    const frontierSiteGroupDungeonIDs = new Set(dungeonSpawnEligibility.collectFrontierDungeonSiteGroupIDs({ frontierDungeonTemplates }, itemTypes));
+    const frontierSpawnAuthorityIDs = new Set(dungeonSpawnEligibility.collectFrontierDungeonSpawnAuthorityIDs({ frontierDungeonTemplates }, itemTypes));
+    const invalidStandaloneFrontierDungeonIDs = new Set([...frontierSiteGroupDungeonIDs].filter((dungeonID) => (!frontierSpawnAuthorityIDs.has(dungeonID))));
     const templatesByID = {
         ...normalizeObject(payload && payload.templatesByID),
     };
@@ -192,7 +198,10 @@ function mergeFrontierDungeonSpawnTemplates(payload, frontierDungeonTemplates = 
     }
     let frontierDungeonConfiguredTemplateCount = 0;
     for (const [templateID, template] of Object.entries(templatesByID)) {
-        const configuredTemplate = frontierDungeonSpawns.decorateTemplate(template);
+        const sourceDungeonID = Math.max(0, toInt(template && template.sourceDungeonID, 0));
+        const configuredTemplate = invalidStandaloneFrontierDungeonIDs.has(sourceDungeonID)
+            ? template
+            : frontierDungeonSpawns.decorateTemplate(template);
         templatesByID[templateID] = configuredTemplate;
         if (configuredTemplate && configuredTemplate.frontierDungeonSpawnConfigured === true) {
             frontierDungeonConfiguredTemplateCount += 1;
@@ -200,7 +209,12 @@ function mergeFrontierDungeonSpawnTemplates(payload, frontierDungeonTemplates = 
     }
     for (const template of Object.values(templatesByID)) {
         const templateID = String(template && template.templateID || "").trim();
-        if (templateID) {
+        const sourceDungeonID = Math.max(0, toInt(template && template.sourceDungeonID, 0));
+        const isFrontierWorldSpawnCandidate = frontierSpawnAuthorityIDs.has(sourceDungeonID);
+        const isConfiguredFrontierWorldSpawn = template && template.frontierDungeonSpawnConfigured === true;
+        if (templateID &&
+            !invalidStandaloneFrontierDungeonIDs.has(sourceDungeonID) &&
+            (!isFrontierWorldSpawnCandidate || isConfiguredFrontierWorldSpawn)) {
             addTemplateIndex(indexes.templateIDsByFamily, template.siteFamily, templateID);
         }
     }

@@ -511,6 +511,47 @@ test("Frontier Creation ship info exposes derived capacitor and fuel capacity", 
   assert.equal(attributes[5633], 2250);
 });
 
+test("Frontier Creation ship info does not reapply live space modifiers", () => {
+  const service = new DogmaService();
+  service._getShipRuntimeAttributeOverrides = () => ({
+    creationModifiersApplied: true,
+    attributes: { 37: 180, 38: 288, 482: 200, 5633: 2250 },
+    mass: 1,
+    maxVelocity: 180,
+    maxTargetRange: 0,
+    maxLockedTargets: 0,
+    signatureRadius: 0,
+    cloakingTargetingDelay: 0,
+    scanResolution: 0,
+  });
+  const attributes = service._buildShipAttributes(
+    { characterID: 140000005 },
+    {
+      itemID: 9988400001895,
+      typeID: 95276,
+      ownerID: 140000005,
+      conditionState: { charge: 1, fuelCharge: 2250 },
+    },
+    { compatibilityProfile: "frontier" },
+    {
+      creationDogmaContext: {
+        shipAttributeModifierEntries: [
+          { modifiedAttributeID: 37, operation: 2, value: 180 },
+          { modifiedAttributeID: 38, operation: 2, value: 288 },
+          { modifiedAttributeID: 482, operation: 2, value: 200 },
+          { modifiedAttributeID: 5633, operation: 2, value: 2250 },
+        ],
+      },
+    },
+  );
+
+  assert.equal(attributes[37], 180);
+  assert.equal(attributes[38], 288);
+  assert.equal(attributes[482], 200);
+  assert.equal(attributes[5633], 2250);
+  assert.equal(attributes[5635], 2250);
+});
+
 test("Frontier Creation refreshes derived attributes after Godma hydration", () => {
   const service = new DogmaService();
   const notifications: any[] = [];
@@ -1034,7 +1075,7 @@ test("Frontier construction hydration publishes assembly activation state", () =
   assert.equal(smartGateEntity.targetSolarsystemID, 30000005);
 });
 
-test("Frontier Refuge accepts Creation without widening its ship-group rules", () => {
+test("Frontier Refuge accepts shuttles, corvettes, and current modular Creation hulls", () => {
   const definitions = berthingContractTesting.buildSmartHangarDefinitions([{
     _key: 87160,
     smartHangar: {
@@ -1064,7 +1105,41 @@ test("Frontier Refuge accepts Creation without widening its ship-group rules", (
       refuge,
       { typeID: 95735, groupID: 5128 },
     ),
+    true,
+  );
+  assert.equal(
+    berthingContractTesting.smartHangarAcceptsShip(
+      refuge,
+      { typeID: 95968, groupID: 5128 },
+    ),
+    true,
+  );
+  assert.equal(
+    berthingContractTesting.smartHangarAcceptsShip(
+      refuge,
+      { typeID: 95748, groupID: 5128 },
+    ),
     false,
+  );
+
+  const partialDefinitions = berthingContractTesting
+    .buildSmartHangarDefinitions([{
+      _key: 87160,
+      smartHangar: {
+        acceptedGroupIDs: {},
+        accessRange: 5000,
+        allowUserAdd: 1,
+        allowUserTake: 1,
+      },
+    }]);
+  const partialRefuge = partialDefinitions.get(87160);
+  assert.equal(
+    berthingContractTesting.smartHangarAcceptsShipGroup(partialRefuge, 31),
+    true,
+  );
+  assert.equal(
+    berthingContractTesting.smartHangarAcceptsShipGroup(partialRefuge, 237),
+    true,
   );
 });
 
@@ -1116,6 +1191,10 @@ test("Frontier Creation berths at Refuge center and departs outside its hull", (
     radius: 1,
     position: { ...activeShip.spaceState.position },
     direction: { ...activeShip.spaceState.direction },
+    velocity: { x: 50, y: 0, z: 0 },
+    speedFraction: 1,
+    mode: "GOTO",
+    targetPoint: { x: 10_000, y: 2_000, z: 3_000 },
   };
   const refugeEntity: Record<string, any> = {
     itemID: refugeID,
@@ -1185,6 +1264,60 @@ test("Frontier Creation berths at Refuge center and departs outside its hull", (
       refugeID,
     );
     assert.equal(getContractForSession(session, dependencies).phase, BERTHING_PHASE_BERTHED);
+    assert.equal(shipEntity.frontierBerthingHostAssemblyID, refugeID);
+    assert.equal(
+      frontierSpaceRuntime._testing.isShipMovementLockedByRuntimeForTesting(
+        shipEntity,
+      ),
+      true,
+    );
+
+    const restoredShipEntity = frontierSpaceRuntime._testing
+      .buildRuntimeShipEntityForTesting(
+        {
+          itemID: shipID,
+          typeID: activeShip.typeID,
+          groupID: activeShip.groupID,
+          categoryID: activeShip.categoryID,
+          ownerID: activeShip.ownerID,
+          customInfo: activeShip.customInfo,
+          passiveResourceState: {
+            attributes: {},
+            maxVelocity: 200,
+          },
+          spaceState: {
+            ...activeShip.spaceState,
+            mode: "GOTO",
+            speedFraction: 1,
+            velocity: { x: 100, y: 0, z: 0 },
+          },
+        },
+        solarSystemID,
+      );
+    assert.equal(restoredShipEntity.frontierBerthingHostAssemblyID, refugeID);
+    assert.equal(restoredShipEntity.mode, "STOP");
+    assert.equal(restoredShipEntity.speedFraction, 0);
+    assert.deepEqual(restoredShipEntity.velocity, { x: 0, y: 0, z: 0 });
+
+    shipEntity.position = { x: 1_050, y: 2_000, z: 3_000 };
+    shipEntity.velocity = { x: 50, y: 0, z: 0 };
+    shipEntity.speedFraction = 1;
+    shipEntity.mode = "GOTO";
+    const enforced = frontierSpaceRuntime._testing
+      .enforceFrontierBerthedShipMotionForTesting(
+        {
+          getEntityByID(itemID) {
+            return Number(itemID) === refugeID ? refugeEntity : null;
+          },
+        },
+        shipEntity,
+      );
+    assert.equal(enforced.berthed, true);
+    assert.equal(enforced.changed, true);
+    assert.deepEqual(shipEntity.position, refugeEntity.position);
+    assert.deepEqual(shipEntity.velocity, { x: 0, y: 0, z: 0 });
+    assert.equal(shipEntity.speedFraction, 0);
+    assert.equal(shipEntity.mode, "STOP");
 
     berthingContractTesting.clearContracts();
     const recovered = getContractForSession(session, dependencies);
@@ -1200,6 +1333,16 @@ test("Frontier Creation berths at Refuge center and departs outside its hull", (
     const departedInfo = JSON.parse(activeShip.customInfo);
     assert.deepEqual(departedInfo.evejsFrontierCreation, creationState);
     assert.equal(Object.hasOwn(departedInfo, "evejsFrontierBerthing"), false);
+    assert.equal(
+      Object.hasOwn(shipEntity, "frontierBerthingHostAssemblyID"),
+      false,
+    );
+    assert.equal(
+      frontierSpaceRuntime._testing.isShipMovementLockedByRuntimeForTesting(
+        shipEntity,
+      ),
+      false,
+    );
     assert.equal(getContractForSession(session, dependencies), null);
   } finally {
     berthingContractTesting.clearContracts();
@@ -3091,6 +3234,56 @@ test("Frontier legacy orbitals use only generic CR object fields", () => {
     normalized.entries.map(([key]) => key),
     ["itemID", "typeID", "ownerID", "locationID"],
   );
+});
+
+test("Frontier native NPC ships use CREntity data instead of CRShip data", () => {
+  const entity: Record<string, any> = {
+    itemID: 980000000002,
+    typeID: 87582,
+    slimTypeID: 87582,
+    groupID: 4860,
+    slimGroupID: 4860,
+    categoryID: 11,
+    slimCategoryID: 11,
+    graphicID: 31488,
+    kind: "ship",
+    nativeNpc: true,
+    ownerID: 1,
+    itemName: "Eirhdizhmai",
+    slimName: "Eirhdizhmai",
+    radius: 75,
+    signatureRadius: 110,
+    characterID: 140000005,
+    modules: [{ itemID: 1234 }],
+    skinMaterialSetID: 55,
+    hostileResponseThreshold: -5,
+    friendlyResponseThreshold: 5,
+  };
+
+  const normalized = normalizeCrDataDictionaryForProfile(
+    buildSlimItemDict(entity),
+    entity,
+    "frontier",
+  );
+  const fields = Object.fromEntries(normalized.entries);
+
+  assert.deepEqual(
+    normalized.entries.map(([key]) => key),
+    [
+      "itemID",
+      "typeID",
+      "ownerID",
+      "name",
+      "signatureRadius",
+      "hostile_response_threshold",
+      "friendly_response_threshold",
+    ],
+  );
+  assert.equal(fields.name, "Eirhdizhmai");
+  assert.equal(fields.signatureRadius, 110);
+  assert.equal(fields.charID, undefined);
+  assert.equal(fields.modules, undefined);
+  assert.equal(fields.skinMaterialSetID, undefined);
 });
 
 test("Frontier AddBalls2 uses ball ID keyed crdata tuples", () => {

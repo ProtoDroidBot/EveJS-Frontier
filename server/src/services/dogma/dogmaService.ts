@@ -46,6 +46,7 @@ const {
   ITEM_FLAGS,
   SHIP_CATEGORY_ID,
   getItemMutationVersion,
+  ensureFreeStationFuelSupply,
   findCharacterShipByType,
   findItemById,
   grantItemToCharacterLocation,
@@ -332,6 +333,10 @@ const ATTRIBUTE_CAPACITOR_CAPACITY =
 // `fuelCapacity` (Creation FuelCapacityAdd total, e.g. 2,250).
 const ATTRIBUTE_FUEL_CAPACITY = getAttributeIDByNames("fuelCapacity") || 5633;
 const ATTRIBUTE_FUEL_CHARGE = getAttributeIDByNames("fuelCharge") || 5635;
+// The client continues processing GetAllInfo/MachoBindObject after the wire
+// response has been sent.  CreationDogmaItem initializes deferred dynamic
+// attributes during that pass and will otherwise overwrite fuelCharge with 0.
+const DOCKED_DOGMA_ATTRIBUTE_REFRESH_DELAY_MS = 250;
 const ATTRIBUTE_MAX_LOCKED_TARGETS =
   getAttributeIDByNames("maxLockedTargets") || 192;
 const ATTRIBUTE_QUANTITY = getAttributeIDByNames("quantity") || 805;
@@ -2627,10 +2632,18 @@ class DogmaService extends BaseService {
         runtimeAttributeOverrides.scanResolution,
       );
     }
-    // The space entity does not yet model flagCreationFitting modules. Treat
-    // its passive snapshot as the base, then add the Creation layout so stale
-    // zeroes in the scene cannot erase capacities contributed by those parts.
-    if (creationShipAttributeModifierEntries.length > 0) {
+    // Docked snapshots do not model flagCreationFitting modules, so add the
+    // Creation layout there. Live space entities already include that layout
+    // in passiveDerivedState; applying it again doubles every additive module
+    // contribution (fuel/cargo/capacitor capacity, thrust, and so on).
+    const runtimeAlreadyIncludesCreationModifiers = Boolean(
+      runtimeAttributeOverrides &&
+      runtimeAttributeOverrides.creationModifiersApplied === true,
+    );
+    if (
+      creationShipAttributeModifierEntries.length > 0 &&
+      !runtimeAlreadyIncludesCreationModifiers
+    ) {
       applyModifierGroups(attributes, creationShipAttributeModifierEntries);
     }
     if (
@@ -2676,8 +2689,18 @@ class DogmaService extends BaseService {
         (armorHP * shipCondition.armorDamage).toFixed(6),
       );
     }
-    if (Number.isFinite(shipCondition.damage)) {
-      attributes[ATTRIBUTE_ITEM_DAMAGE] = shipCondition.damage;
+    const structureHP = Number(attributes[ATTRIBUTE_STRUCTURE_HP]);
+    if (
+      Number.isFinite(structureHP) &&
+      structureHP >= 0 &&
+      Number.isFinite(shipCondition.damage)
+    ) {
+      // conditionState.damage is persisted as a 0-1 ratio, while Dogma's
+      // attribute 3 is an absolute damage amount. Sending the ratio directly
+      // makes a docked 72.6%-damaged 2100 HP hull look like it lost 0.726 HP.
+      attributes[ATTRIBUTE_ITEM_DAMAGE] = Number(
+        (structureHP * shipCondition.damage).toFixed(6),
+      );
     }
     // CCP parity: Set attribute 18 ("charge") to the current capacitor energy
     // in GJ so the client's HUD capacitor gauge displays correctly.  The value
@@ -3761,6 +3784,57 @@ class DogmaService extends BaseService {
         normalizedChanges.map((change) => summarizeModuleAttributeChangeLog(change)),
       )}`,
     );
+  }
+  _dispatchPostResponseAttributeChanges(session, changes: any[] = []) {
+    if (!Array.isArray(changes) || changes.length === 0) {
+      return false;
+    }
+    const configuredDelay = Number(
+      session && session._postDogmaAttributeRefreshDelayMs,
+    );
+    const delayMs = Number.isFinite(configuredDelay) && configuredDelay >= 0
+      ? configuredDelay
+      : isDockedSession(session)
+        ? DOCKED_DOGMA_ATTRIBUTE_REFRESH_DELAY_MS
+        : 0;
+    if (delayMs <= 0) {
+      this._notifyModuleAttributeChanges(session, changes);
+      return true;
+    }
+    const timer = setTimeout(() => {
+      try {
+        this._notifyModuleAttributeChanges(session, changes);
+      } catch (error: any) {
+        log.debug(
+          `[DogmaIM] delayed attribute refresh skipped: ${error && error.message ? error.message : error}`,
+        );
+      }
+    }, delayMs);
+    if (timer && typeof timer.unref === "function") {
+      timer.unref();
+    }
+    return true;
+  }
+  _queuePostLoadFuelAttributeChanges(session, changes: any[] = []) {
+    if (!session || !Array.isArray(changes) || changes.length === 0) {
+      return;
+    }
+    // LoadFuel is commonly the inline call which creates the client's bound
+    // dogmaIM object.  A notification emitted from that inline handler arrives
+    // before the bind response, while Godma may still have a priming channel;
+    // the retail client explicitly discards attribute batches in that state.
+    // Hold this one refresh until packetDispatcher has sent the call response.
+    session._pendingLoadFuelAttributeChanges = changes;
+  }
+  _flushPostLoadFuelAttributeChanges(session) {
+    const changes = session && session._pendingLoadFuelAttributeChanges;
+    if (session) {
+      delete session._pendingLoadFuelAttributeChanges;
+    }
+    if (!Array.isArray(changes) || changes.length === 0) {
+      return false;
+    }
+    return this._dispatchPostResponseAttributeChanges(session, changes);
   }
   _notifyShipFittingResourceAttributeChanges(
     session,
@@ -5538,7 +5612,7 @@ class DogmaService extends BaseService {
     if (changes.length <= 0) {
       return 0;
     }
-    this._notifyModuleAttributeChanges(session, changes);
+    this._dispatchPostResponseAttributeChanges(session, changes);
     return changes.length;
   }
   _queuePostGetAllInfoCreationAttributeRefresh(
@@ -5612,7 +5686,7 @@ class DogmaService extends BaseService {
     if (changes.length === 0) {
       return 0;
     }
-    this._notifyModuleAttributeChanges(session, changes);
+    this._dispatchPostResponseAttributeChanges(session, changes);
     return changes.length;
   }
   _shouldIncludeLoginShipInfoLoadedCharges(session) {
@@ -5961,7 +6035,9 @@ class DogmaService extends BaseService {
         throwWrappedUserError("DeniedTargetOtherWarping");
         break;
       case "TARGET_OUT_OF_RANGE":
-        throwWrappedUserError("TargetTooFar");
+        throwWrappedUserError("TargetOutOfRangeFar", {
+          targetname: this._buildUserErrorTypeValue(errorData.targetTypeID),
+        });
         break;
       case "TARGET_NOT_FOUND":
         throwWrappedUserError("TargetingAttemptCancelled");
@@ -7611,6 +7687,16 @@ class DogmaService extends BaseService {
         `accepted=${creationResult && creationResult.success === true} ` +
         `error=${creationResult && creationResult.errorMsg || "none"}`,
       );
+      if (
+        creationResult &&
+        creationResult.success === true &&
+        session &&
+        session._space
+      ) {
+        spaceRuntime.refreshShipDerivedState(session, {
+          broadcast: true,
+        });
+      }
       return creationResult;
     }
     const previousOnline = isEffectivelyOnlineModule(moduleItem);
@@ -9259,7 +9345,7 @@ class DogmaService extends BaseService {
   Handle_LoadFuel(args, session) {
     const shipID = Number(args && args[0]) || 0;
     const fuelTypeID = Number(args && args[1]) || 0;
-    const quantity = Number(args && args[2]) || 0;
+    let quantity = Number(args && args[2]) || 0;
     const fuelItems = args && args[3] != null ? unwrapMarshalValue(args[3]) : null;
     const sourceLocationID = args && args[4] != null
       ? Number(unwrapMarshalValue(args[4])) || 0
@@ -9324,6 +9410,46 @@ class DogmaService extends BaseService {
     );
     const fuelCapacity =
       Number(shipAttributes && shipAttributes[ATTRIBUTE_FUEL_CAPACITY]) || 0;
+    const dockedLocationID = getDockedLocationID(session) || 0;
+    if (dockedLocationID > 0 && fuelTypeID === 77818) {
+      ensureFreeStationFuelSupply(charID, dockedLocationID);
+      // The docked fuel widget derives its submit amount from the local Godma
+      // fuelCharge. During Creation initialization that dynamic attribute can
+      // briefly be reset to its type default, producing a zero-unit request.
+      // Treat that station-only request as "fill the authoritative remainder".
+      const previousFuelCharge = Math.min(
+        Math.max(0, getShipFuelCharge(shipContext.shipMetadata)),
+        Math.max(0, fuelCapacity),
+      );
+      if (quantity <= 0) {
+        quantity = Math.max(0, fuelCapacity - previousFuelCharge);
+        if (quantity <= 0) {
+          if (session) {
+            session._lastLoadFuelRequest = { key: requestKey, atMs: nowMs };
+          }
+          const when = this._sessionFileTime(session);
+          this._queuePostLoadFuelAttributeChanges(session, [[
+            "OnModuleAttributeChange",
+            charID,
+            shipID,
+            ATTRIBUTE_FUEL_CHARGE,
+            when,
+            previousFuelCharge,
+            previousFuelCharge,
+            null,
+          ]]);
+          log.info(
+            `[DogmaIM] LoadFuel zero-unit station request refreshed full tank ` +
+            `ship=${shipID} fuelCharge=${previousFuelCharge}/${fuelCapacity}`,
+          );
+          return null;
+        }
+        log.info(
+          `[DogmaIM] LoadFuel inferred station fill ship=${shipID} ` +
+          `qty=${quantity} fuelCharge=${previousFuelCharge}/${fuelCapacity}`,
+        );
+      }
+    }
 
     const loadResult = loadFuelIntoShipTank({
       characterID: charID,
@@ -9333,7 +9459,7 @@ class DogmaService extends BaseService {
       fuelItems,
       sourceLocationID,
       fuelCapacity,
-      dockedLocationID: getDockedLocationID(session) || 0,
+      dockedLocationID,
     });
     if (!loadResult.success) {
       log.info(
@@ -9386,7 +9512,7 @@ class DogmaService extends BaseService {
       previousFuelProperties[propertyName],
       null,
     ]);
-    this._notifyModuleAttributeChanges(session, [[
+    this._queuePostLoadFuelAttributeChanges(session, [[
       "OnModuleAttributeChange",
       charID,
       shipID,
@@ -10319,6 +10445,10 @@ class DogmaService extends BaseService {
               ? nestedCall[0].toString("utf8")
               : String(nestedCall[0]);
       }
+    }
+    if (dogmaMethodName === "LoadFuel") {
+      this._flushPostLoadFuelAttributeChanges(session);
+      return;
     }
     if (dogmaMethodName !== "GetAllInfo") {
       return;

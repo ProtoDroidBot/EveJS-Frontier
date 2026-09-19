@@ -796,6 +796,24 @@ function updateCharacterRecord(charId, updater) {
     const normalizedRecord = normalizeCharacterRecord(charId, updatedRecord);
     return writeCharacterRecord(charId, normalizedRecord);
 }
+function clearCharacterActiveShipForCloneSelection(charId) {
+    ensureMigrated();
+    const numericCharID = Number(charId) || 0;
+    const currentRecord = readCharacters()[String(numericCharID)] || null;
+    if (numericCharID <= 0 || !currentRecord) {
+        return {
+            success: false,
+            errorMsg: "CHARACTER_NOT_FOUND",
+        };
+    }
+    return writeCharacterRecord(numericCharID, {
+        ...currentRecord,
+        shipID: 0,
+        shipTypeID: 0,
+        shipName: "",
+        suppressActiveShipProvisioning: true,
+    });
+}
 function getCharacterShips(charId) {
     return getCharacterShipItems(charId);
 }
@@ -3341,6 +3359,7 @@ module.exports = {
     writeCharacterRecord,
     removeCharacterRecord,
     updateCharacterRecord,
+    clearCharacterActiveShipForCloneSelection,
     resolveHomeStationInfo,
     getCharacterShips,
     findCharacterShip,

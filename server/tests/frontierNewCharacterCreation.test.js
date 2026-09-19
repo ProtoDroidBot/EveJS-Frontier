@@ -4,12 +4,12 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const config = require("../src/config");
 const CharService = require("../src/services/character/charService");
-const { getCharacterRecord, listCharacterIDs, } = require("../src/services/character/characterState");
+const { clearCharacterActiveShipForCloneSelection, getCharacterRecord, listCharacterIDs, peekCharacterRecord, } = require("../src/services/character/characterState");
 const { CREATION_FITTING_FLAG_ID, ensureCreationState, filterCreationModuleInventoryItems, readCreationState, } = require("../src/services/frontier/creationRuntime");
 const CreationService = require("../src/services/frontier/creationService");
 const { SuiCharacterProvisioningError, prepareSuiCharacterIdentity, } = require("../src/services/frontier/suiCharacterProvisioning");
 const InvBrokerService = require("../src/services/inventory/invBrokerService");
-const { ITEM_FLAGS, findCharacterShipItem, getAllItems, getItemMetadata, grantItemToCharacterLocation, listCharacterItems, listContainerItems, } = require("../src/services/inventory/itemStore");
+const { CLIENT_INVENTORY_STACK_LIMIT, FREE_STATION_FUEL_CUSTOM_INFO, ITEM_FLAGS, consumeInventoryItemQuantity, createSpaceItemForCharacter, findCharacterShipItem, getActiveShipItem, getAllItems, getItemMetadata, grantItemToCharacterLocation, listCharacterItems, listContainerItems, moveItemToLocation, setActiveShipForCharacter, } = require("../src/services/inventory/itemStore");
 const { marshalEncode, } = require("../src/network/tcp/utils/marshal");
 const STARTER_LOCATION = Object.freeze({
     corporationID: 1000442,
@@ -92,6 +92,12 @@ test("Frontier character creation starts in one initialized Creation", async () 
     assert.equal(character.suiTransactionDigest, `test-sui-character-${characterID}`);
     assert.equal(ship.typeID, 95276);
     assert.equal(ship.itemName, "Creation");
+    assert.equal(ship.conditionState.fuelCharge, 2250);
+    assert.equal(ship.conditionState.fuelTypeID, 77818);
+    assert.deepEqual(ship.conditionState.fuelQueue, [{
+            fuelTypeID: 77818,
+            quantity: 2250,
+        }]);
     assert.equal(listCharacterItems(characterID).some((item) => Number(item.typeID) === 87698), false);
     const state = readCreationState(ship);
     assert.equal(state.version, 1);
@@ -147,6 +153,101 @@ test("generic character creation retains the racial Wend profile", () => {
     assert.equal(character.shipName, "Wend");
     assert.equal(ship.typeID, 87698);
     assert.equal(ship.itemName, "Wend");
+    assert.equal(ship.conditionState.fuelCharge, 200);
+    assert.equal(ship.conditionState.fuelTypeID, 77818);
+    assert.deepEqual(ship.conditionState.fuelQueue, [{
+            fuelTypeID: 77818,
+            quantity: 200,
+        }]);
+});
+test("clone selection suppresses implicit starter provisioning until respawn", () => {
+    const characterID = createCharacter("Clone Ship Guard", 990001089);
+    const initialCharacter = getCharacterRecord(characterID);
+    const initialShip = findCharacterShipItem(characterID, initialCharacter.shipID);
+    const shipIDsBefore = Object.values(getAllItems())
+        .filter((item) => Number(item.ownerID) === characterID && Number(item.categoryID) === 6)
+        .map((item) => Number(item.itemID))
+        .sort((left, right) => left - right);
+    const clearResult = clearCharacterActiveShipForCloneSelection(characterID);
+    assert.equal(clearResult.success, true, clearResult.errorMsg);
+    assert.equal(getActiveShipItem(characterID), null);
+    assert.deepEqual(Object.values(getAllItems())
+        .filter((item) => Number(item.ownerID) === characterID && Number(item.categoryID) === 6)
+        .map((item) => Number(item.itemID))
+        .sort((left, right) => left - right), shipIDsBefore);
+    assert.equal(peekCharacterRecord(characterID).shipID, 0);
+    assert.equal(peekCharacterRecord(characterID).suppressActiveShipProvisioning, true);
+    const activateResult = setActiveShipForCharacter(characterID, initialShip.itemID);
+    assert.equal(activateResult.success, true, activateResult.errorMsg);
+    assert.equal(getActiveShipItem(characterID).itemID, initialShip.itemID);
+    assert.equal(Object.prototype.hasOwnProperty.call(peekCharacterRecord(characterID), "suppressActiveShipProvisioning"), false);
+});
+test("station fuel inventory exposes one unlimited free Unstable Fuel offer", () => {
+    const characterID = createCharacter("Station Fuel Test", 990000088);
+    const character = getCharacterRecord(characterID);
+    const session = {
+        charid: characterID,
+        characterID,
+        shipid: character.shipID,
+        shipID: character.shipID,
+        stationid: STARTER_LOCATION.stationID,
+        stationID: STARTER_LOCATION.stationID,
+        compatibilityProfile: "frontier",
+    };
+    const inventory = new InvBrokerService();
+    const ordinaryFuelGrant = grantItemToCharacterLocation(characterID, STARTER_LOCATION.stationID, ITEM_FLAGS.HANGAR, 77818, 25);
+    assert.equal(ordinaryFuelGrant.success, true, ordinaryFuelGrant.errorMsg);
+    const ordinaryFuel = ordinaryFuelGrant.data.items[0];
+    const boundContext = {
+        inventoryID: STARTER_LOCATION.stationID,
+        locationID: STARTER_LOCATION.stationID,
+        flagID: ITEM_FLAGS.HANGAR,
+        kind: "stationInventory",
+        ownerID: characterID,
+    };
+    const firstRows = inventory._resolveContainerItems(session, ITEM_FLAGS.HANGAR, boundContext);
+    const secondRows = inventory._resolveContainerItems(session, ITEM_FLAGS.HANGAR, boundContext);
+    const firstSupply = firstRows.filter((item) => Number(item.typeID) === 77818 &&
+        item.customInfo === FREE_STATION_FUEL_CUSTOM_INFO);
+    const secondSupply = secondRows.filter((item) => Number(item.typeID) === 77818 &&
+        item.customInfo === FREE_STATION_FUEL_CUSTOM_INFO);
+    assert.equal(firstSupply.length, 1);
+    assert.equal(secondSupply.length, 1);
+    assert.equal(firstSupply[0].itemID, secondSupply[0].itemID);
+    assert.equal(firstSupply[0].stacksize, CLIENT_INVENTORY_STACK_LIMIT);
+    assert.notEqual(firstSupply[0].itemID, ordinaryFuel.itemID);
+    assert.equal(ordinaryFuel.stacksize, 25);
+    assert.equal(ordinaryFuel.customInfo, "");
+    assert.equal(consumeInventoryItemQuantity(firstSupply[0].itemID, 1).errorMsg, "FREE_STATION_FUEL_SUPPLY_RESERVED");
+    assert.equal(moveItemToLocation(firstSupply[0].itemID, character.shipID, ITEM_FLAGS.CARGO_HOLD, 1).errorMsg, "FREE_STATION_FUEL_SUPPLY_RESERVED");
+});
+test("Creation-template hulls are initialized in station and space", () => {
+    const characterID = createCharacter("Creation Grant Test", 990000099);
+    for (const [typeID, expectedFuelCapacity] of [[95276, 2250], [95735, 2250]]) {
+        const stationGrant = grantItemToCharacterLocation(characterID, STARTER_LOCATION.stationID, ITEM_FLAGS.HANGAR, getItemMetadata(typeID), 1, { singleton: 1 });
+        assert.equal(stationGrant.success, true, stationGrant.errorMsg);
+        assert.deepEqual(stationGrant.data.initializedCreationShipIDs, [stationGrant.data.items[0].itemID]);
+        const spaceGrant = createSpaceItemForCharacter(characterID, STARTER_LOCATION.solarSystemID, getItemMetadata(typeID), { position: { x: typeID, y: 0, z: 0 } });
+        assert.equal(spaceGrant.success, true, spaceGrant.errorMsg);
+        for (const [locationKind, ship] of [
+            ["station", stationGrant.data.items[0]],
+            ["space", spaceGrant.data],
+        ]) {
+            const state = readCreationState(ship);
+            assert.ok(state, `type ${typeID} should carry Creation state when spawned in ${locationKind}`);
+            assert.equal(state.templateTypeID, typeID);
+            assert.ok(state.modules.length > 0);
+            assert.equal(ship.conditionState.fuelCharge, expectedFuelCapacity);
+            assert.equal(ship.conditionState.fuelTypeID, 77818);
+            assert.deepEqual(ship.conditionState.fuelQueue, [{
+                    fuelTypeID: 77818,
+                    quantity: expectedFuelCapacity,
+                }]);
+            const fittedModules = listContainerItems(characterID, ship.itemID, CREATION_FITTING_FLAG_ID);
+            assert.equal(fittedModules.length, state.modules.length);
+            assert.deepEqual(new Set(fittedModules.map((item) => Number(item.itemID))), new Set(state.modules.map((module) => Number(module.itemID))));
+        }
+    }
 });
 test("non-Creation ship inventory calls remain iterable", () => {
     const characterID = createCharacter("Inventory Guard Test", 990000003, {

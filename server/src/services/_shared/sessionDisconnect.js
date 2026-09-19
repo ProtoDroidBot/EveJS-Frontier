@@ -10,7 +10,6 @@ const structureState = require(path.join(__dirname, "../structure/structureState
 const { unregisterCharacterSession, } = require(path.join(__dirname, "../chat/xmppStubServer"));
 const { abortTradesForSession, } = require(path.join(__dirname, "../trade/tradeMgrService"));
 const { currentFileTime, } = require(path.join(__dirname, "./serviceHelpers"));
-const { buildEmergencyWarpLogoffState, shipSuppressesEmergencyWarp, } = require(path.join(__dirname, "./emergencyWarpRuntime"));
 const { broadcastStationGuestLeft, broadcastStructureGuestLeft, forgetObserverGuestLedger, } = require(path.join(__dirname, "./guestLists"));
 const { updateCharacterRecord, clearCharacterFromSession, getActiveShipRecord, } = require(path.join(__dirname, "../character/characterState"));
 const { moveShipToSpace, ITEM_FLAGS, } = require(path.join(__dirname, "../inventory/itemStore"));
@@ -124,7 +123,7 @@ function persistCharacterLogoffState(session) {
     let persistedStationID = sessionStationID;
     let persistedStructureID = sessionStructureID;
     let persistedSolarSystemID = nextSolarSystemID;
-    const activeShip = getActiveShipRecord(characterID);
+    let activeShip = getActiveShipRecord(characterID);
     const { clearSafeLogoffCompletion, consumeSafeLogoffCompletion, } = require(path.join(__dirname, "../ship/safeLogoffRuntime"));
     let completedSafeLogoff = false;
     if (activeShip) {
@@ -137,15 +136,33 @@ function persistCharacterLogoffState(session) {
     else {
         clearSafeLogoffCompletion(session);
     }
+    // Damage and capacitor state live on the runtime entity while the pilot is
+    // in space.  Checkpoint that entity before any inventory/location mutation;
+    // this is especially important for Creation hulls whose login hydration
+    // otherwise sees an older full-health item snapshot.
+    if (activeShip && session._space) {
+        const checkpointResult = spaceRuntime.persistSessionShipState(session, {
+            offlinePersistent: !completedSafeLogoff,
+            nowMs: Date.now(),
+        });
+        if (!checkpointResult || checkpointResult.success !== true) {
+            log.warn(`[SessionDisconnect] Failed to checkpoint active ship ${activeShip.itemID} ` +
+                `for char=${characterID}: ${checkpointResult && checkpointResult.errorMsg || "SHIP_CHECKPOINT_FAILED"}`);
+        }
+        else {
+            activeShip = getActiveShipRecord(characterID) || activeShip;
+        }
+    }
     if (!persistedStationID && !persistedStructureID && activeShip) {
         const liveSpaceState = resolveLiveShipSpaceState(session, activeShip, persistedSolarSystemID);
         if (liveSpaceState) {
-            const persistedSpaceState = completedSafeLogoff || shipSuppressesEmergencyWarp(characterID)
-                ? liveSpaceState
-                : buildEmergencyWarpLogoffState(liveSpaceState, {
-                    characterID,
-                    shipID: activeShip.itemID,
-                }) || liveSpaceState;
+            // Unsafe disconnects now leave the ship in the ballpark, so its durable
+            // coordinates must be the exact live coordinates as well.  Safe Logoff
+            // uses the same snapshot but de-instances the runtime entity below.
+            const persistedSpaceState = {
+                ...liveSpaceState,
+                offlinePersistent: !completedSafeLogoff,
+            };
             const moveResult = moveShipToSpace(activeShip.itemID, Number(persistedSpaceState.systemID || persistedSolarSystemID), persistedSpaceState);
             if (!moveResult.success) {
                 log.warn(`[SessionDisconnect] Failed to persist active ship ${activeShip.itemID} into space for char=${characterID}: ${moveResult.errorMsg}`);
@@ -205,6 +222,9 @@ function disconnectCharacterSession(session, options = {}) {
                 sessionRegistry.resolveSessionCharacterID(session) === characterID)));
     const stationID = Number(session.stationid || session.stationID || 0);
     const structureID = Number(session.structureid || session.structureID || 0);
+    const lifecycleReason = String(options.lifecycleReason || "disconnect");
+    const controlReason = String(options.lifecycleReason || "retail_disconnect");
+    const preserveShipInSpace = lifecycleReason !== "safe_logoff";
     const cleanupErrors = [];
     const attemptCleanup = (label, callback) => {
         try {
@@ -251,7 +271,8 @@ function disconnectCharacterSession(session, options = {}) {
         attemptCleanup("guest-ledger cleanup", () => forgetObserverGuestLedger(session));
         attemptCleanup("space detach", () => spaceRuntime.detachSession(session, {
             broadcast: options.broadcast !== false,
-            lifecycleReason: String(options.lifecycleReason || "disconnect"),
+            lifecycleReason,
+            preserveShipInSpace,
             attemptDroneBayRecovery: true,
             attemptFighterTubeRecovery: true,
         }));
@@ -268,7 +289,7 @@ function disconnectCharacterSession(session, options = {}) {
             const clearResult = attemptCleanup("character-session clear", () => (clearCharacterFromSession(session, {
                 emitNotifications: false,
                 controlTransition: options.controlTransition !== false,
-                controlReason: String(options.lifecycleReason || "retail_disconnect"),
+                controlReason,
             })));
             if (!clearResult || clearResult.success !== true) {
                 sessionRegistry.deindexCharacterSession(session);
@@ -278,7 +299,7 @@ function disconnectCharacterSession(session, options = {}) {
                         const characterControlRuntime = require(path.join(__dirname, "../online/characterControlRuntime"));
                         characterControlRuntime.recordRetailSessionEnded(characterID, {
                             session,
-                            reason: String(options.lifecycleReason || "retail_disconnect"),
+                            reason: controlReason,
                         });
                     });
                 }
@@ -292,7 +313,7 @@ function disconnectCharacterSession(session, options = {}) {
                     const characterControlRuntime = require(path.join(__dirname, "../online/characterControlRuntime"));
                     characterControlRuntime.recordRetailSessionEnded(characterID, {
                         session,
-                        reason: String(options.lifecycleReason || "retail_disconnect"),
+                        reason: controlReason,
                     });
                 });
             }

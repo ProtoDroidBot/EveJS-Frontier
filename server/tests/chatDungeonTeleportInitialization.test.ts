@@ -1,0 +1,165 @@
+"use strict";
+
+const assert = require("node:assert/strict");
+const test = require("node:test");
+
+const chatCommands = require("../src/services/chat/chatCommands");
+const spaceRuntime = require("../src/space/runtime");
+
+const {
+  buildTransportPointAnchor,
+  executeSessionTransportTarget,
+  findTransportDestinationDungeonIdentity,
+  initializeTransportDestinationDungeon,
+} = chatCommands._testing;
+
+test("transport anchors preserve a player's active dungeon identity", () => {
+  const anchor = buildTransportPointAnchor({
+    itemID: 9_000_000_001,
+    systemID: 30_000_142,
+    position: { x: 10, y: 20, z: 30 },
+    direction: { x: 0, y: 1, z: 0 },
+    dungeonCurrentInstanceID: 7_100_000_000_001,
+    dungeonCurrentRoomKey: "room:2",
+    dungeonCurrentSiteID: 7_200_000_000_001,
+  });
+
+  assert.equal(anchor.destinationStaticInstanceID, 7_100_000_000_001);
+  assert.equal(anchor.destinationDungeonRoomKey, "room:2");
+  assert.equal(anchor.destinationDungeonSiteID, 7_200_000_000_001);
+});
+
+test("coordinate transport resolves a nearby dungeon anchor for initialization", () => {
+  const scene = {
+    staticEntities: [{
+      itemID: 7_200_000_000_002,
+      position: { x: 0, y: 0, z: 0 },
+      dungeonSiteInstanceID: 7_100_000_000_002,
+      dungeonSiteID: 7_200_000_000_002,
+    }],
+  };
+  const identity = findTransportDestinationDungeonIdentity(scene, {
+    kind: "point",
+    point: { x: 30_000_000, y: 0, z: 0 },
+  });
+
+  assert.deepEqual(identity, {
+    instanceID: 7_100_000_000_002,
+    roomKey: "room:entry",
+    siteID: 7_200_000_000_002,
+  });
+});
+
+test("transport dungeon initialization materializes encounters before room tracking changes", () => {
+  const calls: any[] = [];
+  const session = { characterID: 140_000_001 };
+  const destination = {
+    kind: "point",
+    point: { x: 1_000, y: 2_000, z: 3_000 },
+    destinationStaticInstanceID: 7_100_000_000_003,
+    destinationDungeonRoomKey: "room:entry",
+    destinationDungeonSiteID: 7_200_000_000_003,
+  };
+  const result = initializeTransportDestinationDungeon(
+    { staticEntities: [] },
+    destination,
+    session,
+    {
+      dependencies: {
+        dungeonService: {
+          ensureSiteContentsMaterialized(scene, instance, options) {
+            calls.push({ kind: "universe", scene, instance, options });
+            return { success: true, data: { instanceID: instance.instanceID } };
+          },
+        },
+        landscapeSceneService: {
+          materializeNearbyLandscapeSites(scene, anchor, options) {
+            calls.push({ kind: "landscape", scene, anchor, options });
+            return null;
+          },
+        },
+      },
+    },
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.data.initialized, true);
+  assert.equal(calls[0].kind, "universe");
+  assert.equal(calls[0].instance.instanceID, 7_100_000_000_003);
+  assert.equal(calls[0].instance.siteID, 7_200_000_000_003);
+  assert.equal(calls[0].options.markCurrentDungeonRoom, false);
+  assert.equal(calls[0].options.resyncSession, false);
+  assert.equal(calls[0].options.roomKey, "room:entry");
+  assert.equal(calls[0].options.session, session);
+  assert.deepEqual(calls[0].options.roomPosition, destination.point);
+});
+
+test("session transport initializes a dungeon before teleporting the ship", async () => {
+  const originalGetSceneForSession = spaceRuntime.getSceneForSession;
+  const originalTeleportSessionShipToPoint = spaceRuntime.teleportSessionShipToPoint;
+  const order: string[] = [];
+  const scene = {
+    staticEntities: [],
+    commitAcceptedPilotWarpDungeonContext(_entity, options) {
+      order.push("context");
+      assert.equal(options.destinationStaticInstanceID, 7_100_000_000_004);
+      assert.equal(options.destinationDungeonRoomKey, "room:2");
+    },
+    requestFinalSceneVisibilityReconciliation() {
+      order.push("reconcile");
+    },
+  };
+  const session = {
+    characterID: 140_000_002,
+    solarsystemid2: 30_000_142,
+    _space: { shipID: 9_000_000_002 },
+  };
+  const destination = {
+    kind: "point",
+    systemID: 30_000_142,
+    point: { x: 4_000, y: 5_000, z: 6_000 },
+    direction: { x: 1, y: 0, z: 0 },
+    destinationStaticInstanceID: 7_100_000_000_004,
+    destinationDungeonRoomKey: "room:2",
+    destinationDungeonSiteID: 7_200_000_000_004,
+    label: "test dungeon",
+  };
+
+  spaceRuntime.getSceneForSession = () => scene;
+  spaceRuntime.teleportSessionShipToPoint = (_session, point) => {
+    order.push("teleport");
+    assert.deepEqual(point, destination.point);
+    return { success: true };
+  };
+
+  try {
+    const result = await executeSessionTransportTarget(
+      session,
+      { kind: "session", session, label: "me" },
+      destination,
+      null,
+      {
+        emitChatFeedback: false,
+        transportDungeonInitializationDependencies: {
+          dungeonService: {
+            ensureSiteContentsMaterialized() {
+              order.push("initialize");
+              return { success: true };
+            },
+          },
+          landscapeSceneService: {
+            materializeNearbyLandscapeSites() {
+              return null;
+            },
+          },
+        },
+      },
+    );
+
+    assert.equal(result.handled, true);
+    assert.deepEqual(order, ["initialize", "teleport", "context", "reconcile"]);
+  } finally {
+    spaceRuntime.getSceneForSession = originalGetSceneForSession;
+    spaceRuntime.teleportSessionShipToPoint = originalTeleportSessionShipToPoint;
+  }
+});

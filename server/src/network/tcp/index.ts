@@ -157,23 +157,34 @@ module.exports = function (serviceManager) {
   );
 
   const universePrepareStartedAtMs = Date.now();
+  // Register teardown handling before startup lifecycle mutations so persisted
+  // props/NPCs from discarded instances are removed with their old pocket.
+  log.info("[Startup] Starting dungeon universe runtime sync");
+  dungeonUniverseSiteService.startRuntimeSync();
   log.info(
     `[Startup] Dungeon universe prepare: evaluating persistent site state for ` +
       `${startupPreloadPlan.systemIDs.length} startup system(s)`,
   );
   const universeStartup = dungeonUniverseRuntime.prepareStartupUniversePersistentSites({
     startupSystemIDs: startupPreloadPlan.systemIDs,
+    resetIncompleteDungeonsOnStartup: true,
     resetMiningAnomaliesOnStartup: false,
     cleanupInvalidGeneratedIce: true,
     restoreGeneratedIceAfterDowntime: false,
     reconcileStartupSystems: true,
-    scheduleBackgroundReconcile: true,
+    // Persistent sites are reconciled when a system is preloaded or receives
+    // its first player. Sweeping all 24k systems on a fresh database competes
+    // with the scene-planning/packet workers needed by the first login and can
+    // push the client past its bootstrap timeout.
+    scheduleBackgroundReconcile: false,
     backgroundReason: "server-startup",
   });
   const universePrepareElapsedMs = Date.now() - universePrepareStartedAtMs;
   log.info(
     `[Startup] Dungeon universe prepare complete in ${universePrepareElapsedMs}ms ` +
       `(fullUpToDate=${universeStartup && universeStartup.status && universeStartup.status.fullUpToDate === true} ` +
+      `incompleteReset=${Number(universeStartup && universeStartup.startupIncompleteReset && universeStartup.startupIncompleteReset.discardedCount) || 0}/` +
+      `${Number(universeStartup && universeStartup.startupIncompleteReset && universeStartup.startupIncompleteReset.rotatedCount) || 0} ` +
       `startupMiningReset=${Number(universeStartup && universeStartup.startupMiningReset && universeStartup.startupMiningReset.purgedCount) || 0}/` +
       `${Number(universeStartup && universeStartup.startupMiningReset && universeStartup.startupMiningReset.createdInstances) || 0} ` +
       `invalidGeneratedIce=${Number(universeStartup && universeStartup.invalidGeneratedIceCleanup && universeStartup.invalidGeneratedIceCleanup.despawnedCount) || 0}/` +
@@ -214,8 +225,6 @@ module.exports = function (serviceManager) {
     );
   }
 
-  log.info("[Startup] Starting dungeon universe runtime sync");
-  dungeonUniverseSiteService.startRuntimeSync();
   log.info("[Startup] Starting dungeon universe ticker");
   dungeonUniverseRuntime.startTicker({
     systemIDsProvider: awakeDungeonSystemIDs,

@@ -66,6 +66,28 @@ function cloneValue(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function scheduleNpcIffVerdictRefresh(systemID) {
+  const numericSystemID = toPositiveInt(systemID, 0);
+  if (!numericSystemID) {
+    return false;
+  }
+  try {
+    const iffAbilityHandlers = require(path.join(
+      __dirname,
+      "../../services/frontier/iffAbilityHandlers",
+    ));
+    return typeof iffAbilityHandlers.scheduleIffVerdicts === "function"
+      ? iffAbilityHandlers.scheduleIffVerdicts(numericSystemID)
+      : false;
+  } catch (error) {
+    log.warn(
+      `[NativeNpc] IFF verdict refresh failed system=${numericSystemID}: ` +
+      `${error && error.message ? error.message : error}`,
+    );
+    return false;
+  }
+}
+
 function isDamageableChargeType(itemType) {
   return (
     toPositiveInt(itemType && itemType.categoryID, 0) === 8 &&
@@ -679,10 +701,27 @@ function resolveNativeRuntimeKind(options: Record<string, any> = {}) {
   return isNativeAmbientRuleOptions(options) ? "nativeAmbient" : "nativeCombat";
 }
 
+function isProfiledPassiveRoamingEnabled(definitionOrController) {
+  const behaviorProfile =
+    definitionOrController && definitionOrController.behaviorProfile &&
+    typeof definitionOrController.behaviorProfile === "object"
+      ? definitionOrController.behaviorProfile
+      : definitionOrController &&
+          definitionOrController.definitionSnapshot &&
+          definitionOrController.definitionSnapshot.behaviorProfile &&
+          typeof definitionOrController.definitionSnapshot.behaviorProfile === "object"
+        ? definitionOrController.definitionSnapshot.behaviorProfile
+        : {};
+  return behaviorProfile.passiveRoaming === true;
+}
+
 function buildNativeControllerRecord(context, definition, entityRecord, spawnState, options: Record<string, any> = {}) {
   const runtimeKind = resolveNativeRuntimeKind(options);
   const nextThinkAtMs =
-    runtimeKind === "nativeAmbient" || options.skipInitialBehaviorTick === true
+    (
+      runtimeKind === "nativeAmbient" &&
+      !isProfiledPassiveRoamingEnabled(definition)
+    ) || options.skipInitialBehaviorTick === true
       ? Number.MAX_SAFE_INTEGER
       : 0;
   return {
@@ -733,7 +772,15 @@ function buildNativeControllerRecord(context, definition, entityRecord, spawnSta
   };
 }
 
-function buildNativeRuntimeShipSpec(entityRecord) {
+function buildNativeRuntimeShipSpec(entityRecord, definition = null) {
+  const npcFactionKey = String(
+    entityRecord.npcFactionKey ||
+      definition && definition.profile && (
+        definition.profile.npcFactionKey ||
+        definition.profile.frontierFactionKey
+      ) ||
+      "",
+  ).trim().toLowerCase() || null;
   return {
     itemID: entityRecord.entityID,
     typeID: entityRecord.typeID,
@@ -747,11 +794,15 @@ function buildNativeRuntimeShipSpec(entityRecord) {
     corporationID: entityRecord.corporationID,
     allianceID: entityRecord.allianceID,
     warFactionID: entityRecord.warFactionID,
+    npcFactionID: entityRecord.warFactionID,
+    npcFactionKey,
+    npcProfileID: entityRecord.profileID || null,
     securityStatus: entityRecord.securityStatus,
     bounty: entityRecord.bounty,
     npcEntityType: entityRecord.npcEntityType,
     npcBehaviorRole: entityRecord.behaviorRole || null,
     npcBehaviorActivity: entityRecord.behaviorActivity || null,
+    npcBehaviorProfile: cloneValue(definition && definition.behaviorProfile || {}),
     capitalNpc: entityRecord.capitalNpc === true,
     capitalClassID: entityRecord.capitalClassID || null,
     capitalRarity: entityRecord.capitalRarity || null,
@@ -817,6 +868,16 @@ function applyNativeRuntimeNpcPresentation(entity, entityRecord, definition = nu
   entity.corporationID = entityRecord.corporationID;
   entity.allianceID = entityRecord.allianceID;
   entity.warFactionID = entityRecord.warFactionID;
+  entity.npcFactionID = entityRecord.warFactionID;
+  entity.npcFactionKey = String(
+    entityRecord.npcFactionKey ||
+      definition && definition.profile && (
+        definition.profile.npcFactionKey ||
+        definition.profile.frontierFactionKey
+      ) ||
+      "",
+  ).trim().toLowerCase() || null;
+  entity.npcProfileID = entityRecord.profileID || null;
   entity.slimTypeID = entityRecord.slimTypeID;
   entity.slimGroupID = entityRecord.slimGroupID;
   entity.slimCategoryID = entityRecord.slimCategoryID;
@@ -832,6 +893,7 @@ function applyNativeRuntimeNpcPresentation(entity, entityRecord, definition = nu
   entity.npcBehaviorActivity = entityRecord.behaviorActivity ||
     definition && definition.behaviorPolicy && definition.behaviorPolicy.activity ||
     null;
+  entity.npcBehaviorProfile = cloneValue(definition && definition.behaviorProfile || {});
   entity.capitalNpc = entityRecord.capitalNpc === true;
   entity.capitalClassID = entityRecord.capitalClassID || null;
   entity.capitalRarity = entityRecord.capitalRarity || null;
@@ -933,6 +995,7 @@ function syncNativeAmbientIdleState(scene, entity, controller, definition) {
 
 function registerNativeRuntimeController(entityRecord, controllerRecord, definition) {
   const runtimeKind = String(controllerRecord && controllerRecord.runtimeKind || "nativeAmbient").trim() || "nativeAmbient";
+  const passiveRoamingEnabled = isProfiledPassiveRoamingEnabled(definition);
   return registerController({
     ...cloneValue(controllerRecord),
     behaviorProfile: cloneValue(definition && definition.behaviorProfile || {}),
@@ -949,7 +1012,7 @@ function registerNativeRuntimeController(entityRecord, controllerRecord, definit
     capitalRarity: entityRecord.capitalRarity || null,
     runtimeKind,
     nextThinkAtMs:
-      runtimeKind === "nativeAmbient"
+      runtimeKind === "nativeAmbient" && !passiveRoamingEnabled
         ? Number.MAX_SAFE_INTEGER
         : Math.max(0, toFiniteNumber(controllerRecord && controllerRecord.nextThinkAtMs, 0)),
     manualOrder: null,
@@ -997,6 +1060,7 @@ function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, d
     if (runtimeKind === "nativeAmbient") {
       syncNativeAmbientIdleState(scene, existingEntity, controller, definition);
     }
+    scheduleNpcIffVerdictRefresh(scene.systemID);
     return {
       success: true,
       data: {
@@ -1008,7 +1072,7 @@ function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, d
 
   const spawnResult = spaceRuntime.spawnDynamicShip(
     scene.systemID,
-    buildNativeRuntimeShipSpec(entityRecord),
+    buildNativeRuntimeShipSpec(entityRecord, definition),
     {
       persistSpaceState: false,
       broadcast: options.broadcast !== false,
@@ -1032,6 +1096,7 @@ function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, d
   if (runtimeKind === "nativeAmbient") {
     syncNativeAmbientIdleState(scene, entity, controller, definition);
   }
+  scheduleNpcIffVerdictRefresh(scene.systemID);
   return {
     success: true,
     data: {
@@ -1132,6 +1197,40 @@ function buildStoredEntityRecordFromRuntimeEntity(entityRecord, runtimeEntity) {
   };
 }
 
+function persistNativeRuntimeEntity(runtimeEntity, options: Record<string, any> = {}) {
+  const entityID = toPositiveInt(runtimeEntity && runtimeEntity.itemID, 0);
+  if (!entityID || !runtimeEntity || runtimeEntity.nativeNpc !== true) {
+    return {
+      success: false,
+      skipped: true,
+      errorMsg: "NPC_NOT_FOUND",
+    };
+  }
+
+  const storedEntityRecord = nativeNpcStore.getNativeEntity(entityID);
+  if (!storedEntityRecord) {
+    return {
+      success: false,
+      skipped: true,
+      errorMsg: "NPC_NOT_FOUND",
+    };
+  }
+
+  const result = nativeNpcStore.upsertNativeEntity(
+    buildStoredEntityRecordFromRuntimeEntity(storedEntityRecord, runtimeEntity),
+    {
+      // Dungeon/startup NPCs which were authored as transient must stay out of
+      // the disk snapshot, while durable native NPCs retain their normal store
+      // semantics.  Both variants survive player disconnect virtualization.
+      transient: storedEntityRecord.transient === true,
+    },
+  );
+  if (result && result.success === true) {
+    runtimeEntity.lastPersistAt = toFiniteNumber(options.nowMs, Date.now());
+  }
+  return result;
+}
+
 function buildStoredControllerRecordFromRuntimeController(controllerRecord, runtimeController) {
   const runtimeKind =
     String(
@@ -1139,6 +1238,7 @@ function buildStoredControllerRecordFromRuntimeController(controllerRecord, runt
         (controllerRecord && controllerRecord.runtimeKind) ||
         "nativeAmbient",
     ).trim() || "nativeAmbient";
+  const passiveRoamingEnabled = isProfiledPassiveRoamingEnabled(runtimeController);
   return {
     ...cloneValue(controllerRecord || {}),
     definitionSnapshot:
@@ -1192,7 +1292,7 @@ function buildStoredControllerRecordFromRuntimeController(controllerRecord, runt
         : { x: 1, y: 0, z: 0 },
     ),
     nextThinkAtMs:
-      runtimeKind === "nativeAmbient"
+      runtimeKind === "nativeAmbient" && !passiveRoamingEnabled
         ? Number.MAX_SAFE_INTEGER
         : Math.max(
             0,
@@ -1239,7 +1339,7 @@ function dematerializeNativeController(controller, options: Record<string, any> 
       nativeNpcStore.upsertNativeEntity(
         buildStoredEntityRecordFromRuntimeEntity(storedEntityRecord, runtimeEntity),
         {
-          transient: true,
+          transient: storedEntityRecord.transient === true,
         },
       );
     }
@@ -1252,7 +1352,7 @@ function dematerializeNativeController(controller, options: Record<string, any> 
           runtimeController,
         ),
         {
-          transient: true,
+          transient: storedControllerRecord.transient === true,
         },
       );
     }
@@ -1265,6 +1365,7 @@ function dematerializeNativeController(controller, options: Record<string, any> 
     });
   }
   unregisterController(entityID);
+  scheduleNpcIffVerdictRefresh(systemID);
   return {
     success: true,
     data: {
@@ -1348,6 +1449,12 @@ function spawnNativeNpcEntityInContext(context, definition, options: Record<stri
     corporationID: identity.corporationID,
     allianceID: identity.allianceID,
     warFactionID: identity.warFactionID,
+    npcFactionKey: String(
+      options.npcFactionKey ||
+        definition.profile.npcFactionKey ||
+        definition.profile.frontierFactionKey ||
+        "",
+    ).trim().toLowerCase() || null,
     securityStatus: identity.securityStatus,
     bounty: identity.bounty,
     npcEntityType: identity.npcEntityType,
@@ -1740,6 +1847,7 @@ function destroyNativeNpcController(controller, options: Record<string, any> = {
 
   unregisterController(entityID);
   nativeNpcStore.removeNativeEntityCascade(entityID);
+  scheduleNpcIffVerdictRefresh(systemID);
   return {
     success: true,
     data: {
@@ -1754,6 +1862,7 @@ function destroyNativeNpcController(controller, options: Record<string, any> = {
 module.exports = {
   isNativeAmbientRuleOptions,
   materializeStoredNativeController,
+  persistNativeRuntimeEntity,
   dematerializeNativeController,
   spawnNativeDefinitionsInContext,
   spawnNativeNpcEntityInContext,

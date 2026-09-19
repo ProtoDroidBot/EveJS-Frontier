@@ -41,6 +41,7 @@
  * to every pilot in the system.
  */
 
+const crypto = require("crypto");
 const path = require("path");
 
 const log = require(path.join(__dirname, "../../utils/logger"));
@@ -52,6 +53,7 @@ const { getCreationModule } = require(path.join(__dirname, "./creationStaticData
 const {
   getTypeAttributeValue,
 } = require(path.join(__dirname, "../fitting/liveFittingState"));
+const npcFactionConfig = require(path.join(__dirname, "../../config/npcFactionConfig"));
 
 const IFF_INFO_KEY = "evejsFrontierIff";
 const IFF_CODE_MAX_LENGTH = 32;
@@ -73,6 +75,7 @@ const DEFAULT_BEACON_DURATION_MS = 30000;
 
 // beaconID (module itemID) -> beacon runtime state
 const activeBeacons = new Map();
+const npcTransponderCache = new WeakMap();
 
 function toInt(value, fallback = 0) {
   const numeric = Number(value);
@@ -123,6 +126,141 @@ function normalizeIffCode(value) {
     return null;
   }
   return code.length <= IFF_CODE_MAX_LENGTH ? code : undefined;
+}
+
+function normalizeNpcCodePart(value) {
+  return String(value == null ? "" : value)
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Build the client-sized code broadcast by an NPC group. Short authored
+ * group identities stay human-readable; long catalog IDs receive a stable
+ * digest suffix so codes remain deterministic and never exceed the client's
+ * 32-character limit.
+ */
+function buildNpcTransponderCode(signal, groupIdentity) {
+  const normalizedSignal = normalizeNpcCodePart(signal) || "NPC";
+  const normalizedGroup = normalizeNpcCodePart(groupIdentity) || "UNKNOWN";
+  const readable = `${normalizedSignal}:${normalizedGroup}`;
+  if (readable.length <= IFF_CODE_MAX_LENGTH) {
+    return readable;
+  }
+  const digest = crypto
+    .createHash("sha256")
+    .update(String(groupIdentity || "unknown"))
+    .digest("hex")
+    .slice(0, 8)
+    .toUpperCase();
+  const groupBudget = Math.max(
+    1,
+    IFF_CODE_MAX_LENGTH - normalizedSignal.length - digest.length - 2,
+  );
+  const signalBudget = IFF_CODE_MAX_LENGTH - groupBudget - digest.length - 2;
+  return `${normalizedSignal.slice(0, signalBudget)}:` +
+    `${normalizedGroup.slice(0, groupBudget)}-${digest}`;
+}
+
+/**
+ * Native NPC ships always broadcast a code-channel transponder. The faction
+ * config supplies the signal namespace while the ordered group policy picks
+ * the stable spawn-group/profile/faction identity used for the code.
+ */
+function resolveNpcTransponder(entity) {
+  const configuration = npcFactionConfig.resolveNpcTransponderConfiguration(entity);
+  if (!configuration) {
+    return null;
+  }
+  const fingerprint = [
+    configuration.channel,
+    configuration.signal,
+    configuration.groupIdentity,
+    String(entity && entity.npcTransponderCode || ""),
+  ].join("\u0000");
+  if (entity && typeof entity === "object") {
+    const cached = npcTransponderCache.get(entity);
+    if (cached && cached.fingerprint === fingerprint) {
+      return cached.transponder;
+    }
+  }
+  const explicitCode = normalizeIffCode(entity && entity.npcTransponderCode);
+  const code = explicitCode || buildNpcTransponderCode(
+    configuration.signal,
+    configuration.groupIdentity,
+  );
+  const transponder = {
+    channel: configuration.channel,
+    code,
+    signal: configuration.signal,
+    groupIdentity: configuration.groupIdentity,
+    source: "npc-group",
+  };
+  if (entity && typeof entity === "object") {
+    npcTransponderCache.set(entity, { fingerprint, transponder });
+  }
+  return transponder;
+}
+
+function resolveEntityTransponder(entity, options: Record<string, any> = {}) {
+  if (!entity || typeof entity !== "object") {
+    return null;
+  }
+  const explicit = entity.iffTransponder || entity.transponder;
+  if (explicit && typeof explicit === "object") {
+    const channel = normalizeIffChannel(
+      explicit.channel,
+      IFF_TRANSPONDER_CHANNELS,
+    );
+    if (channel === IFF_CHANNEL_CODE) {
+      const code = normalizeIffCode(explicit.code);
+      if (code) {
+        return { channel, code, source: "entity" };
+      }
+    } else if (channel === IFF_CHANNEL_TRIBE) {
+      return { channel, code: null, source: "entity" };
+    }
+  }
+  if (entity.nativeNpc === true || entity.nativeNpcOccupied === true) {
+    return resolveNpcTransponder(entity);
+  }
+  const characterID = toInt(
+    entity.characterID ||
+      entity.pilotCharacterID ||
+      entity.session && (entity.session.charid || entity.session.characterID) ||
+      entity.ownerID,
+    0,
+  );
+  const shipID = toInt(entity.itemID || entity.shipID, 0);
+  const resolver = typeof options.resolveActiveTransponder === "function"
+    ? options.resolveActiveTransponder
+    : resolveActiveTransponder;
+  return characterID > 0 && shipID > 0
+    ? resolver(characterID, shipID)
+    : null;
+}
+
+function transpondersMatch(left, right, leftEntity = null, rightEntity = null) {
+  if (!left || !right || left.channel !== right.channel) {
+    return false;
+  }
+  if (left.channel === IFF_CHANNEL_CODE) {
+    return Boolean(left.code) && left.code === right.code;
+  }
+  if (left.channel === IFF_CHANNEL_TRIBE) {
+    const leftCorporationID = toInt(
+      leftEntity && (leftEntity.corporationID || leftEntity.ownerID),
+      0,
+    );
+    const rightCorporationID = toInt(
+      rightEntity && (rightEntity.corporationID || rightEntity.ownerID),
+      0,
+    );
+    return leftCorporationID > 0 && leftCorporationID === rightCorporationID;
+  }
+  return false;
 }
 
 /**
@@ -515,6 +653,7 @@ module.exports = {
   IFF_INFO_KEY,
   IFF_TRANSPONDER_CHANNELS,
   beaconVisibleToViewer,
+  buildNpcTransponderCode,
   clearBeaconsForCharacter,
   clearBeaconsForShip,
   getActiveBeacon,
@@ -527,9 +666,12 @@ module.exports = {
   readTransponderState,
   resolveActiveTransponder,
   resolveBeaconDurationMs,
+  resolveEntityTransponder,
+  resolveNpcTransponder,
   resetIffRuntimeForTests,
   setTransponderBroadcastState,
   startBeacon,
   stopBeacon,
+  transpondersMatch,
   writeTransponderState,
 };

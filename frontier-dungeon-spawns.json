@@ -4,14 +4,14 @@
   "source": {
     "clientBuild": 3502403,
     "analysis": "../_analysis/frontier-dungeon-spawner-inventory-3502403.md",
-    "notes": "Controller counts and activation labels come from the build-3502403 analysis. Raw trigger values are retained as metadata and are not interpreted as NPC counts. spawnFrequency is a relative template-selection weight. placementDistanceAu is measured from the selected valid placement anchor. siteSeparationLightSeconds is the deterministic pairwise exclusion distance between dungeon sites in the same solar system. warpIn defines the approach-side site boundary and collision clearance used for safe landings. Sites may override these values; otherwise site-type and global defaults apply. Add exact entity descriptors to sites.<dungeonID>.entities or spawnerTypes.<typeID>.entityComposition when a controller has a known entity output."
+    "notes": "Controller counts and activation labels come from the build-3502403 analysis. Raw trigger values are retained as metadata and are not interpreted as NPC counts. spawnFrequency is a relative template-selection weight. placementDistanceAu is measured from the selected valid placement anchor. siteSeparationLightSeconds is the deterministic pairwise exclusion distance between dungeon sites in the same solar system. siteWarpInDistanceMeters is the minimum approach-side stand-off from the authored entry beacon and may be overridden by a site. Add exact entity descriptors to sites.<dungeonID>.entities or spawnerTypes.<typeID>.entityComposition when a controller has a known entity output."
   },
   "defaults": {
     "factionTagPrefix": "frontier-faction:",
     "siteSpawnFrequency": 1,
     "sitePlacementDistanceAu": { "min": 3.65, "max": 4.35 },
     "siteSeparationLightSeconds": { "min": 1, "max": 10 },
-    "warpIn": { "boundaryRadiusMeters": 250000, "collisionClearanceMeters": 10000 },
+    "siteWarpInDistanceMeters": 10000,
     "maxNpcEntriesPerController": 8,
     "formationSpacingMeters": 1800,
     "npcFactionID": 500025,
@@ -389,6 +389,16 @@
         { "role": "miner", "count": 2 }
       ]
     },
+    "83963": {
+      "typeID": 83963,
+      "name": "Test Hive Spawner",
+      "category": "named_controller",
+      "spawnKind": "entity",
+      "isNpcWave": false,
+      "entityComposition": [
+        { "typeID": 83963, "name": "Test Hive", "positionOffset": { "x": 25000, "y": 0, "z": 0 }, "count": 1 }
+      ]
+    },
     "85745": {
       "typeID": 85745,
       "name": "Feral Drone Surveyor Spawner",
@@ -454,7 +464,7 @@
     "10645": { "name": "Minor Osa Drone Nest", "siteTypeID": 4873, "entryBeaconTypeID": 83872, "faction": "osa", "tags": ["site:minor-drone-nest"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [2] }, { "typeID": 83552, "count": 3, "activation": "triggered", "rawTriggerValues": [2, 3, 4] }, { "typeID": 83553, "count": 2, "activation": "triggered", "rawTriggerValues": [2, 4] }] },
     "10646": { "name": "Osa Feral Enclave", "siteTypeID": 4873, "entryBeaconTypeID": 83884, "faction": "osa", "tags": ["site:feral-enclave"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [4] }, { "typeID": 83554, "count": 3, "activation": "triggered", "rawTriggerValues": [4, 5, 6] }, { "typeID": 83555, "count": 1, "activation": "triggered", "rawTriggerValues": [6] }] },
     "10650": { "name": "Osa Domination Cluster", "siteTypeID": 4873, "entryBeaconTypeID": 83888, "faction": "osa", "tags": ["site:domination-cluster"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "initial", "rawTriggerValues": [4] }, { "typeID": 83554, "count": 1, "activation": "initial", "rawTriggerValues": [4] }, { "typeID": 83556, "count": 3, "activation": "triggered", "rawTriggerValues": [6, 7] }, { "typeID": 83557, "count": 1, "activation": "triggered", "rawTriggerValues": [7] }] },
-    "10684": { "name": "Abandoned Mining Operation", "siteTypeID": 4871, "entryBeaconTypeID": 83738, "tags": ["character:zarquis"], "spawners": [{ "typeID": 82967, "count": 1, "activation": "initial" }] },
+    "10684": { "name": "Derelict Zarquis Strip Miner", "siteTypeID": 4871, "entryBeaconTypeID": 83738, "tags": ["character:zarquis"], "spawners": [{ "typeID": 82967, "count": 1, "activation": "initial" }] },
     "11097": { "name": "Okryda Infesting Hive", "siteTypeID": 4873, "entryBeaconTypeID": 83876, "faction": "okryda", "tags": ["site:infesting-hive"], "spawners": [{ "typeID": 83552, "count": 3, "activation": "initial" }, { "typeID": 83554, "count": 2, "activation": "initial" }, { "typeID": 83556, "count": 1, "activation": "initial" }] },
     "11098": { "name": "Termit Infesting Hive", "siteTypeID": 4873, "entryBeaconTypeID": 83877, "faction": "termit", "tags": ["site:infesting-hive"], "spawners": [{ "typeID": 83552, "count": 2, "activation": "initial" }, { "typeID": 83554, "count": 1, "activation": "initial" }, { "typeID": 83556, "count": 4, "activation": "initial" }] },
     "11099": { "name": "Tsikada Infesting Hive", "siteTypeID": 4873, "entryBeaconTypeID": 83878, "faction": "tsikada", "tags": ["site:infesting-hive"], "spawners": [{ "typeID": 83552, "count": 1, "activation": "locator" }, { "typeID": 83554, "count": 4, "activation": "locator" }, { "typeID": 83556, "count": 2, "activation": "locator" }] },
@@ -473,7 +483,11 @@
     "12349": { "name": "Okryda Surveyors", "siteTypeID": 4873, "entryBeaconTypeID": 85744, "faction": "okryda", "tags": ["site:surveyors"], "spawners": [{ "typeID": 85745, "count": 1, "activation": "initial", "rawTriggerValues": [1] }] },
     "12560": { "name": "Derelict Autonomous Shipyard", "siteTypeID": 4874, "entryBeaconTypeID": 88013, "tags": ["event:summer", "site:generative", "site:derelict-autonomous-shipyard"], "spawners": [{ "typeID": 89766, "count": 1, "activation": "initial", "rawTriggerValues": [1] }, { "typeID": 89766, "count": 3, "activation": "triggered", "rawTriggerValues": [1] }] },
     "12673": { "name": "Ruined Processing Plant", "siteTypeID": 4873, "entryBeaconTypeID": 86825, "tags": ["site:locator-pattern"], "spawners": [{ "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
-    "12700": { "name": "Installation Wreckage", "siteTypeID": 4873, "entryBeaconTypeID": 88383, "tags": ["site:npe-step-up"], "spawners": [{ "typeID": 88390, "count": 1, "activation": "initial", "rawTriggerValues": [1] }] },
+    "12700": { "name": "Installation Wreckage", "siteTypeID": 4873, "entryBeaconTypeID": 88383, "tags": ["site:npe-step-up", "site:generative"], "spawners": [{ "typeID": 88390, "count": 1, "activation": "initial", "rawTriggerValues": [1] }] },
+    "12701": { "name": "Inculcator Foundation", "siteTypeID": 4874, "entryBeaconTypeID": 88008, "tags": ["site:generative", "site:inculcator"], "spawners": [], "buildup": { "kind": "inculcator_foundation", "phases": [{ "key": "foundation", "durationSeconds": 900 }, { "key": "superstructure", "durationSeconds": 900 }, { "key": "forge_assembly", "durationSeconds": 900 }], "completionEntity": { "typeID": 88090, "name": "Steel Forge", "positionOffset": { "x": 0, "y": 0, "z": 0 }, "count": 1 } } },
+    "12704": { "name": "Ruined Inculcator", "siteTypeID": 4873, "entryBeaconTypeID": 88838, "tags": ["site:generative", "site:inculcator"], "spawners": [] },
+    "12705": { "name": "Inculcator Wreckage", "siteTypeID": 4873, "entryBeaconTypeID": 88837, "tags": ["site:generative", "site:inculcator"], "spawners": [] },
+    "12706": { "name": "Razed Inculcator", "siteTypeID": 4873, "entryBeaconTypeID": 88849, "tags": ["site:generative", "site:inculcator"], "spawners": [] },
     "12707": { "name": "Shipyard Ruins", "siteTypeID": 4873, "entryBeaconTypeID": 89061, "tags": ["site:generative", "site:shipyard-ruins"], "spawners": [] },
     "12708": { "name": "Shipyard Archive Wreckage", "siteTypeID": 4873, "entryBeaconTypeID": 89062, "tags": ["site:generative", "site:shipyard-ruins"], "spawners": [] },
     "12709": { "name": "Destroyed Shipyard", "siteTypeID": 4873, "entryBeaconTypeID": 89063, "tags": ["site:generative", "site:shipyard-ruins"], "spawners": [] },
@@ -481,23 +495,13 @@
     "13294": { "name": "Hydrosulphide Formation", "siteTypeID": 4871, "entryBeaconTypeID": 89064, "faction": "feral", "tags": ["site:mining-field"], "spawners": [{ "typeID": 83916, "count": 2, "activation": "initial" }] },
     "13295": { "name": "Platinum Mass Cluster", "siteTypeID": 4871, "entryBeaconTypeID": 89065, "faction": "feral", "tags": ["site:mining-field"], "spawners": [{ "typeID": 83916, "count": 2, "activation": "initial" }] },
     "13443": { "name": "Sanguine Assembly Ruins", "siteTypeID": 4873, "entryBeaconTypeID": 89990, "tags": ["event:eimur", "site:sanguine-assembly"], "spawners": [{ "typeID": 91264, "count": 6, "activation": "locator" }] },
-    "13582": { "name": "Feral Moon Tumor P2", "siteTypeID": 4871, "entryBeaconTypeID": 88328, "tags": ["site:mooneater"], "spawners": [] },
     "13583": { "name": "Stacked Storage Stations", "siteTypeID": 4871, "entryBeaconTypeID": 86823, "tags": ["site:stacked-storage", "site:xeroti"], "spawners": [] },
     "13742": { "name": "Stacked Storage Stations", "siteTypeID": 4871, "entryBeaconTypeID": 86823, "tags": ["site:stacked-storage", "site:xeroti"], "spawners": [] },
     "13743": { "name": "Stacked Storage Stations", "siteTypeID": 4871, "entryBeaconTypeID": 86823, "tags": ["site:stacked-storage", "site:xeroti"], "spawners": [] },
     "13744": { "name": "Stacked Storage Stations", "siteTypeID": 4871, "entryBeaconTypeID": 86823, "tags": ["site:stacked-storage", "site:xeroti"], "spawners": [] },
     "13745": { "name": "Stacked Storage Stations", "siteTypeID": 4871, "entryBeaconTypeID": 86823, "tags": ["site:stacked-storage", "site:xeroti"], "spawners": [] },
-    "13723": { "name": "Landscape Refinery 02", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:resource-locators"], "spawners": [{ "typeID": 91211, "count": 50, "activation": "locator" }] },
     "13828": { "name": "Stacked Storage Stations", "siteTypeID": 4871, "entryBeaconTypeID": 86823, "tags": ["site:stacked-storage", "site:xeroti"], "spawners": [] },
-    "13870": { "name": "Mooneater Prefab", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:locator-pattern", "site:mooneater"], "spawners": [{ "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
-    "13871": { "name": "Termit Prefab", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:locator-pattern"], "spawners": [{ "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
-    "13872": { "name": "Tsikada Hive Prefab", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:locator-pattern"], "spawners": [{ "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
-    "13873": { "name": "Sarana Hive Prefab", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:locator-pattern"], "spawners": [{ "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
-    "13938": { "name": "13316 Pulverized Asteroid", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:locator-pattern"], "spawners": [{ "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
-    "14140": { "name": "KotH", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:resource-locators"], "spawners": [{ "typeID": 91211, "count": 49, "activation": "locator" }] },
-    "14187": { "name": "<unnamed>", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:resource-locators"], "spawners": [{ "typeID": 91211, "count": 50, "activation": "locator" }] },
-    "14203": { "name": "Creche Exterior Pattern", "siteTypeID": 4873, "entryBeaconTypeID": 92666, "tags": ["site:locator-pattern", "site:resource-locators"], "spawners": [{ "typeID": 91211, "count": 20, "activation": "locator" }, { "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
-    "14229": { "name": "RuinsPattern", "siteTypeID": 4873, "entryBeaconTypeID": 92666, "tags": ["site:locator-pattern", "site:resource-locators"], "spawners": [{ "typeID": 91211, "count": 20, "activation": "locator" }, { "typeID": 91212, "count": 3, "activation": "locator" }, { "typeID": 91213, "count": 2, "activation": "locator" }, { "typeID": 91214, "count": 3, "activation": "locator" }] },
-    "14238": { "name": "AsteroidDebris1", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:resource-locators"], "spawners": [{ "typeID": 91211, "count": 40, "activation": "locator" }] }
+    "10659": { "name": "Pulverized Asteroid Cluster", "siteTypeID": 4871, "entryBeaconTypeID": 86823, "tags": ["site:mining-field", "site:mooneater"], "spawners": [] },
+    "14140": { "name": "KotH", "siteTypeID": 4873, "entryBeaconTypeID": 83889, "tags": ["site:resource-locators"], "spawners": [{ "typeID": 91211, "count": 49, "activation": "locator" }, { "typeID": 83963, "count": 1, "activation": "initial" }] }
   }
 }

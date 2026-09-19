@@ -297,12 +297,6 @@ const DEV_COMMAND_SHIP_PRESETS = Object.freeze({
     alternateChargeNames: ["Mystic L", "Occult L"],
     propulsionName: "500MN Y-T8 Compact Microwarpdrive",
   }),
-  trigzirnitra: createTrigPreset({
-    shipName: "Zirnitra",
-    weaponName: "Ultratidal Entropic Disintegrator II",
-    primaryChargeName: "Baryon Exotic Plasma XL",
-    alternateChargeNames: ["Mystic XL", "Occult XL"],
-  }),
   guardian: Object.freeze({
     commandName: "/guardian",
     shipName: "Guardian",
@@ -352,7 +346,6 @@ const TRIG_COMMAND_PRESET_KEYS = Object.freeze({
   zarmazd: "trigzarmazd",
   drekavac: "trigdrekavac",
   leshak: "trigleshak",
-  zirnitra: "trigzirnitra",
   frigate: "trigdamavik",
   assaultfrigate: "trignergal",
   destroyer: "trigkikimora",
@@ -363,15 +356,12 @@ const TRIG_COMMAND_PRESET_KEYS = Object.freeze({
   logi: "trigzarmazd",
   battlecruiser: "trigdrekavac",
   battleship: "trigleshak",
-  dread: "trigzirnitra",
   light: "trigdamavik",
   heavy: "trigvedmak",
   supratidal: "trigleshak",
-  ultratidal: "trigzirnitra",
   small: "trigdamavik",
   medium: "trigvedmak",
   large: "trigleshak",
-  xl: "trigzirnitra",
 });
 
 function toInt(value, fallback = 0) {
@@ -1292,7 +1282,7 @@ function handleTrigCommand(session, argumentText = "") {
   if (!presetKey) {
     return {
       success: false as const,
-      message: "Usage: /trig [damavik|nergal|kikimora|draugur|vedmak|rodiva|ikitursa|zarmazd|drekavac|leshak|zirnitra|light|heavy|supratidal|ultratidal].",
+      message: "Usage: /trig [damavik|nergal|kikimora|draugur|vedmak|rodiva|ikitursa|zarmazd|drekavac|leshak|light|heavy|supratidal].",
     };
   }
   return handleDevCommandShip(session, presetKey);

@@ -923,10 +923,30 @@ function definitionsMatchActiveUniverseInstance(instance, definition, template) 
   if (!runtimeState.isActiveLifecycleState(instance.lifecycleState)) {
     return false;
   }
-  if (normalizeText(instance.templateID, "") !== normalizeText(template.templateID, "")) {
+  if (normalizeText(instance.siteKey, "") !== normalizeText(definition.siteKey, "")) {
     return false;
   }
-  if (normalizeText(instance.siteKey, "") !== normalizeText(definition.siteKey, "")) {
+  const replaceUniverseTemplateID = normalizeText(
+    definition && definition.metadata && definition.metadata.replaceUniverseTemplateID,
+    "",
+  );
+  if (
+    replaceUniverseTemplateID &&
+    normalizeText(instance.templateID, "") === replaceUniverseTemplateID
+  ) {
+    return false;
+  }
+  // Reconciliation is a cache/authority refresh, not a dungeon lifecycle
+  // transition. Once a persistent universe site is active, its instance ID,
+  // position, and materialized contents must remain stable until the normal
+  // completion/expiry rotation replaces it. A concurrent login/undock or
+  // full-universe reconcile may produce a newer definition hash for the same
+  // slot; replacing the live instance here moves the system-view marker while
+  // pilots are warping and tears down the props they are travelling toward.
+  if (instance.runtimeFlags && instance.runtimeFlags.universePersistent === true) {
+    return true;
+  }
+  if (normalizeText(instance.templateID, "") !== normalizeText(template.templateID, "")) {
     return false;
   }
   const existingHash = normalizeText(instance.metadata && instance.metadata.definitionHash, "");
@@ -943,6 +963,74 @@ function normalizeTextFilterSet(values: any[] = []) {
     .map((entry) => normalizeText(entry, "").toLowerCase())
     .filter(Boolean))];
   return normalized.length > 0 ? new Set(normalized) : null;
+}
+
+function indexCanonicalUniverseInstancesBySiteKey(instances: any[] = []) {
+  const existingBySiteKey = new Map();
+  const duplicateInstances: any[] = [];
+  for (const instance of Array.isArray(instances) ? instances : []) {
+    const siteKey = normalizeText(instance && instance.siteKey, "");
+    if (!siteKey) {
+      continue;
+    }
+    const existing = existingBySiteKey.get(siteKey) || null;
+    if (!existing) {
+      existingBySiteKey.set(siteKey, instance);
+      continue;
+    }
+    const existingIsActive = runtimeState.isActiveLifecycleState(
+      existing && existing.lifecycleState,
+    );
+    const candidateIsActive = runtimeState.isActiveLifecycleState(
+      instance && instance.lifecycleState,
+    );
+    const preferCandidate =
+      (candidateIsActive && !existingIsActive) ||
+      (
+        candidateIsActive === existingIsActive &&
+        toInt(instance && instance.instanceID, 0) <
+          toInt(existing && existing.instanceID, 0)
+      );
+    if (preferCandidate) {
+      duplicateInstances.push(existing);
+      existingBySiteKey.set(siteKey, instance);
+    } else {
+      duplicateInstances.push(instance);
+    }
+  }
+  return {
+    duplicateInstances,
+    existingBySiteKey,
+  };
+}
+
+function normalizeUniverseSeededDefinitions(definitions: any[] = []) {
+  const definitionsBySiteKey = new Map();
+  for (const definition of Array.isArray(definitions) ? definitions : []) {
+    if (!definition || !definition.templateID || !definition.siteKey) {
+      continue;
+    }
+    const normalized = {
+      ...cloneValue(definition),
+      solarSystemID: Math.max(0, toInt(definition.solarSystemID, 0)),
+      siteKey: normalizeText(definition.siteKey, ""),
+      templateID: normalizeText(definition.templateID, ""),
+    };
+    if (
+      normalized.solarSystemID <= 0 ||
+      !normalized.siteKey ||
+      !normalized.templateID ||
+      definitionsBySiteKey.has(normalized.siteKey)
+    ) {
+      continue;
+    }
+    // A universe slot is a single persistent site. If upstream allocation
+    // accidentally returns the same slot for more than one band/profile, keep
+    // the first definition rather than creating several live anchors that all
+    // share one map identity.
+    definitionsBySiteKey.set(normalized.siteKey, normalized);
+  }
+  return [...definitionsBySiteKey.values()];
 }
 
 function normalizeUniverseReconcileOptions(options: Record<string, any> = {}) {
@@ -1024,15 +1112,7 @@ function buildUniverseSeededReconcilePlan(
     ...(snapshot.options || {}),
     ...options,
   });
-  const normalizedDefinitions = (Array.isArray(definitions) ? definitions : [])
-    .filter((definition) => definition && definition.templateID && definition.siteKey)
-    .map((definition) => ({
-      ...cloneValue(definition),
-      solarSystemID: Math.max(0, toInt(definition.solarSystemID, 0)),
-      siteKey: normalizeText(definition.siteKey, ""),
-      templateID: normalizeText(definition.templateID, ""),
-    }))
-    .filter((definition) => definition.solarSystemID > 0 && definition.siteKey && definition.templateID);
+  const normalizedDefinitions = normalizeUniverseSeededDefinitions(definitions);
   const targetedSystemIDs = new Set(
     normalizedOptions.systemIDs.length > 0
       ? normalizedOptions.systemIDs
@@ -1052,7 +1132,7 @@ function buildUniverseSeededReconcilePlan(
     }
   }
 
-  const existingBySiteKey = new Map();
+  const eligibleInstances: any[] = [];
   for (const instance of Array.isArray(snapshot.instances) ? snapshot.instances : []) {
     if (
       !instance ||
@@ -1084,14 +1164,21 @@ function buildUniverseSeededReconcilePlan(
     ) {
       continue;
     }
-    existingBySiteKey.set(instance.siteKey, instance);
+    eligibleInstances.push(instance);
   }
 
-  const removedBefore: any[] = [];
+  const {
+    duplicateInstances,
+    existingBySiteKey,
+  } = indexCanonicalUniverseInstancesBySiteKey(eligibleInstances);
+
+  const removedBefore: any[] = duplicateInstances.map((instance) => cloneValue(instance));
   const createdAfter: any[] = [];
   const retainedInstanceIDs: any[] = [];
   const preservedInstanceIDs: any[] = [];
-  const removeInstanceIDs = new Set<any>();
+  const removeInstanceIDs = new Set<any>(
+    duplicateInstances.map((instance) => Math.max(0, toInt(instance && instance.instanceID, 0))),
+  );
   let replacedInstances = 0;
   for (const [siteKey, instance] of existingBySiteKey.entries()) {
     if (!desiredBySiteKey.has(siteKey) && !preserveSiteKeys.has(siteKey)) {
@@ -1192,15 +1279,7 @@ function applyUniverseSeededReconcilePlan(plan) {
 }
 
 function reconcileUniverseSeededInstances(definitions: any[] = [], options: Record<string, any> = {}) {
-  const normalizedDefinitions = (Array.isArray(definitions) ? definitions : [])
-    .filter((definition) => definition && definition.templateID && definition.siteKey)
-    .map((definition) => ({
-      ...cloneValue(definition),
-      solarSystemID: Math.max(0, toInt(definition.solarSystemID, 0)),
-      siteKey: normalizeText(definition.siteKey, ""),
-      templateID: normalizeText(definition.templateID, ""),
-    }))
-    .filter((definition) => definition.solarSystemID > 0 && definition.siteKey && definition.templateID);
+  const normalizedDefinitions = normalizeUniverseSeededDefinitions(definitions);
 
   const targetedSystemIDs = new Set(
     (Array.isArray(options.systemIDs) ? options.systemIDs : normalizedDefinitions.map((definition) => definition.solarSystemID))
@@ -1242,7 +1321,7 @@ function reconcileUniverseSeededInstances(definitions: any[] = [], options: Reco
       targetedSystemIDs.size <= 0 ||
       targetedSystemIDs.has(Math.max(0, toInt(summary && summary.solarSystemID, 0)))
     ));
-  const existingBySiteKey = new Map();
+  const eligibleInstances: any[] = [];
   for (const summary of candidateSummaries) {
     const instance = runtimeState.getInstanceSnapshot(summary.instanceID);
     if (!instance || !(instance.runtimeFlags && instance.runtimeFlags.universeSeeded === true)) {
@@ -1277,10 +1356,18 @@ function reconcileUniverseSeededInstances(definitions: any[] = [], options: Reco
     ) {
       continue;
     }
-    existingBySiteKey.set(instance.siteKey, instance);
+    eligibleInstances.push(instance);
   }
 
-  const removeInstanceIDs = new Set<any>();
+  const {
+    duplicateInstances,
+    existingBySiteKey,
+  } = indexCanonicalUniverseInstancesBySiteKey(eligibleInstances);
+
+  const removeInstanceIDs = new Set<any>(
+    duplicateInstances.map((instance) => Math.max(0, toInt(instance && instance.instanceID, 0))),
+  );
+  removedBefore.push(...duplicateInstances.map((instance) => cloneValue(instance)));
   for (const [siteKey, instance] of existingBySiteKey.entries()) {
     if (!desiredBySiteKey.has(siteKey) && !preserveSiteKeys.has(siteKey)) {
       removedBefore.push(cloneValue(instance));

@@ -5,6 +5,18 @@ const path = require("path");
 const { createTableRepository, } = require(path.join(__dirname, "../../gameStore/tableRepository"));
 const repo = createTableRepository("service:mining", { strict: true });
 const { resolveItemByTypeID, } = require(path.join(__dirname, "../inventory/itemTypeRegistry"));
+const { TABLE, readStaticTable, } = require(path.join(__dirname, "../_shared/referenceData"));
+const ASTEROID_OUTPUT_TYPE_ATTRIBUTE_ID = 6070;
+const CANONICAL_MINING_CARRIER_BY_YIELD_TYPE_ID = Object.freeze({
+    77800: Object.freeze({ typeID: 91374, groupID: 5004, categoryID: 25, name: "Char" }),
+    77810: Object.freeze({ typeID: 91375, groupID: 5005, categoryID: 25, name: "Slag" }),
+    78426: Object.freeze({ typeID: 91376, groupID: 5006, categoryID: 25, name: "Ingot" }),
+    77811: Object.freeze({ typeID: 91377, groupID: 5007, categoryID: 25, name: "Comet" }),
+    78446: Object.freeze({ typeID: 91378, groupID: 5008, categoryID: 25, name: "Dewdrop" }),
+    78447: Object.freeze({ typeID: 91379, groupID: 5009, categoryID: 25, name: "Ember" }),
+    78448: Object.freeze({ typeID: 91380, groupID: 5010, categoryID: 25, name: "Glint" }),
+    78449: Object.freeze({ typeID: 91381, groupID: 5011, categoryID: 25, name: "Soot" }),
+});
 function toPositiveInt(value, fallback = 0) {
     const numeric = Math.trunc(Number(value) || 0);
     return numeric > 0 ? numeric : fallback;
@@ -22,6 +34,86 @@ function normalizeOreMapPayload(payload) {
     return payload;
 }
 let cachedOreMap = null;
+let cachedCarrierTypeIDsByYieldTypeID = null;
+function getAsteroidOutputTypeID(typeID) {
+    const root = readStaticTable(TABLE.TYPE_DOGMA) || {};
+    const record = root.typesByTypeID && root.typesByTypeID[String(toPositiveInt(typeID, 0))];
+    const attributes = record && record.attributes;
+    if (!attributes || typeof attributes !== "object") {
+        return 0;
+    }
+    return toPositiveInt(attributes[String(ASTEROID_OUTPUT_TYPE_ATTRIBUTE_ID)], 0);
+}
+function getCarrierTypeIDsByYieldTypeID() {
+    if (cachedCarrierTypeIDsByYieldTypeID) {
+        return cachedCarrierTypeIDsByYieldTypeID;
+    }
+    const carrierTypeIDsByYieldTypeID = new Map();
+    const root = readStaticTable(TABLE.TYPE_DOGMA) || {};
+    const typesByTypeID = root.typesByTypeID && typeof root.typesByTypeID === "object"
+        ? root.typesByTypeID
+        : {};
+    for (const [typeIDText, record] of Object.entries(typesByTypeID)) {
+        const carrierTypeID = toPositiveInt(typeIDText, 0);
+        const yieldTypeID = toPositiveInt(record && record.attributes &&
+            record.attributes[String(ASTEROID_OUTPUT_TYPE_ATTRIBUTE_ID)], 0);
+        if (carrierTypeID <= 0 || yieldTypeID <= 0 || carrierTypeID === yieldTypeID) {
+            continue;
+        }
+        const existingTypeID = toPositiveInt(carrierTypeIDsByYieldTypeID.get(yieldTypeID), 0);
+        // Some resource families expose multiple carrier variants for the same
+        // output. The lowest type ID is the canonical/default carrier in the SDE
+        // (for example Char 91374 -> Feldspar Crystals 77800).
+        if (existingTypeID <= 0 || carrierTypeID < existingTypeID) {
+            carrierTypeIDsByYieldTypeID.set(yieldTypeID, carrierTypeID);
+        }
+    }
+    cachedCarrierTypeIDsByYieldTypeID = carrierTypeIDsByYieldTypeID;
+    return cachedCarrierTypeIDsByYieldTypeID;
+}
+function resolveMiningResourceIdentity(typeRecordOrID) {
+    const sourceTypeID = toPositiveInt(typeRecordOrID && typeof typeRecordOrID === "object"
+        ? typeRecordOrID.typeID
+        : typeRecordOrID, 0);
+    const sourceTypeRecord = typeRecordOrID && typeof typeRecordOrID === "object"
+        ? typeRecordOrID
+        : resolveItemByTypeID(sourceTypeID);
+    if (sourceTypeID <= 0) {
+        return {
+            carrierTypeRecord: sourceTypeRecord || null,
+            yieldTypeRecord: sourceTypeRecord || null,
+        };
+    }
+    const canonicalCarrierEntry = Object.entries(CANONICAL_MINING_CARRIER_BY_YIELD_TYPE_ID).find(([, carrier]) => toPositiveInt(carrier && carrier.typeID, 0) === sourceTypeID);
+    if (canonicalCarrierEntry) {
+        const canonicalYieldTypeID = toPositiveInt(canonicalCarrierEntry[0], 0);
+        const canonicalCarrier = canonicalCarrierEntry[1];
+        return {
+            carrierTypeRecord: sourceTypeRecord || resolveItemByTypeID(sourceTypeID) || canonicalCarrier,
+            yieldTypeRecord: resolveItemByTypeID(canonicalYieldTypeID) || {
+                typeID: canonicalYieldTypeID,
+            },
+        };
+    }
+    const directYieldTypeID = getAsteroidOutputTypeID(sourceTypeID);
+    if (directYieldTypeID > 0 && directYieldTypeID !== sourceTypeID) {
+        return {
+            carrierTypeRecord: sourceTypeRecord || resolveItemByTypeID(sourceTypeID),
+            yieldTypeRecord: resolveItemByTypeID(directYieldTypeID) || sourceTypeRecord || null,
+        };
+    }
+    const carrierTypeID = toPositiveInt(getCarrierTypeIDsByYieldTypeID().get(sourceTypeID) ||
+        (CANONICAL_MINING_CARRIER_BY_YIELD_TYPE_ID[sourceTypeID] &&
+            CANONICAL_MINING_CARRIER_BY_YIELD_TYPE_ID[sourceTypeID].typeID), 0);
+    const canonicalCarrier = CANONICAL_MINING_CARRIER_BY_YIELD_TYPE_ID[sourceTypeID] || null;
+    return {
+        carrierTypeRecord: (carrierTypeID > 0 && resolveItemByTypeID(carrierTypeID)) ||
+            canonicalCarrier ||
+            sourceTypeRecord ||
+            null,
+        yieldTypeRecord: sourceTypeRecord || resolveItemByTypeID(sourceTypeID),
+    };
+}
 function loadSolarSystemOreMap() {
     if (cachedOreMap) {
         return cachedOreMap;
@@ -157,6 +249,7 @@ function resolveMiningVisualPresentation(typeRecord, overrides = {}) {
 }
 module.exports = {
     getSolarSystemOreTypeRecords,
+    resolveMiningResourceIdentity,
     resolveMiningVisualPresentation,
 };
 //# sourceMappingURL=miningVisuals.js.map

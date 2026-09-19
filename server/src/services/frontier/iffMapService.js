@@ -5,7 +5,7 @@ const CairnService = require("./cairnService");
 const log = require(path.join(__dirname, "../../utils/logger"));
 const { buildDict, buildList, unwrapMarshalValue, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const iffRuntime = require(path.join(__dirname, "./iffRuntime"));
-const { notifyIffStateChanged, } = require(path.join(__dirname, "./iffAbilityHandlers"));
+const { notifyIffStateChanged, scheduleIffVerdicts, } = require(path.join(__dirname, "./iffAbilityHandlers"));
 const { findItemById } = require(path.join(__dirname, "../inventory/itemStore"));
 function toInt(value, fallback = 0) {
     const numeric = Number(value);
@@ -51,6 +51,10 @@ class IffMapService extends CairnService {
         };
         const rows = iffRuntime.listVisibleBeacons(viewer);
         log.debug(`[iffMap] get_visible_beacons char=${characterID} system=${solarSystemID} rows=${rows.length}`);
+        // The map fetch is part of the client's IFF bootstrap. Refresh verdicts
+        // here as well so a persisted active player transponder immediately sees
+        // already-materialized NPC group broadcasts after login or system entry.
+        scheduleIffVerdicts(solarSystemID);
         return buildList(rows.map(buildBeaconRow));
     }
     /**

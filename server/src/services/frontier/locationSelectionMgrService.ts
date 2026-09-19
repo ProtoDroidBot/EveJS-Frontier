@@ -11,7 +11,7 @@ const {
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const itemStore = require(path.join(__dirname, "../inventory/itemStore"));
 const {
-  updateCharacterRecord,
+  clearCharacterActiveShipForCloneSelection,
 } = require(path.join(__dirname, "../character/characterState"));
 const deploymentRuntime = require(path.join(__dirname, "./deploymentRuntime"));
 const berthingRuntime = require(path.join(__dirname, "./berthingRuntime"));
@@ -33,8 +33,10 @@ const FITTING_CLASS = "frontier.clone_selection.common.location.Fitting";
 const LOCATION_CLASS = "frontier.clone_selection.common.location.Location";
 const CREATION_SHIP_TYPE_ID = berthingRuntime.CREATION_SHIP_TYPE_ID || 95276;
 const REFUGE_TYPE_ID = berthingRuntime.REFUGE_TYPE_ID || 87160;
+const REFUGE_SHIP_TYPE_ID = 95735;
 const DEFAULT_FALLBACK_STATION_ID = 60003760;
 const CLONE_SPAWN_CLEARANCE_METERS = 1_000;
+const STATION_CLONE_SPAWN_CLEARANCE_METERS = 5_000;
 
 const ENVIRONMENTAL_STATUS_EFFECT_KEYS = new Set([
   "heat",
@@ -81,59 +83,24 @@ function normalizeDeathStatusEffect(value) {
   return ENVIRONMENTAL_STATUS_EFFECT_KEYS.has(normalized) ? normalized : null;
 }
 
-function buildPythonDatetimePickle(date) {
+function buildPythonDatetimePayload(milliseconds) {
+  const date = new Date(Number(milliseconds));
   const normalizedDate = date instanceof Date && Number.isFinite(date.getTime())
     ? date
     : new Date();
-  const year = normalizedDate.getUTCFullYear();
-  const month = normalizedDate.getUTCMonth() + 1;
-  const day = normalizedDate.getUTCDate();
-  const hour = normalizedDate.getUTCHours();
-  const minute = normalizedDate.getUTCMinutes();
-  const second = normalizedDate.getUTCSeconds();
-  const microsecond = normalizedDate.getUTCMilliseconds() * 1000;
-  const datetimeBytes = Buffer.from([
-    (year >> 8) & 0xff,
-    year & 0xff,
-    month & 0xff,
-    day & 0xff,
-    hour & 0xff,
-    minute & 0xff,
-    second & 0xff,
-    (microsecond >> 16) & 0xff,
-    (microsecond >> 8) & 0xff,
-    microsecond & 0xff,
+  // datetime.datetime is in the client's core marshal whitelist. Construct it
+  // through ObjectEx instead of nesting a cPicked stream inside DeathReport:
+  // the latter reaches the native FromPickle path and aborts the entire RPC
+  // response before the death-message controller can render its blue frame.
+  return buildObjectEx1("datetime.datetime", [
+    normalizedDate.getUTCFullYear(),
+    normalizedDate.getUTCMonth() + 1,
+    normalizedDate.getUTCDate(),
+    normalizedDate.getUTCHours(),
+    normalizedDate.getUTCMinutes(),
+    normalizedDate.getUTCSeconds(),
+    normalizedDate.getUTCMilliseconds() * 1000,
   ]);
-  const datetimeUnicodeBytes = Buffer.from(
-    datetimeBytes.toString("latin1"),
-    "utf8",
-  );
-  const datetimeLength = Buffer.alloc(4);
-  datetimeLength.writeUInt32LE(datetimeUnicodeBytes.length, 0);
-  const encodingLength = Buffer.alloc(4);
-  encodingLength.writeUInt32LE(6, 0);
-
-  return Buffer.concat([
-    Buffer.from([0x80, 0x02]),
-    Buffer.from("cdatetime\ndatetime\nq\0c_codecs\nencode\nq\x01X", "latin1"),
-    datetimeLength,
-    datetimeUnicodeBytes,
-    Buffer.from("q\x02X", "latin1"),
-    encodingLength,
-    Buffer.from("latin1q\x03", "latin1"),
-    Buffer.from([0x86]),
-    Buffer.from("q\x04Rq\x05", "latin1"),
-    Buffer.from([0x85]),
-    Buffer.from("q\x06Rq\x07.", "latin1"),
-  ]);
-}
-
-function buildPythonDatetimePayload(milliseconds) {
-  const date = new Date(Number(milliseconds));
-  return {
-    type: "cpicked",
-    data: buildPythonDatetimePickle(date),
-  };
 }
 
 function recordCloneDeathReport(
@@ -154,6 +121,14 @@ function recordCloneDeathReport(
     deathTimeMs: Number.isFinite(Number(report.deathTimeMs))
       ? Number(report.deathTimeMs)
       : Date.now(),
+    finalBlow: toPositiveInt(
+      report.finalBlow ?? report.finalCharacterID,
+      0,
+    ) || null,
+    finalShipTypeID: toPositiveInt(
+      report.finalShipTypeID ?? report.attackerShipTypeID,
+      0,
+    ) || null,
     shellTypeID: toPositiveInt(report.shellTypeID, DEFAULT_SHELL_TYPE_ID),
     shipID: toPositiveInt(report.shipID, 0),
     shipTypeID: toPositiveInt(report.shipTypeID, CREATION_SHIP_TYPE_ID),
@@ -195,8 +170,8 @@ function buildDeathReportPayload(report) {
     buildList([]),
     buildList([]),
     buildPythonDatetimePayload(report.deathTimeMs),
-    null,
-    null,
+    report.finalBlow || null,
+    report.finalShipTypeID || null,
     null,
     report.deathStatusEffect,
   ]);
@@ -358,7 +333,13 @@ function listEligibleCloneAssemblies(
         kind: "assembly",
         locationID: toPositiveInt(item.itemID, 0),
         solarSystemID,
-        shipTypeID: CREATION_SHIP_TYPE_ID,
+        // A clone assembled by a Refuge uses the distinct Refuge Ship hull
+        // from the SDE. Deployed smart hangars continue to assemble the
+        // standard Creation hull. Both types are initialized by itemStore's
+        // shared Creation-template grant path before entering space.
+        shipTypeID: isRefuge
+          ? REFUGE_SHIP_TYPE_ID
+          : CREATION_SHIP_TYPE_ID,
         shellTypeID: DEFAULT_SHELL_TYPE_ID,
         item,
       };
@@ -414,24 +395,69 @@ function buildAvailableLocationsPayload(
 
 function parseLocationKey(rawValue) {
   const value = unwrapMarshalValue(rawValue);
+  const directSolarSystemID = toPositiveInt(value, 0);
+  if (directSolarSystemID > 0) {
+    return { solarSystemID: directSolarSystemID, locationID: 0 };
+  }
   if (!value || typeof value !== "object") {
     return null;
   }
   const header = Array.isArray(value.header) ? value.header : [];
-  const className = String(header[0] || value.className || "");
+  const rawClassName = Array.isArray(header[0])
+    ? header[0][0]
+    : header[0];
+  const className = String(
+    rawClassName || value.className || value.__class__ || "",
+  );
   const keyArgs = Array.isArray(header[1])
     ? header[1]
     : Array.isArray(value.args)
       ? value.args
       : [];
-  if (!className.endsWith("RefugeLocationKey") || keyArgs.length < 2) {
+  const state = [
+    !Array.isArray(header[1]) ? header[1] : null,
+    header[2],
+    value.state,
+    value,
+  ].find((candidate) => (
+    candidate && typeof candidate === "object" && !Array.isArray(candidate)
+  )) || {};
+  if (
+    className &&
+    !className.endsWith("RefugeLocationKey")
+  ) {
     return null;
   }
-  const solarSystemID = toPositiveInt(keyArgs[0], 0);
-  const locationID = toPositiveInt(keyArgs[1], 0);
-  return solarSystemID > 0 && locationID > 0
+  const solarSystemID = toPositiveInt(
+    keyArgs[0] ?? state.solarsystem_id ?? state.solar_system_id ??
+      state.solarSystemID,
+    0,
+  );
+  const locationID = toPositiveInt(
+    keyArgs[1] ?? state.assembly_id ?? state.location_id ?? state.locationID,
+    0,
+  );
+  return solarSystemID > 0
     ? { solarSystemID, locationID }
     : null;
+}
+
+function parseLocationKeys(rawValue) {
+  const value = unwrapMarshalValue(rawValue);
+  const candidates = Array.isArray(value) ? value : [value];
+  return candidates
+    .map((candidate) => parseLocationKey(candidate))
+    .filter(Boolean);
+}
+
+function summarizeLocationKeyInput(value) {
+  try {
+    return JSON.stringify(value, (_key, entry) => (
+      Buffer.isBuffer(entry) ? `<Buffer length=${entry.length}>` : entry
+    )).slice(0, 1_000);
+  } catch (_error) {
+    return String(value);
+  }
 }
 
 function buildAssemblySpawnState(item) {
@@ -459,13 +485,36 @@ function buildAssemblySpawnState(item) {
   };
 }
 
+function buildStationSpawnState(station) {
+  const direction = normalizeVector(
+    cloneVector(station && station.position),
+    { x: 1, y: 0, z: 0 },
+  );
+  const position = cloneVector(station && station.position);
+  const stationRadius = Math.max(
+    toFiniteNumber(station && station.radius, 15_000),
+    0,
+  );
+  const offset = stationRadius + STATION_CLONE_SPAWN_CLEARANCE_METERS;
+  const spawnPosition = {
+    x: position.x + direction.x * offset,
+    y: position.y + direction.y * offset,
+    z: position.z + direction.z * offset,
+  };
+  return {
+    anchorID: toPositiveInt(station && station.stationID, 0),
+    anchorType: "station-clone-fallback",
+    position: spawnPosition,
+    direction,
+    velocity: { x: 0, y: 0, z: 0 },
+    speedFraction: 0,
+    mode: "STOP",
+    targetPoint: spawnPosition,
+  };
+}
+
 function clearCharacterActiveShip(characterID) {
-  return updateCharacterRecord(characterID, (record) => ({
-    ...record,
-    shipID: 0,
-    shipTypeID: 0,
-    shipName: "",
-  }));
+  return clearCharacterActiveShipForCloneSelection(characterID);
 }
 
 function spawnAtAssembly(session, location) {
@@ -475,9 +524,15 @@ function spawnAtAssembly(session, location) {
     pending && pending.fallbackStationID,
     DEFAULT_FALLBACK_STATION_ID,
   );
-  const creationShip = resolveShipByTypeID(CREATION_SHIP_TYPE_ID) || {
-    typeID: CREATION_SHIP_TYPE_ID,
-    name: "Creation",
+  const spawnShipTypeID = toPositiveInt(
+    location && location.shipTypeID,
+    CREATION_SHIP_TYPE_ID,
+  );
+  const creationShip = resolveShipByTypeID(spawnShipTypeID) || {
+    typeID: spawnShipTypeID,
+    name: spawnShipTypeID === REFUGE_SHIP_TYPE_ID
+      ? "Refuge Ship"
+      : "Creation",
   };
   const createResult = itemStore.createShipItemForCharacter(
     characterID,
@@ -522,13 +577,73 @@ function spawnAtAssembly(session, location) {
 }
 
 function spawnAtStation(session, location) {
+  const characterID = toPositiveInt(session && session.characterID, 0);
+  const station = worldData.getStationByID(location.locationID);
+  if (!station) {
+    return { success: false, errorMsg: "STATION_NOT_FOUND" };
+  }
+  const shipTypeID = toPositiveInt(
+    location && location.shipTypeID,
+    CREATION_SHIP_TYPE_ID,
+  );
+  const creationShip = resolveShipByTypeID(shipTypeID) || {
+    typeID: shipTypeID,
+    name: "Creation",
+  };
+  const createResult = itemStore.createShipItemForCharacter(
+    characterID,
+    station.stationID,
+    creationShip,
+  );
+  if (!createResult.success || !createResult.data) {
+    return createResult;
+  }
+  const shipItem = createResult.data;
+  const activateResult = itemStore.setActiveShipForCharacter(
+    characterID,
+    shipItem.itemID,
+  );
+  if (!activateResult.success) {
+    itemStore.removeInventoryItem(shipItem.itemID, { removeContents: true });
+    return activateResult;
+  }
+
+  // CloneSelectionView only implements an AwakeTransition to Space. Docking
+  // here makes the client attempt clone_selection -> hangar, for which no
+  // transition exists. Use the station as a safe space anchor instead.
   const transitions = require(path.join(__dirname, "../../space/transitions"));
-  return transitions.rebuildDockedSessionAtStation(session, location.locationID, {
-    emitNotifications: true,
-    logSelection: true,
-    boardNewbieShip: true,
-    newbieShipLogLabel: "CloneSelectionStationFallback",
-  });
+  const jumpResult = transitions.jumpSessionToSolarSystem(
+    session,
+    location.solarSystemID,
+    {
+      countsTowardJumpGoal: false,
+      spawnStateOverride: buildStationSpawnState(station),
+    },
+  );
+  if (!jumpResult.success) {
+    itemStore.removeInventoryItem(shipItem.itemID, { removeContents: true });
+    clearCharacterActiveShip(characterID);
+    return jumpResult;
+  }
+  return {
+    success: true,
+    data: {
+      ...jumpResult.data,
+      cloneLocation: location,
+      createdShip: shipItem,
+    },
+  };
+}
+
+function confirmCloneDeathTransition(session) {
+  const shipDestruction = require(path.join(__dirname, "../../space/shipDestruction"));
+  const confirmation = typeof shipDestruction.confirmCloneSelectionTransition === "function"
+    ? shipDestruction.confirmCloneSelectionTransition(session)
+    : { success: true };
+  return confirmation || {
+    success: false,
+    errorMsg: "CLONE_DEATH_CONFIRMATION_FAILED",
+  };
 }
 
 function spawnCharacterAtLocation(session, rawLocationKey) {
@@ -537,14 +652,22 @@ function spawnCharacterAtLocation(session, rawLocationKey) {
   if (!pending || Date.now() < pending.readyAtMs) {
     return { success: false, errorMsg: "CLONE_SELECTION_NOT_READY" };
   }
-  const requested = parseLocationKey(rawLocationKey);
-  if (!requested) {
+  const requestedLocations = parseLocationKeys(rawLocationKey);
+  if (requestedLocations.length === 0) {
+    log.warn(
+      `[LocationSelection] Invalid clone location key char=${characterID} ` +
+        `payload=${summarizeLocationKeyInput(rawLocationKey)}`,
+    );
     return { success: false, errorMsg: "INVALID_CLONE_LOCATION" };
   }
-  const location = resolveSelectableCloneLocations(characterID)
-    .find((candidate) => (
+  const availableLocations = resolveSelectableCloneLocations(characterID);
+  const location = requestedLocations
+    .map((requested) => availableLocations.find((candidate) => (
       candidate.solarSystemID === requested.solarSystemID &&
-      candidate.locationID === requested.locationID
+      (
+        requested.locationID <= 0 ||
+        candidate.locationID === requested.locationID
+      )
     )) || (() => {
       // A station card is only shown when no refuge or deployed hangar is
       // available. Keep an already-presented fallback valid if an assembly
@@ -552,12 +675,34 @@ function spawnCharacterAtLocation(session, rawLocationKey) {
       const station = resolveFallbackStation(pending);
       return station &&
         station.solarSystemID === requested.solarSystemID &&
-        station.locationID === requested.locationID
+        (
+          requested.locationID <= 0 ||
+          station.locationID === requested.locationID
+        )
         ? station
         : null;
-    })();
+    })())
+    .find(Boolean);
   if (!location) {
+    log.warn(
+      `[LocationSelection] Clone location unavailable char=${characterID} ` +
+        `requested=${JSON.stringify(requestedLocations)} ` +
+        `available=${JSON.stringify(availableLocations.map((candidate) => ({
+          kind: candidate.kind,
+          solarSystemID: candidate.solarSystemID,
+          locationID: candidate.locationID,
+        })))}`,
+    );
     return { success: false, errorMsg: "CLONE_LOCATION_UNAVAILABLE" };
+  }
+
+  // Selecting a concrete respawn destination is the first unambiguous
+  // server-observable player action. Loading clone locations is not sufficient:
+  // the client also does that when DeathMessageIntegration throws before the
+  // blue report installs its hold-to-confirm handler.
+  const confirmation = confirmCloneDeathTransition(session);
+  if (confirmation.success !== true) {
+    return confirmation;
   }
 
   const result = location.kind === "station"
@@ -591,8 +736,20 @@ class LocationSelectionMgrService extends BaseService {
   }
 
   Handle_get_locations(_args, session) {
-    return buildAvailableLocationsPayload(
+    const characterID = toPositiveInt(
       session && (session.characterID || session.charid),
+      0,
+    );
+    const pending = getPendingCloneDeath(characterID);
+    if (pending && Date.now() < pending.readyAtMs) {
+      throw new Error("CLONE_SELECTION_NOT_READY");
+    }
+
+    // This RPC is also reached when the client fails to construct its blue
+    // death-report panel. It must remain read-only so a UI/marshal failure does
+    // not destroy the preserved ship or otherwise finalize clone death.
+    return buildAvailableLocationsPayload(
+      characterID,
     );
   }
 
@@ -618,18 +775,22 @@ class LocationSelectionMgrService extends BaseService {
 
 module.exports = LocationSelectionMgrService;
 module.exports.CREATION_SHIP_TYPE_ID = CREATION_SHIP_TYPE_ID;
+module.exports.REFUGE_SHIP_TYPE_ID = REFUGE_SHIP_TYPE_ID;
 module.exports.DEATH_REPORT_CLASS = DEATH_REPORT_CLASS;
 module.exports.buildAvailableLocationsPayload = buildAvailableLocationsPayload;
 module.exports.buildDeathReportPayload = buildDeathReportPayload;
 module.exports.buildLocationPayload = buildLocationPayload;
+module.exports.buildStationSpawnState = buildStationSpawnState;
 module.exports.clearCharacterActiveShip = clearCharacterActiveShip;
 module.exports.getLastDeathReport = getLastDeathReport;
 module.exports.getPendingCloneDeath = getPendingCloneDeath;
 module.exports.listEligibleCloneAssemblies = listEligibleCloneAssemblies;
 module.exports.parseLocationKey = parseLocationKey;
+module.exports.parseLocationKeys = parseLocationKeys;
 module.exports.recordCloneDeathReport = recordCloneDeathReport;
 module.exports.recordEnvironmentalDeathReport = recordEnvironmentalDeathReport;
 module.exports.recordPendingCloneDeath = recordPendingCloneDeath;
 module.exports.resetDeathReports = resetDeathReports;
 module.exports.resolveSelectableCloneLocations = resolveSelectableCloneLocations;
+module.exports.spawnAtStation = spawnAtStation;
 module.exports.spawnCharacterAtLocation = spawnCharacterAtLocation;

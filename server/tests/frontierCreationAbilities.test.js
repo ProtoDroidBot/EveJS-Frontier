@@ -2,7 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 /**
  * Frontier Creation ability framework, IFF transponder/beacon, and
- * directional scanner coverage (client build 3467658).
+ * directional scanner coverage (client build 3502403).
  * Run through: npm run test:frontier-server (isolated runner).
  */
 const assert = require("node:assert/strict");
@@ -23,7 +23,7 @@ const frontierSpaceRuntime = require("../src/space/runtime");
 const DogmaService = require("../src/services/dogma/dogmaService");
 const CreationService = require("../src/services/frontier/creationService");
 const { buildPythonTimedeltaPayload, buildScanResponse, millisecondsToFiletimeDelta, } = require("../src/services/frontier/scanningAbilityHandlers");
-const { buildVerdictsForViewer, } = require("../src/services/frontier/iffAbilityHandlers");
+const { buildNpcTransponderShipsForSystem, buildVerdictsForViewer, } = require("../src/services/frontier/iffAbilityHandlers");
 const TYPE_SCANNER = 95322;
 const TYPE_TRANSPONDER = 95988;
 const TYPE_BEACON = 96039;
@@ -563,6 +563,25 @@ test("Creation fitting splits one singleton and Dogma bridges online state", () 
     assert.equal(offline.success, true, offline.errorMsg);
     assert.equal(creationRuntime.isCreationModuleOnline(itemStore.findItemById(sourceStack.itemID)), false);
     assert.equal(notifications.filter((entry) => entry.name === "OnMultiEvent").length, 2);
+    const stateBeforeUndock = creationRuntime.readCreationState(itemStore.findItemById(ship.itemID));
+    assert.ok(stateBeforeUndock);
+    const undock = itemStore.moveShipToSpace(ship.itemID, SOLAR_SYSTEM_ID, {
+        position: { x: 10, y: 20, z: 30 },
+        direction: { x: 0, y: 0, z: 1 },
+        velocity: { x: 0, y: 0, z: 0 },
+        mode: "STOP",
+        customInfo: `Undocking:${stationID}`,
+    });
+    assert.equal(undock.success, true, undock.errorMsg);
+    assert.equal(undock.data.clientCustomInfo, `Undocking:${stationID}`);
+    const persistedAfterUndock = itemStore.findItemById(ship.itemID);
+    assert.deepEqual(creationRuntime.readCreationState(persistedAfterUndock), stateBeforeUndock);
+    assert.equal(creationRuntime.isCreationModuleOnline(itemStore.findItemById(sourceStack.itemID)), false);
+    const rehydrated = creationRuntime.ensureCreationState(persistedAfterUndock, OWNER_ID);
+    assert.equal(rehydrated.success, true, rehydrated.errorMsg);
+    assert.equal(rehydrated.data.seeded, false);
+    assert.deepEqual(rehydrated.data.state, stateBeforeUndock);
+    assert.equal(creationRuntime.isCreationModuleOnline(itemStore.findItemById(sourceStack.itemID)), false);
 });
 // ── Phase 2: transponder configuration and beacon visibility ─────────────
 test("transponder configuration validation matches the client contract", () => {
@@ -889,6 +908,41 @@ test("verdicts only pair mutually matching transponders", () => {
     ];
     assert.deepEqual(buildVerdictsForViewer(viewer, ships), [[2, true]]);
 });
+test("IFF verdict population includes native NPC group broadcasts", () => {
+    const matchingNpc = {
+        itemID: 5,
+        kind: "ship",
+        nativeNpc: true,
+        npcEntityType: "npc",
+        npcFactionID: 500010,
+        corporationID: 1_500_010,
+        spawnGroupID: "guristas_gate_patrol",
+    };
+    const otherNpc = {
+        ...matchingNpc,
+        itemID: 6,
+        spawnGroupID: "guristas_belt_patrol",
+    };
+    const npcShips = buildNpcTransponderShipsForSystem(SOLAR_SYSTEM_ID, {
+        scene: {
+            getDynamicEntities: () => [matchingNpc, otherNpc, {
+                    itemID: 7,
+                    kind: "ship",
+                    nativeNpc: false,
+                }],
+        },
+    });
+    assert.equal(npcShips.length, 2);
+    const viewer = {
+        shipID: 1,
+        corporationID: 98_000_001,
+        transponder: {
+            channel: "code",
+            code: npcShips[0].transponder.code,
+        },
+    };
+    assert.deepEqual(buildVerdictsForViewer(viewer, [viewer, ...npcShips]), [[matchingNpc.itemID, true]]);
+});
 // ── Phase 3: directional scanner ─────────────────────────────────────────
 test("scan request validation follows client-authored angle bounds", () => {
     assert.equal(scanningRuntime.normalizeScanRequest({ scan_angle: 1, scan_direction: [0, 0, 1] }).errorMsg, "SCAN_ANGLE_OUT_OF_RANGE");
@@ -937,6 +991,32 @@ test("scan contact resolution is delayed, stable across rescans, and session sco
     assert.equal(scanningRuntime.isScanningContactResolved(session, 4102, 9000), false);
     assert.ok(previousGeneration.frontierResolvedScanningContactsByID instanceof Map);
 });
+test("combat-resolved contacts are immediate and survive unrelated scans", () => {
+    const session = { _space: {} };
+    const contact = scanningRuntime.forceResolveScanningContact(session, 4110, { nowMs: 1_000 });
+    assert.equal(contact.resolveAtMs, 1_000);
+    assert.equal(scanningRuntime.isCombatResolvedScanningContact(session, 4110, 1_000), true);
+    const unrelatedScan = scanningRuntime.replaceResolvedScanningContacts(session, [4111], { nowMs: 2_000, delayMs: 6_000 });
+    assert.deepEqual([...unrelatedScan.activeIDs].sort(), [4110, 4111]);
+    assert.deepEqual(unrelatedScan.removedIDs, []);
+    assert.equal(scanningRuntime.isScanningContactResolved(session, 4110, 2_000), true);
+    assert.equal(scanningRuntime.forgetResolvedScanningContact(session, 4110), true);
+    assert.equal(scanningRuntime.isScanningContactResolved(session, 4110, 2_000), false);
+});
+test("resolved contacts use the Frontier distance reveal curve per ball", () => {
+    assert.equal(scanningRuntime.calculateScanRevealDelayMs(0, 6000), 0);
+    assert.equal(Math.round(scanningRuntime.calculateScanRevealDelayMs(50_000_000, 6000)), 4731);
+    assert.equal(scanningRuntime.calculateScanRevealDelayMs(scanningRuntime.MAXIMUM_SCAN_DISTANCE_METERS, 6000), 6000);
+    assert.equal(scanningRuntime.calculateScanRevealDelayMs(scanningRuntime.MAXIMUM_SCAN_DISTANCE_METERS + 1, 6000), 6000);
+    const session = { _space: {} };
+    const delays = new Map([[4201, 1250], [4202, 4750]]);
+    const resolution = scanningRuntime.replaceResolvedScanningContacts(session, [4201, 4202], { nowMs: 10_000, delayMs: 6000, delayMsByEntityID: delays });
+    assert.deepEqual([...resolution.delayMsByEntityID], [...delays]);
+    assert.equal(scanningRuntime.isScanningContactResolved(session, 4201, 11_249), false);
+    assert.equal(scanningRuntime.isScanningContactResolved(session, 4201, 11_250), true);
+    assert.equal(scanningRuntime.isScanningContactResolved(session, 4202, 14_749), false);
+    assert.equal(scanningRuntime.isScanningContactResolved(session, 4202, 14_750), true);
+});
 function runScan(candidates, overrides = {}) {
     return scanningRuntime.performDirectionalScan({
         originPosition: { x: 0, y: 0, z: 0 },
@@ -979,7 +1059,9 @@ test("scanner cone includes in-cone and excludes out-of-cone targets", () => {
             z: Math.cos((10 * Math.PI) / 180) * 1000000,
         },
     };
-    const scan = runScan([inCone, outOfCone, justOutside, justInside]);
+    const scan = runScan([inCone, outOfCone, justOutside, justInside], {
+        resolutionConfig: { renderResolvedObjects: false },
+    });
     const scannedIds = scan.updatedScans.map((result) => result.scan_id).sort();
     assert.deepEqual(scannedIds, [4001, 4004]);
 });
@@ -995,7 +1077,9 @@ test("scanner enforces the client-authored maximum range", () => {
         position: { x: 0, y: 0, z: scanningRuntime.MAXIMUM_SCAN_DISTANCE_METERS + 1000 },
     };
     const zeroDistance = { itemID: 5003, typeID: TYPE_SIGNATURE_TARGET, position: { x: 0, y: 0, z: 0 } };
-    const scan = runScan([withinRange, beyondRange, zeroDistance]);
+    const scan = runScan([withinRange, beyondRange, zeroDistance], {
+        resolutionConfig: { renderResolvedObjects: false },
+    });
     assert.deepEqual(scan.updatedScans.map((result) => result.scan_id), [5001]);
 });
 test("Frontier scan detection and object-resolution ranges are validated config", () => {
@@ -1047,12 +1131,42 @@ test("contacts outside resolution range stay unresolved signatures", () => {
             renderOutOfRangeSignatures: true,
         },
     });
-    assert.deepEqual(scan.updatedScans.map((result) => result.scan_id), [5101, 5102]);
+    assert.deepEqual(scan.updatedScans.map((result) => result.scan_id), [5102]);
     assert.deepEqual(scan.resolvedIds, [5101]);
-    assert.equal(scan.updatedScans[0].resolution_state, "in-resolution-range");
-    assert.equal(scan.updatedScans[1].resolution_state, "unresolved-out-of-range");
-    assert.ok(scan.updatedScans[1].signature_results.every(([, signature, noise]) => scanningRuntime.calculateSnr(signature, noise) < 1));
+    assert.equal(scan.updatedScans[0].resolution_state, "unresolved-out-of-range");
+    assert.ok(scan.updatedScans[0].signature_results.every(([, signature, noise]) => scanningRuntime.calculateSnr(signature, noise) < 1));
     frontierMarshals(buildScanResponse(scan));
+});
+test("combat reveals only the attacker while other distant contacts stay signatures", () => {
+    const scan = runScan([
+        {
+            itemID: 5110,
+            typeID: TYPE_SIGNATURE_TARGET,
+            position: { x: 0, y: 0, z: 750 },
+            forceCombatResolved: true,
+        },
+        {
+            itemID: 5111,
+            typeID: TYPE_SIGNATURE_TARGET,
+            position: { x: 0, y: 0, z: 750 },
+        },
+    ], {
+        scannerProfile: {
+            durationMs: 6_000,
+            multipliers: [[scanningRuntime.SIGNATURE_TYPE_GRAVIMETRIC, 1_000]],
+        },
+        resolutionConfig: {
+            detectionRangeMeters: 1_000,
+            resolutionRangeMeters: 500,
+            resolutionSnrThreshold: 1,
+            renderResolvedObjects: true,
+            renderOutOfRangeSignatures: true,
+        },
+    });
+    assert.deepEqual(scan.resolvedIds, [5110]);
+    assert.equal(scan.resolvedDelayMsById.get(5110), 0);
+    assert.deepEqual(scan.updatedScans.map((result) => result.scan_id), [5111]);
+    assert.equal(scan.updatedScans[0].resolution_state, "unresolved-out-of-range");
 });
 test("out-of-resolution contacts can be omitted or all contacts kept signature-only", () => {
     const candidate = {
@@ -1089,19 +1203,52 @@ test("out-of-resolution contacts can be omitted or all contacts kept signature-o
 test("scan ids are stable and deltas report added/removed", () => {
     const target = { itemID: 6001, typeID: TYPE_SIGNATURE_TARGET, position: { x: 0, y: 0, z: 500000 } };
     const other = { itemID: 6002, typeID: TYPE_SIGNATURE_TARGET, position: { x: 0, y: 0, z: 600000 } };
-    const first = runScan([target]);
+    const signatureOnly = { renderResolvedObjects: false };
+    const first = runScan([target], { resolutionConfig: signatureOnly });
     assert.deepEqual(first.added, [6001]);
     assert.deepEqual(first.removed, []);
     assert.deepEqual(first.scanIds, [6001]);
     // Same target rescanned: stable id, no delta churn.
-    const second = runScan([target], { previousScanIds: first.scanIds });
+    const second = runScan([target], {
+        previousScanIds: first.scanIds,
+        resolutionConfig: signatureOnly,
+    });
     assert.deepEqual(second.added, []);
     assert.deepEqual(second.removed, []);
     assert.deepEqual(second.updatedScans[0].scan_id, 6001);
     // Target swapped out.
-    const third = runScan([other], { previousScanIds: second.scanIds });
+    const third = runScan([other], {
+        previousScanIds: second.scanIds,
+        resolutionConfig: signatureOnly,
+    });
     assert.deepEqual(third.added, [6002]);
     assert.deepEqual(third.removed, [6001]);
+});
+test("a resolved ball replaces its prior unresolved signature with client fate", () => {
+    const target = {
+        itemID: 6101,
+        typeID: TYPE_SIGNATURE_TARGET,
+        position: { x: 0, y: 0, z: 50_000_000 },
+    };
+    const first = runScan([target], {
+        resolutionConfig: { renderResolvedObjects: false },
+    });
+    const resolved = runScan([target], { previousScanIds: first.scanIds });
+    assert.deepEqual(resolved.updatedScans, []);
+    assert.deepEqual(resolved.scanIds, []);
+    assert.deepEqual(resolved.resolvedIds, [6101]);
+    assert.deepEqual(resolved.removed, [6101]);
+    assert.deepEqual(resolved.removedReasonsByScanId.get(6101), [scanningRuntime.UPDATE_RESOLVED_TO_ITEM, 6101]);
+    assert.equal(Math.round(resolved.resolvedDelayMsById.get(6101)), 4731);
+    const responseEntries = new Map(buildScanResponse(resolved).args.entries);
+    assert.deepEqual(responseEntries.get("removed"), {
+        type: "dict",
+        entries: [[6101, {
+                    type: "tuple",
+                    items: [scanningRuntime.UPDATE_RESOLVED_TO_ITEM, 6101],
+                }]],
+    });
+    frontierMarshals(buildScanResponse(resolved));
 });
 test("empty scans and empty beacon lists marshal under the frontier profile", () => {
     const emptyScan = runScan([]);
@@ -1111,7 +1258,7 @@ test("empty scans and empty beacon lists marshal under the frontier profile", ()
     frontierMarshals(buildScanResponse(emptyScan));
     const populatedScan = runScan([
         { itemID: 7001, typeID: TYPE_SIGNATURE_TARGET, position: { x: 0, y: 0, z: 200000 } },
-    ]);
+    ], { resolutionConfig: { renderResolvedObjects: false } });
     assert.equal(populatedScan.updatedScans.length, 1);
     frontierMarshals(buildScanResponse(populatedScan));
 });
@@ -1151,7 +1298,7 @@ test("scan response uses KeyVal, timedelta duration, and resolved filetime delta
 test("scan duration and signature multipliers come from authored dogma", () => {
     assert.equal(scanningRuntime.resolveScanDurationMs(TYPE_SCANNER), 6000);
     const multipliers = scanningRuntime.resolveSignatureMultipliers(TYPE_SCANNER);
-    assert.deepEqual(multipliers.map(([type]) => type).sort(), [1, 2, 3]);
+    assert.deepEqual(multipliers.map(([type]) => type).sort(), [2, 3, 4]);
     for (const [, multiplier] of multipliers) {
         assert.equal(multiplier, 500);
     }
@@ -1194,7 +1341,11 @@ test("module and weapon activity raise EM signature and decay to baseline", () =
     const signatures = scanningRuntime.buildSignatureResultsForTarget({
         baseSignature: 10,
         distanceMeters: 1000000,
-        multipliers: [[1, 500], [2, 500], [3, 500]],
+        multipliers: [
+            [scanningRuntime.SIGNATURE_TYPE_GRAVIMETRIC, 500],
+            [scanningRuntime.SIGNATURE_TYPE_ELECTROMAGNETIC, 500],
+            [scanningRuntime.SIGNATURE_TYPE_THERMAL, 500],
+        ],
         emSignatureMultiplier: 2,
     });
     assert.deepEqual(signatures.map((entry) => entry[1]), [5, 10, 5]);
@@ -1204,13 +1355,21 @@ test("target mass increases only gravimetric signature and scan resolution", () 
     const lightSignatures = scanningRuntime.buildSignatureResultsForTarget({
         baseSignature: 10,
         distanceMeters: scanningRuntime.MAXIMUM_SCAN_DISTANCE_METERS,
-        multipliers: [[1, 500], [2, 500], [3, 500]],
+        multipliers: [
+            [scanningRuntime.SIGNATURE_TYPE_GRAVIMETRIC, 500],
+            [scanningRuntime.SIGNATURE_TYPE_ELECTROMAGNETIC, 500],
+            [scanningRuntime.SIGNATURE_TYPE_THERMAL, 500],
+        ],
         massKg: referenceMass / 2,
     });
     const heavySignatures = scanningRuntime.buildSignatureResultsForTarget({
         baseSignature: 10,
         distanceMeters: scanningRuntime.MAXIMUM_SCAN_DISTANCE_METERS,
-        multipliers: [[1, 500], [2, 500], [3, 500]],
+        multipliers: [
+            [scanningRuntime.SIGNATURE_TYPE_GRAVIMETRIC, 500],
+            [scanningRuntime.SIGNATURE_TYPE_ELECTROMAGNETIC, 500],
+            [scanningRuntime.SIGNATURE_TYPE_THERMAL, 500],
+        ],
         massKg: referenceMass * 4,
     });
     assert.deepEqual(lightSignatures.map((entry) => entry[1]), [2.5, 5, 5]);
@@ -1237,7 +1396,7 @@ test("target mass increases only gravimetric signature and scan resolution", () 
     });
     assert.deepEqual(resolutionScan.resolvedIds, [8052]);
 });
-test("build 3467658 non-modular scanningService uses built-in hull sensors and exact response", () => {
+test("build 3502403 non-modular scanningService uses built-in hull sensors and exact response", () => {
     const ship = {
         kind: "ship",
         itemID: SHIP_ID,
@@ -1276,7 +1435,7 @@ test("build 3467658 non-modular scanningService uses built-in hull sensors and e
             updateResolvedScanningContactsForSession(session, resolvedIds, options) {
                 resolutionUpdate = { session, resolvedIds, options };
                 return {
-                    delayMsByEntityID: new Map([[8101, 6000]]),
+                    delayMsByEntityID: new Map([[8101, 3210]]),
                 };
             },
         },
@@ -1285,19 +1444,12 @@ test("build 3467658 non-modular scanningService uses built-in hull sensors and e
             return {
                 origin: [10, 20, 30],
                 durationMs: 6000,
-                added: [8101],
+                added: [],
                 removed: [7999],
-                updatedScans: [{
-                        center: [10, 20, 100030],
-                        radius: 1000,
-                        scan_id: 8101,
-                        distance_range: [100000, 100000],
-                        estimated_number: 1,
-                        estimated_number_uncertainty: 0,
-                        signature_results: [[1, 1, 0.001]],
-                    }],
+                updatedScans: [],
                 resolvedIds: [8101],
-                scanIds: [8101],
+                resolvedDelayMsById: new Map([[8101, 3210]]),
+                scanIds: [],
             };
         },
     });
@@ -1336,11 +1488,14 @@ test("build 3467658 non-modular scanningService uses built-in hull sensors and e
             emSignatureMultiplier: 1,
             thermalSignatureMultiplier: 1,
         }]);
-    assert.deepEqual(session._space.frontierDirectionalScanIds, [8101]);
+    assert.deepEqual(session._space.frontierDirectionalScanIds, []);
     assert.deepEqual(resolutionUpdate, {
         session,
         resolvedIds: [8101],
-        options: { delayMs: 6000 },
+        options: {
+            delayMs: 6000,
+            delayMsByEntityID: new Map([[8101, 3210]]),
+        },
     });
     assert.equal(response.type, "object");
     assert.equal(response.name, "util.KeyVal");
@@ -1348,11 +1503,11 @@ test("build 3467658 non-modular scanningService uses built-in hull sensors and e
     assert.deepEqual(entries.get("duration"), buildPythonTimedeltaPayload(6000));
     assert.deepEqual(entries.get("resolved"), {
         type: "dict",
-        entries: [[8101, 60000000n]],
+        entries: [[8101, 32100000n]],
     });
     frontierMarshals(response);
 });
-test("MachoNet advertises the build 3467658 module-less scanning service", () => {
+test("MachoNet advertises the build 3502403 module-less scanning service", () => {
     const serviceInfo = new Map(new MachoNetService().getServiceInfoDict().entries);
     assert.equal(serviceInfo.has("scanningService"), true);
     assert.equal(serviceInfo.get("scanningService"), null);

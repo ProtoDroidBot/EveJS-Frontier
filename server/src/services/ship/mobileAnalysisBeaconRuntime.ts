@@ -38,6 +38,10 @@ const frontierDungeonSpawns = require(path.join(
   __dirname,
   "../../config/frontierDungeonSpawns",
 ));
+const {
+  DEFAULT_DUNGEON_SPAWN_SEPARATION_METERS,
+  buildSeparatedSpawnPosition,
+} = require(path.join(__dirname, "../../utils/dungeonSpawnPlacement"));
 
 const CATEGORY_DEPLOYABLE = 22;
 const CATEGORY_UPWELL_STRUCTURE = 65;
@@ -778,11 +782,28 @@ function spawnConfiguredHiveNpcs(anchorEntity, state, options: Record<string, an
   const spawned: any[] = [];
   const failures: any[] = [];
   const total = configuration.spawnEntries.length;
+  const occupiedSpawnPositions: any[] = [{
+    position: anchorEntity.position,
+    radius: Math.max(0, toReal(anchorEntity.radius, 0)),
+  }];
   configuration.spawnEntries.forEach((entry, index) => {
+    const spawnPosition = buildSeparatedSpawnPosition(
+      anchorEntity.position,
+      occupiedSpawnPositions,
+      {
+        minimumSeparationMeters: DEFAULT_DUNGEON_SPAWN_SEPARATION_METERS,
+        candidateRadius: 1_000,
+        seed: `${configuration.hiveTypeID}:${anchorEntity.itemID}:${index}:${entry.profileID}`,
+      },
+    );
+    occupiedSpawnPositions.push({ position: spawnPosition, radius: 1_000 });
     const spawnResult = npcService.spawnNpcBatchInSystem(systemID, {
       profileQuery: entry.profileID,
       amount: 1,
       anchorEntity,
+      spawnStateOverride: {
+        position: spawnPosition,
+      },
       entityScopeMetadata: buildChildEntityScopeMetadata(anchorEntity),
       preferredTargetID: toInt(state && state.linkedShipID, 0),
       transient: true,

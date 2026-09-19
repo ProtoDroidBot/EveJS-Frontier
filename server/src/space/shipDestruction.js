@@ -22,7 +22,7 @@ const { resolveShipByTypeID } = require("../services/chat/shipTypeRegistry");
 const pendingDeathTests = new Map();
 let nextPendingDeathTestID = 1;
 let pendingDeathTestTimer = null;
-const pendingCloneSelectionTimers = new Map();
+const pendingCloneSelectionTransitions = new Map();
 function handleInsuranceShipDestroyedSafe(systemID, shipEntity, options = {}, shipRecord = null) {
     if (!shipEntity || shipEntity.kind !== "ship") {
         return null;
@@ -640,6 +640,26 @@ function resolveCloneDeathTransitionDelayMs(options = {}) {
     const configuredSeconds = Math.max(0, toFiniteNumber(options.transitionDelaySeconds, serverConfig.frontierCloneDeathTransitionDelaySeconds ?? 5));
     return Math.max(0, toFiniteNumber(options.transitionDelayMs, configuredSeconds * 1_000));
 }
+function resolveCloneDeathSource(options = {}) {
+    const attackerEntity = options.attackerEntity &&
+        typeof options.attackerEntity === "object"
+        ? options.attackerEntity
+        : null;
+    const finalBlow = toPositiveInt(options.finalBlow ??
+        options.finalCharacterID ??
+        (attackerEntity && (attackerEntity.pilotCharacterID ??
+            attackerEntity.characterID ??
+            (attackerEntity.session && (attackerEntity.session.characterID ??
+                attackerEntity.session.charid)))), 0) || null;
+    const finalShipTypeID = toPositiveInt(options.finalShipTypeID ??
+        options.attackerShipTypeID ??
+        (attackerEntity && (attackerEntity.typeID ??
+            attackerEntity.slimTypeID)), 0) || null;
+    return {
+        finalBlow,
+        finalShipTypeID,
+    };
+}
 function recordCloneDeathStateSafe(session, shipEntity, systemID, statusEffectKey, nowMs, options = {}) {
     try {
         const locationSelectionMgr = getLocationSelectionMgr();
@@ -647,8 +667,11 @@ function recordCloneDeathStateSafe(session, shipEntity, systemID, statusEffectKe
             return null;
         }
         const activeShell = getActiveShell(session && session.characterID);
+        const deathSource = resolveCloneDeathSource(options);
         const deathReport = locationSelectionMgr.recordCloneDeathReport(session && session.characterID, {
             deathTimeMs: nowMs,
+            finalBlow: deathSource.finalBlow,
+            finalShipTypeID: deathSource.finalShipTypeID,
             shellTypeID: toPositiveInt(activeShell && activeShell.typeID, DEFAULT_SHELL_TYPE_ID),
             shipID: shipEntity && shipEntity.itemID,
             shipTypeID: shipEntity && shipEntity.typeID,
@@ -671,7 +694,7 @@ function recordCloneDeathStateSafe(session, shipEntity, systemID, statusEffectKe
         return null;
     }
 }
-function clearSessionShipForCloneSelection(session, oldShipID, systemID) {
+function clearSessionShipForCloneSelection(session, oldShipID, systemID, options = {}) {
     if (!session || !session.characterID) {
         return false;
     }
@@ -704,48 +727,157 @@ function clearSessionShipForCloneSelection(session, oldShipID, systemID) {
         session.solarsystemid2 = numericSystemID;
         session.locationid = numericSystemID;
     }
-    if (typeof session.sendSessionChange === "function") {
+    if (options.sendSessionChange !== false &&
+        typeof session.sendSessionChange === "function") {
         session.sendSessionChange({
             shipid: [previousShipID || null, null],
         });
     }
     return true;
 }
-function queueCloneSelectionTransition(session, callback, options = {}) {
+function presentCloneDeathReport(session, pending) {
+    const current = pendingCloneSelectionTransitions.get(pending.characterID);
+    if (current !== pending) {
+        return false;
+    }
+    pending.presentationTimer = null;
+    if (pending.presented) {
+        return true;
+    }
+    pending.presented = true;
+    // A shipid -> null notification activates the client's DeathTransition.
+    // Its first stage is the blue death report, which blocks locally on the
+    // hold-to-confirm button. Hull death has already removed the ship, while
+    // shell expiry preserves it until confirmation; attachedShipID keeps the
+    // report transition stable in either lifecycle.
+    if (typeof session.sendSessionChange === "function") {
+        session.sendSessionChange({
+            shipid: [pending.attachedShipID || null, null],
+        });
+    }
+    log.info(`[ShipDestruction] Presented clone death report ` +
+        `char=${pending.characterID} reason=${pending.reason}`);
+    return true;
+}
+function deferCloneSelectionTransition(session, options = {}) {
     const characterID = toPositiveInt(session && session.characterID, 0);
     const delayMs = resolveCloneDeathTransitionDelayMs(options);
-    const previousTimer = pendingCloneSelectionTimers.get(characterID);
-    if (previousTimer) {
-        clearTimeout(previousTimer);
-        pendingCloneSelectionTimers.delete(characterID);
-    }
-    const complete = () => {
-        pendingCloneSelectionTimers.delete(characterID);
-        try {
-            return callback();
-        }
-        catch (error) {
-            log.warn(`[ShipDestruction] Clone-selection transition failed char=${characterID}: ${error.message}`);
-            return null;
-        }
-    };
-    if (delayMs <= 0) {
+    if (characterID <= 0) {
         return {
             delayMs,
             pending: false,
-            result: complete(),
+            deferredUntilConfirmation: false,
+            result: null,
         };
     }
-    const timer = setTimeout(complete, delayMs);
-    if (timer && typeof timer.unref === "function") {
-        timer.unref();
+    const previous = pendingCloneSelectionTransitions.get(characterID);
+    if (previous && previous.presentationTimer) {
+        clearTimeout(previous.presentationTimer);
     }
-    pendingCloneSelectionTimers.set(characterID, timer);
+    const pending = {
+        characterID,
+        reason: options.reason === "vitality" ? "vitality" : "hull",
+        shipID: toPositiveInt(options.shipID, 0),
+        attachedShipID: toPositiveInt(options.attachedShipID ||
+            (session && (session.shipid || session.shipID || session.activeShipID)), 0),
+        systemID: toPositiveInt(options.systemID, 0),
+        statusEffectKey: options.statusEffectKey || null,
+        sessionChangeReason: options.sessionChangeReason || null,
+        callback: typeof options.callback === "function" ? options.callback : null,
+        presented: false,
+        presentationTimer: null,
+    };
+    pendingCloneSelectionTransitions.set(characterID, pending);
+    if (delayMs <= 0) {
+        presentCloneDeathReport(session, pending);
+    }
+    else {
+        pending.presentationTimer = setTimeout(() => presentCloneDeathReport(session, pending), delayMs);
+        if (pending.presentationTimer &&
+            typeof pending.presentationTimer.unref === "function") {
+            pending.presentationTimer.unref();
+        }
+    }
     return {
         delayMs,
         pending: true,
+        presentationPending: delayMs > 0,
+        deferredUntilConfirmation: true,
         result: null,
     };
+}
+// Backward-compatible test/helper surface. Unlike the old implementation,
+// this never schedules callback execution; confirmation is the sole trigger.
+function queueCloneSelectionTransition(session, callback, options = {}) {
+    return deferCloneSelectionTransition(session, {
+        ...options,
+        callback,
+    });
+}
+function confirmCloneSelectionTransition(session) {
+    const characterID = toPositiveInt(session && session.characterID, 0);
+    const pending = pendingCloneSelectionTransitions.get(characterID);
+    if (!pending) {
+        return {
+            success: true,
+            data: { alreadyFinalized: true },
+        };
+    }
+    let result;
+    try {
+        if (pending.callback) {
+            result = pending.callback();
+        }
+        else if (pending.reason === "vitality") {
+            const liveContext = getAttachedSessionShipDestructionContext(session);
+            if (!liveContext.entity ||
+                toPositiveInt(liveContext.entity.itemID, 0) !== pending.shipID) {
+                return {
+                    success: false,
+                    errorMsg: "PRESERVED_SHIP_NO_LONGER_ATTACHED",
+                };
+            }
+            const abandonedShipEntity = spaceRuntime.disembarkSession(session, {
+                broadcast: true,
+                lifecycleReason: "environmental-clone-death-confirmed",
+            });
+            if (!abandonedShipEntity) {
+                return { success: false, errorMsg: "SHIP_ENTITY_NOT_FOUND" };
+            }
+            clearSessionShipForCloneSelection(session, pending.shipID, pending.systemID, { sendSessionChange: !pending.presented });
+            resetEnvironmentalCloneStateSafe(characterID);
+            result = {
+                success: true,
+                data: { preservedShip: abandonedShipEntity },
+            };
+        }
+        else {
+            result = destroySessionCapsuleForCloneSelection(session, {
+                sessionChangeReason: pending.sessionChangeReason || "combat",
+                sendSessionChange: !pending.presented,
+            });
+        }
+    }
+    catch (error) {
+        log.warn(`[ShipDestruction] Confirmed clone-selection transition failed ` +
+            `char=${characterID}: ${error.message}`);
+        return {
+            success: false,
+            errorMsg: error.message || "CLONE_DEATH_FAILED",
+        };
+    }
+    if (result && result.success === false) {
+        return result;
+    }
+    if (pending.presentationTimer) {
+        clearTimeout(pending.presentationTimer);
+    }
+    pendingCloneSelectionTransitions.delete(characterID);
+    log.info(`[ShipDestruction] Finalized clone death after respawn confirmation ` +
+        `char=${characterID} reason=${pending.reason}`);
+    return result && result.success === true
+        ? result
+        : { success: true, data: { result: result || null } };
 }
 function destroySessionClonePreservingShip(session, options = {}) {
     if (!session || !session.characterID || !session._space) {
@@ -767,29 +899,15 @@ function destroySessionClonePreservingShip(session, options = {}) {
     const deathState = recordCloneDeathStateSafe(session, attachedShipEntity, systemID, options.statusEffectKey, toFiniteNumber(options.nowMs, Date.now()), { ...options, reason: "vitality" });
     sendCloneDeathNotification(session, "OnShellDeath", shipID);
     const shellEquipmentResult = destroySessionShellEquipmentForDeath(session);
-    const transition = queueCloneSelectionTransition(session, () => {
-        const liveContext = getAttachedSessionShipDestructionContext(session);
-        if (!liveContext.entity ||
-            toPositiveInt(liveContext.entity.itemID, 0) !== shipID) {
-            throw new Error("PRESERVED_SHIP_NO_LONGER_ATTACHED");
-        }
-        const abandonedShipEntity = spaceRuntime.disembarkSession(session, {
-            broadcast: true,
-            lifecycleReason: "environmental-clone-death",
-        });
-        if (!abandonedShipEntity) {
-            throw new Error("SHIP_ENTITY_NOT_FOUND");
-        }
-        clearSessionShipForCloneSelection(session, shipID, systemID);
-        resetEnvironmentalCloneStateSafe(characterID);
-        log.info(`[ShipDestruction] Opened shell-expiration clone selection ` +
-            `char=${characterID} effect=${options.statusEffectKey || "unknown"} ` +
-            `preservedShip=${shipID} system=${systemID}`);
-        return abandonedShipEntity;
+    const transition = deferCloneSelectionTransition(session, {
+        ...options,
+        reason: "vitality",
+        shipID,
+        systemID,
     });
-    log.info(`[ShipDestruction] Shell-expiration transition queued char=${characterID} ` +
+    log.info(`[ShipDestruction] Shell-expiration transition deferred char=${characterID} ` +
         `effect=${options.statusEffectKey || "unknown"} preservedShip=${shipID} ` +
-        `delayMs=${transition.delayMs}`);
+        `readyDelayMs=${transition.delayMs}`);
     return {
         success: true,
         data: {
@@ -923,6 +1041,52 @@ function emitDestroyedShipContentChangesForSession(session, destroyedShipID, des
     }
     return emitShipDeathInventoryChangesForSession(session, changes);
 }
+function destroySessionShipForCloneSelection(session, shipEntity, shipRecord, systemID, options = {}) {
+    const scene = spaceRuntime.getSceneForSession(session);
+    const shipID = toPositiveInt(shipEntity && shipEntity.itemID, 0);
+    const abandonedShipEntity = spaceRuntime.disembarkSession(session, {
+        broadcast: true,
+        lifecycleReason: "clone-death",
+    });
+    if (!scene || !abandonedShipEntity || shipID <= 0) {
+        return {
+            success: false,
+            errorMsg: "SHIP_ENTITY_NOT_FOUND",
+        };
+    }
+    const destroyResult = destroyShipEntityWithWreck(systemID, abandonedShipEntity, {
+        ...options,
+        ownerCharacterID: session.characterID,
+        shipRecord,
+        forceVisibleSessions: [session],
+        // This session is deliberately left without an attached ship while clone
+        // selection is open, so there is no later ego visibility-sync event that
+        // could release a deferred wreck. Broadcast the replacement immediately.
+        deferWreckBroadcastUntilVisibilitySync: false,
+    });
+    if (!destroyResult.success) {
+        return destroyResult;
+    }
+    purgeDestroyedShipEntityFromScene(scene, shipID);
+    const syncedDestroyedShipContentChangeCount = emitDestroyedShipContentChangesForSession(session, shipID, destroyResult.data || {}, { shipRecord });
+    clearSessionShipForCloneSelection(session, shipID, systemID, {
+        sendSessionChange: false,
+    });
+    return {
+        success: true,
+        data: {
+            capsule: null,
+            wreck: destroyResult.data && destroyResult.data.wreck,
+            destroyedShipID: shipID,
+            movedChanges: destroyResult.data && destroyResult.data.movedChanges,
+            destroyChanges: destroyResult.data && destroyResult.data.destroyChanges,
+            wreckChanges: destroyResult.data && destroyResult.data.wreckChanges,
+            destroyedShipContentChangesSyncedToSession: true,
+            syncedDestroyedShipContentChangeCount,
+            boundResult: null,
+        },
+    };
+}
 function destroySessionShip(session, options = {}) {
     if (!session || !session.characterID || !session._space) {
         return {
@@ -1053,7 +1217,9 @@ function destroySessionCapsuleForCloneSelection(session, options = {}) {
         log.warn(`[ShipDestruction] Capsule cleanup failed before clone selection ` +
             `char=${session.characterID} pod=${capsuleID} error=${destroyResult.errorMsg}`);
     }
-    clearSessionShipForCloneSelection(session, capsuleID, systemID);
+    clearSessionShipForCloneSelection(session, capsuleID, systemID, {
+        sendSessionChange: options.sendSessionChange !== false,
+    });
     resetEnvironmentalCloneStateSafe(session.characterID);
     return {
         success: true,
@@ -1085,35 +1251,35 @@ function destroySessionShipAndClone(session, options = {}) {
     const originalShipID = toPositiveInt(originalShipEntity.itemID, 0);
     const deathState = recordCloneDeathStateSafe(session, originalShipEntity, originalContext.systemID, options.environmentalStatusEffectKey || options.statusEffectKey, toFiniteNumber(options.nowMs || options.destructionNowMs, Date.now()), { ...options, reason: "hull" });
     sendCloneDeathNotification(session, "OnPlayerDeath", originalShipID);
-    let shipDestructionResult = null;
-    if (Number(originalShipEntity.typeID) === CAPSULE_TYPE_ID) {
-        shipDestructionResult = {
-            success: true,
-            data: {
-                capsule: originalShipEntity,
-                destroyedShipID: originalShipID,
-            },
-        };
-    }
-    else {
-        shipDestructionResult = destroySessionShip(session, options);
-        if (!shipDestructionResult.success || !shipDestructionResult.data) {
-            return shipDestructionResult;
-        }
+    const originalShipRecord = findShipItemById(originalShipID) || {
+        itemID: originalShipID,
+        typeID: originalShipEntity.typeID,
+        locationID: originalContext.systemID,
+        ownerID: characterID,
+    };
+    const shipDestructionResult = destroySessionShipForCloneSelection(session, originalShipEntity, originalShipRecord, originalContext.systemID, options);
+    if (!shipDestructionResult.success || !shipDestructionResult.data) {
+        return shipDestructionResult;
     }
     const shellEquipmentResult = destroySessionShellEquipmentForDeath(session);
-    const transition = queueCloneSelectionTransition(session, () => {
-        const cloneDeathResult = destroySessionCapsuleForCloneSelection(session, {
-            ...options,
-            sessionChangeReason: options.sessionChangeReason || "combat",
-        });
-        if (!cloneDeathResult.success || !cloneDeathResult.data) {
-            throw new Error(cloneDeathResult.errorMsg || "CLONE_DEATH_FAILED");
-        }
-        log.info(`[ShipDestruction] Opened hull-death clone selection ` +
-            `char=${characterID} ship=${originalShipID} system=${originalContext.systemID}`);
-        return cloneDeathResult;
-    }, options);
+    const transition = deferCloneSelectionTransition(session, {
+        ...options,
+        attachedShipID: originalShipID,
+        callback: () => {
+            resetEnvironmentalCloneStateSafe(characterID);
+            return {
+                success: true,
+                data: {
+                    destroyedShipID: originalShipID,
+                    systemID: originalContext.systemID,
+                },
+            };
+        },
+        reason: "hull",
+        shipID: originalShipID,
+        systemID: originalContext.systemID,
+        sessionChangeReason: options.sessionChangeReason || "combat",
+    });
     return {
         success: true,
         data: {
@@ -1294,6 +1460,7 @@ function spawnShipDeathTestField(session, options = {}) {
     };
 }
 module.exports = {
+    confirmCloneSelectionTransition,
     destroyShipEntityWithWreck,
     destroySessionClonePreservingShip,
     destroySessionShip,
@@ -1311,17 +1478,23 @@ module.exports._testing = {
     destroySessionClonePreservingShip,
     destroySessionShipAndClone,
     destroySessionShellEquipmentForDeath,
+    confirmCloneSelectionTransition,
+    deferCloneSelectionTransition,
     queueCloneSelectionTransition,
+    recordCloneDeathStateSafe,
+    resolveCloneDeathSource,
     resolveCloneDeathTransitionDelayMs,
     clearPendingDeathTests() {
         pendingDeathTests.clear();
         clearPendingDeathTestTimer();
     },
     clearPendingCloneSelectionTimers() {
-        for (const timer of pendingCloneSelectionTimers.values()) {
-            clearTimeout(timer);
+        for (const pending of pendingCloneSelectionTransitions.values()) {
+            if (pending && pending.presentationTimer) {
+                clearTimeout(pending.presentationTimer);
+            }
         }
-        pendingCloneSelectionTimers.clear();
+        pendingCloneSelectionTransitions.clear();
     },
 };
 //# sourceMappingURL=shipDestruction.js.map

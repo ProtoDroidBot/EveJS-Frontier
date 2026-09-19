@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "enabled": true,
   "defaults": {
     "role": "guard",
@@ -17,18 +17,43 @@
       "leashRangeMeters": 250000,
       "returnToHomeWhenIdle": true,
       "homeArrivalMeters": 2000,
-      "autoActivateWeapons": true
+      "autoActivateWeapons": true,
+      "passiveRoaming": true,
+      "passiveWarping": true,
+      "passiveRoamRadiusMeters": 750000,
+      "passiveMoveMinDistanceMeters": 5000,
+      "passiveMoveMaxDistanceMeters": 25000,
+      "passiveMoveArrivalMeters": 750,
+      "passiveMoveIntervalMinMs": 3000,
+      "passiveMoveIntervalMaxMs": 12000,
+      "passiveMoveTimeoutMs": 90000,
+      "passiveWarpIntervalMs": 60000,
+      "passiveWarpMinDistanceMeters": 175000,
+      "passiveWarpMaxDistanceMeters": 650000
     }
   },
   "roles": {
     "guard": {
       "activity": "guard",
       "description": "Default combat role. Authored/SDE behavior remains authoritative; these values only fill missing fields.",
-      "behaviorDefaults": {}
+      "behaviorDefaults": {
+        "chaseTargets": true,
+        "mineAsteroids": false,
+        "guardAnchor": true,
+        "retainTargetLockWhenOccluded": false,
+        "fireThroughOccluders": false
+      }
     },
     "passive": {
       "activity": "idle",
       "description": "Non-combat traffic and utility hulls retain their authored passive behavior.",
+      "behaviorDefaults": {
+        "chaseTargets": false,
+        "mineAsteroids": false,
+        "guardAnchor": false,
+        "retainTargetLockWhenOccluded": false,
+        "fireThroughOccluders": false
+      },
       "behaviorOverrides": {
         "autoAggro": false,
         "autoActivateWeapons": false
@@ -37,6 +62,13 @@
     "miner": {
       "activity": "mining",
       "description": "Mining-capable hulls are automatically enrolled in the mining controller and mine available local resources.",
+      "behaviorDefaults": {
+        "chaseTargets": false,
+        "mineAsteroids": true,
+        "guardAnchor": false,
+        "retainTargetLockWhenOccluded": false,
+        "fireThroughOccluders": false
+      },
       "behaviorOverrides": {
         "autoAggro": false,
         "autoAggroTargetClasses": [],
@@ -53,6 +85,13 @@
     "hauler": {
       "activity": "hauling",
       "description": "Mining-operation haulers remain passive and can be attached to configured mining fleets.",
+      "behaviorDefaults": {
+        "chaseTargets": false,
+        "mineAsteroids": false,
+        "guardAnchor": false,
+        "retainTargetLockWhenOccluded": false,
+        "fireThroughOccluders": false
+      },
       "behaviorOverrides": {
         "autoAggro": false,
         "autoAggroTargetClasses": [],
@@ -66,6 +105,17 @@
     }
   },
   "rules": [
+    {
+      "id": "all-profiled-npc-roamers",
+      "priority": 10,
+      "match": {
+        "all": true
+      },
+      "behaviorOverrides": {
+        "passiveRoaming": true,
+        "passiveWarping": true
+      }
+    },
     {
       "id": "authored-passive-npcs",
       "priority": 100,

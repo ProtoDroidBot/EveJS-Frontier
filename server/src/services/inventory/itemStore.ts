@@ -140,6 +140,8 @@ const DEFAULT_MODULE_STATE = Object.freeze({
   incapacitated: false,
 });
 const CLIENT_INVENTORY_STACK_LIMIT = 2147483647;
+const FREE_STATION_FUEL_CUSTOM_INFO = "evejs:free-station-unstable-fuel";
+const UNSTABLE_FUEL_TYPE_ID = 77818;
 const ITEM_ID_RESERVE_BATCH_SIZE = 128;
 const PACKAGED_VOLUME_OVERRIDES_BY_GROUP_ID = Object.freeze({
   // Mirrored from packaged client inventorycommon.const.packagedVolumeOverridesPerGroup.
@@ -852,6 +854,11 @@ function normalizeSpaceState(rawValue) {
 
   return {
     systemID: toNumber(rawValue.systemID, 0),
+    // An unsafe logout/socket loss leaves the hull in the ballpark.  Persist
+    // that lifecycle bit alongside the coordinates so a scene rebuilt before
+    // the pilot reconnects can materialize the same damaged hull.  Safe
+    // Logoff deliberately writes false and therefore remains de-instanced.
+    offlinePersistent: rawValue.offlinePersistent === true,
     position: normalizeSpaceVector(rawValue.position),
     velocity: normalizeSpaceVector(rawValue.velocity),
     direction: normalizeSpaceVector(rawValue.direction, { x: 1, y: 0, z: 0 }),
@@ -1756,13 +1763,15 @@ function applyStackableGrant({
   let splitApplied = false;
 
   while (remainingQuantity > 0) {
-    const existingStack = findStackWithAvailableCapacity(
-      stackIndex,
-      ownerID,
-      locationID,
-      flagID,
-      metadata.typeID,
-    );
+    const existingStack = options.forceNewStack === true
+      ? null
+      : findStackWithAvailableCapacity(
+        stackIndex,
+        ownerID,
+        locationID,
+        flagID,
+        metadata.typeID,
+      );
 
     if (existingStack) {
       const currentQuantity = getStackableItemQuantity(existingStack);
@@ -2124,6 +2133,9 @@ function ensureCharacterActiveShipItem(charId, existingRecord = null) {
   if (record.isDeleted === true || record.accountId === null) {
     return null;
   }
+  if (record.suppressActiveShipProvisioning === true) {
+    return null;
+  }
 
   const recordStationID = toNumber(record.stationID ?? record.stationid, 0);
   const recordStructureID = toNumber(record.structureID ?? record.structureid, 0);
@@ -2192,21 +2204,28 @@ function ensureCharacterActiveShipItem(charId, existingRecord = null) {
   }
 
   if (recordIsInSpace) {
-    const items = readItems();
-    const starterShip = buildShipItem({
-      itemID: nextItemID(numericCharId, items, record),
-      typeID: record.shipTypeID || DEFAULT_SHIP_TYPE_ID,
-      ownerID: numericCharId,
-      locationID: recordSolarSystemID,
-      flagID: 0,
-      itemName: record.shipName || null,
-      spaceState: buildStoppedSpaceStateForSystem(recordSolarSystemID),
-    });
-
-    items[String(starterShip.itemID)] = starterShip;
-    if (!writeItems(items, { indexDelta: { upsertedIDs: [starterShip.itemID] } })) {
+    const createResult = grantItemToCharacterLocation(
+      numericCharId,
+      recordSolarSystemID,
+      0,
+      record.shipTypeID || DEFAULT_SHIP_TYPE_ID,
+      1,
+      {
+        singleton: 1,
+        itemName: record.shipName || null,
+        spaceState: buildStoppedSpaceStateForSystem(recordSolarSystemID),
+      },
+    );
+    const starterShip = createResult.success
+      ? createResult.data.items[0] || null
+      : null;
+    if (!starterShip) {
+      const createError = createResult.success
+        ? "CREATED_SHIP_MISSING"
+        : createResult.errorMsg || "ITEM_CREATE_FAILED";
       log.warn(
-        `[ItemStore] Failed to provision in-space starter ship for char=${numericCharId}`,
+        `[ItemStore] Failed to provision in-space starter ship for char=${numericCharId} ` +
+          `error=${createError}`,
       );
       return null;
     }
@@ -2266,20 +2285,27 @@ function ensureCharacterActiveShipItem(charId, existingRecord = null) {
     );
   }
 
-  const items = readItems();
-  const starterShip = buildShipItem({
-    itemID: nextItemID(numericCharId, items, record),
-    typeID: record.shipTypeID || DEFAULT_SHIP_TYPE_ID,
-    ownerID: numericCharId,
-    locationID: dockedLocationID,
-    flagID: ITEM_FLAGS.HANGAR,
-    itemName: record.shipName || null,
-  });
-
-  items[String(starterShip.itemID)] = starterShip;
-  if (!writeItems(items, { indexDelta: { upsertedIDs: [starterShip.itemID] } })) {
+  const createResult = grantItemToCharacterLocation(
+    numericCharId,
+    dockedLocationID,
+    ITEM_FLAGS.HANGAR,
+    record.shipTypeID || DEFAULT_SHIP_TYPE_ID,
+    1,
+    {
+      singleton: 1,
+      itemName: record.shipName || null,
+    },
+  );
+  const starterShip = createResult.success
+    ? createResult.data.items[0] || null
+    : null;
+  if (!starterShip) {
+    const createError = createResult.success
+      ? "CREATED_SHIP_MISSING"
+      : createResult.errorMsg || "ITEM_CREATE_FAILED";
     log.warn(
-      `[ItemStore] Failed to provision starter ship for char=${numericCharId}`,
+      `[ItemStore] Failed to provision starter ship for char=${numericCharId} ` +
+        `error=${createError}`,
     );
     return null;
   }
@@ -2319,6 +2345,7 @@ function syncCharacterActiveShip(charId, shipItem) {
     shipTypeID: shipItem.typeID,
     shipName: shipItem.itemName,
   };
+  delete nextRecord.suppressActiveShipProvisioning;
 
   if (Object.prototype.hasOwnProperty.call(nextRecord, "storedShips")) {
     delete nextRecord.storedShips;
@@ -2350,6 +2377,205 @@ function resolveItemTypeReference(itemType) {
   }
 
   return getItemMetadata(itemType);
+}
+
+function initializeCreationTemplatesForGrantedItems(
+  characterID,
+  createdItems: any[] = [],
+  changes: any[] = [],
+) {
+  const createdShips = (Array.isArray(createdItems) ? createdItems : [])
+    .filter((item) => toNumber(item && item.categoryID, 0) === SHIP_CATEGORY_ID);
+  if (createdShips.length === 0) {
+    return { success: true as const, initialized: [] };
+  }
+
+  // Lazy imports keep itemStore as the inventory owner without introducing a
+  // module-load cycle: Creation initialization grants its template modules
+  // back through this file, and those non-ship grants immediately skip here.
+  const { getCreationTemplate } = require(path.join(
+    __dirname,
+    "../frontier/creationStaticData",
+  ));
+  const templateShips = createdShips.filter((item) =>
+    Boolean(getCreationTemplate(toNumber(item && item.typeID, 0))));
+  if (templateShips.length === 0) {
+    return { success: true as const, initialized: [] };
+  }
+
+  const { ensureCreationState } = require(path.join(
+    __dirname,
+    "../frontier/creationRuntime",
+  ));
+  const initialized: any[] = [];
+  for (const ship of templateShips) {
+    const result = ensureCreationState(ship, characterID);
+    if (!result.success) {
+      // Never return a bare modular hull after claiming its grant failed.
+      // ensureCreationState removes a partial module seed itself; removing the
+      // hull with contents also covers any future initialization extensions.
+      for (const createdShip of templateShips) {
+        removeInventoryItem(createdShip.itemID, { removeContents: true });
+      }
+      return {
+        success: false as const,
+        errorMsg: result.errorMsg || "CREATION_TEMPLATE_INITIALIZATION_FAILED",
+      };
+    }
+
+    const initializedShip = cloneValue(result.data.item);
+    initialized.push(initializedShip);
+    const itemIndex = createdItems.findIndex(
+      (item) => toNumber(item && item.itemID, 0) === initializedShip.itemID,
+    );
+    if (itemIndex >= 0) {
+      createdItems[itemIndex] = initializedShip;
+    }
+    const change = changes.find(
+      (candidate) =>
+        candidate &&
+        candidate.item &&
+        toNumber(candidate.item.itemID, 0) === initializedShip.itemID,
+    );
+    if (change) {
+      change.item = cloneValue(initializedShip);
+    }
+  }
+
+  return { success: true as const, initialized };
+}
+
+function initializeFuelTanksForGrantedShips(
+  characterID,
+  createdItems: any[] = [],
+  changes: any[] = [],
+) {
+  const createdShips = (Array.isArray(createdItems) ? createdItems : [])
+    .filter((item) => toNumber(item && item.categoryID, 0) === SHIP_CATEGORY_ID);
+  if (createdShips.length === 0) {
+    return { success: true as const, initialized: [] };
+  }
+  // Lazy import keeps fuelTankRuntime's itemStore dependency acyclic at module
+  // initialization time.
+  const {
+    INITIAL_FULL_FUEL_SHIP_TYPE_IDS,
+    initializeNewShipFuelTank,
+  } = require(path.join(__dirname, "../frontier/fuelTankRuntime"));
+  const targetShips = createdShips.filter((item) =>
+    INITIAL_FULL_FUEL_SHIP_TYPE_IDS.has(toNumber(item && item.typeID, 0)));
+  const initialized: any[] = [];
+  for (const ship of targetShips) {
+    const result = initializeNewShipFuelTank(ship, characterID);
+    if (!result.success) {
+      for (const targetShip of targetShips) {
+        removeInventoryItem(targetShip.itemID, { removeContents: true });
+      }
+      return {
+        success: false as const,
+        errorMsg: result.errorMsg || "INITIAL_FUEL_INITIALIZATION_FAILED",
+      };
+    }
+    if (result.skipped === true) {
+      continue;
+    }
+    const initializedShip = cloneValue(result.data.item);
+    initialized.push(initializedShip);
+    const itemIndex = createdItems.findIndex(
+      (item) => toNumber(item && item.itemID, 0) === initializedShip.itemID,
+    );
+    if (itemIndex >= 0) {
+      createdItems[itemIndex] = initializedShip;
+    }
+    const change = changes.find(
+      (candidate) =>
+        candidate &&
+        candidate.item &&
+        toNumber(candidate.item.itemID, 0) === initializedShip.itemID,
+    );
+    if (change) {
+      change.item = cloneValue(initializedShip);
+    }
+  }
+  return { success: true as const, initialized };
+}
+
+function isFreeStationFuelSupplyItem(item, options: Record<string, any> = {}) {
+  if (
+    !item ||
+    toNumber(item.typeID, 0) !== UNSTABLE_FUEL_TYPE_ID ||
+    toNumber(item.flagID, 0) !== ITEM_FLAGS.HANGAR ||
+    String(item.customInfo || "") !== FREE_STATION_FUEL_CUSTOM_INFO
+  ) {
+    return false;
+  }
+  const characterID = toNumber(options.characterID, 0);
+  const stationID = toNumber(options.stationID, 0);
+  return (
+    (characterID <= 0 || toNumber(item.ownerID, 0) === characterID) &&
+    (stationID <= 0 || toNumber(item.locationID, 0) === stationID)
+  );
+}
+
+/** Ensure the docked fuel picker always sees one inexhaustible Unstable Fuel
+ * stack. LoadFuel recognizes this marked station-hangar row and does not debit
+ * it, so its client-safe maximum quantity remains available for every load. */
+function ensureFreeStationFuelSupply(characterID, stationID) {
+  const ownerID = toNumber(characterID, 0);
+  const locationID = toNumber(stationID, 0);
+  if (ownerID <= 0 || locationID <= 0) {
+    return { success: false as const, errorMsg: "INVALID_STATION_FUEL_LOCATION" };
+  }
+  const unstableStacks = listContainerItems(
+    ownerID,
+    locationID,
+    ITEM_FLAGS.HANGAR,
+  ).filter((item) => toNumber(item && item.typeID, 0) === UNSTABLE_FUEL_TYPE_ID);
+  const existingSupply = unstableStacks.find((item) =>
+    isFreeStationFuelSupplyItem(item, {
+      characterID: ownerID,
+      stationID: locationID,
+    })) || null;
+  if (existingSupply) {
+    if (
+      toNumber(existingSupply.stacksize ?? existingSupply.quantity, 0) ===
+        CLIENT_INVENTORY_STACK_LIMIT &&
+      isFreeStationFuelSupplyItem(existingSupply, {
+        characterID: ownerID,
+        stationID: locationID,
+      })
+    ) {
+      return { success: true as const, created: false, data: { item: existingSupply } };
+    }
+    const updateResult = updateInventoryItem(existingSupply.itemID, (item) => ({
+      ...item,
+      singleton: 0,
+      quantity: CLIENT_INVENTORY_STACK_LIMIT,
+      stacksize: CLIENT_INVENTORY_STACK_LIMIT,
+      customInfo: FREE_STATION_FUEL_CUSTOM_INFO,
+    }));
+    return updateResult.success
+      ? { success: true as const, created: false, data: { item: updateResult.data } }
+      : updateResult;
+  }
+  const grantResult = grantItemToCharacterLocation(
+    ownerID,
+    locationID,
+    ITEM_FLAGS.HANGAR,
+    UNSTABLE_FUEL_TYPE_ID,
+    CLIENT_INVENTORY_STACK_LIMIT,
+    {
+      singleton: 0,
+      customInfo: FREE_STATION_FUEL_CUSTOM_INFO,
+      forceNewStack: true,
+    },
+  );
+  return grantResult.success
+    ? {
+      success: true as const,
+      created: true,
+      data: { item: grantResult.data.items[0] || null },
+    }
+    : grantResult;
 }
 
 function buildStackKey(ownerID, locationID, flagID, typeID) {
@@ -2534,6 +2760,30 @@ function grantItemsToCharacterLocation(
     }
   }
 
+  const creationInitialization = initializeCreationTemplatesForGrantedItems(
+    charId,
+    createdItems,
+    changes,
+  );
+  if (!creationInitialization.success) {
+    return {
+      success: false as const,
+      errorMsg: creationInitialization.errorMsg,
+    };
+  }
+
+  const fuelInitialization = initializeFuelTanksForGrantedShips(
+    charId,
+    createdItems,
+    changes,
+  );
+  if (!fuelInitialization.success) {
+    return {
+      success: false as const,
+      errorMsg: fuelInitialization.errorMsg,
+    };
+  }
+
   const singleEntry = entries.length === 1 ? grantedEntries[0] || null : null;
   return {
     success: true as const,
@@ -2548,6 +2798,12 @@ function grantItemsToCharacterLocation(
       grantedEntries,
       stackSplitApplied,
       stackSplitStackCount,
+      initializedCreationShipIDs: creationInitialization.initialized.map(
+        (item) => item.itemID,
+      ),
+      initializedFuelShipIDs: fuelInitialization.initialized.map(
+        (item) => item.itemID,
+      ),
     },
   };
 }
@@ -3646,6 +3902,12 @@ function consumeInventoryItemQuantity(itemId, quantity = 1, options: Record<stri
       errorMsg: "ITEM_NOT_FOUND",
     };
   }
+  if (isFreeStationFuelSupplyItem(currentItem)) {
+    return {
+      success: false as const,
+      errorMsg: "FREE_STATION_FUEL_SUPPLY_RESERVED",
+    };
+  }
 
   const availableQuantity =
     currentItem.singleton === 1
@@ -3789,6 +4051,15 @@ function stageMergeItemStacks(
     return {
       success: false as const,
       errorMsg: "ITEM_NOT_FOUND",
+    };
+  }
+  if (
+    isFreeStationFuelSupplyItem(sourceItem) ||
+    isFreeStationFuelSupplyItem(destinationItem)
+  ) {
+    return {
+      success: false as const,
+      errorMsg: "FREE_STATION_FUEL_SUPPLY_RESERVED",
     };
   }
 
@@ -3971,6 +4242,13 @@ function stageItemMoveToLocation(
     return {
       success: false as const,
       errorMsg: "ITEM_NOT_FOUND",
+    };
+  }
+
+  if (isFreeStationFuelSupplyItem(currentItem)) {
+    return {
+      success: false as const,
+      errorMsg: "FREE_STATION_FUEL_SUPPLY_RESERVED",
     };
   }
 
@@ -4698,6 +4976,13 @@ function transferItemToOwnerLocation(
     };
   }
 
+  if (isFreeStationFuelSupplyItem(currentItem)) {
+    return {
+      success: false as const,
+      errorMsg: "FREE_STATION_FUEL_SUPPLY_RESERVED",
+    };
+  }
+
   const availableQuantity =
     currentItem.singleton === 1
       ? 1
@@ -4990,30 +5275,42 @@ function setItemPackagingState(itemId, packaged) {
 }
 
 function moveShipToSpace(shipId, solarSystemId, spaceState) {
-  return updateShipItem(shipId, (currentItem) => {
-    const nextSpaceState = { ...(spaceState || {}) };
-    const hasCustomInfoOverride = Object.prototype.hasOwnProperty.call(
-      nextSpaceState,
-      "customInfo",
-    );
-    const customInfo = hasCustomInfoOverride
-      ? String(nextSpaceState.customInfo || "")
-      : currentItem.customInfo;
-    if (hasCustomInfoOverride) {
-      delete nextSpaceState.customInfo;
-    }
-    return {
-      ...currentItem,
-      locationID: toNumber(solarSystemId, currentItem.locationID),
-      flagID: 0,
-      customInfo,
-      spaceState: normalizeSpaceState({
-        ...nextSpaceState,
-        systemID: toNumber(solarSystemId, currentItem.locationID),
-      }),
-      conditionState: normalizeShipConditionState(currentItem.conditionState),
+  const nextSpaceState = { ...(spaceState || {}) };
+  const hasClientCustomInfo = Object.prototype.hasOwnProperty.call(
+    nextSpaceState,
+    "customInfo",
+  );
+  const clientCustomInfo = hasClientCustomInfo
+    ? String(nextSpaceState.customInfo || "")
+    : null;
+  if (hasClientCustomInfo) {
+    delete nextSpaceState.customInfo;
+  }
+
+  const result = updateShipItem(shipId, (currentItem) => ({
+    ...currentItem,
+    locationID: toNumber(solarSystemId, currentItem.locationID),
+    flagID: 0,
+    // `spaceState.customInfo` is an inventory-notification hint (for example
+    // "Undocking:<stationID>"), not durable ship metadata. Persisting that
+    // hint used to replace Creation layout JSON on every undock, causing the
+    // next get_creation call to seed a second set of modules and lose their
+    // online/offline state along with the original layout.
+    customInfo: currentItem.customInfo,
+    spaceState: normalizeSpaceState({
+      ...nextSpaceState,
+      systemID: toNumber(solarSystemId, currentItem.locationID),
+    }),
+    conditionState: normalizeShipConditionState(currentItem.conditionState),
+  }));
+
+  if (result.success && hasClientCustomInfo) {
+    result.data = {
+      ...result.data,
+      clientCustomInfo,
     };
-  });
+  }
+  return result;
 }
 
 function dockShipToStation(shipId, stationId) {
@@ -5378,6 +5675,8 @@ module.exports = {
   CAPSULE_TYPE_ID_GOLDEN,
   GOLDEN_CAPSULE_IMPLANT_TYPE_ID,
   CLIENT_INVENTORY_STACK_LIMIT,
+  FREE_STATION_FUEL_CUSTOM_INFO,
+  UNSTABLE_FUEL_TYPE_ID,
   ensureMigrated,
   getAllItems,
   listOwnedItems,
@@ -5389,8 +5688,10 @@ module.exports = {
   findItemById,
   findShipItemById,
   findCharacterShipByType,
+  isFreeStationFuelSupplyItem,
   isCapsuleTypeID,
   ensureCharacterActiveShipItem,
+  ensureFreeStationFuelSupply,
   getActiveShipItem,
   grantItemsToCharacterLocation,
   grantItemToCharacterLocation,
@@ -5398,6 +5699,7 @@ module.exports = {
   grantItemToOwnerLocation,
   grantItemToCharacterStationHangar,
   grantItemsToCharacterStationHangar,
+  createShipItemForCharacter,
   createSpaceItemForCharacter,
   createSpaceItemForOwner,
   takeItemTypeFromCharacterLocation,

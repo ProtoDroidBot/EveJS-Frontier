@@ -13,8 +13,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *   stack sizes.
  * - The tank level is the ship Dogma attribute `fuelCharge` (5635) against
  *   `fuelCapacity` (5633); both widgets poll the godma ship item, so a plain
- *   attribute-change notification refreshes the numerator. Loading consumes
- *   the source stacks outright — the client ships no fuel-unload RPC.
+ *   attribute-change notification refreshes the numerator. Loading normally
+ *   consumes source stacks; the marked station Unstable Fuel offer is the one
+ *   non-depleting source. The client ships no fuel-unload RPC.
  * - `frontier.fuel.static_data` treats a type as fuel when its group is in
  *   inventorycommon.const.fuelGroups = [4738 crude fuel, 4598 corvette fuel].
  * - The client offers fuel from ship cargo (flag 5), the specialized fuel bay
@@ -35,7 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const itemStore = require(path.join(__dirname, "../inventory/itemStore"));
 const { resolveItemByTypeID } = require(path.join(__dirname, "../inventory/itemTypeRegistry"));
-const { getTypeDogmaAttributes } = require(path.join(__dirname, "../fitting/liveFittingState"));
+const { applyModifierGroups, buildEffectiveItemAttributeMap, getTypeDogmaAttributes, } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const { getCreationTemplate } = require(path.join(__dirname, "./creationStaticData"));
 const ATTRIBUTE_FUEL_EFFICIENCY = 5607;
 const ATTRIBUTE_FUEL_CAPACITY = 5633;
@@ -50,6 +51,12 @@ const FUEL_PROPERTY_ATTRIBUTE_IDS = Object.freeze({
     fuelContainmentBurden: ATTRIBUTE_FUEL_CONTAINMENT_BURDEN,
     fuelVolatility: ATTRIBUTE_FUEL_VOLATILITY,
 });
+const UNSTABLE_FUEL_TYPE_ID = 77818;
+const INITIAL_FULL_FUEL_SHIP_TYPE_IDS = new Set([
+    87698, // Wend
+    95276, // Creation
+    95735, // Refuge Ship
+]);
 const SHIP_CATEGORY_ID = 6;
 const FUEL_EPSILON = 1e-9;
 // inventorycommon.const.fuelGroups in the staged client.
@@ -158,6 +165,84 @@ function resolveShipFuelTank(shipItem, effectiveCapacity, deps = {}) {
         baseCapacity,
         capacity,
         supported: isShip && source !== null && capacity > 0,
+    };
+}
+/** Resolve the capacity contributed by the hull and the Creation layout that
+ * exists at the instant a supported starter hull is created. */
+function resolveInitialShipFuelCapacity(shipItem, characterID, deps = {}) {
+    const typeID = toInt(shipItem && shipItem.typeID, 0);
+    if (!INITIAL_FULL_FUEL_SHIP_TYPE_IDS.has(typeID)) {
+        return 0;
+    }
+    const buildAttributes = typeof deps.buildEffectiveItemAttributeMap === "function"
+        ? deps.buildEffectiveItemAttributeMap
+        : buildEffectiveItemAttributeMap;
+    const applyModifiers = typeof deps.applyModifierGroups === "function"
+        ? deps.applyModifierGroups
+        : applyModifierGroups;
+    const attributes = buildAttributes(shipItem) || {};
+    const resolveCreationTemplate = typeof deps.getCreationTemplate === "function"
+        ? deps.getCreationTemplate
+        : getCreationTemplate;
+    if (resolveCreationTemplate(typeID)) {
+        // Lazy import avoids itemStore -> fuel runtime -> Creation runtime ->
+        // itemStore initialization cycles. The grant path has already seeded the
+        // layout before this function runs.
+        const resolveCreationContext = typeof deps.getCreationDogmaContext === "function"
+            ? deps.getCreationDogmaContext
+            : require(path.join(__dirname, "./creationRuntime")).getCreationDogmaContext;
+        const contextResult = resolveCreationContext(shipItem, toInt(characterID, 0));
+        if (!contextResult || contextResult.success !== true) {
+            return 0;
+        }
+        const modifierEntries = contextResult.data &&
+            Array.isArray(contextResult.data.shipAttributeModifierEntries)
+            ? contextResult.data.shipAttributeModifierEntries
+            : [];
+        applyModifiers(attributes, modifierEntries);
+    }
+    return Math.max(0, Math.floor(toFiniteNumber(attributes[ATTRIBUTE_FUEL_CAPACITY], 0)));
+}
+function initializeNewShipFuelTank(shipItem, characterID, deps = {}) {
+    const typeID = toInt(shipItem && shipItem.typeID, 0);
+    if (!INITIAL_FULL_FUEL_SHIP_TYPE_IDS.has(typeID)) {
+        return { success: true, skipped: true, data: { item: shipItem } };
+    }
+    const capacity = resolveInitialShipFuelCapacity(shipItem, characterID, deps);
+    if (capacity <= 0) {
+        return { success: false, errorMsg: "INITIAL_FUEL_CAPACITY_MISSING" };
+    }
+    const updateShipItem = typeof deps.updateShipItem === "function"
+        ? deps.updateShipItem
+        : itemStore.updateShipItem;
+    const updateResult = updateShipItem(shipItem.itemID, (currentItem) => ({
+        ...currentItem,
+        conditionState: {
+            ...(currentItem.conditionState || {}),
+            fuelCharge: capacity,
+            fuelTypeID: UNSTABLE_FUEL_TYPE_ID,
+            fuelQueue: [{
+                    fuelTypeID: UNSTABLE_FUEL_TYPE_ID,
+                    quantity: capacity,
+                }],
+        },
+    }));
+    if (!updateResult || updateResult.success !== true) {
+        return {
+            success: false,
+            errorMsg: updateResult && updateResult.errorMsg
+                ? updateResult.errorMsg
+                : "INITIAL_FUEL_WRITE_FAILED",
+        };
+    }
+    return {
+        success: true,
+        skipped: false,
+        data: {
+            capacity,
+            fuelTypeID: UNSTABLE_FUEL_TYPE_ID,
+            item: updateResult.data,
+        },
     };
 }
 function getConditionState(shipItem) {
@@ -290,13 +375,16 @@ function appendFuelQueueBatch(fuelQueue, fuelTypeID, quantity) {
     ]);
 }
 /**
- * Advance Frontier's fuel-driven capacitor recharge for one tick.
+ * Advance Frontier's fuel-driven power grid and capacitor recharge for one
+ * tick.
  *
- * One MW of unused power grid supplies one GJ/s of capacitor recharge. Each
- * unit of loaded fuel supplies `fuelEfficiency` GJ. The returned state is
- * deliberately pure so both Creation and regular fuel-tank ships use exactly
- * the same accounting. `capacitorRechargeRate` is retained in the input for
- * diagnostics/legacy callers, but Frontier's rate is the free grid headroom.
+ * Online consumers are supplied first by the generator. Remaining generator
+ * headroom may recharge the capacitor, capped by the authored recharge rate.
+ * One MW sustained for one second consumes one GJ of fuel energy and each
+ * unit of loaded fuel supplies `fuelEfficiency` GJ. This mirrors the Frontier
+ * client's `generator_load`: online load plus admitted capacitor recharge.
+ * The returned state is deliberately pure so Creation and regular fuel-tank
+ * ships use the same accounting.
  */
 function calculateFueledCapacitorRecharge({ currentCapacitorAmount, capacitorCapacity, capacitorRechargeRate, powerOutput, powerLoad, fuelCharge, fuelTypeID, fuelQueue, fuelComposition, deltaSeconds, }, deps = {}) {
     const capacity = Math.max(0, toFiniteNumber(capacitorCapacity, 0));
@@ -315,11 +403,17 @@ function calculateFueledCapacitorRecharge({ currentCapacitorAmount, capacitorCap
     const loadedFuel = getFuelQueueQuantity(normalizedFuelQueue);
     const fuelProperties = calculateFuelQueueProperties(normalizedFuelQueue, deps);
     const fuelEfficiency = fuelProperties.fuelEfficiency;
-    const powerHeadroom = Math.max(0, toFiniteNumber(powerOutput, 0) - toFiniteNumber(powerLoad, 0));
+    const normalizedPowerOutput = Math.max(0, toFiniteNumber(powerOutput, 0));
+    const normalizedPowerLoad = Math.max(0, toFiniteNumber(powerLoad, 0));
+    const consumerGeneratorLoad = Math.min(normalizedPowerOutput, normalizedPowerLoad);
+    const powerHeadroom = Math.max(0, normalizedPowerOutput - normalizedPowerLoad);
     const authoredRechargeRate = Math.max(0, toFiniteNumber(capacitorRechargeRate, 0));
-    const effectiveRechargeRate = powerHeadroom;
+    const effectiveRechargeRate = Math.min(powerHeadroom, authoredRechargeRate);
     const missingEnergy = Math.max(0, capacity - currentAmount);
-    const requestedEnergy = Math.min(missingEnergy, effectiveRechargeRate * Math.max(0, toFiniteNumber(deltaSeconds, 0)));
+    const normalizedDeltaSeconds = Math.max(0, toFiniteNumber(deltaSeconds, 0));
+    const requestedRechargeEnergy = Math.min(missingEnergy, effectiveRechargeRate * normalizedDeltaSeconds);
+    const requestedConsumerEnergy = consumerGeneratorLoad * normalizedDeltaSeconds;
+    const requestedEnergy = requestedConsumerEnergy + requestedRechargeEnergy;
     const nextFuelQueue = normalizedFuelQueue.map((entry) => ({ ...entry }));
     let remainingEnergy = requestedEnergy;
     let consumedFuel = 0;
@@ -340,7 +434,9 @@ function calculateFueledCapacitorRecharge({ currentCapacitorAmount, capacitorCap
             nextFuelQueue.shift();
         }
     }
-    const rechargedEnergy = requestedEnergy - remainingEnergy;
+    const suppliedEnergy = requestedEnergy - remainingEnergy;
+    const suppliedConsumerEnergy = Math.min(requestedConsumerEnergy, suppliedEnergy);
+    const rechargedEnergy = Math.min(requestedRechargeEnergy, Math.max(0, suppliedEnergy - suppliedConsumerEnergy));
     const rawNextFuelCharge = Math.max(0, getFuelQueueQuantity(nextFuelQueue));
     const nextFuelCharge = rawNextFuelCharge <= FUEL_EPSILON
         ? 0
@@ -351,17 +447,29 @@ function calculateFueledCapacitorRecharge({ currentCapacitorAmount, capacitorCap
     const nextCapacitorAmount = capacity - rawNextCapacitorAmount <= FUEL_EPSILON
         ? capacity
         : rawNextCapacitorAmount;
+    const admittedRechargeRate = normalizedDeltaSeconds > 0
+        ? requestedRechargeEnergy / normalizedDeltaSeconds
+        : 0;
     return {
         currentCapacitorAmount: currentAmount,
         nextCapacitorAmount,
         missingEnergy,
+        normalizedPowerOutput,
+        normalizedPowerLoad,
+        consumerGeneratorLoad,
         powerHeadroom,
         authoredRechargeRate,
         effectiveRechargeRate,
+        generatorLoad: consumerGeneratorLoad + admittedRechargeRate,
         fuelEfficiency,
         fuelProperties,
         nextFuelProperties,
         consumedFuel,
+        requestedConsumerEnergy,
+        suppliedConsumerEnergy,
+        requestedRechargeEnergy,
+        requestedEnergy,
+        suppliedEnergy,
         rechargedEnergy,
         previousFuelCharge: loadedFuel,
         nextFuelCharge,
@@ -471,6 +579,9 @@ function loadFuelIntoShipTank({ characterID, shipID, fuelTypeID, quantity, fuelI
     const updateShipItem = typeof deps.updateShipItem === "function"
         ? deps.updateShipItem
         : itemStore.updateShipItem;
+    const isFreeStationFuelSupplyItem = typeof deps.isFreeStationFuelSupplyItem === "function"
+        ? deps.isFreeStationFuelSupplyItem
+        : itemStore.isFreeStationFuelSupplyItem;
     const ownerID = toInt(characterID, 0);
     const numericShipID = toInt(shipID, 0);
     const numericTypeID = toInt(fuelTypeID, 0);
@@ -536,6 +647,18 @@ function loadFuelIntoShipTank({ characterID, shipID, fuelTypeID, quantity, fuelI
         dockedLocationID,
         deps,
     });
+    const isFreeStationSupply = (stack) => numericTypeID === UNSTABLE_FUEL_TYPE_ID &&
+        toInt(dockedLocationID, 0) > 0 &&
+        typeof isFreeStationFuelSupplyItem === "function" &&
+        isFreeStationFuelSupplyItem(stack, {
+            characterID: ownerID,
+            stationID: toInt(dockedLocationID, 0),
+        });
+    // The station button does not identify one particular source stack. Put the
+    // service-backed offer first so an automatic fill never consumes a pilot's
+    // ordinary cargo or hangar fuel while the free station option is available.
+    sourceStacks.sort((left, right) => Number(isFreeStationSupply(right)) - Number(isFreeStationSupply(left)) ||
+        toInt(left.itemID, 0) - toInt(right.itemID, 0));
     const availableQuantity = sourceStacks.reduce((total, item) => total + getStackQuantity(item), 0);
     if (availableQuantity < requestedQuantity) {
         return {
@@ -552,6 +675,10 @@ function loadFuelIntoShipTank({ characterID, shipID, fuelTypeID, quantity, fuelI
             break;
         }
         const take = Math.min(remaining, getStackQuantity(stack));
+        if (isFreeStationSupply(stack)) {
+            remaining -= take;
+            continue;
+        }
         const result = consumeInventoryItemQuantity(stack.itemID, take);
         if (!result || result.success !== true) {
             // Restore already-drained stacks before failing so a mid-drain write
@@ -638,6 +765,8 @@ module.exports = {
     ATTRIBUTE_FUEL_VOLATILITY,
     FUEL_PROPERTY_ATTRIBUTE_IDS,
     FUEL_GROUP_IDS,
+    INITIAL_FULL_FUEL_SHIP_TYPE_IDS,
+    UNSTABLE_FUEL_TYPE_ID,
     appendFuelQueueBatch,
     calculateFuelQueueProperties,
     calculateFueledCapacitorRecharge,
@@ -650,11 +779,13 @@ module.exports = {
     getShipFuelQueue,
     getShipFuelProperties,
     getShipFuelTypeID,
+    initializeNewShipFuelTank,
     isSupportedFuelType,
     loadFuelIntoShipTank,
     normalizeFuelComposition,
     normalizeFuelQueue,
     normalizeRequestedFuelItemIDs,
+    resolveInitialShipFuelCapacity,
     resolveShipFuelTank,
     trimFuelQueueToQuantity,
 };

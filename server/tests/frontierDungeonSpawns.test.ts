@@ -71,17 +71,66 @@ test("Frontier dungeon spawn config loads with the analyzed sites and controller
 
   assert.equal(config.schemaVersion, 2);
   assert.equal(config.enabled, true);
-  assert.equal(Object.keys(config.sites).length, 49);
-  assert.equal(Object.keys(config.spawnerTypes).length, 16);
+  assert.equal(Object.keys(config.sites).length, 43);
+  assert.equal(config.sites["13938"], undefined);
+  assert.equal(config.sites["13582"], undefined);
+  assert.deepEqual(config.sites["10659"], {
+    name: "Pulverized Asteroid Cluster",
+    siteTypeID: 4871,
+    spawnFrequency: 1,
+    placementDistanceAu: { min: 3.65, max: 4.35 },
+    separationLightSeconds: { min: 1, max: 10 },
+    warpInDistanceMeters: 10_000,
+    entryBeaconTypeID: 86823,
+    tags: ["site:mining-field", "site:mooneater"],
+    spawners: [],
+  });
+  assert.deepEqual(
+    ["12701", "12704", "12705", "12706"].map((dungeonID) => ({
+      dungeonID,
+      name: config.sites[dungeonID].name,
+      spawnFrequency: config.sites[dungeonID].spawnFrequency,
+      tags: config.sites[dungeonID].tags,
+      spawners: config.sites[dungeonID].spawners,
+    })),
+    [
+      { dungeonID: "12701", name: "Inculcator Foundation", spawnFrequency: 1, tags: ["site:generative", "site:inculcator"], spawners: [] },
+      { dungeonID: "12704", name: "Ruined Inculcator", spawnFrequency: 1, tags: ["site:generative", "site:inculcator"], spawners: [] },
+      { dungeonID: "12705", name: "Inculcator Wreckage", spawnFrequency: 1, tags: ["site:generative", "site:inculcator"], spawners: [] },
+      { dungeonID: "12706", name: "Razed Inculcator", spawnFrequency: 1, tags: ["site:generative", "site:inculcator"], spawners: [] },
+    ],
+  );
+  assert.deepEqual(config.sites["12701"].buildup, {
+    kind: "inculcator_foundation",
+    phases: [
+      { key: "foundation", durationSeconds: 900 },
+      { key: "superstructure", durationSeconds: 900 },
+      { key: "forge_assembly", durationSeconds: 900 },
+    ],
+    completionEntity: {
+      typeID: 88_090,
+      name: "Steel Forge",
+      positionOffset: { x: 0, y: 0, z: 0 },
+      count: 1,
+    },
+  });
+  assert.equal(Object.keys(config.spawnerTypes).length, 17);
   assert.equal(Object.keys(config.hiveSpawns).length, 7);
   assert.equal(summary.hiveSpawnTypeCount, 7);
   assert.equal(summary.schemaVersion, config.schemaVersion);
   assert.equal(summary.enabled, true);
+  assert.deepEqual(
+    config.sites["14140"].spawners.find((entry) => entry.typeID === 83_963),
+    { typeID: 83_963, count: 1, activation: "initial" },
+  );
+  assert.deepEqual(config.spawnerTypes["83963"].entityComposition, [{
+    typeID: 83_963,
+    name: "Test Hive",
+    positionOffset: { x: 25_000, y: 0, z: 0 },
+    count: 1,
+  }]);
   assert.deepEqual(config.defaults.siteSeparationLightSeconds, { min: 1, max: 10 });
-  assert.deepEqual(config.defaults.warpIn, {
-    boundaryRadiusMeters: 250_000,
-    collisionClearanceMeters: 10_000,
-  });
+  assert.equal(config.defaults.siteWarpInDistanceMeters, 10_000);
   assert.equal(
     summary.configuredSiteCount ?? summary.siteCount,
     Object.keys(config.sites).length,
@@ -92,62 +141,136 @@ test("Frontier dungeon spawn config loads with the analyzed sites and controller
     assert.ok(site.placementDistanceAu.max >= site.placementDistanceAu.min);
     assert.ok(site.separationLightSeconds.min >= 1);
     assert.ok(site.separationLightSeconds.max <= 10);
-    assert.deepEqual(site.warpIn, config.defaults.warpIn);
+    assert.equal(site.warpInDistanceMeters, 10_000);
   }
 });
 
-test("dungeon warp-in resolves to the approach-side boundary clear of site objects", () => {
+test("Inculcator Foundation buildup advances by elapsed phase time and places one Steel Forge", () => {
+  const buildup = frontierDungeonSpawns.getConfig().sites["12701"].buildup;
+  const hints = frontierDungeonSpawns.buildConfiguredPopulationHints({
+    templateID: "frontier-dungeon:12701",
+    sourceDungeonID: 12_701,
+    entryObjectID: 0,
+    rooms: [],
+    triggers: [],
+  });
+  assert.deepEqual(hints.frontierDungeonBuildup, buildup);
+
+  const instance: any = {
+    instanceID: 910_127_010,
+    factionID: 500_025,
+    dungeonFactionKey: "osa",
+    timers: {
+      createdAtMs: 1_000,
+      activatedAtMs: 1_000,
+    },
+    environmentState: {},
+  };
+  const testing = dungeonUniverseSiteService._testing;
+  assert.deepEqual(
+    testing.resolveInculcatorBuildupSnapshot(instance, buildup, 1_000),
+    {
+      kind: "inculcator_foundation",
+      state: "building",
+      phaseIndex: 0,
+      phaseCount: 3,
+      phaseKey: "foundation",
+      startedAtMs: 1_000,
+      phaseStartedAtMs: 1_000,
+      nextPhaseAtMs: 901_000,
+      completedAtMs: null,
+      completionEntityTypeID: 88_090,
+      lastControllingFactionKey: "osa",
+      lastControllingFactionID: 500_025,
+    },
+  );
+  assert.equal(
+    testing.resolveInculcatorBuildupSnapshot(instance, buildup, 901_000).phaseKey,
+    "superstructure",
+  );
+
+  const siteEntity: any = {
+    itemID: 81_270_100,
+    itemName: "Inculcator Foundation",
+    position: { x: 10_000, y: 20_000, z: 30_000 },
+  };
+  const scene: any = {
+    staticEntities: [],
+    staticEntitiesByID: new Map(),
+    broadcasts: [],
+    addStaticEntity(entity) {
+      if (this.staticEntitiesByID.has(entity.itemID)) {
+        return false;
+      }
+      this.staticEntities.push(entity);
+      this.staticEntitiesByID.set(entity.itemID, entity);
+      return true;
+    },
+    broadcastAddBalls(entities) {
+      this.broadcasts.push([...entities]);
+    },
+  };
+  const persisted: any[] = [];
+  const runtime = {
+    mergeEnvironmentState(instanceID, patch, options) {
+      persisted.push({ instanceID, patch, options });
+      return { ...instance, environmentState: { ...instance.environmentState, ...patch } };
+    },
+  };
+  const completedAtMs = 2_701_000;
+  const result = testing.processInculcatorSiteBuildup(
+    scene,
+    instance,
+    siteEntity,
+    { frontierDungeonBuildup: buildup },
+    { nowMs: completedAtMs, dungeonRuntime: runtime },
+  );
+  assert.equal(result.phaseChanged, true);
+  assert.equal(result.completed, true);
+  assert.equal(result.entitySpawned, true);
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0].patch.inculcatorBuildup.state, "completed");
+  assert.equal(siteEntity.inculcatorBuildupPhaseKey, "completed");
+  assert.equal(scene.staticEntities.length, 1);
+  assert.equal(scene.broadcasts.length, 1);
+  assert.equal(result.entity.typeID, 88_090);
+  assert.equal(result.entity.itemName, "Steel Forge");
+  assert.deepEqual(result.entity.position, siteEntity.position);
+  assert.equal(result.entity.inculcatorLastControllingFactionKey, "osa");
+  assert.equal(result.entity.inculcatorTransponderBindingPending, true);
+
+  instance.environmentState.inculcatorBuildup = persisted[0].patch.inculcatorBuildup;
+  const repeated = testing.processInculcatorSiteBuildup(
+    scene,
+    instance,
+    siteEntity,
+    { frontierDungeonBuildup: buildup },
+    { nowMs: completedAtMs + 1_000, dungeonRuntime: runtime },
+  );
+  assert.equal(repeated.phaseChanged, false);
+  assert.equal(repeated.entitySpawned, false);
+  assert.equal(persisted.length, 1);
+  assert.equal(scene.staticEntities.length, 1);
+  assert.equal(scene.broadcasts.length, 1);
+});
+
+test("dungeon warp-in resolves to the site anchor", () => {
   const instance = {
     instanceID: 91_000_001,
     position: { x: 1_000_000, y: 2_000_000, z: 3_000_000 },
-    frontierDungeonWarpIn: {
-      boundaryRadiusMeters: 100_000,
-      collisionClearanceMeters: 5_000,
-    },
   };
-  const ship = {
-    itemID: 92_000_001,
-    kind: "ship",
-    position: { x: 2_000_000, y: 2_000_000, z: 3_000_000 },
-    radius: 100,
-  };
-  const boundaryObject = {
-    itemID: 93_000_001,
-    dungeonSiteInstanceID: instance.instanceID,
-    position: { x: 1_105_100, y: 2_000_000, z: 3_000_000 },
-    radius: 20_000,
-  };
-  const point = deadspaceWarpPolicy.resolveSiteWarpInPoint(instance, ship, {
-    staticEntities: [boundaryObject],
-    dynamicEntities: new Map(),
-  });
 
-  assert.ok(point.x > boundaryObject.position.x);
-  assert.equal(point.y, instance.position.y);
-  assert.equal(point.z, instance.position.z);
-  assert.ok(
-    point.x - boundaryObject.position.x >=
-      boundaryObject.radius + ship.radius + instance.frontierDungeonWarpIn.collisionClearanceMeters,
-  );
-  assert.ok(
-    point.x - instance.position.x >=
-      instance.frontierDungeonWarpIn.boundaryRadiusMeters +
-      ship.radius +
-      instance.frontierDungeonWarpIn.collisionClearanceMeters,
-  );
+  assert.deepEqual(deadspaceWarpPolicy.resolveSiteWarpInPoint(instance), instance.position);
 });
 
-test("deadspace clamp uses the safe boundary point instead of the dungeon anchor", () => {
+test("deadspace clamp uses the dungeon anchor", () => {
   const dungeonRuntime = require("../src/services/dungeon/dungeonRuntime");
   const originalListActiveInstancesBySystem = dungeonRuntime.listActiveInstancesBySystem;
   const instance = {
     instanceID: 91_000_002,
     solarSystemID: 30_000_142,
+    gateStatesByKey: { "gate:entry": { state: "unlocked" } },
     position: { x: 10_000, y: 20_000, z: 30_000 },
-    frontierDungeonWarpIn: {
-      boundaryRadiusMeters: 120_000,
-      collisionClearanceMeters: 8_000,
-    },
   };
   dungeonRuntime.listActiveInstancesBySystem = () => [instance];
   try {
@@ -159,19 +282,14 @@ test("deadspace clamp uses the safe boundary point instead of the dungeon anchor
         position: { x: 1_010_000, y: 20_000, z: 30_000 },
         radius: 75,
       },
-      instance.position,
+      { x: instance.position.x + 50_000, y: instance.position.y, z: instance.position.z },
       {},
       { staticEntities: [], dynamicEntities: new Map() },
     );
 
     assert.equal(decision.action, "clamp");
     assert.equal(decision.siteInstanceID, instance.instanceID);
-    assert.deepEqual(decision.point, {
-      x: instance.position.x + 128_075,
-      y: instance.position.y,
-      z: instance.position.z,
-    });
-    assert.notDeepEqual(decision.point, instance.position);
+    assert.deepEqual(decision.point, instance.position);
   } finally {
     dungeonRuntime.listActiveInstancesBySystem = originalListActiveInstancesBySystem;
   }
@@ -182,10 +300,12 @@ test("deadspace clamp selects the nearest site when logical deadspace regions ov
   const originalListActiveInstancesBySystem = dungeonRuntime.listActiveInstancesBySystem;
   const fartherInstance = {
     instanceID: 91_000_003,
+    gateStatesByKey: { "gate:entry": { state: "unlocked" } },
     position: { x: 250_000_000, y: 0, z: 0 },
   };
   const targetInstance = {
     instanceID: 91_000_004,
+    gateStatesByKey: { "gate:entry": { state: "unlocked" } },
     position: { x: 0, y: 0, z: 0 },
   };
   dungeonRuntime.listActiveInstancesBySystem = () => [fartherInstance, targetInstance];
@@ -198,7 +318,7 @@ test("deadspace clamp selects the nearest site when logical deadspace regions ov
         position: { x: -2_000_000_000, y: 0, z: 0 },
         radius: 50,
       },
-      targetInstance.position,
+      { x: targetInstance.position.x + 50_000, y: 0, z: 0 },
       {},
       { staticEntities: [], dynamicEntities: new Map() },
     );
@@ -207,6 +327,80 @@ test("deadspace clamp selects the nearest site when logical deadspace regions ov
     assert.equal(decision.siteInstanceID, targetInstance.instanceID);
   } finally {
     dungeonRuntime.listActiveInstancesBySystem = originalListActiveInstancesBySystem;
+  }
+});
+
+test("ungated combat anomalies permit returning to their site beacon", () => {
+  const dungeonRuntime = require("../src/services/dungeon/dungeonRuntime");
+  const originalGetInstance = dungeonRuntime.getInstance;
+  const originalListActiveInstancesBySystem = dungeonRuntime.listActiveInstancesBySystem;
+  const instance = {
+    instanceID: 91_000_005,
+    solarSystemID: 30_000_009,
+    siteFamily: "combat",
+    siteKind: "anomaly",
+    gateStatesByKey: {},
+    position: { x: 100_000, y: 200_000, z: 300_000 },
+  };
+  dungeonRuntime.getInstance = () => instance;
+  dungeonRuntime.listActiveInstancesBySystem = () => [instance];
+  try {
+    const decision = deadspaceWarpPolicy.evaluateDeadspaceWarp(
+      {
+        itemID: 92_000_005,
+        kind: "ship",
+        systemID: instance.solarSystemID,
+        dungeonCurrentInstanceID: instance.instanceID,
+        position: { x: 140_000, y: 200_000, z: 300_000 },
+      },
+      instance.position,
+    );
+
+    assert.equal(decision.action, "allow");
+    assert.equal(
+      deadspaceWarpPolicy.isWarpRestrictedInstance(instance),
+      false,
+    );
+  } finally {
+    dungeonRuntime.getInstance = originalGetInstance;
+    dungeonRuntime.listActiveInstancesBySystem = originalListActiveInstancesBySystem;
+  }
+});
+
+test("gated complexes still reject intra-site warp commands", () => {
+  const dungeonRuntime = require("../src/services/dungeon/dungeonRuntime");
+  const originalGetInstance = dungeonRuntime.getInstance;
+  const instance = {
+    instanceID: 91_000_006,
+    solarSystemID: 30_000_009,
+    siteFamily: "combat",
+    siteKind: "signature",
+    gateStatesByKey: {
+      "gate:entry": { state: "unlocked" },
+    },
+    position: { x: 100_000, y: 200_000, z: 300_000 },
+  };
+  dungeonRuntime.getInstance = () => instance;
+  try {
+    const decision = deadspaceWarpPolicy.evaluateDeadspaceWarp(
+      {
+        itemID: 92_000_006,
+        kind: "ship",
+        systemID: instance.solarSystemID,
+        dungeonCurrentInstanceID: instance.instanceID,
+        position: { x: 140_000, y: 200_000, z: 300_000 },
+      },
+      instance.position,
+    );
+
+    assert.equal(decision.action, "block");
+    assert.equal(decision.errorMsg, "DunCannotWarpWithinComplex");
+    assert.equal(
+      deadspaceWarpPolicy.isWarpRestrictedInstance(instance),
+      true,
+    );
+  } finally {
+    dungeonRuntime.getInstance = originalGetInstance;
   }
 });
 
@@ -233,6 +427,35 @@ test("Frontier dungeon loot config keeps cargo-container and wreck tables separa
       Object.values(wreckMappings).includes(lootTableID)
     )),
     false,
+  );
+});
+
+test("universe dungeon selection requires exact unified-config authority", () => {
+  const configured = frontierDungeonSpawns.decorateTemplate({
+    ...buildControllerTemplate(11_122, 83_889, 83_552),
+    rooms: [],
+  });
+  const extractedButDeleted = {
+    templateID: "frontier-dungeon:13723",
+    sourceDungeonID: 13_723,
+    frontierDungeonSpawnConfigured: false,
+  };
+  const extractedAuthority = new Set([11_122, 13_723]);
+
+  assert.equal(
+    dungeonUniverseRuntime._testing.isUniverseSpawnEligibleTemplate(
+      configured,
+      extractedAuthority,
+    ),
+    true,
+  );
+  assert.equal(
+    dungeonUniverseRuntime._testing.isUniverseSpawnEligibleTemplate(
+      extractedButDeleted,
+      extractedAuthority,
+    ),
+    false,
+    "an extracted client dungeon absent from frontier-dungeon-spawns.json must fail closed",
   );
 });
 
@@ -415,6 +638,104 @@ test("dungeon site placement retries overlaps using the configured 1-10 light-se
   }
 });
 
+test("server startup rotates persistent unfinished dungeons and discards other unfinished pockets", () => {
+  const dungeonRuntime = require("../src/services/dungeon/dungeonRuntime");
+  const originalListInstancesByLifecycle = dungeonRuntime.listInstancesByLifecycle;
+  const originalRotateUniversePersistentInstances = dungeonRuntime.rotateUniversePersistentInstances;
+  const originalPurgeInstances = dungeonRuntime.purgeInstances;
+  const persistentInstance = {
+    instanceID: 7_100_000_000_201,
+    templateID: "frontier-dungeon:12230",
+    solarSystemID: 30_000_142,
+    siteKey: "dungeon:combat:30000142:0",
+    siteFamily: "combat",
+    siteOrigin: "universe_dungeon",
+    lifecycleState: "active",
+    runtimeFlags: {
+      universePersistent: true,
+      universeSeeded: true,
+    },
+  };
+  const missionInstance = {
+    instanceID: 7_100_000_000_202,
+    templateID: "mission:test",
+    solarSystemID: 30_000_142,
+    siteKey: "mission:90000001:1",
+    siteFamily: "mission",
+    siteOrigin: "agentmission",
+    lifecycleState: "paused",
+    runtimeFlags: {
+      missionRuntime: true,
+    },
+  };
+  const completedInstance = {
+    instanceID: 7_100_000_000_203,
+    lifecycleState: "completed",
+  };
+  const rotated: any[] = [];
+  let purged: any[] = [];
+
+  dungeonRuntime.listInstancesByLifecycle = (lifecycleState) => {
+    if (lifecycleState === "active") {
+      return [persistentInstance];
+    }
+    if (lifecycleState === "paused") {
+      return [missionInstance];
+    }
+    if (lifecycleState === "completed") {
+      return [completedInstance];
+    }
+    return [];
+  };
+  dungeonRuntime.rotateUniversePersistentInstances = (rotations) => {
+    rotated.push(...rotations);
+    return {
+      rotatedCount: rotations.length,
+      removedCount: rotations.length,
+    };
+  };
+  dungeonRuntime.purgeInstances = (instanceIDs) => {
+    purged = [...instanceIDs];
+    return {
+      removedCount: instanceIDs.length,
+      removedInstanceIDs: [...instanceIDs],
+    };
+  };
+
+  try {
+    const result = dungeonUniverseRuntime._testing.resetStartupIncompleteDungeons({
+      nowMs: 50_000,
+      buildRotationDefinition: (instance) => ({
+        ...instance,
+        instanceID: undefined,
+        siteKey: "dungeon:combat:30000142:0:rotation:1",
+        lifecycleState: "active",
+        metadata: {
+          rotationIndex: 1,
+        },
+      }),
+    });
+
+    assert.equal(result.scannedCount, 2);
+    assert.equal(result.rotatedCount, 1);
+    assert.equal(result.purgedCount, 1);
+    assert.equal(result.discardedCount, 2);
+    assert.deepEqual(result.rotatedInstanceIDs, [persistentInstance.instanceID]);
+    assert.deepEqual(purged, [missionInstance.instanceID]);
+    assert.equal(rotated[0].existingInstance.instanceID, persistentInstance.instanceID);
+    assert.equal(rotated[0].nextDefinition.metadata.rotationIndex, 1);
+    assert.equal(
+      result.rotatedInstanceIDs.includes(completedInstance.instanceID) ||
+      result.purgedInstanceIDs.includes(completedInstance.instanceID),
+      false,
+    );
+  } finally {
+    dungeonRuntime.listInstancesByLifecycle = originalListInstancesByLifecycle;
+    dungeonRuntime.rotateUniversePersistentInstances = originalRotateUniversePersistentInstances;
+    dungeonRuntime.purgeInstances = originalPurgeInstances;
+  }
+});
+
 test("named hives resolve only their drone family and deduplicate shared SDE types", () => {
   const expectedDroneTypeByHiveTypeID = new Map([
     [77_950, "osa"],
@@ -510,6 +831,47 @@ test("configured hive spawns invoke one NPC batch per resolved drone type", () =
   assert.equal(calls[0].options.transient, true);
 });
 
+test("Test Hive triggers every configured NPC at collision-safe positions", () => {
+  const calls: any[] = [];
+  const result = mobileAnalysisBeaconRuntime._testing.spawnConfiguredHiveNpcs(
+    {
+      itemID: 6_400_000_000_002,
+      typeID: 83_963,
+      kind: "siteEnvironmentProp",
+      radius: 2_000,
+      position: { x: 1_000, y: 2_000, z: 3_000 },
+      dungeonSiteID: 7_200_000_000_002,
+      dungeonSiteInstanceID: 7_100_000_000_002,
+    },
+    {
+      solarSystemID: 30_000_142,
+      linkedShipID: 9_000_000_002,
+    },
+    {
+      npcService: {
+        spawnNpcBatchInSystem(systemID, options) {
+          calls.push({ systemID, options });
+          return { success: true, data: { spawned: [{ entityID: calls.length }] } };
+        },
+      },
+    },
+  );
+  const configuration = frontierDungeonSpawns.resolveHiveSpawnConfiguration(83_963);
+
+  assert.equal(result.success, true);
+  assert.equal(calls.length, configuration.spawnEntries.length);
+  assert.ok(calls.length > 5);
+  const positions = calls.map((entry) => entry.options.spawnStateOverride.position);
+  for (let left = 0; left < positions.length; left += 1) {
+    for (let right = left + 1; right < positions.length; right += 1) {
+      const dx = positions[left].x - positions[right].x;
+      const dy = positions[left].y - positions[right].y;
+      const dz = positions[left].z - positions[right].z;
+      assert.ok(Math.sqrt((dx * dx) + (dy * dy) + (dz * dz)) >= 8_000);
+    }
+  }
+});
+
 test("configured hive scenery advertises the link-with-ship component", () => {
   const entity = mobileAnalysisBeaconRuntime._testing.applyConfiguredHiveLinkPresentation(
     {
@@ -532,13 +894,39 @@ test("configured hive scenery advertises the link-with-ship component", () => {
   assert.equal(entity.frontierHiveLinkState.hiveSpawnedAtMs, 0);
 });
 
+test("KotH materializes one configured Test Hive stress spawner", () => {
+  const withoutAuthoredHive = frontierDungeonSpawns.buildConfiguredPopulationHints(
+    buildControllerTemplate(14_140, 83_889, 91_211),
+  );
+  const configuredHives = withoutAuthoredHive.environmentProps.filter(
+    (entry) => entry.typeID === 83_963,
+  );
+
+  assert.equal(configuredHives.length, 1);
+  assert.equal(configuredHives[0].label, "Test Hive");
+  assert.deepEqual(configuredHives[0].positionOffset, { x: 25_000, y: 0, z: 0 });
+  assert.deepEqual(
+    frontierDungeonSpawns.resolveHiveSpawnConfiguration(configuredHives[0].typeID)
+      .droneTypes,
+    ["osa", "okryda", "termit", "tsikada", "sarana"],
+  );
+
+  const withAuthoredHive = frontierDungeonSpawns.buildConfiguredPopulationHints(
+    buildControllerTemplate(14_140, 83_889, 83_963),
+  );
+  assert.equal(
+    withAuthoredHive.environmentProps.filter((entry) => entry.typeID === 83_963).length,
+    1,
+  );
+});
+
 test("factions are resolved only from exact dungeon IDs, never a reused entry beacon", () => {
   const okryda = frontierDungeonSpawns.resolveSiteConfiguration({
     sourceDungeonID: 11_122,
     entryObjectTypeID: 83_889,
   });
   const reusedBeaconPrefab = frontierDungeonSpawns.resolveSiteConfiguration({
-    sourceDungeonID: 13_870,
+    sourceDungeonID: 14_140,
     entryObjectTypeID: 83_889,
   });
   const unknownWithReusedBeacon = frontierDungeonSpawns.resolveSiteConfiguration({
@@ -554,14 +942,26 @@ test("factions are resolved only from exact dungeon IDs, never a reused entry be
 
   const decoratedOkryda = frontierDungeonSpawns.decorateTemplate({
     ...buildControllerTemplate(11_122, 83_889, 83_552),
+    resolvedName: "Landscape Refinery 02",
+    dungeonName: "Landscape Refinery 02",
     rooms: [],
   });
   const decoratedPrefab = frontierDungeonSpawns.decorateTemplate({
-    ...buildControllerTemplate(13_870, 83_889, 91_214),
+    ...buildControllerTemplate(14_140, 83_889, 91_211),
     rooms: [],
   });
   assert.equal(decoratedOkryda.frontierFactionKey, "okryda");
   assert.equal(decoratedOkryda.frontierFactionTag, "frontier-faction:okryda");
+  assert.equal(decoratedOkryda.resolvedName, "Okryda Domination Cluster");
+  assert.equal(decoratedOkryda.dungeonName, "Okryda Domination Cluster");
+  assert.equal(
+    dungeonUniverseSiteService._testing.resolveEntityLabel(
+      { instanceID: 1, siteFamily: "combat", metadata: {}, spawnState: {} },
+      decoratedOkryda,
+      { name: "Landscape Refinery 02" },
+    ),
+    "Okryda Domination Cluster",
+  );
   assert.equal(decoratedPrefab.frontierFactionKey, null);
   assert.equal(decoratedPrefab.frontierFactionTag, null);
 });
@@ -577,20 +977,35 @@ test("specialized site encounters decorate Mooneater, Generative, Shipyard, and 
     (encounter) => encounter.frontierEncounterSpawnTableID,
   );
 
-  const mooneater = encounterFor(decorate(13_870, 83_889));
-  assert.equal(mooneater.frontierEncounterSpawnTableID, "mooneater_site");
-  assert.ok(mooneater.spawnEntries.some(
+  const pulverizedAsteroidCluster = encounterFor(decorate(10_659, 86_823));
+  assert.equal(pulverizedAsteroidCluster.trigger, "on_load");
+  assert.equal(pulverizedAsteroidCluster.frontierEncounterSpawnTableID, "mooneater_site");
+  assert.ok(pulverizedAsteroidCluster.spawnEntries.some(
     (entry) => entry.frontierEncounterFamilyKey === "mooneater_entities",
   ));
-  assert.ok(mooneater.spawnEntries.some(
+  assert.ok(pulverizedAsteroidCluster.spawnEntries.some(
     (entry) => entry.frontierEncounterFamilyKey === "feral_support",
   ));
 
-  const generative = encounterFor(decorate(12_707, 89_061));
-  assert.equal(generative.frontierEncounterSpawnTableID, "generative_site");
-  assert.ok(generative.spawnEntries.some(
-    (entry) => entry.frontierEncounterFamilyKey === "generative_entities",
-  ));
+  for (const [dungeonID, entryObjectTypeID] of [
+    [12_700, 88_383],
+    [12_701, 88_008],
+    [12_704, 88_838],
+    [12_705, 88_837],
+    [12_706, 88_849],
+    [12_707, 89_061],
+    [12_708, 89_062],
+    [12_709, 89_063],
+  ]) {
+    const generative = encounterFor(decorate(dungeonID, entryObjectTypeID));
+    assert.equal(generative.frontierEncounterSpawnTableID, "generative_site");
+    assert.ok(generative.spawnEntries.some(
+      (entry) => entry.frontierEncounterFamilyKey === "generative_entities",
+    ));
+    assert.ok(generative.spawnEntries.some(
+      (entry) => entry.frontierEncounterFamilyKey === "feral_support",
+    ));
+  }
 
   const shipyard = encounterFor(decorate(12_560, 88_013));
   assert.equal(shipyard.frontierEncounterSpawnTableID, "derelict_autonomous_shipyard");
@@ -616,35 +1031,66 @@ test("the same authored frigate controller expands to the site's tagged drone fa
 
   assert.equal(osa.frontierDungeonSpawnConfigured, true);
   assert.equal(osa.frontierDungeonSpawnFrequency, 1);
+  assert.equal(osa.frontierDungeonWarpInDistanceMeters, 10_000);
   assert.deepEqual(osa.frontierDungeonPlacementDistanceAu, { min: 3.65, max: 4.35 });
-  assert.deepEqual(osa.frontierDungeonWarpIn, {
-    boundaryRadiusMeters: 250_000,
-    collisionClearanceMeters: 10_000,
-  });
-  assert.deepEqual(osa.populationHints.frontierDungeonWarpIn, osa.frontierDungeonWarpIn);
   assert.equal(osa.frontierFactionKey, "osa");
   assert.ok(osa.frontierDungeonTags.includes("frontier-faction:osa"));
   assert.equal(okryda.frontierFactionKey, "okryda");
   assert.ok(okryda.frontierDungeonTags.includes("frontier-faction:okryda"));
 
-  assert.equal(osa.populationHints.encounters.length, 1);
-  assert.equal(okryda.populationHints.encounters.length, 1);
+  const osaAuthoredEncounter = osa.populationHints.encounters.find(
+    (entry) => entry.frontierDungeonObjectID === 200,
+  );
+  const okrydaAuthoredEncounter = okryda.populationHints.encounters.find(
+    (entry) => entry.frontierDungeonObjectID === 200,
+  );
+  assert.ok(osaAuthoredEncounter);
+  assert.ok(okrydaAuthoredEncounter);
   assert.deepEqual(
-    osa.populationHints.encounters[0].spawnEntries.map((entry) => entry.profileID),
+    osaAuthoredEncounter.spawnEntries.map((entry) => entry.profileID),
     ["frontier_osa_frigate", "frontier_osa_frigate", "frontier_osa_frigate"],
   );
   assert.deepEqual(
-    osa.populationHints.encounters[0].spawnEntries.map((entry) => entry.typeID),
+    osaAuthoredEncounter.spawnEntries.map((entry) => entry.typeID),
     [72_207, 72_207, 72_207],
   );
   assert.deepEqual(
-    okryda.populationHints.encounters[0].spawnEntries.map((entry) => entry.profileID),
+    okrydaAuthoredEncounter.spawnEntries.map((entry) => entry.profileID),
     ["frontier_okryda_frigate", "frontier_okryda_frigate", "frontier_okryda_frigate"],
   );
   assert.deepEqual(
-    okryda.populationHints.encounters[0].spawnEntries.map((entry) => entry.typeID),
+    okrydaAuthoredEncounter.spawnEntries.map((entry) => entry.typeID),
     [73_019, 73_019, 73_019],
   );
+});
+
+test("missing configured dungeon spawners synthesize reachable fallback encounters", () => {
+  const template = buildControllerTemplate(10_645, 83_872, 83_552);
+  template.rooms[0].objects = [template.rooms[0].objects[0]];
+
+  const encounters = frontierDungeonSpawns.decorateTemplate(template)
+    .populationHints.encounters;
+  assert.equal(encounters.length, 6);
+  assert.equal(
+    encounters.every((encounter) => encounter.notes.some(
+      (note) => note.includes("Configured fallback controller"),
+    )),
+    true,
+  );
+  assert.ok(encounters.some((encounter) => encounter.trigger === "on_load"));
+
+  const encountersByKey = new Map(encounters.map((encounter) => [encounter.key, encounter]));
+  for (const encounter of encounters) {
+    const visited = new Set();
+    let current = encounter;
+    while (current && current.prerequisiteKey) {
+      assert.equal(visited.has(current.key), false);
+      visited.add(current.key);
+      current = encountersByKey.get(current.prerequisiteKey);
+    }
+    assert.ok(current);
+    assert.equal(current.trigger, "on_load");
+  }
 });
 
 test("authored trigger edges sequence configured controllers without treating raw values as counts", () => {
@@ -691,6 +1137,51 @@ test("authored trigger edges sequence configured controllers without treating ra
   assert.ok(child.notes.some((note) => note.includes("Raw trigger tinyint_1=99")));
 });
 
+test("cyclic authored trigger graphs retain a reachable dungeon spawner root", () => {
+  const template = buildControllerTemplate(10_645, 83_872, 83_552);
+  template.rooms[0].objects[1].guardCommand = { objectTriggerSpawn: 1 };
+  template.rooms[0].objects.push(
+    {
+      objectID: 201,
+      typeID: 83_552,
+      role: "scenery",
+      position: { x: 10_000, y: 0, z: 0 },
+      guardCommand: { objectTriggerSpawn: 1 },
+    },
+    {
+      objectID: 202,
+      typeID: 83_552,
+      role: "scenery",
+      position: { x: 10_000, y: 0, z: 0 },
+      guardCommand: { objectTriggerSpawn: 1 },
+    },
+  );
+  template.triggers = [
+    { objectID: 200, triggerEvents: [{ eventTypeID: 3, objectID: 201 }] },
+    { objectID: 201, triggerEvents: [{ eventTypeID: 3, objectID: 202 }] },
+    { objectID: 202, triggerEvents: [{ eventTypeID: 3, objectID: 200 }] },
+  ];
+
+  const encounters = frontierDungeonSpawns.decorateTemplate(template)
+    .populationHints.encounters
+    .filter((encounter) => encounter.frontierDungeonObjectID > 0);
+  assert.equal(encounters.length, 3);
+  assert.ok(encounters.some((encounter) => encounter.trigger === "on_load"));
+
+  const encountersByKey = new Map(encounters.map((encounter) => [encounter.key, encounter]));
+  for (const encounter of encounters) {
+    const visited = new Set();
+    let current = encounter;
+    while (current && current.prerequisiteKey) {
+      assert.equal(visited.has(current.key), false);
+      visited.add(current.key);
+      current = encountersByKey.get(current.prerequisiteKey);
+    }
+    assert.ok(current);
+    assert.equal(current.trigger, "on_load");
+  }
+});
+
 test("locator-only dungeon objects do not become NPC encounters", () => {
   const template = buildControllerTemplate(12_673, 86_825, 91_214);
   const hints = frontierDungeonSpawns.buildConfiguredPopulationHints(template);
@@ -732,6 +1223,146 @@ test("site entity descriptors compile into exact positioned entity spawns", () =
     hints.environmentProps[0].positionOffset,
     hints.environmentProps[1].positionOffset,
   );
+
+  assert.equal(
+    dungeonUniverseSiteService._testing.resolveEnvironmentStaticVisibilityScope(
+      hints.environmentProps[0],
+    ),
+    "site",
+  );
+  assert.equal(
+    dungeonUniverseSiteService._testing.resolveEnvironmentStaticVisibilityScope({ exact: false }),
+    "bubble",
+  );
+});
+
+test("authored Frontier content is rebased around its primary room cluster", () => {
+  const firstOffset = { x: -555_904, y: 197_824, z: 72_501 };
+  const secondOffset = { x: -525_904, y: 187_824, z: 62_501 };
+  const configuredSiteOffset = { x: 4_000, y: 5_000, z: 6_000 };
+  const rebased = dungeonUniverseSiteService._testing.rebaseFrontierDungeonExactContent({
+    frontierDungeonScene: true,
+    environmentProps: [
+      {
+        key: "frontier-dungeon:12230:1:101",
+        exact: true,
+        dunObjectID: 101,
+        positionOffset: firstOffset,
+      },
+      {
+        key: "frontier-dungeon:12230:1:102",
+        exact: true,
+        dunObjectID: 102,
+        positionOffset: secondOffset,
+      },
+      {
+        key: "frontier-config-entity:12230:site:1:1",
+        exact: true,
+        frontierDungeonConfiguredEntity: true,
+        positionOffset: configuredSiteOffset,
+      },
+    ],
+  });
+
+  assert.deepEqual(rebased.frontierDungeonContentOriginOffset, {
+    x: -540_904,
+    y: 192_824,
+    z: 67_501,
+  });
+  assert.deepEqual(rebased.environmentProps[0].positionOffset, {
+    x: -15_000,
+    y: 5_000,
+    z: 5_000,
+  });
+  assert.deepEqual(rebased.environmentProps[1].positionOffset, {
+    x: 15_000,
+    y: -5_000,
+    z: -5_000,
+  });
+  assert.deepEqual(rebased.environmentProps[2].positionOffset, configuredSiteOffset);
+  assert.deepEqual(
+    {
+      x: rebased.environmentProps[1].positionOffset.x -
+        rebased.environmentProps[0].positionOffset.x,
+      y: rebased.environmentProps[1].positionOffset.y -
+        rebased.environmentProps[0].positionOffset.y,
+      z: rebased.environmentProps[1].positionOffset.z -
+        rebased.environmentProps[0].positionOffset.z,
+    },
+    {
+      x: secondOffset.x - firstOffset.x,
+      y: secondOffset.y - firstOffset.y,
+      z: secondOffset.z - firstOffset.z,
+    },
+  );
+});
+
+test("untouched encounter sites do not complete from missing scene entities", () => {
+  const planKey = "frontier-controller:test";
+  const buildInstance = (lastPlayerProgressAtMs = 0) => ({
+    instanceID: 7_100_000_000_400,
+    lifecycleState: "active",
+    siteKind: "anomaly",
+    spawnState: {
+      ...(lastPlayerProgressAtMs > 0 ? { lastPlayerProgressAtMs } : {}),
+      encounterStatesByKey: {
+        [planKey]: {
+          spawnedAtMs: 1_000,
+          remainingEntityIDs: [],
+          completedAtMs: 2_000,
+        },
+      },
+    },
+  });
+  const populationHints = {
+    encounters: [{
+      key: planKey,
+      supported: true,
+      spawnQuery: "frontier_osa_frigate",
+      amount: 1,
+      trigger: "on_load",
+      waveIndex: 1,
+    }],
+  };
+  const dungeonRuntime = require("../src/services/dungeon/dungeonRuntime");
+  const originalGetInstance = dungeonRuntime.getInstance;
+  const originalSetLifecycleState = dungeonRuntime.setLifecycleState;
+  let current = buildInstance();
+  let completionCount = 0;
+  dungeonRuntime.getInstance = () => current;
+  dungeonRuntime.setLifecycleState = (_instanceID, lifecycleState, options) => {
+    completionCount += 1;
+    return {
+      ...current,
+      lifecycleState,
+      timers: { completedAtMs: options.completedAtMs },
+    };
+  };
+  try {
+    assert.equal(
+      dungeonUniverseSiteService._testing.maybeCompleteClearedEncounterSite(
+        current,
+        populationHints,
+        { nowMs: 3_000 },
+      ),
+      false,
+    );
+    assert.equal(completionCount, 0);
+
+    current = buildInstance(2_500);
+    assert.equal(
+      dungeonUniverseSiteService._testing.maybeCompleteClearedEncounterSite(
+        current,
+        populationHints,
+        { nowMs: 3_000 },
+      ),
+      true,
+    );
+    assert.equal(completionCount, 1);
+  } finally {
+    dungeonRuntime.getInstance = originalGetInstance;
+    dungeonRuntime.setLifecycleState = originalSetLifecycleState;
+  }
 });
 
 test("the config supplies loadable NPC profiles and behavior profiles", () => {
@@ -791,6 +1422,7 @@ test("materialized site entities expose dungeon faction tags to signal tracking"
   ]);
   assert.equal(entity.dungeonFactionKey, "osa");
   assert.equal(entity.dungeonFactionTag, "frontier-faction:osa");
+  assert.equal(entity.dungeonWarpInDistanceMeters, 10_000);
   assert.deepEqual(entity.signalTrackerSiteTags, entity.dungeonTags);
   assert.equal(entity.signalTrackerSiteFactionKey, "osa");
   assert.equal(entity.signalTrackerSiteFactionTag, "frontier-faction:osa");

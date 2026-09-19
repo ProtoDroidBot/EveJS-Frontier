@@ -16,6 +16,10 @@ const ShellManagerService = require(
 const LocationSelectionMgrService = require(
   "../src/services/frontier/locationSelectionMgrService",
 );
+const {
+  marshalDecode,
+  marshalEncode,
+} = require("../src/network/tcp/utils/marshal");
 const shipDestruction = require("../src/space/shipDestruction");
 const {
   ATTRIBUTE_METAMORPHOSIS_ITEM,
@@ -121,14 +125,27 @@ test("environmental thresholds, delay, and damage rates are validated config", (
   );
 });
 
-test("clone selection waits for the configured intermediary-death delay", async () => {
+test("death timer presents the report but location loading cannot confirm cleanup", async () => {
   assert.equal(
     shipDestruction._testing.resolveCloneDeathTransitionDelayMs(),
     5_000,
   );
   let completed = 0;
+  const sessionChanges: any[] = [];
+  const session = {
+    characterID: 300,
+    shipid: 9_300,
+    sendSessionChange(changes) {
+      sessionChanges.push(changes);
+    },
+  };
+  LocationSelectionMgrService.recordPendingCloneDeath(300, {
+    deathSystemID: 30_000_001,
+    fallbackStationID: 60_003_760,
+    readyAtMs: Date.now() + 10,
+  });
   const transition = shipDestruction._testing.queueCloneSelectionTransition(
-    { characterID: 300 },
+    session,
     () => {
       completed += 1;
     },
@@ -136,8 +153,63 @@ test("clone selection waits for the configured intermediary-death delay", async 
   );
   assert.equal(transition.pending, true);
   assert.equal(transition.delayMs, 10);
+  assert.equal(transition.presentationPending, true);
+  assert.equal(transition.deferredUntilConfirmation, true);
+  assert.equal(completed, 0);
+  const service = new LocationSelectionMgrService();
+  assert.throws(
+    () => service.Handle_get_locations([], session),
+    /CLONE_SELECTION_NOT_READY/,
+  );
   assert.equal(completed, 0);
   await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(completed, 0);
+  assert.deepEqual(sessionChanges, [{ shipid: [9_300, null] }]);
+
+  // A failed DeathMessageIntegration falls through to the clone-selection view
+  // and calls get_locations without any player confirmation. Merely loading the
+  // map must therefore leave the pending transition and preserved ship intact.
+  service.Handle_get_locations([], session);
+  assert.equal(completed, 0);
+
+  // The actual location-selection/spawn RPC uses this confirmation path after
+  // validating the chosen destination.
+  assert.equal(
+    shipDestruction._testing.confirmCloneSelectionTransition(session).success,
+    true,
+  );
+  assert.equal(completed, 1);
+});
+
+test("destroyed hull reports retain the original ship id after the session is cleared", () => {
+  let completed = 0;
+  const sessionChanges: any[] = [];
+  const session = {
+    characterID: 301,
+    shipid: null,
+    sendSessionChange(changes) {
+      sessionChanges.push(changes);
+    },
+  };
+
+  const transition = shipDestruction._testing.queueCloneSelectionTransition(
+    session,
+    () => {
+      completed += 1;
+    },
+    {
+      attachedShipID: 9_301,
+      transitionDelayMs: 0,
+    },
+  );
+
+  assert.equal(transition.pending, true);
+  assert.deepEqual(sessionChanges, [{ shipid: [9_301, null] }]);
+  assert.equal(completed, 0);
+  assert.equal(
+    shipDestruction._testing.confirmCloneSelectionTransition(session).success,
+    true,
+  );
   assert.equal(completed, 1);
 });
 
@@ -251,6 +323,77 @@ test("configured NPC scans and damaging hits apply feralization", () => {
     ).applied,
     false,
   );
+});
+
+test("a ship berthed in a compatible SmartHangar is protected from environmental effects", () => {
+  const ship = buildPlayerShip(203, {
+    frontierBerthingHostAssemblyID: 91_003,
+    shieldCapacity: 100,
+    armorHP: 100,
+    structureHP: 100,
+    conditionState: {
+      armorDamage: 0,
+      damage: 0,
+      shieldCharge: 1,
+      temperature: environmentalEffects.CRITICAL_TEMPERATURE_K,
+    },
+  });
+  const scene = buildScene(ship, [buildRift()]);
+  const options = {
+    damageDelaySeconds: 0,
+    hitpointDamagePerEffectPerSecond: 25,
+    vitalityDamagePerEffectPerSecond: 25,
+  };
+
+  const initial = environmentalEffects.advanceEntityEnvironmentalEffects(
+    scene,
+    ship,
+    1_000,
+    options,
+  );
+  const protectedTick = environmentalEffects.advanceEntityEnvironmentalEffects(
+    scene,
+    ship,
+    5_000,
+    options,
+  );
+
+  assert.equal(initial.protected, true);
+  assert.equal(protectedTick.protected, true);
+  assert.equal(protectedTick.damagingEffectSeconds, 0);
+  assert.equal(protectedTick.hitpointDamageApplied, 0);
+  assert.equal(protectedTick.vitalityDamageApplied, 0);
+  assert.equal(protectedTick.vitality, 100);
+  assert.equal(ship.conditionState.shieldCharge, 1);
+
+  const npc = {
+    kind: "ship",
+    nativeNpc: true,
+    passiveDerivedState: {
+      attributes: {
+        [environmentalEffects.ATTRIBUTE_FERALIZATION_AMOUNT_PER_SCAN]: 100,
+      },
+    },
+  };
+  const scanned = environmentalEffects.applyNpcFeralization(
+    ship,
+    npc,
+    "scan",
+    5_000,
+  );
+  assert.equal(scanned.protected, true);
+  assert.equal(scanned.applied, false);
+
+  delete ship.frontierBerthingHostAssemblyID;
+  const exposed = environmentalEffects.advanceEntityEnvironmentalEffects(
+    scene,
+    ship,
+    6_000,
+    options,
+  );
+  assert.equal(exposed.protected, undefined);
+  assert.ok(exposed.hitpointDamageApplied > 0);
+  assert.ok(exposed.vitalityDamageApplied > 0);
 });
 
 test("the shared NPC weapon path applies hit feralization", () => {
@@ -478,7 +621,7 @@ test("environmental hull depletion requests clone death through the ship explosi
   assert.deepEqual(receivedDamageMetadata, { statusEffectKey: "heat" });
 });
 
-test("locationSelectionMgr returns the pickled-client environmental death report", () => {
+test("locationSelectionMgr returns a marshal-safe environmental death report", () => {
   const characterID = 303;
   const deathTimeMs = Date.UTC(2026, 8, 18, 12, 34, 56);
   LocationSelectionMgrService.recordEnvironmentalDeathReport(characterID, {
@@ -503,8 +646,81 @@ test("locationSelectionMgr returns the pickled-client environmental death report
   assert.equal(payload.header[1][3], 91969);
   assert.equal(payload.header[1][4].type, "list");
   assert.equal(payload.header[1][5].type, "list");
-  assert.equal(payload.header[1][6].type, "cpicked");
+  assert.equal(payload.header[1][6].type, "objectex1");
+  assert.equal(payload.header[1][6].header[0].value, "datetime.datetime");
+  assert.deepEqual(payload.header[1][6].header[1], [
+    2026,
+    9,
+    18,
+    12,
+    34,
+    56,
+    0,
+  ]);
+  assert.equal(payload.header[1][7], null);
+  assert.equal(payload.header[1][8], null);
+  assert.equal(payload.header[1][9], null);
   assert.equal(payload.header[1][10], "temporal_drift");
+
+  const encoded = marshalEncode(payload, { compatibilityProfile: "frontier" });
+  const decoded = marshalDecode(encoded, { compatibilityProfile: "frontier" });
+  assert.equal(decoded.header[1][6].type, "objectex1");
+  assert.equal(decoded.header[1][6].header[0].value, "datetime.datetime");
+});
+
+test("death reports identify player attackers and NPC attacking ship types", () => {
+  const playerVictimCharacterID = 305;
+  const playerAttackerCharacterID = 140_000_099;
+  const playerDeath = shipDestruction._testing.recordCloneDeathStateSafe(
+    { characterID: playerVictimCharacterID },
+    { itemID: 88_101, typeID: 95_276 },
+    30_000_142,
+    null,
+    Date.UTC(2026, 8, 18, 12, 35, 0),
+    {
+      attackerEntity: {
+        itemID: 88_201,
+        kind: "ship",
+        typeID: 95_276,
+        characterID: playerAttackerCharacterID,
+      },
+      transitionDelayMs: 0,
+    },
+  );
+  assert.equal(playerDeath.deathReport.finalBlow, playerAttackerCharacterID);
+  assert.equal(playerDeath.deathReport.finalShipTypeID, 95_276);
+
+  const playerPayload = new LocationSelectionMgrService()
+    .Handle_get_last_death_report([], { characterID: playerVictimCharacterID });
+  assert.equal(playerPayload.header[1][7], playerAttackerCharacterID);
+  assert.equal(playerPayload.header[1][8], 95_276);
+  assert.equal(playerPayload.header[1][10], null);
+
+  const npcVictimCharacterID = 306;
+  const npcDeath = shipDestruction._testing.recordCloneDeathStateSafe(
+    { characterID: npcVictimCharacterID },
+    { itemID: 88_102, typeID: 95_276 },
+    30_000_142,
+    null,
+    Date.UTC(2026, 8, 18, 12, 36, 0),
+    {
+      attackerEntity: {
+        itemID: 88_202,
+        kind: "ship",
+        nativeNpc: true,
+        typeID: 11_565,
+      },
+      transitionDelayMs: 0,
+    },
+  );
+  assert.equal(npcDeath.deathReport.finalBlow, null);
+  assert.equal(npcDeath.deathReport.finalShipTypeID, 11_565);
+
+  const npcPayload = new LocationSelectionMgrService()
+    .Handle_get_last_death_report([], { characterID: npcVictimCharacterID });
+  assert.equal(npcPayload.header[1][7], null);
+  assert.equal(npcPayload.header[1][8], 11_565);
+  assert.equal(npcPayload.header[1][10], null);
 });
 
 test("clone selection exposes active refuge and deployed-hangar systems", () => {
@@ -572,6 +788,37 @@ test("clone selection exposes active refuge and deployed-hangar systems", () => 
     },
   );
 
+  const selectableLocations = LocationSelectionMgrService
+    .resolveSelectableCloneLocations(characterID, {
+      pending,
+      getAllItems: () => items,
+      readConstructionState: (item) => item.state,
+      isAssemblyActivationPending: () => false,
+      getSmartHangarDefinition: (typeID) => typeID === 87_160
+        ? null
+        : {
+            allowFreeForAll: false,
+            allowUserAdd: true,
+          },
+      smartHangarAcceptsShip: () => true,
+    });
+  assert.deepEqual(
+    selectableLocations.map((location) => ({
+      locationID: location.locationID,
+      shipTypeID: location.shipTypeID,
+    })),
+    [
+      {
+        locationID: 91_001,
+        shipTypeID: LocationSelectionMgrService.REFUGE_SHIP_TYPE_ID,
+      },
+      {
+        locationID: 91_002,
+        shipTypeID: LocationSelectionMgrService.CREATION_SHIP_TYPE_ID,
+      },
+    ],
+  );
+
   assert.equal(payload.type, "list");
   assert.equal(payload.items.length, 3);
   const locationKeys = payload.items.map((location) => location.header[1][0]);
@@ -585,6 +832,37 @@ test("clone selection exposes active refuge and deployed-hangar systems", () => 
   ]);
   assert.deepEqual(
     LocationSelectionMgrService.parseLocationKey(locationKeys[1]),
+    { solarSystemID: refugeSystemID, locationID: 91_001 },
+  );
+  assert.deepEqual(
+    LocationSelectionMgrService.parseLocationKeys({
+      type: "list",
+      items: locationKeys.slice(1),
+    }),
+    [
+      { solarSystemID: refugeSystemID, locationID: 91_001 },
+      { solarSystemID: hangarSystemID, locationID: 91_002 },
+    ],
+  );
+  assert.deepEqual(
+    LocationSelectionMgrService.parseLocationKey({
+      type: "objectex2",
+      header: [
+        [{
+          type: "token",
+          value: "frontier.clone_selection.common.location.RefugeLocationKey",
+        }],
+        {
+          type: "dict",
+          entries: [
+            ["solarsystem_id", refugeSystemID],
+            ["assembly_id", 91_001],
+          ],
+        },
+      ],
+      list: [],
+      dict: [],
+    }),
     { solarSystemID: refugeSystemID, locationID: 91_001 },
   );
 });
@@ -619,6 +897,183 @@ test("clone selection falls back to the configured station when no assembly is e
     shipTypeID: LocationSelectionMgrService.CREATION_SHIP_TYPE_ID,
     shellTypeID: 91969,
   }]);
+});
+
+test("station clone fallback awakens in space instead of opening hangar", () => {
+  const worldData = require("../src/space/worldData");
+  const itemStore = require("../src/services/inventory/itemStore");
+  const transitions = require("../src/space/transitions");
+  const originals = {
+    createShipItemForCharacter: itemStore.createShipItemForCharacter,
+    getStationByID: worldData.getStationByID,
+    jumpSessionToSolarSystem: transitions.jumpSessionToSolarSystem,
+    rebuildDockedSessionAtStation: transitions.rebuildDockedSessionAtStation,
+    removeInventoryItem: itemStore.removeInventoryItem,
+    setActiveShipForCharacter: itemStore.setActiveShipForCharacter,
+  };
+  const station = {
+    stationID: 60_003_760,
+    solarSystemID: 30_002_187,
+    position: { x: 3_000, y: 4_000, z: 0 },
+    radius: 20_000,
+  };
+  const createdShip = {
+    itemID: 99_001,
+    typeID: LocationSelectionMgrService.CREATION_SHIP_TYPE_ID,
+  };
+  let capturedJump = null;
+
+  try {
+    worldData.getStationByID = () => station;
+    itemStore.createShipItemForCharacter = () => ({
+      success: true,
+      data: createdShip,
+    });
+    itemStore.setActiveShipForCharacter = () => ({ success: true });
+    itemStore.removeInventoryItem = () => {
+      throw new Error("unexpected station fallback rollback");
+    };
+    transitions.rebuildDockedSessionAtStation = () => {
+      throw new Error("clone selection must not transition directly to hangar");
+    };
+    transitions.jumpSessionToSolarSystem = (session, solarSystemID, options) => {
+      capturedJump = { session, solarSystemID, options };
+      return { success: true, data: { solarSystemID } };
+    };
+
+    const session = { characterID: 306 };
+    const result = LocationSelectionMgrService.spawnAtStation(session, {
+      kind: "station",
+      locationID: station.stationID,
+      solarSystemID: station.solarSystemID,
+      shipTypeID: LocationSelectionMgrService.CREATION_SHIP_TYPE_ID,
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.data.createdShip, createdShip);
+    assert.equal(capturedJump.session, session);
+    assert.equal(capturedJump.solarSystemID, station.solarSystemID);
+    assert.equal(capturedJump.options.countsTowardJumpGoal, false);
+    assert.equal(
+      capturedJump.options.spawnStateOverride.anchorType,
+      "station-clone-fallback",
+    );
+    assert.deepEqual(
+      capturedJump.options.spawnStateOverride.position,
+      { x: 18_000, y: 24_000, z: 0 },
+    );
+  } finally {
+    itemStore.createShipItemForCharacter = originals.createShipItemForCharacter;
+    worldData.getStationByID = originals.getStationByID;
+    transitions.jumpSessionToSolarSystem = originals.jumpSessionToSolarSystem;
+    transitions.rebuildDockedSessionAtStation = originals.rebuildDockedSessionAtStation;
+    itemStore.removeInventoryItem = originals.removeInventoryItem;
+    itemStore.setActiveShipForCharacter = originals.setActiveShipForCharacter;
+  }
+});
+
+test("station clone fallback persists an in-space ship and session", () => {
+  const characterState = require("../src/services/character/characterState");
+  const itemStore = require("../src/services/inventory/itemStore");
+  const spaceRuntime = require("../src/space/runtime");
+  const worldData = require("../src/space/worldData");
+  const characterID = 199_999_306;
+  const stationID = 64_000_001;
+  const station = worldData.getStationByID(stationID);
+  assert.ok(station, "Frontier station fixture is required");
+
+  const originalAttachSession = spaceRuntime.attachSession;
+  const sessionChanges: any[] = [];
+  const notifications: any[] = [];
+  const session: Record<string, any> = {
+    characterID,
+    charid: characterID,
+    characterName: "Clone Transition Test",
+    locationid: station.solarSystemID,
+    solarsystemid: station.solarSystemID,
+    solarsystemid2: station.solarSystemID,
+    stationid: null,
+    stationID: null,
+    stationid2: null,
+    structureid: null,
+    structureID: null,
+    shipid: null,
+    shipID: null,
+    activeShipID: 0,
+    sendNotification(...args) {
+      notifications.push(args);
+    },
+    sendSessionChange(changes) {
+      sessionChanges.push(changes);
+    },
+  };
+
+  characterState.writeCharacterRecord(characterID, {
+    characterID,
+    characterName: session.characterName,
+    corporationID: 1_000_442,
+    stationID: null,
+    structureID: null,
+    solarSystemID: station.solarSystemID,
+    constellationID: 20_000_004,
+    regionID: 10_000_004,
+    homeStationID: stationID,
+    cloneStationID: stationID,
+    shipID: 0,
+    shipTypeID: 0,
+    shipName: "",
+    suppressActiveShipProvisioning: true,
+  });
+
+  try {
+    spaceRuntime.attachSession = (attachedSession, ship, options) => {
+      attachedSession._space = {
+        systemID: Number(options.systemID),
+        shipID: Number(ship.itemID),
+      };
+      return attachedSession._space;
+    };
+
+    const result = LocationSelectionMgrService.spawnAtStation(session, {
+      kind: "station",
+      locationID: stationID,
+      solarSystemID: station.solarSystemID,
+      shipTypeID: LocationSelectionMgrService.CREATION_SHIP_TYPE_ID,
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(session.stationid, null);
+    assert.equal(session.stationid2, null);
+    assert.equal(session.locationid, station.solarSystemID);
+    assert.equal(session.solarsystemid, station.solarSystemID);
+    assert.equal(session.solarsystemid2, station.solarSystemID);
+    assert.equal(session.shipid, result.data.createdShip.itemID);
+    assert.equal(session._space.shipID, result.data.createdShip.itemID);
+
+    const ship = itemStore.findShipItemById(result.data.createdShip.itemID);
+    assert.equal(ship.locationID, station.solarSystemID);
+    assert.equal(ship.flagID, 0);
+    assert.equal(ship.spaceState.systemID, station.solarSystemID);
+
+    const character = characterState.getCharacterRecord(characterID);
+    assert.equal(character.stationID, null);
+    assert.equal(character.structureID, null);
+    assert.equal(character.solarSystemID, station.solarSystemID);
+    assert.equal(character.shipID, ship.itemID);
+
+    const emittedStationDestination = sessionChanges.some((changes) => (
+      changes.stationid && Number(changes.stationid[1]) > 0
+    ));
+    assert.equal(emittedStationDestination, false);
+    assert.ok(notifications.length > 0);
+  } finally {
+    spaceRuntime.attachSession = originalAttachSession;
+    const activeShip = itemStore.getActiveShipItem(characterID);
+    if (activeShip) {
+      itemStore.removeInventoryItem(activeShip.itemID, { removeContents: true });
+    }
+    characterState.removeCharacterRecord(characterID);
+  }
 });
 
 test("configured thresholds and grace period delay vitality and ship HP damage", () => {

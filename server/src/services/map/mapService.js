@@ -369,10 +369,30 @@ function buildDungeonBeaconMapRows(solarSystemID, session = null, options = {}) 
     if (!Array.isArray(instances) || instances.length === 0) {
         return [];
     }
+    // A site key is one logical map destination. Keep the oldest active anchor
+    // authoritative if legacy/reconcile data contains duplicates, matching the
+    // runtime's stable-site rule and preventing repeated clicks from selecting a
+    // different coordinate for the same named site.
+    const canonicalInstancesBySiteKey = new Map();
+    for (const instance of instances) {
+        const siteKey = String(instance && instance.siteKey || "").trim();
+        const fallbackKey = `instance:${toPositiveInteger(instance && instance.instanceID, 0)}`;
+        const key = siteKey || fallbackKey;
+        const existing = canonicalInstancesBySiteKey.get(key) || null;
+        if (!existing ||
+            toPositiveInteger(instance && instance.instanceID, Number.MAX_SAFE_INTEGER) <
+                toPositiveInteger(existing && existing.instanceID, Number.MAX_SAFE_INTEGER)) {
+            canonicalInstancesBySiteKey.set(key, instance);
+        }
+    }
+    instances = [...canonicalInstancesBySiteKey.values()];
     const instancesByID = new Map(instances.map((instance) => [
         toPositiveInteger(instance && instance.instanceID, 0),
         instance,
     ]));
+    // listActiveInstancesBySystem already excludes completed/failed/despawned
+    // instances. Do not hide an active site merely because a player entered or
+    // interacted with it: incomplete sites must retain their map warp-in.
     return instances
         .filter((instance) => Boolean(visibilityPolicy.resolveDungeonInstanceVisibilityForSession(session, instance && instance.instanceID, {
         systemID: numericSystemID,

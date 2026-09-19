@@ -30,15 +30,22 @@ const {
   getShipFuelQueue,
   getShipFuelProperties,
   getShipFuelTypeID,
+  initializeNewShipFuelTank,
   loadFuelIntoShipTank,
   normalizeFuelQueue,
   normalizeRequestedFuelItemIDs,
+  resolveInitialShipFuelCapacity,
   resolveShipFuelTank,
 } = require("../src/services/frontier/fuelTankRuntime");
 const itemStore = require("../src/services/inventory/itemStore");
+const {
+  FREE_STATION_FUEL_CUSTOM_INFO,
+} = itemStore;
 const DogmaService = require("../src/services/dogma/dogmaService");
 const {
   advanceEntityCapacitorRechargeForTesting,
+  calculateCreationPowerStateForTesting,
+  calculateRegularShipFuelPowerStateForTesting,
 } = require("../src/space/runtime")._testing;
 
 const FUEL_TYPE_UNSTABLE = 77818; // group 4598 (corvette/hydrogen fuel)
@@ -237,6 +244,56 @@ test("fuel tanks are enabled by Creation modules or a regular hull Dogma attribu
       supported: true,
     },
   );
+});
+
+test("new Wend and Creation-family hulls initialize to their current full capacity", () => {
+  const modifierEntries = [{
+    modifiedAttributeID: ATTRIBUTE_FUEL_CAPACITY,
+    operation: 2,
+    value: 2250,
+  }];
+  const creationCapacity = resolveInitialShipFuelCapacity(
+    shipItem(),
+    OWNER_ID,
+    {
+      buildEffectiveItemAttributeMap: () => ({ [ATTRIBUTE_FUEL_CAPACITY]: 0 }),
+      getCreationTemplate: () => ({ _key: CREATION_SHIP_TYPE }),
+      getCreationDogmaContext: () => ({
+        success: true,
+        data: { shipAttributeModifierEntries: modifierEntries },
+      }),
+      applyModifierGroups: (attributes, entries) => {
+        for (const entry of entries) {
+          attributes[entry.modifiedAttributeID] =
+            Number(attributes[entry.modifiedAttributeID] || 0) + Number(entry.value || 0);
+        }
+      },
+    },
+  );
+  assert.equal(creationCapacity, 2250);
+
+  let persisted = null;
+  const wend = {
+    ...shipItem(),
+    typeID: 87698,
+    conditionState: { fuelCharge: 0 },
+  };
+  const result = initializeNewShipFuelTank(wend, OWNER_ID, {
+    buildEffectiveItemAttributeMap: () => ({ [ATTRIBUTE_FUEL_CAPACITY]: 200 }),
+    getCreationTemplate: () => null,
+    updateShipItem: (_shipID, updater) => {
+      persisted = updater(wend);
+      return { success: true, data: persisted };
+    },
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.data.capacity, 200);
+  assert.equal(persisted.conditionState.fuelCharge, 200);
+  assert.equal(persisted.conditionState.fuelTypeID, FUEL_TYPE_UNSTABLE);
+  assert.deepEqual(persisted.conditionState.fuelQueue, [{
+    fuelTypeID: FUEL_TYPE_UNSTABLE,
+    quantity: 200,
+  }]);
 });
 
 test("a capacity value cannot opt a tankless regular ship or non-ship into fuel", () => {
@@ -548,7 +605,7 @@ test("LoadFuel: an empty or legacy untyped tank records the newly loaded type", 
   }
 });
 
-test("capacitor recharge is capped by unused power grid and burns fuel by efficiency", () => {
+test("online consumers and capacitor recharge both burn fuel by efficiency", () => {
   const deps = buildFakeStore().deps;
   const recharge = calculateFueledCapacitorRecharge({
     currentCapacitorAmount: 20,
@@ -562,14 +619,16 @@ test("capacitor recharge is capped by unused power grid and burns fuel by effici
   }, deps);
   assert.equal(recharge.powerHeadroom, 10);
   assert.equal(recharge.effectiveRechargeRate, 10);
+  assert.equal(recharge.consumerGeneratorLoad, 5);
+  assert.equal(recharge.generatorLoad, 15);
   assert.equal(recharge.fuelEfficiency, 8);
   assert.equal(recharge.rechargedEnergy, 20);
-  assert.equal(recharge.consumedFuel, 2.5);
+  assert.equal(recharge.consumedFuel, 3.75);
   assert.equal(recharge.nextCapacitorAmount, 40);
-  assert.equal(recharge.nextFuelCharge, 7.5);
+  assert.equal(recharge.nextFuelCharge, 6.25);
 });
 
-test("more unused power grid directly accelerates Frontier recharge", () => {
+test("online load consumes fuel while remaining power headroom recharges the capacitor", () => {
   const deps = buildFakeStore().deps;
   const calculate = (powerOutput, powerLoad) =>
     calculateFueledCapacitorRecharge({
@@ -585,9 +644,84 @@ test("more unused power grid directly accelerates Frontier recharge", () => {
 
   assert.equal(calculate(6, 5).rechargedEnergy, 2);
   assert.equal(calculate(15, 5).rechargedEnergy, 20);
-  assert.equal(calculate(30, 5).rechargedEnergy, 50);
+  assert.equal(calculate(30, 5).rechargedEnergy, 24);
   assert.equal(calculate(5, 5).rechargedEnergy, 0);
-  assert.equal(calculate(4, 5).consumedFuel, 0);
+  assert.equal(calculate(6, 5).consumedFuel, 1.5);
+  assert.equal(calculate(15, 5).consumedFuel, 3.75);
+  assert.equal(calculate(30, 5).consumedFuel, 4.25);
+  assert.equal(calculate(5, 5).consumedFuel, 1.25);
+  assert.equal(calculate(4, 5).consumedFuel, 1);
+});
+
+test("a full capacitor still burns fuel for online module load", () => {
+  const recharge = calculateFueledCapacitorRecharge({
+    currentCapacitorAmount: 100,
+    capacitorCapacity: 100,
+    capacitorRechargeRate: 12,
+    powerOutput: 15,
+    powerLoad: 5,
+    fuelCharge: 10,
+    fuelTypeID: FUEL_TYPE_UNSTABLE,
+    deltaSeconds: 2,
+  }, buildFakeStore().deps);
+
+  assert.equal(recharge.rechargedEnergy, 0);
+  assert.equal(recharge.generatorLoad, 5);
+  assert.equal(recharge.consumedFuel, 1.25);
+  assert.equal(recharge.nextFuelCharge, 8.75);
+});
+
+test("Creation power state follows the online modular generator and consumers", () => {
+  const state = calculateCreationPowerStateForTesting({
+    moduleItems: [
+      { itemID: 1, typeID: 95318, moduleState: { online: true } },
+      { itemID: 2, typeID: 95302, moduleState: { online: true } },
+      { itemID: 3, typeID: 95325, moduleState: { online: true } },
+      { itemID: 4, typeID: 95486, moduleState: { online: false } },
+    ],
+  });
+
+  assert.equal(state.powerOutput, 15);
+  assert.equal(state.powerLoad, 0.1);
+  assert.equal(state.capacitorRechargeRate, 1.2);
+  assert.deepEqual(state.onlineModuleIDs, [1, 2, 3]);
+});
+
+test("regular ship fuel power state derives recharge from its online engine", () => {
+  const resourceState = {
+    powerOutput: 30,
+    powerLoad: 4,
+    capacitorRechargeRate: 0,
+  };
+  const onlineEngine = {
+    ...engineItem(POWER_GENERATOR_TYPE, 600101),
+    moduleState: { online: true },
+  };
+  const offlineEngine = {
+    ...engineItem(POWER_GENERATOR_TYPE, 600102),
+    moduleState: { online: false },
+  };
+
+  assert.deepEqual(
+    calculateRegularShipFuelPowerStateForTesting(resourceState, [onlineEngine]),
+    {
+      powerOutput: 30,
+      powerLoad: 4,
+      capacitorRechargeRate: 1,
+      engineModuleIDs: [600101],
+      onlineEngineModuleIDs: [600101],
+    },
+  );
+  assert.deepEqual(
+    calculateRegularShipFuelPowerStateForTesting(resourceState, [offlineEngine]),
+    {
+      powerOutput: 30,
+      powerLoad: 4,
+      capacitorRechargeRate: 0,
+      engineModuleIDs: [600102],
+      onlineEngineModuleIDs: [],
+    },
+  );
 });
 
 test("fuel quantity truncates recharge and all fuel tiers use authored efficiency", () => {
@@ -629,12 +763,26 @@ test("fuel quantity truncates recharge and all fuel tiers use authored efficienc
   assert.equal(crude.nextFuelCharge, 0);
 });
 
-test("space recharge applies the same fuel and power-grid rules to Creation and regular ships", () => {
+test("space fuel tick burns online load and only uses headroom for recharge", () => {
   const deps = buildFakeStore().deps;
-  for (const [typeID, fuelCapacity, capacitorRechargeRate] of [
-    [CREATION_SHIP_TYPE, TANK_CAPACITY, 1.2],
-    [REGULAR_FUEL_SHIP_TYPE, 3000, 0],
-  ]) {
+  const cases: Array<[
+    number,
+    number,
+    number,
+    { rechargedEnergy: number; capacitorChargeRatio: number; fuelCharge: number },
+  ]> = [
+    [CREATION_SHIP_TYPE, TANK_CAPACITY, 1.2, {
+      rechargedEnergy: 1.2,
+      capacitorChargeRatio: 0.212,
+      fuelCharge: 9.225,
+    }],
+    [REGULAR_FUEL_SHIP_TYPE, 3000, 1, {
+      rechargedEnergy: 1,
+      capacitorChargeRatio: 0.21,
+      fuelCharge: 9.25,
+    }],
+  ];
+  for (const [typeID, fuelCapacity, capacitorRechargeRate, expected] of cases) {
     const entity: Record<string, any> = {
       kind: "ship",
       itemID: SHIP_ID + typeID,
@@ -655,6 +803,12 @@ test("space recharge applies the same fuel and power-grid rules to Creation and 
       passiveDerivedState: {
         powerOutput: 15,
         powerLoad: 5,
+        fittedItems: typeID === REGULAR_FUEL_SHIP_TYPE
+          ? [{
+              ...engineItem(POWER_GENERATOR_TYPE, 600103),
+              moduleState: { online: true },
+            }]
+          : [],
         attributes: {
           [ATTRIBUTE_FUEL_CAPACITY]: fuelCapacity,
           11: 15,
@@ -672,14 +826,54 @@ test("space recharge applies the same fuel and power-grid rules to Creation and 
     );
     assert.equal(result.mode, "frontier-fueled");
     assert.equal(result.changed, true);
-    assert.equal(result.rechargedEnergy, 10);
-    assert.equal(entity.capacitorChargeRatio, 0.3);
-    assert.equal(entity.conditionState.fuelCharge, 8.75);
+    assert.ok(Math.abs(result.rechargedEnergy - expected.rechargedEnergy) < 1e-9);
+    assert.ok(Math.abs(entity.capacitorChargeRatio - expected.capacitorChargeRatio) < 1e-9);
+    assert.ok(Math.abs(entity.conditionState.fuelCharge - expected.fuelCharge) < 1e-9);
     assert.equal(entity.conditionState.fuelTypeID, FUEL_TYPE_UNSTABLE);
-    assert.deepEqual(entity.conditionState.fuelQueue, [
-      { fuelTypeID: FUEL_TYPE_UNSTABLE, quantity: 8.75 },
-    ]);
+    assert.equal(entity.conditionState.fuelQueue[0].fuelTypeID, FUEL_TYPE_UNSTABLE);
+    assert.ok(Math.abs(entity.conditionState.fuelQueue[0].quantity - expected.fuelCharge) < 1e-9);
   }
+});
+
+test("space fuel tick drains powered ships while the capacitor is full", () => {
+  const entity: Record<string, any> = {
+    kind: "ship",
+    itemID: SHIP_ID,
+    typeID: CREATION_SHIP_TYPE,
+    categoryID: 6,
+    ownerID: OWNER_ID,
+    capacitorCapacity: 100,
+    capacitorRechargeRate: 1.2,
+    capacitorChargeRatio: 1,
+    conditionState: {
+      charge: 1,
+      fuelCharge: 10,
+      fuelTypeID: FUEL_TYPE_UNSTABLE,
+      fuelQueue: [{ fuelTypeID: FUEL_TYPE_UNSTABLE, quantity: 10 }],
+    },
+    passiveDerivedState: {
+      powerOutput: 15,
+      powerLoad: 5,
+      attributes: {
+        [ATTRIBUTE_FUEL_CAPACITY]: TANK_CAPACITY,
+        11: 15,
+        15: 5,
+      },
+    },
+    persistSpaceState: false,
+  };
+
+  const result = advanceEntityCapacitorRechargeForTesting(
+    entity,
+    1,
+    1000,
+    buildFakeStore().deps,
+  );
+  assert.equal(result.mode, "frontier-fueled");
+  assert.equal(result.changed, true);
+  assert.equal(result.rechargedEnergy, 0);
+  assert.equal(entity.capacitorChargeRatio, 1);
+  assert.equal(entity.conditionState.fuelCharge, 9.375);
 });
 
 test("space recharge advances a live ship to the next queued fuel batch", () => {
@@ -776,6 +970,37 @@ test("LoadFuel: docked hangar stacks are eligible sources", () => {
   });
   assert.equal(result.success, true);
   assert.equal(store.getItem(600007).stacksize, 200);
+});
+
+test("LoadFuel: the free station Unstable Fuel offer never depletes", () => {
+  const store = buildFakeStore({
+    items: [
+      shipItem(),
+      fuelStack(600007, 500),
+      fuelStack(600008, itemStore.CLIENT_INVENTORY_STACK_LIMIT, {
+        locationID: STATION_ID,
+        flagID: 4,
+        customInfo: FREE_STATION_FUEL_CUSTOM_INFO,
+      }),
+    ],
+  });
+  const result = loadFuelIntoShipTank({
+    characterID: OWNER_ID,
+    shipID: SHIP_ID,
+    fuelTypeID: FUEL_TYPE_UNSTABLE,
+    quantity: TANK_CAPACITY,
+    fuelCapacity: TANK_CAPACITY,
+    dockedLocationID: STATION_ID,
+    deps: store.deps,
+  });
+  assert.equal(result.success, true);
+  assert.deepEqual(store.consumeCalls, []);
+  assert.equal(store.getItem(600007).stacksize, 500);
+  assert.equal(
+    store.getItem(600008).stacksize,
+    itemStore.CLIENT_INVENTORY_STACK_LIMIT,
+  );
+  assert.equal(store.getShipUpdate().conditionState.fuelCharge, TANK_CAPACITY);
 });
 
 test("LoadFuel: explicit fuelItems restrict the drained stacks", () => {
@@ -1067,7 +1292,18 @@ function grantTestItems() {
     [{ itemType: CREATION_SHIP_TYPE, quantity: 1, options: { individualItems: true, singleton: 1 } }],
   );
   assert.equal(shipGrant.success, true, shipGrant.errorMsg);
-  const ship = shipGrant.data.items[0];
+  const grantedShip = shipGrant.data.items[0];
+  const resetResult = itemStore.updateShipItem(grantedShip.itemID, (current) => ({
+    ...current,
+    conditionState: {
+      ...(current.conditionState || {}),
+      fuelCharge: 0,
+      fuelQueue: [],
+      fuelTypeID: 0,
+    },
+  }));
+  assert.equal(resetResult.success, true, resetResult.errorMsg);
+  const ship = resetResult.data;
   const fuelGrant = itemStore.grantItemsToCharacterLocation(
     OWNER_ID,
     ship.itemID,
@@ -1099,6 +1335,9 @@ function buildHandlerHarness(ship) {
     charid: OWNER_ID,
     stationid: STATION_ID,
     _space: {},
+    // Production deliberately waits for the client's Creation dogma priming
+    // pass. Unit tests use an immediate dispatcher so assertions stay local.
+    _postDogmaAttributeRefreshDelayMs: 0,
     sendNotification(name, idType, payload) {
       notifications.push({ name, idType, payload });
     },
@@ -1119,7 +1358,7 @@ function buildHandlerHarness(ship) {
   return { service, session, notifications };
 }
 
-test("Handle_LoadFuel: end-to-end load, duplicate suppression, persistence", () => {
+test("Handle_LoadFuel: end-to-end load, post-bind refresh, duplicate suppression, persistence", async () => {
   const { ship, fuelStackItem, mixedFuelStackItem } = grantTestItems();
   const { service, session, notifications } = buildHandlerHarness(ship);
   const args: any[] = [ship.itemID, FUEL_TYPE_UNSTABLE, 1000, null, null];
@@ -1133,8 +1372,21 @@ test("Handle_LoadFuel: end-to-end load, duplicate suppression, persistence", () 
     { fuelTypeID: FUEL_TYPE_UNSTABLE, quantity: 1000 },
   ]);
   const persistedStack = itemStore.findItemById(fuelStackItem.itemID);
-  assert.equal(persistedStack.stacksize, 500);
+  assert.equal(persistedStack.stacksize, 1500);
 
+  // The refuel button's first dogmaIM call is nested in MachoBindObject. The
+  // fuel change must wait until that bind response has been sent or client
+  // Godma can discard it while its priming channel is active.
+  assert.equal(
+    notifications.filter((entry) => entry.name === "OnModuleAttributeChanges").length,
+    0,
+  );
+  await service.afterCallResponse("MachoBindObject", session, {
+    args: [
+      [STATION_ID, 15],
+      ["LoadFuel", args, { type: "dict", entries: [] }],
+    ],
+  });
   const attributeEvents = notifications.filter(
     (entry) => entry.name === "OnModuleAttributeChanges",
   );
@@ -1149,11 +1401,12 @@ test("Handle_LoadFuel: end-to-end load, duplicate suppression, persistence", () 
 
   // Identical request within the duplicate window must not double-load.
   assert.equal(service.Handle_LoadFuel(args, session), null);
+  await service.afterCallResponse("LoadFuel", session);
   assert.equal(
     itemStore.findItemById(ship.itemID).conditionState.fuelCharge,
     1000,
   );
-  assert.equal(itemStore.findItemById(fuelStackItem.itemID).stacksize, 500);
+  assert.equal(itemStore.findItemById(fuelStackItem.itemID).stacksize, 1500);
 
   // A different quantity is a new logical action.
   assert.equal(
@@ -1163,11 +1416,12 @@ test("Handle_LoadFuel: end-to-end load, duplicate suppression, persistence", () 
     ),
     null,
   );
+  await service.afterCallResponse("LoadFuel", session);
   assert.equal(
     itemStore.findItemById(ship.itemID).conditionState.fuelCharge,
     1250,
   );
-  assert.equal(itemStore.findItemById(fuelStackItem.itemID).stacksize, 250);
+  assert.equal(itemStore.findItemById(fuelStackItem.itemID).stacksize, 1500);
 
   // Overflow surfaces a user error and leaves state untouched.
   assert.throws(() =>
@@ -1189,6 +1443,7 @@ test("Handle_LoadFuel: end-to-end load, duplicate suppression, persistence", () 
     ),
     null,
   );
+  await service.afterCallResponse("LoadFuel", session);
   const mixedShip = itemStore.findItemById(ship.itemID);
   assert.equal(mixedShip.conditionState.fuelCharge, 1500);
   assert.equal(mixedShip.conditionState.fuelTypeID, FUEL_TYPE_UNSTABLE);
@@ -1208,6 +1463,42 @@ test("Handle_LoadFuel: end-to-end load, duplicate suppression, persistence", () 
     { fuelTypeID: FUEL_TYPE_UNSTABLE, quantity: 1250 },
     { fuelTypeID: FUEL_TYPE_EU_40, quantity: 250 },
   ]);
+});
+
+test("Handle_LoadFuel: zero-unit docked request fills or refreshes Creation fuel", async () => {
+  const { ship } = grantTestItems();
+  const { service, session, notifications } = buildHandlerHarness(ship);
+  const args: any[] = [ship.itemID, FUEL_TYPE_UNSTABLE, 0, null, null];
+
+  // Creation can reset its dynamic fuelCharge to the type default while the
+  // station widget is being constructed, causing Refuel to submit zero. The
+  // server treats that docked request as a fill-to-capacity operation.
+  assert.equal(service.Handle_LoadFuel(args, session), null);
+  assert.equal(
+    itemStore.findItemById(ship.itemID).conditionState.fuelCharge,
+    TANK_CAPACITY,
+  );
+  await service.afterCallResponse("LoadFuel", session);
+  assert.equal(
+    notifications.filter((entry) => entry.name === "OnModuleAttributeChanges").length,
+    1,
+  );
+
+  // If persistence is already full but the UI is stale, the same action is a
+  // successful no-op which replays the authoritative charge instead of showing
+  // FUEL_QUANTITY_INVALID.
+  session._lastLoadFuelRequest = null;
+  notifications.length = 0;
+  assert.equal(service.Handle_LoadFuel(args, session), null);
+  await service.afterCallResponse("LoadFuel", session);
+  assert.equal(
+    itemStore.findItemById(ship.itemID).conditionState.fuelCharge,
+    TANK_CAPACITY,
+  );
+  assert.equal(
+    notifications.filter((entry) => entry.name === "OnModuleAttributeChanges").length,
+    1,
+  );
 });
 
 test("Handle_LoadFuel: rejects a non-active ship", () => {

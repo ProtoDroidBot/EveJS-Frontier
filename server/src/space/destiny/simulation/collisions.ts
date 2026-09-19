@@ -18,6 +18,14 @@ const NON_PHYSICAL_COLLISION_KINDS = new Set([
 
 const COLLISION_EPSILON_METERS = 0.01;
 const COLLISION_MOTION_EPSILON_SQUARED = 1e-12;
+// Large authored dungeon meshes can extend a few hundred metres beyond the
+// collision bundle's coarse bound (including render-only shell pieces).  A
+// narrow beam tested against the unpadded bound can therefore look as though
+// it passes through the structure.  Keep this tolerance weapon-only and
+// bounded so it cannot alter ordinary ship movement collision.
+const WEAPON_DUNGEON_OCCLUSION_PADDING_RATIO = 0.1;
+const WEAPON_DUNGEON_OCCLUSION_PADDING_MIN_METERS = 50;
+const WEAPON_DUNGEON_OCCLUSION_PADDING_MAX_METERS = 500;
 
 function toFiniteNumber(value, fallback = 0) {
   const numeric = Number(value);
@@ -597,6 +605,30 @@ function resolveEntityCollisionQuaternion(entity) {
       z: toFiniteNumber(source.z, 0),
     };
   }
+
+  // Dungeon/static-scene rotations are authored as yaw, pitch, and roll in
+  // degrees.  The client applies that tuple to the rendered model, so use the
+  // same orientation for the server collision compound.  Without this
+  // fallback an elongated wall can render across the line of fire while its
+  // authoritative boxes/capsules remain in the unrotated asset orientation.
+  const dunRotation = entity && entity.dunRotation;
+  if (Array.isArray(dunRotation) && dunRotation.length >= 3) {
+    const yaw = toFiniteNumber(dunRotation[0], 0) * (Math.PI / 180);
+    const pitch = toFiniteNumber(dunRotation[1], 0) * (Math.PI / 180);
+    const roll = toFiniteNumber(dunRotation[2], 0) * (Math.PI / 180);
+    const cy = Math.cos(yaw / 2);
+    const sy = Math.sin(yaw / 2);
+    const cp = Math.cos(pitch / 2);
+    const sp = Math.sin(pitch / 2);
+    const cr = Math.cos(roll / 2);
+    const sr = Math.sin(roll / 2);
+    return {
+      w: cy * cp * cr + sy * sp * sr,
+      x: cy * sp * cr + sy * cp * sr,
+      y: sy * cp * cr - cy * sp * sr,
+      z: cy * cp * sr - sy * sp * cr,
+    };
+  }
   return { w: 1, x: 0, y: 0, z: 0 };
 }
 
@@ -609,6 +641,54 @@ function transformProfilePoint(point, origin, scale, quaternion) {
 
 function transformProfileDirection(direction, scale, quaternion) {
   return rotateVectorWxyz(scaleVector(direction, scale), quaternion);
+}
+
+function resolveWeaponOcclusionPaddingMeters(sourceEntity, candidate, options) {
+  if (Number.isFinite(Number(options && options.occlusionPaddingMeters))) {
+    return Math.max(0, Number(options.occlusionPaddingMeters));
+  }
+  if (
+    !(
+      options && options.includeDungeonVisualHull === true ||
+      sourceEntity && sourceEntity.nativeNpc === true
+    ) ||
+    !candidate ||
+    !(
+      candidate.dungeonMaterializedEnvironment === true ||
+      String(candidate.kind || "").trim().toLowerCase() === "siteenvironmentprop"
+    )
+  ) {
+    return 0;
+  }
+
+  const authoredBound = getEntityCollisionBroadphaseRadius(candidate);
+  if (authoredBound <= 0) {
+    return 0;
+  }
+  return Math.min(
+    WEAPON_DUNGEON_OCCLUSION_PADDING_MAX_METERS,
+    Math.max(
+      WEAPON_DUNGEON_OCCLUSION_PADDING_MIN_METERS,
+      authoredBound * WEAPON_DUNGEON_OCCLUSION_PADDING_RATIO,
+    ),
+  );
+}
+
+function shouldUseDungeonProfileBounds(sourceEntity, candidate, options) {
+  if (typeof (options && options.fallbackToProfileBounds) === "boolean") {
+    return options.fallbackToProfileBounds;
+  }
+  return Boolean(
+    (
+      options && options.includeDungeonVisualHull === true ||
+      sourceEntity && sourceEntity.nativeNpc === true
+    ) &&
+    candidate &&
+    (
+      candidate.dungeonMaterializedEnvironment === true ||
+      String(candidate.kind || "").trim().toLowerCase() === "siteenvironmentprop"
+    ),
+  );
 }
 
 function findWeaponLineOccluder(
@@ -665,6 +745,11 @@ function findWeaponLineOccluder(
     ) {
       continue;
     }
+    const occlusionPaddingMeters = resolveWeaponOcclusionPaddingMeters(
+      sourceEntity,
+      candidate,
+      options,
+    );
     const intersection = findSweptEntityCollision(
       sourceEntity,
       candidate,
@@ -672,7 +757,24 @@ function findWeaponLineOccluder(
       rayEnd,
       cloneVector(candidate.position),
       cloneVector(candidate.position),
-      { movingRadius: 0 },
+      {
+        movingRadius: occlusionPaddingMeters,
+        // Some capital-scale dungeon assets render a continuous outer shell
+        // while their collision bundle contains thousands of disconnected
+        // component boxes with authored gaps.  Exact primitives remain the
+        // first choice. For authoritative weapon impacts, treat entry into the
+        // bundle's own authored bound as occluded when none of those primitives
+        // hit. Visibility rays do not request this conservative fallback.
+        // Do not use the envelope when the muzzle already starts inside it;
+        // interior rooms and hangar openings must continue to use the precise
+        // compound rather than becoming an all-blocking sphere.
+        fallbackToProfileBounds: shouldUseDungeonProfileBounds(
+          sourceEntity,
+          candidate,
+          options,
+        ),
+        profileBoundsFallbackOutsideOnly: true,
+      },
     );
     if (
       intersection &&
@@ -705,6 +807,7 @@ function findWeaponLineOccluder(
         startedInside: intersection.startedOverlapping,
         primitiveType: intersection.primitiveType || "sphereFallback",
         collisionID: intersection.collisionID || null,
+        occlusionPaddingMeters,
       };
     }
   }
@@ -751,6 +854,11 @@ function findSweptWeaponOccluder(
     }
     const candidateEnd = cloneVector(candidate.position);
     const candidateStart = getCandidateStartPosition(candidate, activeTickSequence);
+    const occlusionPaddingMeters = resolveWeaponOcclusionPaddingMeters(
+      movingEntity,
+      candidate,
+      options,
+    );
     const collision = findSweptEntityCollision(
       movingEntity,
       candidate,
@@ -758,6 +866,16 @@ function findSweptWeaponOccluder(
       movingEnd,
       candidateStart,
       candidateEnd,
+      {
+        movingRadius:
+          getEntityCollisionRadius(movingEntity) + occlusionPaddingMeters,
+        fallbackToProfileBounds: shouldUseDungeonProfileBounds(
+          movingEntity,
+          candidate,
+          options,
+        ),
+        profileBoundsFallbackOutsideOnly: true,
+      },
     );
     if (
       collision &&
@@ -788,6 +906,7 @@ function findSweptWeaponOccluder(
         ),
         candidateStart,
         candidateEnd,
+        occlusionPaddingMeters,
       };
     }
   }
@@ -1043,6 +1162,39 @@ function findSweptEntityCollision(
       primitiveType: "capsule",
     });
     primitiveIndex += 1;
+  }
+  if (!earliest && options.fallbackToProfileBounds === true) {
+    const profileFallbackRadius = Math.max(
+      0,
+      toFiniteNumber(profile.boundingRadius, 0) * absoluteScale,
+    );
+    const profileBoundsCollision = profileFallbackRadius > 0
+      ? findSweptSphereCollision(
+          movingEntity,
+          candidate,
+          movingStart,
+          movingEnd,
+          candidateStart,
+          candidateEnd,
+          {
+            ...options,
+            candidateRadius: profileFallbackRadius,
+          },
+        )
+      : null;
+    if (
+      profileBoundsCollision &&
+      !(
+        options.profileBoundsFallbackOutsideOnly === true &&
+        profileBoundsCollision.startedOverlapping
+      )
+    ) {
+      earliest = {
+        ...profileBoundsCollision,
+        primitiveIndex,
+        primitiveType: "profileBoundsFallback",
+      };
+    }
   }
   if (!earliest) {
     return null;
