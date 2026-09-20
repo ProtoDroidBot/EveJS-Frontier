@@ -281,6 +281,39 @@ test("Frontier rejects a world-sync config after its deployment artifacts change
   );
 });
 
+test("Frontier reads the synchronized assembly energy manifest and rejects stale balance data", (t) => {
+  const { configPath, env } = createSyncedWorldFixture(t);
+  const sourceWorkspace = path.join(path.dirname(configPath), "source");
+  const contracts = path.join(sourceWorkspace, "world-contracts");
+  const deploymentPath = path.join(contracts, "deployments", "localnet", "extracted-object-ids.json");
+  const publicationPath = path.join(contracts, "contracts", "world", "Pub.localnet.toml");
+  const energyPath = path.join(contracts, "config", "assembly-energy.json");
+  const deployment = "{}\n";
+  const publication = "published-at = \"test\"\n";
+  const energy = `${JSON.stringify({ schemaVersion: 1, clientBuild: 3502403,
+    assemblies: [{ typeID: 77917, name: "Heavy Storage", energyRequired: 500 }] })}\n`;
+  for (const file of [deploymentPath, publicationPath, energyPath]) fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(deploymentPath, deployment);
+  fs.writeFileSync(publicationPath, publication);
+  fs.writeFileSync(energyPath, energy);
+  writeSyncedWorldConfig(configPath, syncedWorldConfig({
+    sourceWorkspace,
+    assemblyEnergy: { schemaVersion: 1, clientBuild: 3502403,
+      entries: [{ typeID: 77917, energyRequired: 500 }] },
+    artifacts: {
+      deploymentSha256: sha256(deployment),
+      publicationSha256: sha256(publication),
+      assemblyEnergySha256: sha256(energy),
+    },
+  }));
+
+  const current = readSyncedSuiWorldConfig(env);
+  assert.deepEqual(current?.assemblyEnergy, [{ typeID: 77917, energyRequired: 500 }]);
+  assert.equal(current?.assemblyEnergySha256, sha256(energy));
+  fs.writeFileSync(energyPath, energy.replace("500", "501"));
+  assert.throws(() => readSyncedSuiWorldConfig(env), /stale.*assembly energy manifest/i);
+});
+
 test("Frontier rejects a synchronized world from a different live chain before submission", async (t) => {
   const { configPath, env } = createSyncedWorldFixture(t);
   writeSyncedWorldConfig(configPath, syncedWorldConfig());

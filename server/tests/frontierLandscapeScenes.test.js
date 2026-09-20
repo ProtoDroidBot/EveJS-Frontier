@@ -14,7 +14,7 @@ test("landscape spawn config composes disjoint NPC families into site-specific e
     assert.equal(summary.dungeonOverrideCount, 17);
     assert.equal(config.dungeonOverrides["13582"], undefined);
     assert.equal(summary.npcFamilyCount, 7);
-    assert.equal(summary.npcProfileCount, 47);
+    assert.equal(summary.npcProfileCount, 46);
     assert.deepEqual(config.npcFamilies.mooneater_entities.groupIDs, [4770]);
     assert.deepEqual(config.npcFamilies.feral_support.groupIDs, [759, 1764]);
     assert.deepEqual(config.npcFamilies.generative_entities.groupIDs, [4860]);
@@ -23,7 +23,7 @@ test("landscape spawn config composes disjoint NPC families into site-specific e
     assert.deepEqual(config.npcFamilies.conservator.groupIDs, [5033]);
     assert.deepEqual(config.npcFamilies.allotrope.groupIDs, [5130]);
     const profiles = frontierLandscapeSpawns.getGeneratedNpcRows("npcProfiles");
-    assert.equal(profiles.length, 47);
+    assert.equal(profiles.length, 46);
     assert.equal(profiles.find((entry) => entry.shipTypeID === 92_096)
         .frontierLandscapeExpectedGroupID, 5033);
     assert.equal(profiles.find((entry) => entry.shipTypeID === 94_167)

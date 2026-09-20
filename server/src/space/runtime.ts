@@ -3845,6 +3845,8 @@ const CREATION_ATTRIBUTE_POWER_LOAD = 15;
 const CREATION_ATTRIBUTE_POWER = 30;
 const CREATION_ATTRIBUTE_RECHARGE_RATE = 55;
 const CREATION_ATTRIBUTE_CAPACITOR_CAPACITY = 482;
+const CREATION_ATTRIBUTE_SOLAR_CHARGE_RATE = 6355;
+const CREATION_TYPE_BLACKSTART_CELL = 96055;
 const CREATION_EFFECT_ONLINE = 16;
 const CREATION_EFFECT_POWER_OUTPUT_ADD_ONLINE = 3782;
 const CREATION_EFFECT_PROCESS_POWER_ADD_ONLINE = 12326;
@@ -3869,6 +3871,8 @@ function calculateCreationPowerState(creationDogmaContext) {
   let capacitorCapacity = 0;
   let capacitorRechargeRate = 0;
   let capacitorDischargeRate = 0;
+  let blackstartCapacity = 0;
+  let blackstartSolarChargeRate = 0;
   const onlineModuleIDs: any[] = [];
 
   for (const moduleItem of creationDogmaContext.moduleItems) {
@@ -3909,6 +3913,19 @@ function calculateCreationPowerState(creationDogmaContext) {
       0,
       toFiniteNumber(attributes[CREATION_ATTRIBUTE_CAPACITOR_CAPACITY], 0),
     );
+    if (typeID === CREATION_TYPE_BLACKSTART_CELL) {
+      blackstartCapacity += Math.max(
+        0,
+        toFiniteNumber(attributes[CREATION_ATTRIBUTE_CAPACITOR_CAPACITY], 0),
+      );
+      blackstartSolarChargeRate += Math.max(
+        0,
+        toFiniteNumber(attributes[CREATION_ATTRIBUTE_SOLAR_CHARGE_RATE], 0),
+      );
+      // Blackstart recharge is admitted by direct starlight below. It must
+      // not enter the generator/headroom path or consume fuel.
+      continue;
+    }
     if (
       effects.has(CREATION_EFFECT_CAPACITOR_BATTERY_ONLINE) ||
       effects.has(CREATION_EFFECT_CAPACITOR_CAPACITY_ADD_ONLINE)
@@ -3930,6 +3947,8 @@ function calculateCreationPowerState(creationDogmaContext) {
     capacitorCapacity: roundNumber(capacitorCapacity, 6),
     capacitorRechargeRate: roundNumber(capacitorRechargeRate, 6),
     capacitorDischargeRate: roundNumber(capacitorDischargeRate, 6),
+    blackstartCapacity: roundNumber(blackstartCapacity, 6),
+    blackstartSolarChargeRate: roundNumber(blackstartSolarChargeRate, 6),
     onlineModuleIDs,
   };
 }
@@ -3944,6 +3963,7 @@ function applyCreationPowerStateToResourceState(
   }
   resourceState.powerOutput = creationPowerState.powerOutput;
   resourceState.powerLoad = creationPowerState.powerLoad;
+  resourceState.capacitorCapacity = creationPowerState.capacitorCapacity;
   resourceState.capacitorRechargeRate =
     creationPowerState.capacitorRechargeRate;
   if (resourceState.attributes && typeof resourceState.attributes === "object") {
@@ -3951,6 +3971,8 @@ function applyCreationPowerStateToResourceState(
       creationPowerState.powerOutput;
     resourceState.attributes[CREATION_ATTRIBUTE_POWER_LOAD] =
       creationPowerState.powerLoad;
+    resourceState.attributes[CREATION_ATTRIBUTE_CAPACITOR_CAPACITY] =
+      creationPowerState.capacitorCapacity;
     resourceState.attributes[CREATION_ATTRIBUTE_RECHARGE_RATE] =
       creationPowerState.capacitorRechargeRate;
   }
@@ -4103,6 +4125,33 @@ function getEntityRuntimeModuleOwnerItems(entity, options: Record<string, any> =
     moduleOwnerItems.push(moduleItem);
   }
   return moduleOwnerItems;
+}
+
+function hasExplicitOfflineModuleState(moduleItem) {
+  return Boolean(
+    moduleItem &&
+    moduleItem.moduleState &&
+    typeof moduleItem.moduleState === "object" &&
+    Object.prototype.hasOwnProperty.call(moduleItem.moduleState, "online") &&
+    moduleItem.moduleState.online !== true
+  );
+}
+
+function shouldStopEffectForUnavailableModule(moduleItem) {
+  return !moduleItem || hasExplicitOfflineModuleState(moduleItem);
+}
+
+function isEntityRuntimeModuleOnline(moduleItem) {
+  if (!moduleItem) {
+    return false;
+  }
+  // Creation modules use hidden fitting flag 183, outside the ordinary EVE
+  // fitting ranges. Their Creation Dogma context always supplies an explicit
+  // online state, including the ship-wide powered-off override.
+  if (toInt(moduleItem.flagID, 0) === 183) {
+    return !hasExplicitOfflineModuleState(moduleItem);
+  }
+  return isEffectivelyOnlineModule(moduleItem);
 }
 
 function getEntityRuntimeModuleItem(entity, moduleID = 0, moduleFlagID = 0) {
@@ -4666,6 +4715,98 @@ function recordAreaDamageKillmailOutcome(
       chargeItem: null,
     });
   }
+}
+
+function dischargeHeatTrapBeforeDestruction(scene, heatTrapEntity, whenMs) {
+  if (
+    !scene ||
+    !heatTrapEntity ||
+    heatTrapEntity.heatTrapDischargeTriggered === true
+  ) {
+    return { triggered: false, targetCount: 0, damage: 0 };
+  }
+  const launchBayPayloadRuntime = lazyRequire(
+    "../services/frontier/launchBayPayloadRuntime",
+  );
+  const item = findItemById(toInt(heatTrapEntity.itemID, 0));
+  if (
+    !launchBayPayloadRuntime ||
+    typeof launchBayPayloadRuntime.resolveHeatTrapDischarge !== "function" ||
+    !launchBayPayloadRuntime.isLaunchBayPayloadItem(item)
+  ) {
+    return { triggered: false, targetCount: 0, damage: 0 };
+  }
+  const normalizedWhenMs = toFiniteNumber(
+    whenMs,
+    typeof scene.getCurrentSimTimeMs === "function"
+      ? scene.getCurrentSimTimeMs()
+      : Date.now(),
+  );
+  const discharge = launchBayPayloadRuntime.resolveHeatTrapDischarge(
+    item,
+    normalizedWhenMs,
+  );
+  if (!discharge) {
+    return { triggered: false, targetCount: 0, damage: 0 };
+  }
+
+  // Mark first because a lethal discharge can recursively destroy other
+  // combat entities before this deployable is removed from the ballpark.
+  heatTrapEntity.heatTrapDischargeTriggered = true;
+  const radiusMeters = Math.max(0, toFiniteNumber(discharge.radiusMeters, 0));
+  const thermalDamage = Math.max(0, toFiniteNumber(discharge.damage, 0));
+  if (radiusMeters <= 0 || thermalDamage <= 0) {
+    return { triggered: true, targetCount: 0, damage: thermalDamage };
+  }
+  const damageVector = {
+    em: 0,
+    thermal: thermalDamage,
+    kinetic: 0,
+    explosive: 0,
+  };
+  const targets = [...(scene.dynamicEntities?.values?.() || [])]
+    .filter((candidate) => (
+      candidate &&
+      candidate.kind === "ship" &&
+      toInt(candidate.itemID, 0) !== toInt(heatTrapEntity.itemID, 0) &&
+      hasDamageableHealth(candidate) &&
+      getEntitySurfaceDistance(heatTrapEntity, candidate) <= radiusMeters + 1.0e-6
+    ));
+  let targetCount = 0;
+  for (const targetEntity of targets) {
+    recordCrimewatchOffensiveAggression(
+      scene,
+      heatTrapEntity,
+      targetEntity,
+      normalizedWhenMs,
+    );
+    const weaponDamageResult = applyWeaponDamageToTarget(
+      scene,
+      heatTrapEntity,
+      targetEntity,
+      damageVector,
+      normalizedWhenMs,
+      { skipWeaponOcclusion: true },
+    );
+    recordAreaDamageKillmailOutcome(
+      heatTrapEntity,
+      targetEntity,
+      item,
+      damageVector,
+      weaponDamageResult,
+      normalizedWhenMs,
+    );
+    notifyWeaponDamageMessages(
+      heatTrapEntity,
+      weaponDamageResult?.impactTargetEntity || targetEntity,
+      item,
+      damageVector,
+      getAppliedDamageAmount(weaponDamageResult?.damageResult),
+      3,
+    );
+    targetCount += 1;
+  }
+  return { triggered: true, targetCount, damage: thermalDamage };
 }
 
 function buildPointDefenseRuntimeCallbacks(scene = null) {
@@ -6954,6 +7095,8 @@ function refreshInventoryBackedEntityPresentationFields(entity) {
   if (entity.kind === "deployable") {
     lazyRequire("../services/frontier/deploymentRuntime")
       .hydrateConstructionEntityFromInventoryItem(entity, itemRecord);
+    lazyRequire("../services/frontier/launchBayPayloadRuntime")
+      .hydrateLaunchBayPayloadEntityFromInventoryItem(entity, itemRecord);
     deployableCynoRuntime.hydrateMobileCynoDeployableEntityFromInventoryItem(entity, itemRecord);
     mobileDepotRuntime.hydrateMobileDepotEntityFromInventoryItem(entity, itemRecord);
     mobileAnalysisBeaconRuntime.hydrateMobileAnalysisBeaconEntityFromInventoryItem(entity, itemRecord);
@@ -13695,6 +13838,15 @@ function resolveInitialModuleRemainingCycles(rawRepeat) {
   return normalizeEffectRepeatCount(rawRepeat, null) === 0 ? 1 : null;
 }
 
+function resolveModuleActivationRepeat(effectRecord, rawRepeat) {
+  return effectRecord && (
+    effectRecord.disallowAutoRepeat === true ||
+    toInt(effectRecord.disallowAutoRepeat, 0) > 0
+  )
+    ? 0
+    : normalizeEffectRepeatCount(rawRepeat, null);
+}
+
 function normalizeModuleConsequenceDelivery(rawDelivery) {
   const normalizedDelivery = String(rawDelivery || "").trim();
   return MODULE_CONSEQUENCE_DELIVERY_VALUES.has(normalizedDelivery)
@@ -13705,6 +13857,10 @@ function normalizeModuleConsequenceDelivery(rawDelivery) {
 function resolveModuleConsequenceDelivery(effectState) {
   if (!effectState || typeof effectState !== "object") {
     return MODULE_CONSEQUENCE_DELIVERY.LEGACY_UNKNOWN;
+  }
+
+  if (effectState.consequenceDelivery !== undefined) {
+    return normalizeModuleConsequenceDelivery(effectState.consequenceDelivery);
   }
 
   // These families already own their terminal/reload sequencing. The shared
@@ -14145,6 +14301,7 @@ function finalizeGenericModuleDeactivationWithoutSession(
   effectState.deactivationRequestedAtMs = 0;
   effectState.deactivateAtMs = 0;
   effectState.stopReason = options.reason || effectState.stopReason || null;
+  cleanupCreationActiveModuleEffectOnDeactivation(scene, entity, effectState);
   clearJumpPortalBridgeModeForEffect(effectState);
   clearCynosuralFieldForEffect(scene, null, effectState, {
     nowMs: stopTimeMs,
@@ -15326,6 +15483,90 @@ function notifyFuelPropertyChangesToSession(
   notifyAttributeChanges(session, changes);
 }
 
+function cleanupCreationActiveModuleEffectOnDeactivation(scene, entity, effectState) {
+  if (!effectState || effectState.creationActiveModuleEffect !== true) {
+    return;
+  }
+  try {
+    const creationActiveModuleRuntime = lazyRequire(
+      "../services/frontier/creationActiveModuleRuntime",
+    );
+    if (
+      creationActiveModuleRuntime &&
+      typeof creationActiveModuleRuntime.cleanupCreationActiveModuleEffect === "function"
+    ) {
+      creationActiveModuleRuntime.cleanupCreationActiveModuleEffect({
+        scene,
+        entity,
+        effectState,
+        callbacks: buildCreationActiveModuleRuntimeCallbacks(scene),
+      });
+    }
+  } catch (error) {
+    log.warn(
+      `[SpaceRuntime] Creation active cleanup failed ship=${toInt(entity && entity.itemID, 0)} ` +
+        `module=${toInt(effectState && effectState.moduleID, 0)}: ${error.message}`,
+    );
+  }
+}
+
+function buildCreationActiveModuleRuntimeCallbacks(scene) {
+  return {
+    getOwningSessionForEntity: (sourceScene, entity) =>
+      getOwningSessionForEntity(sourceScene || scene, entity),
+    follow: ({ entity, targetID, range }) => {
+      const followed = scene.followShipEntity(entity, targetID, range, {
+        source: "approachComputer",
+      });
+      return followed === false
+        ? false
+        : {
+          success: true,
+          movementTraceID: toInt(entity && entity.movementTrace && entity.movementTrace.id, 0),
+        };
+    },
+    stop: ({ entity, reason }) => scene.stopShipEntity(entity, {
+      reason: reason || "approachComputerDeactivated",
+    }),
+    refreshDerivedState: (payload) => {
+      const targetEntity = payload && payload.entity;
+      if (!targetEntity) {
+        return null;
+      }
+      const targetSession = payload && payload.session
+        ? payload.session
+        : getOwningSessionForEntity(scene, targetEntity);
+      return scene.refreshShipEntityDerivedState(targetEntity, {
+        session: targetSession || undefined,
+        broadcast: true,
+        notifyTargeting: true,
+      });
+    },
+    notifyFuelMutation: (payload) => {
+      const targetEntity = payload && payload.entity;
+      const targetSession = payload && payload.session
+        ? payload.session
+        : getOwningSessionForEntity(scene, targetEntity);
+      if (!targetEntity || !targetSession || !isReadyForDestiny(targetSession)) {
+        return;
+      }
+      notifyFuelChargeChangeToSession(
+        targetSession,
+        targetEntity,
+        payload.nowMs,
+        payload.previousFuelCharge,
+      );
+      notifyFuelPropertyChangesToSession(
+        targetSession,
+        targetEntity,
+        payload.previousFuelProperties,
+        payload.nextFuelProperties,
+        payload.nowMs,
+      );
+    },
+  };
+}
+
 function advanceEntityCapacitorRecharge(
   entity,
   deltaSeconds,
@@ -15533,6 +15774,90 @@ function advanceEntityCapacitorRecharge(
     changed: true,
     rechargedEnergy: capacitorCapacity * (newRatio - capRatio),
     consumedFuel: 0,
+  };
+}
+
+function advanceEntityBlackstartRecharge(
+  entity,
+  deltaSeconds,
+  nowMs = Date.now(),
+) {
+  if (!entity || entity.kind !== "ship") {
+    return { changed: false, rechargedEnergy: 0, reason: "not-ship" };
+  }
+  const state = entity.creationPowerState;
+  const reserveCapacity = Math.max(
+    0,
+    toFiniteNumber(state && state.blackstartCapacity, 0),
+  );
+  const solarChargeRate = Math.max(
+    0,
+    toFiniteNumber(state && state.blackstartSolarChargeRate, 0),
+  );
+  if (reserveCapacity <= 0 || solarChargeRate <= 0) {
+    return { changed: false, rechargedEnergy: 0, reason: "no-blackstart" };
+  }
+  if (
+    String(entity.mode || "").trim().toUpperCase() === "WARP" ||
+    berthingRuntime.isShipEntityBerthed(entity)
+  ) {
+    return { changed: false, rechargedEnergy: 0, reason: "protected-or-warping" };
+  }
+  const thermalState = entity.temperatureState;
+  if (!thermalState || thermalState.shadowed === true) {
+    return { changed: false, rechargedEnergy: 0, reason: "shadowed" };
+  }
+  const externalTemperature = Math.max(
+    0,
+    toFiniteNumber(thermalState.externalTemperature, 0),
+  );
+  if (externalTemperature <= temperatureRuntime.SHADOW_TEMPERATURE_K) {
+    return { changed: false, rechargedEnergy: 0, reason: "dark" };
+  }
+
+  const capacitorCapacity = Math.max(
+    0,
+    toFiniteNumber(entity.capacitorCapacity, 0),
+  );
+  const previousAmount = getEntityCapacitorAmount(entity);
+  const rechargeCeiling = Math.min(capacitorCapacity, reserveCapacity);
+  const missingReserveEnergy = Math.max(0, rechargeCeiling - previousAmount);
+  const rechargedEnergy = Math.min(
+    missingReserveEnergy,
+    solarChargeRate *
+      (externalTemperature / temperatureRuntime.FROSTLINE_TEMPERATURE_K) *
+      Math.max(0, toFiniteNumber(deltaSeconds, 0)),
+  );
+  if (rechargedEnergy <= 1.0e-9 || capacitorCapacity <= 0) {
+    return { changed: false, rechargedEnergy: 0, reason: "reserve-full" };
+  }
+
+  setEntityCapacitorRatio(
+    entity,
+    (previousAmount + rechargedEnergy) / capacitorCapacity,
+  );
+  const normalizedNowMs = toFiniteNumber(nowMs, Date.now());
+  const notificationDue =
+    normalizedNowMs - toFiniteNumber(entity._lastCapNotifyAtMs, 0) >= 500 ||
+    previousAmount + rechargedEnergy >= rechargeCeiling - 1.0e-9;
+  if (notificationDue) {
+    persistEntityCapacitorRatio(entity);
+    if (entity.session && isReadyForDestiny(entity.session)) {
+      notifyCapacitorChangeToSession(
+        entity.session,
+        entity,
+        normalizedNowMs,
+        previousAmount,
+      );
+    }
+    entity._lastCapNotifyAtMs = normalizedNowMs;
+  }
+  return {
+    changed: true,
+    externalTemperature,
+    rechargeCeiling,
+    rechargedEnergy,
+    reason: "direct-starlight",
   };
 }
 
@@ -17737,6 +18062,22 @@ function applyWeaponDamageToTarget(
     };
   }
 
+  try {
+    const smartTurretRuntime = lazyRequire("../services/frontier/smartTurretRuntime");
+    if (
+      smartTurretRuntime &&
+      typeof smartTurretRuntime.noteIncomingAggression === "function"
+    ) {
+      smartTurretRuntime.noteIncomingAggression(
+        attackerEntity,
+        targetEntity,
+        whenMs,
+      );
+    }
+  } catch (error) {
+    log.warn(`[SpaceRuntime] Smart Turret aggression note failed: ${error.message}`);
+  }
+
   const weaponOcclusion =
     options.skipWeaponOcclusion === true &&
     !(attackerEntity && attackerEntity.nativeNpc === true)
@@ -18443,6 +18784,7 @@ function destroyCombatEntity(scene, entity, options: Record<string, any> = {}) {
   if (isInventoryBackedDynamicEntity(entity)) {
     return scene.destroyInventoryBackedDynamicEntity(entity.itemID, {
       terminalDestructionEffectID: DESTRUCTION_EFFECT_EXPLOSION,
+      destructionNowMs: options.destructionNowMs,
     });
   }
 
@@ -21319,6 +21661,8 @@ function buildRuntimeInventoryEntity(item, systemID, nowMs) {
   if (kind === "deployable") {
     lazyRequire("../services/frontier/deploymentRuntime")
       .hydrateConstructionEntityFromInventoryItem(entity, item);
+    lazyRequire("../services/frontier/launchBayPayloadRuntime")
+      .hydrateLaunchBayPayloadEntityFromInventoryItem(entity, item, nowMs);
     deployableCynoRuntime.hydrateMobileCynoDeployableEntityFromInventoryItem(entity, item);
     mobileDepotRuntime.hydrateMobileDepotEntityFromInventoryItem(entity, item);
     mobileAnalysisBeaconRuntime.hydrateMobileAnalysisBeaconEntityFromInventoryItem(entity, item);
@@ -26962,6 +27306,7 @@ class SolarSystemScene {
         nowMs,
         delayMs: options.delayMs,
         delayMsByEntityID: options.delayMsByEntityID,
+        source: options.source,
       },
     );
     this.requestFinalSceneVisibilityReconciliation();
@@ -28902,6 +29247,46 @@ class SolarSystemScene {
       };
     }
 
+    // Creation configuration actions (notably sealing or reopening a Fuel
+    // Blister) update the durable ship row before asking the live ball to
+    // refresh. Hydrate the fuel fields first so the subsequent entity
+    // persistence cannot write its pre-action queue back over that commit.
+    const persistedConditionState = shipRecord.conditionState;
+    if (
+      persistedConditionState &&
+      typeof persistedConditionState === "object" &&
+      Object.prototype.hasOwnProperty.call(persistedConditionState, "charge")
+    ) {
+      const persistedChargeRatio = clamp(
+        toFiniteNumber(persistedConditionState.charge, 0),
+        0,
+        1,
+      );
+      entity.capacitorChargeRatio = persistedChargeRatio;
+      entity.conditionState = {
+        ...(entity.conditionState || {}),
+        charge: persistedChargeRatio,
+      };
+    }
+    if (
+      persistedConditionState &&
+      typeof persistedConditionState === "object" &&
+      (
+        Object.prototype.hasOwnProperty.call(persistedConditionState, "fuelCharge") ||
+        Array.isArray(persistedConditionState.fuelQueue)
+      )
+    ) {
+      const persistedFuelQueue = getShipFuelQueue(shipRecord);
+      entity.conditionState = {
+        ...(entity.conditionState || {}),
+        fuelCharge: getShipFuelCharge(shipRecord),
+        fuelQueue: persistedFuelQueue.map((entry) => ({ ...entry })),
+        fuelTypeID: persistedFuelQueue[0]
+          ? toInt(persistedFuelQueue[0].fuelTypeID, 0)
+          : 0,
+      };
+    }
+
     const previousCommandedSpeedFraction = clamp(
       toFiniteNumber(entity.speedFraction, 0),
       0,
@@ -28923,6 +29308,7 @@ class SolarSystemScene {
     );
     const validModuleOwnerIDs = new Set(
       getEntityRuntimeModuleOwnerItems(entity, { creationDogmaContext })
+        .filter((item) => !hasExplicitOfflineModuleState(item))
         .map((item) => toInt(item && item.itemID, 0))
         .filter((itemID) => itemID > 0),
     );
@@ -29012,6 +29398,15 @@ class SolarSystemScene {
     const regularFuelPowerState = applyRegularShipFuelPowerStateToResourceState(
       passiveResourceState,
       creationPowerState,
+    );
+    const creationActiveModuleRuntime = lazyRequire(
+      "../services/frontier/creationActiveModuleRuntime",
+    );
+    creationActiveModuleRuntime.applyCreationActiveThrustToResourceState(
+      passiveResourceState,
+      entity,
+      creationDogmaContext,
+      { shipItem: shipRecord },
     );
     entity.creationPowerState = creationPowerState;
     entity.regularFuelPowerState = regularFuelPowerState;
@@ -30512,6 +30907,34 @@ class SolarSystemScene {
     if (finalRuntimeAttrs.capNeed > previousChargeAmount + 1e-6) {
       return { success: false, errorMsg: "NOT_ENOUGH_CAPACITOR" };
     }
+    if (typeof options.beforeCommit === "function") {
+      let beforeCommitResult;
+      try {
+        beforeCommitResult = options.beforeCommit({
+          scene: this,
+          session,
+          entity,
+          moduleItem: effectiveModuleItem,
+          effectRecord,
+          nowMs: now,
+        });
+      } catch (error) {
+        return {
+          success: false,
+          errorMsg: error && error.message
+            ? String(error.message)
+            : "MODULE_PRECOMMIT_FAILED",
+        };
+      }
+      if (
+        beforeCommitResult === false ||
+        (beforeCommitResult && beforeCommitResult.success === false)
+      ) {
+        return beforeCommitResult && typeof beforeCommitResult === "object"
+          ? beforeCommitResult
+          : { success: false, errorMsg: "MODULE_PRECOMMIT_FAILED" };
+      }
+    }
     const initialFuelConsumptionResult = consumeShipModuleFuelForSession(
       session,
       entity,
@@ -30538,6 +30961,14 @@ class SolarSystemScene {
     );
 
     let cloakActivationDeactivationResult = null;
+    const activationRepeat = isCynosuralActivation
+      ? 1
+      : resolveModuleActivationRepeat(effectRecord, options.repeat);
+    const creationEffectStatePatch =
+      options.creationEffectStatePatch &&
+      options.creationEffectStatePatch.creationActiveModuleEffect === true
+        ? options.creationEffectStatePatch
+        : null;
     const effectState = {
       moduleID: normalizedModuleID,
       moduleFlagID: toInt(moduleItem.flagID, 0),
@@ -30567,12 +30998,10 @@ class SolarSystemScene {
       fuelTypeID: Math.max(0, toInt(finalRuntimeAttrs.fuelTypeID, 0)),
       fuelPerActivation: Math.max(0, toInt(finalRuntimeAttrs.fuelPerActivation, 0)),
       reactivationDelayMs: finalRuntimeAttrs.reactivationDelayMs,
-      repeat: isCynosuralActivation
-        ? 1
-        : normalizeEffectRepeatCount(options.repeat, null),
+      repeat: activationRepeat,
       remainingCycles: isCynosuralActivation
         ? null
-        : resolveInitialModuleRemainingCycles(options.repeat),
+        : resolveInitialModuleRemainingCycles(activationRepeat),
       targetID: targetEntity ? resolvedTargetID : 0,
       chargeTypeID: toInt(
         (chargeItem && chargeItem.typeID) ||
@@ -30672,6 +31101,7 @@ class SolarSystemScene {
       ...(superweaponActivation.matched === true && superweaponActivation.success === true
         ? superweaponEffectStatePatch
         : {}),
+      ...(creationEffectStatePatch || {}),
     };
     if (effectState.cloakModuleEffect === true) {
       effectState.durationMs = -1;
@@ -31364,6 +31794,7 @@ class SolarSystemScene {
     effectState.deactivationRequestedAtMs = 0;
     effectState.deactivateAtMs = 0;
     effectState.stopReason = stopReason;
+    cleanupCreationActiveModuleEffectOnDeactivation(this, entity, effectState);
     clearJumpPortalBridgeModeForEffect(effectState);
     clearCynosuralFieldForEffect(this, session, effectState, {
       nowMs: stopTimeMs,
@@ -32272,6 +32703,12 @@ class SolarSystemScene {
       };
     }
 
+    dischargeHeatTrapBeforeDestruction(
+      this,
+      entity,
+      options.destructionNowMs,
+    );
+
     deployableCynoRuntime.clearMobileCynoDeployable(entity.itemID, "destroyed");
     mobileDepotRuntime.clearMobileDepot(entity.itemID, "destroyed");
     mobileAnalysisBeaconRuntime.clearMobileAnalysisBeacon(entity.itemID, "destroyed");
@@ -32344,7 +32781,10 @@ class SolarSystemScene {
           systemID: this.systemID,
         });
       } else {
-        destroyResult = this.destroyInventoryBackedDynamicEntity(expiredEntity.entityID);
+        destroyResult = this.destroyInventoryBackedDynamicEntity(
+          expiredEntity.entityID,
+          { destructionNowMs: numericNow },
+        );
       }
       if (destroyResult.success) {
         destroyedEntityIDs.push(expiredEntity.entityID);
@@ -41958,6 +42398,36 @@ class SolarSystemScene {
     // down.
     this.validateNpcTargetLocksBeforeCombat(now);
 
+    try {
+      const launchBayPayloadRuntime = lazyRequire(
+        "../services/frontier/launchBayPayloadRuntime",
+      );
+      if (
+        launchBayPayloadRuntime &&
+        typeof launchBayPayloadRuntime.tickScene === "function"
+      ) {
+        tickProfiler.section(
+          "launchBayPayload",
+          () => launchBayPayloadRuntime.tickScene(this, now),
+        );
+      }
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Launch Bay payload tick failed for system=${this.systemID}: ${error.message}`,
+      );
+    }
+
+    try {
+      const smartTurretRuntime = lazyRequire("../services/frontier/smartTurretRuntime");
+      if (smartTurretRuntime && typeof smartTurretRuntime.tickScene === "function") {
+        tickProfiler.section("smartTurret", () => smartTurretRuntime.tickScene(this, now));
+      }
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Smart Turret tick failed for system=${this.systemID}: ${error.message}`,
+      );
+    }
+
     const sharedUpdates: any[] = [];
     const sessionOnlyPreEffectUpdates: any[] = [];
     const sessionOnlyUpdates: any[] = [];
@@ -42112,6 +42582,32 @@ class SolarSystemScene {
             effectState.moduleID,
             effectState.moduleFlagID,
           );
+
+          // Refresh normally tears down an effect as soon as its module is
+          // powered off. Re-check at every cycle boundary as a fail-safe so a
+          // missed refresh, disconnect, or direct persisted-state change can
+          // never let an offline module consume another fuel/capacitor cycle.
+          if (shouldStopEffectForUnavailableModule(moduleItem)) {
+            if (ownerSession && isReadyForDestiny(ownerSession)) {
+              finalizeDeactivation(ownerSession, effectState.moduleID, {
+                reason: "offline",
+                nowMs: cycleBoundaryMs,
+              });
+            } else if (isGenericEffect) {
+              finalizeGenericModuleDeactivationWithoutSession(
+                this,
+                entity,
+                effectState,
+                {
+                  reason: "offline",
+                  nowMs: cycleBoundaryMs,
+                },
+              );
+            } else {
+              entity.activeModuleEffects.delete(toInt(effectState.moduleID, 0));
+            }
+            continue;
+          }
 
           // A deferred manual stop on an end-of-cycle module must still complete
           // the current cycle and deliver its final effect at the boundary (EVE
@@ -42457,6 +42953,46 @@ class SolarSystemScene {
             effectState.remainingCycles = 0;
           }
 
+          const creationDogmaContext =
+            effectState && effectState.creationActiveModuleEffect === true
+              ? { moduleItems: getEntityRuntimeModuleOwnerItems(entity) }
+              : null;
+          if (creationDogmaContext) {
+            const creationActiveModuleRuntime = lazyRequire(
+              "../services/frontier/creationActiveModuleRuntime",
+            );
+            const preflightResult = creationActiveModuleRuntime
+              .preflightCreationActiveModuleCycle({
+                scene: this,
+                session: ownerSession,
+                entity,
+                moduleItem,
+                effectState,
+                creationDogmaContext,
+                nowMs: cycleBoundaryMs,
+                callbacks: buildCreationActiveModuleRuntimeCallbacks(this),
+              });
+            if (!preflightResult.success) {
+              const preflightStopReason = preflightResult.stopReason || "creationActive";
+              if (ownerSession && isReadyForDestiny(ownerSession)) {
+                finalizeDeactivation(ownerSession, effectState.moduleID, {
+                  reason: preflightStopReason,
+                  nowMs: cycleBoundaryMs,
+                });
+              } else if (isGenericEffect) {
+                finalizeGenericModuleDeactivationWithoutSession(
+                  this,
+                  entity,
+                  effectState,
+                  { reason: preflightStopReason, nowMs: cycleBoundaryMs },
+                );
+              } else {
+                entity.activeModuleEffects.delete(toInt(effectState.moduleID, 0));
+              }
+              continue;
+            }
+          }
+
           const previousChargeAmount = getEntityCapacitorAmount(entity);
           if (!terminalFinalEffectDue && effectState.capNeed > previousChargeAmount + 1e-6) {
             if (entity.session && isReadyForDestiny(entity.session)) {
@@ -42558,6 +43094,28 @@ class SolarSystemScene {
           let cycleStopReason = null;
           let cycleExecutedForHeat = true;
           if (
+            effectState &&
+            effectState.creationActiveModuleEffect === true
+          ) {
+            const creationActiveModuleRuntime = lazyRequire(
+              "../services/frontier/creationActiveModuleRuntime",
+            );
+            const cycleResult = creationActiveModuleRuntime
+              .executeCreationActiveModuleCycle({
+                scene: this,
+                session: ownerSession,
+                entity,
+                moduleItem,
+                effectState,
+                creationDogmaContext,
+                nowMs: cycleBoundaryMs,
+                callbacks: buildCreationActiveModuleRuntimeCallbacks(this),
+              });
+            if (!cycleResult.success) {
+              cycleExecutedForHeat = false;
+              cycleStopReason = cycleResult.stopReason || "creationActive";
+            }
+          } else if (
             effectState &&
             effectState.localCycleEffect === true
           ) {
@@ -43108,6 +43666,7 @@ class SolarSystemScene {
       // and are capped by unused power-grid headroom; tankless legacy ships
       // retain the standard nonlinear EVE recharge curve.
       // -----------------------------------------------------------------
+      advanceEntityBlackstartRecharge(entity, deltaSeconds, now);
       advanceEntityCapacitorRecharge(entity, deltaSeconds, now);
 
       // -----------------------------------------------------------------
@@ -43902,6 +44461,23 @@ class SolarSystemScene {
     tickProfiler.add("mv.entityLoop", __mvEntityLoopStart);
 
     const __mvVisibilityStart = tickProfiler.now();
+    try {
+      const passiveScanningRuntime = lazyRequire(
+        "../services/frontier/passiveScanningRuntime",
+      );
+      if (
+        passiveScanningRuntime &&
+        typeof passiveScanningRuntime.tickScene === "function"
+      ) {
+        tickProfiler.section("passiveScanning", () =>
+          passiveScanningRuntime.tickScene(this, now));
+      }
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Passive scanning tick failed for system=${this.systemID}: ` +
+          `${error.message}`,
+      );
+    }
     this.validateAllTargetLocks(now);
     tickSceneStructureTethers(this, now);
     if (isAnchorRelevanceEnabled() && hasStartupAnchorRelevanceContext(this)) {
@@ -47508,6 +48084,10 @@ runtimeExports.resolveCompressionFacilityTypelistsForEntity =
   resolveCompressionFacilityTypelistsForEntity;
 runtimeExports.applyJammerCyclePresentation = applyJammerCyclePresentation;
 runtimeExports.removeJammerCyclePresentation = removeJammerCyclePresentation;
+runtimeExports.getCreationActiveModuleCallbacksForSession = (session) => {
+  const scene = runtimeExports.getSceneForSession(session);
+  return scene ? buildCreationActiveModuleRuntimeCallbacks(scene) : {};
+};
 runtimeExports.applyRuntimeEntityScopeMetadata = applyRuntimeEntityScopeMetadata;
 runtimeExports.buildHostileModuleRuntimeCallbacks = buildHostileModuleRuntimeCallbacks;
 runtimeExports.droneInterop = {
@@ -47524,6 +48104,18 @@ runtimeExports.droneInterop = {
   broadcastDamageStateChange,
   persistDynamicEntity,
 };
+runtimeExports.smartTurretInterop = {
+  resolveTurretShot,
+  getCombatMessageHitQuality,
+  getAppliedDamageAmount,
+  notifyWeaponDamageMessages,
+  applyWeaponDamageToTarget,
+  noteKillmailDamage,
+  recordKillmailFromDestruction,
+  getEntityCurrentHealthLayers,
+  getEntityMaxHealthLayers,
+  hasDamageableHealth,
+};
 // Keep skill-shot orchestration outside this already large ballpark runtime,
 // while exposing the same authoritative item, capacitor, ammunition, damage,
 // and presentation primitives used by normal turret cycles.  In particular,
@@ -47535,7 +48127,7 @@ runtimeExports.skillShotInterop = {
   getEntityRuntimeModuleItem,
   getEntityRuntimeLoadedCharge,
   buildWeaponSnapshotForEntity,
-  isEffectivelyOnlineModule,
+  isEffectivelyOnlineModule: isEntityRuntimeModuleOnline,
   getEntityCapacitorAmount,
   consumeEntityCapacitor,
   notifyCapacitorChangeToSession,
@@ -47547,6 +48139,10 @@ runtimeExports.skillShotInterop = {
   applyWeaponDamageToTarget,
   noteKillmailDamage,
   recordKillmailFromDestruction,
+  applySkillShotUtilityHit(options) {
+    return lazyRequire("../services/frontier/skillShotUtilityRuntime")
+      .applySkillShotUtilityHit(options);
+  },
 };
 
 if (typeof structureState.registerStructureChangeListener === "function") {
@@ -47572,6 +48168,8 @@ runtimeExports._testing = {
   MODULE_CONSEQUENCE_DELIVERY,
   normalizeModuleConsequenceDelivery,
   resolveModuleConsequenceDelivery,
+  resolveModuleActivationRepeat,
+  shouldStopEffectForUnavailableModule,
   collectEntityActiveShipAttributeModifierEntries,
   RUNTIME_UNANCHORED_STRUCTURE_HULL_KIND,
   BUBBLE_RADIUS_METERS,
@@ -47659,6 +48257,8 @@ runtimeExports._testing = {
   advanceEntityForDestructionSnapshotForTesting:
     advanceEntityForDestructionSnapshot,
   applyWeaponDamageToTargetForTesting: applyWeaponDamageToTarget,
+  dischargeHeatTrapBeforeDestructionForTesting:
+    dischargeHeatTrapBeforeDestruction,
   executeTurretCycleForTesting: executeTurretCycle,
   resolveMissileLifecycleForTesting: resolveMissileLifecycle,
   buildSalvagerRuntimeCallbacksForTesting: buildSalvagerRuntimeCallbacks,
@@ -47681,6 +48281,7 @@ runtimeExports._testing = {
     notifyShipDerivedAttributesToSession,
   computeTargetLockDurationMsForTesting: computeTargetLockDurationMs,
   advanceEntityCapacitorRechargeForTesting: advanceEntityCapacitorRecharge,
+  advanceEntityBlackstartRechargeForTesting: advanceEntityBlackstartRecharge,
   calculateRegularShipFuelPowerStateForTesting:
     calculateRegularShipFuelPowerState,
   advancePassiveRechargeRatioForTesting: advancePassiveRechargeRatio,

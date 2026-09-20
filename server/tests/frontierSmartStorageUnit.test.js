@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const itemStore = require("../src/services/inventory/itemStore");
+const characterState = require("../src/services/character/characterState");
 const smartStorageUnitRuntime = require("../src/services/frontier/smartStorageUnitRuntime");
 const { registerSuiAssemblyStateRunner, registerSuiAssemblyStatesRunner, } = require("../src/services/frontier/suiAssemblyState");
 const { getStorageUnitProtoTypes, } = require("../src/_secondary/express/gatewayServices/assemblyStorageUnitProto");
@@ -12,6 +13,8 @@ const OWNER_ID = 140000003;
 const VISITOR_ID = 140000002;
 const SOLAR_SYSTEM_ID = 30000004;
 const STORAGE_TYPE_ID = 77917;
+const TURRET_TYPE_ID = 92279;
+const FIELD_STORAGE_TYPE_ID = 87566;
 const SHIP_TYPE_ID = 95276;
 const MATERIAL_TYPE_ID = 78423; // Water Ice, 0.1 m³ per unit
 const CARGO_FLAG = 5;
@@ -45,6 +48,46 @@ function createStorageUnit(ownerID = OWNER_ID, assemblyStatus = 2) {
                 solarSystemID: SOLAR_SYSTEM_ID,
             },
         }),
+    }));
+    assert.equal(update.success, true, update.errorMsg);
+    return update.data;
+}
+function createTurret(ownerID = OWNER_ID, assemblyStatus = 2) {
+    const turret = grantOne(ownerID, SOLAR_SYSTEM_ID, 0, TURRET_TYPE_ID, 1, {
+        individualItems: true,
+        singleton: 1,
+    });
+    const update = itemStore.updateInventoryItem(turret.itemID, current => ({
+        ...current,
+        customInfo: JSON.stringify({
+            evejsFrontierConstruction: {
+                assemblyStatus,
+                assemblyTypeID: TURRET_TYPE_ID,
+                completedAtMs: 1,
+                createdAtMs: 1,
+                ownerID,
+                solarSystemID: SOLAR_SYSTEM_ID,
+            },
+        }),
+    }));
+    assert.equal(update.success, true, update.errorMsg);
+    return update.data;
+}
+function createFieldStorage(ownerID = OWNER_ID, assemblyStatus = 2) {
+    const field = grantOne(ownerID, SOLAR_SYSTEM_ID, 0, FIELD_STORAGE_TYPE_ID, 1, {
+        individualItems: true,
+        singleton: 1,
+    });
+    const update = itemStore.updateInventoryItem(field.itemID, current => ({
+        ...current,
+        customInfo: JSON.stringify({ evejsFrontierConstruction: {
+                assemblyStatus,
+                assemblyTypeID: FIELD_STORAGE_TYPE_ID,
+                completedAtMs: 1,
+                createdAtMs: 1,
+                ownerID,
+                solarSystemID: SOLAR_SYSTEM_ID,
+            } }),
     }));
     assert.equal(update.success, true, update.errorMsg);
     return update.data;
@@ -116,6 +159,18 @@ function totalAt(ownerID, locationID, flagID, typeID) {
         .reduce((total, item) => total + Number(item.stacksize ?? item.quantity ?? 0), 0);
 }
 test.beforeEach(() => {
+    for (const characterID of [OWNER_ID, VISITOR_ID]) {
+        const result = characterState.writeCharacterRecord(characterID, {
+            characterID,
+            characterName: `Storage Test ${characterID}`,
+            corporationID: 1000442,
+            solarSystemID: SOLAR_SYSTEM_ID,
+            shipID: 0,
+            shipTypeID: 0,
+            suppressActiveShipProvisioning: true,
+        });
+        assert.equal(result.success, true, result.errorMsg);
+    }
     smartStorageUnitRuntime._testing.clearTransactions();
     smartStorageUnitRuntime._testing.clearStorageComponentCache();
 });
@@ -540,6 +595,112 @@ test("storage-to-storage withdrawal refreshes both assemblies and commits atomic
     assert.equal(replayed.data.replayed, true);
     assert.equal(totalAt(OWNER_ID, source.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 18);
     assert.equal(totalAt(OWNER_ID, destination.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 12);
+});
+test("Smart Turret cargo is a source and destination for Smart Storage transfers", async (t) => {
+    const unit = createStorageUnit();
+    const turret = createTurret();
+    const ship = createShip();
+    const stack = grantOne(OWNER_ID, turret.itemID, 0, MATERIAL_TYPE_ID, 30);
+    const batches = [];
+    t.after(registerSuiAssemblyStatesRunner(async (assemblyIDs, operation) => {
+        batches.push([...assemblyIDs]);
+        await Promise.resolve();
+        return operation();
+    }));
+    const resolveAccess = () => createAccess(ship);
+    const deposit = await smartStorageUnitRuntime.prepareStorageDeposit({
+        access: resolveAccess(),
+        characterID: OWNER_ID,
+        resolveAccess,
+        sourceFlagID: 0,
+        sourceLocationID: turret.itemID,
+        stacks: [{ itemID: stack.itemID, quantity: 10 }],
+        storageUnitID: unit.itemID,
+    });
+    assert.equal(deposit.success, true, deposit.errorMsg);
+    assert.deepEqual(batches, [[unit.itemID, turret.itemID]]);
+    const deposited = await smartStorageUnitRuntime.executeStorageTransaction({
+        action: "storageunit-deposit",
+        characterID: OWNER_ID,
+        resolveAccess,
+        signature: VALID_SIGNATURE,
+        transactionUUID: deposit.data.transactionUUID,
+    });
+    assert.equal(deposited.success, true, deposited.errorMsg);
+    assert.equal(totalAt(OWNER_ID, turret.itemID, 0, MATERIAL_TYPE_ID), 20);
+    assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 10);
+    const withdraw = await smartStorageUnitRuntime.prepareStorageWithdraw({
+        access: resolveAccess(),
+        characterID: OWNER_ID,
+        destinationStorageUnitID: turret.itemID,
+        resolveAccess,
+        stacks: [{ typeID: MATERIAL_TYPE_ID, quantity: 5 }],
+        storageUnitID: unit.itemID,
+    });
+    assert.equal(withdraw.success, true, withdraw.errorMsg);
+    const withdrawn = await smartStorageUnitRuntime.executeStorageTransaction({
+        action: "storageunit-withdraw",
+        characterID: OWNER_ID,
+        resolveAccess,
+        signature: VALID_SIGNATURE,
+        transactionUUID: withdraw.data.transactionUUID,
+    });
+    assert.equal(withdrawn.success, true, withdrawn.errorMsg);
+    assert.equal(withdrawn.data.destinationAssemblyID, turret.itemID);
+    assert.equal(withdrawn.data.destinationAssemblyKind, "turret");
+    assert.equal(withdrawn.data.destinationStorageUnitID, 0);
+    assert.equal(withdrawn.data.destinationNoticeItems.length, 0);
+    assert.equal(totalAt(OWNER_ID, turret.itemID, 0, MATERIAL_TYPE_ID), 25);
+    assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 5);
+    assert.deepEqual(batches, [
+        [unit.itemID, turret.itemID],
+        [unit.itemID, turret.itemID],
+        [unit.itemID, turret.itemID],
+        [unit.itemID, turret.itemID],
+    ]);
+});
+test("Field Storage cargo is a source and destination for Smart Storage transfers", async () => {
+    const unit = createStorageUnit();
+    const field = createFieldStorage();
+    const ship = createShip();
+    const stack = grantOne(OWNER_ID, field.itemID, 0, MATERIAL_TYPE_ID, 30);
+    const access = createAccess(ship);
+    const deposit = await smartStorageUnitRuntime.prepareStorageDeposit({
+        access,
+        characterID: OWNER_ID,
+        sourceFlagID: 0,
+        sourceLocationID: field.itemID,
+        stacks: [{ itemID: stack.itemID, quantity: 10 }],
+        storageUnitID: unit.itemID,
+    });
+    assert.equal(deposit.success, true, deposit.errorMsg);
+    assert.equal((await smartStorageUnitRuntime.executeStorageTransaction({
+        access,
+        action: "storageunit-deposit",
+        characterID: OWNER_ID,
+        signature: VALID_SIGNATURE,
+        transactionUUID: deposit.data.transactionUUID,
+    })).success, true);
+    const withdraw = await smartStorageUnitRuntime.prepareStorageWithdraw({
+        access,
+        characterID: OWNER_ID,
+        destinationStorageUnitID: field.itemID,
+        stacks: [{ typeID: MATERIAL_TYPE_ID, quantity: 5 }],
+        storageUnitID: unit.itemID,
+    });
+    assert.equal(withdraw.success, true, withdraw.errorMsg);
+    const withdrawn = await smartStorageUnitRuntime.executeStorageTransaction({
+        access,
+        action: "storageunit-withdraw",
+        characterID: OWNER_ID,
+        signature: VALID_SIGNATURE,
+        transactionUUID: withdraw.data.transactionUUID,
+    });
+    assert.equal(withdrawn.success, true, withdrawn.errorMsg);
+    assert.equal(withdrawn.data.destinationAssemblyKind, "field_storage");
+    assert.equal(withdrawn.data.destinationStorageUnitID, 0);
+    assert.equal(totalAt(OWNER_ID, field.itemID, 0, MATERIAL_TYPE_ID), 25);
+    assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 5);
 });
 test("storage-to-storage withdrawal revalidates destination capacity before commit", () => {
     const source = createStorageUnit();

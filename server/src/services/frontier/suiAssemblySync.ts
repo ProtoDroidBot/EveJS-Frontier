@@ -16,7 +16,11 @@ import { createSuiAssemblySupervisor } from "./suiAssemblySupervisor";
 import { registerSuiStorageSyncBridge, type SuiStorageSyncRequest } from "./suiStorageSync";
 import { registerSuiGateSyncBridge, type SuiGateSyncBridge } from "./suiGateSync";
 import { createSponsoredAssemblyAdmin, registerSuiAssemblyAdminBridge } from "./suiAssemblyAdmin";
-import { clearAssemblyEnergyConfig, setAssemblyEnergyConfig } from "./networkNodeEnergyConfig";
+import {
+  assertAssemblyEnergyConfigMatches,
+  clearAssemblyEnergyConfig,
+  setAssemblyEnergyConfig,
+} from "./networkNodeEnergyConfig";
 import { registerSuiAssemblyStatesRunner, readSuiAssemblyStatusIntent } from "./suiAssemblyState";
 import {
   readSyncedSuiWorldConfig, prepareSuiCharacterIdentity, createSuiCharacterTransaction,
@@ -828,6 +832,11 @@ export function startSuiAssemblySync() {
       await context.assertCurrent();
       const energyRequirements = await context.chain.readEnergyRequirements();
       await context.assertCurrent();
+      assertAssemblyEnergyConfigMatches(
+        energyRequirements,
+        synced.assemblyEnergy,
+        readStaticRows(TABLE.SPACE_COMPONENTS_BY_TYPE),
+      );
       setAssemblyEnergyConfig(energyRequirements, {
         energyConfigID: context.world.energyConfigId, chainId: synced.chainId,
       });

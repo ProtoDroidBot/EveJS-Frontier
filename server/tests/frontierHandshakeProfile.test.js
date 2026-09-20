@@ -1095,6 +1095,12 @@ test("Frontier chain assemblies commit a one-use signed state transition", () =>
     }
 });
 test("Frontier Heavy Gates stay owner-managed while allowing visitor traversal", () => {
+    const networkNodeEnergyRuntime = require("../src/services/frontier/networkNodeEnergyRuntime");
+    const originalValidateAssemblyOnline = networkNodeEnergyRuntime.validateAssemblyOnline;
+    const originalReconcileNetworkNodeEnergy = networkNodeEnergyRuntime.reconcileNetworkNodeEnergy;
+    // Network-node admission and reconciliation have their own contract tests.
+    // Keep this ownership/traversal test focused on Heavy Gate behavior instead
+    // of depending on whichever energy configuration the suite fixture loaded.
     const visitorCharacterID = 140000005;
     const gateOwnerID = 140000006;
     const sourceSystemID = 30000004;
@@ -1150,6 +1156,8 @@ test("Frontier Heavy Gates stay owner-managed while allowing visitor traversal",
         characterID: visitorCharacterID,
     };
     const signatureEnvelope = Buffer.alloc(97, 1).toString("base64");
+    networkNodeEnergyRuntime.validateAssemblyOnline = () => ({ success: true });
+    networkNodeEnergyRuntime.reconcileNetworkNodeEnergy = () => { };
     try {
         const service = new SmartAssemblyService();
         assert.equal(service.Handle_on_interaction([sourceGateID], visitorSession), null);
@@ -1240,6 +1248,10 @@ test("Frontier Heavy Gates stay owner-managed while allowing visitor traversal",
         assert.equal(findItemById(destinationGateID).ownerID, gateOwnerID);
     }
     finally {
+        networkNodeEnergyRuntime.validateAssemblyOnline =
+            originalValidateAssemblyOnline;
+        networkNodeEnergyRuntime.reconcileNetworkNodeEnergy =
+            originalReconcileNetworkNodeEnergy;
         deploymentContractTesting.clearPendingAssemblyTransitions();
         removeInventoryItem(sourceGateID, { removeContents: true });
         removeInventoryItem(destinationGateID, { removeContents: true });

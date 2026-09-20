@@ -34,6 +34,9 @@ const {
   buildList,
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const { findItemById } = require(path.join(__dirname, "../inventory/itemStore"));
+const {
+  isCreationModuleOnline,
+} = require(path.join(__dirname, "./creationRuntime"));
 
 const FILETIME_UNITS_PER_MS = 10000n;
 
@@ -240,6 +243,9 @@ function registerScanningAbilityHandlers() {
 
   registerCreationAbilityHandler("directional_scan", ABILITY_DIRECTIONAL_SCAN, {
     validate(context) {
+      if (context.creationState && context.creationState.poweredOff === true) {
+        return { success: false as const, errorMsg: "CREATION_POWERED_OFF" };
+      }
       const request = scanningRuntime.normalizeScanRequest(context.kwargs);
       if (request.errorMsg) {
         return { success: false as const, errorMsg: request.errorMsg };
@@ -266,6 +272,9 @@ function registerScanningAbilityHandlers() {
       const moduleItem = findItemById(context.moduleItemID);
       if (!moduleItem) {
         return { success: false as const, errorMsg: "MODULE_NOT_FOUND" };
+      }
+      if (!isCreationModuleOnline(moduleItem)) {
+        return { success: false as const, errorMsg: "MODULE_OFFLINE" };
       }
       scanningRuntime.recordEntityScannerEmissionActivity(entity, {
         nowMs: Date.now(),

@@ -792,6 +792,43 @@ class FittingBytecodePatchTests(unittest.TestCase):
             "patched",
         )
 
+    def test_skillshot_wrappers_are_exact_and_idempotent(self):
+        controller_code = compile(
+            "class SkillShotController:\n"
+            "    def fire(self): pass\n"
+            "    def _fire_session(self): pass\n"
+            "    @staticmethod\n"
+            "    def _build_turret_states(ids, direction): return []\n",
+            "skillshot_controller_fixture.py",
+            "exec",
+        )
+        auto_cannon_code = compile(
+            "class AutoCannonMode:\n"
+            "    def _auto_fire_loop(self): pass\n"
+            "    def OnSkillShotFailed(self, key, args): pass\n",
+            "skillshot_auto_cannon_fixture.py",
+            "exec",
+        )
+        for code, builder in (
+            (controller_code, patcher.patched_skillshot_controller_member),
+            (auto_cannon_code, patcher.patched_skillshot_auto_cannon_member),
+        ):
+            source = member_for(code)
+            expected = hashlib.sha256(source).hexdigest()
+            patched = builder(source)
+            self.assertEqual(
+                patcher.inspect_member(
+                    source, expected, builder, set()
+                )[0],
+                "source",
+            )
+            self.assertEqual(
+                patcher.inspect_member(
+                    patched, expected, builder, set()
+                )[0],
+                "patched",
+            )
+
     @unittest.skipUnless(
         os.environ.get("EVE_FRONTIER_TEST_ARCHIVE"),
         "Set EVE_FRONTIER_TEST_ARCHIVE for real bytecode validation",
@@ -807,6 +844,8 @@ class FittingBytecodePatchTests(unittest.TestCase):
                         patcher.CREATION_SERVICE_MODULE_NAME,
                         patcher.ACTION_PROVIDER_MODULE_NAME,
                         patcher.ACTION_BAR_INTEGRATION_MODULE_NAME,
+                        patcher.SKILLSHOT_CONTROLLER_MODULE_NAME,
+                        patcher.SKILLSHOT_AUTO_CANNON_MODULE_NAME,
                     )
                 }
             with zipfile.ZipFile(archive_path, "w") as archive:

@@ -23,6 +23,7 @@ const { getCachedCharacterSkillMap, } = require(path.join(__dirname, "../skills/
 const { ITEM_FLAGS, findItemById, findShipItemById, getItemMutationVersion, grantItemsToCharacterLocation, listContainerItems, removeInventoryItem, updateInventoryItem, } = require(path.join(__dirname, "../inventory/itemStore"));
 const { getFittedModuleItems, getLoadedChargeByFlag, getEffectTypeRecord, isChargeCompatibleWithModule, isModuleOnline, buildShipResourceState, buildChargeTupleItemID, getTypeAttributeMap, } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const { resolveItemByTypeID, } = require(path.join(__dirname, "../inventory/itemTypeRegistry"));
+const { matchesTypeList, } = require(path.join(__dirname, "../inventory/typeListAuthority"));
 const { MINING_HOLD_FLAGS, } = require("./miningConstants");
 const { getPreferredMiningHoldFlagForType, getShipHoldCapacityByFlag, } = require("./miningInventory");
 const { computeMiningResult, } = require("./miningMath");
@@ -238,12 +239,15 @@ function buildEntityMiningSnapshot(entity, moduleItem, effectRecord, options = {
         return null;
     }
     const additionalModifierEntries = commandBurstRuntime.collectModifierEntriesForItem(entity, resolvedModuleItem, options.nowMs);
+    const chargeItem = Object.prototype.hasOwnProperty.call(options, "chargeItem")
+        ? options.chargeItem
+        : resolveEntityLoadedCharge(entity, resolvedModuleItem);
     return buildMiningModuleSnapshot({
         characterID: resolveEntityCharacterID(entity),
         shipItem,
         moduleItem: resolvedModuleItem,
         effectRecord,
-        chargeItem: resolveEntityLoadedCharge(entity, resolvedModuleItem),
+        chargeItem,
         fittedItems: resolveEntityFittedItems(entity),
         skillMap: resolveEntitySkillMap(entity),
         activeModuleContexts: resolveEntityActiveModuleContexts(entity, resolvedModuleItem.itemID),
@@ -471,6 +475,20 @@ function isFamilyCompatibleWithYield(snapshot, mineableState) {
     }
     return mineableState.yieldKind === "ore" || mineableState.yieldKind === "salvage";
 }
+function isChargeValidForYield(chargeItem, mineableState, snapshot = null) {
+    if (!chargeItem || !mineableState) {
+        return true;
+    }
+    const targetTypeListID = toInt(snapshot && snapshot.crystalTargetTypeListID, 0);
+    if (targetTypeListID > 0) {
+        // Frontier lenses author their supported resources through attribute 3148:
+        // Cutting/Needle lenses use list 612 (asteroids + salvageable wreckage),
+        // while Crude Extractor lenses use list 601 (Crude Rift materials).  Use
+        // that source of truth instead of broad name heuristics when it exists.
+        return matchesTypeList({ typeID: toInt(mineableState.yieldTypeID, 0) }, targetTypeListID);
+    }
+    return isChargeHeuristicallyValidForYield(chargeItem, mineableState);
+}
 function isMiningSnapshotCompatibleWithState(snapshot, mineableState) {
     return isFamilyCompatibleWithYield(snapshot, mineableState);
 }
@@ -640,7 +658,8 @@ function executeMiningCycle(scene, entity, effectState, cycleBoundaryMs, options
         !canEntitiesInteractLocally(entity, targetEntity)) {
         return { success: false, stopReason: "target" };
     }
-    if (!getTargetsForEntity(scene, entity).includes(targetID)) {
+    if (options.requireTargetLock !== false &&
+        !getTargetsForEntity(scene, entity).includes(targetID)) {
         return { success: false, stopReason: "target" };
     }
     const moduleItem = resolveEntityModuleItem(entity, effectState.moduleID, effectState.moduleFlagID);
@@ -648,8 +667,11 @@ function executeMiningCycle(scene, entity, effectState, cycleBoundaryMs, options
         return { success: false, stopReason: "module" };
     }
     const effectRecord = getEffectTypeRecord(toInt(effectState.effectID, 0));
-    const snapshot = buildEntityMiningSnapshot(entity, moduleItem, effectRecord, {
+    const snapshot = options.snapshot || buildEntityMiningSnapshot(entity, moduleItem, effectRecord, {
         nowMs: cycleBoundaryMs,
+        ...(Object.prototype.hasOwnProperty.call(options, "chargeItem")
+            ? { chargeItem: options.chargeItem }
+            : {}),
     });
     if (!snapshot || !isFamilyCompatibleWithYield(snapshot, mineableState)) {
         return { success: false, stopReason: "module" };
@@ -658,10 +680,13 @@ function executeMiningCycle(scene, entity, effectState, cycleBoundaryMs, options
         snapshot.maxRangeMeters + 1) {
         return { success: false, stopReason: "range" };
     }
-    const chargeItem = resolveEntityLoadedCharge(entity, moduleItem);
+    const chargeItem = Object.prototype.hasOwnProperty.call(options, "chargeItem")
+        ? options.chargeItem
+        : resolveEntityLoadedCharge(entity, moduleItem);
+    const validateChargeYield = options.isChargeValidForYield || isChargeHeuristicallyValidForYield;
     if (chargeItem &&
         !(isChargeCompatibleWithModule(moduleItem.typeID, chargeItem.typeID) &&
-            isChargeHeuristicallyValidForYield(chargeItem, mineableState))) {
+            validateChargeYield(chargeItem, mineableState, snapshot))) {
         return { success: false, stopReason: "charge" };
     }
     effectState.chargeTypeID = snapshot.chargeTypeID;
@@ -675,7 +700,8 @@ function executeMiningCycle(scene, entity, effectState, cycleBoundaryMs, options
             return { success: false, stopReason: "cargo" };
         }
     }
-    const miningVolume = Math.max(0, snapshot.miningAmountM3);
+    const amountMultiplier = Math.max(0, toFiniteNumber(options.amountMultiplier, 1));
+    const miningVolume = Math.max(0, snapshot.miningAmountM3 * amountMultiplier);
     const effectiveMiningVolume = miningVolume * efficiency;
     const quantityVolumeAvailable = mineableState.remainingQuantity * mineableState.unitVolume;
     const maximumTransferredQuantity = Number.isFinite(availableVolume)
@@ -777,7 +803,9 @@ function executeMiningCycle(scene, entity, effectState, cycleBoundaryMs, options
             }
         }
     }
-    applyCrystalVolatility(entity, moduleItem, snapshot, efficiency);
+    if (options.applyCrystalVolatility !== false) {
+        applyCrystalVolatility(entity, moduleItem, snapshot, efficiency);
+    }
     return {
         success: true,
         data: {
@@ -788,9 +816,102 @@ function executeMiningCycle(scene, entity, effectState, cycleBoundaryMs, options
             criticalHitQuantity: miningResult.criticalHitQuantity,
             wastedQuantity: miningResult.wastedQuantity,
             efficiency,
+            amountMultiplier,
             partialCycle: options.partialCycle === true,
             depleted: Boolean(deltaResult.data && deltaResult.data.depleted),
         },
+    };
+}
+/**
+ * Resolve one manually-aimed held-beam collision as a mining/extraction
+ * cycle. Unlike ordinary mining activation this path intentionally does not
+ * require a target lock: the authoritative swept collision is the target.
+ */
+function executeSkillShotMiningCycle(scene, entity, targetEntity, moduleItem, chargeItem, cycleBoundaryMs, options = {}) {
+    if (!scene || !entity || !targetEntity || !moduleItem) {
+        return { matched: false };
+    }
+    const ensureMiningState = options.ensureSceneMiningState || ensureSceneMiningState;
+    const resolveMineableState = options.getMineableState || getMineableState;
+    const buildSnapshot = options.buildEntityMiningSnapshot || buildEntityMiningSnapshot;
+    const validateModuleCharge = options.isChargeCompatibleWithModule || isChargeCompatibleWithModule;
+    const validateChargeYield = options.isChargeValidForYield || isChargeValidForYield;
+    const executeCycle = options.executeMiningCycle || executeMiningCycle;
+    ensureMiningState(scene);
+    const targetID = toInt(targetEntity.itemID, 0);
+    const mineableState = resolveMineableState(scene, targetID);
+    if (!mineableState) {
+        return { matched: false };
+    }
+    if (mineableState.remainingQuantity <= 0) {
+        return {
+            matched: true,
+            success: false,
+            stopReason: "target",
+        };
+    }
+    const snapshot = buildSnapshot(entity, moduleItem, null, {
+        nowMs: cycleBoundaryMs,
+        chargeItem,
+    });
+    if (!snapshot || !isFamilyCompatibleWithYield(snapshot, mineableState)) {
+        return {
+            matched: true,
+            success: false,
+            stopReason: "module",
+        };
+    }
+    if (chargeItem &&
+        !(validateModuleCharge(moduleItem.typeID, chargeItem.typeID) &&
+            validateChargeYield(chargeItem, mineableState, snapshot))) {
+        return {
+            matched: true,
+            success: false,
+            stopReason: "charge",
+        };
+    }
+    const { authoredEfficiency, rampMultiplier, amountMultiplier, } = resolveSkillShotMiningAmountMultiplier(snapshot, options.rampMultiplier);
+    if (amountMultiplier <= 0) {
+        return {
+            matched: true,
+            success: false,
+            stopReason: "cycle",
+        };
+    }
+    const cycleResult = executeCycle(scene, entity, {
+        targetID,
+        moduleID: toInt(moduleItem.itemID, 0),
+        moduleFlagID: toInt(moduleItem.flagID, 0),
+        effectID: 0,
+    }, cycleBoundaryMs, {
+        requireTargetLock: false,
+        snapshot,
+        chargeItem,
+        amountMultiplier,
+        isChargeValidForYield: validateChargeYield,
+        // SkillShotRuntime has already applied this cycle's lens volatility
+        // while consuming its authoritative resources.
+        applyCrystalVolatility: false,
+    });
+    return {
+        matched: true,
+        success: cycleResult.success === true,
+        stopReason: cycleResult.stopReason || null,
+        data: {
+            ...(cycleResult.data || {}),
+            authoredEfficiency,
+            rampMultiplier,
+            amountMultiplier,
+        },
+    };
+}
+function resolveSkillShotMiningAmountMultiplier(snapshot, rawRampMultiplier = 1) {
+    const authoredEfficiency = Math.max(0, toFiniteNumber(snapshot && snapshot.miningEfficiencyPercent, 100) / 100);
+    const rampMultiplier = Math.max(0, toFiniteNumber(rawRampMultiplier, 1));
+    return {
+        authoredEfficiency,
+        rampMultiplier,
+        amountMultiplier: authoredEfficiency * rampMultiplier,
     };
 }
 function resolveSceneForSession(session) {
@@ -956,7 +1077,12 @@ module.exports = {
     isMiningSnapshotCompatibleWithState,
     resolveMiningActivation,
     executeMiningCycle,
+    executeSkillShotMiningCycle,
     miningModuleUsesCrystals,
     buildScanResultsForSession,
+    _testing: {
+        isChargeValidForYield,
+        resolveSkillShotMiningAmountMultiplier,
+    },
 };
 //# sourceMappingURL=miningRuntime.js.map

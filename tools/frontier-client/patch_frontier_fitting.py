@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the verified build-3502403 non-modular fitting compatibility fix."""
+"""Install verified build-3502403 Frontier client compatibility adapters."""
 
 import argparse
 import hashlib
@@ -25,6 +25,12 @@ ACTION_PROVIDER_PREVIOUS_WRAPPER_SHA256 = {
 }
 ACTION_BAR_INTEGRATION_MODULE_NAME = "frontier/hud/action_bar/integration.pyc"
 ACTION_BAR_INTEGRATION_SOURCE_MEMBER_SHA256 = "092f955e64a6ee6b89b54b395c77c8b9fe432af590fa9a22de210b72068363c4"
+SKILLSHOT_CONTROLLER_MODULE_NAME = "frontier/skillshot/client/controller.pyc"
+SKILLSHOT_CONTROLLER_SOURCE_MEMBER_SHA256 = "4c4162c18f4116b728755169581736ffc7984deb1c5d45cc6454e49dbeb81e75"
+SKILLSHOT_AUTO_CANNON_MODULE_NAME = (
+    "frontier/skillshot/client/mode/auto_cannon.pyc"
+)
+SKILLSHOT_AUTO_CANNON_SOURCE_MEMBER_SHA256 = "b4698b692cfb9c2af113b367b16aea3c5d1603e94b31415018c91460cecd538c"
 PREVIOUS_WRAPPER_SHA256 = {
     "3a8b251364c9ca5dcf18f44518a5283869377f4781546885d916a57b8007910a",
     "74bd5fc669dbb04177083c1cdcb4350b3e2ba569a52208fd94b5f446b0c0f1e8",
@@ -40,6 +46,12 @@ ACTION_PROVIDER_ADAPTER = Path(__file__).with_name(
 ACTION_BAR_INTEGRATION_ADAPTER = Path(__file__).with_name(
     "action_bar_selection_adapter.py"
 )
+SKILLSHOT_CONTROLLER_ADAPTER = Path(__file__).with_name(
+    "skillshot_authority_controller_adapter.py"
+)
+SKILLSHOT_AUTO_CANNON_ADAPTER = Path(__file__).with_name(
+    "skillshot_authority_auto_cannon_adapter.py"
+)
 SOURCE_SENTINEL = b"EVEJS_FITTING_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_FITTING_ADAPTER_CODE_V1"
 CREATION_SERVICE_SOURCE_SENTINEL = b"EVEJS_CREATION_SERVICE_ORIGINAL_MEMBER_V1"
@@ -51,6 +63,18 @@ ACTION_BAR_INTEGRATION_SOURCE_SENTINEL = (
 )
 ACTION_BAR_INTEGRATION_ADAPTER_SENTINEL = (
     b"EVEJS_ACTION_BAR_INTEGRATION_ADAPTER_CODE_V1"
+)
+SKILLSHOT_CONTROLLER_SOURCE_SENTINEL = (
+    b"EVEJS_SKILLSHOT_CONTROLLER_ORIGINAL_MEMBER_V1"
+)
+SKILLSHOT_CONTROLLER_ADAPTER_SENTINEL = (
+    b"EVEJS_SKILLSHOT_CONTROLLER_ADAPTER_CODE_V1"
+)
+SKILLSHOT_AUTO_CANNON_SOURCE_SENTINEL = (
+    b"EVEJS_SKILLSHOT_AUTO_CANNON_ORIGINAL_MEMBER_V1"
+)
+SKILLSHOT_AUTO_CANNON_ADAPTER_SENTINEL = (
+    b"EVEJS_SKILLSHOT_AUTO_CANNON_ADAPTER_CODE_V1"
 )
 
 
@@ -170,6 +194,62 @@ def patched_action_bar_integration_member(member):
     return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
 
 
+def patched_skillshot_controller_member(member):
+    original = marshal.loads(member[16:])
+    adapter = compile(
+        SKILLSHOT_CONTROLLER_ADAPTER.read_text(encoding="utf-8"),
+        "evejs/skillshot_authority_controller_adapter.py",
+        "exec",
+        dont_inherit=True,
+    )
+    wrapper = compile(
+        "import marshal as _evejs_skillshot_controller_marshal\n"
+        "exec(_evejs_skillshot_controller_marshal.loads(b'EVEJS_SKILLSHOT_CONTROLLER_ORIGINAL_MEMBER_V1'[16:]))\n"
+        "exec(_evejs_skillshot_controller_marshal.loads(b'EVEJS_SKILLSHOT_CONTROLLER_ADAPTER_CODE_V1'))\n"
+        "_evejs_install_skillshot_authority(globals())\n",
+        original.co_filename,
+        "exec",
+        dont_inherit=True,
+    )
+    constants = tuple(
+        member
+        if value == SKILLSHOT_CONTROLLER_SOURCE_SENTINEL
+        else marshal.dumps(adapter)
+        if value == SKILLSHOT_CONTROLLER_ADAPTER_SENTINEL
+        else value
+        for value in wrapper.co_consts
+    )
+    return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
+
+
+def patched_skillshot_auto_cannon_member(member):
+    original = marshal.loads(member[16:])
+    adapter = compile(
+        SKILLSHOT_AUTO_CANNON_ADAPTER.read_text(encoding="utf-8"),
+        "evejs/skillshot_authority_auto_cannon_adapter.py",
+        "exec",
+        dont_inherit=True,
+    )
+    wrapper = compile(
+        "import marshal as _evejs_skillshot_auto_cannon_marshal\n"
+        "exec(_evejs_skillshot_auto_cannon_marshal.loads(b'EVEJS_SKILLSHOT_AUTO_CANNON_ORIGINAL_MEMBER_V1'[16:]))\n"
+        "exec(_evejs_skillshot_auto_cannon_marshal.loads(b'EVEJS_SKILLSHOT_AUTO_CANNON_ADAPTER_CODE_V1'))\n"
+        "_evejs_install_skillshot_auto_fire_authority(globals())\n",
+        original.co_filename,
+        "exec",
+        dont_inherit=True,
+    )
+    constants = tuple(
+        member
+        if value == SKILLSHOT_AUTO_CANNON_SOURCE_SENTINEL
+        else marshal.dumps(adapter)
+        if value == SKILLSHOT_AUTO_CANNON_ADAPTER_SENTINEL
+        else value
+        for value in wrapper.co_consts
+    )
+    return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
+
+
 def inspect_member(
     member,
     expected=SOURCE_MEMBER_SHA256,
@@ -218,6 +298,8 @@ def inspect_archive(archive, build=BUILD):
             CREATION_SERVICE_MODULE_NAME,
             ACTION_PROVIDER_MODULE_NAME,
             ACTION_BAR_INTEGRATION_MODULE_NAME,
+            SKILLSHOT_CONTROLLER_MODULE_NAME,
+            SKILLSHOT_AUTO_CANNON_MODULE_NAME,
         ):
             entries = [
                 entry
@@ -251,12 +333,26 @@ def inspect_archive(archive, build=BUILD):
                 set(),
             )
         )
+        skillshot_controller_state, skillshot_controller_original = inspect_member(
+            source.read(entries_by_name[SKILLSHOT_CONTROLLER_MODULE_NAME]),
+            SKILLSHOT_CONTROLLER_SOURCE_MEMBER_SHA256,
+            patched_skillshot_controller_member,
+            set(),
+        )
+        skillshot_auto_cannon_state, skillshot_auto_cannon_original = inspect_member(
+            source.read(entries_by_name[SKILLSHOT_AUTO_CANNON_MODULE_NAME]),
+            SKILLSHOT_AUTO_CANNON_SOURCE_MEMBER_SHA256,
+            patched_skillshot_auto_cannon_member,
+            set(),
+        )
 
     states = {
         command_state,
         service_state,
         action_provider_state,
         action_bar_integration_state,
+        skillshot_controller_state,
+        skillshot_auto_cannon_state,
     }
     if states == {"patched"}:
         state = "patched"
@@ -274,6 +370,14 @@ def inspect_archive(archive, build=BUILD):
         ACTION_BAR_INTEGRATION_MODULE_NAME: (
             action_bar_integration_state,
             action_bar_integration_original,
+        ),
+        SKILLSHOT_CONTROLLER_MODULE_NAME: (
+            skillshot_controller_state,
+            skillshot_controller_original,
+        ),
+        SKILLSHOT_AUTO_CANNON_MODULE_NAME: (
+            skillshot_auto_cannon_state,
+            skillshot_auto_cannon_original,
         ),
     }
 
@@ -304,6 +408,22 @@ def patch_archive(archive, build=BUILD):
             replacements[ACTION_BAR_INTEGRATION_MODULE_NAME] = (
                 patched_action_bar_integration_member(
                     action_bar_integration_original
+                )
+            )
+        skillshot_controller_state, skillshot_controller_original = originals[
+            SKILLSHOT_CONTROLLER_MODULE_NAME
+        ]
+        if skillshot_controller_state != "patched":
+            replacements[SKILLSHOT_CONTROLLER_MODULE_NAME] = (
+                patched_skillshot_controller_member(skillshot_controller_original)
+            )
+        skillshot_auto_cannon_state, skillshot_auto_cannon_original = originals[
+            SKILLSHOT_AUTO_CANNON_MODULE_NAME
+        ]
+        if skillshot_auto_cannon_state != "patched":
+            replacements[SKILLSHOT_AUTO_CANNON_MODULE_NAME] = (
+                patched_skillshot_auto_cannon_member(
+                    skillshot_auto_cannon_original
                 )
             )
         rewrite_archive(archive, replacements)

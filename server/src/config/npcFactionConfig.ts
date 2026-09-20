@@ -21,6 +21,7 @@ const NPC_TRANSPONDER_GROUP_FIELDS = new Set([
   "faction",
 ]);
 const NPC_TRANSPONDER_SIGNAL_MAX_LENGTH = 20;
+const U64_MAX = (1n << 64n) - 1n;
 
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -51,6 +52,42 @@ function positiveInteger(value, fieldName) {
 
 function normalizeFactionKey(value, fieldName) {
   return nonEmptyText(value, fieldName).toLowerCase();
+}
+
+function canonicalMist(value, fieldName, allowZero = false) {
+  if (typeof value !== "string") {
+    throw new TypeError(`${fieldName} must be a canonical MIST integer string`);
+  }
+  const normalized = value.trim();
+  if (!/^(0|[1-9][0-9]*)$/.test(normalized)) {
+    throw new TypeError(`${fieldName} must be a canonical MIST integer string`);
+  }
+  const amount = BigInt(normalized);
+  if ((!allowZero && amount === 0n) || amount > U64_MAX) {
+    throw new TypeError(`${fieldName} must be ${allowZero ? "a" : "a positive"} u64 MIST amount`);
+  }
+  return amount.toString();
+}
+
+function normalizeSuiWalletFunding(value) {
+  const source = assertRecord(value, "suiWalletFunding");
+  if (typeof source.enabled !== "boolean") {
+    throw new TypeError("suiWalletFunding.enabled must be a boolean");
+  }
+  if (typeof source.faucetEnabled !== "boolean") {
+    throw new TypeError("suiWalletFunding.faucetEnabled must be a boolean");
+  }
+  const maxFaucetRequests = Number(source.maxFaucetRequests);
+  if (!Number.isSafeInteger(maxFaucetRequests) || maxFaucetRequests < 0 || maxFaucetRequests > 20) {
+    throw new TypeError("suiWalletFunding.maxFaucetRequests must be an integer from 0 through 20");
+  }
+  return {
+    enabled: source.enabled,
+    budgetMist: canonicalMist(source.budgetMist, "suiWalletFunding.budgetMist"),
+    faucetEnabled: source.faucetEnabled,
+    gasReserveMist: canonicalMist(source.gasReserveMist, "suiWalletFunding.gasReserveMist"),
+    maxFaucetRequests,
+  };
 }
 
 function normalizeDisposition(value, fieldName) {
@@ -212,6 +249,7 @@ function validateConfig(rawConfig) {
     throw new TypeError("enabled must be a boolean");
   }
   const transponder = normalizeNpcTransponderConfig(source.transponder);
+  const suiWalletFunding = normalizeSuiWalletFunding(source.suiWalletFunding);
 
   const rawDefaults = assertRecord(source.defaults, "defaults");
   if (typeof rawDefaults.retaliateAgainstAggressors !== "boolean") {
@@ -345,6 +383,7 @@ function validateConfig(rawConfig) {
   return deepFreeze({
     schemaVersion,
     enabled: source.enabled,
+    suiWalletFunding,
     transponder,
     defaults,
     factions,
@@ -708,6 +747,8 @@ function getConfigSummary() {
     transponderSignalCount: CONFIG.factions.filter(
       (faction) => Boolean(faction.transponderSignal),
     ).length,
+    suiWalletFundingEnabled: CONFIG.suiWalletFunding.enabled,
+    suiWalletBudgetMist: CONFIG.suiWalletFunding.budgetMist,
     factionCount: CONFIG.factions.length,
     relationRuleCount: CONFIG.relations.length,
     resolvedRelationCount: RELATIONS_BY_PAIR.size,

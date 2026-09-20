@@ -1062,16 +1062,25 @@ function normalizeShipConditionState(rawValue) {
   for (const entry of rawFuelQueue) {
     const fuelTypeID = toNumber(entry && (entry.fuelTypeID ?? entry.typeID), 0);
     const quantity = Math.max(0, toFiniteNumber(entry && entry.quantity, 0));
+    const reserve = Boolean(entry && entry.reserve === true);
     if (
       Number.isSafeInteger(fuelTypeID) &&
       fuelTypeID > 0 &&
       quantity > 1e-9
     ) {
       const tail = fuelQueue[fuelQueue.length - 1];
-      if (tail && tail.fuelTypeID === fuelTypeID) {
+      if (
+        tail &&
+        tail.fuelTypeID === fuelTypeID &&
+        Boolean(tail.reserve === true) === reserve
+      ) {
         tail.quantity += quantity;
       } else {
-        fuelQueue.push({ fuelTypeID, quantity });
+        fuelQueue.push({
+          fuelTypeID,
+          quantity,
+          ...(reserve ? { reserve: true } : {}),
+        });
       }
     }
   }
@@ -1150,7 +1159,7 @@ function normalizeModuleState(rawValue) {
   const source =
     rawValue && typeof rawValue === "object" ? rawValue : DEFAULT_MODULE_STATE;
 
-  const normalizedState = {
+  const normalizedState: Record<string, any> = {
     online: Boolean(source.online),
     damage: toFiniteNumber(source.damage, DEFAULT_MODULE_STATE.damage),
     charge: toFiniteNumber(source.charge, DEFAULT_MODULE_STATE.charge),
@@ -1169,6 +1178,11 @@ function normalizeModuleState(rawValue) {
     "serviceFuelOnlineAt",
     "serviceFuelLastCycleAt",
     "serviceFuelNextCycleAt",
+    // Creation Launch Bays expose the same 20-second reload timestamp to the
+    // client after both loading and launching.  Keep the authority on the
+    // real fitted module row so reconnects and process restarts cannot bypass
+    // that window.
+    "creationLaunchBayReadyAtMs",
   ]) {
     if (Object.prototype.hasOwnProperty.call(source, key)) {
       const value = source[key];
@@ -1177,6 +1191,38 @@ function normalizeModuleState(rawValue) {
           ? null
           : toNumber(value, null);
     }
+  }
+  const reserveFuelQueue: any[] = [];
+  for (const entry of Array.isArray(source.reserveFuelQueue)
+    ? source.reserveFuelQueue
+    : []) {
+    const fuelTypeID = toNumber(entry && (entry.fuelTypeID ?? entry.typeID), 0);
+    const quantity = Math.max(0, toFiniteNumber(entry && entry.quantity, 0));
+    if (
+      Number.isSafeInteger(fuelTypeID) &&
+      fuelTypeID > 0 &&
+      quantity > 1e-9
+    ) {
+      const tail = reserveFuelQueue[reserveFuelQueue.length - 1];
+      if (tail && tail.fuelTypeID === fuelTypeID) {
+        tail.quantity += quantity;
+      } else {
+        reserveFuelQueue.push({ fuelTypeID, quantity, reserve: true });
+      }
+    }
+  }
+  if (reserveFuelQueue.length > 0) {
+    normalizedState.reserveFuelQueue = reserveFuelQueue;
+    normalizedState.reserveFuelCharge = reserveFuelQueue.reduce(
+      (total, entry) => total + entry.quantity,
+      0,
+    );
+  } else if (Object.prototype.hasOwnProperty.call(source, "reserveFuelCharge")) {
+    normalizedState.reserveFuelCharge = Math.max(
+      0,
+      toFiniteNumber(source.reserveFuelCharge, 0),
+    );
+    normalizedState.reserveFuelQueue = [];
   }
   return normalizedState;
 }
@@ -4588,6 +4634,159 @@ function moveItemsToLocations(moveRequests) {
 }
 
 /**
+ * Atomically stage inventory moves and an update to one existing item against
+ * the same private item-table snapshot. Creation management uses this so the
+ * fitted module rows and the hull's serialized layout can never be persisted
+ * independently.
+ *
+ * `flush` is intended for small, user-confirmed configuration commits whose
+ * durability must be visible immediately after a server restart.
+ */
+function moveItemsToLocationsAndUpdateItem(
+  moveRequests,
+  itemId,
+  updater,
+  options: Record<string, any> = {},
+) {
+  ensureMigrated();
+  const requests = Array.isArray(moveRequests) ? moveRequests : [];
+  const numericItemID = Number(itemId);
+  if (!Number.isSafeInteger(numericItemID) || numericItemID <= 0) {
+    return { success: false as const, errorMsg: "ITEM_NOT_FOUND" };
+  }
+
+  const previousItems = readItems();
+  const items = cloneValue(previousItems);
+  const characters = readCharacters();
+  const moves: any[] = [];
+  const changes: any[] = [];
+  let affectsFitting = false;
+
+  for (const request of requests) {
+    const requestItemID = Number(request && request.itemID);
+    const destinationLocationID = Number(
+      request && request.destinationLocationID,
+    );
+    const destinationFlagID = Number(request && request.destinationFlagID);
+    const hasQuantity = Boolean(
+      request && Object.prototype.hasOwnProperty.call(request, "quantity"),
+    );
+    const quantity = hasQuantity ? Number(request.quantity) : null;
+    if (
+      !Number.isSafeInteger(requestItemID) ||
+      requestItemID <= 0 ||
+      !Number.isSafeInteger(destinationLocationID) ||
+      destinationLocationID <= 0 ||
+      !Number.isSafeInteger(destinationFlagID) ||
+      destinationFlagID < 0 ||
+      (
+        hasQuantity &&
+        (!Number.isSafeInteger(quantity) || quantity <= 0)
+      )
+    ) {
+      return { success: false as const, errorMsg: "INVALID_MOVE_REQUEST" };
+    }
+
+    const stageResult = stageItemMoveToLocation(
+      items,
+      characters,
+      requestItemID,
+      destinationLocationID,
+      destinationFlagID,
+      quantity,
+      request && request.options,
+    );
+    if (!stageResult.success) {
+      return stageResult;
+    }
+    const movedItemUpdater = request && request.options && request.options.updateMovedItem;
+    if (typeof movedItemUpdater === "function") {
+      const movedItemID = Number(stageResult.data && stageResult.data.movedItemID);
+      const currentMovedItem = normalizeInventoryItem(items[String(movedItemID)]);
+      const updatedMovedItem = normalizeInventoryItem(
+        movedItemUpdater(cloneValue(currentMovedItem)),
+        currentMovedItem,
+      );
+      if (
+        !currentMovedItem ||
+        !updatedMovedItem ||
+        updatedMovedItem.itemID !== movedItemID
+      ) {
+        return { success: false as const, errorMsg: "INVALID_ITEM_STATE" };
+      }
+      items[String(movedItemID)] = updatedMovedItem;
+      const movedChange = [...stageResult.data.changes].reverse().find(
+        (change) => Number(change && change.item && change.item.itemID) === movedItemID,
+      );
+      if (movedChange) {
+        movedChange.item = cloneValue(updatedMovedItem);
+      }
+    }
+    affectsFitting = affectsFitting || stageResult.affectsFitting;
+    moves.push(stageResult.data);
+    changes.push(...stageResult.data.changes);
+  }
+
+  const currentItem = normalizeInventoryItem(items[String(numericItemID)]);
+  if (!currentItem) {
+    return { success: false as const, errorMsg: "ITEM_NOT_FOUND" };
+  }
+  const expectedCategoryID = Number(options && options.expectedCategoryID);
+  if (
+    Number.isSafeInteger(expectedCategoryID) &&
+    expectedCategoryID > 0 &&
+    currentItem.categoryID !== expectedCategoryID
+  ) {
+    return { success: false as const, errorMsg: "INVALID_ITEM_STATE" };
+  }
+
+  const updatedValue = typeof updater === "function"
+    ? updater(cloneValue(currentItem))
+    : updater;
+  const updatedItem = normalizeInventoryItem(updatedValue, currentItem);
+  if (!updatedItem || updatedItem.itemID !== numericItemID) {
+    return { success: false as const, errorMsg: "INVALID_ITEM_STATE" };
+  }
+  items[String(numericItemID)] = updatedItem;
+
+  const indexDelta = indexDeltaFromChanges(changes);
+  indexDelta.upsertedIDs.push(numericItemID);
+  indexDelta.upsertedIDs = [...new Set(indexDelta.upsertedIDs)];
+  if (!writeItems(items, { indexDelta })) {
+    return { success: false as const, errorMsg: "WRITE_ERROR" };
+  }
+
+  if (options && options.flush === true) {
+    const flushResult = repo.flushTablesSync([ITEMS_TABLE]);
+    if (!flushResult || flushResult.success !== true) {
+      // The logical transaction was staged in memory but did not become
+      // durable. Restore the previous snapshot before reporting failure so a
+      // client retry cannot duplicate an installation or removal.
+      writeItems(previousItems);
+      repo.flushTablesSync([ITEMS_TABLE]);
+      return { success: false as const, errorMsg: "PERSISTENCE_FLUSH_ERROR" };
+    }
+  }
+
+  if (affectsFitting) {
+    bumpDogmaInvalidationVersion();
+  }
+  notifyInsuranceInventoryMutationChanges(
+    changes,
+    "moveItemsToLocationsAndUpdateItem",
+  );
+  return {
+    success: true as const,
+    previousData: cloneValue(currentItem),
+    data: {
+      item: cloneValue(updatedItem),
+      changes,
+      moves,
+    },
+  };
+}
+
+/**
  * Atomically consolidate one or more stack quantities into a single stack at
  * a destination location/flag. When destinationItemID is omitted, the first
  * source move creates (or becomes) the destination stack and every remaining
@@ -4679,7 +4878,8 @@ function moveItemStacksToLocation(
     normalizedRequests.push({ itemID, quantity });
   }
 
-  const items = cloneValue(readItems());
+  const previousItems = readItems();
+  const items = cloneValue(previousItems);
   const characters = readCharacters();
   let destinationItemID = requestedDestinationItemID;
   if (destinationItemID > 0) {
@@ -4771,11 +4971,46 @@ function moveItemStacksToLocation(
     return { success: false as const, errorMsg: "INVALID_DESTINATION_STACK" };
   }
 
+  // Some stack moves are also state transitions on a different inventory
+  // row.  Creation Launch Bay reload uses this to persist its cooldown in the
+  // same item-table commit as the charge custody change.
+  const updateItemID = Number(options && options.updateItemID) || 0;
+  let updatedItem = null;
+  let updatedItemPreviousData = null;
+  if (updateItemID > 0) {
+    const currentItem = normalizeInventoryItem(items[String(updateItemID)]);
+    if (!currentItem) {
+      return { success: false as const, errorMsg: "ITEM_NOT_FOUND" };
+    }
+    updatedItemPreviousData = cloneValue(currentItem);
+    const updatedValue = typeof options.updateItem === "function"
+      ? options.updateItem(cloneValue(currentItem))
+      : options.updateItem;
+    updatedItem = normalizeInventoryItem(updatedValue, currentItem);
+    if (!updatedItem || updatedItem.itemID !== updateItemID) {
+      return { success: false as const, errorMsg: "INVALID_ITEM_STATE" };
+    }
+    items[String(updateItemID)] = updatedItem;
+  }
+
   if (affectsFitting) {
     bumpDogmaInvalidationVersion();
   }
-  if (!writeItems(items, { indexDelta: indexDeltaFromChanges(changes) })) {
+  const indexDelta = indexDeltaFromChanges(changes);
+  if (updatedItem) {
+    indexDelta.upsertedIDs.push(updateItemID);
+    indexDelta.upsertedIDs = [...new Set(indexDelta.upsertedIDs)];
+  }
+  if (!writeItems(items, { indexDelta })) {
     return { success: false as const, errorMsg: "WRITE_ERROR" };
+  }
+  if (options && options.flush === true) {
+    const flushResult = repo.flushTablesSync([ITEMS_TABLE]);
+    if (!flushResult || flushResult.success !== true) {
+      writeItems(previousItems);
+      repo.flushTablesSync([ITEMS_TABLE]);
+      return { success: false as const, errorMsg: "PERSISTENCE_FLUSH_ERROR" };
+    }
   }
   notifyInsuranceInventoryMutationChanges(
     changes,
@@ -4790,6 +5025,8 @@ function moveItemStacksToLocation(
       moves,
       preliminaryMoves,
       quantity: totalQuantity,
+      updatedItem: updatedItem ? cloneValue(updatedItem) : null,
+      updatedItemPreviousData,
     },
   };
 }
@@ -5714,6 +5951,7 @@ module.exports = {
   moveItemToLocation,
   moveItemStacksToLocation,
   moveItemsToLocations,
+  moveItemsToLocationsAndUpdateItem,
   moveItemsAndSetShipPackagingState,
   transferItemToOwnerLocation,
   moveItemTypeFromCharacterLocation,

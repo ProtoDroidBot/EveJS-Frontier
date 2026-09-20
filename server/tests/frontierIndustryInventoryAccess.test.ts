@@ -1,7 +1,41 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const fs = require("node:fs");
+const path = require("node:path");
 const vm = require("node:vm");
+
+function assemblyInventoryFixture(fileName, typeID, component, capacity) {
+  const ownerID = 140000001;
+  const item = { itemID: 501, typeID, ownerID, state: {
+    assemblyStatus: 2, assemblyTypeID: typeID, solarSystemID: 30000001,
+  } };
+  const resolved = require.resolve(`../src/services/frontier/${fileName}`);
+  const sandbox = {
+    __dirname: path.dirname(resolved),
+    module: { exports: {} },
+    exports: {},
+    require(name) {
+      if (name === "path") return path;
+      if (name.endsWith("services\\inventory\\itemStore") || name.endsWith("services/inventory/itemStore")) {
+        return { findItemById: id => Number(id) === item.itemID ? item : null,
+          getItemMetadata: id => Number(id) === typeID ? { capacity } : null };
+      }
+      if (name.endsWith("services\\_shared\\referenceData") || name.endsWith("services/_shared/referenceData")) {
+        return { TABLE: { SPACE_COMPONENTS_BY_TYPE: "spaceComponentsByType" },
+          readStaticRows: () => [{ _key: typeID, ...component }] };
+      }
+      if (name.endsWith("frontier\\deploymentRuntime") || name.endsWith("frontier/deploymentRuntime")) {
+        return { ASSEMBLY_STATUS_OFFLINE: 1, ASSEMBLY_STATUS_ONLINE: 2,
+          ASSEMBLY_STATUS_UNDER_CONSTRUCTION: 0, isAssemblyActivationPending: () => false,
+          readConstructionState: candidate => candidate?.state || null };
+      }
+      assert.fail(`Unexpected dependency ${name}`);
+    },
+  };
+  vm.runInNewContext(fs.readFileSync(resolved, "utf8"), sandbox);
+  return { api: sandbox.module.exports as any, item, ownerID,
+    access: { authorized: true, activeShipID: 100, solarSystemID: 30000001, inRange: true } };
+}
 
 function fixture() {
   const owner = 140000001, system = 30000001;
@@ -23,8 +57,23 @@ function fixture() {
     "../../space/destiny/identity/interactionScope": { canEntitiesInteractLocally: () => state.visible },
     "./smartStorageUnitRuntime": {
       SMART_STORAGE_FLAG: 66, getShipCargoCapacity: () => 1234,
+      getStorageComponent: typeID => typeID === 77917 ? {} : null,
       validateStorageUnit: (_owner, id, options) => id !== 106 ? { errorMsg: "ASSEMBLY_NOT_FOUND" }
         : !options.access.inRange ? { errorMsg: "ASSEMBLY_OUT_OF_RANGE" } : { capacity: 10000 },
+    },
+    "./smartTurretInventoryRuntime": {
+      SMART_TURRET_INVENTORY_FLAG: 0,
+      getTurretComponent: typeID => typeID === 92279 ? { smartTurret: true } : null,
+      validateTurretInventory: (_owner, id, options) => id !== 107 ? { errorMsg: "ASSEMBLY_NOT_FOUND" }
+        : !options.access.inRange ? { errorMsg: "ASSEMBLY_OUT_OF_RANGE" }
+          : { capacity: 600 },
+    },
+    "./fieldStorageInventoryRuntime": {
+      FIELD_STORAGE_INVENTORY_FLAG: 0,
+      getFieldStorageComponent: typeID => typeID === 87566 ? { accessRange: 5000 } : null,
+      validateFieldStorageInventory: (_owner, id, options) => id !== 108 ? { errorMsg: "INVALID_INVENTORY" }
+        : !options.access.inRange ? { errorMsg: "ASSEMBLY_OUT_OF_RANGE" }
+          : { capacity: 30000 },
     },
     "../../_secondary/fitting/fittingRuntime": {
       getShipFittingSnapshot: () => ({ resourceState: { miningCapacity: state.miningCapacity } }),
@@ -115,4 +164,62 @@ test("industry resolves only validated nearby SSU flag66 partitions and rejects 
   f.state.distance = 100;
   f.state.visible = false;
   assert.equal(f.api.resolveIndustryInventory(f.session, 106, 66).success, false);
+});
+
+test("industry exposes an owned nearby Smart Turret flag-0 cargo endpoint", () => {
+  const f = fixture();
+  f.items.set(107, { ...f.container, itemID: 107, typeID: 92279, categoryID: 65 });
+  const result = f.api.resolveSmartAssemblyInventory(f.session, 107);
+  assert.equal(result.success, true);
+  assert.equal(result.data.flagID, 0);
+  assert.equal(result.data.capacity, 600);
+  assert.equal(result.data.smartAssemblyKind, "turret");
+  assert.equal(result.data.inventoryOwnerID, f.session.characterID);
+  assert.equal(f.api.isIndustryInventoryItemAllowed(result.data, { singleton: 0 }), true);
+  assert.equal(f.api.isIndustryInventoryItemAllowed(result.data, { singleton: 1 }), false);
+  assert.equal(f.api.resolveIndustryInventory(f.session, 107, 66).success, false);
+  f.state.distance = 5001;
+  assert.equal(f.api.resolveIndustryInventory(f.session, 107, 0).success, false);
+  f.state.distance = 100;
+  f.state.visible = false;
+  assert.equal(f.api.resolveIndustryInventory(f.session, 107, 0).success, false);
+});
+
+test("industry transfer endpoint resolver includes the active ship and Field Storage", () => {
+  const f = fixture();
+  f.items.set(108, { ...f.container, itemID: 108, typeID: 87566, categoryID: 22 });
+  const ship = f.api.resolveTransferInventory(f.session, f.ship.itemID);
+  assert.equal(ship.success, true);
+  assert.equal(ship.data.flagID, 5);
+  const field = f.api.resolveTransferInventory(f.session, 108);
+  assert.equal(field.success, true);
+  assert.equal(field.data.flagID, 0);
+  assert.equal(field.data.capacity, 30000);
+  assert.equal(field.data.inventoryKind, "field_storage");
+});
+
+test("turret and Field Storage validators enforce authored capacity, ownership, state, and range", () => {
+  const turret = assemblyInventoryFixture("smartTurretInventoryRuntime", 92279, { smartTurret: {} }, 600);
+  const validTurret = turret.api.validateTurretInventory(turret.ownerID, turret.item.itemID,
+    { access: turret.access, requireOnline: true });
+  assert.equal(validTurret.capacity, 600);
+  assert.equal(validTurret.flagID, 0);
+  assert.equal(turret.api.validateTurretInventory(turret.ownerID + 1, turret.item.itemID,
+    { access: turret.access }).errorMsg, "ACCESS_DENIED");
+  assert.equal(turret.api.validateTurretInventory(turret.ownerID, turret.item.itemID,
+    { access: { ...turret.access, inRange: false } }).errorMsg, "ASSEMBLY_OUT_OF_RANGE");
+  turret.item.state.assemblyStatus = 1;
+  assert.equal(turret.api.validateTurretInventory(turret.ownerID, turret.item.itemID,
+    { access: turret.access, requireOnline: true }).errorMsg, "ASSEMBLY_OFFLINE");
+
+  const field = assemblyInventoryFixture("fieldStorageInventoryRuntime", 87566,
+    { cargoBay: { accessRange: 5000, allowUserAdd: 1, allowUserTake: 1 },
+      smartDeployable: { createOnChain: 0 } }, 30000);
+  const validField = field.api.validateFieldStorageInventory(field.ownerID, field.item.itemID,
+    { access: field.access });
+  assert.equal(validField.capacity, 30000);
+  assert.equal(validField.component.accessRange, 5000);
+  assert.equal(validField.flagID, 0);
+  assert.equal(field.api.validateFieldStorageInventory(field.ownerID, field.item.itemID,
+    { access: { ...field.access, inRange: false } }).errorMsg, "ASSEMBLY_OUT_OF_RANGE");
 });

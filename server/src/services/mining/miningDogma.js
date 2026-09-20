@@ -10,6 +10,7 @@ const ATTRIBUTE_DURATION = getAttributeIDByNames("duration") || 73;
 const ATTRIBUTE_SPEED = getAttributeIDByNames("speed") || 51;
 const ATTRIBUTE_MAX_RANGE = getAttributeIDByNames("maxRange") || 54;
 const ATTRIBUTE_MINING_AMOUNT = getAttributeIDByNames("miningAmount") || 77;
+const ATTRIBUTE_MINING_EFFICIENCY = getAttributeIDByNames("miningEfficiency") || 5803;
 const ATTRIBUTE_MAX_GROUP_ACTIVE = getAttributeIDByNames("maxGroupActive") || 763;
 const ATTRIBUTE_REACTIVATION_DELAY = getAttributeIDByNames("moduleReactivationDelay", "reactivationDelay") || 669;
 const ATTRIBUTE_MINING_WASTE_MULTIPLIER = getAttributeIDByNames("miningWastedVolumeMultiplier") || 2865;
@@ -138,6 +139,7 @@ function buildMiningModuleSnapshot({ characterID = 0, shipItem, moduleItem, effe
         maxGroupActive: Math.max(0, toInt(moduleAttributes[ATTRIBUTE_MAX_GROUP_ACTIVE], 0)),
         reactivationDelayMs: Math.max(0, round6(toFiniteNumber(moduleAttributes[ATTRIBUTE_REACTIVATION_DELAY], 0))),
         miningAmountM3,
+        miningEfficiencyPercent: Math.max(0, round6(toFiniteNumber(moduleAttributes[ATTRIBUTE_MINING_EFFICIENCY], 100))),
         wasteVolumeMultiplier: Math.max(0, round6(toFiniteNumber(moduleAttributes[ATTRIBUTE_MINING_WASTE_MULTIPLIER], 0))),
         wasteProbability: Math.max(0, round6(toFiniteNumber(moduleAttributes[ATTRIBUTE_MINING_WASTE_PROBABILITY], 0))),
         critChance: Math.max(0, round6(toFiniteNumber(moduleAttributes[ATTRIBUTE_MINING_CRIT_CHANCE], 0))),

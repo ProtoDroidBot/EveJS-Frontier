@@ -25,6 +25,7 @@ const temperatureRuntime = require(path.join(__dirname, "./temperatureRuntime"))
 const { ABILITY_DIRECTIONAL_SCAN, registerCreationAbilityHandler, } = require(path.join(__dirname, "./creationAbilityRuntime"));
 const { buildDict, buildKeyVal, buildList, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const { findItemById } = require(path.join(__dirname, "../inventory/itemStore"));
+const { isCreationModuleOnline, } = require(path.join(__dirname, "./creationRuntime"));
 const FILETIME_UNITS_PER_MS = 10000n;
 let registered = false;
 function toInt(value, fallback = 0) {
@@ -202,6 +203,9 @@ function registerScanningAbilityHandlers() {
     registered = true;
     registerCreationAbilityHandler("directional_scan", ABILITY_DIRECTIONAL_SCAN, {
         validate(context) {
+            if (context.creationState && context.creationState.poweredOff === true) {
+                return { success: false, errorMsg: "CREATION_POWERED_OFF" };
+            }
             const request = scanningRuntime.normalizeScanRequest(context.kwargs);
             if (request.errorMsg) {
                 return { success: false, errorMsg: request.errorMsg };
@@ -229,6 +233,9 @@ function registerScanningAbilityHandlers() {
             const moduleItem = findItemById(context.moduleItemID);
             if (!moduleItem) {
                 return { success: false, errorMsg: "MODULE_NOT_FOUND" };
+            }
+            if (!isCreationModuleOnline(moduleItem)) {
+                return { success: false, errorMsg: "MODULE_OFFLINE" };
             }
             scanningRuntime.recordEntityScannerEmissionActivity(entity, {
                 nowMs: Date.now(),

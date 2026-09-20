@@ -12,6 +12,8 @@ provided. It never installs, copies, pins, or updates efctl.
 The synchronized EveJS file contains the current localnet world IDs and only
 the admin signer needed for character provisioning. It is stored under the
 gitignored _local directory with an ACL restricted to the current Windows user.
+When deployments/localnet/npc-deployment.json exists, its public NPC upgrade
+settings are validated and synchronized separately without changing base IDs.
 
 .EXAMPLE
 .\FrontierWorld.ps1 sync
@@ -43,6 +45,8 @@ param(
     # Intended for tests or an intentionally remote/nonstandard localnet only.
     [switch]$SkipRpcValidation,
     [switch]$SkipDockerOwnershipCheck,
+    # Intended for isolated tests or explicit recovery workflows only.
+    [switch]$SkipNpcFactionFunding,
 
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$EfctlArgument = @()
@@ -75,6 +79,7 @@ $WorldConfigPath = Join-Path $DestinationRoot 'world.private.json'
 $NpcConfigPath = Join-Path $DestinationRoot 'npc-deployment.json'
 $EfctlConfigPath = Join-Path $SourceRoot 'efctl.yaml'
 $WorldContractsRoot = Join-Path $SourceRoot 'world-contracts'
+$AssemblyEnergyConfigPath = Join-Path $WorldContractsRoot 'config\assembly-energy.json'
 $CommonModule = Join-Path $RepoRoot 'tools\frontier-client\FrontierWindows.Common.psm1'
 
 if (-not (Test-Path -LiteralPath $CommonModule -PathType Leaf)) {
@@ -375,6 +380,7 @@ function Read-StableSourceSnapshots {
         [Parameter(Mandatory)] [string]$DeploymentPath,
         [Parameter(Mandatory)] [string]$PublicationPath,
         [Parameter(Mandatory)] [string]$EnvironmentPath,
+        [Parameter(Mandatory)] [string]$AssemblyEnergyPath,
         [Parameter(Mandatory)] [string]$NpcDeploymentPath
     )
 
@@ -382,6 +388,7 @@ function Read-StableSourceSnapshots {
         Deployment = $DeploymentPath
         Publication = $PublicationPath
         Environment = $EnvironmentPath
+        AssemblyEnergy = $AssemblyEnergyPath
         NpcDeployment = $NpcDeploymentPath
     }
     for ($attempt = 1; $attempt -le 3; $attempt++) {
@@ -445,6 +452,48 @@ function Get-DotEnvValue {
         throw "$Name contains an invalid line break or NUL character."
     }
     return $values[0]
+}
+
+function Read-AssemblyEnergyManifest {
+    param([Parameter(Mandatory)] [object]$Snapshot)
+
+    try {
+        $manifest = ConvertFrom-Json -InputObject $Snapshot.Text -AsHashtable
+    }
+    catch {
+        throw "Assembly energy configuration is malformed JSON: $AssemblyEnergyConfigPath"
+    }
+    if ($manifest -isnot [Collections.IDictionary] -or
+        $manifest.schemaVersion -isnot [long] -or $manifest.schemaVersion -ne 1 -or
+        $manifest.clientBuild -isnot [long] -or $manifest.clientBuild -ne [long]$Build -or
+        $manifest.assemblies -isnot [array] -or $manifest.assemblies.Count -eq 0) {
+        throw 'Assembly energy configuration has an unsupported schema, build, or empty catalog.'
+    }
+    $seen = [Collections.Generic.HashSet[long]]::new()
+    [long]$previousTypeID = 0
+    $entries = [Collections.Generic.List[object]]::new()
+    foreach ($entry in $manifest.assemblies) {
+        if ($entry -isnot [Collections.IDictionary] -or
+            $entry.typeID -isnot [long] -or $entry.typeID -le 0 -or
+            $entry.typeID -le $previousTypeID -or -not $seen.Add([long]$entry.typeID) -or
+            $entry.energyRequired -isnot [long] -or $entry.energyRequired -lt 0 -or
+            $entry.energyRequired -gt 9007199254740991 -or
+            $entry.name -isnot [string] -or [string]::IsNullOrWhiteSpace($entry.name) -or
+            $entry.name -match '[\x00-\x1f\x7f]') {
+            throw 'Assembly energy configuration contains an invalid, duplicate, or unsorted entry.'
+        }
+        $previousTypeID = [long]$entry.typeID
+        $entries.Add([ordered]@{
+            typeID = [long]$entry.typeID
+            energyRequired = [long]$entry.energyRequired
+        })
+    }
+    return [pscustomobject]@{
+        SchemaVersion = 1
+        ClientBuild = [long]$manifest.clientBuild
+        Entries = $entries.ToArray()
+        Sha256 = [string]$Snapshot.Sha256
+    }
 }
 
 function Get-Bech32Polymod {
@@ -567,7 +616,7 @@ function Read-SourceWorld {
     $publicationPath = Join-Path $WorldContractsRoot 'contracts\world\Pub.localnet.toml'
     $environmentPath = Join-Path $WorldContractsRoot '.env'
     $npcDeploymentPath = Join-Path $WorldContractsRoot 'deployments\localnet\npc-deployment.json'
-    foreach ($required in @($deploymentPath, $publicationPath, $environmentPath)) {
+    foreach ($required in @($deploymentPath, $publicationPath, $environmentPath, $AssemblyEnergyConfigPath)) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "Required deployed-world artifact is missing: $required"
         }
@@ -577,6 +626,7 @@ function Read-SourceWorld {
         -DeploymentPath $deploymentPath `
         -PublicationPath $publicationPath `
         -EnvironmentPath $environmentPath `
+        -AssemblyEnergyPath $AssemblyEnergyConfigPath `
         -NpcDeploymentPath $npcDeploymentPath
     try {
         $deployment = $snapshots.Deployment.Text | ConvertFrom-Json
@@ -615,6 +665,7 @@ function Read-SourceWorld {
     $npcDeployment = Read-NpcDeployment -Snapshot $snapshots.NpcDeployment `
         -ChainId $chainId -PackageId $packageId `
         -ObjectRegistryId $objectRegistryId -AdminAclId $adminAclId
+    $assemblyEnergy = Read-AssemblyEnergyManifest -Snapshot $snapshots.AssemblyEnergy
 
     $adminPrivateKey = Get-DotEnvValue `
         -Path $environmentPath `
@@ -631,6 +682,7 @@ function Read-SourceWorld {
         AdminAclId = $adminAclId
         DeploymentSha256 = $snapshots.Deployment.Sha256
         PublicationSha256 = $snapshots.Publication.Sha256
+        AssemblyEnergy = $assemblyEnergy
         NpcDeployment = $npcDeployment
     }
 }
@@ -744,10 +796,16 @@ function Write-WorldConfig {
             objectRegistryId = [string]$World.ObjectRegistryId
             adminAclId = [string]$World.AdminAclId
         }
+        $value.assemblyEnergy = [ordered]@{
+            schemaVersion = [long]$World.AssemblyEnergy.SchemaVersion
+            clientBuild = [long]$World.AssemblyEnergy.ClientBuild
+            entries = @($World.AssemblyEnergy.Entries)
+        }
         $value.adminPrivateKey = [string]$World.AdminPrivateKey
         $value.artifacts = [ordered]@{
             deploymentSha256 = [string]$World.DeploymentSha256
             publicationSha256 = [string]$World.PublicationSha256
+            assemblyEnergySha256 = [string]$World.AssemblyEnergy.Sha256
         }
     }
 
@@ -775,8 +833,61 @@ function Publish-WorldSync {
     Write-Output "[evejs-frontier-world] Object registry: $($world.ObjectRegistryId)"
     Write-Output "[evejs-frontier-world] Admin ACL: $($world.AdminAclId)"
     Write-WorldConfig -State ready -World $world -Efctl $Efctl -LastAction $LastAction
+    Invoke-NpcFactionFunding
     if (-not $DryRun) {
         Write-Output "[evejs-frontier-world] Synced private EveJS config: $WorldConfigPath"
+    }
+}
+
+function Invoke-NpcFactionFunding {
+    if ($SkipNpcFactionFunding) {
+        Write-Output '[evejs-frontier-world] NPC faction wallet funding skipped explicitly.'
+        return
+    }
+    $fundingSource = Join-Path $RepoRoot 'scripts\FrontierWorld\fund-npc-factions.ts'
+    $fundingScript = Join-Path $RepoRoot 'scripts\FrontierWorld\fund-npc-factions.js'
+    $factionsConfig = Join-Path $RepoRoot 'npc-factions.config.json'
+    if (-not (Test-Path -LiteralPath $fundingSource -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $factionsConfig -PathType Leaf)) {
+        throw 'NPC faction funding source or faction configuration is missing.'
+    }
+    if ($DryRun) {
+        Write-Output "[evejs-frontier-world] Would top up configured NPC faction wallets after writing $WorldConfigPath"
+        return
+    }
+    $npm = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $npm) {
+        $npm = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    }
+    $node = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $node) {
+        $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    }
+    if ($null -eq $npm -or $null -eq $node) {
+        throw 'Node.js and npm are required to fund NPC faction wallets during world sync.'
+    }
+    Push-Location $RepoRoot
+    try {
+        & $npm.Source run --silent build:tools
+        if ($LASTEXITCODE -ne 0) {
+            throw "NPC faction funding build failed with exit code $LASTEXITCODE."
+        }
+        if (-not (Test-Path -LiteralPath $fundingScript -PathType Leaf)) {
+            throw "NPC faction funding build did not produce: $fundingScript"
+        }
+        & $node.Source $fundingScript `
+            --world-config $WorldConfigPath `
+            --factions-config $factionsConfig
+        if ($LASTEXITCODE -ne 0) {
+            throw "NPC faction wallet funding failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        Pop-Location
     }
 }
 

@@ -19,11 +19,20 @@ const {
   getEntityCollisionRadius,
   getSceneCollisionCandidates,
 } = require(path.join(__dirname, "../../space/destiny/simulation/collisions"));
+const creationControlAuthority = require(path.join(
+  __dirname,
+  "./creationControlAuthority",
+));
 
 const SKILL_SHOT_EFFECT_GUID = "effects.SkillShotWeapon";
 const SKILL_SHOT_BEAM_RADIUS_METERS = 50;
 const SKILL_SHOT_AIM_GRACE_MS = 5_000;
 const MAX_TURRET_STATES = 32;
+// Added by the verified Python 3.12 client adapter only for shots originating
+// from AutoCannonMode's toggle loop. Legacy/unpatched two-field turret states
+// remain ordinary manual fire for backwards compatibility.
+const AUTO_FIRE_CONTRACT_MARKER = "evejs.auto_fire.v1";
+const AUTO_FIRE_TERMINATED_KEY = "AutoFireTerminated";
 const ATTRIBUTE_DURATION = 73;
 const ATTRIBUTE_REACTIVATION_DELAY = 669;
 const ATTRIBUTE_HELD_BEAM_RAMP_MAX_MULTIPLIER = 6272;
@@ -153,9 +162,24 @@ function normalizeTurretStates(value) {
       continue;
     }
     seenModuleIDs.add(moduleID);
-    states.push({ moduleID, direction });
+    states.push({
+      moduleID,
+      direction,
+      automatic: Boolean(
+        Array.isArray(rawState) && rawState[2] === AUTO_FIRE_CONTRACT_MARKER,
+      ),
+    });
   }
   return states;
+}
+
+function hasAutoFireContractMarker(value) {
+  return Boolean(
+    Array.isArray(value) &&
+    value.some((rawState) => (
+      Array.isArray(rawState) && rawState[2] === AUTO_FIRE_CONTRACT_MARKER
+    )),
+  );
 }
 
 function getProfile(typeID) {
@@ -232,7 +256,7 @@ function notifySkillShot(session, name, payload: any[] = []) {
   return true;
 }
 
-function mapFailureKey(errorMsg) {
+function mapFailureKey(errorMsg, options: Record<string, any> = {}) {
   switch (String(errorMsg || "")) {
     case "NO_AMMO":
     case "NO_CHARGE":
@@ -245,8 +269,15 @@ function mapFailureKey(errorMsg) {
       return "ModuleReactivationDelayed2";
     case "EFFECT_ALREADY_ACTIVE":
       return "EffectAlreadyActive2";
+    case "AUTO_FIRE_CONTROLLER_OFFLINE":
+      return "AutoFireControllerOffline";
     default:
-      return "EffectAlreadyActive2";
+      // Automatic fire treats every failure except the two transient module
+      // states above as terminal. The client adapter consumes this dedicated
+      // key and stops the toggle without opening one generic popup per poll.
+      return options.automatic === true
+        ? AUTO_FIRE_TERMINATED_KEY
+        : "EffectAlreadyActive2";
   }
 }
 
@@ -261,6 +292,27 @@ function failure(errorMsg, extra: Record<string, any> = {}): any {
 
 function success(data: Record<string, any> = {}): any {
   return { success: true, data };
+}
+
+function resolveUtilityConsequenceFailure(hitResult) {
+  const utilityResult = hitResult && hitResult.utilityResult;
+  if (
+    !utilityResult ||
+    utilityResult.matched !== true ||
+    utilityResult.success === true
+  ) {
+    return null;
+  }
+  const stopReason = String(utilityResult.stopReason || "target");
+  const errorKey = stopReason === "cargo"
+    ? "NotEnoughCargoSpace"
+    : stopReason === "charge"
+      ? "CrystalRequired"
+      : "InvalidTargetType";
+  return failure(`UTILITY_${stopReason.toUpperCase()}`, {
+    errorKey,
+    utilityResult,
+  });
 }
 
 function defaultSchedule(callback, delayMs) {
@@ -278,6 +330,7 @@ class SkillShotRuntime {
   declare _getSpaceRuntime: any;
   declare _heldSessions: WeakMap<any, Map<number, any>>;
   declare _now: any;
+  declare _resolveCreationControlAuthority: any;
   declare _schedule: any;
   declare _singleSessions: WeakMap<any, any>;
 
@@ -293,6 +346,9 @@ class SkillShotRuntime {
     this._now = dependencies.now || (() => Date.now());
     this._schedule = dependencies.schedule || defaultSchedule;
     this._clearTimer = dependencies.clearTimer || clearTimeout;
+    this._resolveCreationControlAuthority =
+      dependencies.resolveCreationControlAuthority ||
+      creationControlAuthority.resolveCreationControlAuthority;
     this._cooldowns = new Map();
     this._singleSessions = new WeakMap();
     this._heldSessions = new WeakMap();
@@ -316,6 +372,31 @@ class SkillShotRuntime {
       return failure("SHIP_NOT_IN_SPACE");
     }
     return success({ spaceRuntime, interop: spaceRuntime.skillShotInterop || {}, scene, entity });
+  }
+
+  _enforceAutoFireAuthority(session, context, states: any[] = []) {
+    if (!states.some((state) => state && state.automatic === true)) {
+      return success();
+    }
+    const authorityState = this._resolveCreationControlAuthority(session, {
+      shipItem: context && context.shipItem,
+    });
+    if (!authorityState || authorityState.authorityResolved !== true) {
+      return failure("AUTO_FIRE_AUTHORITY_UNAVAILABLE");
+    }
+    if (
+      authorityState.isCreation === true &&
+      !creationControlAuthority.hasOnlineCreationControlModule(
+        authorityState,
+        creationControlAuthority.TYPE_CREATION_REPEATER,
+      )
+    ) {
+      return failure("AUTO_FIRE_CONTROLLER_OFFLINE");
+    }
+    return success({
+      isCreation: authorityState.isCreation === true,
+      requiresCreationRepeater: authorityState.isCreation === true,
+    });
   }
 
   _resolveModuleContext(session, state, expectedMode, options: Record<string, any> = {}) {
@@ -383,6 +464,7 @@ class SkillShotRuntime {
       entity,
       moduleItem,
       chargeItem,
+      shipItem,
       profile,
       weaponSnapshot,
       cooldownKey,
@@ -531,13 +613,42 @@ class SkillShotRuntime {
   _applyHit(context, trace, nowMs, options: Record<string, any> = {}) {
     const { scene, entity, moduleItem, chargeItem, weaponSnapshot, interop } = context;
     const targetEntity = trace && trace.entity;
-    if (!targetEntity || typeof interop.applyWeaponDamageToTarget !== "function") {
+    if (!targetEntity) {
       return { damageResult: null, destroyResult: null };
     }
     const damageMultiplier = Math.max(
       0,
       toFiniteNumber(options.damageMultiplier, 1),
     );
+    const utilityResult =
+      typeof interop.applySkillShotUtilityHit === "function"
+        ? interop.applySkillShotUtilityHit({
+            scene,
+            sourceEntity: entity,
+            targetEntity,
+            moduleItem,
+            chargeItem,
+            weaponSnapshot,
+            nowMs,
+            rampMultiplier: damageMultiplier,
+          })
+        : null;
+    if (
+      utilityResult &&
+      (
+        utilityResult.matched === true ||
+        utilityResult.blockCombatDamage === true
+      )
+    ) {
+      return {
+        damageResult: null,
+        destroyResult: null,
+        utilityResult,
+      };
+    }
+    if (typeof interop.applyWeaponDamageToTarget !== "function") {
+      return { damageResult: null, destroyResult: null, utilityResult };
+    }
     const shotDamage = Object.fromEntries(
       Object.entries<any>(weaponSnapshot.rawShotDamage || {}).map(([key, value]) => [
         key,
@@ -590,7 +701,7 @@ class SkillShotRuntime {
         hitQuality,
       );
     }
-    return result;
+    return { ...result, utilityResult };
   }
 
   _executeShot(session, state, expectedMode, options: Record<string, any> = {}) {
@@ -604,6 +715,19 @@ class SkillShotRuntime {
       return contextResult;
     }
     const context = contextResult.data;
+    if (state && state.automatic === true) {
+      // A delayed skill-shot must not rely on authority captured by BeginFire.
+      // Re-resolve persisted effective Creation state immediately before any
+      // capacitor/ammunition consumption, collision, damage, or presentation.
+      const authorityResult = this._enforceAutoFireAuthority(
+        session,
+        context,
+        [state],
+      );
+      if (!authorityResult.success) {
+        return authorityResult;
+      }
+    }
     const nowMs = this._now();
     const resourceResult = this._consumeShotResources(context, nowMs);
     if (!resourceResult.success) {
@@ -635,14 +759,28 @@ class SkillShotRuntime {
     if (options.broadcast !== false) {
       this._broadcastEffect(context, trace, true, expectedMode === "held_beam");
     }
-    return success({ context, trace, hitResult, nowMs });
+    return success({
+      context,
+      trace,
+      hitResult,
+      nowMs,
+      consequenceFailure: resolveUtilityConsequenceFailure(hitResult),
+    });
   }
 
-  _notifyFailure(session, result) {
+  _notifyFailure(session, result, options: Record<string, any> = {}) {
     notifySkillShot(
       session,
       "OnSkillShotFailed",
-      [result && result.errorKey || mapFailureKey(result && result.errorMsg), {}],
+      [
+        options.automatic === true
+          ? mapFailureKey(result && result.errorMsg, options)
+          : result && result.errorKey || mapFailureKey(
+              result && result.errorMsg,
+              options,
+            ),
+        {},
+      ],
     );
   }
 
@@ -659,10 +797,21 @@ class SkillShotRuntime {
   }
 
   beginFire(session, rawStates) {
+    const automaticRequest = hasAutoFireContractMarker(rawStates);
     const states = normalizeTurretStates(rawStates);
+    // The client contract describes the firing session, not an individual
+    // turret. Treat every accepted state as automatic when any raw tuple
+    // carries the marker. Otherwise a malformed or mixed sibling tuple could
+    // make the request pass through this branch while an unmarked delayed shot
+    // escapes the per-shot Repeater revalidation below.
+    if (automaticRequest) {
+      for (const state of states) {
+        state.automatic = true;
+      }
+    }
     if (states.length <= 0) {
       const result = failure("INVALID_TURRET_STATE");
-      this._notifyFailure(session, result);
+      this._notifyFailure(session, result, { automatic: automaticRequest });
       return result;
     }
     if (this._singleSessions.has(session)) {
@@ -671,12 +820,39 @@ class SkillShotRuntime {
       return result;
     }
 
+    if (states.some((state) => state.automatic === true)) {
+      // Resolve the authoritative persisted Creation state before cooldown or
+      // resource consumption. The explicit client contract, not retry timing,
+      // distinguishes this request from an ordinary manual click.
+      const authorityContextResult = this._resolveModuleContext(
+        session,
+        states[0],
+        "single_shot",
+        { checkCooldown: false },
+      );
+      if (!authorityContextResult.success) {
+        this._notifyFailure(session, authorityContextResult, { automatic: true });
+        return authorityContextResult;
+      }
+      const autoFireAuthorityResult = this._enforceAutoFireAuthority(
+        session,
+        authorityContextResult.data,
+        states,
+      );
+      if (!autoFireAuthorityResult.success) {
+        this._notifyFailure(session, autoFireAuthorityResult, { automatic: true });
+        return autoFireAuthorityResult;
+      }
+    }
+
     const preparedStates: any[] = [];
     let firstCycleMs = this._now();
     for (const state of states) {
       const contextResult = this._resolveModuleContext(session, state, "single_shot");
       if (!contextResult.success) {
-        this._notifyFailure(session, contextResult);
+        this._notifyFailure(session, contextResult, {
+          automatic: state.automatic === true,
+        });
         return contextResult;
       }
       const fireAtMs = this._now() + contextResult.data.profile.fireDelayMs;
@@ -692,16 +868,28 @@ class SkillShotRuntime {
 
     for (const state of preparedStates) {
       const execute = () => {
-        state.fired = true;
-        const result = this._executeShot(session, state, "single_shot");
-        if (!result.success) {
-          this._notifyFailure(session, result);
-        } else {
-          this._scheduleSingleEffectStop(result);
-          notifySkillShot(session, "OnSkillShotSucceeded", []);
+        if (firingSession.ended || state.cancelled) {
+          return;
         }
-        if ([...firingSession.states.values()].every((entry) => entry.fired)) {
-          this._singleSessions.delete(session);
+        state.fired = true;
+        try {
+          const result = this._executeShot(session, state, "single_shot");
+          if (!result.success) {
+            this._notifyFailure(session, result, {
+              automatic: state.automatic === true,
+            });
+          } else {
+            this._scheduleSingleEffectStop(result);
+            if (result.data.consequenceFailure) {
+              this._notifyFailure(session, result.data.consequenceFailure);
+            } else {
+              notifySkillShot(session, "OnSkillShotSucceeded", []);
+            }
+          }
+        } finally {
+          if ([...firingSession.states.values()].every((entry) => entry.fired)) {
+            this._singleSessions.delete(session);
+          }
         }
       };
       const delayMs = Math.max(0, state.fireAtMs - this._now());
@@ -733,9 +921,17 @@ class SkillShotRuntime {
     const firingSession = this._singleSessions.get(session);
     if (firingSession) {
       firingSession.ended = true;
-      if ([...firingSession.states.values()].every((entry) => entry.fired)) {
-        this._singleSessions.delete(session);
+      for (const state of firingSession.states.values()) {
+        if (state.fired || state.cancelled) {
+          continue;
+        }
+        state.cancelled = true;
+        if (state.timer) {
+          this._clearTimer(state.timer);
+          state.timer = null;
+        }
       }
+      this._singleSessions.delete(session);
     }
     return success({ ended: Boolean(firingSession) });
   }
@@ -808,6 +1004,12 @@ class SkillShotRuntime {
         context: result.data.context,
         trace: result.data.trace,
       };
+      if (result.data.consequenceFailure) {
+        this._stopHeldState(session, state, {
+          failure: result.data.consequenceFailure,
+        });
+        return;
+      }
       if (!state.succeeded) {
         state.succeeded = true;
         notifySkillShot(session, "OnSkillShotSucceeded", []);
@@ -942,5 +1144,7 @@ module.exports.SkillShotRuntime = SkillShotRuntime;
 module.exports.SKILL_SHOT_PROFILES = SKILL_SHOT_PROFILES;
 module.exports.SKILL_SHOT_EFFECT_GUID = SKILL_SHOT_EFFECT_GUID;
 module.exports.SKILL_SHOT_BEAM_RADIUS_METERS = SKILL_SHOT_BEAM_RADIUS_METERS;
+module.exports.AUTO_FIRE_CONTRACT_MARKER = AUTO_FIRE_CONTRACT_MARKER;
+module.exports.AUTO_FIRE_TERMINATED_KEY = AUTO_FIRE_TERMINATED_KEY;
 module.exports.normalizeTurretStates = normalizeTurretStates;
 module.exports.resolveCycleDurationMs = resolveCycleDurationMs;

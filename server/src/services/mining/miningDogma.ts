@@ -25,6 +25,8 @@ const ATTRIBUTE_DURATION = getAttributeIDByNames("duration") || 73;
 const ATTRIBUTE_SPEED = getAttributeIDByNames("speed") || 51;
 const ATTRIBUTE_MAX_RANGE = getAttributeIDByNames("maxRange") || 54;
 const ATTRIBUTE_MINING_AMOUNT = getAttributeIDByNames("miningAmount") || 77;
+const ATTRIBUTE_MINING_EFFICIENCY =
+  getAttributeIDByNames("miningEfficiency") || 5803;
 const ATTRIBUTE_MAX_GROUP_ACTIVE = getAttributeIDByNames("maxGroupActive") || 763;
 const ATTRIBUTE_REACTIVATION_DELAY =
   getAttributeIDByNames("moduleReactivationDelay", "reactivationDelay") || 669;
@@ -237,6 +239,10 @@ function buildMiningModuleSnapshot({
       round6(toFiniteNumber(moduleAttributes[ATTRIBUTE_REACTIVATION_DELAY], 0)),
     ),
     miningAmountM3,
+    miningEfficiencyPercent: Math.max(
+      0,
+      round6(toFiniteNumber(moduleAttributes[ATTRIBUTE_MINING_EFFICIENCY], 100)),
+    ),
     wasteVolumeMultiplier: Math.max(
       0,
       round6(toFiniteNumber(moduleAttributes[ATTRIBUTE_MINING_WASTE_MULTIPLIER], 0)),

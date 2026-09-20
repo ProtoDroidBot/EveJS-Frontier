@@ -26,6 +26,11 @@ const ADMIN_PRIVATE_KEY =
   "suiprivkey1qq4z52329g4z52329g4z52329g4z52329g4z52329g4z52329g4z59sdsxd";
 const NPC_PACKAGE_ID = `0x${"4".repeat(64)}`;
 const NPC_TYPE_ORIGIN = `0x${"5".repeat(64)}`;
+const ENERGY_MANIFEST = {
+  schemaVersion: 1,
+  clientBuild: 3502403,
+  assemblies: [{ typeID: 88092, name: "Network Node", energyRequired: 0 }],
+};
 
 function npcManifest(overrides = {}) {
   return {
@@ -61,8 +66,10 @@ function writeFixture(root) {
   const contracts = path.join(source, "world-contracts");
   const deployment = path.join(contracts, "deployments", "localnet");
   const world = path.join(contracts, "contracts", "world");
+  const config = path.join(contracts, "config");
   fs.mkdirSync(deployment, { recursive: true });
   fs.mkdirSync(world, { recursive: true });
+  fs.mkdirSync(config, { recursive: true });
   fs.writeFileSync(path.join(source, "efctl.yaml"), "with-graphql: true\n");
   fs.writeFileSync(
     path.join(contracts, ".env"),
@@ -96,6 +103,10 @@ function writeFixture(root) {
       "",
     ].join("\n"),
   );
+  fs.writeFileSync(
+    path.join(config, "assembly-energy.json"),
+    `${JSON.stringify(ENERGY_MANIFEST, null, 2)}\n`,
+  );
   return source;
 }
 
@@ -118,6 +129,11 @@ function writeFakeEfctl(root) {
 }
 
 function runWorld(args, environment) {
+  const worldArgs = environment?.EVEJS_TEST_RUN_NPC_FACTION_FUNDING === "1"
+    ? args
+    : [args[0], "-SkipNpcFactionFunding", ...args.slice(1)];
+  const childEnvironment = { ...environment };
+  delete childEnvironment.EVEJS_TEST_RUN_NPC_FACTION_FUNDING;
   return spawnSync(
     POWERSHELL,
     [
@@ -126,11 +142,11 @@ function runWorld(args, environment) {
       "-NonInteractive",
       "-File",
       WORLD_SCRIPT,
-      ...args,
+      ...worldArgs,
     ],
     {
       encoding: "utf8",
-      env: { ...process.env, ...environment },
+      env: { ...process.env, ...childEnvironment },
     },
   );
 }
@@ -172,6 +188,12 @@ test(
       objectRegistryId: OBJECT_REGISTRY_ID,
       adminAclId: ADMIN_ACL_ID,
     });
+    assert.deepEqual(config.assemblyEnergy, {
+      schemaVersion: 1,
+      clientBuild: 3502403,
+      entries: [{ typeID: 88092, energyRequired: 0 }],
+    });
+    assert.match(config.artifacts.assemblyEnergySha256, /^[0-9a-f]{64}$/);
     assert.equal(config.adminPrivateKey, ADMIN_PRIVATE_KEY);
     assert.equal(text.includes("PLAYER_A_PRIVATE_KEY"), false);
     assert.equal(text.includes("PLAYER_B_PRIVATE_KEY"), false);
@@ -367,6 +389,52 @@ test(
     assert.equal("world" in inactive, false);
     assert.equal("adminPrivateKey" in inactive, false);
     assert.equal(inactiveText.includes(ADMIN_PRIVATE_KEY), false);
+  },
+);
+
+test(
+  "Frontier world sync rejects malformed or wrong-build assembly energy manifests",
+  { skip: !canRunPowerShell },
+  (t) => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "evejs world energy sync "));
+    t.after(() => fs.rmSync(fixture, { force: true, recursive: true }));
+    const source = writeFixture(fixture);
+    const destination = path.join(fixture, "evejs", "world");
+    const manifestPath = path.join(source, "world-contracts", "config", "assembly-energy.json");
+    const common = ["sync", "-SourceRoot", source, "-DestinationRoot", destination,
+      "-EfctlPath", writeFakeEfctl(fixture), "-SkipRpcValidation", "-SkipDockerOwnershipCheck"];
+
+    for (const invalid of [
+      { ...ENERGY_MANIFEST, clientBuild: 1 },
+      { ...ENERGY_MANIFEST, assemblies: [
+        { typeID: 88092, name: "Network Node", energyRequired: 0 },
+        { typeID: 88092, name: "Duplicate", energyRequired: 1 },
+      ] },
+    ]) {
+      fs.writeFileSync(manifestPath, JSON.stringify(invalid));
+      const result = runWorld(common, {});
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Assembly energy configuration/);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(destination, "world.private.json"), "utf8")).state, "error");
+    }
+  },
+);
+
+test(
+  "Frontier world dry-run includes equal NPC faction wallet funding",
+  { skip: !canRunPowerShell },
+  (t) => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "evejs world funding dryrun "));
+    t.after(() => fs.rmSync(fixture, { force: true, recursive: true }));
+    const source = writeFixture(fixture);
+    const destination = path.join(fixture, "evejs", "world");
+    const result = runWorld([
+      "sync", "-DryRun", "-SourceRoot", source, "-DestinationRoot", destination,
+      "-EfctlPath", writeFakeEfctl(fixture), "-SkipRpcValidation", "-SkipDockerOwnershipCheck",
+    ], { EVEJS_TEST_RUN_NPC_FACTION_FUNDING: "1" });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Would top up configured NPC faction wallets/);
+    assert.equal(fs.existsSync(path.join(destination, "world.private.json")), false);
   },
 );
 

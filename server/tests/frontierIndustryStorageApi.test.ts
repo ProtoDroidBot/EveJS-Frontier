@@ -13,6 +13,7 @@ function fixture(overrides: Record<string, any> = {}) {
     failed: errorMsg => ({ success: false, errorMsg }),
     validateFacility: () => success, settleProduction: () => success,
     listStorage: () => [{ storageUnitID: 200, items: [] }],
+    resolveTransferInventory: () => null,
     readStorageRows: () => [{ itemID: 301, stacksize: 4 }, { itemID: 302, stacksize: 8 }],
     depositItems: async (...args) => { state.moves.push(args); return { success: true, data: { chain: { status: "synced", industryStatus: "synced", storageStatus: "synced" } } }; },
     withdrawItems: async (...args) => { state.moves.push(args); return { success: true, data: { chain: { status: "pending", industryStatus: "synced", storageStatus: "pending" } } }; },
@@ -54,6 +55,47 @@ test("Industry withdrawals route both inputs and products to the requested SSU p
     assert.deepEqual([...args[2]], [[34, 7]]);
     assert.deepEqual(args.slice(3, 6), [200, 66, side]);
   }
+});
+
+test("Industry transfers use the resolved cargo flag for turrets, Field Storage, and ships", async () => {
+  for (const endpoint of [
+    { flagID: 0, smartAssemblyKind: "turret" },
+    { flagID: 0, inventoryKind: "field_storage" },
+    { flagID: 5, inventoryKind: "ship" },
+  ]) {
+    let listedFlag = -1;
+    const deposit = fixture({
+      resolveTransferInventory: () => ({ success: true, data: endpoint }),
+      readStorageRows: (_characterID, _inventoryID, _typeID, flagID) => {
+        listedFlag = flagID;
+        return [{ itemID: 301, stacksize: 7 }];
+      },
+    });
+    assert.equal((await deposit.api.transfer("token", 100, REQUEST)).success, true);
+    assert.equal(listedFlag, endpoint.flagID);
+
+    const withdraw = fixture({
+      resolveTransferInventory: () => ({ success: true, data: endpoint }),
+    });
+    const result = await withdraw.api.transfer("token", 100, {
+      ...REQUEST,
+      direction: "withdraw",
+      side: "outputs",
+    });
+    assert.equal(result.success, true);
+    assert.equal(withdraw.state.moves[0][4], endpoint.flagID);
+  }
+});
+
+test("Industry transfer and sync reject an inaccessible resolved endpoint", async () => {
+  const f = fixture({
+    resolveTransferInventory: () => ({ success: false, errorMsg: "ASSEMBLY_OUT_OF_RANGE" }),
+    syncStorage: () => assert.fail("must not synchronize an inaccessible endpoint"),
+  });
+  assert.equal((await f.api.transfer("token", 100, REQUEST)).errorMsg, "ASSEMBLY_OUT_OF_RANGE");
+  assert.equal((await f.api.storageSync("token", 100, { storageUnitID: 200 })).errorMsg,
+    "ASSEMBLY_OUT_OF_RANGE");
+  assert.equal(f.state.moves.length, 0);
 });
 
 test("Duplicate Industry transfer requests share one mutation and conflicting replays fail", async () => {

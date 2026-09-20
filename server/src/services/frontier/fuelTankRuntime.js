@@ -42,6 +42,7 @@ const ATTRIBUTE_FUEL_EFFICIENCY = 5607;
 const ATTRIBUTE_FUEL_CAPACITY = 5633;
 const ATTRIBUTE_FUEL_RATE = 5634;
 const ATTRIBUTE_FUEL_CHARGE = 5635;
+const ATTRIBUTE_FUEL_CAPACITY_ADD = 5679;
 const ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY = 6123;
 const ATTRIBUTE_FUEL_CONTAINMENT_BURDEN = 6124;
 const ATTRIBUTE_FUEL_VOLATILITY = 6311;
@@ -59,6 +60,7 @@ const INITIAL_FULL_FUEL_SHIP_TYPE_IDS = new Set([
 ]);
 const SHIP_CATEGORY_ID = 6;
 const FUEL_EPSILON = 1e-9;
+const TYPE_FUEL_BLISTER = 96013;
 // inventorycommon.const.fuelGroups in the staged client.
 const FUEL_GROUP_CRUDE = 4738;
 const FUEL_GROUP_CORVETTE = 4598;
@@ -215,16 +217,16 @@ function initializeNewShipFuelTank(shipItem, characterID, deps = {}) {
     const updateShipItem = typeof deps.updateShipItem === "function"
         ? deps.updateShipItem
         : itemStore.updateShipItem;
+    const fuelTank = resolveShipFuelTank(shipItem, capacity, deps);
+    const reserveCapacity = resolveCreationReserveFuelCapacity(shipItem, fuelTank, deps);
+    const initialFuelQueue = partitionFuelQueueByReserveCapacity([{ fuelTypeID: UNSTABLE_FUEL_TYPE_ID, quantity: capacity }], capacity, reserveCapacity);
     const updateResult = updateShipItem(shipItem.itemID, (currentItem) => ({
         ...currentItem,
         conditionState: {
             ...(currentItem.conditionState || {}),
             fuelCharge: capacity,
             fuelTypeID: UNSTABLE_FUEL_TYPE_ID,
-            fuelQueue: [{
-                    fuelTypeID: UNSTABLE_FUEL_TYPE_ID,
-                    quantity: capacity,
-                }],
+            fuelQueue: initialFuelQueue,
         },
     }));
     if (!updateResult || updateResult.success !== true) {
@@ -271,15 +273,22 @@ function normalizeFuelQueue(rawQueue) {
         const tuple = Array.isArray(entry);
         const fuelTypeID = toInt(tuple ? entry[0] : entry && (entry.fuelTypeID ?? entry.typeID), 0);
         const quantity = Math.max(0, toFiniteNumber(tuple ? entry[1] : entry && entry.quantity, 0));
+        const reserve = Boolean(!tuple && entry && entry.reserve === true);
         if (fuelTypeID <= 0 || quantity <= FUEL_EPSILON) {
             continue;
         }
         const tail = fuelQueue[fuelQueue.length - 1];
-        if (tail && tail.fuelTypeID === fuelTypeID) {
+        if (tail &&
+            tail.fuelTypeID === fuelTypeID &&
+            Boolean(tail.reserve) === reserve) {
             tail.quantity += quantity;
         }
         else {
-            fuelQueue.push({ fuelTypeID, quantity });
+            fuelQueue.push({
+                fuelTypeID,
+                quantity,
+                ...(reserve ? { reserve: true } : {}),
+            });
         }
     }
     return fuelQueue;
@@ -363,16 +372,135 @@ function trimFuelQueueToQuantity(fuelQueue, nextTotalQuantity) {
             break;
         }
         const quantity = Math.min(entry.quantity, remaining);
-        trimmedQueue.push({ fuelTypeID: entry.fuelTypeID, quantity });
+        trimmedQueue.push({
+            fuelTypeID: entry.fuelTypeID,
+            quantity,
+            ...(entry.reserve === true ? { reserve: true } : {}),
+        });
         remaining -= quantity;
     }
     return normalizeFuelQueue(trimmedQueue);
 }
 function appendFuelQueueBatch(fuelQueue, fuelTypeID, quantity) {
+    const normalized = normalizeFuelQueue(fuelQueue);
+    const firstReserveIndex = normalized.findIndex((entry) => entry.reserve === true);
+    const insertionIndex = firstReserveIndex >= 0
+        ? firstReserveIndex
+        : normalized.length;
+    normalized.splice(insertionIndex, 0, { fuelTypeID, quantity });
+    return normalizeFuelQueue(normalized);
+}
+/**
+ * Mark only the tail which physically exceeds the ordinary tank capacity as
+ * reserve fuel. Keeping that tier at the end of the FIFO makes Fuel Blisters
+ * burn after the ship's normal tanks, even after a later refuel operation.
+ */
+function partitionFuelQueueByReserveCapacity(fuelQueue, totalCapacity, reserveCapacity) {
+    const source = normalizeFuelQueue(fuelQueue);
+    const hasAuthoredReserveTier = source.some((entry) => entry.reserve === true);
+    const normalized = source.map((entry) => ({
+        fuelTypeID: entry.fuelTypeID,
+        quantity: entry.quantity,
+        ...(entry.reserve === true ? { reserve: true } : {}),
+    }));
+    const totalQuantity = getFuelQueueQuantity(normalized);
+    const capacity = Math.max(0, toFiniteNumber(totalCapacity, 0));
+    const reserveLimit = Math.min(capacity, Math.max(0, toFiniteNumber(reserveCapacity, 0)));
+    let ordinaryRemaining = Math.min(totalQuantity, Math.max(0, capacity - reserveLimit));
+    if (hasAuthoredReserveTier) {
+        const ordinaryEntries = normalized.filter((entry) => entry.reserve !== true);
+        const reserveEntries = normalized
+            .filter((entry) => entry.reserve === true)
+            .map((entry) => ({ ...entry, reserve: true }));
+        const ordinaryQuantity = getFuelQueueQuantity(ordinaryEntries);
+        const ordinaryLimit = Math.max(0, capacity - reserveLimit);
+        if (ordinaryQuantity <= ordinaryLimit + FUEL_EPSILON) {
+            return normalizeFuelQueue([...ordinaryEntries, ...reserveEntries]);
+        }
+        const split = trimFuelQueueToQuantity(ordinaryEntries, ordinaryLimit);
+        const overflow = trimFuelQueueToQuantity(ordinaryEntries, ordinaryQuantity);
+        let drop = ordinaryLimit;
+        const overflowTail = [];
+        for (const entry of overflow) {
+            const skipped = Math.min(drop, entry.quantity);
+            drop -= skipped;
+            const quantity = entry.quantity - skipped;
+            if (quantity > FUEL_EPSILON) {
+                overflowTail.push({
+                    fuelTypeID: entry.fuelTypeID,
+                    quantity,
+                    reserve: true,
+                });
+            }
+        }
+        return normalizeFuelQueue([
+            ...split,
+            ...overflowTail,
+            ...reserveEntries,
+        ]);
+    }
+    const partitioned = [];
+    for (const entry of normalized) {
+        const ordinaryQuantity = Math.min(entry.quantity, ordinaryRemaining);
+        if (ordinaryQuantity > FUEL_EPSILON) {
+            partitioned.push({
+                fuelTypeID: entry.fuelTypeID,
+                quantity: ordinaryQuantity,
+            });
+            ordinaryRemaining -= ordinaryQuantity;
+        }
+        const reserveQuantity = entry.quantity - ordinaryQuantity;
+        if (reserveQuantity > FUEL_EPSILON) {
+            partitioned.push({
+                fuelTypeID: entry.fuelTypeID,
+                quantity: reserveQuantity,
+                reserve: true,
+            });
+        }
+    }
+    return normalizeFuelQueue(partitioned);
+}
+function appendFuelQueueBatchByReserveCapacity(fuelQueue, fuelTypeID, quantity, totalCapacity, reserveCapacity) {
+    const capacity = Math.max(0, toFiniteNumber(totalCapacity, 0));
+    const reserveLimit = Math.min(capacity, Math.max(0, toFiniteNumber(reserveCapacity, 0)));
+    const ordinaryLimit = Math.max(0, capacity - reserveLimit);
+    const normalized = partitionFuelQueueByReserveCapacity(fuelQueue, capacity, reserveLimit);
+    const ordinaryEntries = normalized.filter((entry) => entry.reserve !== true);
+    const reserveEntries = normalized.filter((entry) => entry.reserve === true);
+    const ordinaryQuantity = getFuelQueueQuantity(ordinaryEntries);
+    const requested = Math.max(0, toFiniteNumber(quantity, 0));
+    const ordinaryAdded = Math.min(requested, Math.max(0, ordinaryLimit - ordinaryQuantity));
+    const reserveAdded = requested - ordinaryAdded;
     return normalizeFuelQueue([
-        ...normalizeFuelQueue(fuelQueue),
-        { fuelTypeID, quantity },
+        ...ordinaryEntries,
+        ...(ordinaryAdded > FUEL_EPSILON
+            ? [{ fuelTypeID, quantity: ordinaryAdded }]
+            : []),
+        ...reserveEntries,
+        ...(reserveAdded > FUEL_EPSILON
+            ? [{ fuelTypeID, quantity: reserveAdded, reserve: true }]
+            : []),
     ]);
+}
+function resolveCreationReserveFuelCapacity(shipItem, fuelTank = null, deps = {}) {
+    const resolvedFuelTank = fuelTank || resolveShipFuelTank(shipItem, 0, deps);
+    if (!resolvedFuelTank.creationType) {
+        return 0;
+    }
+    const resolveCreationContext = typeof deps.getCreationDogmaContext === "function"
+        ? deps.getCreationDogmaContext
+        : require(path.join(__dirname, "./creationRuntime")).getCreationDogmaContext;
+    const context = resolveCreationContext(shipItem, toInt(shipItem && shipItem.ownerID, 0));
+    if (!context || context.success !== true || !context.data) {
+        return 0;
+    }
+    return Math.max(0, Math.floor((Array.isArray(context.data.moduleItems) ? context.data.moduleItems : [])
+        .filter((moduleItem) => (toInt(moduleItem && moduleItem.typeID, 0) === TYPE_FUEL_BLISTER &&
+        moduleItem.moduleState && moduleItem.moduleState.online === true))
+        .reduce((total, moduleItem) => {
+        const attributes = buildEffectiveItemAttributeMap(moduleItem) || {};
+        return total + Math.max(0, toFiniteNumber(attributes[ATTRIBUTE_FUEL_CAPACITY_ADD], 0));
+    }, 0)));
 }
 /**
  * Advance Frontier's fuel-driven power grid and capacitor recharge for one
@@ -619,8 +747,9 @@ function loadFuelIntoShipTank({ characterID, shipID, fuelTypeID, quantity, fuelI
             params: { allowedFuelGroupIDs, fuelGroupID },
         };
     }
+    const reserveFuelCapacity = resolveCreationReserveFuelCapacity(shipItem, fuelTank, deps);
     const previousFuelCharge = Math.min(getShipFuelCharge(shipItem), tankCapacity);
-    let previousFuelQueue = trimFuelQueueToQuantity(getShipFuelQueue(shipItem), previousFuelCharge);
+    let previousFuelQueue = partitionFuelQueueByReserveCapacity(trimFuelQueueToQuantity(getShipFuelQueue(shipItem), previousFuelCharge), tankCapacity, reserveFuelCapacity);
     // An old save can contain charge without a type. Adopt that charge as the
     // first newly loaded type, matching the prior migration behavior.
     if (previousFuelCharge > FUEL_EPSILON &&
@@ -704,7 +833,7 @@ function loadFuelIntoShipTank({ characterID, shipID, fuelTypeID, quantity, fuelI
         remaining -= take;
     }
     const nextFuelCharge = Math.min(previousFuelCharge + requestedQuantity, tankCapacity);
-    const nextFuelQueue = appendFuelQueueBatch(previousFuelQueue, numericTypeID, requestedQuantity);
+    const nextFuelQueue = appendFuelQueueBatchByReserveCapacity(previousFuelQueue, numericTypeID, requestedQuantity, tankCapacity, reserveFuelCapacity);
     const nextFuelTypeID = nextFuelQueue[0]?.fuelTypeID || 0;
     const previousFuelProperties = calculateFuelQueueProperties(previousFuelQueue, deps);
     const fuelProperties = calculateFuelQueueProperties(nextFuelQueue, deps);
@@ -766,8 +895,10 @@ module.exports = {
     FUEL_PROPERTY_ATTRIBUTE_IDS,
     FUEL_GROUP_IDS,
     INITIAL_FULL_FUEL_SHIP_TYPE_IDS,
+    TYPE_FUEL_BLISTER,
     UNSTABLE_FUEL_TYPE_ID,
     appendFuelQueueBatch,
+    appendFuelQueueBatchByReserveCapacity,
     calculateFuelQueueProperties,
     calculateFueledCapacitorRecharge,
     collectFuelSourceStacks,
@@ -785,6 +916,8 @@ module.exports = {
     normalizeFuelComposition,
     normalizeFuelQueue,
     normalizeRequestedFuelItemIDs,
+    partitionFuelQueueByReserveCapacity,
+    resolveCreationReserveFuelCapacity,
     resolveInitialShipFuelCapacity,
     resolveShipFuelTank,
     trimFuelQueueToQuantity,

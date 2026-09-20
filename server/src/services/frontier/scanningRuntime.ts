@@ -35,6 +35,13 @@
  * - Non-modular ships use their built-in radar, ladar, magnetometric, and
  *   gravimetric sensor strengths. When a hull authors more than one positive
  *   sensor type, those strengths are averaged.
+ * - Passive Creation scanners consume the effective ship attributes authored
+ *   by Ion/Gravity sensors and their support modules. Strength is log10
+ *   (attributes 6173/6139), while resolution is a positive linear angular
+ *   value (6171/6168; lower is better).
+ * - Target EM strength consumes the effective `signatureEm` Dogma attribute
+ *   (6094). Frontier hulls author 100 as the neutral signature, EM Scrambler
+ *   applies its -60% modifier, and an active Transponder adds its +100 bloom.
  *
  * Documented emulator approximation (NOT client-recoverable): the client
  * ships the reveal/where-it-lands math but the server-side signature model
@@ -92,6 +99,19 @@ const SCAN_TIME_SHIFT_FRACTION = 0.025;
 // changes and large structures to produce proportionally stronger gravity
 // returns.
 const GRAVIMETRIC_REFERENCE_MASS_KG = 1_000_000;
+const EM_SIGNATURE_REFERENCE = 100;
+const ATTRIBUTE_SIGNATURE_EM = 6094;
+const ATTRIBUTE_PASSIVE_SCAN_GRAV_STRENGTH = 6139;
+const ATTRIBUTE_PASSIVE_SCAN_GRAV_RESOLUTION = 6168;
+const ATTRIBUTE_PASSIVE_SCAN_EM_RESOLUTION = 6171;
+const ATTRIBUTE_PASSIVE_SCAN_EM_STRENGTH = 6173;
+const DEFAULT_PASSIVE_SCAN_RESOLUTION = 10;
+// In the emulator signature equation, multiplier 1 resolves a neutral
+// base-signature target at 100 km. Converting log10 strength around 10^5
+// therefore preserves the authored meaning: each +1 strength is exactly 10x
+// more passive detection range, before target signature is applied.
+const PASSIVE_SCAN_MULTIPLIER_LOG10_REFERENCE = 5;
+const MAX_PASSIVE_SCAN_STRENGTH = Math.log10(MAXIMUM_SCAN_DISTANCE_METERS);
 const BUILT_IN_SENSOR_STRENGTH_ATTRIBUTES = Object.freeze([
   [208, "scanRadarStrength"],
   [209, "scanLadarStrength"],
@@ -230,6 +250,39 @@ function readEntityAttribute(entity, attributeID, attributeName) {
   );
 }
 
+function readEffectiveEntityAttribute(
+  entity,
+  attributeID,
+  attributeName,
+  fallback = null,
+) {
+  const attributes = entity && entity.passiveDerivedState &&
+    entity.passiveDerivedState.attributes &&
+    typeof entity.passiveDerivedState.attributes === "object"
+      ? entity.passiveDerivedState.attributes
+      : null;
+  if (
+    attributes &&
+    Object.prototype.hasOwnProperty.call(attributes, String(attributeID))
+  ) {
+    const rawDerived = attributes[String(attributeID)];
+    const derived = rawDerived === null || rawDerived === undefined
+      ? NaN
+      : toFiniteNumber(rawDerived, NaN);
+    if (Number.isFinite(derived)) {
+      return derived;
+    }
+  }
+  const rawAuthored = getTypeAttributeValue(
+    toInt(entity && entity.typeID, 0),
+    attributeName,
+  );
+  const authored = rawAuthored === null || rawAuthored === undefined
+    ? NaN
+    : toFiniteNumber(rawAuthored, NaN);
+  return Number.isFinite(authored) ? authored : fallback;
+}
+
 /**
  * Resolve the scanner profile for a classic/non-modular hull. Positive sensor
  * types are averaged exactly once each; zero or absent types do not dilute a
@@ -267,6 +320,88 @@ function resolveBuiltInScannerProfile(entity) {
           [SIGNATURE_TYPE_THERMAL, multiplier],
         ]
       : [],
+  };
+}
+
+function buildPassiveScannerChannel(
+  entity,
+  signatureType,
+  strengthAttributeID,
+  strengthAttributeName,
+  resolutionAttributeID,
+  resolutionAttributeName,
+) {
+  const strength = Math.max(
+    0,
+    toFiniteNumber(
+      readEffectiveEntityAttribute(
+        entity,
+        strengthAttributeID,
+        strengthAttributeName,
+        0,
+      ),
+      0,
+    ),
+  );
+  if (!(strength > 0)) {
+    return null;
+  }
+  const authoredResolution = toFiniteNumber(
+    readEffectiveEntityAttribute(
+      entity,
+      resolutionAttributeID,
+      resolutionAttributeName,
+      DEFAULT_PASSIVE_SCAN_RESOLUTION,
+    ),
+    DEFAULT_PASSIVE_SCAN_RESOLUTION,
+  );
+  const resolution = authoredResolution > 0
+    ? authoredResolution
+    : DEFAULT_PASSIVE_SCAN_RESOLUTION;
+  const boundedStrength = Math.min(strength, MAX_PASSIVE_SCAN_STRENGTH);
+  return {
+    signatureType,
+    strength,
+    resolution,
+    multiplier: Math.pow(
+      10,
+      boundedStrength - PASSIVE_SCAN_MULTIPLIER_LOG10_REFERENCE,
+    ),
+  };
+}
+
+/**
+ * Resolve the live 360-degree passive scanner profile for a Creation. The
+ * entity's derived map is already the authoritative online/powered-on Dogma
+ * result, so offline sensors/support modules disappear without a second state
+ * model in the scanner.
+ */
+function resolvePassiveScannerProfile(entity) {
+  const channels = [
+    buildPassiveScannerChannel(
+      entity,
+      SIGNATURE_TYPE_GRAVIMETRIC,
+      ATTRIBUTE_PASSIVE_SCAN_GRAV_STRENGTH,
+      "passiveScanGravStrength",
+      ATTRIBUTE_PASSIVE_SCAN_GRAV_RESOLUTION,
+      "passiveScanGravResolution",
+    ),
+    buildPassiveScannerChannel(
+      entity,
+      SIGNATURE_TYPE_ELECTROMAGNETIC,
+      ATTRIBUTE_PASSIVE_SCAN_EM_STRENGTH,
+      "passiveScanEmStrength",
+      ATTRIBUTE_PASSIVE_SCAN_EM_RESOLUTION,
+      "passiveScanEmResolution",
+    ),
+  ].filter(Boolean);
+  return {
+    source: "passive",
+    channels,
+    multipliers: channels.map((channel) => ([
+      channel.signatureType,
+      channel.multiplier,
+    ])),
   };
 }
 
@@ -424,7 +559,19 @@ function resolveEntityEmSignatureMultiplier(entity, nowMs = Date.now()) {
     WEAPON_ACTIVITY_EM_DECAY_MS,
     WEAPON_ACTIVITY_EM_BONUS,
   );
-  return 1 +
+  const signatureEm = readEffectiveEntityAttribute(
+    entity,
+    ATTRIBUTE_SIGNATURE_EM,
+    "signatureEm",
+    null,
+  );
+  const dogmaSignatureMultiplier =
+    signatureEm !== null &&
+    signatureEm !== undefined &&
+    Number.isFinite(Number(signatureEm))
+    ? Math.max(0, Number(signatureEm)) / EM_SIGNATURE_REFERENCE
+    : 1;
+  return dogmaSignatureMultiplier +
     (Math.max(0, activeModuleCount) * ACTIVE_MODULE_EM_BONUS) +
     Math.max(modulePulse, weaponPulse);
 }
@@ -496,7 +643,7 @@ function buildSignatureResultsForTarget({
       toInt(signatureType, 0) === SIGNATURE_TYPE_GRAVIMETRIC
         ? gravimetricSignatureMultiplier
         : toInt(signatureType, 0) === SIGNATURE_TYPE_ELECTROMAGNETIC
-          ? Math.max(1, toFiniteNumber(emSignatureMultiplier, 1))
+          ? Math.max(0, toFiniteNumber(emSignatureMultiplier, 1))
           : toInt(signatureType, 0) === SIGNATURE_TYPE_THERMAL
             ? Math.max(0, toFiniteNumber(thermalSignatureMultiplier, 1))
             : 1
@@ -671,6 +818,9 @@ function forceResolveScanningContact(
       ? Number(previous.lastScannedAtMs)
       : nowMs,
     combatResolvedAtMs: nowMs,
+    sources: previous && previous.sources && typeof previous.sources === "object"
+      ? { ...previous.sources }
+      : {},
   };
   contacts.set(entityID, contact);
   return contact;
@@ -686,7 +836,7 @@ function forgetResolvedScanningContact(session, rawEntityID) {
 }
 
 /**
- * Replace the contacts resolved by the latest directional scan.
+ * Replace the contacts resolved by one scanner source.
  *
  * A repeated scan preserves an existing contact's original resolve deadline,
  * so continuously scanning the same signal cannot postpone (or re-hide) a
@@ -713,6 +863,7 @@ function replaceResolvedScanningContacts(
     ? options.delayMsByEntityID
     : null;
   const previous = getResolvedScanningContactMap(session, false);
+  const source = String(options.source || "directional").trim() || "directional";
   const next = new Map<any, any>();
   const delayMsByEntityID = new Map<any, any>();
 
@@ -731,11 +882,28 @@ function replaceResolvedScanningContacts(
           toFiniteNumber(configuredDelayMsByEntityID.get(entityID), delayMs),
         )
       : delayMs;
-    const resolveAtMs = previousContact &&
+    const previousSources = previousContact &&
+      previousContact.sources &&
+      typeof previousContact.sources === "object"
+      ? new Set(Object.keys(previousContact.sources).filter(
+          (key) => previousContact.sources[key] === true,
+        ))
+      : new Set(previousContact ? ["directional"] : []);
+    const sourceWasAlreadyPresent = previousSources.has(source);
+    previousSources.add(source);
+    const configuredResolveAtMs = nowMs + configuredDelayMs;
+    const previousResolveAtMs = previousContact &&
       Number.isFinite(Number(previousContact.resolveAtMs))
       ? Number(previousContact.resolveAtMs)
-      : nowMs + configuredDelayMs;
+      : Number.POSITIVE_INFINITY;
+    const resolveAtMs = sourceWasAlreadyPresent
+      ? previousResolveAtMs
+      : Math.min(previousResolveAtMs, configuredResolveAtMs);
     next.set(entityID, {
+      // Preserve source-independent authority such as combatResolvedAtMs.
+      // A scan may refresh an attacker that already identified itself; that
+      // refresh must not make a later scan omission capable of hiding it.
+      ...(previousContact || {}),
       entityID,
       detectedAtMs: previousContact &&
         Number.isFinite(Number(previousContact.detectedAtMs))
@@ -743,24 +911,42 @@ function replaceResolvedScanningContacts(
         : nowMs,
       resolveAtMs,
       lastScannedAtMs: nowMs,
+      sources: Object.fromEntries(
+        [...previousSources].map((key) => [key, true]),
+      ),
     });
     delayMsByEntityID.set(entityID, Math.max(0, resolveAtMs - nowMs));
   }
 
-  // A hostile source stays resolved after identifying itself. A later scan in
-  // another direction must not turn that already-materialized attacker back
-  // into an anonymous signature or evict its server-side resolution state.
+  // A source only replaces its own contacts. Passive and directional scans
+  // coexist, and a hostile source stays resolved after identifying itself.
   if (previous instanceof Map) {
     for (const [entityID, previousContact] of previous.entries()) {
-      if (
-        next.has(entityID) ||
-        !previousContact ||
-        !Number.isFinite(Number(previousContact.combatResolvedAtMs))
-      ) {
+      if (next.has(entityID) || !previousContact) {
         continue;
       }
-      next.set(entityID, previousContact);
-      delayMsByEntityID.set(entityID, 0);
+      const remainingSources = previousContact.sources &&
+        typeof previousContact.sources === "object"
+        ? new Set(Object.keys(previousContact.sources).filter(
+            (key) => previousContact.sources[key] === true,
+          ))
+        : new Set(["directional"]);
+      remainingSources.delete(source);
+      const combatResolved = Number.isFinite(
+        Number(previousContact.combatResolvedAtMs),
+      );
+      if (remainingSources.size > 0 || combatResolved) {
+        next.set(entityID, {
+          ...previousContact,
+          sources: Object.fromEntries(
+            [...remainingSources].map((key) => [key, true]),
+          ),
+        });
+        delayMsByEntityID.set(
+          entityID,
+          Math.max(0, toFiniteNumber(previousContact.resolveAtMs, nowMs) - nowMs),
+        );
+      }
     }
   }
 
@@ -777,6 +963,150 @@ function replaceResolvedScanningContacts(
     activeIDs: new Set(next.keys()),
     delayMsByEntityID,
     removedIDs,
+  };
+}
+
+/**
+ * Run a 360-degree passive scan. Unlike an active directional pulse, passive
+ * updates are immediate and use the best authored channel resolution for the
+ * CombinedScanResult's apparent radius.
+ */
+function performPassiveScan({
+  originPosition,
+  scannerProfile,
+  resolutionConfig = null,
+  candidates,
+  previousScanIds = [],
+}: Record<string, any>) {
+  const origin = normalizeVector(originPosition) || { x: 0, y: 0, z: 0 };
+  const profile = scannerProfile && typeof scannerProfile === "object"
+    ? scannerProfile
+    : { channels: [], multipliers: [] };
+  const channels = Array.isArray(profile.channels)
+    ? profile.channels.filter((channel) => (
+        channel &&
+        toInt(channel.signatureType, 0) > 0 &&
+        toFiniteNumber(channel.multiplier, 0) > 0
+      ))
+    : [];
+  const multipliers = channels.map((channel) => ([
+    toInt(channel.signatureType, 0),
+    toFiniteNumber(channel.multiplier, 0),
+  ]));
+  const resolvedScanningConfig = resolveScanningConfig(resolutionConfig);
+  const bestResolution = channels.length > 0
+    ? Math.min(...channels.map((channel) => Math.max(
+        Number.EPSILON,
+        toFiniteNumber(channel.resolution, DEFAULT_PASSIVE_SCAN_RESOLUTION),
+      )))
+    : DEFAULT_PASSIVE_SCAN_RESOLUTION;
+  const angularResolutionRadians = Math.min(
+    Math.PI / 2,
+    (bestResolution * Math.PI) / 180,
+  );
+
+  const combinedResults: any[] = [];
+  const resolvedIds: any[] = [];
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    const position = normalizeVector(candidate && candidate.position);
+    if (!position || multipliers.length === 0) {
+      continue;
+    }
+    const offset = {
+      x: position.x - origin.x,
+      y: position.y - origin.y,
+      z: position.z - origin.z,
+    };
+    const distanceMeters = magnitude(offset);
+    if (
+      distanceMeters <= 0 ||
+      distanceMeters > resolvedScanningConfig.detectionRangeMeters
+    ) {
+      continue;
+    }
+    const outsideResolutionRange =
+      distanceMeters > resolvedScanningConfig.resolutionRangeMeters;
+    if (
+      outsideResolutionRange &&
+      resolvedScanningConfig.renderOutOfRangeSignatures !== true
+    ) {
+      continue;
+    }
+    const baseSignature = resolveBaseSignature(candidate.typeID);
+    if (!(baseSignature > 0)) {
+      continue;
+    }
+    const signatureResults = getPresentedSignatureResults(
+      buildSignatureResultsForTarget({
+        baseSignature,
+        distanceMeters,
+        multipliers,
+        massKg: candidate && candidate.mass,
+        emSignatureMultiplier: candidate && candidate.emSignatureMultiplier,
+        thermalSignatureMultiplier:
+          candidate && candidate.thermalSignatureMultiplier,
+      }),
+      candidate && candidate.hasLineOfSight,
+    );
+    const forceUnresolved =
+      outsideResolutionRange ||
+      resolvedScanningConfig.renderResolvedObjects !== true;
+    const presentedSignatureResults = forceUnresolved
+      ? capSignatureResultsBelowResolutionThreshold(
+          signatureResults,
+          resolvedScanningConfig.resolutionSnrThreshold,
+        )
+      : signatureResults;
+    const scanId = buildScanId(candidate.itemID);
+    if (
+      !forceUnresolved &&
+      isResolved(
+        presentedSignatureResults,
+        resolvedScanningConfig.resolutionSnrThreshold,
+      )
+    ) {
+      resolvedIds.push(scanId);
+      continue;
+    }
+    combinedResults.push({
+      center: [position.x, position.y, position.z],
+      radius: distanceMeters * Math.sin(angularResolutionRadians),
+      scan_id: scanId,
+      distance_range: [distanceMeters, distanceMeters],
+      estimated_number: 1,
+      estimated_number_uncertainty: 0,
+      signature_results: presentedSignatureResults,
+      resolution_state: outsideResolutionRange
+        ? "unresolved-out-of-range"
+        : resolvedScanningConfig.renderResolvedObjects !== true
+          ? "unresolved-signature-only"
+          : "passive-unresolved",
+    });
+  }
+
+  const currentIds = combinedResults.map((result) => result.scan_id);
+  const previous = new Set(
+    (Array.isArray(previousScanIds) ? previousScanIds : []).map((value) =>
+      toInt(value, 0)),
+  );
+  const added = currentIds.filter((scanId) => !previous.has(scanId));
+  const removed = [...previous].filter((scanId) => !currentIds.includes(scanId));
+  const resolvedIdSet = new Set(resolvedIds);
+  const removedReasonsByScanId = new Map<any, any>();
+  for (const scanId of removed) {
+    if (resolvedIdSet.has(scanId)) {
+      removedReasonsByScanId.set(scanId, [UPDATE_RESOLVED_TO_ITEM, scanId]);
+    }
+  }
+  return {
+    origin: [origin.x, origin.y, origin.z],
+    added,
+    removed,
+    updatedScans: combinedResults,
+    resolvedIds,
+    scanIds: currentIds,
+    removedReasonsByScanId,
+    resolutionConfig: resolvedScanningConfig,
   };
 }
 
@@ -961,6 +1291,8 @@ function performDirectionalScan({
 
 module.exports = {
   DEFAULT_ACTIVE_SCAN_DURATION_MS,
+  DEFAULT_PASSIVE_SCAN_RESOLUTION,
+  EM_SIGNATURE_REFERENCE,
   MAXIMUM_SCAN_DISTANCE_METERS,
   RESOLVE_SNR_THRESHOLD,
   SCAN_ANGLE_DEFAULT_DEGREES,
@@ -1000,9 +1332,11 @@ module.exports = {
   isScanningContactResolved,
   normalizeScanRequest,
   performDirectionalScan,
+  performPassiveScan,
   recordEntityScannerEmissionActivity,
   replaceResolvedScanningContacts,
   resolveBuiltInScannerProfile,
+  resolvePassiveScannerProfile,
   resolveBaseSignature,
   resolveGravimetricSignatureMultiplier,
   resolveScanDurationMs,

@@ -341,4 +341,3 @@ module.exports = {
     PREPARE_WITHDRAW_ITEMS_REQUEST,
     createAssemblyStorageUnitGatewayService,
 };
-//# sourceMappingURL=assemblyStorageUnitGatewayService.js.map

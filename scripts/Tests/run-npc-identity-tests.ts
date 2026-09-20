@@ -12,7 +12,7 @@ if (help) {
   const tests = [
     "npcPilotIdentityStore", "npcIdentityAllocation", "nativeNpcIdentityPersistence",
     "frontierNpcPilotIdentity", "nativeNpcPersistence", "npcStartupIdentitySlots", "beltRatIdentitySlots",
-    "frontierSuiCharacterProvisioning", "frontierSuiNpcCharacterProvisioning", "frontierSuiNpcIdentitySync",
+    "frontierSuiCharacterProvisioning", "frontierSuiNpcCharacterProvisioning", "frontierSuiNpcFactionFunding", "frontierSuiNpcIdentitySync",
     "frontierSuiNpcWorldConfig", "frontierSuiNpcProfile",
   ].map(name => `server/tests/${name}.test.js`);
   const result = spawnSync(process.execPath, [path.join(__dirname, "run-isolated-tests.js"), "--test-concurrency=1", ...tests], {

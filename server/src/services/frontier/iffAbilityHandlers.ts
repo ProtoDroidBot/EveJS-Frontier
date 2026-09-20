@@ -33,6 +33,8 @@ const {
 } = require(path.join(__dirname, "./creationAbilityRuntime"));
 const {
   isCreationModuleOnline,
+  readCreationState,
+  subscribeCreationStateChanges,
 } = require(path.join(__dirname, "./creationRuntime"));
 const { findItemById } = require(path.join(__dirname, "../inventory/itemStore"));
 
@@ -101,10 +103,10 @@ function notifyIffMapChanged(solarSystemID, reason = "changed") {
 }
 
 /**
- * Minimal verdict model (documented emulator scope): for each recipient in
- * the system, every other ship with an active transponder on a mutual
- * channel gets a friendly=true verdict when it matches the recipient's own
- * active transponder (same tribe/corporation, or exact code match).
+ * Build-3502403 consumes dict[int, bool] and explicitly maps true to
+ * HudColor.IFF_FRIENDLY and false to HudColor.IFF_UNFRIENDLY. Preserve an
+ * absent row for ships that do not broadcast at all, while every broadcasting
+ * peer receives the mutual-match verdict.
  */
 function buildVerdictsForViewer(viewer, shipsInSystem) {
   const verdicts: any[] = [];
@@ -121,9 +123,7 @@ function buildVerdictsForViewer(viewer, shipsInSystem) {
       viewer,
       other,
     );
-    if (friendly) {
-      verdicts.push([toInt(other.shipID, 0), true]);
-    }
+    verdicts.push([toInt(other.shipID, 0), friendly]);
   }
   return verdicts;
 }
@@ -364,17 +364,154 @@ function stopIffDogmaEffect(context, reason = "iff-deactivated") {
   return result || { success: false as const, errorMsg: "DOGMA_EFFECT_STOP_FAILED" };
 }
 
+function isIffEffectActive(context) {
+  const runtime = context.dependencies && context.dependencies.spaceRuntime
+    ? context.dependencies.spaceRuntime
+    : getSpaceRuntime();
+  if (!runtime || typeof runtime.getEntity !== "function") {
+    return false;
+  }
+  try {
+    const entity = runtime.getEntity(
+      context.session,
+      toInt(context.creationItem && context.creationItem.itemID, 0),
+    );
+    return Boolean(
+      entity &&
+      entity.activeModuleEffects instanceof Map &&
+      entity.activeModuleEffects.has(toInt(context.moduleItemID, 0)),
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Keep the persisted transponder's desired broadcast state distinct from its
+ * effective power state. Offlining/powering down stops the Dogma cycle but
+ * leaves {active:true}; restoring authority resumes that same configured
+ * broadcast without requiring a second client click.
+ */
+function reconcileTransponderEffectsForCreation(event: Record<string, any> = {}) {
+  const session = event.session || null;
+  const creationItem = event.item || null;
+  const creationID = toInt(event.creationID || creationItem && creationItem.itemID, 0);
+  const characterID = toInt(event.characterID, 0);
+  if (!session || !session._space || creationID <= 0 || characterID <= 0) {
+    return { started: 0, stopped: 0 };
+  }
+  const state = event.state || readCreationState(creationItem);
+  const previousState = event.previousState || null;
+  const entries = [
+    ...(state && Array.isArray(state.modules) ? state.modules : []),
+    ...(previousState && Array.isArray(previousState.modules)
+      ? previousState.modules
+      : []),
+  ];
+  const moduleIDs = new Set(
+    entries
+      .filter((entry) => iffRuntime.isIffModuleType(entry && entry.typeID))
+      .map((entry) => toInt(entry && entry.itemID, 0))
+      .filter((moduleID) => moduleID > 0),
+  );
+  let started = 0;
+  let stopped = 0;
+  for (const moduleItemID of moduleIDs) {
+    const moduleEntry = state && Array.isArray(state.modules)
+      ? state.modules.find((entry) =>
+          toInt(entry && entry.itemID, 0) === moduleItemID &&
+          iffRuntime.isIffModuleType(entry && entry.typeID))
+      : null;
+    const moduleItem = findItemById(moduleItemID);
+    const transponder = moduleItem
+      ? iffRuntime.readTransponderState(moduleItem)
+      : null;
+    const shouldBroadcast = Boolean(
+      state &&
+      state.poweredOff !== true &&
+      moduleEntry &&
+      moduleItem &&
+      toInt(moduleItem.locationID, 0) === creationID &&
+      isCreationModuleOnline(moduleItem) &&
+      transponder &&
+      transponder.active === true &&
+      transponder.channel,
+    );
+    const context: Record<string, any> = {
+      session,
+      characterID,
+      creationItem: creationItem || findItemById(creationID),
+      creationState: state,
+      moduleItemID,
+      dependencies: event.spaceRuntime ? { spaceRuntime: event.spaceRuntime } : {},
+    };
+    const active = isIffEffectActive(context);
+    if (shouldBroadcast && !active) {
+      const startResult = startIffDogmaEffect(
+        context,
+        moduleItem,
+        IFF_BROADCAST_EFFECT_NAME,
+      );
+      if (startResult && startResult.success === true) {
+        started += 1;
+      }
+    } else if (!shouldBroadcast && active) {
+      const stopResult = stopIffDogmaEffect(
+        context,
+        `iff-${String(event.reason || "authority-change")}`,
+      );
+      if (stopResult && stopResult.success === true) {
+        stopped += 1;
+      }
+    }
+  }
+  return { started, stopped };
+}
+
+function handleCreationIffStateChange(event: Record<string, any> = {}) {
+  const creationID = toInt(
+    event.creationID || event.item && event.item.itemID,
+    0,
+  );
+  if (creationID <= 0) {
+    return { started: 0, stopped: 0, suspended: 0, resumed: 0, released: 0 };
+  }
+  const transponderEffects = reconcileTransponderEffectsForCreation(event);
+  const beacons = iffRuntime.reconcileBeaconsForCreation(
+    creationID,
+    String(event.reason || "creation-state-change"),
+  );
+  const systems = new Set(beacons.solarSystemIDs || []);
+  const sessionSystemID = resolveSessionSolarSystemID(event.session);
+  if (sessionSystemID > 0) {
+    systems.add(sessionSystemID);
+  }
+  for (const solarSystemID of systems) {
+    scheduleIffStateChanged(solarSystemID, `creation-${event.reason || "state"}`);
+  }
+  return {
+    ...transponderEffects,
+    released: beacons.released,
+    resumed: beacons.resumed,
+    suspended: beacons.suspended,
+  };
+}
+
 function registerIffAbilityHandlers() {
   if (registered) {
     return;
   }
   registered = true;
+  subscribeCreationStateChanges(handleCreationIffStateChange);
 
   registerCreationAbilityHandler(
     iffRuntime.IFF_BEHAVIOR_NAME,
     ABILITY_ACTIVATE_EFFECT,
     {
       validate(context) {
+        if (context.creationState && context.creationState.poweredOff === true) {
+          return { success: false as const, errorMsg: "CREATION_POWERED_OFF" };
+        }
         const configuration = iffRuntime.normalizeIffConfiguration(
           context.kwargs.iff_channel,
           context.kwargs.iff_code,
@@ -499,6 +636,9 @@ function registerIffAbilityHandlers() {
     ABILITY_ACTIVATE_EFFECT,
     {
       validate(context) {
+        if (context.creationState && context.creationState.poweredOff === true) {
+          return { success: false as const, errorMsg: "CREATION_POWERED_OFF" };
+        }
         const configuration = iffRuntime.normalizeIffConfiguration(
           context.kwargs.iff_channel,
           context.kwargs.iff_code,
@@ -553,6 +693,21 @@ function registerIffAbilityHandlers() {
             context,
             `iff-beacon-${reason || "released"}`,
           ),
+          resumeImmobilizer: (reason) => {
+            const currentModuleItem = findItemById(context.moduleItemID);
+            if (!currentModuleItem || !isCreationModuleOnline(currentModuleItem)) {
+              return { success: false as const, errorMsg: "MODULE_OFFLINE" };
+            }
+            if (isIffEffectActive(context)) {
+              return { success: true as const, data: { alreadyActive: true } };
+            }
+            return startIffDogmaEffect(
+              context,
+              currentModuleItem,
+              IFF_BEACON_EFFECT_NAME,
+              { repeat: 0, immobilizesShip: true },
+            );
+          },
           notifyMapChanged: (reason) =>
             scheduleIffStateChanged(spaceContext.solarSystemID, `beacon-${reason}`),
           nowMs,
@@ -588,9 +743,11 @@ function registerIffAbilityHandlers() {
 module.exports = {
   buildVerdictsForViewer,
   buildNpcTransponderShipsForSystem,
+  handleCreationIffStateChange,
   notifyIffMapChanged,
   notifyIffStateChanged,
   notifyIffVerdicts,
   registerIffAbilityHandlers,
+  reconcileTransponderEffectsForCreation,
   scheduleIffVerdicts,
 };

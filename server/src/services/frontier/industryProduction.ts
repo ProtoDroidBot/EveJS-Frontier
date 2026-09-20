@@ -41,7 +41,25 @@ function withProduction(facility, production, recipe = null) {
     ...(recipe ? { productionRecipe: { jobID: production.jobID, blueprint: recipe } } : {}) };
   return JSON.stringify(info);
 }
+function getCreationHostedFacilityState(facility) {
+  if (!facility || !blueprints.isIndustryFacilityType(facility.typeID)) return false;
+  const creationRuntime = require("./creationRuntime");
+  if (Number(facility.flagID) !== Number(creationRuntime.CREATION_FITTING_FLAG_ID)) return false;
+  const host = itemStore.findItemById(Number(facility.locationID));
+  const state = creationRuntime.readCreationState(host);
+  return host && state && Array.isArray(state.modules) && state.modules.some(module =>
+    Number(module?.itemID) === Number(facility.itemID) &&
+    Number(module?.typeID) === Number(facility.typeID))
+    ? state
+    : null;
+}
+
 function online(facility) {
+  const creationState = getCreationHostedFacilityState(facility);
+  if (creationState) {
+    return creationState.poweredOff !== true &&
+      require("./creationRuntime").isCreationModuleOnline(facility);
+  }
   return readConstructionState(facility)?.assemblyStatus === ASSEMBLY_STATUS_ONLINE &&
     !isAssemblyActivationPending(facility);
 }
@@ -118,7 +136,7 @@ function event(type, production, timestampMs) {
 }
 
 function startProduction(session, facilityID, blueprintID, hash, runs = null, options = {}) {
-  const access = require("./industryRuntime").validateFacility(session, facilityID);
+  const access = require("./industryRuntime").validateFacility(session, facilityID, options);
   if (!access.success) return access;
   const { facility } = access.data;
   if (invalidStoredProduction(facility)) return fail("INVALID_PRODUCTION_STATE");
@@ -202,7 +220,7 @@ function advanceProduction(facilityID, options = {}) {
 }
 
 function discontinueProduction(session, facilityID, options = {}) {
-  const access = require("./industryRuntime").validateFacility(session, facilityID);
+  const access = require("./industryRuntime").validateFacility(session, facilityID, options);
   if (!access.success) return access;
   const { facility } = access.data;
   if (invalidStoredProduction(facility)) return fail("INVALID_PRODUCTION_STATE");

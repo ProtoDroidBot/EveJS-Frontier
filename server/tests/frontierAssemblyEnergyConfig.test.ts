@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Build-3455996 assembly energy configuration contract coverage.
+ * Build-3502403 assembly energy configuration contract coverage.
  * Run through:
  *   npm run test:isolated -- server/tests/frontierAssemblyEnergyConfig.test.js
  */
@@ -27,6 +27,36 @@ const CONFIG_ENTRIES = [
 
 test.afterEach(() => energyConfig.clearAssemblyEnergyConfig());
 
+test("server accepts only a chain table that exactly matches the synchronized build manifest", () => {
+  const components = [77917, 88086, 88092].map(typeID => ({
+    _key: typeID,
+    smartDeployable: { createOnChain: 1 },
+  }));
+  const manifest = [
+    { typeID: 77917, energyRequired: 500 },
+    { typeID: 88086, energyRequired: 0 },
+    { typeID: 88092, energyRequired: 0 },
+  ];
+  assert.doesNotThrow(() => energyConfig.assertAssemblyEnergyConfigMatches(
+    [{ typeID: 77917, energyRequired: 500 }], manifest, components,
+  ));
+  assert.throws(() => energyConfig.assertAssemblyEnergyConfigMatches(
+    [], manifest, components,
+  ), /77917: expected 500, chain absent/);
+  assert.throws(() => energyConfig.assertAssemblyEnergyConfigMatches(
+    [{ typeID: 77917, energyRequired: 500 }, { typeID: 88086, energyRequired: 1 }], manifest, components,
+  ), /88086: expected 0, chain 1/);
+  assert.throws(() => energyConfig.assertAssemblyEnergyConfigMatches(
+    [{ typeID: 77917, energyRequired: 500 }, { typeID: 84556, energyRequired: 10 }], manifest, components,
+  ), /84556: not in manifest/);
+  assert.throws(() => energyConfig.assertAssemblyEnergyConfigMatches(
+    [{ typeID: 77917, energyRequired: 500 }], manifest.slice(1), components,
+  ), /missing 77917/);
+  assert.throws(() => energyConfig.assertAssemblyEnergyConfigMatches(
+    [{ typeID: 77917, energyRequired: 500 }], undefined, components,
+  ), /run FrontierWorld\.ps1 sync/);
+});
+
 function requestEnvelope(payloadBuffer = Buffer.alloc(0), characterID = CHARACTER_ID) {
   return {
     authoritative_context: {
@@ -40,7 +70,7 @@ function requestEnvelope(payloadBuffer = Buffer.alloc(0), characterID = CHARACTE
   };
 }
 
-test("assembly energy protobuf matches the build-3455996 descriptor", () => {
+test("assembly energy protobuf matches the build-3502403 descriptor", () => {
   const types = getAssemblyGateProtoTypes();
   const encodedRequest = types.getEnergyConfigRequest.encode({}).finish();
   assert.equal(encodedRequest.length, 0);

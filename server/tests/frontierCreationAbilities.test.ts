@@ -18,6 +18,7 @@ const {
 } = require("../src/services/_shared/serviceHelpers");
 const creationRuntime = require("../src/services/frontier/creationRuntime");
 const creationAbilityRuntime = require("../src/services/frontier/creationAbilityRuntime");
+const fuelTankRuntime = require("../src/services/frontier/fuelTankRuntime");
 const {
   getCreationTemplate,
 } = require("../src/services/frontier/creationStaticData");
@@ -29,6 +30,9 @@ const MachoNetService = require("../src/services/machoNet/machoNetService");
 const itemStore = require("../src/services/inventory/itemStore");
 const liveFittingState = require("../src/services/fitting/liveFittingState");
 const frontierSpaceRuntime = require("../src/space/runtime");
+const launchBayPayloadRuntime = require(
+  "../src/services/frontier/launchBayPayloadRuntime",
+);
 const DogmaService = require("../src/services/dogma/dogmaService");
 const CreationService = require("../src/services/frontier/creationService");
 const {
@@ -39,6 +43,7 @@ const {
 const {
   buildNpcTransponderShipsForSystem,
   buildVerdictsForViewer,
+  handleCreationIffStateChange,
 } = require("../src/services/frontier/iffAbilityHandlers");
 const TYPE_SCANNER = 95322;
 const TYPE_TRANSPONDER = 95988;
@@ -52,6 +57,10 @@ const TYPE_STUTTERGUN = 95753;
 const TYPE_PYRO_ROUND = 82126;
 const TYPE_LAUNCH_BAY = 95811;
 const TYPE_FIELD_CAIRN = 93141;
+const TYPE_HEAT_TRAP = 95812;
+const TYPE_FIELD_SENTRY = 96099;
+const TYPE_FUEL_BLISTER = 96013;
+const TYPE_BLACKSTART_CELL = 96055;
 const TYPE_WRONG_GROUP_CHARGE = 82126;
 const TYPE_REFUGE_CREATION = 95735;
 const TYPE_REIVER = 87848;
@@ -67,6 +76,18 @@ const SOLAR_SYSTEM_ID = 30000004;
 function frontierMarshals(value) {
   assert.doesNotThrow(() =>
     marshalEncode(value, { compatibilityProfile: "frontier" }));
+}
+
+function assertCreationError(callback, reason) {
+  assert.throws(callback, (error) => {
+    const header = error?.machoErrorResponse?.payload?.header;
+    assert.equal(
+      header?.[0]?.value,
+      "frontier.creation.common.errors.CreationError",
+    );
+    assert.deepEqual(header?.[1], [reason]);
+    return true;
+  });
 }
 
 // ── Phase 1: ability discovery and dispatch ──────────────────────────────
@@ -113,6 +134,55 @@ test("Creation charge abilities are advertised only for charge-capable modules",
   );
 });
 
+test("offline Creation modules stop contributing derived ship benefits", () => {
+  for (const typeID of [95318, 95320, TYPE_CAPACITOR, 95326, 96013]) {
+    const onlineEntries = creationRuntime.buildCreationShipAttributeModifierEntries([{
+      itemID: typeID,
+      typeID,
+      flagID: creationRuntime.CREATION_FITTING_FLAG_ID,
+      moduleState: { online: true },
+    }]);
+    const offlineEntries = creationRuntime.buildCreationShipAttributeModifierEntries([{
+      itemID: typeID,
+      typeID,
+      flagID: creationRuntime.CREATION_FITTING_FLAG_ID,
+      moduleState: { online: false },
+    }]);
+    assert.ok(onlineEntries.length > 0, `expected online modifiers for type ${typeID}`);
+    assert.deepEqual(offlineEntries, [], `offline type ${typeID} retained modifiers`);
+  }
+
+  // A Fuel Bay has no online effect or online/offline action. It is an
+  // intentionally passive hull part and must retain its capacity modifier.
+  assert.ok(
+    creationRuntime.buildCreationShipAttributeModifierEntries([{
+      itemID: TYPE_FUEL_BAY,
+      typeID: TYPE_FUEL_BAY,
+      flagID: creationRuntime.CREATION_FITTING_FLAG_ID,
+      moduleState: { online: false },
+    }]).length > 0,
+  );
+
+  const resourceState: Record<string, any> = {
+    capacitorCapacity: 999,
+    capacitorRechargeRate: 999,
+    powerOutput: 999,
+    powerLoad: 999,
+    attributes: { 11: 999, 15: 999, 55: 999, 482: 999 },
+  };
+  const powerState = frontierSpaceRuntime._testing
+    .applyCreationPowerStateToResourceStateForTesting(resourceState, {
+      moduleItems: [{
+        itemID: TYPE_CAPACITOR,
+        typeID: TYPE_CAPACITOR,
+        moduleState: { online: false },
+      }],
+    });
+  assert.equal(powerState.capacitorCapacity, 0);
+  assert.equal(resourceState.capacitorCapacity, 0);
+  assert.equal(resourceState.attributes[482], 0);
+});
+
 test("no ability is advertised without a registered handler", () => {
   for (const typeID of [
     TYPE_SCANNER,
@@ -123,7 +193,11 @@ test("no ability is advertised without a registered handler", () => {
     const behaviorName = creationAbilityRuntime.getModuleBehaviorName(typeID);
     for (const ability of creationRuntime.getCreationModuleAbilities(typeID)) {
       assert.ok(
-        creationAbilityRuntime.resolveCreationAbilityHandler(behaviorName, ability),
+        creationAbilityRuntime.resolveCreationAbilityHandler(
+          behaviorName,
+          ability,
+          typeID,
+        ),
         `missing handler for ${behaviorName}:${ability}`,
       );
     }
@@ -279,6 +353,17 @@ function addCreationModuleToFixture(fixture, typeID) {
   return moduleItem;
 }
 
+function expireLaunchBayCooldown(moduleItemID) {
+  const result = itemStore.updateInventoryItem(moduleItemID, (item) => ({
+    ...item,
+    moduleState: {
+      ...(item.moduleState || {}),
+      creationLaunchBayReadyAtMs: 0,
+    },
+  }));
+  assert.equal(result.success, true, result.errorMsg);
+}
+
 function assertCreationChangedNotification(
   notification,
   creationID,
@@ -362,6 +447,11 @@ test("Creation reload and unload move one mining lens through module charge flag
 
   assert.equal(typeof reloadPayload.server_time, "bigint");
   assert.ok(reloadPayload.server_time > beforeReload);
+  assert.equal(
+    reloadPayload.server_time - fixture.session._space.simFileTime,
+    10_000_000n,
+    "ordinary reload responses retain the authored 1000 ms FILETIME delay",
+  );
   assert.equal(reloadPayload.type_id, TYPE_RECYCLED_MINING_LENS);
   assert.equal(reloadPayload.qty, 1);
 
@@ -459,7 +549,7 @@ test("Creation Launch Bay reloads and unloads a deployable payload through flag 
   const launchBay = addCreationModuleToFixture(fixture, TYPE_LAUNCH_BAY);
   assert.deepEqual(
     creationRuntime.getCreationModuleAbilities(TYPE_LAUNCH_BAY),
-    ["online", "offline", "reload", "unload"],
+    ["online", "offline", "deploy", "reload", "unload"],
   );
   const fieldCairn = grantCreationCargoCharge(
     OWNER_ID,
@@ -534,6 +624,221 @@ test("Creation Launch Bay reloads and unloads a deployable payload through flag 
     unloadedSnapshot.modules[String(launchBay.itemID)].loaded_count,
     0,
   );
+});
+
+test("Creation Launch Bay deploys Field Sentries and transfers Heat Trap heat", (t) => {
+  const fixture = buildCreationChargeFixture();
+  const launchBay = addCreationModuleToFixture(fixture, TYPE_LAUNCH_BAY);
+  assert.equal(
+    creationRuntime.isCreationModuleOnline(itemStore.findItemById(launchBay.itemID)),
+    true,
+  );
+  const heatTrapGrant = itemStore.grantItemToCharacterLocation(
+    OWNER_ID,
+    fixture.ship.itemID,
+    itemStore.ITEM_FLAGS.CARGO_HOLD,
+    TYPE_HEAT_TRAP,
+    3,
+    { singleton: 0 },
+  );
+  assert.equal(heatTrapGrant.success, true, heatTrapGrant.errorMsg);
+  const heatTrap = heatTrapGrant.data.items[0];
+  const reloadResult = fixture.service.Handle_activate_ability(
+    [fixture.ship.itemID, launchBay.itemID, "reload"],
+    fixture.session,
+    {
+      type_id: TYPE_HEAT_TRAP,
+      ammo_item_ids: [heatTrap.itemID],
+      ammo_location_id: fixture.ship.itemID,
+    },
+  );
+  assert.equal(unwrapMarshalValue(reloadResult).qty, 3);
+  assert.ok(
+    itemStore.findItemById(launchBay.itemID).moduleState.creationLaunchBayReadyAtMs >
+      Date.now(),
+    "reload persists the authored 20-second Launch Bay cooldown",
+  );
+
+  const shipEntity: Record<string, any> = {
+    conditionState: { temperature: 500 },
+    direction: { x: 1, y: 0, z: 0 },
+    dungeonSiteID: 123,
+    dungeonSiteInstanceID: 456,
+    itemID: fixture.ship.itemID,
+    kind: "ship",
+    mode: "STOP",
+    position: { x: 10, y: 20, z: 30 },
+    radius: 25,
+    temperatureState: {
+      externalTemperature: 300,
+      shadowed: false,
+      temperature: 500,
+    },
+    velocity: { x: 2, y: 0, z: 0 },
+  };
+  t.mock.method(frontierSpaceRuntime, "getEntity", () => shipEntity);
+  let spawnedItemID = 0;
+  t.mock.method(
+    frontierSpaceRuntime,
+    "spawnDynamicInventoryEntity",
+    (_systemID, itemID) => {
+      spawnedItemID = Number(itemID);
+      return { success: true, data: { entity: { itemID } } };
+    },
+  );
+
+  assertCreationError(
+    () => fixture.service.Handle_activate_ability(
+      [fixture.ship.itemID, launchBay.itemID, "deploy"],
+      fixture.session,
+      {},
+    ),
+    "CreationError_ModuleBusy",
+  );
+  expireLaunchBayCooldown(launchBay.itemID);
+  assert.equal(
+    creationRuntime.isCreationModuleOnline(itemStore.findItemById(launchBay.itemID)),
+    true,
+    `Launch Bay must remain online after reload: ${JSON.stringify(
+      itemStore.findItemById(launchBay.itemID).moduleState,
+    )}`,
+  );
+
+  const deployResult = fixture.service.Handle_activate_ability(
+    [fixture.ship.itemID, launchBay.itemID, "deploy"],
+    fixture.session,
+    {},
+  );
+  const payload = unwrapMarshalValue(deployResult);
+  assert.equal(payload.type_id, TYPE_HEAT_TRAP);
+  assert.equal(payload.transferred_heat, 150);
+  assert.equal(payload.item_id, spawnedItemID);
+
+  const deployed = itemStore.findItemById(spawnedItemID);
+  assert.equal(deployed.locationID, SOLAR_SYSTEM_ID);
+  assert.equal(deployed.flagID, 0);
+  assert.equal(deployed.singleton, 1);
+  assert.equal(deployed.launcherID, fixture.ship.itemID);
+  assert.equal(deployed.conditionState.temperature, 445);
+  assert.equal(deployed.spaceState.systemID, SOLAR_SYSTEM_ID);
+  assert.equal(deployed.spaceState.dungeonSiteID, 123);
+  const deployedHeatState = launchBayPayloadRuntime.getHeatTrapState(deployed);
+  assert.equal(deployedHeatState.startTemperature, 445);
+  assert.equal(deployedHeatState.ambientTemperature, 300);
+  assert.ok(
+    itemStore.findItemById(launchBay.itemID).moduleState.creationLaunchBayReadyAtMs >
+      Date.now(),
+    "deploy advances and durably persists the next ready time",
+  );
+  assert.equal(shipEntity.conditionState.temperature, 350);
+  assert.equal(
+    itemStore.listContainerItems(
+      OWNER_ID,
+      launchBay.itemID,
+      CREATION_MODULE_CHARGE_FLAG_ID,
+    )[0].stacksize,
+    2,
+  );
+
+  const unloadResult = fixture.service.Handle_activate_ability(
+    [fixture.ship.itemID, launchBay.itemID, "unload"],
+    fixture.session,
+    {},
+  );
+  assert.equal(typeof unwrapMarshalValue(unloadResult).server_time, "bigint");
+  expireLaunchBayCooldown(launchBay.itemID);
+  const sentryGrant = itemStore.grantItemToCharacterLocation(
+    OWNER_ID,
+    fixture.ship.itemID,
+    itemStore.ITEM_FLAGS.CARGO_HOLD,
+    TYPE_FIELD_SENTRY,
+    1,
+    { singleton: 0 },
+  );
+  assert.equal(sentryGrant.success, true, sentryGrant.errorMsg);
+  const sentry = sentryGrant.data.items[0];
+  const sentryReload = fixture.service.Handle_activate_ability(
+    [fixture.ship.itemID, launchBay.itemID, "reload"],
+    fixture.session,
+    {
+      type_id: TYPE_FIELD_SENTRY,
+      ammo_item_ids: [sentry.itemID],
+      ammo_location_id: fixture.ship.itemID,
+    },
+  );
+  assert.equal(unwrapMarshalValue(sentryReload).qty, 1);
+  expireLaunchBayCooldown(launchBay.itemID);
+  spawnedItemID = 0;
+  const sentryDeploy = unwrapMarshalValue(
+    fixture.service.Handle_activate_ability(
+      [fixture.ship.itemID, launchBay.itemID, "deploy"],
+      fixture.session,
+      {},
+    ),
+  );
+  assert.equal(sentryDeploy.type_id, TYPE_FIELD_SENTRY);
+  assert.equal(sentryDeploy.transferred_heat, 0);
+  assert.equal(sentryDeploy.item_id, spawnedItemID);
+  const deployedSentry = itemStore.findItemById(spawnedItemID);
+  assert.equal(deployedSentry.spaceState.systemID, SOLAR_SYSTEM_ID);
+  assert.equal(
+    deployedSentry.expiresAtMs -
+      launchBayPayloadRuntime.getLaunchState(deployedSentry).deployedAtMs,
+    86_400_000,
+    "Field Sentry persists authored 24-hour decay before ballpark spawn",
+  );
+});
+
+test("Creation Launch Bay persists Field Cairn authored 24-hour expiry", (t) => {
+  const fixture = buildCreationChargeFixture();
+  const launchBay = addCreationModuleToFixture(fixture, TYPE_LAUNCH_BAY);
+  const fieldCairn = grantCreationCargoCharge(
+    OWNER_ID,
+    fixture.ship.itemID,
+    TYPE_FIELD_CAIRN,
+  );
+  fixture.service.Handle_activate_ability(
+    [fixture.ship.itemID, launchBay.itemID, "reload"],
+    fixture.session,
+    {
+      type_id: TYPE_FIELD_CAIRN,
+      ammo_item_ids: [fieldCairn.itemID],
+      ammo_location_id: fixture.ship.itemID,
+    },
+  );
+  expireLaunchBayCooldown(launchBay.itemID);
+  assert.equal(
+    creationRuntime.isCreationModuleOnline(itemStore.findItemById(launchBay.itemID)),
+    true,
+    `Launch Bay must remain online after reload: ${JSON.stringify(
+      itemStore.findItemById(launchBay.itemID).moduleState,
+    )}`,
+  );
+  t.mock.method(frontierSpaceRuntime, "getEntity", () => ({
+    conditionState: { temperature: 295 },
+    direction: { x: 1, y: 0, z: 0 },
+    itemID: fixture.ship.itemID,
+    kind: "ship",
+    mode: "STOP",
+    position: { x: 0, y: 0, z: 0 },
+    radius: 25,
+    velocity: { x: 0, y: 0, z: 0 },
+  }));
+  t.mock.method(
+    frontierSpaceRuntime,
+    "spawnDynamicInventoryEntity",
+    (_systemID, itemID) => ({ success: true, data: { entity: { itemID } } }),
+  );
+  const deployment = unwrapMarshalValue(
+    fixture.service.Handle_activate_ability(
+      [fixture.ship.itemID, launchBay.itemID, "deploy"],
+      fixture.session,
+      {},
+    ),
+  );
+  const persisted = itemStore.findItemById(deployment.item_id);
+  const launchState = launchBayPayloadRuntime.getLaunchState(persisted);
+  assert.equal(persisted.expiresAtMs - launchState.deployedAtMs, 86_400_000);
 });
 
 test("Creation reload and unload remain successful when post-commit notifications throw", () => {
@@ -689,16 +994,18 @@ test("Creation reload rejects spoofed and wrong-group charge sources without mut
     TYPE_RECYCLED_MINING_LENS,
   );
   const foreignBefore = itemStore.findItemById(foreignCharge.itemID);
-  const spoofedResult = fixture.service.Handle_activate_ability(
-    [fixture.ship.itemID, fixture.moduleItem.itemID, "reload"],
-    fixture.session,
-    {
-      type_id: TYPE_RECYCLED_MINING_LENS,
-      ammo_item_ids: [foreignCharge.itemID],
-      ammo_location_id: fixture.ship.itemID,
-    },
+  assertCreationError(
+    () => fixture.service.Handle_activate_ability(
+      [fixture.ship.itemID, fixture.moduleItem.itemID, "reload"],
+      fixture.session,
+      {
+        type_id: TYPE_RECYCLED_MINING_LENS,
+        ammo_item_ids: [foreignCharge.itemID],
+        ammo_location_id: fixture.ship.itemID,
+      },
+    ),
+    "CreationError_CannotActivate",
   );
-  assert.equal(spoofedResult, false);
   assert.deepEqual(itemStore.findItemById(foreignCharge.itemID), foreignBefore);
 
   const wrongGroupCharge = grantCreationCargoCharge(
@@ -707,16 +1014,18 @@ test("Creation reload rejects spoofed and wrong-group charge sources without mut
     TYPE_WRONG_GROUP_CHARGE,
   );
   const wrongGroupBefore = itemStore.findItemById(wrongGroupCharge.itemID);
-  const wrongGroupResult = fixture.service.Handle_activate_ability(
-    [fixture.ship.itemID, fixture.moduleItem.itemID, "reload"],
-    fixture.session,
-    {
-      type_id: TYPE_WRONG_GROUP_CHARGE,
-      ammo_item_ids: [wrongGroupCharge.itemID],
-      ammo_location_id: fixture.ship.itemID,
-    },
+  assertCreationError(
+    () => fixture.service.Handle_activate_ability(
+      [fixture.ship.itemID, fixture.moduleItem.itemID, "reload"],
+      fixture.session,
+      {
+        type_id: TYPE_WRONG_GROUP_CHARGE,
+        ammo_item_ids: [wrongGroupCharge.itemID],
+        ammo_location_id: fixture.ship.itemID,
+      },
+    ),
+    "CreationError_CannotActivate",
   );
-  assert.equal(wrongGroupResult, false);
   assert.deepEqual(
     itemStore.findItemById(wrongGroupCharge.itemID),
     wrongGroupBefore,
@@ -779,6 +1088,35 @@ function buildIffEffectRuntime(shipID) {
   };
 }
 
+function persistCreationAuthorityStateForTest(
+  shipID,
+  moduleItem,
+  poweredOff,
+  includeModule = true,
+) {
+  const update = itemStore.updateInventoryItem(shipID, (currentItem) => {
+    let info: Record<string, any> = {};
+    try {
+      info = JSON.parse(String(currentItem.customInfo || "{}"));
+    } catch (_) {
+      info = {};
+    }
+    info[creationRuntime.CREATION_STATE_KEY] = {
+      version: creationRuntime.CREATION_STATE_VERSION,
+      templateTypeID: currentItem.typeID,
+      poweredOff: poweredOff === true,
+      modules: includeModule
+        ? [{ itemID: moduleItem.itemID, typeID: moduleItem.typeID }]
+        : [],
+      interiorPlacements: [],
+      hardpoints: [],
+    };
+    return { ...currentItem, customInfo: JSON.stringify(info) };
+  });
+  assert.equal(update.success, true, update.errorMsg);
+  return update.data;
+}
+
 test("dispatch rejects spoofed, unadvertised, and foreign-module abilities", () => {
   const creationContext = buildDispatchContext(TYPE_SCANNER);
 
@@ -837,6 +1175,313 @@ test("directional scan requires an in-space session", () => {
   assert.equal(result.errorMsg, "SHIP_NOT_IN_SPACE");
 });
 
+test("powered-off Creation hull rejects scanner and IFF activation", () => {
+  for (const [moduleTypeID, ability, kwargs] of [
+    [TYPE_SCANNER, "directional_scan", {
+      scan_angle: 15,
+      scan_direction: [0, 0, 1],
+    }],
+    [TYPE_TRANSPONDER, "activate_effect", {
+      iff_channel: "code",
+      iff_code: "RALLY-7",
+    }],
+    [TYPE_BEACON, "activate_effect", {
+      iff_channel: "tribe",
+    }],
+  ]) {
+    const creationContext: Record<string, any> = buildDispatchContext(moduleTypeID);
+    creationContext.state.poweredOff = true;
+    const result = creationAbilityRuntime.dispatchCreationAbility({
+      ability,
+      kwargs,
+      session: null,
+      creationContext,
+      moduleItemID: 500001,
+    });
+    assert.equal(result.success, false, `${moduleTypeID}:${ability}`);
+    assert.equal(result.errorMsg, "CREATION_POWERED_OFF", `${moduleTypeID}:${ability}`);
+  }
+});
+
+test("directional scan rejects an offline Creation scanner", (t) => {
+  const scannerGrant = itemStore.grantItemToCharacterLocation(
+    OWNER_ID,
+    SHIP_ID,
+    creationRuntime.CREATION_FITTING_FLAG_ID,
+    TYPE_SCANNER,
+    1,
+    {
+      individualItems: true,
+      singleton: 1,
+      moduleState: { online: false },
+    },
+  );
+  assert.equal(scannerGrant.success, true, scannerGrant.errorMsg);
+  const scanner = scannerGrant.data.items[0];
+  const originalGetEntity = frontierSpaceRuntime.getEntity;
+  frontierSpaceRuntime.getEntity = () => ({
+    kind: "ship",
+    itemID: SHIP_ID,
+    position: { x: 0, y: 0, z: 0 },
+  });
+  t.after(() => {
+    frontierSpaceRuntime.getEntity = originalGetEntity;
+  });
+
+  const result = creationAbilityRuntime.dispatchCreationAbility({
+    ability: "directional_scan",
+    kwargs: { scan_angle: 15, scan_direction: [0, 0, 1] },
+    session: {
+      charid: OWNER_ID,
+      characterID: OWNER_ID,
+      _space: { systemID: SOLAR_SYSTEM_ID, shipID: SHIP_ID },
+    },
+    creationContext: buildDispatchContext(TYPE_SCANNER, scanner.itemID),
+    moduleItemID: scanner.itemID,
+  });
+  assert.equal(result.success, false);
+  assert.equal(result.errorMsg, "MODULE_OFFLINE");
+});
+
+test("ship-wide Creation power state refreshes the live entity", (t) => {
+  const shipGrant = itemStore.grantItemToCharacterLocation(
+    OWNER_ID,
+    64000001,
+    itemStore.ITEM_FLAGS.HANGAR,
+    95276,
+    1,
+    { individualItems: true, singleton: 1 },
+  );
+  assert.equal(shipGrant.success, true, shipGrant.errorMsg);
+  const ship = shipGrant.data.items[0];
+  assert.equal(
+    creationRuntime.ensureCreationState(ship, OWNER_ID).success,
+    true,
+  );
+
+  const refreshCalls: any[] = [];
+  const originalRefresh = frontierSpaceRuntime.refreshShipDerivedState;
+  frontierSpaceRuntime.refreshShipDerivedState = (session, options) => {
+    refreshCalls.push({ session, options });
+    return { success: true };
+  };
+  t.after(() => {
+    frontierSpaceRuntime.refreshShipDerivedState = originalRefresh;
+  });
+
+  const session: Record<string, any> = {
+    characterID: OWNER_ID,
+    shipID: ship.itemID,
+    compatibilityProfile: "frontier",
+    _space: { systemID: SOLAR_SYSTEM_ID, shipID: ship.itemID },
+  };
+  const service = new CreationService();
+  assert.notEqual(service.Handle_set_power_state([ship.itemID, true], session), false);
+  assert.equal(refreshCalls.length, 1);
+  assert.equal(
+    creationRuntime.getCreationDogmaContext(
+      itemStore.findItemById(ship.itemID),
+      OWNER_ID,
+    ).data.moduleItems.every((item) => item.moduleState.online === false),
+    true,
+  );
+  assert.notEqual(service.Handle_set_power_state([ship.itemID, false], session), false);
+  assert.equal(refreshCalls.length, 2);
+});
+
+test("Creation industry modules cannot be removed while their job is active", () => {
+  const shipGrant = itemStore.grantItemToCharacterLocation(
+    OWNER_ID,
+    64000001,
+    itemStore.ITEM_FLAGS.HANGAR,
+    95276,
+    1,
+    { individualItems: true, singleton: 1 },
+  );
+  assert.equal(shipGrant.success, true, shipGrant.errorMsg);
+  const ship = shipGrant.data.items[0];
+  const ensured = creationRuntime.ensureCreationState(ship, OWNER_ID);
+  assert.equal(ensured.success, true, ensured.errorMsg);
+
+  const printer = ensured.data.state.modules.find((module) => module.typeID === 95302);
+  const processor = ensured.data.state.modules.find((module) => module.typeID === 95486);
+  assert.ok(printer);
+  assert.ok(processor);
+
+  const setProductionState = (state) => {
+    const result = itemStore.updateInventoryItem(printer.itemID, (currentItem) => ({
+      ...currentItem,
+      customInfo: JSON.stringify({
+        evejsFrontierIndustry: {
+          version: 1,
+          blueprintID: 1510,
+          production: {
+            version: 1,
+            jobID: 7,
+            state,
+            requestedRuns: 3,
+            completedRuns: 0,
+            runStartedAtMs: 1_700_000_000_000,
+            runEndAtMs: 1_700_000_010_000,
+            stopReason: state === "STOPPED" ? "DISCONTINUED" : null,
+          },
+        },
+      }),
+    }));
+    assert.equal(result.success, true, result.errorMsg);
+  };
+  const removePrinter = () => creationRuntime.commitCreationDraft(
+    itemStore.findItemById(ship.itemID),
+    OWNER_ID,
+    [{
+      op: "remove",
+      itemID: printer.itemID,
+      destLocationID: ship.itemID,
+      destFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
+    }],
+    null,
+  );
+
+  for (const state of ["RUNNING", "DISCONTINUING"]) {
+    setProductionState(state);
+    const versionBefore = itemStore.getItemMutationVersion();
+    const blocked = removePrinter();
+    assert.equal(blocked.success, false);
+    assert.equal(blocked.diagnostics[0].code, "invalid_post_commit_state");
+    assert.equal(blocked.diagnostics[0].params.reason, "INDUSTRY_JOB_ACTIVE");
+    assert.equal(blocked.diagnostics[0].params.jobID, 7);
+    assert.equal(blocked.diagnostics[0].params.state, state);
+    assert.equal(itemStore.getItemMutationVersion(), versionBefore);
+    assert.equal(
+      itemStore.findItemById(printer.itemID).flagID,
+      creationRuntime.CREATION_FITTING_FLAG_ID,
+    );
+    assert.ok(
+      creationRuntime.readCreationState(itemStore.findItemById(ship.itemID)).modules
+        .some((module) => module.itemID === printer.itemID),
+    );
+  }
+
+  setProductionState("STOPPED");
+  const escrowGrant = itemStore.grantItemsToCharacterLocation(
+    OWNER_ID,
+    printer.itemID,
+    20000,
+    [{ itemType: 34, quantity: 2 }],
+  );
+  assert.equal(escrowGrant.success, true, escrowGrant.errorMsg);
+  const escrowVersion = itemStore.getItemMutationVersion();
+  const escrowBlocked = removePrinter();
+  assert.equal(escrowBlocked.success, false);
+  assert.equal(escrowBlocked.diagnostics[0].code, "invalid_post_commit_state");
+  assert.equal(escrowBlocked.diagnostics[0].params.reason, "INDUSTRY_ESCROW_NOT_EMPTY");
+  assert.equal(escrowBlocked.diagnostics[0].params.inputItems, 1);
+  assert.equal(escrowBlocked.diagnostics[0].params.outputItems, 0);
+  assert.equal(itemStore.getItemMutationVersion(), escrowVersion);
+  assert.equal(itemStore.removeInventoryItem(escrowGrant.data.items[0].itemID).success, true);
+
+  const removed = removePrinter();
+  assert.equal(removed.success, true, JSON.stringify(removed.diagnostics));
+  assert.equal(
+    itemStore.findItemById(printer.itemID).flagID,
+    itemStore.ITEM_FLAGS.CARGO_HOLD,
+  );
+  const finalState = creationRuntime.readCreationState(itemStore.findItemById(ship.itemID));
+  assert.equal(finalState.modules.some((module) => module.itemID === printer.itemID), false);
+  assert.equal(
+    finalState.modules.some((module) => module.itemID === processor.itemID),
+    true,
+    "the other industry module retains its separate Creation industry tab",
+  );
+});
+
+test("Creation module removal immediately refreshes live cargo and fuel capacity", (t) => {
+  const shipGrant = itemStore.grantItemToCharacterLocation(
+    OWNER_ID,
+    64000001,
+    itemStore.ITEM_FLAGS.HANGAR,
+    95276,
+    1,
+    { individualItems: true, singleton: 1 },
+  );
+  assert.equal(shipGrant.success, true, shipGrant.errorMsg);
+  const ship = shipGrant.data.items[0];
+  const ensured = creationRuntime.ensureCreationState(ship, OWNER_ID);
+  assert.equal(ensured.success, true, ensured.errorMsg);
+  const cargoModule = ensured.data.state.modules.find((module) => module.typeID === 95315);
+  const fuelModule = ensured.data.state.modules.find((module) => module.typeID === TYPE_FUEL_BAY);
+  assert.ok(cargoModule);
+  assert.ok(fuelModule);
+
+  const cargoRuntime = require("../src/services/frontier/smartStorageUnitRuntime");
+  const getFuelCapacity = () => {
+    const currentShip = itemStore.findItemById(ship.itemID);
+    const context = creationRuntime.getCreationDogmaContext(currentShip, OWNER_ID);
+    assert.equal(context.success, true, context.errorMsg);
+    const attributes = liveFittingState.buildEffectiveItemAttributeMap(context.data.item);
+    liveFittingState.applyModifierGroups(
+      attributes,
+      context.data.shipAttributeModifierEntries,
+    );
+    return Number(attributes[5633] || 0);
+  };
+  const initialCargoCapacity = cargoRuntime.getShipCargoCapacity(
+    OWNER_ID,
+    itemStore.findItemById(ship.itemID),
+  );
+  const initialFuelCapacity = getFuelCapacity();
+  const initialFuelCharge = fuelTankRuntime.getShipFuelCharge(
+    itemStore.findItemById(ship.itemID),
+  );
+  assert.ok(initialCargoCapacity >= 36);
+  assert.ok(initialFuelCapacity >= 500);
+  assert.equal(initialFuelCharge, initialFuelCapacity);
+
+  const refresh = t.mock.method(
+    frontierSpaceRuntime,
+    "refreshShipDerivedState",
+    () => ({ success: true }),
+  );
+  const session: Record<string, any> = {
+    charid: OWNER_ID,
+    characterID: OWNER_ID,
+    shipid: ship.itemID,
+    shipID: ship.itemID,
+    _space: { systemID: SOLAR_SYSTEM_ID, shipID: ship.itemID },
+    sendNotification() {},
+  };
+  const service = new CreationService();
+  const remove = (itemID) => unwrapMarshalValue(
+    service.Handle_commit_management_draft([ship.itemID, [{
+      op: "remove",
+      itemID,
+      destLocationID: ship.itemID,
+      destFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
+    }]], session),
+  );
+
+  assert.deepEqual(remove(cargoModule.itemID), []);
+  assert.equal(
+    cargoRuntime.getShipCargoCapacity(OWNER_ID, itemStore.findItemById(ship.itemID)),
+    initialCargoCapacity - 36,
+  );
+  assert.deepEqual(remove(fuelModule.itemID), []);
+  assert.equal(getFuelCapacity(), initialFuelCapacity - 500);
+  const shipAfterFuelRemoval = itemStore.findItemById(ship.itemID);
+  assert.equal(
+    fuelTankRuntime.getShipFuelCharge(shipAfterFuelRemoval),
+    initialFuelCapacity - 500,
+    "fuel that cannot fit after removing a Fuel Bay is voided",
+  );
+  assert.equal(
+    fuelTankRuntime.getShipFuelQueue(shipAfterFuelRemoval)
+      .reduce((total, entry) => total + entry.quantity, 0),
+    initialFuelCapacity - 500,
+    "the persisted FIFO fuel queue is trimmed with fuelCharge",
+  );
+  assert.equal(refresh.mock.callCount(), 2);
+});
+
 test("Creation fitting splits one singleton and Dogma bridges online state", () => {
   const stationID = 64000001;
   const shipGrant = itemStore.grantItemToCharacterLocation(
@@ -850,6 +1495,9 @@ test("Creation fitting splits one singleton and Dogma bridges online state", () 
   assert.equal(shipGrant.success, true, shipGrant.errorMsg);
   const ship = shipGrant.data.items[0];
   assert.ok(ship && ship.itemID > 0);
+
+  const initiallyEnsured = creationRuntime.ensureCreationState(ship, OWNER_ID);
+  assert.equal(initiallyEnsured.success, true, initiallyEnsured.errorMsg);
 
   const stackGrant = itemStore.grantItemToCharacterLocation(
     OWNER_ID,
@@ -866,10 +1514,23 @@ test("Creation fitting splits one singleton and Dogma bridges online state", () 
   const template = getCreationTemplate(ship.typeID);
   const partID = Number(Object.keys(template && template.parts || {})[0]) || 0;
   assert.ok(partID > 0);
-  const commit = creationRuntime.commitCreationDraft(
-    ship,
-    OWNER_ID,
-    [{
+
+  const notifications: any[] = [];
+  const session: Record<string, any> = {
+    charid: OWNER_ID,
+    characterID: OWNER_ID,
+    shipid: ship.itemID,
+    shipID: ship.itemID,
+    shipTypeID: ship.typeID,
+    compatibilityProfile: "frontier",
+    sendNotification(name, idType, payload) {
+      notifications.push({ name, idType, payload });
+    },
+  };
+  const service = new CreationService();
+  const mutationVersionBeforeInstall = itemStore.getItemMutationVersion();
+  const commitDiagnostics = unwrapMarshalValue(
+    service.Handle_commit_management_draft([ship.itemID, [{
       op: "add",
       itemID: sourceStack.itemID,
       typeID: TYPE_BEACON,
@@ -882,10 +1543,18 @@ test("Creation fitting splits one singleton and Dogma bridges online state", () 
       rotationX: 0,
       rotationY: 0,
       rotationZ: 0,
-    }],
-    null,
+    }]], session),
   );
-  assert.equal(commit.success, true, JSON.stringify(commit.diagnostics));
+  assert.deepEqual(commitDiagnostics, []);
+  assert.equal(
+    itemStore.getItemMutationVersion() - mutationVersionBeforeInstall,
+    1,
+    "the module move and hull layout must use one item-table commit",
+  );
+  assert.equal(
+    notifications.filter((entry) => entry.name === "OnCreationChanged").length,
+    1,
+  );
 
   let fitted = itemStore.findItemById(sourceStack.itemID);
   assert.equal(fitted.locationID, ship.itemID);
@@ -934,18 +1603,6 @@ test("Creation fitting splits one singleton and Dogma bridges online state", () 
   assert.equal(cargoRemainders.length, 1);
   assert.equal(cargoRemainders[0].stacksize, 1);
 
-  const notifications: any[] = [];
-  const session: Record<string, any> = {
-    charid: OWNER_ID,
-    characterID: OWNER_ID,
-    shipid: ship.itemID,
-    shipID: ship.itemID,
-    shipTypeID: ship.typeID,
-    compatibilityProfile: "frontier",
-    sendNotification(name, idType, payload) {
-      notifications.push({ name, idType, payload });
-    },
-  };
   const dogma = new DogmaService();
   const online = dogma._setModuleOnlineState(
     ship.itemID,
@@ -1007,6 +1664,50 @@ test("Creation fitting splits one singleton and Dogma bridges online state", () 
   assert.deepEqual(rehydrated.data.state, stateBeforeUndock);
   assert.equal(
     creationRuntime.isCreationModuleOnline(itemStore.findItemById(sourceStack.itemID)),
+    false,
+  );
+
+  const mutationVersionBeforeRemove = itemStore.getItemMutationVersion();
+  const removeDiagnostics = unwrapMarshalValue(
+    service.Handle_commit_management_draft([ship.itemID, [{
+      op: "remove",
+      itemID: sourceStack.itemID,
+      // The 3.12 client may serialize an implicit cargo destination as None.
+      // The server must normalize that to this Creation's cargo hold.
+      destLocationID: null,
+      destFlagID: null,
+    }]], session),
+  );
+  assert.deepEqual(removeDiagnostics, []);
+  assert.equal(
+    itemStore.getItemMutationVersion() - mutationVersionBeforeRemove,
+    1,
+    "the uninstall and hull layout must use one item-table commit",
+  );
+
+  const removedModule = itemStore.findItemById(sourceStack.itemID);
+  assert.equal(removedModule.locationID, ship.itemID);
+  assert.equal(removedModule.flagID, itemStore.ITEM_FLAGS.CARGO_HOLD);
+  assert.equal(
+    creationRuntime.readCreationState(itemStore.findItemById(ship.itemID)).modules
+      .some((module) => module.itemID === sourceStack.itemID),
+    false,
+  );
+  assert.equal(
+    notifications.filter((entry) => entry.name === "OnCreationChanged").length,
+    2,
+  );
+
+  // Drop the item-store cache to model a fresh server process. Both sides of
+  // the uninstall must already be present in the durable item table.
+  itemStore.resetInventoryStoreForTests();
+  const restartedShip = itemStore.findItemById(ship.itemID);
+  const restartedModule = itemStore.findItemById(sourceStack.itemID);
+  assert.equal(restartedModule.locationID, ship.itemID);
+  assert.equal(restartedModule.flagID, itemStore.ITEM_FLAGS.CARGO_HOLD);
+  assert.equal(
+    creationRuntime.readCreationState(restartedShip).modules
+      .some((module) => module.itemID === sourceStack.itemID),
     false,
   );
 });
@@ -1100,25 +1801,60 @@ test("Creation live entities enforce their derived capacitor and retain active m
   );
   assert.equal(moduleGrant.success, true, moduleGrant.errorMsg);
   const sourceModule = moduleGrant.data.items[0];
+  const blackstartGrant = itemStore.grantItemToCharacterLocation(
+    OWNER_ID,
+    ship.itemID,
+    itemStore.ITEM_FLAGS.CARGO_HOLD,
+    TYPE_BLACKSTART_CELL,
+    1,
+    { individualItems: true, singleton: 1 },
+  );
+  assert.equal(blackstartGrant.success, true, blackstartGrant.errorMsg);
+  const sourceBlackstart = blackstartGrant.data.items[0];
   const template = getCreationTemplate(ship.typeID);
   const partID = Number(Object.keys(template && template.parts || {})[0]) || 0;
+  const occupiedPartIDs = new Set(
+    (template && Array.isArray(template.interior_modules)
+      ? template.interior_modules
+      : []).map((module) => Number(module.part_id)),
+  );
+  const blackstartPartID = Number(
+    Object.keys(template && template.parts || {})
+      .find((candidate) => !occupiedPartIDs.has(Number(candidate))),
+  ) || partID;
   const commit = creationRuntime.commitCreationDraft(
     ship,
     OWNER_ID,
-    [{
-      op: "add",
-      itemID: sourceModule.itemID,
-      typeID: TYPE_TRANSPONDER,
-      partID,
-      sourceLocationID: ship.itemID,
-      sourceFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
-      x: 0,
-      y: 0,
-      z: 0,
-      rotationX: 0,
-      rotationY: 0,
-      rotationZ: 0,
-    }],
+    [
+      {
+        op: "add",
+        itemID: sourceModule.itemID,
+        typeID: TYPE_TRANSPONDER,
+        partID,
+        sourceLocationID: ship.itemID,
+        sourceFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
+        x: 0,
+        y: 0,
+        z: 0,
+        rotationX: 0,
+        rotationY: 0,
+        rotationZ: 0,
+      },
+      {
+        op: "add",
+        itemID: sourceBlackstart.itemID,
+        typeID: TYPE_BLACKSTART_CELL,
+        partID: blackstartPartID,
+        sourceLocationID: ship.itemID,
+        sourceFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
+        x: 0,
+        y: 0,
+        z: 0,
+        rotationX: 0,
+        rotationY: 0,
+        rotationZ: 0,
+      },
+    ],
     null,
   );
   assert.equal(commit.success, true, JSON.stringify(commit.diagnostics));
@@ -1127,6 +1863,10 @@ test("Creation live entities enforce their derived capacitor and retain active m
     true,
   );
   assert.equal(itemStore.updateInventoryItem(sourceModule.itemID, (item) => ({
+    ...item,
+    moduleState: { ...(item.moduleState || {}), online: true },
+  })).success, true);
+  assert.equal(itemStore.updateInventoryItem(sourceBlackstart.itemID, (item) => ({
     ...item,
     moduleState: { ...(item.moduleState || {}), online: true },
   })).success, true);
@@ -1146,8 +1886,8 @@ test("Creation live entities enforce their derived capacitor and retain active m
     itemStore.findItemById(ship.itemID),
     SOLAR_SYSTEM_ID,
   );
-  assert.equal(entity.capacitorCapacity, 200);
-  assert.equal(entity.capacitorChargeRatio, 1);
+  assert.equal(entity.capacitorCapacity, 300);
+  assert.equal(entity.capacitorChargeRatio, 2 / 3);
   assert.equal(entity.passiveDerivedState.attributes[6250], 1_800_000_000);
   assert.equal(entity.maxVelocity, 360);
 
@@ -1205,8 +1945,256 @@ test("Creation live entities enforce their derived capacitor and retain active m
     notifyDerivedAttributes: false,
   });
   assert.equal(refresh.success, true, refresh.errorMsg);
-  assert.equal(entity.capacitorCapacity, 200);
+  assert.equal(entity.capacitorCapacity, 300);
   assert.equal(entity.activeModuleEffects.has(moduleItem.itemID), true);
+
+  const capacitorBeforeOffline = scene.getShipCapacitorState(session).amount;
+  assert.equal(
+    creationRuntime.setCreationModuleOnlineState(
+      itemStore.findItemById(ship.itemID),
+      OWNER_ID,
+      moduleItem.itemID,
+      false,
+      session,
+    ).success,
+    true,
+  );
+  const offlineRefresh = scene.refreshShipEntityDerivedState(entity, {
+    session,
+    broadcast: false,
+    notifyDerivedAttributes: false,
+  });
+  assert.equal(offlineRefresh.success, true, offlineRefresh.errorMsg);
+  assert.equal(entity.activeModuleEffects.has(moduleItem.itemID), false);
+  assert.equal(scene.getShipCapacitorState(session).amount, capacitorBeforeOffline);
+
+  const creationContext = creationRuntime.getCreationDogmaContext(
+    itemStore.findItemById(ship.itemID),
+    OWNER_ID,
+  );
+  assert.equal(creationContext.success, true, creationContext.errorMsg);
+  const capacitorModules = creationContext.data.moduleItems.filter(
+    (item) => item.typeID === TYPE_CAPACITOR,
+  );
+  const movementModule = creationContext.data.moduleItems.find(
+    (item) => item.typeID === 95320 || item.typeID === 95326,
+  );
+  const reserveFuelModule = creationContext.data.moduleItems.find(
+    (item) => item.typeID === 96013,
+  );
+  const blackstartModule = creationContext.data.moduleItems.find(
+    (item) => item.typeID === TYPE_BLACKSTART_CELL,
+  );
+  assert.ok(capacitorModules.length > 0);
+  assert.ok(movementModule);
+  assert.ok(reserveFuelModule);
+  assert.ok(blackstartModule);
+  assert.equal(
+    creationRuntime.isCreationModuleOnline(
+      itemStore.findItemById(reserveFuelModule.itemID),
+    ),
+    true,
+    "the template Fuel Blister starts online before it is sealed",
+  );
+
+  for (const capacitorModule of capacitorModules) {
+    assert.equal(
+      creationRuntime.setCreationModuleOnlineState(
+        itemStore.findItemById(ship.itemID),
+        OWNER_ID,
+        capacitorModule.itemID,
+        false,
+        session,
+      ).success,
+      true,
+    );
+  }
+  assert.equal(scene.refreshShipEntityDerivedState(entity, {
+    session,
+    broadcast: false,
+    notifyDerivedAttributes: false,
+  }).success, true);
+  assert.equal(entity.capacitorCapacity, 100);
+
+  const onlineMaxVelocity = entity.maxVelocity;
+  assert.equal(
+    creationRuntime.setCreationModuleOnlineState(
+      itemStore.findItemById(ship.itemID),
+      OWNER_ID,
+      movementModule.itemID,
+      false,
+      session,
+    ).success,
+    true,
+  );
+  assert.equal(scene.refreshShipEntityDerivedState(entity, {
+    session,
+    broadcast: false,
+    notifyDerivedAttributes: false,
+  }).success, true);
+  assert.ok(entity.maxVelocity < onlineMaxVelocity);
+
+  const fuelCapacityBeforeOffline = Number(
+    entity.passiveDerivedState.attributes[5633],
+  );
+  const fuelChargeBeforeOffline = fuelTankRuntime.getShipFuelCharge(
+    itemStore.findShipItemById(ship.itemID),
+  );
+  assert.equal(
+    creationRuntime.setCreationModuleOnlineState(
+      itemStore.findItemById(ship.itemID),
+      OWNER_ID,
+      reserveFuelModule.itemID,
+      false,
+      session,
+    ).success,
+    true,
+  );
+  assert.equal(scene.refreshShipEntityDerivedState(entity, {
+    session,
+    broadcast: false,
+    notifyDerivedAttributes: false,
+  }).success, true);
+  assert.equal(
+    Number(entity.passiveDerivedState.attributes[5633]),
+    fuelCapacityBeforeOffline - 250,
+  );
+  const sealedBlister = itemStore.findItemById(reserveFuelModule.itemID);
+  assert.equal(sealedBlister.moduleState.reserveFuelCharge, 250);
+  assert.equal(
+    fuelTankRuntime.getShipFuelCharge(itemStore.findShipItemById(ship.itemID)),
+    fuelChargeBeforeOffline - 250,
+  );
+
+  assert.equal(
+    creationRuntime.setCreationModuleOnlineState(
+      itemStore.findItemById(ship.itemID),
+      OWNER_ID,
+      reserveFuelModule.itemID,
+      true,
+      session,
+    ).success,
+    true,
+  );
+  assert.equal(
+    fuelTankRuntime.getShipFuelCharge(itemStore.findShipItemById(ship.itemID)),
+    fuelChargeBeforeOffline,
+  );
+  assert.equal(
+    itemStore.findItemById(reserveFuelModule.itemID).moduleState.reserveFuelCharge,
+    0,
+  );
+
+  assert.equal(
+    creationRuntime.setCreationModuleOnlineState(
+      itemStore.findItemById(ship.itemID),
+      OWNER_ID,
+      reserveFuelModule.itemID,
+      false,
+      session,
+    ).success,
+    true,
+  );
+  assert.equal(
+    itemStore.findItemById(reserveFuelModule.itemID).moduleState.reserveFuelCharge,
+    250,
+  );
+  const removedBlister = creationRuntime.commitCreationDraft(
+    itemStore.findItemById(ship.itemID),
+    OWNER_ID,
+    [{
+      op: "remove",
+      itemID: reserveFuelModule.itemID,
+      destLocationID: ship.itemID,
+      destFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
+    }],
+    session,
+  );
+  assert.equal(removedBlister.success, true, JSON.stringify(removedBlister.diagnostics));
+  assert.equal(
+    itemStore.findItemById(reserveFuelModule.itemID).moduleState.reserveFuelCharge,
+    0,
+    "sealed Fuel Blister contents are voided atomically when it is removed",
+  );
+  assert.deepEqual(
+    itemStore.findItemById(reserveFuelModule.itemID).moduleState.reserveFuelQueue,
+    [],
+  );
+
+  assert.equal(itemStore.updateShipItem(ship.itemID, (shipItem) => ({
+    ...shipItem,
+    conditionState: { ...(shipItem.conditionState || {}), charge: 1 },
+  })).success, true);
+  assert.equal(scene.refreshShipEntityDerivedState(entity, {
+    session,
+    broadcast: false,
+    notifyDerivedAttributes: false,
+  }).success, true);
+  assert.equal(scene.getShipCapacitorState(session).amount, 100);
+
+  const blackstartOffline = creationRuntime.setCreationModuleOnlineState(
+    itemStore.findItemById(ship.itemID),
+    OWNER_ID,
+    blackstartModule.itemID,
+    false,
+    session,
+  );
+  assert.equal(blackstartOffline.success, true, blackstartOffline.errorMsg);
+  assert.equal(blackstartOffline.data.voidedBlackstartEnergy, 100);
+  assert.equal(scene.refreshShipEntityDerivedState(entity, {
+    session,
+    broadcast: false,
+    notifyDerivedAttributes: false,
+  }).success, true);
+  assert.equal(entity.capacitorCapacity, 0);
+  assert.equal(scene.getShipCapacitorState(session).amount, 0);
+
+  const blackstartOnline = creationRuntime.setCreationModuleOnlineState(
+    itemStore.findItemById(ship.itemID),
+    OWNER_ID,
+    blackstartModule.itemID,
+    true,
+    session,
+  );
+  assert.equal(blackstartOnline.success, true, blackstartOnline.errorMsg);
+  assert.equal(scene.refreshShipEntityDerivedState(entity, {
+    session,
+    broadcast: false,
+    notifyDerivedAttributes: false,
+  }).success, true);
+  assert.equal(entity.capacitorCapacity, 100);
+  assert.equal(
+    scene.getShipCapacitorState(session).amount,
+    0,
+    "onlining an empty Blackstart Cell must not mint its 100 GJ reserve",
+  );
+
+  assert.equal(itemStore.updateShipItem(ship.itemID, (shipItem) => ({
+    ...shipItem,
+    conditionState: { ...(shipItem.conditionState || {}), charge: 1 },
+  })).success, true);
+  const removedBlackstart = creationRuntime.commitCreationDraft(
+    itemStore.findItemById(ship.itemID),
+    OWNER_ID,
+    [{
+      op: "remove",
+      itemID: blackstartModule.itemID,
+      destLocationID: ship.itemID,
+      destFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
+    }],
+    session,
+  );
+  assert.equal(
+    removedBlackstart.success,
+    true,
+    JSON.stringify(removedBlackstart.diagnostics),
+  );
+  assert.equal(removedBlackstart.data.voidedBlackstartEnergy, 100);
+  assert.equal(
+    itemStore.findShipItemById(ship.itemID).conditionState.charge,
+    0,
+    "removing a Blackstart Cell discards charge stored in its reserve",
+  );
 });
 
 test("transponder activation broadcasts explicitly and deactivation preserves its mode", () => {
@@ -1234,16 +2222,16 @@ test("transponder activation broadcasts explicitly and deactivation preserves it
   );
   assert.equal(moduleGrant.success, true, moduleGrant.errorMsg);
   const moduleItem = moduleGrant.data.items[0];
+  const persistedShip = persistCreationAuthorityStateForTest(
+    ship.itemID,
+    moduleItem,
+    false,
+  );
+  const persistedState = creationRuntime.readCreationState(persistedShip);
   const creationContext: Record<string, any> = {
-    item: ship,
+    item: persistedShip,
     characterID: OWNER_ID,
-    state: {
-      modules: [{
-        itemID: moduleItem.itemID,
-        typeID: TYPE_TRANSPONDER,
-        abilities: creationRuntime.getCreationModuleAbilities(TYPE_TRANSPONDER),
-      }],
-    },
+    state: persistedState,
   };
   const effectRuntime = buildIffEffectRuntime(ship.itemID);
   const session: Record<string, any> = {
@@ -1300,6 +2288,89 @@ test("transponder activation broadcasts explicitly and deactivation preserves it
     },
   );
 
+  const poweredOffShip = persistCreationAuthorityStateForTest(
+    ship.itemID,
+    moduleItem,
+    true,
+  );
+  const poweredOffState = creationRuntime.readCreationState(poweredOffShip);
+  const suspended = handleCreationIffStateChange({
+    reason: "power_state",
+    session,
+    characterID: OWNER_ID,
+    creationID: ship.itemID,
+    item: poweredOffShip,
+    previousState: persistedState,
+    state: poweredOffState,
+    spaceRuntime: effectRuntime.runtime,
+  });
+  assert.equal(suspended.stopped, 1);
+  assert.equal(effectRuntime.entity.activeModuleEffects.has(moduleItem.itemID), false);
+  assert.equal(iffRuntime.resolveActiveTransponder(OWNER_ID, ship.itemID), null);
+  assert.equal(
+    iffRuntime.readTransponderState(itemStore.findItemById(moduleItem.itemID)).active,
+    true,
+    "power loss preserves the configured broadcast intent",
+  );
+
+  const poweredOnShip = persistCreationAuthorityStateForTest(
+    ship.itemID,
+    moduleItem,
+    false,
+  );
+  const poweredOnState = creationRuntime.readCreationState(poweredOnShip);
+  const resumed = handleCreationIffStateChange({
+    reason: "power_state",
+    session,
+    characterID: OWNER_ID,
+    creationID: ship.itemID,
+    item: poweredOnShip,
+    previousState: poweredOffState,
+    state: poweredOnState,
+    spaceRuntime: effectRuntime.runtime,
+  });
+  assert.equal(resumed.started, 1);
+  assert.equal(effectRuntime.entity.activeModuleEffects.has(moduleItem.itemID), true);
+  assert.equal(iffRuntime.resolveActiveTransponder(OWNER_ID, ship.itemID).code, "RALLY-7");
+
+  assert.equal(itemStore.updateInventoryItem(moduleItem.itemID, (currentItem) => ({
+    ...currentItem,
+    moduleState: { ...(currentItem.moduleState || {}), online: false },
+  })).success, true);
+  const moduleOffline = handleCreationIffStateChange({
+    reason: "module_online_state",
+    session,
+    characterID: OWNER_ID,
+    creationID: ship.itemID,
+    item: poweredOnShip,
+    state: poweredOnState,
+    moduleItemID: moduleItem.itemID,
+    previousOnline: true,
+    nextOnline: false,
+    spaceRuntime: effectRuntime.runtime,
+  });
+  assert.equal(moduleOffline.stopped, 1);
+  assert.equal(iffRuntime.resolveActiveTransponder(OWNER_ID, ship.itemID), null);
+
+  assert.equal(itemStore.updateInventoryItem(moduleItem.itemID, (currentItem) => ({
+    ...currentItem,
+    moduleState: { ...(currentItem.moduleState || {}), online: true },
+  })).success, true);
+  const moduleOnline = handleCreationIffStateChange({
+    reason: "module_online_state",
+    session,
+    characterID: OWNER_ID,
+    creationID: ship.itemID,
+    item: poweredOnShip,
+    state: poweredOnState,
+    moduleItemID: moduleItem.itemID,
+    previousOnline: false,
+    nextOnline: true,
+    spaceRuntime: effectRuntime.runtime,
+  });
+  assert.equal(moduleOnline.started, 1);
+  assert.equal(iffRuntime.resolveActiveTransponder(OWNER_ID, ship.itemID).code, "RALLY-7");
+
   const reconfigured = invoke("iff_reconfigure", { iff_channel: "tribe" });
   assert.equal(reconfigured.success, true, reconfigured.errorMsg);
   assert.deepEqual(
@@ -1342,6 +2413,7 @@ test("beacon activation publishes a one-cycle immobilizing Dogma effect", () => 
   assert.equal(itemStore.updateInventoryItem(ship.itemID, (currentItem) => ({
     ...currentItem,
     locationID: SOLAR_SYSTEM_ID,
+    flagID: 0,
     spaceState: {
       systemID: SOLAR_SYSTEM_ID,
       position: { x: 1, y: 2, z: 3 },
@@ -1362,6 +2434,12 @@ test("beacon activation publishes a one-cycle immobilizing Dogma effect", () => 
   );
   assert.equal(moduleGrant.success, true, moduleGrant.errorMsg);
   const moduleItem = moduleGrant.data.items[0];
+  const persistedShip = persistCreationAuthorityStateForTest(
+    ship.itemID,
+    moduleItem,
+    false,
+  );
+  const persistedState = creationRuntime.readCreationState(persistedShip);
   const effectRuntime = buildIffEffectRuntime(ship.itemID);
   const session: Record<string, any> = {
     charid: OWNER_ID,
@@ -1374,15 +2452,9 @@ test("beacon activation publishes a one-cycle immobilizing Dogma effect", () => 
     sendNotification() {},
   };
   const creationContext: Record<string, any> = {
-    item: itemStore.findItemById(ship.itemID),
+    item: persistedShip,
     characterID: OWNER_ID,
-    state: {
-      modules: [{
-        itemID: moduleItem.itemID,
-        typeID: TYPE_BEACON,
-        abilities: creationRuntime.getCreationModuleAbilities(TYPE_BEACON),
-      }],
-    },
+    state: persistedState,
   };
   const invoke = (ability) => creationAbilityRuntime.dispatchCreationAbility({
     ability,
@@ -1406,11 +2478,190 @@ test("beacon activation publishes a one-cycle immobilizing Dogma effect", () => 
   );
   assert.ok(iffRuntime.getActiveBeacon(moduleItem.itemID));
 
+  const poweredOffShip = persistCreationAuthorityStateForTest(
+    ship.itemID,
+    moduleItem,
+    true,
+  );
+  const poweredOffState = creationRuntime.readCreationState(poweredOffShip);
+  const suspended = handleCreationIffStateChange({
+    reason: "power_state",
+    session,
+    characterID: OWNER_ID,
+    creationID: ship.itemID,
+    item: poweredOffShip,
+    previousState: persistedState,
+    state: poweredOffState,
+    spaceRuntime: effectRuntime.runtime,
+  });
+  assert.equal(suspended.suspended, 1);
+  assert.equal(iffRuntime.getActiveBeacon(moduleItem.itemID).suspended, true);
+  assert.equal(effectRuntime.entity.activeModuleEffects.has(moduleItem.itemID), false);
+  assert.deepEqual(
+    iffRuntime.listVisibleBeacons({
+      characterID: OWNER_ID,
+      solarSystemID: SOLAR_SYSTEM_ID,
+      corporationID: 98000001,
+      transponder: null,
+    }),
+    [],
+  );
+
+  const poweredOnShip = persistCreationAuthorityStateForTest(
+    ship.itemID,
+    moduleItem,
+    false,
+  );
+  const poweredOnState = creationRuntime.readCreationState(poweredOnShip);
+  const resumed = handleCreationIffStateChange({
+    reason: "power_state",
+    session,
+    characterID: OWNER_ID,
+    creationID: ship.itemID,
+    item: poweredOnShip,
+    previousState: poweredOffState,
+    state: poweredOnState,
+    spaceRuntime: effectRuntime.runtime,
+  });
+  assert.equal(resumed.resumed, 1);
+  assert.equal(iffRuntime.getActiveBeacon(moduleItem.itemID).suspended, false);
+  assert.equal(effectRuntime.entity.activeModuleEffects.has(moduleItem.itemID), true);
+  assert.equal(
+    iffRuntime.listVisibleBeacons({
+      characterID: OWNER_ID,
+      solarSystemID: SOLAR_SYSTEM_ID,
+      corporationID: 98000001,
+      transponder: null,
+    }).length,
+    1,
+  );
+
+  assert.equal(itemStore.updateInventoryItem(moduleItem.itemID, (currentItem) => ({
+    ...currentItem,
+    moduleState: { ...(currentItem.moduleState || {}), online: false },
+  })).success, true);
+  const moduleOffline = handleCreationIffStateChange({
+    reason: "module_online_state",
+    session,
+    characterID: OWNER_ID,
+    creationID: ship.itemID,
+    item: poweredOnShip,
+    state: poweredOnState,
+    moduleItemID: moduleItem.itemID,
+    previousOnline: true,
+    nextOnline: false,
+    spaceRuntime: effectRuntime.runtime,
+  });
+  assert.equal(moduleOffline.suspended, 1);
+  assert.equal(iffRuntime.getActiveBeacon(moduleItem.itemID).suspended, true);
+  assert.equal(effectRuntime.entity.activeModuleEffects.has(moduleItem.itemID), false);
+
+  assert.equal(itemStore.updateInventoryItem(moduleItem.itemID, (currentItem) => ({
+    ...currentItem,
+    moduleState: { ...(currentItem.moduleState || {}), online: true },
+  })).success, true);
+  const moduleOnline = handleCreationIffStateChange({
+    reason: "module_online_state",
+    session,
+    characterID: OWNER_ID,
+    creationID: ship.itemID,
+    item: poweredOnShip,
+    state: poweredOnState,
+    moduleItemID: moduleItem.itemID,
+    previousOnline: false,
+    nextOnline: true,
+    spaceRuntime: effectRuntime.runtime,
+  });
+  assert.equal(moduleOnline.resumed, 1);
+  assert.equal(iffRuntime.getActiveBeacon(moduleItem.itemID).suspended, false);
+  assert.equal(effectRuntime.entity.activeModuleEffects.has(moduleItem.itemID), true);
+
   const deactivated = invoke("deactivate_effect");
   assert.equal(deactivated.success, true, deactivated.errorMsg);
   assert.equal(iffRuntime.getActiveBeacon(moduleItem.itemID), null);
   assert.equal(effectRuntime.entity.activeModuleEffects.has(moduleItem.itemID), false);
   iffRuntime.resetIffRuntimeForTests();
+});
+
+test("removing an active beacon module terminates rather than suspends it", (t) => {
+  t.after(() => iffRuntime.resetIffRuntimeForTests());
+  const shipGrant = itemStore.grantItemToCharacterLocation(
+    OWNER_ID,
+    SOLAR_SYSTEM_ID,
+    0,
+    95276,
+    1,
+    { individualItems: true, singleton: 1 },
+  );
+  assert.equal(shipGrant.success, true, shipGrant.errorMsg);
+  const ship = shipGrant.data.items[0];
+  assert.equal(itemStore.updateInventoryItem(ship.itemID, (currentItem) => ({
+    ...currentItem,
+    spaceState: {
+      systemID: SOLAR_SYSTEM_ID,
+      position: { x: 0, y: 0, z: 0 },
+    },
+  })).success, true);
+  const moduleGrant = itemStore.grantItemToCharacterLocation(
+    OWNER_ID,
+    ship.itemID,
+    creationRuntime.CREATION_FITTING_FLAG_ID,
+    TYPE_BEACON,
+    1,
+    {
+      individualItems: true,
+      singleton: 1,
+      moduleState: { online: true },
+    },
+  );
+  assert.equal(moduleGrant.success, true, moduleGrant.errorMsg);
+  const moduleItem = moduleGrant.data.items[0];
+  const fittedShip = persistCreationAuthorityStateForTest(
+    ship.itemID,
+    moduleItem,
+    false,
+  );
+  let releases = 0;
+  const started = iffRuntime.startBeacon({
+    beaconID: moduleItem.itemID,
+    moduleTypeID: moduleItem.typeID,
+    shipID: ship.itemID,
+    characterID: OWNER_ID,
+    corporationID: 98000001,
+    solarSystemID: SOLAR_SYSTEM_ID,
+    position: [0, 0, 0],
+    channel: "public",
+    code: null,
+    durationMs: 30000,
+    releaseImmobilizer() {
+      releases += 1;
+      return { success: true };
+    },
+  });
+  assert.equal(started.success, true, started.errorMsg);
+
+  assert.equal(itemStore.updateInventoryItem(moduleItem.itemID, (currentItem) => ({
+    ...currentItem,
+    flagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
+  })).success, true);
+  const unfittedShip = persistCreationAuthorityStateForTest(
+    ship.itemID,
+    moduleItem,
+    false,
+    false,
+  );
+  const reconciled = handleCreationIffStateChange({
+    reason: "draft_commit",
+    session: null,
+    characterID: OWNER_ID,
+    creationID: ship.itemID,
+    item: unfittedShip,
+    previousState: creationRuntime.readCreationState(fittedShip),
+    state: creationRuntime.readCreationState(unfittedShip),
+  });
+  assert.equal(reconciled.released, 1);
+  assert.equal(releases, 1);
+  assert.equal(iffRuntime.getActiveBeacon(moduleItem.itemID), null);
 });
 
 function buildBeacon(overrides: Record<string, any> = {}) {
@@ -1524,7 +2775,7 @@ test("expired beacons are never visible and are swept", () => {
   assert.equal(iffRuntime.isBeaconLive(null, nowMs), false);
 });
 
-test("verdicts only pair mutually matching transponders", () => {
+test("IFF verdicts distinguish friendly, unfriendly, and unknown broadcasts", () => {
   const viewer: Record<string, any> = {
     shipID: 1,
     corporationID: 98000001,
@@ -1536,7 +2787,10 @@ test("verdicts only pair mutually matching transponders", () => {
     { shipID: 3, corporationID: 98000001, transponder: { channel: "code", code: "NOPE" } },
     { shipID: 4, corporationID: 98000001, transponder: null },
   ];
-  assert.deepEqual(buildVerdictsForViewer(viewer, ships), [[2, true]]);
+  assert.deepEqual(buildVerdictsForViewer(viewer, ships), [
+    [2, true],
+    [3, false],
+  ]);
 });
 
 test("IFF verdict population includes native NPC group broadcasts", () => {
@@ -1575,7 +2829,10 @@ test("IFF verdict population includes native NPC group broadcasts", () => {
   };
   assert.deepEqual(
     buildVerdictsForViewer(viewer, [viewer, ...npcShips]),
-    [[matchingNpc.itemID, true]],
+    [
+      [matchingNpc.itemID, true],
+      [otherNpc.itemID, false],
+    ],
   );
 });
 
@@ -1699,6 +2956,26 @@ test("combat-resolved contacts are immediate and survive unrelated scans", () =>
   assert.deepEqual([...unrelatedScan.activeIDs].sort(), [4110, 4111]);
   assert.deepEqual(unrelatedScan.removedIDs, []);
   assert.equal(scanningRuntime.isScanningContactResolved(session, 4110, 2_000), true);
+
+  scanningRuntime.replaceResolvedScanningContacts(session, [4110], {
+    nowMs: 3_000,
+    delayMs: 0,
+    source: "passive",
+  });
+  assert.equal(
+    scanningRuntime.isCombatResolvedScanningContact(session, 4110, 3_000),
+    true,
+  );
+  const passiveOmission = scanningRuntime.replaceResolvedScanningContacts(
+    session,
+    [],
+    { nowMs: 4_000, delayMs: 0, source: "passive" },
+  );
+  assert.equal(passiveOmission.activeIDs.has(4110), true);
+  assert.equal(
+    scanningRuntime.isCombatResolvedScanningContact(session, 4110, 4_000),
+    true,
+  );
 
   assert.equal(scanningRuntime.forgetResolvedScanningContact(session, 4110), true);
   assert.equal(scanningRuntime.isScanningContactResolved(session, 4110, 2_000), false);
@@ -2297,7 +3574,10 @@ test("build 3502403 non-modular scanningService uses built-in hull sensors and e
     position: target.position,
     mass: target.mass,
     hasLineOfSight: true,
-    emSignatureMultiplier: 1,
+    // Type 23 authors signatureEm=75; the scanning service must forward the
+    // effective target Dogma value instead of flattening every target to the
+    // neutral 100-point EM signature.
+    emSignatureMultiplier: 0.75,
     thermalSignatureMultiplier: 1,
   }]);
   assert.deepEqual(session._space.frontierDirectionalScanIds, []);

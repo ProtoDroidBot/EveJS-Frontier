@@ -33,6 +33,10 @@ const frontierDeploymentRuntime = require(path.join(
   __dirname,
   "../frontier/deploymentRuntime",
 ));
+const creationControlAuthority = require(path.join(
+  __dirname,
+  "../frontier/creationControlAuthority",
+));
 const {
   jumpSessionViaStargateAsync,
   jumpSessionToSolarSystem,
@@ -1632,11 +1636,44 @@ function resolveFleetMemberWarpTarget(session, targetCharacterID) {
 }
 
 class BeyonceService extends BaseService {
+  declare _resolveCreationControlAuthority: any;
+  declare _spaceRuntime: any;
   declare reuseBoundObjectForSession: any;
 
-  constructor() {
+  constructor(dependencies: Record<string, any> = {}) {
     super("beyonce");
+    this._spaceRuntime = dependencies.spaceRuntime || spaceRuntime;
+    this._resolveCreationControlAuthority =
+      dependencies.resolveCreationControlAuthority ||
+      creationControlAuthority.resolveCreationControlAuthority;
     this.reuseBoundObjectForSession = true;
+  }
+
+  _enforceCreationAutoApproachAuthority(session, range) {
+    // Build 3502403 authors Approach as CmdFollowBall(target, 50). Keep At
+    // Range shares this RPC, so non-50 ranges remain distinguishable while an
+    // explicitly selected 50m Keep At Range is protocol-identical to Approach.
+    if (!creationControlAuthority.isCreationApproachRange(range)) {
+      return null;
+    }
+    const authorityState = this._resolveCreationControlAuthority(session);
+    if (!authorityState || authorityState.authorityResolved !== true) {
+      throwWrappedUserError("CustomNotify", {
+        notify: "Automatic approach authority could not be verified.",
+      });
+    }
+    if (
+      authorityState.isCreation === true &&
+      !creationControlAuthority.hasOnlineCreationControlModule(
+        authorityState,
+        creationControlAuthority.TYPE_CREATION_AUTOHELM,
+      )
+    ) {
+      throwWrappedUserError("CustomNotify", {
+        notify: "An online Autohelm is required to approach objects automatically.",
+      });
+    }
+    return authorityState || null;
   }
 
   _getMovementThrottleNowMs() {
@@ -2589,18 +2626,31 @@ class BeyonceService extends BaseService {
   Handle_CmdFollowBall(args, session) {
     const targetID = normalizeNumber(args && args[0], 0);
     const range = normalizeNumber(args && args[1], 0);
+    const autoApproachAuthority =
+      this._enforceCreationAutoApproachAuthority(session, range);
     this._enforceMovementCommandThrottle(session, "CmdFollowBall", [targetID, range]);
     log.info(
       `[Beyonce] CmdFollowBall char=${session && session.characterID} target=${targetID} range=${range}`,
     );
     if (targetID > 0 && range <= 50) {
-      const dockingDebug = spaceRuntime.getDockingDebugState(session, targetID);
+      const dockingDebug = this._spaceRuntime.getDockingDebugState(session, targetID);
       if (dockingDebug) {
         log.info(`[Beyonce] CmdFollowBall dockingState=${JSON.stringify(dockingDebug)}`);
       }
     }
 
-    spaceRuntime.followBall(session, targetID, range);
+    const followed = this._spaceRuntime.followBall(session, targetID, range);
+    if (
+      followed &&
+      autoApproachAuthority &&
+      autoApproachAuthority.isCreation === true
+    ) {
+      creationControlAuthority.recordCreationAutoApproachMovement(
+        session,
+        this._spaceRuntime,
+        { targetID, range },
+      );
+    }
     return null;
   }
 

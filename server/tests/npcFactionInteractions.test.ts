@@ -58,6 +58,8 @@ test("NPC faction config loads the shipped faction and relation matrix", () => {
   assert.equal(summary.transponderEnabled, true);
   assert.equal(summary.transponderChannel, "code");
   assert.equal(summary.transponderSignalCount, 20);
+  assert.equal(summary.suiWalletFundingEnabled, true);
+  assert.equal(summary.suiWalletBudgetMist, "10000000000");
   assert.equal(summary.relationRuleCount, 4);
   assert.ok(summary.resolvedRelationCount > 50);
   const config = npcFactionConfig.getConfig();
@@ -149,6 +151,13 @@ test("NPC faction config validates relation identities and disposition values", 
   const base = {
     schemaVersion: 1,
     enabled: true,
+    suiWalletFunding: {
+      enabled: true,
+      budgetMist: "10000000000",
+      faucetEnabled: true,
+      gasReserveMist: "100000000",
+      maxFaucetRequests: 3,
+    },
     defaults: {
       sameFactionDisposition: "friendly",
       sameCorporationDisposition: "friendly",
@@ -171,6 +180,13 @@ test("NPC faction config validates relation identities and disposition values", 
       }],
     }),
     /friendly, neutral, or hostile/,
+  );
+  assert.throws(
+    () => npcFactionConfig.validateConfig({
+      ...base,
+      suiWalletFunding: { ...base.suiWalletFunding, budgetMist: "01" },
+    }),
+    /suiWalletFunding\.budgetMist/,
   );
 });
 

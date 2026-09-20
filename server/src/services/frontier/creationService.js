@@ -10,19 +10,70 @@ const { commitCreationDraft, ensureCreationState, setCreationPowerState, } = req
 const { dispatchCreationAbility, normalizeAbilityId, } = require(path.join(__dirname, "./creationAbilityRuntime"));
 const { registerFallbackCreationAbilityHandlers, } = require(path.join(__dirname, "./creationAbilityHandlers"));
 const { registerCreationChargeAbilityHandlers, } = require(path.join(__dirname, "./creationChargeAbilityHandlers"));
-const { getCreationModuleChargeState, } = require(path.join(__dirname, "./creationChargeRuntime"));
+const { getCreationModuleChargeState, registerCreationLaunchBayAbilityHandler, } = require(path.join(__dirname, "./creationChargeRuntime"));
 const { registerIffAbilityHandlers, } = require(path.join(__dirname, "./iffAbilityHandlers"));
 const { registerScanningAbilityHandlers, } = require(path.join(__dirname, "./scanningAbilityHandlers"));
+const { registerCreationIndustryAbilityHandlers, } = require(path.join(__dirname, "./creationIndustryAbilityHandlers"));
+const { registerCreationActiveModuleAbilityHandlers, } = require(path.join(__dirname, "./creationActiveModuleAbilityHandlers"));
 const scanningRuntime = require(path.join(__dirname, "./scanningRuntime"));
 // Behavior handlers must be registered before any get_creation snapshot is
 // built: module ability advertisement reads the handler registry.
 registerFallbackCreationAbilityHandlers();
 registerCreationChargeAbilityHandlers();
+registerCreationLaunchBayAbilityHandler();
 registerIffAbilityHandlers();
 registerScanningAbilityHandlers();
+registerCreationIndustryAbilityHandlers();
+registerCreationActiveModuleAbilityHandlers();
 const CREATION_ERROR_CLASS = "frontier.creation.common.errors.CreationError";
 const CREATION_ERROR_GENERIC = "CreationError_Generic";
 const CREATION_ERROR_UNKNOWN = "CreationError_UnknownCreation";
+function mapAbilityFailureToCreationError(errorMsg) {
+    switch (String(errorMsg || "")) {
+        case "MODULE_NOT_IN_CREATION":
+        case "MODULE_NOT_FOUND":
+        case "FACILITY_NOT_FOUND":
+            return "CreationError_UnknownModule";
+        case "ABILITY_EMPTY":
+        case "ABILITY_NOT_ADVERTISED":
+        case "ABILITY_HANDLER_MISSING":
+            return "CreationError_UnknownAbility";
+        case "MODULE_NOT_ONLINE":
+        case "MODULE_OFFLINE":
+        case "CREATION_MODULE_OFFLINE":
+        case "FACILITY_OFFLINE":
+            return "CreationError_ModuleOffline";
+        case "CREATION_POWERED_OFF":
+        case "POWERED_OFF":
+            return "CreationError_PoweredOff";
+        case "TARGET_REQUIRED":
+        case "TARGET_NOT_FOUND":
+        case "INVALID_TARGET":
+        case "TARGET_NOT_LOCKED":
+        case "TARGET_OUT_OF_RANGE":
+            return "CreationError_NoTarget";
+        case "NO_FUEL":
+            return "CreationError_MissingFuel";
+        case "NO_AMMO":
+        case "CREATION_NO_AMMO":
+            return "CreationError_NoAmmo";
+        case "ACCESS_DENIED":
+        case "INVALID_SHIP":
+        case "FACILITY_NOT_IN_CURRENT_SYSTEM":
+            return "CreationError_AccessDenied";
+        case "MODULE_ALREADY_ACTIVE":
+        case "MODULE_REACTIVATING":
+        case "CREATION_MODULE_RELOADING":
+        case "PRODUCTION_ALREADY_RUNNING":
+            return "CreationError_ModuleBusy";
+        case "CARGO_FULL":
+        case "CREATION_CARGO_CAPACITY_EXCEEDED":
+        case "OUTPUT_CAPACITY_EXCEEDED":
+            return "CreationError_CargoFull";
+        default:
+            return "CreationError_CannotActivate";
+    }
+}
 function recordCreationModuleEmission(session, creationItemID) {
     if (!session || !session._space) {
         return;
@@ -152,6 +203,46 @@ class CreationService extends BaseService {
         log.info(`[creation] commit_management_draft ship=${owned.item.itemID} ` +
             `changes=${Array.isArray(changes) ? changes.length : 0} ` +
             `accepted=${result.success === true} diagnostics=${result.diagnostics.length}`);
+        if (result.success === true &&
+            session &&
+            typeof session.sendNotification === "function") {
+            try {
+                const snapshot = buildCreationSnapshot(result.data.item, owned.characterID, result.data.state, result.data.template, {
+                    getLoadedCharge(moduleItemID) {
+                        const loaded = getCreationModuleChargeState(owned.characterID, moduleItemID);
+                        if (!loaded.success || !loaded.data.item) {
+                            return null;
+                        }
+                        return {
+                            count: loaded.data.quantity,
+                            typeID: loaded.data.item.typeID,
+                        };
+                    },
+                });
+                session.sendNotification("OnCreationChanged", "clientID", [owned.item.itemID, snapshot]);
+            }
+            catch (error) {
+                // The draft has already been durably committed. A transient client
+                // notification failure must not turn it into a retryable mutation.
+                log.warn(`[creation] snapshot notification failed ship=${owned.item.itemID}: ` +
+                    `${error && error.message ? error.message : error}`);
+            }
+        }
+        if (result.success === true && session && session._space) {
+            try {
+                const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
+                spaceRuntime.refreshShipDerivedState(session, {
+                    broadcast: true,
+                });
+            }
+            catch (error) {
+                // The fitting draft is already durable. Keep the client mutation
+                // successful and let the next ordinary ship refresh converge if its
+                // live-space presentation is temporarily unavailable.
+                log.warn(`[creation] derived-state refresh failed ship=${owned.item.itemID}: ` +
+                    `${error && error.message ? error.message : error}`);
+            }
+        }
         return diagnosticList(result.diagnostics);
     }
     Handle_take_command(args, session) {
@@ -165,11 +256,17 @@ class CreationService extends BaseService {
         const [requestedItemID, poweredOff] = unpackArgs(args);
         const owned = resolveOwnedCreationItem(requestedItemID, session);
         if (!owned) {
-            return false;
+            throwCreationError(CREATION_ERROR_UNKNOWN);
         }
-        const result = setCreationPowerState(owned.item, owned.characterID, poweredOff === true);
+        const result = setCreationPowerState(owned.item, owned.characterID, poweredOff === true, session);
         log.info(`[creation] set_power_state ship=${owned.item.itemID} ` +
             `poweredOff=${poweredOff === true} accepted=${result.success === true}`);
+        if (result.success === true && session && session._space) {
+            const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
+            spaceRuntime.refreshShipDerivedState(session, {
+                broadcast: true,
+            });
+        }
         return result.success === true
             ? buildServerTimeResult(getSessionFileTime(session))
             : false;
@@ -190,16 +287,22 @@ class CreationService extends BaseService {
         if (!owned) {
             log.warn(`[creation] activate_ability rejected ship=${requestedItemID} ` +
                 `module=${moduleItemID} ability=${ability || "<empty>"} reason=CREATION_NOT_FOUND`);
-            return false;
+            throwCreationError(CREATION_ERROR_UNKNOWN);
         }
         const ensured = ensureCreationState(owned.item, owned.characterID);
         if (!ensured.success) {
             log.warn(`[creation] activate_ability rejected ship=${requestedItemID} ` +
                 `module=${moduleItemID} ability=${ability} ` +
                 `reason=${ensured.errorMsg || "CREATION_STATE_UNAVAILABLE"}`);
-            return false;
+            const unknownCreation = [
+                "CREATION_ITEM_NOT_OWNED",
+                "CREATION_TEMPLATE_NOT_FOUND",
+            ].includes(String(ensured.errorMsg || ""));
+            throwCreationError(unknownCreation
+                ? CREATION_ERROR_UNKNOWN
+                : "CreationError_CannotActivate");
         }
-        const result = dispatchCreationAbility({
+        const dispatched = dispatchCreationAbility({
             ability,
             kwargs: normalizeAbilityKwargs(kwargs),
             session,
@@ -211,24 +314,33 @@ class CreationService extends BaseService {
             },
             moduleItemID,
         });
-        log.info(`[creation] activate_ability ship=${requestedItemID} ` +
-            `module=${moduleItemID} ability=${ability} accepted=${result.success === true} ` +
-            `reason=${result.success ? "OK" : result.errorMsg || "UNKNOWN"}`);
-        if (result.success !== true) {
-            return false;
-        }
-        recordCreationModuleEmission(session, requestedItemID);
-        const data = result.data || {};
-        const entries = [[
-                "server_time",
-                data.serverTime || getSessionFileTime(session),
-            ]];
-        for (const [key, value] of Object.entries(data)) {
-            if (key !== "serverTime") {
-                entries.push([key, value]);
+        const finish = (result) => {
+            log.info(`[creation] activate_ability ship=${requestedItemID} ` +
+                `module=${moduleItemID} ability=${ability} accepted=${result.success === true} ` +
+                `reason=${result.success ? "OK" : result.errorMsg || "UNKNOWN"}`);
+            if (result.success !== true) {
+                // The 3.12 Creation client translates this exception into the
+                // module-specific UI error. Returning false is not sufficient: the
+                // modular Industry controller optimistically changes RUNNING state
+                // after the RPC unless a CreationError is raised.
+                throwCreationError(mapAbilityFailureToCreationError(result.errorMsg));
             }
-        }
-        return buildDict(entries);
+            recordCreationModuleEmission(session, requestedItemID);
+            const data = result.data || {};
+            const entries = [[
+                    "server_time",
+                    data.serverTime || getSessionFileTime(session),
+                ]];
+            for (const [key, value] of Object.entries(data)) {
+                if (key !== "serverTime") {
+                    entries.push([key, value]);
+                }
+            }
+            return buildDict(entries);
+        };
+        return dispatched && typeof dispatched.then === "function"
+            ? dispatched.then(finish)
+            : finish(dispatched);
     }
 }
 module.exports = CreationService;

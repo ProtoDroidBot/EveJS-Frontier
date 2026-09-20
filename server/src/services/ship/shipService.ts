@@ -103,6 +103,10 @@ const {
   scoopMobileTractorUnitToCargo,
 } = require(path.join(__dirname, "./mobileTractorUnitRuntime"));
 const {
+  isLaunchBayPayloadItem,
+  scoopLaunchBayPayloadToCargo,
+} = require(path.join(__dirname, "../frontier/launchBayPayloadRuntime"));
+const {
   getShipDirtTimestamp,
   normalizeFiletime,
   resetShipDirtTimestamp,
@@ -128,6 +132,10 @@ const EXPECTED_SCOOP_REFUSALS = new Set([
   "ITEM_NOT_MOBILE_DEPOT",
   "ITEM_NOT_MOBILE_TRACTOR_UNIT",
   "ITEM_NOT_SCOOPABLE_CONTAINER",
+  "ITEM_NOT_LAUNCH_BAY_PAYLOAD",
+  "LAUNCH_BAY_PAYLOAD_NOT_OWNER",
+  "LAUNCH_BAY_PAYLOAD_NOT_IN_SPACE",
+  "HEAT_TRAP_VOLATILE",
   "MOBILE_DEPOT_HOLD_NOT_AVAILABLE",
   "MOBILE_DEPOT_NOT_ACTIVE",
   "MOBILE_DEPOT_NOT_OWNER",
@@ -1191,7 +1199,9 @@ class ShipService extends BaseService {
     const password = args && args.length > 1 ? normalizeText(args[1], "") : "";
     const item = findItemById(objectID);
     const result =
-      item && isScoopableCargoContainerType(item)
+      item && isLaunchBayPayloadItem(item)
+        ? scoopLaunchBayPayloadToCargo(session, objectID)
+        : item && isScoopableCargoContainerType(item)
         ? scoopCargoContainerToCargo(session, objectID, password)
         : item && isMobileTractorUnitType(item)
           ? scoopMobileTractorUnitToCargo(session, objectID)
@@ -1244,6 +1254,10 @@ class ShipService extends BaseService {
         notify = "Only the owner can scoop this Mobile Tractor Unit.";
       } else if (errorMsg === "MOBILE_TRACTOR_UNIT_CONTENT_EJECTION_FAILED") {
         notify = "Unable to eject Mobile Tractor Unit contents.";
+      } else if (errorMsg === "LAUNCH_BAY_PAYLOAD_NOT_OWNER") {
+        notify = "Only the owner can scoop this Launch Bay payload.";
+      } else if (errorMsg === "HEAT_TRAP_VOLATILE") {
+        notify = "The Heat Trap is still volatile and cannot be scooped.";
       }
       throwWrappedUserError("CustomNotify", { notify });
     }

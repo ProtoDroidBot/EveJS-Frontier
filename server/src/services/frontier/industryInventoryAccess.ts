@@ -2,6 +2,8 @@ const itemStore = require("../inventory/itemStore");
 const spaceRuntime = require("../../space/runtime");
 const { canEntitiesInteractLocally } = require("../../space/destiny/identity/interactionScope");
 const storage = require("./smartStorageUnitRuntime");
+const turret = require("./smartTurretInventoryRuntime");
+const fieldStorage = require("./fieldStorageInventoryRuntime");
 const { getShipFittingSnapshot } = require("../../_secondary/fitting/fittingRuntime");
 const { getShipBaseAttributeValue } = require("../fitting/liveFittingState");
 const mining = require("../mining/miningInventory");
@@ -41,13 +43,18 @@ function resolveIndustryInventory(session, inventoryID, requestedFlagID, options
   const shipID = integer(session?._space?.shipID || session?.shipid || session?.shipID);
   const itemID = integer(inventoryID);
   const flagID = integer(requestedFlagID);
-  if (characterID <= 0 || systemID < 30000000 || systemID >= 40000000 || shipID <= 0 ||
-      itemID <= 0 || flagID < 0 || session?.stationid || session?.stationid2) return fail("INVALID_INVENTORY");
+  const stationID = integer(session?.stationid2 || session?.stationid);
+  const hostedCreationID = integer(options?.creationHost?.creationID);
+  const dockedCreationInventory = stationID > 0 && hostedCreationID === shipID && itemID === shipID;
+  if (characterID <= 0 || shipID <= 0 || itemID <= 0 || flagID < 0 ||
+      (!dockedCreationInventory &&
+        (systemID < 30000000 || systemID >= 40000000 || stationID > 0))) return fail("INVALID_INVENTORY");
   const ship = itemStore.findItemById(shipID);
   const item = itemID === shipID ? ship : itemStore.findItemById(itemID);
-  if (!ship || Number(ship.ownerID) !== characterID || Number(ship.locationID) !== systemID ||
+  const expectedLocationID = dockedCreationInventory ? stationID : systemID;
+  if (!ship || Number(ship.ownerID) !== characterID || Number(ship.locationID) !== expectedLocationID ||
       Number(ship.categoryID) !== 6 || !item) return fail("ACCESS_DENIED");
-  if (Number(item.locationID) !== systemID) return fail("FACILITY_NOT_IN_CURRENT_SYSTEM");
+  if (Number(item.locationID) !== expectedLocationID) return fail("FACILITY_NOT_IN_CURRENT_SYSTEM");
 
   if (itemID !== shipID && flagID === storage.SMART_STORAGE_FLAG) {
     const shipEntity = spaceRuntime.getEntity(session, shipID);
@@ -65,7 +72,42 @@ function resolveIndustryInventory(session, inventoryID, requestedFlagID, options
     if (!Number.isFinite(validation.capacity) || validation.capacity <= 0) return fail("INVALID_INVENTORY");
     // SSUs isolate each character's contents and capacity, including visitors.
     return { success: true as const, data: { item, capacity: validation.capacity, flagID,
-      storageUnitID: itemID, inventoryOwnerID: characterID, maxTypeQuantity: 0xffffffff } };
+      smartAssemblyID: itemID, smartAssemblyKind: "storage_unit", storageUnitID: itemID,
+      inventoryOwnerID: characterID, maxTypeQuantity: 0xffffffff } };
+  }
+  if (itemID !== shipID && flagID === turret.SMART_TURRET_INVENTORY_FLAG &&
+      turret.getTurretComponent(item.typeID)) {
+    const shipEntity = spaceRuntime.getEntity(session, shipID);
+    const targetEntity = spaceRuntime.getEntity(session, itemID);
+    const scene = spaceRuntime.getSceneForSession(session);
+    const visible = shipEntity && targetEntity && canEntitiesInteractLocally(shipEntity, targetEntity);
+    const distance = visible ? scene?.getCommandTimeEntitySurfaceDistance?.(shipEntity, targetEntity) : Infinity;
+    const validation = turret.validateTurretInventory(characterID, itemID, {
+      access: { authorized: true, activeShipID: shipID, solarSystemID: systemID,
+        inRange: Number.isFinite(distance) && distance <= 5000 },
+      refreshingStatus: options.refreshingStatus === true,
+      requireOnline: options.refreshingStatus !== true,
+    });
+    if (validation.errorMsg) return fail(validation.errorMsg);
+    return { success: true as const, data: { item, capacity: validation.capacity, flagID,
+      smartAssemblyID: itemID, smartAssemblyKind: "turret", turretID: itemID,
+      inventoryOwnerID: characterID, maxTypeQuantity: 0xffffffff } };
+  }
+  if (itemID !== shipID && flagID === fieldStorage.FIELD_STORAGE_INVENTORY_FLAG &&
+      fieldStorage.getFieldStorageComponent(item.typeID)) {
+    const shipEntity = spaceRuntime.getEntity(session, shipID);
+    const targetEntity = spaceRuntime.getEntity(session, itemID);
+    const scene = spaceRuntime.getSceneForSession(session);
+    const visible = shipEntity && targetEntity && canEntitiesInteractLocally(shipEntity, targetEntity);
+    const distance = visible ? scene?.getCommandTimeEntitySurfaceDistance?.(shipEntity, targetEntity) : Infinity;
+    const component = fieldStorage.getFieldStorageComponent(item.typeID);
+    const validation = fieldStorage.validateFieldStorageInventory(characterID, itemID, {
+      access: { authorized: true, activeShipID: shipID, solarSystemID: systemID,
+        inRange: Number.isFinite(distance) && distance <= component.accessRange },
+    });
+    if (validation.errorMsg) return fail(validation.errorMsg);
+    return { success: true as const, data: { item, capacity: validation.capacity, flagID,
+      inventoryKind: "field_storage", inventoryOwnerID: characterID, maxTypeQuantity: 0xffffffff } };
   }
   if (Number(item.ownerID) !== characterID) return fail("ACCESS_DENIED");
 
@@ -98,7 +140,7 @@ function resolveIndustryInventory(session, inventoryID, requestedFlagID, options
 
 function isIndustryInventoryItemAllowed(inventory, item) {
   const flagID = inventory?.flagID;
-  if (inventory?.storageUnitID && flagID === storage.SMART_STORAGE_FLAG) return !item?.singleton;
+  if (inventory?.smartAssemblyID) return !item?.singleton;
   if (flagID === 0 || flagID === ITEM_FLAGS.CARGO_HOLD || flagID === ITEM_FLAGS.FLEET_HANGAR) return true;
   if (flagID === ITEM_FLAGS.SHIP_HANGAR) return Number(item?.categoryID) === 6;
   if (mining.MINING_SHIP_BAY_FLAGS.includes(flagID)) {
@@ -110,4 +152,38 @@ function isIndustryInventoryItemAllowed(inventory, item) {
     specialHolds.isSpecialShipHoldItemAllowed(item, flagID) === true;
 }
 
-module.exports = { resolveIndustryInventory, isIndustryInventoryItemAllowed };
+function getSmartAssemblyInventoryFlag(item) {
+  if (!item) return -1;
+  if (storage.getStorageComponent(item.typeID)) return storage.SMART_STORAGE_FLAG;
+  if (turret.getTurretComponent(item.typeID)) return turret.SMART_TURRET_INVENTORY_FLAG;
+  return -1;
+}
+
+function resolveSmartAssemblyInventory(session, inventoryID, options: Record<string, any> = {}) {
+  const item = itemStore.findItemById(integer(inventoryID));
+  const flagID = getSmartAssemblyInventoryFlag(item);
+  return flagID < 0 ? fail("INVALID_INVENTORY")
+    : resolveIndustryInventory(session, inventoryID, flagID, options);
+}
+
+function resolveTransferInventory(session, inventoryID, options: Record<string, any> = {}) {
+  const itemID = integer(inventoryID);
+  const activeShipID = integer(session?._space?.shipID || session?.shipid || session?.shipID);
+  const item = itemStore.findItemById(itemID);
+  if (!item) return fail("INVALID_INVENTORY");
+  if (itemID === activeShipID) return resolveIndustryInventory(session, itemID, ITEM_FLAGS.CARGO_HOLD, options);
+  const smartFlag = getSmartAssemblyInventoryFlag(item);
+  if (smartFlag >= 0) return resolveIndustryInventory(session, itemID, smartFlag, options);
+  if (fieldStorage.getFieldStorageComponent(item.typeID)) {
+    return resolveIndustryInventory(session, itemID, fieldStorage.FIELD_STORAGE_INVENTORY_FLAG, options);
+  }
+  return resolveIndustryInventory(session, itemID, 0, options);
+}
+
+module.exports = {
+  getSmartAssemblyInventoryFlag,
+  isIndustryInventoryItemAllowed,
+  resolveIndustryInventory,
+  resolveSmartAssemblyInventory,
+  resolveTransferInventory,
+};

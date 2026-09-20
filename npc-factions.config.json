@@ -1,6 +1,13 @@
 {
   "schemaVersion": 1,
   "enabled": true,
+  "suiWalletFunding": {
+    "enabled": true,
+    "budgetMist": "10000000000",
+    "faucetEnabled": true,
+    "gasReserveMist": "100000000",
+    "maxFaucetRequests": 3
+  },
   "transponder": {
     "enabled": true,
     "channel": "code",

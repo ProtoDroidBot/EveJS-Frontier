@@ -8,6 +8,7 @@ const {
 } = require("../src/network/tcp/utils/marshal");
 const SkillShotService = require("../src/services/frontier/skillShotService");
 const {
+  AUTO_FIRE_CONTRACT_MARKER,
   SkillShotRuntime,
   SKILL_SHOT_EFFECT_GUID,
 } = require("../src/services/frontier/skillShotRuntime");
@@ -85,6 +86,8 @@ function createHarness(options: Record<string, any> = {}) {
   const notifications: any[] = [];
   const effects: any[] = [];
   const damagedTargets: any[] = [];
+  const utilityHits: any[] = [];
+  const crystalVolatilityApplications: any[] = [];
   const session: Record<string, any> = {
     _space: { shipID: source.itemID },
     sendNotification(name, idType, payload) {
@@ -117,7 +120,7 @@ function createHarness(options: Record<string, any> = {}) {
       6273: options.rampDurationMs || 0,
     },
   };
-  const interop = {
+  const interop: Record<string, any> = {
     getEntityRuntimeModuleItem(_entity, moduleID) {
       return moduleID === moduleItem.itemID ? moduleItem : null;
     },
@@ -156,7 +159,8 @@ function createHarness(options: Record<string, any> = {}) {
       chargeItem.stacksize -= 1;
       return { success: true };
     },
-    applyCrystalVolatilityDamage() {
+    applyCrystalVolatilityDamage(...args) {
+      crystalVolatilityApplications.push(args);
       return { success: true };
     },
     applyWeaponDamageToTarget(_scene, attacker, victim, damage, when, applyOptions) {
@@ -178,6 +182,12 @@ function createHarness(options: Record<string, any> = {}) {
     noteKillmailDamage() {},
     recordKillmailFromDestruction() {},
   };
+  if (typeof options.applySkillShotUtilityHit === "function") {
+    interop.applySkillShotUtilityHit = (input) => {
+      utilityHits.push(input);
+      return options.applySkillShotUtilityHit(input);
+    };
+  }
   const spaceRuntime = {
     skillShotInterop: interop,
     getSceneForSession(candidateSession) {
@@ -187,11 +197,19 @@ function createHarness(options: Record<string, any> = {}) {
       return candidateSession === session && itemID === source.itemID ? source : null;
     },
   };
+  const creationAuthorityState = {
+    authorityResolved: true,
+    isCreation: options.isCreation === true,
+    onlineModuleTypeIDs: new Set(options.onlineCreationModuleTypeIDs || []),
+    poweredOff: false,
+  };
   const runtime = new SkillShotRuntime({
     getSpaceRuntime: () => spaceRuntime,
     now: () => nowMs,
     schedule: scheduler.schedule,
     clearTimer: scheduler.clearTimer,
+    resolveCreationControlAuthority:
+      options.resolveCreationControlAuthority || (() => creationAuthorityState),
   });
   return {
     runtime,
@@ -204,6 +222,9 @@ function createHarness(options: Record<string, any> = {}) {
     notifications,
     effects,
     damagedTargets,
+    utilityHits,
+    crystalVolatilityApplications,
+    creationAuthorityState,
     setNow(value) {
       nowMs = value;
     },
@@ -394,6 +415,281 @@ test("Stuttergun damages the first aimed ball without any target lock", () => {
   assert.ok(harness.notifications.some((entry) => entry.name === "OnSkillShotSucceeded"));
 });
 
+test("deliberately spaced manual Stuttergun shots do not require a Repeater", () => {
+  const harness = createHarness({ isCreation: true });
+  const states = [[harness.moduleItem.itemID, [1, 0, 0]]];
+
+  assert.equal(harness.runtime.beginFire(harness.session, states).success, true);
+  harness.setNow(3_000);
+  const secondShot = harness.runtime.beginFire(harness.session, states);
+
+  assert.equal(secondShot.success, true);
+  assert.equal(harness.damagedTargets.length, 2);
+});
+
+test("explicit Creation auto-fire is rejected when the Repeater is absent or offline", () => {
+  const harness = createHarness({ isCreation: true });
+  const states = [[
+    harness.moduleItem.itemID,
+    [1, 0, 0],
+    AUTO_FIRE_CONTRACT_MARKER,
+  ]];
+  const blocked = harness.runtime.beginFire(harness.session, states);
+
+  assert.equal(blocked.success, false);
+  assert.equal(blocked.errorMsg, "AUTO_FIRE_CONTROLLER_OFFLINE");
+  assert.equal(harness.damagedTargets.length, 0);
+  assert.deepEqual(harness.notifications.at(-1), {
+    name: "OnSkillShotFailed",
+    idType: "clientID",
+    payload: ["AutoFireControllerOffline", {}],
+  });
+});
+
+test("the auto-fire marker applies to the whole request even when its tuple is malformed", () => {
+  const harness = createHarness({
+    isCreation: true,
+    moduleTypeID: 94076,
+    onlineCreationModuleTypeIDs: [95679],
+  });
+  const accepted = harness.runtime.beginFire(harness.session, [
+    // A zero direction is discarded during normalization. It must not discard
+    // the request-level automatic-fire contract along with it.
+    [harness.moduleItem.itemID, [0, 0, 0], AUTO_FIRE_CONTRACT_MARKER],
+    [harness.moduleItem.itemID, [1, 0, 0]],
+  ]);
+
+  assert.equal(accepted.success, true);
+  assert.equal(harness.scheduler.tasks[0].delayMs, 500);
+  harness.creationAuthorityState.onlineModuleTypeIDs.clear();
+  harness.setNow(1_500);
+  harness.scheduler.runNext();
+
+  assert.equal(harness.damagedTargets.length, 0);
+  assert.equal(harness.chargeItem.quantity, 10);
+  assert.equal(harness.source.capacitorChargeRatio, 1);
+  assert.deepEqual(harness.notifications.at(-1), {
+    name: "OnSkillShotFailed",
+    idType: "clientID",
+    payload: ["AutoFireControllerOffline", {}],
+  });
+});
+
+test("an online Creation Repeater authorizes explicit client auto-fire", () => {
+  const harness = createHarness({
+    isCreation: true,
+    onlineCreationModuleTypeIDs: [95679],
+  });
+  const states = [[
+    harness.moduleItem.itemID,
+    [1, 0, 0],
+    AUTO_FIRE_CONTRACT_MARKER,
+  ]];
+
+  assert.equal(harness.runtime.beginFire(harness.session, states).success, true);
+  assert.equal(harness.damagedTargets.length, 1);
+});
+
+test("a powered-down Creation cannot use an otherwise-online Repeater", () => {
+  const harness = createHarness({
+    isCreation: true,
+    onlineCreationModuleTypeIDs: [95679],
+  });
+  harness.creationAuthorityState.poweredOff = true;
+  const result = harness.runtime.beginFire(harness.session, [[
+    harness.moduleItem.itemID,
+    [1, 0, 0],
+    AUTO_FIRE_CONTRACT_MARKER,
+  ]]);
+
+  assert.equal(result.success, false);
+  assert.equal(result.errorMsg, "AUTO_FIRE_CONTROLLER_OFFLINE");
+  assert.equal(harness.damagedTargets.length, 0);
+});
+
+test("every explicit Creation auto-fire shot revalidates current Repeater authority", () => {
+  const harness = createHarness({
+    isCreation: true,
+    onlineCreationModuleTypeIDs: [95679],
+  });
+  const states = [[
+    harness.moduleItem.itemID,
+    [1, 0, 0],
+    AUTO_FIRE_CONTRACT_MARKER,
+  ]];
+
+  assert.equal(harness.runtime.beginFire(harness.session, states).success, true);
+  harness.creationAuthorityState.onlineModuleTypeIDs.clear();
+  const afterEffectiveOffline = harness.runtime.beginFire(harness.session, states);
+
+  assert.equal(afterEffectiveOffline.success, false);
+  assert.equal(afterEffectiveOffline.errorMsg, "AUTO_FIRE_CONTROLLER_OFFLINE");
+  assert.equal(harness.damagedTargets.length, 1);
+});
+
+for (const authorityLoss of [
+  "offline",
+  "removed",
+  "ship power-down",
+]) {
+  test(`delayed Creation auto-fire cannot damage after Repeater ${authorityLoss}`, () => {
+    const harness = createHarness({
+      isCreation: true,
+      moduleTypeID: 94076,
+      onlineCreationModuleTypeIDs: [95679],
+    });
+    const states = [[
+      harness.moduleItem.itemID,
+      [1, 0, 0],
+      AUTO_FIRE_CONTRACT_MARKER,
+    ]];
+
+    const beginResult = harness.runtime.beginFire(harness.session, states);
+    assert.equal(beginResult.success, true);
+    assert.equal(harness.damagedTargets.length, 0);
+    assert.equal(harness.scheduler.tasks[0].delayMs, 500);
+
+    harness.creationAuthorityState.onlineModuleTypeIDs.clear();
+    if (authorityLoss === "ship power-down") {
+      harness.creationAuthorityState.poweredOff = true;
+    }
+    harness.setNow(1_500);
+    harness.scheduler.runNext();
+
+    assert.equal(harness.damagedTargets.length, 0);
+    assert.equal(harness.chargeItem.quantity, 10);
+    assert.equal(harness.source.capacitorChargeRatio, 1);
+    assert.equal(harness.effects.length, 0);
+    assert.deepEqual(harness.notifications.at(-1), {
+      name: "OnSkillShotFailed",
+      idType: "clientID",
+      payload: ["AutoFireControllerOffline", {}],
+    });
+  });
+}
+
+for (const weaponLoss of ["offline", "removed"]) {
+  test(`delayed automatic fire terminates when its weapon is ${weaponLoss}`, () => {
+    const harness = createHarness({
+      isCreation: true,
+      moduleTypeID: 94076,
+      onlineCreationModuleTypeIDs: [95679],
+    });
+    const beginResult = harness.runtime.beginFire(harness.session, [[
+      harness.moduleItem.itemID,
+      [1, 0, 0],
+      AUTO_FIRE_CONTRACT_MARKER,
+    ]]);
+    assert.equal(beginResult.success, true);
+
+    if (weaponLoss === "offline") {
+      harness.moduleItem.moduleState.online = false;
+    } else {
+      harness.moduleItem.itemID += 1;
+    }
+    harness.setNow(1_500);
+    harness.scheduler.runNext();
+
+    assert.equal(harness.damagedTargets.length, 0);
+    assert.equal(harness.chargeItem.quantity, 10);
+    assert.equal(harness.source.capacitorChargeRatio, 1);
+    assert.deepEqual(harness.notifications.at(-1), {
+      name: "OnSkillShotFailed",
+      idType: "clientID",
+      payload: ["AutoFireTerminated", {}],
+    });
+  });
+}
+
+test("EndFire cancels an accepted delayed automatic shot", () => {
+  const harness = createHarness({
+    isCreation: true,
+    moduleTypeID: 94076,
+    onlineCreationModuleTypeIDs: [95679],
+  });
+  const beginResult = harness.runtime.beginFire(harness.session, [[
+    harness.moduleItem.itemID,
+    [1, 0, 0],
+    AUTO_FIRE_CONTRACT_MARKER,
+  ]]);
+  assert.equal(beginResult.success, true);
+
+  const endResult = harness.runtime.endFire(harness.session);
+
+  assert.equal(endResult.success, true);
+  assert.equal(endResult.data.ended, true);
+  assert.equal(harness.scheduler.tasks[0].cancelled, true);
+  assert.equal(harness.scheduler.runNext(), false);
+  assert.equal(harness.damagedTargets.length, 0);
+  assert.equal(harness.chargeItem.quantity, 10);
+  assert.equal(harness.source.capacitorChargeRatio, 1);
+});
+
+test("unresolved automatic-fire authority fails closed without consuming resources", () => {
+  const harness = createHarness({
+    isCreation: true,
+    onlineCreationModuleTypeIDs: [95679],
+  });
+  harness.creationAuthorityState.authorityResolved = false;
+
+  const result = harness.runtime.beginFire(harness.session, [[
+    harness.moduleItem.itemID,
+    [1, 0, 0],
+    AUTO_FIRE_CONTRACT_MARKER,
+  ]]);
+
+  assert.equal(result.success, false);
+  assert.equal(result.errorMsg, "AUTO_FIRE_AUTHORITY_UNAVAILABLE");
+  assert.equal(harness.damagedTargets.length, 0);
+  assert.equal(harness.chargeItem.quantity, 10);
+  assert.equal(harness.source.capacitorChargeRatio, 1);
+  assert.deepEqual(harness.notifications.at(-1), {
+    name: "OnSkillShotFailed",
+    idType: "clientID",
+    payload: ["AutoFireTerminated", {}],
+  });
+});
+
+test("ordinary non-Creation explicit auto-fire is not subject to Repeater authority", () => {
+  const harness = createHarness();
+  const states = [[
+    harness.moduleItem.itemID,
+    [1, 0, 0],
+    AUTO_FIRE_CONTRACT_MARKER,
+  ]];
+
+  assert.equal(harness.runtime.beginFire(harness.session, states).success, true);
+  assert.equal(harness.damagedTargets.length, 1);
+});
+
+test("authorized Repeater fire still uses shared collision, resources, damage, and FX", () => {
+  const blocker = {
+    ...buildEntity(303, { x: 400, y: 0, z: 0 }, 75),
+    kind: "structure",
+    damageable: false,
+  };
+  const harness = createHarness({
+    additionalEntities: [blocker],
+    isCreation: true,
+    onlineCreationModuleTypeIDs: [95679],
+  });
+
+  const result = harness.runtime.beginFire(harness.session, [[
+    harness.moduleItem.itemID,
+    [1, 0, 0],
+    AUTO_FIRE_CONTRACT_MARKER,
+  ]]);
+
+  assert.equal(result.success, true);
+  assert.equal(harness.damagedTargets.length, 1);
+  assert.equal(harness.damagedTargets[0].victim, blocker);
+  assert.equal(harness.chargeItem.quantity, 9);
+  assert.equal(harness.source.capacitorChargeRatio, 0.88);
+  assert.equal(harness.effects.length, 1);
+  assert.equal(harness.effects[0].guid, SKILL_SHOT_EFFECT_GUID);
+  assert.equal(harness.effects[0].options.targetID, blocker.itemID);
+});
+
 test("a nearer physical object obstructs a skill shot before its intended target", () => {
   const blocker = {
     ...buildEntity(303, { x: 400, y: 0, z: 0 }, 75),
@@ -477,6 +773,101 @@ test("held beams tick, expose ramp metadata, update endpoints, and stop cleanly"
   assert.equal(endResult.success, true);
   assert.equal(endResult.data.ended, true);
   assert.equal(harness.effects.at(-1).options.start, false);
+});
+
+test("held-beam utility collisions keep resources and FX but do not also deal combat damage", () => {
+  const harness = createHarness({
+    moduleTypeID: 95317,
+    family: "laserTurret",
+    chargeMode: "crystal",
+    cycleDurationMs: 2_000,
+    rampMaxMultiplier: 2.3,
+    rampDurationMs: 16_000,
+    applySkillShotUtilityHit: () => ({
+      matched: true,
+      success: true,
+      blockCombatDamage: true,
+      data: { transferredQuantity: 13 },
+    }),
+  });
+
+  const result = harness.runtime.beginHeldBeam(harness.session, [
+    [harness.moduleItem.itemID, [1, 0, 0]],
+  ]);
+  assert.equal(result.success, true);
+  harness.scheduler.runNext();
+
+  assert.equal(harness.utilityHits.length, 1);
+  assert.equal(harness.utilityHits[0].targetEntity, harness.target);
+  assert.equal(harness.utilityHits[0].rampMultiplier, 1);
+  assert.equal(harness.damagedTargets.length, 0);
+  assert.equal(harness.source.capacitorChargeRatio, 0.88);
+  assert.equal(harness.crystalVolatilityApplications.length, 1);
+  assert.equal(harness.effects.length, 1);
+  assert.equal(harness.effects[0].options.targetID, harness.target.itemID);
+  assert.equal(harness.effects[0].options.graphicInfo.endpointMode, "hit");
+});
+
+test("a blocked utility transfer stops the beam and reports its authored failure", () => {
+  const harness = createHarness({
+    moduleTypeID: 95503,
+    family: "laserTurret",
+    chargeMode: "crystal",
+    cycleDurationMs: 3_000,
+    applySkillShotUtilityHit: () => ({
+      matched: true,
+      success: false,
+      stopReason: "cargo",
+      blockCombatDamage: true,
+    }),
+  });
+
+  assert.equal(harness.runtime.beginHeldBeam(harness.session, [
+    [harness.moduleItem.itemID, [1, 0, 0]],
+  ]).success, true);
+  harness.scheduler.runNext();
+
+  assert.equal(harness.damagedTargets.length, 0);
+  assert.equal(harness.scheduler.runNext(), false);
+  assert.equal(harness.effects.length, 2);
+  assert.equal(harness.effects[0].options.start, true);
+  assert.equal(harness.effects[1].options.start, false);
+  assert.ok(!harness.notifications.some(
+    (entry) => entry.name === "OnSkillShotSucceeded",
+  ));
+  assert.deepEqual(harness.notifications.at(-1), {
+    name: "OnSkillShotFailed",
+    idType: "clientID",
+    payload: ["NotEnoughCargoSpace", {}],
+  });
+});
+
+test("held-beam utility authority receives the first physical obstruction", () => {
+  const blocker = {
+    ...buildEntity(303, { x: 400, y: 0, z: 0 }, 75),
+    kind: "asteroid",
+  };
+  const harness = createHarness({
+    moduleTypeID: 95317,
+    family: "laserTurret",
+    chargeMode: "crystal",
+    additionalEntities: [blocker],
+    applySkillShotUtilityHit: () => ({
+      matched: true,
+      success: true,
+      blockCombatDamage: true,
+    }),
+  });
+
+  assert.equal(harness.runtime.beginHeldBeam(harness.session, [
+    [harness.moduleItem.itemID, [1, 0, 0]],
+  ]).success, true);
+  harness.scheduler.runNext();
+
+  assert.equal(harness.utilityHits.length, 1);
+  assert.equal(harness.utilityHits[0].targetEntity, blocker);
+  assert.equal(harness.damagedTargets.length, 0);
+  assert.equal(harness.effects[0].options.targetID, blocker.itemID);
 });
 
 test("skillShot service exposes the exact RPC method and BeginFireAck shapes", () => {

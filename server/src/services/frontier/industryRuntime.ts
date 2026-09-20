@@ -37,10 +37,71 @@ function canReadFacility(item, session) {
   return Boolean(item && characterID && (Number(item.ownerID) === characterID ||
     (getSessionSolarSystemID(session) > 0 && getItemSolarSystemID(item) === getSessionSolarSystemID(session))));
 }
-function validateFacility(session, facilityID) {
+function validateCreationHostedFacility(session, facility, facilityID, options: Record<string, any> = {}) {
+  const hosted = options && options.creationHost;
+  if (!hosted || typeof hosted !== "object" || Array.isArray(hosted)) return null;
+  const characterID = positiveInteger(session?.characterID || session?.charid);
+  const creationID = positiveInteger(hosted.creationID);
+  const moduleItemID = positiveInteger(hosted.moduleItemID);
+  const expectedCharacterID = positiveInteger(hosted.characterID);
+  if (!characterID || expectedCharacterID !== characterID || moduleItemID !== positiveInteger(facilityID) ||
+      Number(facility?.itemID) !== moduleItemID || Number(facility?.ownerID) !== characterID) {
+    return fail("ACCESS_DENIED");
+  }
+
+  // A hosted facility is authoritative only while this exact persisted item
+  // remains fitted to the active Creation.  Merely supplying creationHost in
+  // an RPC can never turn a cargo item (or another character's module) into a
+  // facility.
+  const creationRuntime = require("./creationRuntime");
+  if (Number(facility.locationID) !== creationID ||
+      Number(facility.flagID) !== Number(creationRuntime.CREATION_FITTING_FLAG_ID)) {
+    return fail("FACILITY_NOT_FOUND");
+  }
+  const ship = itemStore.findItemById(creationID);
+  if (!ship || Number(ship.ownerID) !== characterID || Number(ship.categoryID) !== 6) {
+    return fail("INVALID_SHIP");
+  }
+  const state = creationRuntime.readCreationState(ship);
+  if (!state || !Array.isArray(state.modules) || !state.modules.some(module =>
+    Number(module?.itemID) === moduleItemID && Number(module?.typeID) === Number(facility.typeID))) {
+    return fail("FACILITY_NOT_FOUND");
+  }
+
+  const activeShipID = positiveInteger(session?._space?.shipID || session?.shipid || session?.shipID);
+  if (activeShipID !== creationID) return fail("INVALID_SHIP");
+  const stationID = positiveInteger(session?.stationid2 || session?.stationid);
+  let shipEntity = null;
+  if (stationID > 0) {
+    // Creation management (including its Industry tabs) remains usable for
+    // the active ship in a station.  Bind it to the exact station inventory;
+    // stale ship/session pairs cannot operate a remote fitted module.
+    if (Number(ship.locationID) !== stationID ||
+        (positiveInteger(session?.locationid) && positiveInteger(session.locationid) !== stationID)) {
+      return fail("FACILITY_NOT_IN_CURRENT_SYSTEM");
+    }
+  } else {
+    const solarSystemID = getSessionSolarSystemID(session);
+    if (!session?._space || solarSystemID <= 0 || getItemSolarSystemID(ship) !== solarSystemID) {
+      return fail("FACILITY_NOT_IN_CURRENT_SYSTEM");
+    }
+    shipEntity = spaceRuntime.getEntity(session, creationID);
+    if (!shipEntity || Number(shipEntity.itemID || shipEntity.entityID) !== creationID ||
+        (shipEntity.kind && shipEntity.kind !== "ship")) {
+      return fail("INVALID_SHIP");
+    }
+  }
+  return { success: true as const, data: {
+    facility, characterID, ship, creationHosted: true, shipEntity,
+  } };
+}
+
+function validateFacility(session, facilityID, options: Record<string, any> = {}) {
   const characterID = positiveInteger(session?.characterID || session?.charid);
   const facility = itemStore.findItemById(positiveInteger(facilityID));
   if (!facility || !blueprints.isIndustryFacilityType(facility.typeID)) return fail("FACILITY_NOT_FOUND");
+  const hosted = validateCreationHostedFacility(session, facility, facilityID, options);
+  if (hosted) return hosted;
   if (!characterID || Number(facility.ownerID) !== characterID) return fail("ACCESS_DENIED");
   const solarSystemID = getSessionSolarSystemID(session);
   if (solarSystemID <= 0 || getItemSolarSystemID(facility) !== solarSystemID ||
@@ -127,8 +188,8 @@ function commit(context, moves, items, side) {
     changes: result.data.changes, storageTransfers: Array.from(storageTransfers.values()),
   } };
 }
-function depositInputItems(session, facilityID, rawItems) {
-  const access = validateFacility(session, facilityID);
+function depositInputItems(session, facilityID, rawItems, options: Record<string, any> = {}) {
+  const access = validateFacility(session, facilityID, options);
   if (!access.success) return access;
   const { facility, characterID } = access.data;
   const requested = parseQuantities(rawItems, true);
@@ -144,7 +205,8 @@ function depositInputItems(session, facilityID, rawItems) {
     if (!item || Number(item.ownerID) !== characterID) return fail("INVALID_SOURCE");
     const sourceKey = `${item.locationID}:${item.flagID}`;
     if (!sourceInventories.has(sourceKey)) {
-      sourceInventories.set(sourceKey, inventoryAccess.resolveIndustryInventory(session, item.locationID, item.flagID));
+      sourceInventories.set(sourceKey,
+        inventoryAccess.resolveIndustryInventory(session, item.locationID, item.flagID, options));
     }
     if (!sourceInventories.get(sourceKey).success) return fail("INVALID_SOURCE");
     if (item.singleton) return fail("SINGLETON_NOT_ACCEPTED");
@@ -160,12 +222,13 @@ function depositInputItems(session, facilityID, rawItems) {
   }
   return commit(access.data, moves, moved, "inputs");
 }
-function withdrawItems(session, facilityID, rawItems, inventoryID, flagID, side = "inputs") {
-  const access = validateFacility(session, facilityID);
+function withdrawItems(session, facilityID, rawItems, inventoryID, flagID, side = "inputs",
+  options: Record<string, any> = {}) {
+  const access = validateFacility(session, facilityID, options);
   if (!access.success) return access;
   const { facility } = access.data;
   if (side !== "inputs" && side !== "outputs") return fail("INVALID_INVENTORY");
-  const destination = inventoryAccess.resolveIndustryInventory(session, inventoryID, flagID);
+  const destination = inventoryAccess.resolveIndustryInventory(session, inventoryID, flagID, options);
   if (!destination.success) return fail("INVALID_DESTINATION");
   const { item: destinationItem, flagID: destinationFlag } = destination.data;
   const requested = parseQuantities(rawItems);
@@ -193,6 +256,46 @@ function withdrawItems(session, facilityID, rawItems, inventoryID, flagID, side 
   return commit(access.data, moves, Object.fromEntries(requested), side);
 }
 
+function prepareJettisonWithdrawal(
+  session,
+  facilityID,
+  rawItems,
+  side = "inputs",
+  options: Record<string, any> = {},
+) {
+  const access = validateFacility(session, facilityID, options);
+  if (!access.success) return access;
+  const { facility } = access.data;
+  if (side !== "inputs" && side !== "outputs") return fail("INVALID_INVENTORY");
+  const requested = parseQuantities(rawItems);
+  if (!requested) return fail("INVALID_QUANTITY");
+  const sourceFlagID = side === "inputs" ? INDUSTRY_INPUT_FLAG : INDUSTRY_OUTPUT_FLAG;
+  const rows = storedRows(facility, sourceFlagID)
+    .sort((left, right) => left.itemID - right.itemID);
+  const moves: any[] = [];
+  for (const [typeID, quantity] of requested) {
+    let remaining = quantity;
+    for (const item of rows) {
+      if (Number(item.typeID) !== typeID || remaining <= 0) continue;
+      const take = Math.min(remaining, itemQuantity(item));
+      if (!take) continue;
+      moves.push({ itemID: item.itemID, quantity: take });
+      remaining -= take;
+    }
+    if (remaining > 0) return fail("INSUFFICIENT_STORED_ITEMS");
+  }
+  return {
+    success: true as const,
+    data: {
+      ...access.data,
+      side,
+      sourceFlagID,
+      items: Object.fromEntries(requested),
+      moves,
+    },
+  };
+}
+
 function validateWithdrawalCapacity(destination, requested, volume) {
   // Ownership controls which rows may move; SSU capacity is per character,
   // while other destination inventories count every owner's rows.
@@ -211,7 +314,8 @@ function validateWithdrawalCapacity(destination, requested, volume) {
     .reduce((sum, item) => sum + Math.max(0, itemStore.getInventoryItemUnitVolume(item)) * itemQuantity(item), 0);
   if (!Number.isFinite(volume) || !Number.isFinite(usedVolume) || !Number.isFinite(destination.capacity) ||
       destination.capacity <= 0 || usedVolume + volume > destination.capacity + 1e-6) {
-    return fail(destination.storageUnitID ? "STORAGE_CAPACITY_EXCEEDED" : "SHIP_CARGO_CAPACITY_EXCEEDED");
+    return fail(destination.smartAssemblyID || destination.inventoryKind === "field_storage"
+      ? "STORAGE_CAPACITY_EXCEEDED" : "SHIP_CARGO_CAPACITY_EXCEEDED");
   }
   return { success: true as const };
 }
@@ -224,15 +328,15 @@ function validateStoppedProduction(facility) {
   return { success: true as const };
 }
 
-function emptyActiveBlueprintItems(session, facilityID, storageUnitID) {
-  const access = validateFacility(session, facilityID);
+function emptyActiveBlueprintItems(session, facilityID, storageUnitID, options: Record<string, any> = {}) {
+  const access = validateFacility(session, facilityID, options);
   if (!access.success) return access;
   const { facility, characterID } = access.data;
   const stopped = validateStoppedProduction(facility);
   if (!stopped.success) return stopped;
-  const destination = inventoryAccess.resolveIndustryInventory(session, storageUnitID, SMART_STORAGE_FLAG);
+  const destination = inventoryAccess.resolveTransferInventory(session, storageUnitID, options);
   if (!destination.success) return destination;
-  if (!destination.data.storageUnitID) return fail("INVALID_DESTINATION");
+  const destinationFlag = destination.data.flagID;
   const moves = [];
   const itemsBySide = { inputs: {}, outputs: {} };
   const totals = new Map<number, number>();
@@ -254,7 +358,7 @@ function emptyActiveBlueprintItems(session, facilityID, storageUnitID) {
       itemsBySide[side][typeID] = (itemsBySide[side][typeID] || 0) + quantity;
       volume += Math.max(0, itemStore.getInventoryItemUnitVolume(item)) * quantity;
       moves.push({ itemID: item.itemID, quantity,
-        destinationLocationID: destination.data.item.itemID, destinationFlagID: SMART_STORAGE_FLAG });
+        destinationLocationID: destination.data.item.itemID, destinationFlagID: destinationFlag });
     }
   }
   if (!moves.length) return fail("FACILITY_ALREADY_EMPTY");
@@ -293,25 +397,53 @@ async function syncStorageTransfers(result) {
   } finally { clearTimeout(timer); }
 }
 
-function withStorageStates(session, facilityID, inventories, operation) {
-  const storageIDs = [...new Set(inventories.filter(inventory => inventory.flagID === SMART_STORAGE_FLAG)
-    .map(inventory => inventory.inventoryID))];
-  if (!storageIDs.length) return operation();
-  const access = validateFacility(session, facilityID);
+async function syncIndustryAssemblyTransfer(result) {
+  if (!result?.success) return result;
+  try {
+    const sync = require("./suiIndustryStorageSync");
+    result.data.chain = await sync.syncIndustryAssemblyTransfer({
+      facilityID: result.data.facility.itemID,
+      characterID: result.data.characterID,
+    });
+  } catch {
+    result.data.chain = { status: "pending", industryStatus: "pending", storageStatus: "disabled" };
+  }
+  result.data.gameCommitted = true;
+  return result;
+}
+
+function withStorageStates(session, facilityID, inventories, operation, options: Record<string, any> = {}) {
+  const assemblyInventoryIDs = [...new Set(inventories.flatMap(inventory => {
+    const item = itemStore.findItemById(positiveInteger(inventory.inventoryID));
+    return inventoryAccess.getSmartAssemblyInventoryFlag(item) === Number(inventory.flagID)
+      ? [positiveInteger(inventory.inventoryID)] : [];
+  }).filter(Boolean))];
+  if (!assemblyInventoryIDs.length) {
+    const result = operation();
+    if (!options.storageUnitID) return result;
+    return result instanceof Promise
+      ? result.then(syncIndustryAssemblyTransfer)
+      : syncIndustryAssemblyTransfer(result);
+  }
+  const access = validateFacility(session, facilityID, options);
   if (!access.success) return access;
   for (const inventory of inventories) {
     const resolved = inventoryAccess.resolveIndustryInventory(session, inventory.inventoryID,
-      inventory.flagID, { refreshingStatus: true });
+      inventory.flagID, { ...options, refreshingStatus: true });
     if (!resolved.success) return resolved;
   }
   const unavailable = error => fail(error?.code === "ASSEMBLY_STATE_PENDING"
     ? "ASSEMBLY_STATE_PENDING" : "ASSEMBLY_STATE_UNAVAILABLE");
   try {
-    const result = runWithSuiAssemblyStates([positiveInteger(facilityID), ...storageIDs], operation);
+    const assemblyIDs = options.creationHost
+      ? assemblyInventoryIDs
+      : [positiveInteger(facilityID), ...assemblyInventoryIDs];
+    const result = runWithSuiAssemblyStates(assemblyIDs, operation);
     // The disabled-chain profile remains synchronous. Live chain operations
     // refresh every involved assembly and commit once on the shared queue.
-    if (result instanceof Promise) return result.then(syncStorageTransfers, unavailable);
-    if (result.success && result.data.storageTransfers?.length) {
+    if (result instanceof Promise) return result.then(value => value?.data?.storageTransfers?.length
+      ? syncStorageTransfers(value) : syncIndustryAssemblyTransfer(value), unavailable);
+    if (result.success) {
       result.data.chain = { status: "disabled", industryStatus: "disabled", storageStatus: "disabled" };
       result.data.gameCommitted = true;
     }
@@ -321,14 +453,18 @@ function withStorageStates(session, facilityID, inventories, operation) {
 
 function depositInputItemsWithStorageState(session, facilityID, rawItems, options: Record<string, any> = {}) {
   const requested = parseQuantities(rawItems, true);
-  if (!requested) return depositInputItems(session, facilityID, rawItems);
+  if (!requested) return depositInputItems(session, facilityID, rawItems, options);
   const inventories = Array.from(requested.keys()).map(itemID => {
     const item = itemStore.findItemById(itemID);
     return { itemID, inventoryID: Number(item?.locationID), flagID: Number(item?.flagID) };
   });
-  if (options.storageUnitID && inventories.some(inventory =>
-    inventory.inventoryID !== positiveInteger(options.storageUnitID) || inventory.flagID !== SMART_STORAGE_FLAG)) {
-    return fail("INVALID_SOURCE");
+  if (options.storageUnitID) {
+    const expectedID = positiveInteger(options.storageUnitID);
+    const expected = inventoryAccess.resolveTransferInventory(session, expectedID, options);
+    if (!expected.success || inventories.some(inventory =>
+      inventory.inventoryID !== expectedID || inventory.flagID !== expected.data.flagID)) {
+      return fail("INVALID_SOURCE");
+    }
   }
   return withStorageStates(session, facilityID, inventories, () => {
     if (typeof options.assertAccess === "function") {
@@ -341,22 +477,25 @@ function depositInputItemsWithStorageState(session, facilityID, rawItems, option
       const item = itemStore.findItemById(inventory.itemID);
       return !item || Number(item.locationID) !== inventory.inventoryID || Number(item.flagID) !== inventory.flagID;
     })) return fail("INVALID_SOURCE");
-    return depositInputItems(session, facilityID, rawItems);
-  });
+    return depositInputItems(session, facilityID, rawItems, options);
+  }, options);
 }
 
 // The native SSU inventory exposes aggregate type rows without real item IDs.
 // Resolve those quantities to this character's persisted partition before the
 // usual authoritative refresh and atomic transfer revalidation.
-function depositStorageInputItems(session, facilityID, storageUnitID, rawItems) {
-  const access = validateFacility(session, facilityID);
+function depositStorageInputItems(session, facilityID, storageUnitID, rawItems,
+  options: Record<string, any> = {}) {
+  const access = validateFacility(session, facilityID, options);
   if (!access.success) return access;
   if (!positiveInteger(storageUnitID)) return fail("INVALID_SOURCE");
   const requested = parseQuantities(rawItems);
   if (!requested || Array.from(requested.values()).some(quantity => quantity > 0xffffffff)) {
     return fail("INVALID_QUANTITY");
   }
-  const rows = itemStore.listContainerItems(access.data.characterID, positiveInteger(storageUnitID), SMART_STORAGE_FLAG)
+  const source = inventoryAccess.resolveTransferInventory(session, storageUnitID, options);
+  if (!source.success) return fail("INVALID_SOURCE");
+  const rows = itemStore.listContainerItems(access.data.characterID, positiveInteger(storageUnitID), source.data.flagID)
     .filter(item => !item.singleton).sort((left, right) => left.itemID - right.itemID);
   const selected = new Map();
   for (const [typeID, quantity] of requested) {
@@ -369,7 +508,7 @@ function depositStorageInputItems(session, facilityID, storageUnitID, rawItems) 
     }
     if (remaining) return fail("INSUFFICIENT_SOURCE_ITEMS");
   }
-  return depositInputItemsWithStorageState(session, facilityID, selected, { storageUnitID });
+  return depositInputItemsWithStorageState(session, facilityID, selected, { ...options, storageUnitID });
 }
 
 function withdrawItemsWithStorageState(session, facilityID, rawItems, inventoryID, flagID, side = "inputs",
@@ -380,22 +519,25 @@ function withdrawItemsWithStorageState(session, facilityID, rawItems, inventoryI
         const allowed = options.assertAccess();
         if (!allowed?.success) return allowed || fail("ACCESS_DENIED");
       }
-      return withdrawItems(session, facilityID, rawItems, inventoryID, flagID, side);
-    });
+      return withdrawItems(session, facilityID, rawItems, inventoryID, flagID, side, options);
+    }, options);
 }
 function emptyActiveBlueprint(session, facilityID, storageUnitID, options: Record<string, any> = {}) {
   if (!positiveInteger(storageUnitID)) return fail("INVALID_DESTINATION");
+  const destination = inventoryAccess.resolveTransferInventory(session, storageUnitID, options);
+  if (!destination.success) return fail("INVALID_DESTINATION");
+  const flagID = destination.data.flagID;
   return withStorageStates(session, facilityID,
-    [{ inventoryID: positiveInteger(storageUnitID), flagID: SMART_STORAGE_FLAG }], () => {
+    [{ inventoryID: positiveInteger(storageUnitID), flagID }], () => {
       if (typeof options.assertAccess === "function") {
         const allowed = options.assertAccess();
         if (!allowed?.success) return allowed || fail("ACCESS_DENIED");
       }
-      return emptyActiveBlueprintItems(session, facilityID, storageUnitID);
-    });
+      return emptyActiveBlueprintItems(session, facilityID, storageUnitID, options);
+    }, options);
 }
-function loadBlueprint(session, facilityID, blueprintID) {
-  const access = validateFacility(session, facilityID);
+function loadBlueprint(session, facilityID, blueprintID, options: Record<string, any> = {}) {
+  const access = validateFacility(session, facilityID, options);
   if (!access.success) return access;
   const { facility } = access.data;
   const stopped = validateStoppedProduction(facility);
@@ -415,6 +557,7 @@ module.exports = {
   INDUSTRY_INPUT_FLAG, INDUSTRY_OUTPUT_FLAG, canReadFacility, getItemSolarSystemID,
   getFacilityItems, depositInputItems: depositInputItemsWithStorageState,
   depositStorageInputItems,
+  prepareJettisonWithdrawal,
   withdrawItems: withdrawItemsWithStorageState, emptyActiveBlueprint, loadBlueprint,
   validateFacility,
   getProduction: (...args) => require("./industryProduction").getProduction(...args),

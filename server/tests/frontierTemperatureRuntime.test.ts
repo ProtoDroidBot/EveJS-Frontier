@@ -213,7 +213,11 @@ test("hull temperature scales only the thermal scanning signature", () => {
   const signatures = scanningRuntime.buildSignatureResultsForTarget({
     baseSignature: 10,
     distanceMeters: 1_000_000,
-    multipliers: [[1, 500], [2, 500], [3, 500]],
+    multipliers: [
+      [scanningRuntime.SIGNATURE_TYPE_GRAVIMETRIC, 500],
+      [scanningRuntime.SIGNATURE_TYPE_ELECTROMAGNETIC, 500],
+      [scanningRuntime.SIGNATURE_TYPE_THERMAL, 500],
+    ],
     massKg: scanningRuntime.GRAVIMETRIC_REFERENCE_MASS_KG,
     emSignatureMultiplier: 1,
     thermalSignatureMultiplier: hotMultiplier,

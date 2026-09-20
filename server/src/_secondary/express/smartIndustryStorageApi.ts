@@ -13,12 +13,14 @@ const store = () => require("../../services/inventory/itemStore");
 function availableStorage(session: any, characterID: number) {
   const inventory = store();
   const access = require("../../services/frontier/industryInventoryAccess");
-  const storage = require("../../services/frontier/smartStorageUnitRuntime");
-  return Object.values<any>(inventory.getAllItems()).filter(item => storage.getStorageComponent(item.typeID))
+  const shipID = Number(session?._space?.shipID || session?.shipid || session?.shipID) || 0;
+  const systemID = Number(session?._space?.systemID || session?.solarsystemid2 || session?.solarsystemid) || 0;
+  return Object.values<any>(inventory.getAllItems())
+    .filter(item => Number(item.itemID) === shipID || Number(item.locationID) === systemID)
     .flatMap(item => {
-      const result = access.resolveIndustryInventory(session, item.itemID, STORAGE_FLAG);
+      const result = access.resolveTransferInventory(session, item.itemID);
       if (!result.success) return [];
-      const rows = inventory.listContainerItems(characterID, item.itemID, STORAGE_FLAG);
+      const rows = inventory.listContainerItems(characterID, item.itemID, result.data.flagID);
       const items = rows.filter(row => !Number(row.singleton)).map(row => ({
         itemID: Number(row.itemID), typeID: Number(row.typeID),
         name: String(inventory.getItemMetadata(row.typeID)?.name || `Type ${row.typeID}`),
@@ -26,13 +28,15 @@ function availableStorage(session: any, characterID: number) {
       }));
       return [{ storageUnitID: Number(item.itemID), name: String(item.itemName || item.name ||
         inventory.getItemMetadata(item.typeID)?.name || `Storage ${item.itemID}`),
-      capacity: result.data.capacity,
+      assemblyKind: result.data.smartAssemblyKind || result.data.inventoryKind ||
+        (Number(item.itemID) === shipID ? "ship" : "cargo"),
+      flagID: result.data.flagID, capacity: result.data.capacity,
       usedVolume: rows.reduce((total, row) => total + quantity(row) * Number(inventory.getInventoryItemUnitVolume(row)), 0), items }];
     }).sort((left, right) => left.storageUnitID - right.storageUnitID);
 }
 
-function sourceRows(characterID: number, storageUnitID: number, typeID: number) {
-  return store().listContainerItems(characterID, storageUnitID, STORAGE_FLAG)
+function sourceRows(characterID: number, storageUnitID: number, typeID: number, flagID = STORAGE_FLAG) {
+  return store().listContainerItems(characterID, storageUnitID, flagID)
     .filter(item => Number(item.typeID) === typeID && !Number(item.singleton))
     .sort((left, right) => Number(left.itemID) - Number(right.itemID));
 }
@@ -46,6 +50,12 @@ export function createIndustryStorageOperations(dependencies: Dependencies) {
     require("../../services/frontier/industryProductionWorker").settleIndustryProduction(id, session));
   const list = dependencies.listStorage || availableStorage;
   const readRows = dependencies.readStorageRows || sourceRows;
+  const resolveTransferInventory = dependencies.resolveTransferInventory || ((session, inventoryID) => {
+    const item = store().findItemById(inventoryID);
+    return item
+      ? require("../../services/frontier/industryInventoryAccess").resolveTransferInventory(session, inventoryID)
+      : null;
+  });
   const deposit = dependencies.depositItems || ((...args) => runtime().depositInputItems(...args));
   const withdraw = dependencies.withdrawItems || ((...args) => runtime().withdrawItems(...args));
   const notify = dependencies.publishTransfer || ((session, result) =>
@@ -61,8 +71,15 @@ export function createIndustryStorageOperations(dependencies: Dependencies) {
         const context = resolve(authorization, facilityID);
         if (!context.success) return context;
         if (!integer(body?.storageUnitID)) return failed("INVALID_ASSEMBLY_ID");
-        const work = Promise.resolve().then(() => sync({ facilityID: context.data.facilityID,
-          characterID: context.data.characterID, storageUnitID: Number(body.storageUnitID) }));
+        const endpoint = resolveTransferInventory(context.data.session, Number(body.storageUnitID));
+        if (endpoint && endpoint.success !== true) return failed(endpoint.errorMsg || "INVALID_INVENTORY");
+        const industryOnly = endpoint?.success === true && endpoint.data.smartAssemblyKind !== "storage_unit";
+        const work = Promise.resolve().then(() => industryOnly
+          ? require("../../services/frontier/suiIndustryStorageSync").syncIndustryAssemblyTransfer({
+              facilityID: context.data.facilityID, characterID: context.data.characterID,
+            })
+          : sync({ facilityID: context.data.facilityID,
+              characterID: context.data.characterID, storageUnitID: Number(body.storageUnitID) }));
         const chain = await Promise.race([work, new Promise(resolve => {
           timer = setTimeout(() => resolve({ status: "pending", industryStatus: "pending", storageStatus: "pending" }),
             dependencies.chainWaitMs ?? 5000);
@@ -121,11 +138,14 @@ export function createIndustryStorageOperations(dependencies: Dependencies) {
             const settled = settle(request.facilityID, context.data.session);
             if (!settled.success) return failed(settled.errorMsg);
             let moved: any;
+            const endpoint = resolveTransferInventory(context.data.session, request.storageUnitID);
+            if (endpoint && !endpoint.success) return failed(endpoint.errorMsg || "INVALID_INVENTORY");
+            const transferFlag = endpoint?.success ? endpoint.data.flagID : STORAGE_FLAG;
             const options = { assertAccess, storageUnitID: request.storageUnitID };
             if (request.direction === "deposit") {
               let remaining = request.quantity;
               const selected = new Map<number, number>();
-              for (const row of readRows(characterID, request.storageUnitID, request.typeID)) {
+              for (const row of readRows(characterID, request.storageUnitID, request.typeID, transferFlag)) {
                 const amount = Math.min(remaining, quantity(row));
                 if (!Number.isSafeInteger(amount) || amount <= 0) continue;
                 selected.set(Number(row.itemID), amount);
@@ -136,7 +156,7 @@ export function createIndustryStorageOperations(dependencies: Dependencies) {
               moved = await deposit(context.data.session, request.facilityID, selected, options);
             } else {
               moved = await withdraw(context.data.session, request.facilityID,
-                new Map([[request.typeID, request.quantity]]), request.storageUnitID, STORAGE_FLAG, request.side, options);
+                new Map([[request.typeID, request.quantity]]), request.storageUnitID, transferFlag, request.side, options);
             }
             if (!moved?.success) return failed(moved?.errorMsg);
             const committed = { success: true as const, data: {
@@ -146,11 +166,17 @@ export function createIndustryStorageOperations(dependencies: Dependencies) {
             } };
             try { notify(context.data.session, moved); } catch { /* Inventory is already durable. */ }
             return committed;
-          } catch { return failed("INDUSTRY_REQUEST_FAILED"); }
+          } catch (error) {
+            if (typeof dependencies.onError === "function") dependencies.onError(error);
+            return failed("INDUSTRY_REQUEST_FAILED");
+          }
         });
         requests.set(key, { fingerprint, result });
         return result;
-      } catch { return failed("INDUSTRY_REQUEST_FAILED"); }
+      } catch (error) {
+        if (typeof dependencies.onError === "function") dependencies.onError(error);
+        return failed("INDUSTRY_REQUEST_FAILED");
+      }
     },
   };
 }
@@ -159,7 +185,8 @@ export function publicIndustryStorageChain(chain: any) {
   const states = ["synced", "pending", "error", "disabled"];
   const expected = chain?.industryStatus === "error" || chain?.storageStatus === "error" ? "error"
     : chain?.industryStatus === "disabled" && chain?.storageStatus === "disabled" ? "disabled"
-      : chain?.industryStatus === "synced" && chain?.storageStatus === "synced" ? "synced" : "pending";
+      : [chain?.industryStatus, chain?.storageStatus].every(value => value === "synced" || value === "disabled")
+        ? "synced" : "pending";
   return chain && states.includes(chain.industryStatus) && states.includes(chain.storageStatus) && chain.status === expected
     ? { status: chain.status, industryStatus: chain.industryStatus, storageStatus: chain.storageStatus }
     : { status: "pending", industryStatus: "pending", storageStatus: "pending" };

@@ -12,11 +12,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
  */
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { ATTRIBUTE_FUEL_CAPACITY, ATTRIBUTE_FUEL_CHARGE, ATTRIBUTE_FUEL_CONTAINMENT_BURDEN, ATTRIBUTE_FUEL_EFFICIENCY, ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY, ATTRIBUTE_FUEL_VOLATILITY, appendFuelQueueBatch, calculateFuelQueueProperties, calculateFueledCapacitorRecharge, collectFuelSourceStacks, getFuelEfficiency, getShipFuelCharge, getShipFuelQueue, getShipFuelProperties, getShipFuelTypeID, initializeNewShipFuelTank, loadFuelIntoShipTank, normalizeFuelQueue, normalizeRequestedFuelItemIDs, resolveInitialShipFuelCapacity, resolveShipFuelTank, } = require("../src/services/frontier/fuelTankRuntime");
+const { ATTRIBUTE_FUEL_CAPACITY, ATTRIBUTE_FUEL_CHARGE, ATTRIBUTE_FUEL_CONTAINMENT_BURDEN, ATTRIBUTE_FUEL_EFFICIENCY, ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY, ATTRIBUTE_FUEL_VOLATILITY, appendFuelQueueBatch, appendFuelQueueBatchByReserveCapacity, calculateFuelQueueProperties, calculateFueledCapacitorRecharge, collectFuelSourceStacks, getFuelEfficiency, getShipFuelCharge, getShipFuelQueue, getShipFuelProperties, getShipFuelTypeID, initializeNewShipFuelTank, loadFuelIntoShipTank, normalizeFuelQueue, normalizeRequestedFuelItemIDs, partitionFuelQueueByReserveCapacity, resolveInitialShipFuelCapacity, resolveShipFuelTank, } = require("../src/services/frontier/fuelTankRuntime");
 const itemStore = require("../src/services/inventory/itemStore");
 const { FREE_STATION_FUEL_CUSTOM_INFO, } = itemStore;
 const DogmaService = require("../src/services/dogma/dogmaService");
-const { advanceEntityCapacitorRechargeForTesting, calculateCreationPowerStateForTesting, calculateRegularShipFuelPowerStateForTesting, } = require("../src/space/runtime")._testing;
+const { advanceEntityCapacitorRechargeForTesting, advanceEntityBlackstartRechargeForTesting, calculateCreationPowerStateForTesting, calculateRegularShipFuelPowerStateForTesting, } = require("../src/space/runtime")._testing;
 const FUEL_TYPE_UNSTABLE = 77818; // group 4598 (corvette/hydrogen fuel)
 const FUEL_TYPE_EU_90 = 78437;
 const FUEL_TYPE_SOF_80 = 78515;
@@ -465,6 +465,61 @@ test("fuel properties come from the head of the FIFO queue", () => {
     assert.deepEqual(getShipFuelProperties({
         conditionState: { fuelCharge: 400, fuelQueue },
     }, deps), calculateFuelQueueProperties(fuelQueue, deps));
+});
+test("Fuel Blister fuel remains in a reserve-last tier across refueling", () => {
+    const initial = partitionFuelQueueByReserveCapacity([
+        { fuelTypeID: FUEL_TYPE_UNSTABLE, quantity: 500 },
+        { fuelTypeID: FUEL_TYPE_EU_40, quantity: 100 },
+    ], 750, 250);
+    assert.deepEqual(initial, [
+        { fuelTypeID: FUEL_TYPE_UNSTABLE, quantity: 500 },
+        { fuelTypeID: FUEL_TYPE_EU_40, quantity: 100, reserve: true },
+    ]);
+    // Once the ordinary tank has been consumed, a refuel goes back into that
+    // tank ahead of the sealed reserve rather than behind it in global FIFO.
+    const refueled = appendFuelQueueBatchByReserveCapacity([
+        { fuelTypeID: FUEL_TYPE_EU_40, quantity: 100, reserve: true },
+    ], FUEL_TYPE_UNSTABLE, 200, 750, 250);
+    assert.deepEqual(refueled, [
+        { fuelTypeID: FUEL_TYPE_UNSTABLE, quantity: 200 },
+        { fuelTypeID: FUEL_TYPE_EU_40, quantity: 100, reserve: true },
+    ]);
+    assert.equal(calculateFuelQueueProperties(refueled, buildFakeStore().deps).activeFuelTypeID, FUEL_TYPE_UNSTABLE);
+});
+test("Blackstart solar recharge survives power-off and stops in shadow, warp, or a berth", () => {
+    const buildEntity = () => ({
+        capacitorCapacity: 200,
+        capacitorChargeRatio: 0,
+        conditionState: { charge: 0 },
+        creationPowerState: {
+            blackstartCapacity: 100,
+            blackstartSolarChargeRate: 0.3,
+        },
+        kind: "ship",
+        mode: "STOP",
+        passiveDerivedState: { attributes: {} },
+        persistSpaceState: false,
+        temperatureState: { externalTemperature: 150, shadowed: false },
+    });
+    const lit = buildEntity();
+    const result = advanceEntityBlackstartRechargeForTesting(lit, 10, 1000);
+    assert.equal(result.reason, "direct-starlight");
+    assert.equal(result.rechargedEnergy, 3);
+    assert.equal(lit.capacitorChargeRatio, 0.015);
+    const poweredOff = buildEntity();
+    poweredOff.creationPowerState.poweredOff = true;
+    assert.equal(advanceEntityBlackstartRechargeForTesting(poweredOff, 10, 1000).rechargedEnergy, 3, "Blackstart remains available to recover a powered-off Creation");
+    const shadowed = buildEntity();
+    shadowed.temperatureState.shadowed = true;
+    assert.equal(advanceEntityBlackstartRechargeForTesting(shadowed, 10, 1000).rechargedEnergy, 0);
+    const warping = buildEntity();
+    warping.mode = "WARP";
+    assert.equal(advanceEntityBlackstartRechargeForTesting(warping, 10, 1000).rechargedEnergy, 0);
+    const berthed = buildEntity();
+    berthed.frontierBerthingHostAssemblyID = 99_001;
+    const berthResult = advanceEntityBlackstartRechargeForTesting(berthed, 10, 1000);
+    assert.equal(berthResult.rechargedEnergy, 0);
+    assert.equal(berthResult.reason, "protected-or-warping");
 });
 test("capacitor recharge consumes fuel batches first-in-first-out", () => {
     const deps = buildFakeStore().deps;

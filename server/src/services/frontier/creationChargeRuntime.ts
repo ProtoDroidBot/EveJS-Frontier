@@ -33,12 +33,22 @@ const {
   getTypeAttributeValue,
 } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const {
+  ABILITY_DEPLOY,
+  registerCreationAbilityHandler,
+  resolveCreationAbilityHandler,
+} = require(path.join(__dirname, "./creationAbilityRuntime"));
+const {
   CREATION_FITTING_FLAG_ID,
   getCreationDogmaContext,
+  isCreationModuleOnline,
 } = require(path.join(__dirname, "./creationRuntime"));
 const {
   buildCreationSnapshot,
 } = require(path.join(__dirname, "./creationCompatibility"));
+const launchBayPayloadRuntime = require(path.join(
+  __dirname,
+  "./launchBayPayloadRuntime",
+));
 
 const CREATION_MODULE_CHARGE_FLAG_ID = 184;
 const CHARGE_CATEGORY_ID = 8;
@@ -50,6 +60,13 @@ const LOADABLE_CATEGORY_IDS = new Set([
 const FILETIME_TICKS_PER_MILLISECOND = 10000n;
 const CAPACITY_EPSILON = 1.0e-6;
 const ATTRIBUTE_RELOAD_TIME = getAttributeIDByNames("reloadTime") || 1795;
+const LAUNCH_BAY_BEHAVIOR = "launch_bay";
+const PAYLOAD_GROUP_ID = 5142;
+const TYPE_LAUNCH_BAY = 95811;
+const TYPE_HEAT_TRAP = 95812;
+const ATTRIBUTE_HEAT_TRANSFER_AMOUNT = 6322;
+const ATTRIBUTE_TEMPERATURE = 5765;
+const NOMINAL_HEAT_TRAP_TEMPERATURE_K = 295;
 
 function toPositiveSafeInteger(value) {
   const numeric = Number(value);
@@ -103,10 +120,229 @@ function getReloadTimeMs(moduleItem) {
     : 0;
 }
 
-function getReadyFileTime(session, moduleItem) {
-  return getSessionFileTime(session) + (
-    BigInt(getReloadTimeMs(moduleItem)) * FILETIME_TICKS_PER_MILLISECOND
+function getContextNowMs(context) {
+  const dependency = context && context.dependencies && context.dependencies.nowMs;
+  const value = typeof dependency === "function" ? dependency() : dependency;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : Date.now();
+}
+
+function getLaunchBayReadyAtMs(moduleItem) {
+  return Math.max(
+    0,
+    toFiniteNumber(
+      moduleItem && moduleItem.moduleState &&
+        moduleItem.moduleState.creationLaunchBayReadyAtMs,
+      0,
+    ),
   );
+}
+
+function getReadyFileTime(session, moduleItem, nowMs = Date.now(), readyAtMs = null) {
+  const authoredReadyAtMs = Number(readyAtMs);
+  const hasAuthoredReadyAt = readyAtMs !== null && readyAtMs !== undefined;
+  const remainingMs = hasAuthoredReadyAt && Number.isFinite(authoredReadyAtMs)
+    ? Math.max(0, authoredReadyAtMs - toFiniteNumber(nowMs, Date.now()))
+    : getReloadTimeMs(moduleItem);
+  return getSessionFileTime(session) + (
+    BigInt(Math.max(0, Math.round(remainingMs))) * FILETIME_TICKS_PER_MILLISECOND
+  );
+}
+
+function toFiniteNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function isLaunchBayModule(moduleItem) {
+  return toPositiveSafeInteger(moduleItem && moduleItem.typeID) === TYPE_LAUNCH_BAY;
+}
+
+function validateLaunchBayReady(moduleItem, nowMs) {
+  if (!isLaunchBayModule(moduleItem)) {
+    return { success: true as const, data: { readyAtMs: 0 } };
+  }
+  const readyAtMs = getLaunchBayReadyAtMs(moduleItem);
+  if (readyAtMs > nowMs) {
+    return {
+      success: false as const,
+      errorMsg: "CREATION_MODULE_RELOADING",
+      params: { readyAtMs, remainingMs: readyAtMs - nowMs },
+    };
+  }
+  return { success: true as const, data: { readyAtMs } };
+}
+
+function withLaunchBayReadyAt(moduleItem, readyAtMs, onlineState = null) {
+  return {
+    ...moduleItem,
+    moduleState: {
+      ...(moduleItem.moduleState || {}),
+      ...(typeof onlineState === "boolean" ? { online: onlineState } : {}),
+      creationLaunchBayReadyAtMs: Math.max(0, Math.round(readyAtMs)),
+    },
+  };
+}
+
+function normalizeVector(value, fallback = { x: 0, y: 0, z: 0 }) {
+  const source = value && typeof value === "object" ? value : fallback;
+  return {
+    x: toFiniteNumber(source.x, fallback.x),
+    y: toFiniteNumber(source.y, fallback.y),
+    z: toFiniteNumber(source.z, fallback.z),
+  };
+}
+
+function normalizeDirection(value) {
+  const direction = normalizeVector(value, { x: 1, y: 0, z: 0 });
+  const length = Math.hypot(direction.x, direction.y, direction.z);
+  return length > 1.0e-9
+    ? { x: direction.x / length, y: direction.y / length, z: direction.z / length }
+    : { x: 1, y: 0, z: 0 };
+}
+
+function buildLaunchPosition(shipEntity, payloadItem) {
+  const position = normalizeVector(shipEntity && shipEntity.position);
+  const direction = normalizeDirection(shipEntity && shipEntity.direction);
+  const shipRadius = Math.max(0, toFiniteNumber(shipEntity && shipEntity.radius, 0));
+  const payloadRadius = Math.max(
+    1,
+    toFiniteNumber(payloadItem && (payloadItem.spaceRadius || payloadItem.radius), 1),
+  );
+  const offset = shipRadius + payloadRadius + 25;
+  return {
+    x: position.x + direction.x * offset,
+    y: position.y + direction.y * offset,
+    z: position.z + direction.z * offset,
+  };
+}
+
+function findMovedItemChange(changes, movedItemID) {
+  return (Array.isArray(changes) ? changes : []).find(
+    (change) => toPositiveSafeInteger(change && change.item && change.item.itemID) === movedItemID,
+  ) || null;
+}
+
+function rollbackLaunchedPayload(
+  itemID,
+  moduleItemID,
+  previousPayloadState = null,
+  previousModuleState = null,
+) {
+  const current = itemStore.findItemById(itemID);
+  if (!current) {
+    return false;
+  }
+  const normalized = itemStore.updateInventoryItem(itemID, (item) => ({
+    ...item,
+    singleton: 0,
+    launcherID: null,
+    expiresAtMs: previousPayloadState && previousPayloadState.expiresAtMs || null,
+    conditionState: previousPayloadState && previousPayloadState.conditionState || item.conditionState,
+    customInfo: previousPayloadState && previousPayloadState.customInfo || "",
+    spaceState: null,
+  }));
+  if (!normalized.success) {
+    return false;
+  }
+  const moved = itemStore.moveItemToLocation(
+    itemID,
+    moduleItemID,
+    CREATION_MODULE_CHARGE_FLAG_ID,
+    1,
+    { affectsFitting: true },
+  );
+  if (previousModuleState) {
+    itemStore.updateInventoryItem(moduleItemID, (item) => ({
+      ...item,
+      moduleState: previousModuleState.moduleState,
+    }));
+  }
+  return moved.success === true;
+}
+
+function calculateHeatTrapTransfer(shipEntity, payloadItem) {
+  if (toPositiveSafeInteger(payloadItem && payloadItem.typeID) !== TYPE_HEAT_TRAP) {
+    return {
+      transferredHeat: 0,
+      shipPreviousTemperature: null,
+      shipNextTemperature: null,
+    };
+  }
+  const attributes = buildEffectiveItemAttributeMap(payloadItem) || {};
+  const maximumTransfer = Math.max(
+    0,
+    toFiniteNumber(attributes[ATTRIBUTE_HEAT_TRANSFER_AMOUNT], 0),
+  );
+  const shipPreviousTemperature = Math.max(
+    0,
+    toFiniteNumber(
+      shipEntity && shipEntity.temperatureState && shipEntity.temperatureState.temperature,
+      toFiniteNumber(
+        shipEntity && shipEntity.conditionState && shipEntity.conditionState.temperature,
+        NOMINAL_HEAT_TRAP_TEMPERATURE_K,
+      ),
+    ),
+  );
+  const transferredHeat = Math.max(
+    0,
+    Math.min(maximumTransfer, shipPreviousTemperature - NOMINAL_HEAT_TRAP_TEMPERATURE_K),
+  );
+  if (transferredHeat <= 0) {
+    return {
+      transferredHeat: 0,
+      shipPreviousTemperature,
+      shipNextTemperature: shipPreviousTemperature,
+    };
+  }
+  return {
+    transferredHeat,
+    shipPreviousTemperature,
+    shipNextTemperature: shipPreviousTemperature - transferredHeat,
+  };
+}
+
+function applyHeatTrapTransfer(resolved, shipEntity, heat, nowMs) {
+  if (!heat || heat.transferredHeat <= 0) {
+    return { success: true as const, rollback() {} };
+  }
+  const previousConditionState = shipEntity.conditionState;
+  const previousTemperatureState = shipEntity.temperatureState;
+  const persistedShip = itemStore.findItemById(resolved.creationID);
+  const previousPersistedConditionState = persistedShip && persistedShip.conditionState;
+  const nextTemperature = heat.shipNextTemperature;
+  const persisted = itemStore.updateShipItem(resolved.creationID, (shipItem) => ({
+    ...shipItem,
+    conditionState: {
+      ...(shipItem.conditionState || {}),
+      temperature: nextTemperature,
+    },
+  }));
+  if (!persisted.success) {
+    return persisted;
+  }
+  shipEntity.conditionState = {
+    ...(shipEntity.conditionState || {}),
+    temperature: nextTemperature,
+  };
+  if (shipEntity.temperatureState && typeof shipEntity.temperatureState === "object") {
+    shipEntity.temperatureState = {
+      ...shipEntity.temperatureState,
+      temperature: nextTemperature,
+      lastUpdatedAtMs: nowMs,
+    };
+  }
+  return {
+    success: true as const,
+    rollback() {
+      shipEntity.conditionState = previousConditionState;
+      shipEntity.temperatureState = previousTemperatureState;
+      itemStore.updateShipItem(resolved.creationID, (shipItem) => ({
+        ...shipItem,
+        conditionState: previousPersistedConditionState,
+      }));
+    },
+  };
 }
 
 function getCreationModuleChargeState(characterID, moduleItemID) {
@@ -399,6 +635,11 @@ function reloadCreationModule(context) {
     return common;
   }
   const resolved = common.data;
+  const nowMs = getContextNowMs(context);
+  const ready = validateLaunchBayReady(resolved.moduleItem, nowMs);
+  if (ready.success === false) {
+    return ready;
+  }
   const kwargs = context && context.kwargs && typeof context.kwargs === "object"
     ? context.kwargs
     : {};
@@ -443,7 +684,12 @@ function reloadCreationModule(context) {
       success: true as const,
       data: {
         qty: resolved.loadedQuantity,
-        serverTime: getReadyFileTime(resolved.session, resolved.moduleItem),
+        serverTime: getReadyFileTime(
+          resolved.session,
+          resolved.moduleItem,
+          nowMs,
+          getLaunchBayReadyAtMs(resolved.moduleItem),
+        ),
         type_id: loadedTypeID,
       },
     };
@@ -488,6 +734,9 @@ function reloadCreationModule(context) {
     return capacity;
   }
 
+  const launchBayReadyAtMs = isLaunchBayModule(resolved.moduleItem)
+    ? nowMs + getReloadTimeMs(resolved.moduleItem)
+    : 0;
   const mutation = itemStore.moveItemStacksToLocation(
     sources.data.moveRequests,
     resolved.moduleItemID,
@@ -507,6 +756,17 @@ function reloadCreationModule(context) {
               quantity: resolved.loadedQuantity,
             }]
           : [],
+      ...(isLaunchBayModule(resolved.moduleItem)
+        ? {
+          flush: true,
+          updateItemID: resolved.moduleItemID,
+          updateItem: (currentItem) => withLaunchBayReadyAt(
+            currentItem,
+            launchBayReadyAtMs,
+            isCreationModuleOnline(resolved.moduleItem),
+          ),
+        }
+        : {}),
     },
   );
   if (!mutation.success) {
@@ -524,7 +784,12 @@ function reloadCreationModule(context) {
     success: true as const,
     data: {
       qty: maximumQuantity,
-      serverTime: getReadyFileTime(resolved.session, resolved.moduleItem),
+      serverTime: getReadyFileTime(
+        resolved.session,
+        mutation.data.updatedItem || resolved.moduleItem,
+        nowMs,
+        isLaunchBayModule(resolved.moduleItem) ? launchBayReadyAtMs : null,
+      ),
       type_id: requestedTypeID,
     },
   };
@@ -574,11 +839,219 @@ function unloadCreationModule(context) {
   };
 }
 
+function deployCreationLaunchBayPayload(context) {
+  const common = resolveCreationChargeContext(context);
+  if (common.success === false) {
+    return common;
+  }
+  const resolved = common.data;
+  const nowMs = getContextNowMs(context);
+  const ready = validateLaunchBayReady(resolved.moduleItem, nowMs);
+  if (ready.success === false) {
+    return ready;
+  }
+  if (
+    resolved.creationState && resolved.creationState.poweredOff === true ||
+    !isCreationModuleOnline(resolved.moduleItem)
+  ) {
+    return { success: false as const, errorMsg: "CREATION_MODULE_OFFLINE" };
+  }
+  if (!resolved.loadedItem || resolved.loadedQuantity <= 0) {
+    return { success: false as const, errorMsg: "CREATION_NO_AMMO" };
+  }
+  if (
+    toPositiveSafeInteger(resolved.loadedItem.categoryID) !== DEPLOYABLE_CATEGORY_ID ||
+    toPositiveSafeInteger(resolved.loadedItem.groupID) !== PAYLOAD_GROUP_ID
+  ) {
+    return { success: false as const, errorMsg: "CREATION_PAYLOAD_NOT_DEPLOYABLE" };
+  }
+
+  const sessionSpace = resolved.session && resolved.session._space;
+  const systemID = toPositiveSafeInteger(sessionSpace && sessionSpace.systemID);
+  if (systemID <= 0) {
+    return { success: false as const, errorMsg: "CREATION_NOT_IN_SPACE" };
+  }
+  const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
+  const shipEntity = typeof spaceRuntime.getEntity === "function"
+    ? spaceRuntime.getEntity(resolved.session, resolved.creationID)
+    : null;
+  if (!shipEntity || String(shipEntity.mode || "").toUpperCase() === "WARP") {
+    return {
+      success: false as const,
+      errorMsg: shipEntity ? "CREATION_SHIP_WARPING" : "CREATION_SHIP_NOT_IN_SPACE",
+    };
+  }
+
+  const position = buildLaunchPosition(shipEntity, resolved.loadedItem);
+  const direction = normalizeDirection(shipEntity.direction);
+  const scope = require(path.join(
+    __dirname,
+    "../../space/destiny/identity/interactionScope.js",
+  )).buildChildEntityScopeMetadata(shipEntity);
+  const heat = calculateHeatTrapTransfer(shipEntity, resolved.loadedItem);
+  const launchState = {
+    deployedAtMs: nowMs,
+    launcherCharacterID: resolved.characterID,
+    sourceModuleID: resolved.moduleItemID,
+    sourceShipID: resolved.creationID,
+    systemID,
+    transferredHeat: heat.transferredHeat,
+  };
+  const decayDurationMs = launchBayPayloadRuntime.getPayloadDecayDurationMs(
+    resolved.loadedItem,
+  );
+  const expiresAtMs = decayDurationMs > 0 ? nowMs + decayDurationMs : null;
+  const ambientTemperature = Math.max(
+    0,
+    toFiniteNumber(
+      shipEntity && shipEntity.temperatureState &&
+        shipEntity.temperatureState.externalTemperature,
+      toFiniteNumber(
+        shipEntity && shipEntity.conditionState &&
+          shipEntity.conditionState.externalTemperature,
+        NOMINAL_HEAT_TRAP_TEMPERATURE_K,
+      ),
+    ),
+  );
+  const heatTrapState = toPositiveSafeInteger(resolved.loadedItem.typeID) === TYPE_HEAT_TRAP
+    ? launchBayPayloadRuntime.buildHeatTrapState(resolved.loadedItem, {
+        ambientTemperature,
+        startTemperature: NOMINAL_HEAT_TRAP_TEMPERATURE_K + heat.transferredHeat,
+        startTimeMs: nowMs,
+      })
+    : null;
+  const nextReadyAtMs = nowMs + getReloadTimeMs(resolved.moduleItem);
+  const moveResult = itemStore.moveItemsToLocationsAndUpdateItem(
+    [{
+      destinationFlagID: 0,
+      destinationLocationID: systemID,
+      itemID: resolved.loadedItem.itemID,
+      quantity: 1,
+      options: {
+        affectsFitting: true,
+        updateMovedItem: (item) => ({
+          ...item,
+          ...scope,
+          singleton: 1,
+          launcherID: resolved.creationID,
+          expiresAtMs,
+          conditionState: heatTrapState
+            ? {
+                ...(item.conditionState || {}),
+                temperature: heatTrapState.startTemperature,
+              }
+            : item.conditionState,
+          customInfo: launchBayPayloadRuntime.buildCustomInfoWithLaunchState(
+            item.customInfo,
+            launchState,
+            heatTrapState,
+          ),
+          spaceState: {
+            ...scope,
+            systemID,
+            position,
+            velocity: normalizeVector(shipEntity.velocity),
+            direction,
+            targetPoint: position,
+            mode: "STOP",
+            speedFraction: 0,
+          },
+        }),
+      },
+    }],
+    resolved.moduleItemID,
+    (moduleItem) => withLaunchBayReadyAt(
+      moduleItem,
+      nextReadyAtMs,
+      isCreationModuleOnline(resolved.moduleItem),
+    ),
+    { flush: true },
+  );
+  if (!moveResult.success) {
+    return moveResult;
+  }
+  const firstMove = moveResult.data && moveResult.data.moves && moveResult.data.moves[0];
+  const launchedItemID = toPositiveSafeInteger(firstMove && firstMove.movedItemID);
+  const launchedChange = findMovedItemChange(
+    moveResult.data && moveResult.data.changes,
+    launchedItemID,
+  );
+  const launchedItem = itemStore.findItemById(launchedItemID);
+  if (!launchedItemID || !launchedItem) {
+    return { success: false as const, errorMsg: "CREATION_PAYLOAD_MOVE_INVALID" };
+  }
+
+  const heatCommit = applyHeatTrapTransfer(resolved, shipEntity, heat, nowMs);
+  if (!heatCommit.success) {
+    rollbackLaunchedPayload(
+      launchedItemID,
+      resolved.moduleItemID,
+      launchedChange && launchedChange.previousData,
+      moveResult.previousData,
+    );
+    return heatCommit;
+  }
+
+  const spawnResult = spaceRuntime.spawnDynamicInventoryEntity(
+    systemID,
+    launchedItemID,
+    { entityScopeMetadata: scope },
+  );
+  if (!spawnResult || spawnResult.success !== true) {
+    heatCommit.rollback();
+    rollbackLaunchedPayload(
+      launchedItemID,
+      resolved.moduleItemID,
+      launchedChange && launchedChange.previousData,
+      moveResult.previousData,
+    );
+    return {
+      success: false as const,
+      errorMsg: spawnResult && spawnResult.errorMsg
+        ? spawnResult.errorMsg
+        : "CREATION_PAYLOAD_SPAWN_FAILED",
+    };
+  }
+
+  notifyInventoryChanges(
+    resolved.session,
+    (moveResult.data && moveResult.data.changes) || [],
+  );
+  notifyCreationChanged(resolved);
+  return {
+    success: true as const,
+    data: {
+      item_id: launchedItemID,
+      serverTime: getReadyFileTime(
+        resolved.session,
+        resolved.moduleItem,
+        nowMs,
+        nextReadyAtMs,
+      ),
+      transferred_heat: heat.transferredHeat,
+      type_id: toPositiveSafeInteger(launchedItem.typeID),
+    },
+  };
+}
+
+function registerCreationLaunchBayAbilityHandler() {
+  if (!resolveCreationAbilityHandler(LAUNCH_BAY_BEHAVIOR, ABILITY_DEPLOY)) {
+    registerCreationAbilityHandler(LAUNCH_BAY_BEHAVIOR, ABILITY_DEPLOY, {
+      execute: deployCreationLaunchBayPayload,
+    });
+  }
+}
+
 module.exports = {
   CHARGE_CATEGORY_ID,
   CREATION_MODULE_CHARGE_FLAG_ID,
   DEPLOYABLE_CATEGORY_ID,
+  LAUNCH_BAY_BEHAVIOR,
+  PAYLOAD_GROUP_ID,
+  TYPE_HEAT_TRAP,
+  deployCreationLaunchBayPayload,
   getCreationModuleChargeState,
+  registerCreationLaunchBayAbilityHandler,
   reloadCreationModule,
   unloadCreationModule,
   _testing: {

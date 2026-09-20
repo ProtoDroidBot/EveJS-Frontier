@@ -80,6 +80,8 @@ type SuiWorldSyncConfig = {
   sourceWorkspace?: string;
   deploymentSha256?: string;
   publicationSha256?: string;
+  assemblyEnergySha256?: string;
+  assemblyEnergy?: Array<{ typeID: number; energyRequired: number }>;
 };
 
 type SuiCharacterOnChainIdentity = SuiCharacterWorld & {
@@ -290,6 +292,28 @@ function readSyncedSuiWorldConfig(
   ) {
     return invalid(`does not match Frontier build ${expectedBuild}`);
   }
+  let assemblyEnergy: Array<{ typeID: number; energyRequired: number }> | undefined;
+  if (config.assemblyEnergy !== undefined) {
+    const energy = config.assemblyEnergy;
+    if (!energy || typeof energy !== "object" || Array.isArray(energy) ||
+        energy.schemaVersion !== 1 || energy.clientBuild !== expectedBuild ||
+        !Array.isArray(energy.entries) || energy.entries.length === 0) {
+      return invalid("contains an invalid assembly energy manifest");
+    }
+    const seen = new Set<number>();
+    let previousTypeID = 0;
+    assemblyEnergy = energy.entries.map((entry: any) => {
+      const typeID = entry?.typeID;
+      const energyRequired = entry?.energyRequired;
+      if (!Number.isSafeInteger(typeID) || typeID <= 0 || typeID <= previousTypeID || seen.has(typeID) ||
+          !Number.isSafeInteger(energyRequired) || energyRequired < 0) {
+        return invalid("contains an invalid assembly energy entry");
+      }
+      seen.add(typeID);
+      previousTypeID = typeID;
+      return { typeID, energyRequired };
+    });
+  }
   if (!config.world || typeof config.world !== "object" || Array.isArray(config.world)) {
     return invalid("has no world identity");
   }
@@ -312,6 +336,9 @@ function readSyncedSuiWorldConfig(
   const publicationSha256 = typeof artifacts?.publicationSha256 === "string"
     ? artifacts.publicationSha256.trim().toLowerCase()
     : "";
+  const assemblyEnergySha256 = typeof artifacts?.assemblyEnergySha256 === "string"
+    ? artifacts.assemblyEnergySha256.trim().toLowerCase()
+    : "";
   const hasArtifactSnapshot = Boolean(
     sourceWorkspace || deploymentSha256 || publicationSha256,
   );
@@ -322,6 +349,10 @@ function readSyncedSuiWorldConfig(
       !/^[0-9a-f]{64}$/.test(publicationSha256))
   ) {
     return invalid("contains incomplete deployment artifact metadata");
+  }
+  if ((assemblyEnergy !== undefined || assemblyEnergySha256) &&
+      (!sourceWorkspace || !assemblyEnergy || !/^[0-9a-f]{64}$/.test(assemblyEnergySha256))) {
+    return invalid("contains incomplete assembly energy artifact metadata");
   }
   if (hasArtifactSnapshot) {
     const deploymentPath = path.join(
@@ -357,6 +388,27 @@ function readSyncedSuiWorldConfig(
       return invalid(
         "is stale relative to its deployment artifacts; run FrontierWorld.ps1 sync",
       );
+    }
+    if (assemblyEnergySha256) {
+      const assemblyEnergyPath = path.join(
+        path.resolve(sourceWorkspace),
+        "world-contracts",
+        "config",
+        "assembly-energy.json",
+      );
+      let currentAssemblyEnergySha256: string;
+      try {
+        currentAssemblyEnergySha256 = readSha256(assemblyEnergyPath);
+      } catch (cause) {
+        throw new SuiCharacterProvisioningError(
+          "INVALID_WORLD_CONFIGURATION",
+          `Synchronized assembly energy artifact could not be read; run FrontierWorld.ps1 sync: ${configPath}`,
+          { cause },
+        );
+      }
+      if (currentAssemblyEnergySha256 !== assemblyEnergySha256) {
+        return invalid("is stale relative to its assembly energy manifest; run FrontierWorld.ps1 sync");
+      }
     }
   }
 
@@ -396,8 +448,10 @@ function readSyncedSuiWorldConfig(
           sourceWorkspace: path.resolve(sourceWorkspace),
           deploymentSha256,
           publicationSha256,
+          ...(assemblyEnergySha256 ? { assemblyEnergySha256 } : {}),
         }
       : {}),
+    ...(assemblyEnergy ? { assemblyEnergy } : {}),
   };
 }
 
