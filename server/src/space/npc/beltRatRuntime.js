@@ -372,6 +372,7 @@ function getOrCreateBeltState(systemID, beltID) {
             lastSpawnAtMs: Number.NEGATIVE_INFINITY,
             spawnSequence: 0,
             spawnedEntityIDs: new Set(),
+            npcIdentityGroups: new Map(),
         };
         beltStateByKey.set(key, state);
     }
@@ -450,6 +451,43 @@ function countActiveBeltRatGroups(scene, beltEntity, state) {
         }
     }
     return activeGroupKeys.size;
+}
+function resolveAvailableBeltNpcIdentitySlot(scene, state) {
+    const prefix = `belt:${state.key}:group:`;
+    const occupied = new Set();
+    // The generation-specific spawnSiteID remains useful for group lifecycle;
+    // pilots instead use the first vacant group slot at this permanent belt.
+    for (const entity of scene.dynamicEntities instanceof Map
+        ? scene.dynamicEntities.values()
+        : []) {
+        const slot = String(entity && entity.npcIdentitySlot || "");
+        if (!slot.startsWith(prefix)) {
+            continue;
+        }
+        const ordinalText = slot.slice(prefix.length).split(":")[0];
+        if (/^\d+$/.test(ordinalText)) {
+            occupied.add(Number(ordinalText));
+        }
+    }
+    if (!(state.npcIdentityGroups instanceof Map)) {
+        state.npcIdentityGroups = new Map();
+    }
+    for (const [ordinal, entityIDs] of state.npcIdentityGroups) {
+        const hasLiveMember = [...entityIDs].some((entityID) => (typeof scene.getEntityByID === "function"
+            ? scene.getEntityByID(entityID)
+            : scene.dynamicEntities instanceof Map && scene.dynamicEntities.get(entityID)));
+        if (hasLiveMember) {
+            occupied.add(ordinal);
+        }
+        else {
+            state.npcIdentityGroups.delete(ordinal);
+        }
+    }
+    let ordinal = 0;
+    while (occupied.has(ordinal)) {
+        ordinal += 1;
+    }
+    return { ordinal, slot: `${prefix}${ordinal}` };
 }
 function countActiveBeltRatCapitalGroupsInSystem(scene) {
     if (!scene) {
@@ -874,6 +912,7 @@ function spawnBeltRatGroup(scene, session, beltEntity, state, plan, options = {}
         : require(path.join(__dirname, "./nativeNpcService")).spawnNativeDefinitionsInContext;
     const shipID = toPositiveInt(options.preferredTargetID, toPositiveInt(session && session._space && session._space.shipID, 0));
     const spawnSiteID = `${state.key}:${state.spawnSequence + 1}`;
+    const identityGroup = resolveAvailableBeltNpcIdentitySlot(scene, state);
     const context = {
         systemID: toPositiveInt(scene && scene.systemID, toPositiveInt(plan && plan.systemID, 0)),
         scene,
@@ -911,6 +950,7 @@ function spawnBeltRatGroup(scene, session, beltEntity, state, plan, options = {}
         anchorID: toPositiveInt(beltEntity && beltEntity.itemID, 0),
         anchorName: String(beltEntity && (beltEntity.itemName || beltEntity.slimName) || "Asteroid Belt"),
         spawnSiteID,
+        npcIdentitySlot: identityGroup.slot,
     });
     if (!spawnResult || spawnResult.success !== true || !spawnResult.data) {
         return spawnResult || {
@@ -922,11 +962,16 @@ function spawnBeltRatGroup(scene, session, beltEntity, state, plan, options = {}
     const spawned = Array.isArray(spawnResult.data.spawned)
         ? spawnResult.data.spawned
         : [];
+    const identityEntityIDs = new Set();
     for (const entry of spawned) {
         const entityID = toPositiveInt(entry && entry.entity && entry.entity.itemID, 0);
         if (entityID) {
             state.spawnedEntityIDs.add(entityID);
+            identityEntityIDs.add(entityID);
         }
+    }
+    if (identityEntityIDs.size > 0) {
+        state.npcIdentityGroups.set(identityGroup.ordinal, identityEntityIDs);
     }
     return {
         ...spawnResult,
@@ -1110,6 +1155,7 @@ module.exports = {
         countActiveBeltRatCapitalGroupsInSystem,
         buildBeltStateKey,
         getOrCreateBeltState,
+        spawnBeltRatGroup,
         isOfficerEligible,
         isCapitalSpawnEligible,
         buildSpecialBeltRatSpawnPlan,

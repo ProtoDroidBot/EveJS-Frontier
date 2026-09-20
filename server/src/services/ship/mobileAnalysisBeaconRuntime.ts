@@ -781,6 +781,7 @@ function spawnConfiguredHiveNpcs(anchorEntity, state, options: Record<string, an
   ));
   const spawned: any[] = [];
   const failures: any[] = [];
+  const npcIdentitySlot = `hive:${systemID}:site:${toInt(anchorEntity.dungeonSiteID, 0)}:instance:${toInt(anchorEntity.dungeonSiteInstanceID, 0)}:controller:${toInt(anchorEntity.itemID, 0)}`;
   const total = configuration.spawnEntries.length;
   const occupiedSpawnPositions: any[] = [{
     position: anchorEntity.position,
@@ -799,6 +800,7 @@ function spawnConfiguredHiveNpcs(anchorEntity, state, options: Record<string, an
     occupiedSpawnPositions.push({ position: spawnPosition, radius: 1_000 });
     const spawnResult = npcService.spawnNpcBatchInSystem(systemID, {
       profileQuery: entry.profileID,
+      npcIdentitySlot: `${npcIdentitySlot}:entry:${index}`,
       amount: 1,
       anchorEntity,
       spawnStateOverride: {

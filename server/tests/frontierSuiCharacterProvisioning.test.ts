@@ -26,6 +26,14 @@ import {
 const PLAYER_PROFILE_ID =
   "0xf3c1cf351092c2d12d8675650f1e1d15ad2569c7fcbd14ecb0f92a69996bf0e7";
 
+test("human Character provisioning rejects the reserved NPC pilot namespace", () => {
+  for (const gameCharacterId of [1500000000, 1555555555, 1599999999]) {
+    assert.throws(() => prepareSuiCharacterIdentity({ accountId: 1, gameCharacterId, characterName: "Not a human" }, { env: {} }),
+      (error: any) => error.code === "NPC_CHARACTER_NOT_PLAYER");
+  }
+  assert.equal(prepareSuiCharacterIdentity({ accountId: 1, gameCharacterId: 140000001, characterName: "Human" }, { env: {} }).gameCharacterId, 140000001);
+});
+
 const SYNCED_PACKAGE_ID = `0x${"1".repeat(64)}`;
 const SYNCED_OBJECT_REGISTRY_ID = `0x${"2".repeat(64)}`;
 const SYNCED_ADMIN_ACL_ID = `0x${"3".repeat(64)}`;

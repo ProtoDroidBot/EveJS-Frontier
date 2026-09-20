@@ -212,6 +212,7 @@ const SQLITE_TABLES = new Set([
   "mapTelemetry",
   "moduleGroupingState",
   "notifications",
+  "npcPilotIdentities",
   "npcEntities",
   "npcModules",
   "npcRuntimeControllers",

@@ -168,11 +168,37 @@ test("configured landscape NPCs spawn at deterministic offsets", () => {
   assert.deepEqual(result.failures, []);
   assert.equal(calls[0].options.profileQuery, plan.npcs[0].profileID);
   assert.equal(calls[0].options.runtimeKind, "frontierLandscape");
+  assert.equal(calls[0].options.npcIdentitySlot, "landscape:30000001:900439900:entry:0");
+  assert.equal(new Set(calls.map((call) => call.options.npcIdentitySlot)).size, calls.length);
   assert.deepEqual(calls[0].options.spawnStateOverride.position, {
     x: 1_000_000 + plan.npcs[0].positionOffset.x,
     y: 2_000_000 + plan.npcs[0].positionOffset.y,
     z: 3_000_000 + plan.npcs[0].positionOffset.z,
   });
+});
+
+test("landscape NPC pilot slots survive re-materialization and separate sites and systems", () => {
+  const slots: string[] = [];
+  const options = {
+    npcService: {
+      spawnNpcBatchInSystem(_systemID, spawnOptions) {
+        slots.push(spawnOptions.npcIdentitySlot);
+        return { success: true, data: { spawned: [{ entity: { itemID: slots.length } }] } };
+      },
+    },
+  };
+  const spawn = (systemID, itemID) => landscapeSceneTesting.spawnConfiguredLandscapeNpcs(
+    { systemID },
+    { itemID, position: { x: 0, y: 0, z: 0 } },
+    { npcs: [{ profileID: "frontier_osa_surveyor", positionOffset: {} }] },
+    options,
+  );
+  spawn(30_000_001, 900_439_900);
+  spawn(30_000_001, 900_439_900);
+  spawn(30_000_001, 900_439_901);
+  spawn(30_000_002, 900_439_900);
+  assert.equal(slots[0], slots[1]);
+  assert.equal(new Set(slots).size, 3);
 });
 
 test("Frontier landscape proximity lookup returns several nearby sites in distance order", () => {

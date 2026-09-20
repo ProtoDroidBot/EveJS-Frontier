@@ -72,6 +72,7 @@ if ([string]::IsNullOrWhiteSpace($DestinationRoot)) {
 }
 $DestinationRoot = [IO.Path]::GetFullPath($DestinationRoot)
 $WorldConfigPath = Join-Path $DestinationRoot 'world.private.json'
+$NpcConfigPath = Join-Path $DestinationRoot 'npc-deployment.json'
 $EfctlConfigPath = Join-Path $SourceRoot 'efctl.yaml'
 $WorldContractsRoot = Join-Path $SourceRoot 'world-contracts'
 $CommonModule = Join-Path $RepoRoot 'tools\frontier-client\FrontierWindows.Common.psm1'
@@ -373,27 +374,35 @@ function Read-StableSourceSnapshots {
     param(
         [Parameter(Mandatory)] [string]$DeploymentPath,
         [Parameter(Mandatory)] [string]$PublicationPath,
-        [Parameter(Mandatory)] [string]$EnvironmentPath
+        [Parameter(Mandatory)] [string]$EnvironmentPath,
+        [Parameter(Mandatory)] [string]$NpcDeploymentPath
     )
 
     $paths = [ordered]@{
         Deployment = $DeploymentPath
         Publication = $PublicationPath
         Environment = $EnvironmentPath
+        NpcDeployment = $NpcDeploymentPath
     }
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         $first = @{}
         $second = @{}
         foreach ($entry in $paths.GetEnumerator()) {
-            $first[$entry.Key] = Read-TextFileSnapshot -Path $entry.Value
+            $first[$entry.Key] = if ($entry.Key -eq 'NpcDeployment' -and
+                -not (Test-Path -LiteralPath $entry.Value)) { $null }
+                else { Read-TextFileSnapshot -Path $entry.Value }
         }
         Start-Sleep -Milliseconds 20
         foreach ($entry in $paths.GetEnumerator()) {
-            $second[$entry.Key] = Read-TextFileSnapshot -Path $entry.Value
+            $second[$entry.Key] = if ($entry.Key -eq 'NpcDeployment' -and
+                -not (Test-Path -LiteralPath $entry.Value)) { $null }
+                else { Read-TextFileSnapshot -Path $entry.Value }
         }
         $stable = $true
         foreach ($entry in $paths.GetEnumerator()) {
-            if ($first[$entry.Key].Sha256 -cne $second[$entry.Key].Sha256) {
+            if (($null -eq $first[$entry.Key]) -ne ($null -eq $second[$entry.Key]) -or
+                ($null -ne $first[$entry.Key] -and
+                    $first[$entry.Key].Sha256 -cne $second[$entry.Key].Sha256)) {
                 $stable = $false
                 break
             }
@@ -557,6 +566,7 @@ function Read-SourceWorld {
     $deploymentPath = Join-Path $WorldContractsRoot 'deployments\localnet\extracted-object-ids.json'
     $publicationPath = Join-Path $WorldContractsRoot 'contracts\world\Pub.localnet.toml'
     $environmentPath = Join-Path $WorldContractsRoot '.env'
+    $npcDeploymentPath = Join-Path $WorldContractsRoot 'deployments\localnet\npc-deployment.json'
     foreach ($required in @($deploymentPath, $publicationPath, $environmentPath)) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "Required deployed-world artifact is missing: $required"
@@ -566,7 +576,8 @@ function Read-SourceWorld {
     $snapshots = Read-StableSourceSnapshots `
         -DeploymentPath $deploymentPath `
         -PublicationPath $publicationPath `
-        -EnvironmentPath $environmentPath
+        -EnvironmentPath $environmentPath `
+        -NpcDeploymentPath $npcDeploymentPath
     try {
         $deployment = $snapshots.Deployment.Text | ConvertFrom-Json
     }
@@ -601,6 +612,10 @@ function Read-SourceWorld {
         }
     }
 
+    $npcDeployment = Read-NpcDeployment -Snapshot $snapshots.NpcDeployment `
+        -ChainId $chainId -PackageId $packageId `
+        -ObjectRegistryId $objectRegistryId -AdminAclId $adminAclId
+
     $adminPrivateKey = Get-DotEnvValue `
         -Path $environmentPath `
         -Text $snapshots.Environment.Text `
@@ -616,7 +631,82 @@ function Read-SourceWorld {
         AdminAclId = $adminAclId
         DeploymentSha256 = $snapshots.Deployment.Sha256
         PublicationSha256 = $snapshots.Publication.Sha256
+        NpcDeployment = $npcDeployment
     }
+}
+
+function Read-NpcDeployment {
+    param(
+        [AllowNull()] [object]$Snapshot,
+        [Parameter(Mandatory)] [string]$ChainId,
+        [Parameter(Mandatory)] [string]$PackageId,
+        [Parameter(Mandatory)] [string]$ObjectRegistryId,
+        [Parameter(Mandatory)] [string]$AdminAclId
+    )
+
+    if ($null -eq $Snapshot) { return $null }
+    try {
+        $manifest = ConvertFrom-Json -InputObject $Snapshot.Text -AsHashtable
+    }
+    catch {
+        throw 'NPC deployment metadata is malformed JSON.'
+    }
+    if ($manifest -isnot [Collections.IDictionary] -or
+        $manifest.schemaVersion -isnot [long] -or $manifest.schemaVersion -ne 1) {
+        throw 'NPC deployment metadata has an unsupported schema.'
+    }
+    if ($manifest.chainId -isnot [string] -or
+        $manifest.chainId -cnotmatch '^[0-9a-fA-F]+$' -or
+        $manifest.chainId.ToLowerInvariant() -cne $ChainId) {
+        throw 'NPC deployment chainId does not match the synchronized world.'
+    }
+    # Copy only the public runtime schema; never propagate extra source fields.
+    $validated = [ordered]@{ schemaVersion = 1; chainId = $ChainId }
+    foreach ($field in @('worldPackageId', 'objectRegistryId', 'adminAclId', 'packageId', 'typeOrigin')) {
+        if ($manifest[$field] -isnot [string]) {
+            throw "NPC deployment $field must be a canonical nonzero Sui address."
+        }
+        $address = Assert-SuiAddress -Value $manifest[$field] -Label "NPC deployment $field"
+        if ($address -eq ('0x' + ('0' * 64))) {
+            throw "NPC deployment $field must be a canonical nonzero Sui address."
+        }
+        $validated[$field] = $address
+    }
+    $expected = @{ worldPackageId = $PackageId; objectRegistryId = $ObjectRegistryId; adminAclId = $AdminAclId }
+    foreach ($field in $expected.Keys) {
+        if ($validated[$field] -cne $expected[$field]) {
+            throw "NPC deployment $field does not match the synchronized world."
+        }
+    }
+    return $validated
+}
+
+function Publish-NpcDeployment {
+    param([AllowNull()] [object]$Manifest)
+
+    $exists = Test-Path -LiteralPath $NpcConfigPath
+    if ($null -eq $Manifest) {
+        if ($exists) {
+            # This may be operator-managed metadata or an older upgrade. Keep it
+            # recoverable, but never mark a base world ready with stale settings.
+            throw 'NPC deployment source is absent but destination npc-deployment.json exists; reconcile the deployment metadata before syncing.'
+        }
+        return
+    }
+    if ($exists) {
+        $existing = Get-Item -LiteralPath $NpcConfigPath -Force
+        if ($existing.PSIsContainer -or
+            ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Refusing to replace a non-file or reparse-point NPC deployment destination.'
+        }
+    }
+    if ($DryRun) {
+        Write-Output "[evejs-frontier-world] Would sync public NPC deployment: $NpcConfigPath"
+        return
+    }
+    New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
+    Write-FrontierJsonAtomic -Path $NpcConfigPath -Value $Manifest
+    Write-Output "[evejs-frontier-world] Synced NPC implementation: $($Manifest.packageId)"
 }
 
 function Write-WorldConfig {
@@ -678,6 +768,7 @@ function Publish-WorldSync {
 
     Assert-DockerWorkspaceOwnership
     $world = Read-SourceWorld
+    Publish-NpcDeployment -Manifest $world.NpcDeployment
     Write-Output "[evejs-frontier-world] Source: $WorldContractsRoot"
     Write-Output "[evejs-frontier-world] Chain: $($world.ChainId)"
     Write-Output "[evejs-frontier-world] World package: $($world.PackageId)"

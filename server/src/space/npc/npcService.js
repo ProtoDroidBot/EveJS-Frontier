@@ -480,37 +480,59 @@ function listStartupRulesForSystem(systemID) {
         ...filteredDynamicRules,
     ];
 }
-function countExistingStartupControllers(scene, startupRuleID, anchorID) {
+function buildStartupNpcIdentitySlot(scene, startupRuleID, anchorID) {
+    return `startup:${toPositiveInt(scene && scene.systemID, 0)}:rule:${encodeURIComponent(String(startupRuleID || "").trim())}:anchor:${toPositiveInt(anchorID, 0)}`;
+}
+function collectExistingStartupGroupSlots(scene, startupRuleID, anchorID) {
     const normalizedSystemID = toPositiveInt(scene && scene.systemID, 0);
     const normalizedStartupRuleID = String(startupRuleID || "").trim();
     const normalizedAnchorID = toPositiveInt(anchorID, 0);
-    const matchingEntityIDs = new Set();
-    for (const controller of listControllers()) {
+    const prefix = `${buildStartupNpcIdentitySlot(scene, startupRuleID, anchorID)}:group:`;
+    const slots = new Set();
+    const visitedEntityIDs = new Set();
+    const legacyGroupKeys = new Set();
+    const visitController = (controller, requireLiveEntity) => {
         if (toPositiveInt(controller && controller.systemID, 0) !== normalizedSystemID ||
             String(controller && controller.startupRuleID || "").trim() !== normalizedStartupRuleID ||
             toPositiveInt(controller && controller.anchorID, 0) !== normalizedAnchorID) {
-            continue;
+            return;
         }
         const entityID = toPositiveInt(controller && controller.entityID, 0);
-        if (!entityID) {
-            continue;
+        if (!entityID || visitedEntityIDs.has(entityID)) {
+            return;
         }
-        if (scene && !scene.getEntityByID(entityID)) {
-            continue;
+        const entity = scene && scene.getEntityByID(entityID);
+        if (requireLiveEntity && !entity) {
+            return;
         }
-        matchingEntityIDs.add(entityID);
+        visitedEntityIDs.add(entityID);
+        const entityRecord = entity || nativeNpcStore.getNativeEntity(entityID);
+        const identitySlot = String(controller.npcIdentitySlot || entityRecord && entityRecord.npcIdentitySlot || "");
+        if (identitySlot.startsWith(prefix)) {
+            const ordinalText = identitySlot.slice(prefix.length).split(":")[0];
+            if (/^\d+$/.test(ordinalText)) {
+                slots.add(Number(ordinalText));
+                return;
+            }
+        }
+        // Pre-identity controllers have no reliable group ordinal. Retain their
+        // existing occupancy conservatively until their normal lifecycle ends.
+        legacyGroupKeys.add(String(controller.spawnSiteID || controller.spawnGroupInstanceID || entityID));
+    };
+    for (const controller of listControllers()) {
+        visitController(controller, true);
     }
-    for (const controllerRecord of nativeNpcStore.listNativeControllersForSystem(normalizedSystemID)) {
-        if (String(controllerRecord && controllerRecord.startupRuleID || "").trim() !== normalizedStartupRuleID ||
-            toPositiveInt(controllerRecord && controllerRecord.anchorID, 0) !== normalizedAnchorID) {
-            continue;
-        }
-        const entityID = toPositiveInt(controllerRecord && controllerRecord.entityID, 0);
-        if (entityID > 0) {
-            matchingEntityIDs.add(entityID);
-        }
+    for (const controller of nativeNpcStore.listNativeControllersForSystem(normalizedSystemID)) {
+        visitController(controller, false);
     }
-    return matchingEntityIDs.size;
+    let legacyOrdinal = 0;
+    for (const _key of legacyGroupKeys) {
+        while (slots.has(legacyOrdinal)) {
+            legacyOrdinal += 1;
+        }
+        slots.add(legacyOrdinal);
+    }
+    return slots;
 }
 function isExactEverMoreGatePresenceRule(rule) {
     return rule && rule.exactEverMoreGatePresence === true;
@@ -668,6 +690,7 @@ function spawnExactEverMoreGatePresenceForAnchor(scene, rule, anchor, sharedSpaw
             batchIndex: index + 1,
             batchTotal: layout.length,
             startupSlotIndex: index,
+            npcIdentitySlot: `${buildStartupNpcIdentitySlot(scene, rule && rule.startupRuleID, anchorID)}:slot:${index}`,
             selectionKind: "group",
             selectionID: String(rule && rule.spawnGroupID || "").trim() || null,
             selectionName: String(rule && rule.name || "").trim() || null,
@@ -748,9 +771,6 @@ function spawnStartupRuleInScene(scene, rule) {
         isCombatStartupRuleDormancyEligible(scene, rule);
     for (const anchor of anchorsResult.data.anchors) {
         const anchorID = toPositiveInt(anchor && anchor.itemID, 0);
-        const existingCount = anchorID > 0
-            ? countExistingStartupControllers(scene, rule.startupRuleID, anchorID)
-            : 0;
         if (isExactEverMoreGatePresenceRule(rule)) {
             const sharedSpawnOptions = {
                 ...normalizeNpcSpawnOptions({
@@ -791,7 +811,11 @@ function spawnStartupRuleInScene(scene, rule) {
             spawned.push(...spawnResult.data.spawned);
             continue;
         }
-        for (let groupIndex = existingCount; groupIndex < groupsPerAnchor; groupIndex += 1) {
+        const occupiedGroupSlots = collectExistingStartupGroupSlots(scene, rule.startupRuleID, anchorID);
+        for (let groupIndex = 0; groupIndex < groupsPerAnchor; groupIndex += 1) {
+            if (occupiedGroupSlots.has(groupIndex)) {
+                continue;
+            }
             const sharedSpawnOptions = {
                 ...normalizeNpcSpawnOptions({
                     transient: rule.transient,
@@ -803,6 +827,7 @@ function spawnStartupRuleInScene(scene, rule) {
                 startupRuleID: String(rule.startupRuleID || "").trim() || null,
                 operatorKind: String(rule.operatorKind || "").trim() || null,
                 behaviorOverrides: rule.behaviorOverrides,
+                npcIdentitySlot: `${buildStartupNpcIdentitySlot(scene, rule.startupRuleID, anchorID)}:group:${groupIndex}`,
                 spawnDistanceMeters: toFiniteNumber(selector.spawnDistanceMeters, 0),
                 distanceFromSurfaceMeters: toFiniteNumber(selector.distanceFromSurfaceMeters, 0),
                 spreadMeters: toFiniteNumber(selector.spreadMeters, 0),
@@ -877,10 +902,12 @@ function getStartupRuleMissingCount(scene, rule) {
             missingCount += countMissingExactEverMoreSlots(scene, rule, anchor);
             continue;
         }
-        const existingCount = anchorID > 0
-            ? countExistingStartupControllers(scene, rule.startupRuleID, anchorID)
-            : 0;
-        missingCount += Math.max(0, groupsPerAnchor - existingCount);
+        const occupiedGroupSlots = collectExistingStartupGroupSlots(scene, rule.startupRuleID, anchorID);
+        for (let groupIndex = 0; groupIndex < groupsPerAnchor; groupIndex += 1) {
+            if (!occupiedGroupSlots.has(groupIndex)) {
+                missingCount += 1;
+            }
+        }
     }
     return {
         success: true,
@@ -1596,6 +1623,10 @@ module.exports = {
     scheduleNpcController,
     _testing: {
         ruleAppliesToSystem,
+        collectExistingStartupGroupSlots,
+        spawnExactEverMoreGatePresenceForAnchor,
+        spawnStartupRuleInScene,
+        getStartupRuleMissingCount,
     },
 };
 //# sourceMappingURL=npcService.js.map

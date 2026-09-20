@@ -5281,6 +5281,9 @@ function spawnEncounterPlan(scene, instance, siteEntity, encounterPlan, options 
         scene._dungeonUniverseEncounterKeys = new Set();
     }
     const encounterKey = `instance:${instanceID}:${planKey}`;
+    // An encounter's pilots belong to its private site instance. Re-materializing
+    // that instance can reuse them, while another player's pocket cannot.
+    const npcIdentitySlot = `dungeon:${instanceSystemID}:${siteID}:instance:${instanceID}:encounter:${encodeURIComponent(planKey)}`;
     if (scene._dungeonUniverseEncounterKeys.has(encounterKey)) {
         return 0;
     }
@@ -5339,6 +5342,7 @@ function spawnEncounterPlan(scene, instance, siteEntity, encounterPlan, options 
             });
             const singleSpawn = npcSpawnService.spawnNpcBatchInSystem(scene.systemID, {
                 profileQuery: resolveSpawnIdentityProfileQuery(entry, encounterFallbackQuery),
+                npcIdentitySlot: `${npcIdentitySlot}:entry:${entryIndex}`,
                 amount: 1,
                 transient: true,
                 position: encounterAnchorPosition,
@@ -5378,6 +5382,7 @@ function spawnEncounterPlan(scene, instance, siteEntity, encounterPlan, options 
                 });
                 const spawnResult = npcSpawnService.spawnNpcBatchInSystem(scene.systemID, {
                     profileQuery,
+                    npcIdentitySlot: `${npcIdentitySlot}:entry:${entryIndex}`,
                     amount: 1,
                     transient: true,
                     position: encounterAnchorPosition,
@@ -7860,6 +7865,7 @@ DungeonUniverseSiteService._testing = {
     materializeSiteContents,
     resolveManagedUniverseSiteInstance,
     resolveEncounterPlans,
+    spawnEncounterPlan,
     resolveEnvironmentStaticVisibilityScope,
     resolveInitialFrontierDungeonSceneObjectIDs,
     rebaseFrontierDungeonExactContent,

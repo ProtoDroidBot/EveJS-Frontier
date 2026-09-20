@@ -829,6 +829,10 @@ test("configured hive spawns invoke one NPC batch per resolved drone type", () =
   assert.equal(calls[0].options.preferredTargetID, 9_000_000_001);
   assert.equal(calls[0].options.runtimeKind, "frontierHive");
   assert.equal(calls[0].options.transient, true);
+  assert.equal(
+    calls[0].options.npcIdentitySlot,
+    "hive:30000142:site:7200000000001:instance:7100000000001:controller:6400000000001:entry:0",
+  );
 });
 
 test("Test Hive triggers every configured NPC at collision-safe positions", () => {
@@ -861,6 +865,7 @@ test("Test Hive triggers every configured NPC at collision-safe positions", () =
   assert.equal(result.success, true);
   assert.equal(calls.length, configuration.spawnEntries.length);
   assert.ok(calls.length > 5);
+  assert.equal(new Set(calls.map((call) => call.options.npcIdentitySlot)).size, calls.length);
   const positions = calls.map((entry) => entry.options.spawnStateOverride.position);
   for (let left = 0; left < positions.length; left += 1) {
     for (let right = left + 1; right < positions.length; right += 1) {
@@ -892,6 +897,83 @@ test("configured hive scenery advertises the link-with-ship component", () => {
   assert.deepEqual(entity.component_activate, [true, null]);
   assert.deepEqual(entity.component_linkWithShip, [null, 1, null, null]);
   assert.equal(entity.frontierHiveLinkState.hiveSpawnedAtMs, 0);
+});
+
+test("hive NPC pilot slots survive retries and remain scoped to their controller and private instance", () => {
+  const slots: string[] = [];
+  const anchor = {
+    itemID: 6_400_000_000_001,
+    typeID: 60_244,
+    position: { x: 0, y: 0, z: 0 },
+    dungeonSiteID: 7_200_000_000_001,
+    dungeonSiteInstanceID: 7_100_000_000_001,
+  };
+  const spawn = (entity) => mobileAnalysisBeaconRuntime._testing.spawnConfiguredHiveNpcs(
+    entity,
+    { solarSystemID: 30_000_142 },
+    {
+      npcService: {
+        spawnNpcBatchInSystem(_systemID, spawnOptions) {
+          slots.push(spawnOptions.npcIdentitySlot);
+          return { success: false, errorMsg: "INJECTED_FAILURE" };
+        },
+      },
+    },
+  );
+  spawn(anchor);
+  spawn(anchor);
+  spawn({ ...anchor, itemID: anchor.itemID + 1 });
+  spawn({ ...anchor, dungeonSiteInstanceID: anchor.dungeonSiteInstanceID + 1 });
+  assert.equal(slots[0], slots[1]);
+  assert.equal(new Set(slots).size, 3);
+});
+
+test("dungeon encounter pilot slots separate siblings and private instances, preserving retries and fallback", (t) => {
+  const npcSpawnService = require("../src/space/npc/npcService");
+  const dungeonAuthority = require("../src/services/dungeon/dungeonAuthority");
+  const dungeonRuntime = require("../src/services/dungeon/dungeonRuntime");
+  const calls: any[] = [];
+  t.mock.method(npcSpawnService, "spawnNpcBatchInSystem", (_systemID, spawnOptions) => {
+    calls.push(spawnOptions);
+    return { success: false, errorMsg: "INJECTED_FAILURE" };
+  });
+  t.mock.method(dungeonAuthority, "getTemplateByID", () => null);
+  t.mock.method(dungeonRuntime, "getInstance", () => null);
+  const scene = { systemID: 30_000_142, dynamicEntities: new Map(), staticEntities: [] };
+  const instance = { instanceID: 7_100_000_000_001, solarSystemID: scene.systemID };
+  const site = { itemID: 7_200_000_000_001, position: { x: 0, y: 0, z: 0 } };
+  const plan = {
+    supported: true,
+    key: "controller:200:wave:1",
+    spawnQuery: "frontier_osa_surveyor",
+    spawnEntries: [
+      { profileID: "frontier_osa_surveyor" },
+      { profileID: "frontier_osa_surveyor" },
+    ],
+  };
+  const spawn = (spawnInstance, spawnPlan = plan) => dungeonUniverseSiteService._testing.spawnEncounterPlan(
+    scene, spawnInstance, site, spawnPlan, { nowMs: 100 },
+  );
+  spawn(instance);
+  spawn(instance);
+  assert.notEqual(calls[0].npcIdentitySlot, calls[1].npcIdentitySlot);
+  assert.equal(calls[0].npcIdentitySlot, calls[2].npcIdentitySlot);
+  assert.equal(calls[1].npcIdentitySlot, calls[3].npcIdentitySlot);
+  assert.equal(calls[0].npcIdentitySlot,
+    "dungeon:30000142:7200000000001:instance:7100000000001:encounter:controller%3A200%3Awave%3A1:entry:0");
+  spawn({ ...instance, instanceID: instance.instanceID + 1 });
+  assert.notEqual(calls[0].npcIdentitySlot, calls[4].npcIdentitySlot);
+
+  calls.length = 0;
+  spawn(instance, {
+    ...plan,
+    spawnEntries: [],
+    amount: 2,
+    fallbackSpawnQuery: "frontier_osa_patroller",
+  } as any);
+  assert.equal(calls.length, 4);
+  assert.equal(calls[0].npcIdentitySlot, calls[2].npcIdentitySlot);
+  assert.equal(calls[1].npcIdentitySlot, calls[3].npcIdentitySlot);
 });
 
 test("KotH materializes one configured Test Hive stress spawner", () => {

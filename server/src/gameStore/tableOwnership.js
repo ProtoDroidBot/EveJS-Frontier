@@ -156,6 +156,10 @@ define(["identityState"], {
     tier: TIERS.RUNTIME, domain: "service:_shared", confidence: CONFIDENCE.SCANNER,
     note: "Identity allocator (services/_shared/identityAllocator.js).",
 });
+define(["npcPilotIdentities"], {
+    tier: TIERS.RUNTIME, domain: "in-space", confidence: CONFIDENCE.INFERRED,
+    note: "Permanent NPC pilot identities, spawn-slot ownership, and faction Sui profiles. Retained across ship destruction and transient runtime cleanup.",
+});
 define(["insuranceContracts"], {
     tier: TIERS.RUNTIME, domain: "service:insurance", confidence: CONFIDENCE.SCANNER,
 });

@@ -79,6 +79,7 @@ const ROW_GROUPS = {
     moduleGroupingState: ["ships"],
     moonExtractions: ["resourcesByStructureID", "extractions"],
     npcEntities: ["entities"],
+    npcPilotIdentities: ["pilots", "slots", "factions"],
     npcModules: ["modules"],
     npcRuntimeControllers: ["controllers"],
     overviewSharedPresets: ["entries"],

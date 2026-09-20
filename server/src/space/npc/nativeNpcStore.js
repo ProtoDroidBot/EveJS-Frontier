@@ -36,13 +36,6 @@ const ROOT = Object.freeze({
         items: {},
     },
 });
-const transientCounters = {
-    [TABLE.ENTITIES]: null,
-    [TABLE.MODULES]: null,
-    [TABLE.CARGO]: null,
-    [TABLE.WRECKS]: null,
-    [TABLE.WRECK_ITEMS]: null,
-};
 const controllerCache = {
     all: null,
     bySystem: new Map(),
@@ -238,9 +231,6 @@ function ensureRootShape(tableName) {
     }
     return normalizedRoot;
 }
-function writeRoot(tableName, root, options = {}) {
-    return database.write(tableName, "/", root, options);
-}
 function readCollection(tableName, key) {
     const root = ensureRootShape(tableName);
     const collection = root && typeof root === "object" && root[key] && typeof root[key] === "object"
@@ -257,28 +247,12 @@ function removeCollectionRow(tableName, collectionKey, rowID) {
     return database.remove(tableName, `/${collectionKey}/${String(rowID)}`);
 }
 function allocateID(tableName, counterKey, options = {}) {
-    if (options.transient === true) {
-        if (!Number.isInteger(transientCounters[tableName])) {
-            const root = ensureRootShape(tableName);
-            transientCounters[tableName] = Math.max(toPositiveInt(root && root[counterKey], 0), toPositiveInt(ROOT[tableName] && ROOT[tableName][counterKey], 0));
-        }
-        const nextID = transientCounters[tableName];
-        transientCounters[tableName] += 1;
-        return {
-            success: true,
-            data: nextID,
-        };
-    }
     const root = ensureRootShape(tableName);
     const nextID = Math.max(toPositiveInt(root && root[counterKey], 0), toPositiveInt(ROOT[tableName] && ROOT[tableName][counterKey], 0));
-    const updatedRoot = {
-        ...root,
-        [counterKey]: nextID + 1,
-    };
     // ID counters are authoritative store metadata, not transient runtime rows.
-    // Persisting them avoids collisions without ever transient-marking the whole
-    // table snapshot.
-    const writeResult = writeRoot(tableName, updatedRoot);
+    // Both persistence modes share one high-water mark. Persist the counter path
+    // without making the transient ship/module/cargo records durable.
+    const writeResult = database.write(tableName, `/${counterKey}`, nextID + 1);
     if (!writeResult.success) {
         return {
             success: false,
@@ -433,7 +407,7 @@ function removeNativeController(entityID) {
     }
     return removeResult;
 }
-function removeNativeEntityCascade(entityID) {
+function removeNativeEntityCascade(entityID, options = {}) {
     const normalizedEntityID = toPositiveInt(entityID, 0);
     if (!normalizedEntityID) {
         return {
@@ -441,6 +415,7 @@ function removeNativeEntityCascade(entityID) {
             errorMsg: "NPC_NATIVE_ENTITY_ID_REQUIRED",
         };
     }
+    const entityRecord = getNativeEntity(normalizedEntityID);
     for (const moduleRecord of listNativeModulesForEntity(normalizedEntityID)) {
         removeNativeModule(moduleRecord.moduleID);
     }
@@ -448,7 +423,11 @@ function removeNativeEntityCascade(entityID) {
         removeNativeCargo(cargoRecord.cargoID);
     }
     removeNativeController(normalizedEntityID);
-    removeNativeEntity(normalizedEntityID);
+    const removeResult = removeNativeEntity(normalizedEntityID);
+    const npcCharacterID = toPositiveInt(entityRecord && entityRecord.npcCharacterID, 0);
+    if (removeResult.success && npcCharacterID) {
+        require("./npcPilotIdentityStore").getNpcPilotIdentityStore().release(npcCharacterID, normalizedEntityID, options.destroyed === true);
+    }
     return {
         success: true,
         data: {

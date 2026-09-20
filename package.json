@@ -28,7 +28,8 @@
     "pretest": "npm run build",
     "test": "npm run test:frontier-static && npm run test:frontier-runners && npm run test:isolated-helper && npm run test:typescript-runtime && npm run test:frontier-industry",
     "test:frontier-industry": "node scripts/Tests/run-isolated-tests.js --test-concurrency=1 server/tests/frontierIndustryProduction.test.js server/tests/frontierIndustryProductionWorker.test.js server/tests/frontierIndustryBlueprints.test.js server/tests/frontierIndustryNotifications.test.js server/tests/frontierIndustryInventoryAccess.test.js server/tests/frontierIndustryInventory.test.js server/tests/frontierIndustryStorageApi.test.js server/tests/frontierIndustryBlueprintApi.test.js server/tests/frontierIndustryBlueprintParity.test.js",
-    "test:typescript-runtime": "node --test server/tests/typescriptRuntime.test.js server/tests/frontierSuiGrpcClient.test.js server/tests/frontierSuiCharacterProvisioning.test.js && npm run test:frontier-sui-assemblies",
+    "test:typescript-runtime": "node --test server/tests/typescriptRuntime.test.js server/tests/frontierSuiGrpcClient.test.js server/tests/frontierSuiCharacterProvisioning.test.js server/tests/frontierSuiNpcCharacterProvisioning.test.js server/tests/frontierSuiNpcIdentitySync.test.js server/tests/frontierSuiNpcWorldConfig.test.js server/tests/frontierSuiNpcProfile.test.js server/tests/npcPilotIdentityStore.test.js && npm run test:frontier-sui-assemblies",
+    "test:frontier-npc-identities": "node scripts/Tests/run-npc-identity-tests.js",
     "test:frontier-sui-assemblies": "node --test server/tests/frontierSuiAssembly*.test.js server/tests/frontierSuiStorage*.test.js server/tests/frontierSuiIndustry*.test.js"
   },
   "dependencies": {

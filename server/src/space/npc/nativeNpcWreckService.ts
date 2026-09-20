@@ -544,6 +544,10 @@ function destroyNativeNpcEntityWithWreck(systemID, shipEntity, options: Record<s
   const wreckRecord = {
     wreckID: wreckIDResult.data,
     sourceEntityID: entityID,
+    sourceNpcCharacterID: toPositiveInt(
+      nativeEntityRecord && nativeEntityRecord.npcCharacterID,
+      toPositiveInt(shipEntity.npcCharacterID, 0),
+    ) || null,
     systemID: normalizedSystemID,
     profileID: nativeEntityRecord && nativeEntityRecord.profileID || null,
     loadoutID: nativeEntityRecord && nativeEntityRecord.loadoutID || null,
@@ -672,7 +676,7 @@ function destroyNativeNpcEntityWithWreck(systemID, shipEntity, options: Record<s
   }
 
   unregisterController(entityID);
-  nativeNpcStore.removeNativeEntityCascade(entityID);
+  nativeNpcStore.removeNativeEntityCascade(entityID, { destroyed: true });
 
   const wreckSpawnResult = spawnNativeWreck(normalizedSystemID, wreckRecord.wreckID);
   if (!wreckSpawnResult.success) {

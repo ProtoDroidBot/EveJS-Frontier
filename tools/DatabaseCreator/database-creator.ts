@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
 const crypto = require("crypto");
+const { NPC_CHARACTER_ID_MIN } = require("../../server/src/services/_shared/npcIdentityConstants");
 const {
   policyViolationCount,
   sanitizeAuthorityTable,
@@ -208,6 +209,7 @@ const REQUIRED_TABLES = [
   "npcLoadouts",
   "npcLootTables",
   "npcModules",
+  "npcPilotIdentities",
   "npcProfiles",
   "npcRuntimeControllers",
   "npcRuntimeState",
@@ -3576,6 +3578,15 @@ function defaultPlaceholderForTable(tableName) {
   }
   if (tableName === "npcHostileUtilities") {
     return { templates: [] };
+  }
+  if (tableName === "npcPilotIdentities") {
+    return {
+      version: 1,
+      nextCharacterID: NPC_CHARACTER_ID_MIN,
+      pilots: {},
+      slots: {},
+      factions: {},
+    };
   }
   if (tableName === "playerBounties") {
     return {

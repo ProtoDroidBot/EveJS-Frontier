@@ -161,7 +161,7 @@ function spawnConfiguredLandscapeNpcs(scene, siteEntity, spawnPlan, options: Rec
   }
   const entityIDs: any[] = [];
   const failures: any[] = [];
-  for (const npc of npcs) {
+  for (const [npcIndex, npc] of npcs.entries()) {
     const spawnResult = npcService.spawnNpcBatchInSystem(scene.systemID, {
       amount: 1,
       anchorEntity: siteEntity,
@@ -171,6 +171,7 @@ function spawnConfiguredLandscapeNpcs(scene, siteEntity, spawnPlan, options: Rec
       preferPools: false,
       profileQuery: npc.profileID,
       runtimeKind: "frontierLandscape",
+      npcIdentitySlot: `landscape:${scene.systemID}:${siteEntity.itemID}:entry:${npcIndex}`,
       spawnGroupID: `frontier-landscape:${siteEntity.itemID}`,
       spawnSiteID: String(siteEntity.itemID),
       spawnStateOverride: {

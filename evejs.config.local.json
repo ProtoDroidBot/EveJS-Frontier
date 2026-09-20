@@ -860,6 +860,18 @@
 
   "clientCompatibilityProfile": "tranquility",
 
+  // Persist faction-keyed NPC pilot identities in Frontier mode, independently of ship lifetimes.
+  // Valid values: Boolean. Only applies to the Frontier compatibility profile.
+  // Default: true.
+
+  "npcPilotIdentitiesEnabled": true,
+
+  // Reconcile persistent NPC Characters and PlayerProfiles on the configured Sui Localnet in the background.
+  // Valid values: Boolean. Requires Frontier mode and NPC pilot identities.
+  // Default: true.
+
+  "suiNpcCharacterProvisioningEnabled": true,
+
   // UTC daily downtime start used by server-side startup reconciliation.
   // Matches the target client's zcluster DowntimeStarts value format and falls back to 11:00:00 when unset.
   // Valid values: UTC time in "HH:MM:SS" format.

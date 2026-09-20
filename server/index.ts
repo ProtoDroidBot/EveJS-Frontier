@@ -277,4 +277,10 @@ try {
   log.err(`[SuiAssemblySync] Failed to start: ${err.message}`);
 }
 
+try {
+  require("./src/services/frontier/suiNpcIdentitySync").startSuiNpcIdentitySync();
+} catch (err) {
+  log.err(`[SuiNpcIdentitySync] Failed to start: ${err.message}`);
+}
+
 startTCPServer(serviceManager);

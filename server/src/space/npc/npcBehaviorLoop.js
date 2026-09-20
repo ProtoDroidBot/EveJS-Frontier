@@ -510,6 +510,7 @@ function maybeRequestDrifterReinforcements(scene, entity, controller, behaviorPr
     const selectionName = String(controller.selectionName ||
         behaviorProfile && behaviorProfile.reinforcementSelectionName ||
         "Drifter Reinforcements").trim() || "Drifter Reinforcements";
+    const parentIdentitySlot = String(entity.npcIdentitySlot || controller.npcIdentitySlot || "").trim();
     const spawnResult = getNativeNpcService().spawnNativeDefinitionsInContext({
         systemID: toPositiveInt(entity && entity.systemID, 0),
         scene,
@@ -531,6 +532,9 @@ function maybeRequestDrifterReinforcements(scene, entity, controller, behaviorPr
         operatorKind: String(controller.operatorKind || "").trim() || "drifterspawn",
         preferredTargetID: targetID,
         runtimeKind: "nativeCombat",
+        ...(parentIdentitySlot
+            ? { npcIdentitySlot: `${parentIdentitySlot}:reinforcement:${toPositiveInt(drifterState.reinforcementRequestCount, 0)}` }
+            : {}),
         behaviorOverrides: {
             movementMode: "hold",
             autoAggro: true,
@@ -3877,6 +3881,7 @@ module.exports = {
     noteDungeonArrivalResponse,
     resolveNpcDungeonArrivalDisposition,
     __testing: {
+        maybeRequestDrifterReinforcements,
         isFriendlyCombatTarget,
         isRecordedNpcAggressor,
         resolveNpcTransponderTargetDisposition,

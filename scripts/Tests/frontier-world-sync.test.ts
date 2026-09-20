@@ -24,6 +24,37 @@ const ADMIN_ACL_ID =
   "0x3333333333333333333333333333333333333333333333333333333333333333";
 const ADMIN_PRIVATE_KEY =
   "suiprivkey1qq4z52329g4z52329g4z52329g4z52329g4z52329g4z52329g4z59sdsxd";
+const NPC_PACKAGE_ID = `0x${"4".repeat(64)}`;
+const NPC_TYPE_ORIGIN = `0x${"5".repeat(64)}`;
+
+function npcManifest(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    chainId: "a1b2c3d4",
+    worldPackageId: PACKAGE_ID,
+    objectRegistryId: OBJECT_REGISTRY_ID,
+    adminAclId: ADMIN_ACL_ID,
+    packageId: NPC_PACKAGE_ID,
+    typeOrigin: NPC_TYPE_ORIGIN,
+    ...overrides,
+  };
+}
+
+function npcSyncFixture(t) {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "evejs npc world sync "));
+  t.after(() => fs.rmSync(fixture, { force: true, recursive: true }));
+  const source = writeFixture(fixture);
+  const destination = path.join(fixture, "evejs", "world");
+  const manifestSource = path.join(source, "world-contracts", "deployments", "localnet", "npc-deployment.json");
+  const manifestDestination = path.join(destination, "npc-deployment.json");
+  const configPath = path.join(destination, "world.private.json");
+  const common = ["sync", "-SourceRoot", source, "-DestinationRoot", destination,
+    "-EfctlPath", writeFakeEfctl(fixture), "-SkipRpcValidation", "-SkipDockerOwnershipCheck"];
+  return { manifestSource, manifestDestination, configPath, destination,
+    write: (value) => fs.writeFileSync(manifestSource, JSON.stringify(value)),
+    run: (extra = []) => runWorld([...common, ...extra], {}),
+  };
+}
 
 function writeFixture(root) {
   const source = path.join(root, "3502403");
@@ -338,3 +369,115 @@ test(
     assert.equal(inactiveText.includes(ADMIN_PRIVATE_KEY), false);
   },
 );
+
+test("NPC deployment sync keeps original world identities and copies only public metadata",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = npcSyncFixture(t);
+    f.write(npcManifest({ extraSecret: "must-not-copy", chainId: "A1B2C3D4" }));
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(fs.readFileSync(f.manifestDestination, "utf8")), npcManifest());
+    const base = JSON.parse(fs.readFileSync(f.configPath, "utf8"));
+    assert.equal(base.state, "ready");
+    assert.equal(base.world.packageId, PACKAGE_ID);
+    assert.equal(base.world.objectRegistryId, OBJECT_REGISTRY_ID);
+    assert.equal(base.world.adminAclId, ADMIN_ACL_ID);
+    assert.notEqual(base.world.packageId, NPC_PACKAGE_ID);
+    assert.doesNotMatch(fs.readFileSync(f.manifestDestination, "utf8"), /must-not-copy|adminPrivateKey/);
+    assert.doesNotMatch(result.stdout + result.stderr, /must-not-copy/);
+  });
+
+test("NPC deployment sync rejects mismatched chain and base-world bindings",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = npcSyncFixture(t);
+    for (const field of ["chainId", "worldPackageId", "objectRegistryId", "adminAclId"]) {
+      f.write(npcManifest({ [field]: field === "chainId" ? "deadbeef" : NPC_PACKAGE_ID }));
+      const result = f.run();
+      assert.notEqual(result.status, 0, field);
+      assert.match(result.stderr, new RegExp(`NPC deployment ${field} does not match`));
+      assert.equal(JSON.parse(fs.readFileSync(f.configPath, "utf8")).state, "error");
+      assert.equal(fs.existsSync(f.manifestDestination), false);
+    }
+  });
+
+test("NPC deployment sync rejects malformed schemas and noncanonical or zero addresses",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = npcSyncFixture(t);
+    for (const invalid of [null, [], npcManifest({ schemaVersion: "1" }), npcManifest({ schemaVersion: 2 }),
+      npcManifest({ packageId: "0x4" }), npcManifest({ typeOrigin: `0x${"0".repeat(64)}` }),
+      npcManifest({ adminAclId: undefined }), npcManifest({ typeOrigin: 123 })]) {
+      f.write(invalid);
+      const result = f.run();
+      assert.notEqual(result.status, 0, JSON.stringify(invalid));
+      assert.match(result.stderr, /NPC deployment/);
+      assert.equal(JSON.parse(fs.readFileSync(f.configPath, "utf8")).state, "error");
+      assert.equal(fs.existsSync(f.manifestDestination), false);
+    }
+    fs.writeFileSync(f.manifestSource, "{private-not-echoed");
+    const malformed = f.run();
+    assert.notEqual(malformed.status, 0);
+    assert.match(malformed.stderr, /NPC deployment metadata is malformed JSON/);
+    assert.doesNotMatch(malformed.stdout + malformed.stderr, /private-not-echoed/);
+  });
+
+test("Absent NPC source fails closed without deleting a previously synchronized destination",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = npcSyncFixture(t);
+    f.write(npcManifest());
+    const initial = f.run();
+    assert.equal(initial.status, 0, initial.stderr || initial.stdout);
+    const previous = fs.readFileSync(f.manifestDestination, "utf8");
+    fs.unlinkSync(f.manifestSource);
+    const result = f.run();
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /NPC deployment source is absent/);
+    assert.equal(JSON.parse(fs.readFileSync(f.configPath, "utf8")).state, "error");
+    assert.equal(fs.readFileSync(f.manifestDestination, "utf8"), previous);
+  });
+
+test("NPC deployment dry-run validates upgrades without changing either destination",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = npcSyncFixture(t);
+    f.write(npcManifest());
+    const initial = f.run();
+    assert.equal(initial.status, 0, initial.stderr || initial.stdout);
+    const previousNpc = fs.readFileSync(f.manifestDestination, "utf8");
+    const previousWorld = fs.readFileSync(f.configPath, "utf8");
+    f.write(npcManifest({ packageId: `0x${"6".repeat(64)}` }));
+    const dryRun = f.run(["-DryRun"]);
+    assert.equal(dryRun.status, 0, dryRun.stderr || dryRun.stdout);
+    assert.match(dryRun.stdout, /Would sync public NPC deployment/);
+    assert.equal(fs.readFileSync(f.manifestDestination, "utf8"), previousNpc);
+    assert.equal(fs.readFileSync(f.configPath, "utf8"), previousWorld);
+    f.write(npcManifest({ chainId: "deadbeef" }));
+    const invalid = f.run(["-DryRun"]);
+    assert.notEqual(invalid.status, 0);
+    assert.equal(fs.readFileSync(f.manifestDestination, "utf8"), previousNpc);
+    assert.equal(fs.readFileSync(f.configPath, "utf8"), previousWorld);
+  });
+
+test("Invalid NPC metadata preserves previous metadata but invalidates the synchronized world",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = npcSyncFixture(t);
+    f.write(npcManifest());
+    const initial = f.run();
+    assert.equal(initial.status, 0, initial.stderr || initial.stdout);
+    const previous = fs.readFileSync(f.manifestDestination, "utf8");
+    f.write(npcManifest({ worldPackageId: NPC_PACKAGE_ID }));
+    const result = f.run();
+    assert.notEqual(result.status, 0);
+    assert.equal(JSON.parse(fs.readFileSync(f.configPath, "utf8")).state, "error");
+    assert.equal(fs.readFileSync(f.manifestDestination, "utf8"), previous);
+  });
+
+test("NPC deployment sync refuses to replace a destination directory",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = npcSyncFixture(t);
+    f.write(npcManifest());
+    fs.mkdirSync(f.manifestDestination, { recursive: true });
+    const result = f.run();
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /non-file or reparse-point NPC deployment destination/);
+    assert.equal(fs.statSync(f.manifestDestination).isDirectory(), true);
+    assert.equal(JSON.parse(fs.readFileSync(f.configPath, "utf8")).state, "error");
+  });

@@ -1365,6 +1365,22 @@ const CONFIG_ENTRY_DEFINITIONS: any[] = [
     validValues: '"tranquility" or "frontier".',
   },
   {
+    key: "npcPilotIdentitiesEnabled",
+    defaultValue: true,
+    envVar: "EVEJS_NPC_PILOT_IDENTITIES_ENABLED",
+    envType: "boolean",
+    description: "Persist faction-keyed NPC pilot identities in Frontier mode, independently of ship lifetimes.",
+    validValues: "Boolean. Only applies to the Frontier compatibility profile.",
+  },
+  {
+    key: "suiNpcCharacterProvisioningEnabled",
+    defaultValue: true,
+    envVar: "EVEJS_SUI_NPC_CHARACTER_PROVISIONING_ENABLED",
+    envType: "boolean",
+    description: "Reconcile persistent NPC Characters and PlayerProfiles on the configured Sui Localnet in the background.",
+    validValues: "Boolean. Requires Frontier mode and NPC pilot identities.",
+  },
+  {
     key: "clusterDowntimeStarts",
     defaultValue: "11:00:00",
     envVar: "EVEJS_CLUSTER_DOWNTIME_STARTS",

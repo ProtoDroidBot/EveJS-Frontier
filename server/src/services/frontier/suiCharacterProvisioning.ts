@@ -82,23 +82,31 @@ type SuiWorldSyncConfig = {
   publicationSha256?: string;
 };
 
-type SuiCharacterIdentity = SuiCharacterWorld & {
-  accountId: number;
+type SuiCharacterOnChainIdentity = SuiCharacterWorld & {
   gameCharacterId: number;
   characterName: string;
   walletAddress: string;
   characterObjectId: string;
 };
 
-type SuiCharacterProvisioningResult = SuiCharacterIdentity & {
+type SuiCharacterIdentity = SuiCharacterOnChainIdentity & {
+  accountId: number;
+};
+
+type SuiCharacterProvisioningResult<
+  TIdentity extends SuiCharacterOnChainIdentity = SuiCharacterIdentity,
+> = TIdentity & {
   network: typeof SUI_GRPC_NETWORK;
   baseUrl: typeof SUI_GRPC_BASE_URL;
   playerProfileObjectId: string;
   transactionDigest: string;
   recovered: boolean;
+  chainId?: string | null;
 };
 
-type SuiCharacterProvisioningOptions = {
+type SuiCharacterProvisioningOptions<
+  TIdentity extends SuiCharacterOnChainIdentity = SuiCharacterIdentity,
+> = {
   client?: SuiCharacterClient;
   world?: Partial<SuiCharacterWorld>;
   env?: NodeJS.ProcessEnv;
@@ -106,7 +114,7 @@ type SuiCharacterProvisioningOptions = {
   adminPrivateKey?: string;
   worldContractsDirectory?: string;
   reconciliationDelaysMs?: number[];
-  transactionFactory?: (identity: SuiCharacterIdentity) => Transaction;
+  transactionFactory?: (identity: TIdentity) => Transaction;
   onTransactionPrepared?: (details: {
     transactionDigest: string;
     transactionBytesBase64?: string;
@@ -115,8 +123,20 @@ type SuiCharacterProvisioningOptions = {
   }) => void | Promise<void>;
 };
 
-type SuiCharacterProvisioningSnapshot = {
-  options: SuiCharacterProvisioningOptions;
+type SuiCharacterSubmissionInput<
+  TIdentity extends SuiCharacterOnChainIdentity = SuiCharacterIdentity,
+> = {
+  identity?: TIdentity;
+  transactionDigest?: unknown;
+  transactionBytesBase64?: unknown;
+  transactionSignature?: unknown;
+  chainId?: unknown;
+};
+
+type SuiCharacterProvisioningSnapshot<
+  TIdentity extends SuiCharacterOnChainIdentity = SuiCharacterIdentity,
+> = {
+  options: SuiCharacterProvisioningOptions<TIdentity>;
   sourceEnv: NodeJS.ProcessEnv;
   syncedConfig: SuiWorldSyncConfig | null;
 };
@@ -381,9 +401,9 @@ function readSyncedSuiWorldConfig(
   };
 }
 
-function snapshotSuiCharacterProvisioningOptions(
-  options: SuiCharacterProvisioningOptions,
-): SuiCharacterProvisioningSnapshot {
+function snapshotSuiCharacterProvisioningOptions<TIdentity extends SuiCharacterOnChainIdentity>(
+  options: SuiCharacterProvisioningOptions<TIdentity>,
+): SuiCharacterProvisioningSnapshot<TIdentity> {
   const sourceEnv = options.env || process.env;
   const world = options.world || {};
   const needsSyncedWorld = !(
@@ -428,8 +448,8 @@ function snapshotSuiCharacterProvisioningOptions(
   };
 }
 
-function assertSuiProvisioningSnapshotCurrent(
-  snapshot: SuiCharacterProvisioningSnapshot,
+function assertSuiProvisioningSnapshotCurrent<TIdentity extends SuiCharacterOnChainIdentity>(
+  snapshot: SuiCharacterProvisioningSnapshot<TIdentity>,
 ): void {
   const expected = snapshot.syncedConfig;
   if (!expected) {
@@ -565,6 +585,9 @@ function prepareSuiCharacterIdentity(
     input.gameCharacterId,
     "Game character ID",
   );
+  if (require("../_shared/npcIdentityConstants").isNpcCharacterID(gameCharacterId)) {
+    throw new SuiCharacterProvisioningError("NPC_CHARACTER_NOT_PLAYER", "Reserved NPC pilot IDs cannot be provisioned as human player characters");
+  }
   const characterName = String(input.characterName || "").trim();
   if (!characterName) {
     throw new SuiCharacterProvisioningError(
@@ -593,7 +616,7 @@ function prepareSuiCharacterIdentity(
 }
 
 function createSuiCharacterTransaction(
-  identity: SuiCharacterIdentity,
+  identity: SuiCharacterOnChainIdentity,
 ): Transaction {
   const transaction = new Transaction();
   const [character] = transaction.moveCall({
@@ -748,9 +771,9 @@ async function readLiveSuiChainIdentifier(
   return null;
 }
 
-async function assertLiveSuiChain(
+async function assertLiveSuiChain<TIdentity extends SuiCharacterOnChainIdentity>(
   client: SuiCharacterClient,
-  snapshot: SuiCharacterProvisioningSnapshot,
+  snapshot: SuiCharacterProvisioningSnapshot<TIdentity>,
   recordedChainId: unknown = null,
 ): Promise<string | null> {
   let liveChainId: string | null;
@@ -783,7 +806,7 @@ async function assertLiveSuiChain(
 
 async function assertLiveSuiWorldObjects(
   client: SuiCharacterClient,
-  identity: SuiCharacterIdentity,
+  identity: SuiCharacterOnChainIdentity,
 ): Promise<void> {
   if (typeof client.getObjects !== "function") {
     return;
@@ -867,7 +890,7 @@ function getAddressOwner(owner: any): string | null {
 
 async function findPlayerProfileObject(
   client: SuiCharacterClient,
-  identity: SuiCharacterIdentity,
+  identity: SuiCharacterOnChainIdentity,
 ): Promise<any | null> {
   const playerProfileType = `${identity.packageId}::character::PlayerProfile`;
   let cursor: string | null = null;
@@ -894,10 +917,10 @@ async function findPlayerProfileObject(
   return null;
 }
 
-async function findExistingSuiCharacter(
+async function findExistingSuiCharacter<TIdentity extends SuiCharacterOnChainIdentity>(
   client: SuiCharacterClient,
-  identity: SuiCharacterIdentity,
-): Promise<SuiCharacterProvisioningResult | null> {
+  identity: TIdentity,
+): Promise<SuiCharacterProvisioningResult<TIdentity> | null> {
   let object: any;
   try {
     ({ object } = await client.getObject({
@@ -926,7 +949,7 @@ async function findExistingSuiCharacter(
   ) {
     throw new SuiCharacterProvisioningError(
       "CHARACTER_ID_COLLISION",
-      `Existing Sui object ${identity.characterObjectId} does not match this player character`,
+      `Existing Sui object ${identity.characterObjectId} does not match this character`,
       { ambiguous: true },
     );
   }
@@ -960,13 +983,13 @@ async function findExistingSuiCharacter(
   };
 }
 
-async function reconcileSubmittedSuiCharacter(
+async function reconcileSubmittedSuiCharacter<TIdentity extends SuiCharacterOnChainIdentity>(
   client: SuiCharacterClient,
-  identity: SuiCharacterIdentity,
+  identity: TIdentity,
   delaysMs: number[] = [0, 150, 500, 1000],
   transactionDigest: string | null = null,
 ): Promise<{
-  result: SuiCharacterProvisioningResult | null;
+  result: SuiCharacterProvisioningResult<TIdentity> | null;
   lastError: unknown;
   definitiveError: SuiCharacterProvisioningError | null;
 }> {
@@ -1027,10 +1050,10 @@ async function reconcileSubmittedSuiCharacter(
   return { result: null, lastError, definitiveError: null };
 }
 
-function parseSuccessfulTransaction(
+function parseSuccessfulTransaction<TIdentity extends SuiCharacterOnChainIdentity>(
   result: any,
-  identity: SuiCharacterIdentity,
-): SuiCharacterProvisioningResult {
+  identity: TIdentity,
+): SuiCharacterProvisioningResult<TIdentity> {
   if (!result || !["Transaction", "FailedTransaction"].includes(result.$kind)) {
     throw new SuiCharacterProvisioningError(
       "TRANSACTION_STATUS_UNKNOWN",
@@ -1147,13 +1170,13 @@ function readPreparedTransactionSubmission(
   }
 }
 
-async function executePreparedSuiCharacterTransaction(
+async function executePreparedSuiCharacterTransaction<TIdentity extends SuiCharacterOnChainIdentity>(
   client: SuiCharacterClient,
-  identity: SuiCharacterIdentity,
+  identity: TIdentity,
   prepared: { transactionBytes: Uint8Array; signature: string },
   transactionDigest: string,
   reconciliationDelaysMs: number[],
-): Promise<SuiCharacterProvisioningResult> {
+): Promise<SuiCharacterProvisioningResult<TIdentity>> {
   if (typeof client.executeTransaction !== "function") {
     throw new SuiCharacterProvisioningError(
       "PENDING_TRANSACTION_REPLAY_UNAVAILABLE",
@@ -1249,42 +1272,44 @@ async function provisionSuiCharacter(
     accountId: unknown;
     gameCharacterId: unknown;
     characterName: unknown;
-    identity?: SuiCharacterIdentity;
-    transactionDigest?: unknown;
-    transactionBytesBase64?: unknown;
-    transactionSignature?: unknown;
-    chainId?: unknown;
-  },
+  } & SuiCharacterSubmissionInput,
   options: SuiCharacterProvisioningOptions = {},
 ): Promise<SuiCharacterProvisioningResult> {
+  return provisionSuiCharacterWithIdentity(
+    input,
+    options,
+    (operationOptions) => prepareSuiCharacterIdentity(input, operationOptions),
+  );
+}
+
+/** Shared account-independent creation/reconciliation path for players and NPCs. */
+async function provisionSuiCharacterWithIdentity<TIdentity extends SuiCharacterOnChainIdentity>(
+  input: SuiCharacterSubmissionInput<TIdentity>,
+  options: SuiCharacterProvisioningOptions<TIdentity>,
+  prepareIdentity: (options: SuiCharacterProvisioningOptions<TIdentity>) => TIdentity,
+): Promise<SuiCharacterProvisioningResult<TIdentity>> {
   const client = options.client || (suiGrpcClient as unknown as SuiCharacterClient);
   const reconciliationDelaysMs = Array.isArray(options.reconciliationDelaysMs)
     ? options.reconciliationDelaysMs
     : [0, 150, 500, 1000];
 
-  return serializeAdminSubmission(async () => {
+  let operationChainId: string | null = null;
+  const result = await serializeAdminSubmission(async () => {
     const snapshot = snapshotSuiCharacterProvisioningOptions(options);
     const operationOptions = snapshot.options;
-    const identity = prepareSuiCharacterIdentity(input, operationOptions);
+    const identity = prepareIdentity(operationOptions);
     if (input.identity) {
       const suppliedIdentity = input.identity;
       const identityMatches =
-        suppliedIdentity.accountId === identity.accountId &&
-        suppliedIdentity.gameCharacterId === identity.gameCharacterId &&
-        suppliedIdentity.characterName === identity.characterName &&
-        suppliedIdentity.tenant === identity.tenant &&
-        suppliedIdentity.tribeId === identity.tribeId &&
-        sameSuiAddress(suppliedIdentity.packageId, identity.packageId) &&
-        sameSuiAddress(
-          suppliedIdentity.objectRegistryId,
-          identity.objectRegistryId,
-        ) &&
-        sameSuiAddress(suppliedIdentity.adminAclId, identity.adminAclId) &&
-        sameSuiAddress(suppliedIdentity.walletAddress, identity.walletAddress) &&
-        sameSuiAddress(
-          suppliedIdentity.characterObjectId,
-          identity.characterObjectId,
-        );
+        Object.keys(identity).every((field) => {
+          if ([
+            "packageId", "objectRegistryId", "adminAclId", "walletAddress",
+            "characterObjectId",
+          ].includes(field)) {
+            return sameSuiAddress(suppliedIdentity[field], identity[field]);
+          }
+          return suppliedIdentity[field] === identity[field];
+        });
       if (!identityMatches) {
         throw new SuiCharacterProvisioningError(
           "INVALID_PREPARED_IDENTITY",
@@ -1314,6 +1339,7 @@ async function provisionSuiCharacter(
       snapshot,
       pendingTransactionDigest ? recordedChainId : null,
     );
+    operationChainId = liveChainId;
     assertSuiProvisioningSnapshotCurrent(snapshot);
 
     if (pendingTransactionDigest) {
@@ -1367,7 +1393,7 @@ async function provisionSuiCharacter(
     await assertLiveSuiWorldObjects(client, identity);
     assertSuiProvisioningSnapshotCurrent(snapshot);
 
-    let existing: SuiCharacterProvisioningResult | null;
+    let existing: SuiCharacterProvisioningResult<TIdentity> | null;
     try {
       existing = await findExistingSuiCharacter(client, identity);
     } catch (error) {
@@ -1541,6 +1567,7 @@ async function provisionSuiCharacter(
       );
     }
   });
+  return { ...result, chainId: operationChainId };
 }
 
 export {
@@ -1557,13 +1584,20 @@ export {
   deriveLocalPlayerSuiWalletAddress,
   deriveSuiCharacterObjectId,
   findExistingSuiCharacter,
+  isObjectNotFoundError,
   prepareSuiCharacterIdentity,
   provisionSuiCharacter,
+  provisionSuiCharacterWithIdentity,
+  readLiveSuiChainIdentifier,
   readSyncedSuiWorldConfig,
   resolveAdminSigner,
   resolveSuiCharacterWorld,
+  serializeAdminSubmission,
   type SuiCharacterIdentity,
+  type SuiCharacterOnChainIdentity,
+  type SuiCharacterProvisioningOptions,
   type SuiCharacterProvisioningResult,
+  type SuiCharacterSubmissionInput,
   type SuiCharacterWorld,
   type SuiWorldSyncConfig,
 };

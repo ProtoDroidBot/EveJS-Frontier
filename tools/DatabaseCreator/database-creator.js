@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
 const crypto = require("crypto");
+const { NPC_CHARACTER_ID_MIN } = require("../../server/src/services/_shared/npcIdentityConstants");
 const { policyViolationCount, sanitizeAuthorityTable, } = require("./production-mission-policy");
 const { STRUCTURE_SIZE, STRUCTURE_FAMILY, STRUCTURE_GROUP_ID, DEFAULT_STRUCTURE_RADIUS, DEFAULT_STRUCTURE_TETHER_RANGE, STRUCTURE_TYPE_PRESETS, TATARA_EXCLUDED_DOCK_GROUP_NAMES, ONE_WAY_UNDOCK_TYPE_IDS, getAllowedServicesForStructureType, } = require(path.join(__dirname, "..", "..", "server", "src", "services", "structure", "structureConstants.js"));
 const DEFAULT_BUILD = 3396210;
@@ -182,6 +183,7 @@ const REQUIRED_TABLES = [
     "npcLoadouts",
     "npcLootTables",
     "npcModules",
+    "npcPilotIdentities",
     "npcProfiles",
     "npcRuntimeControllers",
     "npcRuntimeState",
@@ -3311,6 +3313,15 @@ function defaultPlaceholderForTable(tableName) {
     }
     if (tableName === "npcHostileUtilities") {
         return { templates: [] };
+    }
+    if (tableName === "npcPilotIdentities") {
+        return {
+            version: 1,
+            nextCharacterID: NPC_CHARACTER_ID_MIN,
+            pilots: {},
+            slots: {},
+            factions: {},
+        };
     }
     if (tableName === "playerBounties") {
         return {
