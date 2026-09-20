@@ -21,6 +21,32 @@ const NPC_TRANSPONDER_GROUP_FIELDS = new Set([
   "faction",
 ]);
 const NPC_TRANSPONDER_SIGNAL_MAX_LENGTH = 20;
+const NPC_EQUIPMENT_ROLES = new Set([
+  "weapon",
+  "ammunition",
+  "fuel",
+  "remote_repair",
+  "self_repair",
+  "hostile_utility",
+  "mining",
+  "salvage",
+  "tractor",
+  "scanner",
+  "cloak",
+  "propulsion",
+  "jump_drive",
+  "passive",
+]);
+const NPC_EQUIPMENT_LOSS_POLICIES = new Set(["return", "destroy"]);
+const DEFAULT_NPC_HARDWARE_POLICY = Object.freeze({
+  allowPlayerOwned: true,
+  allowFactionOwned: true,
+  allowCrossFactionDonation: false,
+  allowedRoles: Object.freeze([...NPC_EQUIPMENT_ROLES]),
+  allowedTypeIDs: Object.freeze([]),
+  deniedTypeIDs: Object.freeze([]),
+  equipmentLossPolicy: "return",
+});
 const U64_MAX = (1n << 64n) - 1n;
 
 function isRecord(value) {
@@ -215,6 +241,59 @@ function normalizeFactionKeyList(value, fieldName) {
   });
 }
 
+function normalizeNpcHardwarePolicy(value, fieldName, fallback = DEFAULT_NPC_HARDWARE_POLICY) {
+  if (value == null) return cloneValue(fallback);
+  const source = assertRecord(value, fieldName);
+  const booleanField = (key) => {
+    if (source[key] === undefined) return fallback[key] === true;
+    if (typeof source[key] !== "boolean") {
+      throw new TypeError(`${fieldName}.${key} must be a boolean`);
+    }
+    return source[key];
+  };
+  const normalizeRoles = () => {
+    if (source.allowedRoles === undefined) return [...fallback.allowedRoles];
+    if (!Array.isArray(source.allowedRoles) || source.allowedRoles.length === 0) {
+      throw new TypeError(`${fieldName}.allowedRoles must be a non-empty array`);
+    }
+    const roles = source.allowedRoles.map((entry, index) => {
+      const role = nonEmptyText(entry, `${fieldName}.allowedRoles[${index}]`).toLowerCase();
+      if (!NPC_EQUIPMENT_ROLES.has(role)) {
+        throw new TypeError(`${fieldName}.allowedRoles[${index}] is unsupported: ${role}`);
+      }
+      return role;
+    });
+    if (new Set(roles).size !== roles.length) {
+      throw new TypeError(`${fieldName}.allowedRoles contains duplicates`);
+    }
+    return roles;
+  };
+  const allowedTypeIDs = source.allowedTypeIDs === undefined
+    ? [...fallback.allowedTypeIDs]
+    : normalizeFactionIDList(source.allowedTypeIDs, `${fieldName}.allowedTypeIDs`);
+  const deniedTypeIDs = source.deniedTypeIDs === undefined
+    ? [...fallback.deniedTypeIDs]
+    : normalizeFactionIDList(source.deniedTypeIDs, `${fieldName}.deniedTypeIDs`);
+  if (allowedTypeIDs.some((typeID) => deniedTypeIDs.includes(typeID))) {
+    throw new TypeError(`${fieldName} cannot both allow and deny the same type ID`);
+  }
+  const equipmentLossPolicy = source.equipmentLossPolicy === undefined
+    ? fallback.equipmentLossPolicy
+    : nonEmptyText(source.equipmentLossPolicy, `${fieldName}.equipmentLossPolicy`).toLowerCase();
+  if (!NPC_EQUIPMENT_LOSS_POLICIES.has(equipmentLossPolicy)) {
+    throw new TypeError(`${fieldName}.equipmentLossPolicy must be return or destroy`);
+  }
+  return {
+    allowPlayerOwned: booleanField("allowPlayerOwned"),
+    allowFactionOwned: booleanField("allowFactionOwned"),
+    allowCrossFactionDonation: booleanField("allowCrossFactionDonation"),
+    allowedRoles: normalizeRoles(),
+    allowedTypeIDs,
+    deniedTypeIDs,
+    equipmentLossPolicy,
+  };
+}
+
 function factionIDIdentity(factionID) {
   return `id:${positiveInteger(factionID, "factionID")}`;
 }
@@ -273,6 +352,10 @@ function validateConfig(rawConfig) {
       "defaults.unidentifiedDisposition",
     ),
     retaliateAgainstAggressors: rawDefaults.retaliateAgainstAggressors,
+    hardwarePolicy: normalizeNpcHardwarePolicy(
+      rawDefaults.hardwarePolicy,
+      "defaults.hardwarePolicy",
+    ),
   };
 
   if (!Array.isArray(source.factions)) {
@@ -326,6 +409,11 @@ function validateConfig(rawConfig) {
       retaliateAgainstAggressors: faction.retaliateAgainstAggressors === undefined
         ? defaults.retaliateAgainstAggressors
         : faction.retaliateAgainstAggressors,
+      hardwarePolicy: normalizeNpcHardwarePolicy(
+        faction.hardwarePolicy,
+        `${fieldName}.hardwarePolicy`,
+        defaults.hardwarePolicy,
+      ),
     };
   });
 
@@ -690,6 +778,13 @@ function shouldNpcRetaliateAgainstAggressors(sourceEntity) {
     : CONFIG.defaults.retaliateAgainstAggressors === true;
 }
 
+function resolveNpcHardwarePolicy(sourceEntity) {
+  const faction = resolveConfiguredFaction(sourceEntity);
+  return cloneValue(
+    faction && faction.hardwarePolicy || CONFIG.defaults.hardwarePolicy,
+  );
+}
+
 function hasConfiguredHostileNpcFactions(sourceEntity) {
   if (!CONFIG.enabled) {
     return false;
@@ -769,6 +864,7 @@ module.exports = {
   resolveNpcTransponderGroupIdentity,
   resolveNpcTargetIdentification,
   resolveNpcUnidentifiedDisposition,
+  resolveNpcHardwarePolicy,
   shouldNpcRetaliateAgainstAggressors,
   hasConfiguredHostileNpcFactions,
   getAdditionalAutoAggroTargetClasses,

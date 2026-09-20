@@ -89,6 +89,9 @@ const FLUSH_TABLES = Object.freeze([
   "bookmarkKnownFolders",
   "bookmarkGroups",
   "savedFittings",
+  "creationPresets",
+  "smartAssemblyConstructionTemplates",
+  "smartAssemblyDeploymentPlans",
   "calendarEvents",
   "calendarResponses",
   "missionRuntimeState",
@@ -633,6 +636,9 @@ function purgePrivateCharacterState(characterID) {
     deleteManyFittings(numericCharacterID, fittingIDs, "character");
   }
   removeTablePathIfPresent("savedFittings", `/owners/${numericCharacterID}`);
+  removeTablePathIfPresent("creationPresets", `/owners/${numericCharacterID}`);
+  removeTablePathIfPresent("smartAssemblyConstructionTemplates", `/owners/${numericCharacterID}`);
+  removeTablePathIfPresent("smartAssemblyDeploymentPlans", `/owners/${numericCharacterID}`);
   clearCharacterPortraits(numericCharacterID);
 
   const bookmarkSummary = purgeBookmarkData(numericCharacterID);

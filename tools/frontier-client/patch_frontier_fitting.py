@@ -16,8 +16,13 @@ from patch_frontier_features import rewrite_archive
 BUILD = 3502403
 MODULE_NAME = "eve/client/script/ui/eveCommands.pyc"
 SOURCE_MEMBER_SHA256 = "533a19a7e8e995f415bd9f2649b52d64372538de240791d8b5c227ef76c24f4d"
+MENU_MODULE_NAME = "eve/client/script/ui/services/menusvc.pyc"
+MENU_SOURCE_MEMBER_SHA256 = "014f7513310f4027e6617befa0200d1dd1f0ab8a24c7e42529fb9d138961689f"
 CREATION_SERVICE_MODULE_NAME = "frontier/creation/client/service.pyc"
 CREATION_SERVICE_SOURCE_MEMBER_SHA256 = "55d9b955b0ab99fed39032db1580076946fb2e554c0ac8691eb7747d792f367c"
+CREATION_SERVICE_PREVIOUS_WRAPPER_SHA256 = {
+    "f51e3756cd36500b22833a8bf60519c52ba3b778f43390de1a994bb902dfbe8f",
+}
 ACTION_PROVIDER_MODULE_NAME = "frontier/creation/client/module_action_provider.pyc"
 ACTION_PROVIDER_SOURCE_MEMBER_SHA256 = "fe9644684a5c001c6a6509461efcd4905f928c20937dcf6ab7fda813f13a3a5e"
 ACTION_PROVIDER_PREVIOUS_WRAPPER_SHA256 = {
@@ -35,8 +40,11 @@ PREVIOUS_WRAPPER_SHA256 = {
     "3a8b251364c9ca5dcf18f44518a5283869377f4781546885d916a57b8007910a",
     "74bd5fc669dbb04177083c1cdcb4350b3e2ba569a52208fd94b5f446b0c0f1e8",
     "0d79a1a445efe2fe3a6b44eb2afd093b40e0d6e2a9213b55cb520b0a1a7e3b56",
+    "9eff822f5a7d4c432515d93e02501eaf2643649c3ff6ca576d917475a08559ca",
+    "9774128683688cd11add071a654b0bb438ea4558d3989e93b2e71c94d8cff56d",
 }
 ADAPTER = Path(__file__).with_name("fitting_compatibility_adapter.py")
+MENU_ADAPTER = Path(__file__).with_name("npc_fitting_menu_adapter.py")
 CREATION_SERVICE_ADAPTER = Path(__file__).with_name(
     "creation_service_compatibility_adapter.py"
 )
@@ -54,6 +62,8 @@ SKILLSHOT_AUTO_CANNON_ADAPTER = Path(__file__).with_name(
 )
 SOURCE_SENTINEL = b"EVEJS_FITTING_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_FITTING_ADAPTER_CODE_V1"
+MENU_SOURCE_SENTINEL = b"EVEJS_NPC_FITTING_MENU_ORIGINAL_MEMBER_V1"
+MENU_ADAPTER_SENTINEL = b"EVEJS_NPC_FITTING_MENU_ADAPTER_CODE_V1"
 CREATION_SERVICE_SOURCE_SENTINEL = b"EVEJS_CREATION_SERVICE_ORIGINAL_MEMBER_V1"
 CREATION_SERVICE_ADAPTER_SENTINEL = b"EVEJS_CREATION_SERVICE_ADAPTER_CODE_V1"
 ACTION_PROVIDER_SOURCE_SENTINEL = b"EVEJS_ACTION_PROVIDER_ORIGINAL_MEMBER_V1"
@@ -104,6 +114,34 @@ def patched_member(member):
         if value == SOURCE_SENTINEL
         else marshal.dumps(adapter)
         if value == ADAPTER_SENTINEL
+        else value
+        for value in wrapper.co_consts
+    )
+    return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
+
+
+def patched_menu_member(member):
+    original = marshal.loads(member[16:])
+    adapter = compile(
+        MENU_ADAPTER.read_text(encoding="utf-8"),
+        "evejs/npc_fitting_menu_adapter.py",
+        "exec",
+        dont_inherit=True,
+    )
+    wrapper = compile(
+        "import marshal as _evejs_npc_fitting_menu_marshal\n"
+        "exec(_evejs_npc_fitting_menu_marshal.loads(b'EVEJS_NPC_FITTING_MENU_ORIGINAL_MEMBER_V1'[16:]))\n"
+        "exec(_evejs_npc_fitting_menu_marshal.loads(b'EVEJS_NPC_FITTING_MENU_ADAPTER_CODE_V1'))\n"
+        "_evejs_install_npc_fitting_menu(globals())\n",
+        original.co_filename,
+        "exec",
+        dont_inherit=True,
+    )
+    constants = tuple(
+        member
+        if value == MENU_SOURCE_SENTINEL
+        else marshal.dumps(adapter)
+        if value == MENU_ADAPTER_SENTINEL
         else value
         for value in wrapper.co_consts
     )
@@ -295,6 +333,7 @@ def inspect_archive(archive, build=BUILD):
         entries_by_name = {}
         for module_name in (
             MODULE_NAME,
+            MENU_MODULE_NAME,
             CREATION_SERVICE_MODULE_NAME,
             ACTION_PROVIDER_MODULE_NAME,
             ACTION_BAR_INTEGRATION_MODULE_NAME,
@@ -313,11 +352,17 @@ def inspect_archive(archive, build=BUILD):
         command_state, command_original = inspect_member(
             source.read(entries_by_name[MODULE_NAME])
         )
+        menu_state, menu_original = inspect_member(
+            source.read(entries_by_name[MENU_MODULE_NAME]),
+            MENU_SOURCE_MEMBER_SHA256,
+            patched_menu_member,
+            set(),
+        )
         service_state, service_original = inspect_member(
             source.read(entries_by_name[CREATION_SERVICE_MODULE_NAME]),
             CREATION_SERVICE_SOURCE_MEMBER_SHA256,
             patched_creation_service_member,
-            set(),
+            CREATION_SERVICE_PREVIOUS_WRAPPER_SHA256,
         )
         action_provider_state, action_provider_original = inspect_member(
             source.read(entries_by_name[ACTION_PROVIDER_MODULE_NAME]),
@@ -348,6 +393,7 @@ def inspect_archive(archive, build=BUILD):
 
     states = {
         command_state,
+        menu_state,
         service_state,
         action_provider_state,
         action_bar_integration_state,
@@ -362,6 +408,7 @@ def inspect_archive(archive, build=BUILD):
         state = "outdated"
     return state, {
         MODULE_NAME: (command_state, command_original),
+        MENU_MODULE_NAME: (menu_state, menu_original),
         CREATION_SERVICE_MODULE_NAME: (service_state, service_original),
         ACTION_PROVIDER_MODULE_NAME: (
             action_provider_state,
@@ -389,6 +436,9 @@ def patch_archive(archive, build=BUILD):
         command_state, command_original = originals[MODULE_NAME]
         if command_state != "patched":
             replacements[MODULE_NAME] = patched_member(command_original)
+        menu_state, menu_original = originals[MENU_MODULE_NAME]
+        if menu_state != "patched":
+            replacements[MENU_MODULE_NAME] = patched_menu_member(menu_original)
         service_state, service_original = originals[CREATION_SERVICE_MODULE_NAME]
         if service_state != "patched":
             replacements[CREATION_SERVICE_MODULE_NAME] = (

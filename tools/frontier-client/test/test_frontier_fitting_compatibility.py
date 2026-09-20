@@ -18,6 +18,7 @@ CLIENT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(CLIENT_DIR))
 
 import fitting_compatibility_adapter as adapter  # noqa: E402
+import npc_fitting_menu_adapter as npc_menu_adapter  # noqa: E402
 import action_bar_compatibility_adapter as action_bar_adapter  # noqa: E402
 import action_bar_selection_adapter as selection_adapter  # noqa: E402
 import creation_service_compatibility_adapter as service_adapter  # noqa: E402
@@ -201,6 +202,117 @@ class AdapterTests(unittest.TestCase):
         self.assertIs(self.CreationService.get_creation, first_creation)
         self.assertEqual(self.Command.OpenFitting.nameLabelPath, "fuel-label")
 
+    def test_npc_fitting_window_is_never_opened_without_server_trust(self):
+        opened = []
+
+        class Remote:
+            def __init__(self):
+                self.state = {"trusted": False}
+
+            def GetNpcFittingState(self, entity_id):
+                return dict(self.state, entityID=entity_id)
+
+        remote = Remote()
+        self.namespace["sm"] = NS(
+            RemoteSvc=lambda name: remote,
+            GetService=lambda name: NS(GetItem=lambda item_id: self.ship),
+        )
+        with mock.patch.object(
+            adapter,
+            "_evejs_open_npc_fitting_window",
+            side_effect=lambda namespace, entity_id, state:
+            opened.append((entity_id, state)) or "window",
+        ):
+            self.assertIsNone(self.Command().OpenNpcFitting(980000000001))
+            self.assertEqual(opened, [])
+            remote.state = {"trusted": True, "displayName": "Trusted NPC"}
+            self.assertEqual(
+                self.Command().OpenNpcFitting(980000000001), "window"
+            )
+        self.assertEqual(opened[0][0], 980000000001)
+        self.assertTrue(opened[0][1]["trusted"])
+
+
+class NpcFittingPresenterTests(unittest.TestCase):
+    def test_presenter_replaces_state_after_each_server_authorized_mutation(self):
+        calls = []
+
+        class Remote:
+            def GetNpcFittingState(self, entity_id):
+                calls.append(("refresh", entity_id))
+                return {"trusted": True, "modules": []}
+
+            def FitItem(self, entity_id, item_id, flag_id):
+                calls.append(("fit", entity_id, item_id, flag_id))
+                return {
+                    "trusted": True,
+                    "modules": [{"moduleID": item_id}],
+                }
+
+            def LoadCharge(self, entity_id, module_id, item_id, quantity):
+                calls.append(
+                    ("load", entity_id, module_id, item_id, quantity)
+                )
+                return {
+                    "trusted": True,
+                    "modules": [{"moduleID": module_id}],
+                }
+
+        presenter = adapter._EvejsNpcFittingPresenter(
+            Remote(), 980000000001, {"trusted": True, "modules": []}
+        )
+        presenter.fit(500)
+        presenter.select_module(500)
+        presenter.load(600)
+        self.assertEqual(
+            calls,
+            [
+                ("fit", 980000000001, 500, 0),
+                ("load", 980000000001, 500, 600, 0),
+            ],
+        )
+        presenter.accept({"trusted": False})
+        self.assertFalse(presenter.trusted)
+
+
+class NpcFittingMenuTests(unittest.TestCase):
+    def test_context_action_exists_only_after_the_server_trust_check(self):
+        trusted = False
+        opened = []
+
+        class Remote:
+            def CanOpenNpcFitting(self, entity_id):
+                return {"trusted": trusted, "entityID": entity_id}
+
+        class MenuSvc:
+            def CelestialMenu(
+                self, itemID, mapItem=None, crData=None, typeID=None,
+                parentID=None, hint=None
+            ):
+                return [["Show Info", lambda: None, ()]]
+
+        namespace = {
+            "MenuSvc": MenuSvc,
+            "sm": NS(RemoteSvc=lambda name: Remote()),
+            "uicore": NS(cmd=NS(
+                OpenNpcFitting=lambda entity_id: opened.append(entity_id)
+            )),
+        }
+        npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
+        service = MenuSvc()
+        self.assertEqual(len(service.CelestialMenu(980000000001)), 1)
+        trusted = True
+        menu = service.CelestialMenu(980000000001)
+        self.assertEqual(menu[-1][0], "Manage NPC Fitting")
+        menu[-1][1](*menu[-1][2])
+        self.assertEqual(opened, [980000000001])
+
+        # Multi-select never performs per-NPC trust probes or adds the action.
+        self.assertEqual(
+            len(service.CelestialMenu([980000000001, 980000000002])),
+            1,
+        )
+
 
 class CreationServiceAdapterTests(unittest.TestCase):
     def setUp(self):
@@ -208,9 +320,57 @@ class CreationServiceAdapterTests(unittest.TestCase):
         self.ship = NS(typeID=87698)
         test = self
 
+        class Signal:
+            def __init__(self):
+                self.handlers = []
+
+            def connect(self, handler):
+                self.handlers.append(handler)
+
+            def __call__(self, *args):
+                for handler in self.handlers:
+                    handler(*args)
+
+        class Remote:
+            def list_presets(self):
+                test.events.append(("preset-rpc", "list"))
+                return [{"presetID": "one"}]
+
+            def save_preset(self, creation_id, name, description):
+                test.events.append(
+                    ("preset-rpc", "save", creation_id, name, description)
+                )
+                return {"success": True, "data": {"presetID": "one"}}
+
+            def rename_preset(self, preset_id, name, description):
+                test.events.append(
+                    ("preset-rpc", "rename", preset_id, name, description)
+                )
+                return {"success": True, "data": {"presetID": preset_id}}
+
+            def delete_preset(self, preset_id):
+                test.events.append(("preset-rpc", "delete", preset_id))
+                return {"success": True, "data": {"presetID": preset_id}}
+
+            def preview_preset(self, creation_id, preset_id):
+                test.events.append(
+                    ("preset-rpc", "preview", creation_id, preset_id)
+                )
+                return {
+                    "success": True,
+                    "data": {"previewToken": "token"},
+                }
+
+            def apply_preset(self, creation_id, preset_id, token):
+                test.events.append(
+                    ("preset-rpc", "apply", creation_id, preset_id, token)
+                )
+                return {"success": True, "data": {}}
+
         class CreationService:
             def __init__(self):
                 self._active_creation = "stale"
+                self._remote = Remote()
 
             def get_creation(self, creation_id):
                 test.events.append(("creation-rpc", creation_id))
@@ -229,6 +389,7 @@ class CreationServiceAdapterTests(unittest.TestCase):
                     GetItem=lambda item_id: self.ship,
                 )
             ),
+            "signals": NS(Signal=Signal),
         }
         service_adapter._evejs_install_creation_service_compatibility(
             self.namespace
@@ -263,6 +424,25 @@ class CreationServiceAdapterTests(unittest.TestCase):
         )
         self.assertIs(self.CreationService.get_creation, first_get)
         self.assertIs(self.CreationService.get_active_creation, first_active)
+
+    def test_preset_rpcs_are_exposed_and_mutations_emit_refresh_signal(self):
+        service = self.CreationService()
+        changes = []
+        service.on_creation_presets_changed.connect(
+            lambda action, result: changes.append(action)
+        )
+        self.assertEqual(service.list_creation_presets(), [{"presetID": "one"}])
+        saved = service.save_creation_preset(100, "Baseline", "desc")
+        service.rename_creation_preset("one", "Renamed", "updated")
+        service.preview_creation_preset(100, "one")
+        service.apply_creation_preset(100, "one", "token")
+        service.delete_creation_preset("one")
+        self.assertTrue(saved["success"])
+        self.assertEqual(changes, ["save", "rename", "apply", "delete"])
+        self.assertEqual(
+            [entry[1] for entry in self.events if entry[0] == "preset-rpc"],
+            ["list", "save", "rename", "preview", "apply", "delete"],
+        )
 
 
 class ActionBarAdapterTests(unittest.TestCase):
@@ -673,6 +853,7 @@ class WindowsUpgradeTests(unittest.TestCase):
                 "fittingCompatibility": "outdated",
                 "inventoryView": "patched",
                 "collisionVfx": "patched",
+                "creationTransform": "patched",
             }
             with (
                 mock.patch.object(windows, "check_stage", side_effect=check),
@@ -792,6 +973,30 @@ class FittingBytecodePatchTests(unittest.TestCase):
             "patched",
         )
 
+    def test_npc_fitting_menu_wrapper_is_exact_and_idempotent(self):
+        code = compile(
+            "class MenuSvc:\n"
+            "    def CelestialMenu(self, itemID, mapItem=None, crData=None, "
+            "typeID=None, parentID=None, hint=None): return []\n",
+            "menu_fixture.py",
+            "exec",
+        )
+        source = member_for(code)
+        expected = hashlib.sha256(source).hexdigest()
+        patched = patcher.patched_menu_member(source)
+        self.assertEqual(
+            patcher.inspect_member(
+                source, expected, patcher.patched_menu_member, set()
+            )[0],
+            "source",
+        )
+        self.assertEqual(
+            patcher.inspect_member(
+                patched, expected, patcher.patched_menu_member, set()
+            )[0],
+            "patched",
+        )
+
     def test_skillshot_wrappers_are_exact_and_idempotent(self):
         controller_code = compile(
             "class SkillShotController:\n"
@@ -841,6 +1046,7 @@ class FittingBytecodePatchTests(unittest.TestCase):
                     name: source.read(name)
                     for name in (
                         patcher.MODULE_NAME,
+                        patcher.MENU_MODULE_NAME,
                         patcher.CREATION_SERVICE_MODULE_NAME,
                         patcher.ACTION_PROVIDER_MODULE_NAME,
                         patcher.ACTION_BAR_INTEGRATION_MODULE_NAME,
@@ -853,7 +1059,10 @@ class FittingBytecodePatchTests(unittest.TestCase):
                     archive.writestr(name, member)
                 archive.writestr("unrelated.pyc", b"preserve exactly")
 
-            self.assertEqual(patcher.inspect_archive(archive_path)[0], "source")
+            self.assertIn(
+                patcher.inspect_archive(archive_path)[0],
+                {"source", "outdated", "patched"},
+            )
             patcher.patch_archive(archive_path)
             once = archive_path.read_bytes()
             self.assertEqual(patcher.inspect_archive(archive_path)[0], "patched")

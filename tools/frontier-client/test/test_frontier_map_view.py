@@ -173,6 +173,7 @@ class MapViewPatchTests(unittest.TestCase):
                     "fittingCompatibility": "patched",
                     "inventoryView": "patched",
                     "collisionVfx": "patched",
+                    "creationTransform": "patched",
                 }
                 with (
                     mock.patch.object(windows, "check_stage", side_effect=check),

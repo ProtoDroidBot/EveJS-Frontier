@@ -183,6 +183,22 @@ test("all three held-beam modules mine their collision target without a lock or 
   }
 });
 
+test("held-beam extraction refuses to run without an equipped lens", () => {
+  const result = miningRuntime.executeSkillShotMiningCycle(
+    { systemID: 30000001 },
+    { itemID: 101 },
+    { itemID: 202 },
+    { itemID: 301, typeID: TYPE_CUTTING_LASER },
+    null,
+    12_345,
+  );
+  assert.deepEqual(result, {
+    matched: true,
+    success: false,
+    stopReason: "charge",
+  });
+});
+
 test("depleted utility resources remain terminal non-combat collisions", () => {
   const result = miningRuntime.executeSkillShotMiningCycle(
     { systemID: 30000001 },

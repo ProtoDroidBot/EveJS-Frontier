@@ -94,10 +94,10 @@ test("Frontier character creation starts in one initialized Creation", async () 
     assert.equal(ship.itemName, "Creation");
     assert.equal(ship.conditionState.fuelCharge, 2250);
     assert.equal(ship.conditionState.fuelTypeID, 77818);
-    assert.deepEqual(ship.conditionState.fuelQueue, [{
-            fuelTypeID: 77818,
-            quantity: 2250,
-        }]);
+    assert.deepEqual(ship.conditionState.fuelQueue, [
+        { fuelTypeID: 77818, quantity: 2000 },
+        { fuelTypeID: 77818, quantity: 250, reserve: true },
+    ]);
     assert.equal(listCharacterItems(characterID).some((item) => Number(item.typeID) === 87698), false);
     const state = readCreationState(ship);
     assert.equal(state.version, 1);
@@ -239,10 +239,10 @@ test("Creation-template hulls are initialized in station and space", () => {
             assert.ok(state.modules.length > 0);
             assert.equal(ship.conditionState.fuelCharge, expectedFuelCapacity);
             assert.equal(ship.conditionState.fuelTypeID, 77818);
-            assert.deepEqual(ship.conditionState.fuelQueue, [{
-                    fuelTypeID: 77818,
-                    quantity: expectedFuelCapacity,
-                }]);
+            assert.deepEqual(ship.conditionState.fuelQueue, [
+                { fuelTypeID: 77818, quantity: expectedFuelCapacity - 250 },
+                { fuelTypeID: 77818, quantity: 250, reserve: true },
+            ]);
             const fittedModules = listContainerItems(characterID, ship.itemID, CREATION_FITTING_FLAG_ID);
             assert.equal(fittedModules.length, state.modules.length);
             assert.deepEqual(new Set(fittedModules.map((item) => Number(item.itemID))), new Set(state.modules.map((module) => Number(module.itemID))));

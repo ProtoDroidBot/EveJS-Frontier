@@ -65,6 +65,13 @@ test("NPC faction config loads the shipped faction and relation matrix", () => {
   const config = npcFactionConfig.getConfig();
   assert.equal(config.defaults.unidentifiedDisposition, "suspicious");
   assert.equal("playerDisposition" in config.defaults, false);
+  assert.equal(config.defaults.hardwarePolicy.allowPlayerOwned, true);
+  assert.equal(config.defaults.hardwarePolicy.allowFactionOwned, true);
+  assert.equal(config.defaults.hardwarePolicy.allowCrossFactionDonation, false);
+  assert.ok(config.defaults.hardwarePolicy.allowedRoles.includes("weapon"));
+  assert.ok(config.defaults.hardwarePolicy.allowedRoles.includes("ammunition"));
+  assert.ok(config.defaults.hardwarePolicy.allowedRoles.includes("jump_drive"));
+  assert.equal(config.defaults.hardwarePolicy.equipmentLossPolicy, "return");
 });
 
 test("NPC spawn groups receive stable, distinct configured transponder codes", () => {
@@ -168,7 +175,9 @@ test("NPC faction config validates relation identities and disposition values", 
     factions: [],
     relations: [],
   };
-  assert.doesNotThrow(() => npcFactionConfig.validateConfig(base));
+  const normalized = npcFactionConfig.validateConfig(base);
+  assert.equal(normalized.defaults.hardwarePolicy.allowPlayerOwned, true);
+  assert.ok(normalized.defaults.hardwarePolicy.allowedRoles.includes("mining"));
   assert.throws(
     () => npcFactionConfig.validateConfig({
       ...base,
@@ -187,6 +196,31 @@ test("NPC faction config validates relation identities and disposition values", 
       suiWalletFunding: { ...base.suiWalletFunding, budgetMist: "01" },
     }),
     /suiWalletFunding\.budgetMist/,
+  );
+  assert.throws(
+    () => npcFactionConfig.validateConfig({
+      ...base,
+      defaults: {
+        ...base.defaults,
+        hardwarePolicy: {
+          allowedRoles: ["weapon", "doomsday_bananaphone"],
+        },
+      },
+    }),
+    /unsupported/,
+  );
+  assert.throws(
+    () => npcFactionConfig.validateConfig({
+      ...base,
+      defaults: {
+        ...base.defaults,
+        hardwarePolicy: {
+          allowedRoles: ["weapon"],
+          equipmentLossPolicy: "duplicate",
+        },
+      },
+    }),
+    /return or destroy/,
   );
 });
 

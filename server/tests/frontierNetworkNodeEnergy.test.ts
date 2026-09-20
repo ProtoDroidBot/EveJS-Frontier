@@ -18,6 +18,7 @@ const energy = require("../src/services/frontier/networkNodeEnergyRuntime");
 const deployment = require("../src/services/frontier/deploymentRuntime");
 const fuel = require("../src/services/frontier/networkNodeFuelRuntime");
 const sync = require("../src/services/frontier/suiAssemblySync");
+const requests = require("../src/services/frontier/smartAssemblyRequestRuntime");
 const NOW = 1700000000000;
 const OWNER = 140000003;
 const SYSTEM = 30000004;
@@ -103,6 +104,39 @@ test("online checks use confirmed available production and do not double charge 
   assert.equal(energy.validateAssemblyOnline(items.get(2)).errorMsg, "NETWORK_NODE_ENERGY_EXCEEDED");
   energy.projectSuiNetworkNodeEnergy(1, { maxEnergy: 1000, currentEnergyProduction: 1000, energyUsed: 500, observedAtMs: NOW });
   assert.equal(energy.validateAssemblyOnline(items.get(2)).success, true, "exact capacity is allowed");
+});
+
+test("resource status classifies fuel and power independently and signals over-limit errors", t => {
+  assembly(1, 88092, { quantity: 100 });
+  assembly(2, 77917);
+  useChainEnergy(t, {
+    maxEnergy: 1000,
+    currentEnergyProduction: 1000,
+    energyUsed: 750,
+    observedAtMs: NOW,
+  });
+  const published: any[] = [];
+  t.mock.method(requests, "publishAssemblyStatusSignal", (_nodeID, type, value) => {
+    published.push({ type, value });
+    return { success: true, changed: true, data: value };
+  });
+
+  const current = status();
+  assert.equal(current.fuelLevel, "low");
+  assert.equal(current.lowFuel, true);
+  assert.equal(current.powerUsageLevel, "medium");
+  assert.equal(current.overPowerLimit, false);
+  assert.deepEqual(current.resourceSignals.activeFlags, ["FUEL_LOW", "POWER_USAGE_MEDIUM"]);
+
+  const denied = energy.validateAssemblyOnline(items.get(2));
+  assert.equal(denied.errorMsg, "NETWORK_NODE_ENERGY_EXCEEDED");
+  const overload = published.at(-1);
+  assert.equal(overload.type, "network_node.resources");
+  assert.equal(overload.value.fuel.level, "low", "the fuel dimension remains intact");
+  assert.equal(overload.value.power.usageLevel, "over_limit");
+  assert.equal(overload.value.power.overLimit, true);
+  assert.equal(overload.value.error.code, "NETWORK_NODE_ENERGY_EXCEEDED");
+  assert.ok(overload.value.activeFlags.includes("POWER_LIMIT_EXCEEDED"));
 });
 
 test("pending local online requests cannot claim energy has already been reserved", t => {

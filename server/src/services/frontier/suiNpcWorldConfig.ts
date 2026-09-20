@@ -15,6 +15,10 @@ export type SuiNpcWorldConfig = {
   npcPackageId: string;
   /** First package containing npc::NpcProfile and npc::NpcProfileKey. */
   npcTypeOrigin: string;
+  /** Latest implementation package used for assembly-access Move calls. */
+  accessPackageId: string;
+  /** First package containing assembly_access policy/grant object types. */
+  accessTypeOrigin: string;
   fingerprint: string;
 };
 
@@ -76,7 +80,14 @@ export function readSuiNpcWorldConfig(
         adminAclId: address(raw.adminAclId, "admin ACL"),
         packageId: address(raw.packageId, "package"),
         typeOrigin: address(raw.typeOrigin, "type origin"),
+        accessPackageId: raw.accessPackageId == null
+          ? null : address(raw.accessPackageId, "assembly access package"),
+        accessTypeOrigin: raw.accessTypeOrigin == null
+          ? null : address(raw.accessTypeOrigin, "assembly access type origin"),
       };
+      if ((file.accessPackageId === null) !== (file.accessTypeOrigin === null)) {
+        throw new Error("NPC deployment assembly access package and type origin must be configured together");
+      }
       for (const key of ["chainId", "worldPackageId", "objectRegistryId", "adminAclId"] as const) {
         if (file[key] !== world[key]) {
           throw new Error(`NPC deployment ${key} does not match the synchronized world`);
@@ -86,12 +97,21 @@ export function readSuiNpcWorldConfig(
   }
   const packageOverride = override(env.EVEJS_SUI_NPC_PACKAGE_ID, "environment package");
   const originOverride = override(env.EVEJS_SUI_NPC_TYPE_ORIGIN, "environment type origin");
+  const accessPackageOverride = override(
+    env.EVEJS_SUI_ASSEMBLY_ACCESS_PACKAGE_ID, "assembly access environment package",
+  );
+  const accessOriginOverride = override(
+    env.EVEJS_SUI_ASSEMBLY_ACCESS_TYPE_ORIGIN, "assembly access environment type origin",
+  );
   const npcPackageId = packageOverride ?? file?.packageId ?? world.worldPackageId;
   const npcTypeOrigin = originOverride ?? file?.typeOrigin ?? npcPackageId;
+  const accessPackageId = accessPackageOverride ?? file?.accessPackageId ?? npcPackageId;
+  const accessTypeOrigin = accessOriginOverride ?? file?.accessTypeOrigin ?? accessPackageId;
   const fingerprint = createHash("sha256").update(JSON.stringify({
-    world, file, packageOverride, originOverride, npcPackageId, npcTypeOrigin,
+    world, file, packageOverride, originOverride, accessPackageOverride, accessOriginOverride,
+    npcPackageId, npcTypeOrigin, accessPackageId, accessTypeOrigin,
   })).digest("hex");
-  return { npcPackageId, npcTypeOrigin, fingerprint };
+  return { npcPackageId, npcTypeOrigin, accessPackageId, accessTypeOrigin, fingerprint };
 }
 
 /** Re-read immediately before persisting/submitting a signed transaction. */

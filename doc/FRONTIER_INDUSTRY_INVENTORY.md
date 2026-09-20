@@ -1,5 +1,8 @@
 # Frontier Industry inventory
 
+Multi-job concurrency and per-lane authorization are documented in
+[`FRONTIER_SMART_INDUSTRY_JOB_LANES.md`](./FRONTIER_SMART_INDUSTRY_JOB_LANES.md).
+
 The `industry` service implements the build 3502403 Smart Assembly inventory
 contract:
 
@@ -22,6 +25,13 @@ Construction and activation block access. Supported personal inventories include
 the active ship's cargo and supported specialized holds, plus owned nearby cargo
 containers and active Mobile Depots within their normal interaction range.
 Withdrawals check destination capacity and hold item restrictions.
+
+The owned, nearby Network Node fuel slot is also a bidirectional Industry
+inventory. Withdrawing an accepted fuel output into flag 172 consumes the
+Industry escrow row and increases the node's virtual reserve in one atomic
+commit. Supplying a blueprint fuel input from the node performs the inverse
+operation. Mixed fuels, non-fuel types, insufficient reserve, capacity overflow,
+and pending chain fuel intents fail before either side changes.
 
 Contents use normal durable inventory rows owned by the facility owner, located
 at the facility item ID. Server-only flags `20000` and `20001` distinguish input

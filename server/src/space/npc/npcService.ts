@@ -41,6 +41,9 @@ const {
   resolveNpcDungeonArrivalDisposition,
 } = require(path.join(__dirname, "./npcBehaviorLoop"));
 const {
+  requestNpcSupport,
+} = require(path.join(__dirname, "./npcSupportCoordinator"));
+const {
   GATE_OPERATOR_KIND,
   getStartupRuleOverride,
   setStartupRuleEnabledOverride,
@@ -1311,15 +1314,20 @@ function handleSceneCreated(scene) {
 
   scene._npcStartupInitialized = true;
   const removedLegacySyntheticNpcs = cleanupLegacySyntheticNpcShips(scene);
+  const rehydrationResult = nativeNpcService.rehydrateStoredNativeControllers(scene, {
+    broadcast: false,
+  });
   const removedStaleNativeStartupNpcs = nativeNpcService.cleanupStaleNativeStartupControllers(scene);
   const startupResult = spawnStartupRulesForSystem(scene.systemID);
   return {
-    success: startupResult.success,
-    errorMsg: startupResult.errorMsg || null,
+    success: startupResult.success && rehydrationResult.success,
+    errorMsg: startupResult.errorMsg || rehydrationResult.errorMsg || null,
     data: {
       removedLegacySyntheticNpcs,
       removedStaleNativeStartupNpcs,
-      rehydrated: [],
+      rehydrated: Array.isArray(rehydrationResult.data)
+        ? rehydrationResult.data
+        : [],
       applied:
         startupResult.success && startupResult.data && Array.isArray(startupResult.data.applied)
           ? startupResult.data.applied
@@ -1941,16 +1949,87 @@ function noteNpcIncomingAggression(
       attackerOwnerID,
     },
   );
+  const targetController = getControllerByEntityID(targetEntityID);
+  const supportProfile = {
+    ...(targetController && targetController.behaviorProfile || {}),
+    ...(targetController && targetController.behaviorOverrides || {}),
+  };
+  const supportResult = noteResult.success && targetEntity.transient !== true &&
+    toPositiveInt(targetEntity.npcCharacterID, 0) > 0 &&
+    supportProfile.supportEnabled !== false
+    ? requestNpcSupport({
+        requesterEntityID: targetEntityID,
+        threatTargetID: attackerEntityID,
+        threatOwnerID: attackerOwnerID,
+        systemID: toPositiveInt(targetEntity.systemID, 0),
+        position: targetEntity.position,
+        scene: options.scene || spaceRuntime.ensureScene(toPositiveInt(targetEntity.systemID, 0)),
+        severity: String(supportProfile.supportSeverity || "moderate"),
+        requiredRoles: Array.isArray(supportProfile.supportRequiredRoles)
+          ? supportProfile.supportRequiredRoles
+          : ["combat"],
+        supportGroupID: String(
+          supportProfile.supportGroupID ||
+          targetController && targetController.spawnGroupID ||
+          targetEntity.spawnGroupID ||
+          targetEntity.npcFactionIdentityKey ||
+          targetEntity.npcFactionKey ||
+          "faction",
+        ),
+        maximumResponderCount: toPositiveInt(supportProfile.supportMaximumResponders, 3),
+        responseRadiusMeters: Math.max(
+          0,
+          toFiniteNumber(supportProfile.supportResponseRadiusMeters, 250_000),
+        ),
+        ttlMs: Math.max(1_000, toFiniteNumber(supportProfile.supportIncidentTtlMs, 120_000)),
+        cooldownMs: Math.max(1_000, toFiniteNumber(supportProfile.supportCooldownMs, 60_000)),
+        allowCrossSystemResponders: supportProfile.supportCrossSystemEnabled !== false,
+        allowReserveSpawn:
+          supportProfile.supportReserveSpawnEnabled === true ||
+          Array.isArray(supportProfile.reinforcementDefinitions) &&
+            supportProfile.reinforcementDefinitions.length > 0,
+        maximumReserveSpawn: toPositiveInt(
+          supportProfile.supportMaximumReserveSpawn,
+          Array.isArray(supportProfile.reinforcementDefinitions)
+            ? supportProfile.reinforcementDefinitions.length
+            : 0,
+        ),
+        reserveDefinitions: Array.isArray(supportProfile.reinforcementDefinitions)
+          ? supportProfile.reinforcementDefinitions
+          : [],
+        reserveProfileID: String(supportProfile.supportReserveProfileID || "").trim() || null,
+        reserveSpawnDistanceMeters: Math.max(
+          5_000,
+          toFiniteNumber(supportProfile.supportReserveSpawnDistanceMeters, 35_000),
+        ),
+        nowMs: now,
+      })
+    : null;
+  const coordinatedResponderEntityIDs = supportResult && supportResult.success &&
+    supportResult.data && supportResult.data.incident
+    ? (supportResult.data.incident.responderAssignments || [])
+        .filter((assignment) => ["assigned", "engaging"].includes(String(assignment.status)))
+        .map((assignment) => toPositiveInt(assignment.responderEntityID, 0))
+        .filter(Boolean)
+    : [];
+  // Player allies and transient encounter actors have no durable NPC job to
+  // interrupt. Preserve their immediate local IFF alert path; durable NPCs use
+  // only the bounded coordinator assignments above.
+  const localTransponderResponderEntityIDs =
+    targetEntity.transient === true || toPositiveInt(targetEntity.npcCharacterID, 0) <= 0
+      ? propagateAggressionToTransponderAllies(
+          targetEntity,
+          attackerEntity,
+          now,
+          options,
+        )
+      : [];
   const propagatedEntityIDs = [
     ...(noteResult.success
       ? propagateDrifterAggressionToPack(targetEntity, attackerEntity, now)
       : []),
-    ...propagateAggressionToTransponderAllies(
-      targetEntity,
-      attackerEntity,
-      now,
-      options,
-    ),
+    ...coordinatedResponderEntityIDs,
+    ...localTransponderResponderEntityIDs,
   ].filter((entityID, index, values) => values.indexOf(entityID) === index);
   if (!noteResult.success && propagatedEntityIDs.length === 0) {
     return noteResult;
@@ -1963,6 +2042,14 @@ function noteNpcIncomingAggression(
         : {}),
       directlyNoted: noteResult.success === true,
       propagatedEntityIDs,
+      supportIncidentID:
+        supportResult && supportResult.success && supportResult.data && supportResult.data.incident
+          ? supportResult.data.incident.incidentID
+          : null,
+      supportError:
+        supportResult && supportResult.success === false
+          ? supportResult.errorMsg || "NPC_SUPPORT_REQUEST_FAILED"
+          : null,
     },
   };
 }

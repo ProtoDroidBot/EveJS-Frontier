@@ -10229,6 +10229,14 @@ function buildStaticStargateEntity(stargate) {
     stargate,
     "skinMaterialSetID",
   );
+  let maintenanceState = null;
+  try {
+    const result = lazyRequire("../services/frontier/celestialStargateRuntime")
+      .getStargateState(stargate && stargate.itemID);
+    maintenanceState = result && result.success ? result.data : null;
+  } catch (_) {
+    maintenanceState = null;
+  }
 
   return {
     kind: "stargate",
@@ -10249,10 +10257,18 @@ function buildStaticStargateEntity(stargate) {
     destinationID: stargate.destinationID,
     destinationSolarSystemID: stargate.destinationSolarSystemID,
     activationState: coerceStableActivationState(
-      stargate.activationState,
+      maintenanceState && maintenanceState.dormant
+        ? STARGATE_ACTIVATION_STATE.CLOSED
+        : stargate.activationState,
       STARGATE_ACTIVATION_STATE.OPEN,
     ),
     activationTransitionAtMs: 0,
+    ...(maintenanceState ? {
+      stargateMaintenanceStatus: maintenanceState.status,
+      stargateFuelLevel: maintenanceState.fuelLevel,
+      stargateMaterialLevel: maintenanceState.materialLevel,
+      stargateActivationCompleteAtMs: maintenanceState.activationCompleteAtMs,
+    } : {}),
     poseID: toInt(stargate.poseID, 0),
     localCorruptionStageAndMaximum: coerceStageTuple(
       stargate.localCorruptionStageAndMaximum,
@@ -44768,6 +44784,24 @@ class SpaceRuntime {
       return this.stargateActivationOverrides.get(numericGateID);
     }
 
+    if (numericGateID) {
+      try {
+        const maintenanceOverride = lazyRequire(
+          "../services/frontier/celestialStargateRuntime",
+        ).resolveActivationOverride(numericGateID);
+        if (maintenanceOverride !== null && maintenanceOverride !== undefined) {
+          return coerceStableActivationState(
+            maintenanceOverride,
+            STARGATE_ACTIVATION_STATE.CLOSED,
+          );
+        }
+      } catch (error) {
+        log.warn(
+          `[SpaceRuntime] Stargate maintenance state failed gate=${numericGateID}: ${error.message}`,
+        );
+      }
+    }
+
     const destinationSystemID = toInt(
       stargate && stargate.destinationSolarSystemID,
       0,
@@ -44806,15 +44840,36 @@ class SpaceRuntime {
         }
 
         const nextActivationState = this.resolveStargateActivationState(entity);
+        let maintenanceChanged = false;
+        try {
+          const maintenance = lazyRequire(
+            "../services/frontier/celestialStargateRuntime",
+          ).getStargateState(entity.itemID);
+          if (maintenance && maintenance.success) {
+            maintenanceChanged =
+              entity.stargateMaintenanceStatus !== maintenance.data.status ||
+              entity.stargateFuelLevel !== maintenance.data.fuelLevel ||
+              entity.stargateMaterialLevel !== maintenance.data.materialLevel ||
+              entity.stargateActivationCompleteAtMs !== maintenance.data.activationCompleteAtMs;
+            entity.stargateMaintenanceStatus = maintenance.data.status;
+            entity.stargateFuelLevel = maintenance.data.fuelLevel;
+            entity.stargateMaterialLevel = maintenance.data.materialLevel;
+            entity.stargateActivationCompleteAtMs = maintenance.data.activationCompleteAtMs;
+          }
+        } catch (_) {
+          // An unmanaged legacy stargate has no maintenance payload.
+        }
         const currentStableActivationState = coerceStableActivationState(
           entity.activationState,
           STARGATE_ACTIVATION_STATE.CLOSED,
         );
-        if (currentStableActivationState === nextActivationState) {
+        if (currentStableActivationState === nextActivationState && !maintenanceChanged) {
           continue;
         }
 
-        if (
+        if (currentStableActivationState === nextActivationState) {
+          // Only the celestial maintenance payload changed.
+        } else if (
           animateOpenTransitions &&
           currentStableActivationState === STARGATE_ACTIVATION_STATE.CLOSED &&
           nextActivationState === STARGATE_ACTIVATION_STATE.OPEN
@@ -48143,6 +48198,17 @@ runtimeExports.skillShotInterop = {
     return lazyRequire("../services/frontier/skillShotUtilityRuntime")
       .applySkillShotUtilityHit(options);
   },
+};
+// Cross-system jump drives use the same authoritative Dogma notification
+// primitives as the continuous fuel/temperature simulation.  Keeping this
+// narrow bridge here avoids routing jump initiation through Destiny warp.
+runtimeExports.jumpDriveInterop = {
+  buildAttributeChange,
+  notifyAttributeChanges,
+  notifyFuelChargeChangeToSession,
+  notifyFuelPropertyChangesToSession,
+  notifyShipTemperatureToSession,
+  resolveSessionNotificationFileTime,
 };
 
 if (typeof structureState.registerStructureChangeListener === "function") {

@@ -25,6 +25,7 @@ const {
 const creationRuntime = require(path.join(__dirname, "./creationRuntime"));
 const turretInventory = require(path.join(__dirname, "./smartTurretInventoryRuntime"));
 const fieldStorageInventory = require(path.join(__dirname, "./fieldStorageInventoryRuntime"));
+const networkNodeFuel = require(path.join(__dirname, "./networkNodeFuelRuntime"));
 const {
   runWithSuiAssemblyState,
   runWithSuiAssemblyStates,
@@ -145,13 +146,14 @@ interface StorageDepositContext {
   stacks: StorageStack[];
   depositVolume: number;
   usedVolume: number;
+  sourceAssemblyKind?: "network_node_fuel";
 }
 
 interface StorageWithdrawContext {
   unit: StorageUnitContext;
   destinationUnit?: any;
   destinationAssemblyID: number;
-  destinationAssemblyKind?: "storage_unit" | "turret" | "field_storage";
+  destinationAssemblyKind?: "storage_unit" | "turret" | "field_storage" | "network_node_fuel";
   destinationLocationID: number;
   destinationFlagID: number;
   destinationStorageUnitID: number;
@@ -286,9 +288,13 @@ function withAuthoritativeStorageState(options, operation) {
       [sourceLocationID, toInt(options.sourceFlagID, -1), current.sourceAccess],
       [destinationLocationID, toInt(options.destinationFlagID, -1), current.genericDestinationAccess],
     ]) {
-      if (candidateID <= 0 || flagID !== 0) continue;
+      if (candidateID <= 0) continue;
       const candidateKind = getAssemblyInventoryKind(candidateID);
-      if (candidateKind !== "turret" && candidateKind !== "field_storage") continue;
+      const expectedFlag = candidateKind === "network_node_fuel"
+        ? networkNodeFuel.NETWORK_NODE_FUEL_BAY_FLAG
+        : turretInventory.SMART_TURRET_INVENTORY_FLAG;
+      if (!candidateKind || flagID !== expectedFlag ||
+          !["turret", "field_storage", "network_node_fuel"].includes(candidateKind)) continue;
       const candidateValidation = validateAssemblyInventory(
         current.characterID,
         candidateID,
@@ -298,7 +304,7 @@ function withAuthoritativeStorageState(options, operation) {
       if (candidateValidation.errorMsg) {
         return { success: false as const, errorMsg: candidateValidation.errorMsg };
       }
-      if (candidateKind === "turret") assemblyIDs.push(candidateID);
+      if (candidateKind !== "field_storage") assemblyIDs.push(candidateID);
     }
     const uniqueAssemblyIDs = [...new Set(assemblyIDs)];
     const result = uniqueAssemblyIDs.length === 1
@@ -445,6 +451,7 @@ function getAssemblyInventoryKind(itemID) {
   if (getStorageComponent(item.typeID)) return "storage_unit";
   if (turretInventory.getTurretComponent(item.typeID)) return "turret";
   if (fieldStorageInventory.getFieldStorageComponent(item.typeID)) return "field_storage";
+  if (toInt(item.typeID, 0) === networkNodeFuel.NETWORK_NODE_TYPE_ID) return "network_node_fuel";
   return null;
 }
 
@@ -456,12 +463,15 @@ function validateAssemblyInventory(characterID, itemID, access, options: Record<
       ? turretInventory.validateTurretInventory(characterID, itemID, { access, ...options })
       : kind === "field_storage"
         ? fieldStorageInventory.validateFieldStorageInventory(characterID, itemID, { access, ...options })
+        : kind === "network_node_fuel"
+          ? networkNodeFuel.validateNetworkNodeFuelInventory(characterID, itemID, { access, ...options })
       : { errorMsg: "ASSEMBLY_NOT_FOUND" };
   if (result.errorMsg) return result;
   return {
     ...result,
     kind,
-    flagID: kind === "storage_unit" ? SMART_STORAGE_FLAG : 0,
+    flagID: kind === "storage_unit" ? SMART_STORAGE_FLAG
+      : kind === "network_node_fuel" ? networkNodeFuel.NETWORK_NODE_FUEL_BAY_FLAG : 0,
     inventoryOwnerID: toInt(characterID, 0),
   };
 }
@@ -475,6 +485,11 @@ function validateTransferContainer(characterID, itemID, flagID, access, errorMsg
   const activeShipID = toInt(access && access.activeShipID, 0);
   if (activeShipID > 0 && numericItemID === activeShipID && flagID === CARGO_HOLD_FLAG) {
     return { item, kind: "ship", flagID, inventoryOwnerID: toInt(characterID, 0) };
+  }
+  if (flagID === networkNodeFuel.NETWORK_NODE_FUEL_BAY_FLAG &&
+      toInt(item.typeID, 0) === networkNodeFuel.NETWORK_NODE_TYPE_ID) {
+    const assembly = validateAssemblyInventory(characterID, numericItemID, access);
+    return assembly.errorMsg ? { errorMsg: assembly.errorMsg } : assembly;
   }
   if (flagID !== turretInventory.SMART_TURRET_INVENTORY_FLAG ||
       (!turretInventory.getTurretComponent(item.typeID) &&
@@ -491,10 +506,6 @@ function validateDeposit(options): ValidationResult<StorageDepositContext> {
   if (unit.errorMsg) {
     return unit as { errorMsg: string };
   }
-  const stacks = normalizeDepositStacks(options.stacks);
-  if (!stacks || stacks.length === 0) {
-    return { errorMsg: "INVALID_QUANTITY" };
-  }
   const sourceLocationID = toInt(options.sourceLocationID, 0);
   const sourceFlagID = toInt(options.sourceFlagID, -1);
   const source = validateTransferContainer(
@@ -505,6 +516,45 @@ function validateDeposit(options): ValidationResult<StorageDepositContext> {
     "INVALID_SOURCE",
   );
   if (source.errorMsg) return { errorMsg: source.errorMsg };
+
+  if (source.kind === "network_node_fuel") {
+    const requestedFuel = normalizeWithdrawStacks(options.stacks);
+    if (!requestedFuel || requestedFuel.length !== 1) return { errorMsg: "INVALID_QUANTITY" };
+    const [requested] = requestedFuel;
+    if (!networkNodeFuel.isAcceptedNetworkNodeFuelType(requested.typeID) ||
+        source.fuelState.typeID !== requested.typeID ||
+        source.fuelState.quantity < requested.quantity) {
+      return { errorMsg: "INSUFFICIENT_SOURCE_ITEMS" };
+    }
+    const unitVolume = Math.max(0, itemStore.getInventoryItemUnitVolume({ typeID: requested.typeID }));
+    const depositVolume = unitVolume * requested.quantity;
+    const storedRows = listStoredRows(options.characterID, options.storageUnitID);
+    const existing = aggregateStoredRows(storedRows).find(entry => entry.typeID === requested.typeID);
+    if ((existing?.quantity || 0) + requested.quantity > UINT32_MAX) {
+      return { errorMsg: "STORAGE_TYPE_QUANTITY_EXCEEDED", params: { typeID: requested.typeID } };
+    }
+    const usedVolume = getUsedVolume(storedRows);
+    if (usedVolume + depositVolume > unit.capacity + CAPACITY_EPSILON) {
+      return { errorMsg: "STORAGE_CAPACITY_EXCEEDED", params: {
+        capacity: unit.capacity,
+        freeVolume: Math.max(0, unit.capacity - usedVolume),
+      } };
+    }
+    return {
+      unit: unit as StorageUnitContext,
+      sourceLocationID,
+      sourceFlagID,
+      sourceAssemblyKind: "network_node_fuel",
+      stacks: [{ ...requested, itemID: 0, unitVolume }],
+      depositVolume,
+      usedVolume,
+    };
+  }
+
+  const stacks = normalizeDepositStacks(options.stacks);
+  if (!stacks || stacks.length === 0) {
+    return { errorMsg: "INVALID_QUANTITY" };
+  }
 
   let depositVolume = 0;
   const validatedStacks: any[] = [];
@@ -657,6 +707,31 @@ function validateWithdraw(options): ValidationResult<StorageWithdrawContext> {
     (total, move) => total + (move.unitVolume * move.quantity),
     0,
   );
+  if (destination?.kind === "network_node_fuel") {
+    if (stacks.length !== 1 || !networkNodeFuel.isAcceptedNetworkNodeFuelType(stacks[0].typeID)) {
+      return { errorMsg: "UNSUPPORTED_FUEL_TYPE" };
+    }
+    if (destination.fuelState.quantity > 0 && destination.fuelState.typeID !== stacks[0].typeID) {
+      return { errorMsg: "MIXED_FUEL_TYPES" };
+    }
+    if (destination.usedVolume + withdrawalVolume > destination.capacity + CAPACITY_EPSILON) {
+      return { errorMsg: "FUEL_CAPACITY_EXCEEDED", params: {
+        capacity: destination.capacity,
+        freeVolume: Math.max(0, destination.capacity - destination.usedVolume),
+      } };
+    }
+    return {
+      unit: unit as StorageUnitContext,
+      destinationUnit,
+      destinationAssemblyID: destinationLocationID,
+      destinationAssemblyKind: "network_node_fuel",
+      destinationLocationID,
+      destinationFlagID,
+      destinationStorageUnitID: 0,
+      stacks,
+      moves,
+    };
+  }
   if (destination?.kind !== "ship") {
     const destinationRows = itemStore.listContainerItems(
       destination.inventoryOwnerID,
@@ -817,10 +892,11 @@ function prepareStorageDeposit(options) {
       sourceLocationID: validation.sourceLocationID,
       sourceFlagID: validation.sourceFlagID,
       ...(options.deployment ? { deployment: options.deployment } : {}),
-      stacks: validation.stacks.map(({ itemID, quantity }: Record<string, any>) => ({
-        itemID,
-        quantity,
-      })),
+      stacks: validation.stacks.map(({ itemID, typeID, quantity }: Record<string, any>) => (
+        validation.sourceAssemblyKind === "network_node_fuel"
+          ? { typeID, quantity }
+          : { itemID, quantity }
+      )),
     },
     options.walletAddress,
   );
@@ -885,8 +961,34 @@ function commitDeposit(transaction, access, sourceAccess?) {
       params: validation.params,
     };
   }
+  const deposit = validation as StorageDepositContext;
+  if (deposit.sourceAssemblyKind === "network_node_fuel") {
+    const stack = deposit.stacks[0];
+    const withdrawn = networkNodeFuel.withdrawNetworkNodeFuelToInventory({
+      characterID: transaction.characterID,
+      networkNodeID: deposit.sourceLocationID,
+      fuelTypeID: stack.typeID,
+      quantity: stack.quantity,
+      destinationLocationID: transaction.storageUnitID,
+      destinationFlagID: SMART_STORAGE_FLAG,
+      publishNotice: true,
+    });
+    if (!withdrawn.success) return withdrawn;
+    const itemID = toInt(withdrawn.data.grantedItems?.find(item =>
+      toInt(item.typeID, 0) === stack.typeID)?.itemID, 0);
+    return { success: true as const, data: {
+      action: transaction.action,
+      changes: withdrawn.data.changes,
+      characterID: transaction.characterID,
+      noticeItems: [{ itemID, typeID: stack.typeID, quantity: stack.quantity,
+        unitVolume: stack.unitVolume }],
+      sourceAssemblyID: deposit.sourceLocationID,
+      sourceAssemblyKind: "network_node_fuel",
+      storageUnitID: transaction.storageUnitID,
+    } };
+  }
   const moved = itemStore.moveItemsToLocations(
-    validation.stacks.map((stack) => ({
+    deposit.stacks.map((stack) => ({
       itemID: stack.itemID,
       destinationLocationID: transaction.storageUnitID,
       destinationFlagID: SMART_STORAGE_FLAG,
@@ -899,7 +1001,7 @@ function commitDeposit(transaction, access, sourceAccess?) {
       errorMsg: moved && moved.errorMsg ? moved.errorMsg : "STORAGE_MOVE_FAILED",
     };
   }
-  const noticeItems = aggregateNoticeItems(validation.stacks.map((stack, index) => ({
+  const noticeItems = aggregateNoticeItems(deposit.stacks.map((stack, index) => ({
     itemID: toInt(moved.data.moves[index] && moved.data.moves[index].movedItemID, 0),
     typeID: stack.typeID,
     quantity: stack.quantity,
@@ -930,6 +1032,28 @@ function commitWithdraw(transaction, access, destinationAccess?, genericDestinat
       errorMsg: validation.errorMsg,
       params: validation.params,
     };
+  }
+  if (validation.destinationAssemblyKind === "network_node_fuel") {
+    const deposited = networkNodeFuel.depositNetworkNodeFuelFromInventory({
+      characterID: transaction.characterID,
+      networkNodeID: validation.destinationAssemblyID,
+      sourceLocationID: transaction.storageUnitID,
+      sourceFlagID: SMART_STORAGE_FLAG,
+      items: validation.moves.map(move => ({ itemID: move.itemID, quantity: move.quantity })),
+      publishNotice: true,
+    });
+    if (!deposited.success) return deposited;
+    return { success: true as const, data: {
+      action: transaction.action,
+      changes: deposited.data.changes,
+      characterID: transaction.characterID,
+      noticeItems: aggregateNoticeItems(validation.moves),
+      destinationNoticeItems: [],
+      destinationStorageUnitID: 0,
+      destinationAssemblyID: validation.destinationAssemblyID,
+      destinationAssemblyKind: "network_node_fuel",
+      storageUnitID: transaction.storageUnitID,
+    } };
   }
   const moved = itemStore.moveItemsToLocations(
     validation.moves.map((move) => ({

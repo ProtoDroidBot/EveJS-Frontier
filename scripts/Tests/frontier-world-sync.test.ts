@@ -26,6 +26,8 @@ const ADMIN_PRIVATE_KEY =
   "suiprivkey1qq4z52329g4z52329g4z52329g4z52329g4z52329g4z52329g4z59sdsxd";
 const NPC_PACKAGE_ID = `0x${"4".repeat(64)}`;
 const NPC_TYPE_ORIGIN = `0x${"5".repeat(64)}`;
+const ACCESS_PACKAGE_ID = `0x${"6".repeat(64)}`;
+const ACCESS_TYPE_ORIGIN = `0x${"7".repeat(64)}`;
 const ENERGY_MANIFEST = {
   schemaVersion: 1,
   clientBuild: 3502403,
@@ -41,6 +43,8 @@ function npcManifest(overrides = {}) {
     adminAclId: ADMIN_ACL_ID,
     packageId: NPC_PACKAGE_ID,
     typeOrigin: NPC_TYPE_ORIGIN,
+    accessPackageId: ACCESS_PACKAGE_ID,
+    accessTypeOrigin: ACCESS_TYPE_ORIGIN,
     ...overrides,
   };
 }
@@ -473,6 +477,7 @@ test("NPC deployment sync rejects malformed schemas and noncanonical or zero add
     const f = npcSyncFixture(t);
     for (const invalid of [null, [], npcManifest({ schemaVersion: "1" }), npcManifest({ schemaVersion: 2 }),
       npcManifest({ packageId: "0x4" }), npcManifest({ typeOrigin: `0x${"0".repeat(64)}` }),
+      npcManifest({ accessPackageId: "0x6" }), npcManifest({ accessTypeOrigin: `0x${"0".repeat(64)}` }),
       npcManifest({ adminAclId: undefined }), npcManifest({ typeOrigin: 123 })]) {
       f.write(invalid);
       const result = f.run();
@@ -486,6 +491,21 @@ test("NPC deployment sync rejects malformed schemas and noncanonical or zero add
     assert.notEqual(malformed.status, 0);
     assert.match(malformed.stderr, /NPC deployment metadata is malformed JSON/);
     assert.doesNotMatch(malformed.stdout + malformed.stderr, /private-not-echoed/);
+  });
+
+test("NPC deployment sync rejects incomplete assembly-access metadata",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = npcSyncFixture(t);
+    const { accessTypeOrigin: _origin, ...withoutOrigin } = npcManifest();
+    f.write(withoutOrigin);
+    const missingOrigin = f.run();
+    assert.notEqual(missingOrigin.status, 0);
+    assert.match(missingOrigin.stderr, /configured together/);
+    const { accessPackageId: _package, ...withoutPackage } = npcManifest();
+    f.write(withoutPackage);
+    const missingPackage = f.run();
+    assert.notEqual(missingPackage.status, 0);
+    assert.match(missingPackage.stderr, /configured together/);
   });
 
 test("Absent NPC source fails closed without deleting a previously synchronized destination",

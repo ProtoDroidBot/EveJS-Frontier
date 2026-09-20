@@ -225,6 +225,16 @@ define(["raffles", "rafflesRuntime"], {
 define(["sharedSettings"], {
   tier: TIERS.RUNTIME, domain: "service:settings", confidence: CONFIDENCE.SCANNER,
 });
+define([
+  "assemblyAccessPolicies",
+  "remoteSystemScans",
+  "smartAssemblyRequests",
+  "stargateRuntimeState",
+  "systemSignatureEvents",
+], {
+  tier: TIERS.RUNTIME, domain: "service:frontier", confidence: CONFIDENCE.SCANNER,
+  note: "Durable Frontier assembly access, infrastructure request, remote scanning, lifecycle, and signal state.",
+});
 define(["shipCosmetics", "shipDirt", "shipKillCounters", "shipLogoFittings"], {
   tier: TIERS.RUNTIME, domain: "service:ship", confidence: CONFIDENCE.SCANNER,
 });
@@ -256,6 +266,14 @@ define(["structures"], {
 define(["savedFittings"], {
   tier: TIERS.RUNTIME, domain: "secondary:fitting", confidence: CONFIDENCE.SCANNER,
   note: "Owned by _secondary/fitting/fittingStore.js (writes SAVED_FITTINGS_TABLE). Also touched cross-cuttingly by character deletion and player transfer.",
+});
+define(["creationPresets"], {
+  tier: TIERS.RUNTIME, domain: "service:frontier", confidence: CONFIDENCE.SCANNER,
+  note: "Owned by services/frontier/creationPresetStore.js. Character-owned records are also handled by character deletion and player transfer.",
+});
+define(["smartAssemblyConstructionTemplates", "smartAssemblyDeploymentPlans"], {
+  tier: TIERS.RUNTIME, domain: "service:frontier", confidence: CONFIDENCE.SCANNER,
+  note: "Owned by services/frontier/smartAssemblyConstructionTemplateStore.js. Player-owned records participate in character deletion and transfer; NPC/faction principals remain server-owned.",
 });
 
 // ── Static · read-only SDE / reference data ──────────────────────────

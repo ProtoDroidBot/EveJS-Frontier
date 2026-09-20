@@ -23,7 +23,31 @@
     "sameCorporationDisposition": "friendly",
     "unlistedNpcDisposition": "neutral",
     "unidentifiedDisposition": "suspicious",
-    "retaliateAgainstAggressors": true
+    "retaliateAgainstAggressors": true,
+    "hardwarePolicy": {
+      "allowPlayerOwned": true,
+      "allowFactionOwned": true,
+      "allowCrossFactionDonation": false,
+      "allowedRoles": [
+        "weapon",
+        "ammunition",
+        "fuel",
+        "remote_repair",
+        "self_repair",
+        "hostile_utility",
+        "mining",
+        "salvage",
+        "tractor",
+        "scanner",
+        "cloak",
+        "propulsion",
+        "jump_drive",
+        "passive"
+      ],
+      "allowedTypeIDs": [],
+      "deniedTypeIDs": [],
+      "equipmentLossPolicy": "return"
+    }
   },
   "factions": [
     {

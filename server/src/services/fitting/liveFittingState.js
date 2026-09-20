@@ -2049,7 +2049,7 @@ function calculateShipDerivedAttributes(charID, shipItem, options = {}) {
         resourceState,
     };
 }
-function validateFitForShip(charID, shipItem, item, targetFlagID, fittedItems = null) {
+function validateFitForShip(charID, shipItem, item, targetFlagID, fittedItems = null, options = {}) {
     const numericCharID = toInt(charID, 0);
     const numericTargetFlagID = toInt(targetFlagID, 0);
     if (numericCharID <= 0 || !shipItem || !item || numericTargetFlagID <= 0) {
@@ -2107,22 +2107,24 @@ function validateFitForShip(charID, shipItem, item, targetFlagID, fittedItems = 
     if (conflictingItem) {
         return { success: false, errorMsg: "SLOT_OCCUPIED" };
     }
-    const skillMap = getCachedCharacterSkillMap(numericCharID);
-    for (const requirement of getRequiredSkillRequirements(item.typeID)) {
-        const skillRecord = skillMap.get(requirement.skillTypeID) || null;
-        const trainedLevel = Math.max(0, toInt(skillRecord && (skillRecord.effectiveSkillLevel ??
-            skillRecord.trainedSkillLevel ??
-            skillRecord.skillLevel), 0));
-        if (trainedLevel < requirement.level) {
-            return {
-                success: false,
-                errorMsg: "SKILL_REQUIRED",
-                data: {
-                    skillTypeID: requirement.skillTypeID,
-                    requiredLevel: requirement.level,
-                    currentLevel: trainedLevel,
-                },
-            };
+    if (options.skipSkillRequirements !== true) {
+        const skillMap = getCachedCharacterSkillMap(numericCharID);
+        for (const requirement of getRequiredSkillRequirements(item.typeID)) {
+            const skillRecord = skillMap.get(requirement.skillTypeID) || null;
+            const trainedLevel = Math.max(0, toInt(skillRecord && (skillRecord.effectiveSkillLevel ??
+                skillRecord.trainedSkillLevel ??
+                skillRecord.skillLevel), 0));
+            if (trainedLevel < requirement.level) {
+                return {
+                    success: false,
+                    errorMsg: "SKILL_REQUIRED",
+                    data: {
+                        skillTypeID: requirement.skillTypeID,
+                        requiredLevel: requirement.level,
+                        currentLevel: trainedLevel,
+                    },
+                };
+            }
         }
     }
     const shipRestriction = validateShipTypeOrGroupRestriction(item.typeID, shipItem);

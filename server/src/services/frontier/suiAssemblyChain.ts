@@ -23,6 +23,9 @@ export type SuiAssemblyCapRef = {
 };
 export type SuiAssemblyChainObject = SuiAssemblyCapRef & {
   kind: SuiAssemblyKind;
+  /** Exact immutable Sui object reference observed for this state. */
+  version: string;
+  digest: string;
   fields: Record<string, any>;
   online: boolean;
   networkNodeId: string | null;
@@ -193,8 +196,11 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
     const fields = response.data.content.fields as Record<string, any>;
     const ownerCapId = objectId(fields.owner_cap_id);
     if (!ownerCapId) throw new Error(`Assembly ${id} is missing its OwnerCap`);
+    const version = String(response.data.version ?? "");
+    const digest = String(response.data.digest ?? "");
     return {
       id: response.data.objectId, kind, fields, ownerCapId,
+      version, digest,
       online: statusOnline(fields.status),
       networkNodeId: objectId(suiAssemblyOption(fields.energy_source_id)),
       locationHash: readHash(fields.location),

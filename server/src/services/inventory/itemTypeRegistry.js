@@ -19,6 +19,17 @@ const FALLBACK_ITEMS = [
     },
 ];
 let cachedRegistry = null;
+function _setEntriesForTests(entries = null) {
+    if (entries == null) {
+        cachedRegistry = null;
+        return;
+    }
+    const registry = createRegistry();
+    for (const entry of Array.isArray(entries) ? entries : []) {
+        addEntry(registry, entry);
+    }
+    cachedRegistry = registry;
+}
 function normalizeItemName(value) {
     return String(value || "")
         .toLowerCase()
@@ -304,6 +315,7 @@ function resolveItemByName(query) {
 module.exports = {
     resolveItemByName,
     resolveItemByTypeID,
+    _setEntriesForTests,
     listShipTypeIDs,
 };
 //# sourceMappingURL=itemTypeRegistry.js.map

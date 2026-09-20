@@ -17,6 +17,7 @@ const config = () => ({
   schemaVersion: 1, chainId: world.chainId, worldPackageId: world.packageId,
   objectRegistryId: world.objectRegistryId, adminAclId: world.adminAclId,
   packageId: address(8), typeOrigin: address(7),
+  accessPackageId: address(10), accessTypeOrigin: address(9),
 });
 
 function fixture(t) {
@@ -36,6 +37,8 @@ test("fresh NPC deployments default to the original world while upgrades separat
   const initial = readSuiNpcWorldConfig(world, f.env);
   assert.equal(initial.npcPackageId, world.packageId);
   assert.equal(initial.npcTypeOrigin, world.packageId);
+  assert.equal(initial.accessPackageId, world.packageId);
+  assert.equal(initial.accessTypeOrigin, world.packageId);
   const firstUpgrade = readSuiNpcWorldConfig(world, { ...f.env, EVEJS_SUI_NPC_PACKAGE_ID: "0x7" });
   assert.equal(firstUpgrade.npcPackageId, address(7));
   assert.equal(firstUpgrade.npcTypeOrigin, address(7));
@@ -44,6 +47,15 @@ test("fresh NPC deployments default to the original world while upgrades separat
   });
   assert.equal(laterUpgrade.npcPackageId, address(8));
   assert.equal(laterUpgrade.npcTypeOrigin, address(7));
+  const accessUpgrade = readSuiNpcWorldConfig(world, {
+    ...f.env,
+    EVEJS_SUI_NPC_PACKAGE_ID: "0x8",
+    EVEJS_SUI_NPC_TYPE_ORIGIN: "0x7",
+    EVEJS_SUI_ASSEMBLY_ACCESS_PACKAGE_ID: "0xa",
+    EVEJS_SUI_ASSEMBLY_ACCESS_TYPE_ORIGIN: "0x9",
+  });
+  assert.equal(accessUpgrade.accessPackageId, address(10));
+  assert.equal(accessUpgrade.accessTypeOrigin, address(9));
   assert.notEqual(laterUpgrade.fingerprint, firstUpgrade.fingerprint);
   assert.equal(world.packageId, address(1));
 });
@@ -55,8 +67,12 @@ test("public NPC config normalizes addresses without mutating base world or pers
   const result = readSuiNpcWorldConfig(world, f.env);
   assert.equal(result.npcPackageId, address(8));
   assert.equal(result.npcTypeOrigin, address(7));
+  assert.equal(result.accessPackageId, address(10));
+  assert.equal(result.accessTypeOrigin, address(9));
   assert.deepEqual(world, captured);
-  assert.deepEqual(Object.keys(result).sort(), ["fingerprint", "npcPackageId", "npcTypeOrigin"]);
+  assert.deepEqual(Object.keys(result).sort(), [
+    "accessPackageId", "accessTypeOrigin", "fingerprint", "npcPackageId", "npcTypeOrigin",
+  ]);
   f.write(config());
   assert.equal(readSuiNpcWorldConfig(world, f.env).fingerprint, result.fingerprint);
 });
@@ -64,9 +80,17 @@ test("public NPC config normalizes addresses without mutating base world or pers
 test("per-field NPC environment overrides cannot mask an invalid deployment file", t => {
   const f = fixture(t);
   f.write(config());
-  const env = { ...f.env, EVEJS_SUI_NPC_PACKAGE_ID: "0x9", EVEJS_SUI_NPC_TYPE_ORIGIN: "0x6" };
+  const env = {
+    ...f.env,
+    EVEJS_SUI_NPC_PACKAGE_ID: "0x9",
+    EVEJS_SUI_NPC_TYPE_ORIGIN: "0x6",
+    EVEJS_SUI_ASSEMBLY_ACCESS_PACKAGE_ID: "0xc",
+    EVEJS_SUI_ASSEMBLY_ACCESS_TYPE_ORIGIN: "0xb",
+  };
   assert.equal(readSuiNpcWorldConfig(world, env).npcPackageId, address(9));
   assert.equal(readSuiNpcWorldConfig(world, env).npcTypeOrigin, address(6));
+  assert.equal(readSuiNpcWorldConfig(world, env).accessPackageId, address(12));
+  assert.equal(readSuiNpcWorldConfig(world, env).accessTypeOrigin, address(11));
   assert.equal(readSuiNpcWorldConfig(world, { ...f.env, EVEJS_SUI_NPC_PACKAGE_ID: "0x9" }).npcTypeOrigin, address(7));
   for (const [key, value] of Object.entries({ packageId: "invalid", typeOrigin: "0x0" })) {
     f.write({ ...config(), [key]: value });
@@ -93,11 +117,26 @@ test("malformed NPC config and invalid address overrides reject rather than sele
   fs.writeFileSync(f.file, "{");
   assert.throws(() => readSuiNpcWorldConfig(world, f.env), /could not be read as JSON/);
   f.write(config());
-  for (const key of ["EVEJS_SUI_NPC_PACKAGE_ID", "EVEJS_SUI_NPC_TYPE_ORIGIN"]) {
+  for (const key of [
+    "EVEJS_SUI_NPC_PACKAGE_ID",
+    "EVEJS_SUI_NPC_TYPE_ORIGIN",
+    "EVEJS_SUI_ASSEMBLY_ACCESS_PACKAGE_ID",
+    "EVEJS_SUI_ASSEMBLY_ACCESS_TYPE_ORIGIN",
+  ]) {
     for (const value of ["not-an-address", "0x0", `0x${"a".repeat(65)}`]) {
       assert.throws(() => readSuiNpcWorldConfig(world, { ...f.env, [key]: value }), /Sui address/);
     }
   }
+});
+
+test("assembly access deployment fields must be configured as a package/origin pair", t => {
+  const f = fixture(t);
+  const { accessTypeOrigin: _origin, ...withoutOrigin } = config();
+  f.write(withoutOrigin);
+  assert.throws(() => readSuiNpcWorldConfig(world, f.env), /configured together/);
+  const { accessPackageId: _package, ...withoutPackage } = config();
+  f.write(withoutPackage);
+  assert.throws(() => readSuiNpcWorldConfig(world, f.env), /configured together/);
 });
 
 test("an explicitly selected NPC config is required and replaces conventional sibling lookup", t => {

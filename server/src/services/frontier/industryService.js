@@ -2,12 +2,12 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const BaseService = require("../baseService");
 const log = require("../../utils/logger");
-const { buildDict, buildFiletimeLong } = require("../_shared/serviceHelpers");
+const { buildDict, buildList, buildFiletimeLong } = require("../_shared/serviceHelpers");
 const itemStore = require("../inventory/itemStore");
 const { findItemById } = itemStore;
 const runtime = require("./industryRuntime");
 const blueprints = require("./industryBlueprints");
-const { publishIndustryItemsChanged, publishIndustryProductionResult, publishIndustryBlueprintChanged } = require("./industryNotifications");
+const { publishIndustryItemsChanged, publishIndustryProductionResult, publishIndustryBlueprintChanged, publishIndustryJobLaneChanged } = require("./industryNotifications");
 const { settleIndustryProduction, trackIndustryProduction } = require("./industryProductionWorker");
 const { throwWrappedObject } = require("../../common/machoErrors");
 const { FRONTIER_INDUSTRY_FACILITY_TYPE_IDS } = blueprints;
@@ -39,10 +39,30 @@ function productionDict(production) {
         ["end_time", running ? blueTime(production.runEndAtMs) : null],
     ]);
 }
-function buildFacilityDetails(item = null) {
+function accessPolicyDict(policy) {
+    return buildDict([
+        ["mode", policy?.mode || "owner"],
+        ["character_ids", buildList(policy?.characterIDs || [])],
+        ["tribe_ids", buildList(policy?.tribeIDs || [])],
+    ]);
+}
+function laneDict(lane) {
+    return buildDict([
+        ["lane_id", lane.laneID],
+        ["enabled", Boolean(lane.enabled)],
+        ["can_use", Boolean(lane.canUse)],
+        ["can_manage", Boolean(lane.canManage)],
+        ["access", accessPolicyDict(lane.accessPolicy)],
+        ["production", productionDict(lane.production)],
+    ]);
+}
+function buildFacilityDetails(item = null, session = null) {
     const items = item ? runtime.getFacilityItems(item) : { inputs: {}, outputs: {} };
+    const lanes = item ? runtime.getJobLanes(item, session) : [];
     return buildDict([
         ["production", productionDict(item ? runtime.getProduction(item) : null)],
+        ["job_lane_count", item ? runtime.getFacilityLaneCount(item) : 0],
+        ["job_lanes", buildList(lanes.map(laneDict))],
         [
             "items",
             buildDict([
@@ -89,6 +109,9 @@ const ERROR_REASONS = {
     INSUFFICIENT_INPUTS: "IndustryStartError_MissingInput",
     OUTPUT_CAPACITY_EXCEEDED: "IndustryStartError_OutputCapacity",
     FACILITY_OFFLINE: "IndustryError_FacilityOffline",
+    INVALID_JOB_LANE: "IndustryError_Generic",
+    INVALID_JOB_LANE_ACCESS: "IndustryError_Generic",
+    JOB_LANE_ACCESS_DENIED: "IndustryError_FacilityAccessDenied",
 };
 function requireSuccess(result) {
     if (!result?.success) {
@@ -190,7 +213,7 @@ class IndustryService extends BaseService {
         const latest = findItemById(facilityID) || item;
         log.debug(`[industry] Facility details char=${getSessionCharacterID(session)} ` +
             `facility=${facilityID} type=${typeID} state=${runtime.getProduction(latest)?.state || "IDLE"}`);
-        return buildFacilityDetails(latest);
+        return buildFacilityDetails(latest, session);
     }
     Handle_load_blueprint(args, session) {
         settleOwnedFacility(session, args?.[0]);
@@ -216,12 +239,38 @@ class IndustryService extends BaseService {
     }
     Handle_start_production(args, session) {
         settleOwnedFacility(session, args?.[0]);
-        return finishProduction(session, runtime.startProduction(session, args?.[0], args?.[1], args?.[2], args?.[3]));
+        const options = args?.[4] == null ? undefined : { laneID: args[4] };
+        return finishProduction(session, options
+            ? runtime.startProduction(session, args?.[0], args?.[1], args?.[2], args?.[3], options)
+            : runtime.startProduction(session, args?.[0], args?.[1], args?.[2], args?.[3]));
     }
     Handle_discontinue_production(args, session) {
         // Mark the paid run before settling an elapsed deadline. Settling first
         // could consume another run just as the caller asks production to stop.
-        return finishProduction(session, runtime.discontinueProduction(session, args?.[0]));
+        const options = args?.[1] == null ? undefined : { laneID: args[1] };
+        return finishProduction(session, options
+            ? runtime.discontinueProduction(session, args?.[0], options)
+            : runtime.discontinueProduction(session, args?.[0]));
+    }
+    Handle_get_job_lanes(args, session) {
+        const facilityID = Number(args?.[0]) || 0;
+        const facility = findItemById(facilityID);
+        if (!facility || !blueprints.isIndustryFacilityType(facility.typeID) ||
+            !canReadFacility(facility, session))
+            return null;
+        requireSuccess(settleIndustryProduction(facilityID, session));
+        const latest = findItemById(facilityID) || facility;
+        return buildList(runtime.getJobLanes(latest, session).map(laneDict));
+    }
+    Handle_set_job_lane_access(args, session) {
+        const lane = requireSuccess(runtime.setLaneAccessPolicy(session, args?.[0], args?.[1], args?.[2]));
+        const facility = findItemById(Number(args?.[0]));
+        if (facility)
+            publishIndustryJobLaneChanged(session, facility, {
+                laneID: lane.laneID,
+                type: "access_changed",
+            });
+        return laneDict(lane);
     }
 }
 module.exports = IndustryService;
@@ -231,6 +280,8 @@ module.exports._testing = {
     buildIdleFacilityDetails: buildFacilityDetails,
     buildFacilityDetails,
     productionDict,
+    accessPolicyDict,
+    laneDict,
     canReadFacility,
     getItemSolarSystemID,
 };

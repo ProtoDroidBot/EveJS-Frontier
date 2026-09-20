@@ -20,7 +20,15 @@ function availableStorage(session: any, characterID: number) {
     .flatMap(item => {
       const result = access.resolveTransferInventory(session, item.itemID);
       if (!result.success) return [];
-      const rows = inventory.listContainerItems(characterID, item.itemID, result.data.flagID);
+      const rows = result.data.virtualInventory === "network_node_fuel"
+        ? (result.data.fuelState?.quantity > 0 ? [{
+            itemID: Number(item.itemID),
+            typeID: Number(result.data.fuelState.typeID),
+            quantity: Number(result.data.fuelState.quantity),
+            stacksize: Number(result.data.fuelState.quantity),
+            singleton: 0,
+          }] : [])
+        : inventory.listContainerItems(characterID, item.itemID, result.data.flagID);
       const items = rows.filter(row => !Number(row.singleton)).map(row => ({
         itemID: Number(row.itemID), typeID: Number(row.typeID),
         name: String(inventory.getItemMetadata(row.typeID)?.name || `Type ${row.typeID}`),
@@ -31,7 +39,10 @@ function availableStorage(session: any, characterID: number) {
       assemblyKind: result.data.smartAssemblyKind || result.data.inventoryKind ||
         (Number(item.itemID) === shipID ? "ship" : "cargo"),
       flagID: result.data.flagID, capacity: result.data.capacity,
-      usedVolume: rows.reduce((total, row) => total + quantity(row) * Number(inventory.getInventoryItemUnitVolume(row)), 0), items }];
+      usedVolume: result.data.virtualInventory === "network_node_fuel"
+        ? Number(result.data.usedVolume || 0)
+        : rows.reduce((total, row) => total + quantity(row) * Number(inventory.getInventoryItemUnitVolume(row)), 0),
+      items }];
     }).sort((left, right) => left.storageUnitID - right.storageUnitID);
 }
 

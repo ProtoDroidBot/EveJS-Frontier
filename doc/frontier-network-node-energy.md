@@ -12,8 +12,55 @@ Only confirmed online transitions reserve energy, and confirmed offline transiti
 
 Fuel continues burning at the existing fuel-type rate independently of energy demand. Fuel loss or removal of a valid power source takes dependent assemblies offline.
 
+The Network Node fuel slot is a virtual structure fuel bay (inventory flag 172),
+not a second set of ordinary item rows. Dropping accepted inventory stacks into
+the slot atomically consumes those rows and updates the local/Sui-backed reserve;
+withdrawing fuel atomically materializes a normal stack and deducts the reserve.
+Smart Storage and Industry use these same operations in both directions, with
+the usual ownership, 5 km interaction, single-fuel-type, volume-capacity, and
+pending-chain checks. This avoids duplicated fuel or partial transfers after a
+write failure.
+
+Grid responses expose the independent fuel level and power-usage band described
+in `FRONTIER_SMART_ASSEMBLY_REQUESTS.md`. Every state transition is also written
+to the shared assembly signal journal. Failed reservations publish an explicit
+over-power-limit signal even though the rejected load is never added to the
+confirmed energy total.
+
 The embedded monitor's Network topology tab shows the grid, current use, available energy, and nearby assemblies. The `/evejs/energy` API uses a separate signed-wallet authorization scope and the active in-game character. Connection changes are serialized with chain synchronization, require ownership and the current solar system, and require the assembly offline. Manual disconnection persists and disables automatic reconnection.
 
 The deployed Move contract cannot detach an already anchored assembly without removing its Network Node. Such bindings are preserved; the monitor disables Disconnect and explains the restriction. Previously unanchored assemblies can be connected or disconnected locally before synchronization anchors them.
 
-Relevant checks: `frontierNetworkNodeEnergy.test`, `frontierAssemblyEnergyConfig.test`, `frontierSmartAssemblyEnergyApi.test`, `frontierSuiAssemblyEnergy.test`, and the Sui assembly snapshot tests, plus the monitor's energy client/proxy tests.
+## Temporary remote-scanning interface
+
+Until the dedicated scanning Smart Assembly and Creation module are authored,
+an owned, online Network Node is the authenticated scanner source. Its maximum
+solar-system reach is configured by
+`EVEJS_FRONTIER_NETWORK_NODE_SCAN_RANGE_JUMPS` and measured along stargate
+connections. The dApp may choose any range from zero through that maximum and
+uses the returned reachable-system list instead of trusting a client-authored
+route distance.
+
+The existing signed-wallet API exposes:
+
+- `POST /evejs/energy/:networkNodeID/scanning/config`
+- `POST /evejs/energy/:networkNodeID/scanning/start`
+- `POST /evejs/energy/:networkNodeID/scanning/:scanID/status`
+- `POST /evejs/energy/:networkNodeID/scanning/:scanID/result`
+- `POST /evejs/energy/:networkNodeID/scanning/:scanID/cancel`
+
+Jobs and signature blooms are durable and idempotent. Cold surveys query the
+persistent system index without creating a scene; deep surveys may share a
+controlled system warm-up. Results contain sparse aggregate heat cells, sites,
+and resource fields, never remote Destiny balls, warp points, or targetable
+contacts. Ships and bases are actor-blind: player and NPC sources use the same
+public classes and no owner, character, faction, NPC, or entity identity is
+serialized. The source resolver is deliberately generic so moving the Sui
+contract to the future scanning assembly does not change job or result schemas.
+
+Relevant checks: `frontierNetworkNodeEnergy.test`, `frontierNetworkNodeFuel.test`,
+`frontierSmartStorageUnit.test`, `frontierIndustryInventory.test`,
+`frontierSmartAssemblyRequests.test`, `frontierAssemblyEnergyConfig.test`,
+`frontierSmartAssemblyEnergyApi.test`, `frontierSuiAssemblyEnergy.test`, and the
+Sui assembly snapshot tests, plus `frontierRemoteSystemScanning.test` and the
+monitor's energy client/proxy tests.

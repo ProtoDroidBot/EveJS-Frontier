@@ -80,6 +80,24 @@ const {
   shouldNpcRetaliateAgainstAggressors,
   getAdditionalAutoAggroTargetClasses,
 } = require(path.join(__dirname, "../../config/npcFactionConfig"));
+const {
+  tickDurableNpcJob,
+} = require(path.join(__dirname, "./npcBehaviorTreeRuntime"));
+require(path.join(__dirname, "./npcResourceJobService"))
+  .registerNpcResourceJobHandlers();
+require(path.join(__dirname, "./npcConstructionJobService"))
+  .registerNpcConstructionJobHandlers();
+require(path.join(__dirname, "./npcConstructionTemplateJobService"))
+  .registerNpcConstructionTemplateJobHandler();
+require(path.join(__dirname, "./npcIndustryJobService"))
+  .registerNpcIndustryJobHandler();
+require(path.join(__dirname, "./npcStargateMaintenanceService"))
+  .registerNpcStargateMaintenanceJobHandlers();
+const {
+  requestNpcSupport,
+  registerNpcSupportJobHandlers,
+} = require(path.join(__dirname, "./npcSupportCoordinator"));
+registerNpcSupportJobHandlers();
 
 const CAPSULE_GROUP_ID = 29;
 const NPC_SYNTHETIC_PROPULSION_DURATION_MS = 60_000;
@@ -739,6 +757,68 @@ function maybeRequestDrifterReinforcements(scene, entity, controller, behaviorPr
   if (targetID <= 0) {
     return {
       requested: false,
+    };
+  }
+
+  // Durable Drifters use the faction coordinator. Transient encounter packs
+  // keep the legacy direct-spawn path because they do not own durable pilot
+  // identities or resumable jobs.
+  if (entity.transient !== true && toPositiveInt(entity.npcCharacterID, 0) > 0) {
+    const coordinated = requestNpcSupport({
+      requesterEntityID: toPositiveInt(entity.itemID, 0),
+      threatTargetID: targetID,
+      threatOwnerID: toPositiveInt(targetEntity.ownerID, 0),
+      systemID: toPositiveInt(entity.systemID, 0),
+      position: entity.position,
+      scene,
+      severity: "critical",
+      requiredRoles: ["combat"],
+      supportGroupID: String(
+        controller.spawnGroupID ||
+        entity.npcFactionIdentityKey ||
+        entity.npcFactionKey ||
+        "drifter",
+      ),
+      maximumResponderCount: Math.max(
+        reinforcementDefinitions.length,
+        toPositiveInt(behaviorProfile && behaviorProfile.supportMaximumResponders, 3),
+      ),
+      responseRadiusMeters: Math.max(
+        250_000,
+        toFiniteNumber(behaviorProfile && behaviorProfile.aggressionRangeMeters, 0),
+      ),
+      ttlMs: Math.max(15_000, toFiniteNumber(behaviorProfile && behaviorProfile.supportIncidentTtlMs, 120_000)),
+      cooldownMs,
+      allowReserveSpawn: true,
+      maximumReserveSpawn: reinforcementDefinitions.length,
+      reserveDefinitions: reinforcementDefinitions,
+      reserveSpawnDistanceMeters: Math.max(
+        5_000,
+        toFiniteNumber(behaviorProfile && behaviorProfile.reinforcementSpawnDistanceMeters, 35_000),
+      ),
+      nowMs,
+    });
+    if (!coordinated || coordinated.success !== true) {
+      return {
+        requested: false,
+        errorMsg: coordinated && coordinated.errorMsg || "NPC_SUPPORT_REQUEST_FAILED",
+      };
+    }
+    const coordinatedIncident = coordinated.data && coordinated.data.incident;
+    const responderCount = coordinatedIncident && Array.isArray(coordinatedIncident.responderAssignments)
+      ? coordinatedIncident.responderAssignments.length
+      : 0;
+    if (coordinated.data.created === true) {
+      drifterState.reinforcementRequestCount =
+        toPositiveInt(drifterState.reinforcementRequestCount, 0) + 1;
+      drifterState.lastReinforcementTargetID = targetID;
+      propagateDrifterReinforcementRequestState(scene, controller, entity, nowMs);
+    }
+    return {
+      requested: coordinated.data.created === true || responderCount > 0,
+      assignedCount: responderCount,
+      spawnedCount: toPositiveInt(coordinated.data.spawnedCount, 0),
+      incidentID: coordinatedIncident && coordinatedIncident.incidentID || null,
     };
   }
 
@@ -1676,6 +1756,9 @@ function normalizeBehaviorOverrides(overrides) {
     "fireThroughOccluders",
     "passiveRoaming",
     "passiveWarping",
+    "supportEnabled",
+    "supportCrossSystemEnabled",
+    "supportReserveSpawnEnabled",
   ];
   for (const field of booleanFields) {
     if (overrides[field] !== undefined) {
@@ -1714,6 +1797,12 @@ function normalizeBehaviorOverrides(overrides) {
     "passiveWarpIntervalMs",
     "passiveWarpMinDistanceMeters",
     "passiveWarpMaxDistanceMeters",
+    "supportMaximumResponders",
+    "supportResponseRadiusMeters",
+    "supportIncidentTtlMs",
+    "supportCooldownMs",
+    "supportMaximumReserveSpawn",
+    "supportReserveSpawnDistanceMeters",
   ];
   for (const field of numericFields) {
     if (overrides[field] !== undefined) {
@@ -1756,6 +1845,18 @@ function normalizeBehaviorOverrides(overrides) {
     normalized.proximityAggroTargetClasses = normalizeTargetClassList(
       overrides.proximityAggroTargetClasses,
     );
+  }
+  if (overrides.supportRequiredRoles !== undefined) {
+    normalized.supportRequiredRoles = Array.isArray(overrides.supportRequiredRoles)
+      ? [...new Set(overrides.supportRequiredRoles
+          .map((role) => String(role || "").trim().toLowerCase())
+          .filter((role) => /^[a-z][a-z0-9_-]{0,63}$/u.test(role)))]
+      : [];
+  }
+  for (const field of ["supportSeverity", "supportGroupID", "supportReserveProfileID"]) {
+    if (overrides[field] !== undefined) {
+      normalized[field] = String(overrides[field] || "").trim();
+    }
   }
   if (overrides.syntheticChasePropulsionTier !== undefined) {
     const normalizedTier = String(
@@ -1861,7 +1962,6 @@ function isValidCombatTarget(entity, target, options: Record<string, any> = {}) 
   if (!eligible) {
     return false;
   }
-
   const scene = options.scene;
   if (
     scene &&
@@ -4982,6 +5082,20 @@ function tickController(scene, controller, now) {
         toFiniteNumber(controller.nextThinkAtMs, now + 1_000),
       );
       controller.nextThinkAtMs = Math.max(now + 50, nextThinkAtMs);
+      controller.returningHome = false;
+      return;
+    }
+    const durableJobResult = tickDurableNpcJob(
+      scene,
+      entity,
+      controller,
+      now,
+    );
+    if (durableJobResult && durableJobResult.handled === true) {
+      const durableJobWakeAtMs = toFiniteNumber(durableJobResult.nextWakeAtMs, 0);
+      controller.nextThinkAtMs = durableJobWakeAtMs > now
+        ? durableJobWakeAtMs
+        : now + Math.max(50, toFiniteNumber(behaviorProfile.thinkIntervalMs, 250));
       controller.returningHome = false;
       return;
     }

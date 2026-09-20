@@ -1,8 +1,10 @@
 const path = require("path");
 
 const config = require(path.join(__dirname, "../../config"));
+const database = require(path.join(__dirname, "../../gameStore"));
 const npcService = require(path.join(__dirname, "../../space/npc"));
 const nativeNpcStore = require(path.join(__dirname, "../../space/npc/nativeNpcStore"));
+const itemStore = require(path.join(__dirname, "../inventory/itemStore"));
 const worldData = require(path.join(__dirname, "../../space/worldData"));
 const {
   ONE_AU_IN_METERS,
@@ -451,7 +453,11 @@ function isMiningSnapshotCompatibleWithEntry(snapshot, entry, hooks: Record<stri
     return false;
   }
   if (typeof hooks.isMiningSnapshotCompatibleWithState === "function") {
-    return hooks.isMiningSnapshotCompatibleWithState(snapshot, entry.state) === true;
+    return hooks.isMiningSnapshotCompatibleWithState(
+      snapshot,
+      entry.state,
+      entry.entity || null,
+    ) === true;
   }
   if (snapshot.family === "gas") {
     return entry.state.yieldKind === "gas";
@@ -1510,13 +1516,92 @@ function appendNpcMiningCargo(entity, typeID, quantity) {
   const numericTypeID = toInt(typeID, 0);
   const numericQuantity = Math.max(0, toInt(quantity, 0));
   if (!entity || numericTypeID <= 0 || numericQuantity <= 0) {
-    return;
+    return { success: false, errorMsg: "NPC_RESOURCE_CARGO_INVALID" };
   }
   if (!Array.isArray(entity.nativeCargoItems)) {
     entity.nativeCargoItems = [];
   }
 
-  const typeRecord = resolveItemByTypeID(numericTypeID) || {};
+  const typeRecord = resolveItemByTypeID(numericTypeID) || null;
+  if (!typeRecord) return { success: false, errorMsg: "ITEM_TYPE_NOT_FOUND" };
+
+  // Transient mining fleets intentionally retain their lightweight cargo IDs.
+  // Durable NPCs use the canonical items table so their exact cargo stacks can
+  // be journaled, delivered, and recovered after a crash.
+  if (entity.transient !== true) {
+    const entityID = toInt(entity.itemID, 0);
+    const ownerID = toInt(
+      entity.ownerID ?? entity.pilotCharacterID ?? entity.characterID,
+      0,
+    );
+    if (entityID <= 0 || ownerID <= 0) {
+      return { success: false, errorMsg: "NPC_RESOURCE_CARGO_OWNER_REQUIRED" };
+    }
+    const sameTypeRecords = nativeNpcStore.listNativeCargoForEntity(entityID)
+      .filter((record) =>
+        toInt(record && record.moduleID, 0) <= 0 &&
+        toInt(record && record.typeID, 0) === numericTypeID);
+    const legacyRecords = sameTypeRecords.filter((record) =>
+      !itemStore.findItemById(toInt(record && record.cargoID, 0)));
+    const legacyQuantity = legacyRecords.reduce(
+      (sum, record) => sum + Math.max(0, toInt(record && record.quantity, 0)),
+      0,
+    );
+    const grant = itemStore.grantItemToOwnerLocation(
+      ownerID,
+      entityID,
+      itemStore.ITEM_FLAGS.CARGO_HOLD,
+      typeRecord,
+      numericQuantity + legacyQuantity,
+      { singleton: 0 },
+    );
+    if (!grant.success || !grant.data) return grant;
+    for (const legacyRecord of legacyRecords) {
+      nativeNpcStore.removeNativeCargo(legacyRecord.cargoID);
+    }
+    const changedItems = (Array.isArray(grant.data.changes) ? grant.data.changes : [])
+      .map((change) => change && change.item)
+      .filter((item) =>
+        item &&
+        toInt(item.locationID, 0) === entityID &&
+        toInt(item.flagID, 0) === itemStore.ITEM_FLAGS.CARGO_HOLD &&
+        toInt(item.typeID, 0) === numericTypeID);
+    for (const item of changedItems) {
+      const current = nativeNpcStore.getNativeCargo(item.itemID) || {};
+      const stored = nativeNpcStore.upsertNativeCargo({
+        ...current,
+        cargoID: toInt(item.itemID, 0),
+        entityID,
+        ownerID: toInt(item.ownerID, ownerID),
+        moduleID: 0,
+        typeID: numericTypeID,
+        groupID: toInt(item.groupID ?? typeRecord.groupID, 0),
+        categoryID: toInt(item.categoryID ?? typeRecord.categoryID, 0),
+        itemName: String(item.itemName || typeRecord.name || `type ${numericTypeID}`),
+        quantity: Math.max(0, toInt(item.stacksize ?? item.quantity, 0)),
+        singleton: false,
+        semanticRole: current.semanticRole || "resource",
+        volume: Math.max(0, toFiniteNumber(item.volume ?? typeRecord.volume, 0)),
+        transient: false,
+      }, { durable: true });
+      if (!stored.success) return stored;
+    }
+    const flush = database.flushTablesSync([
+      itemStore.ITEMS_TABLE,
+      nativeNpcStore.TABLE.CARGO,
+    ]);
+    if (!flush.success) return { success: false, errorMsg: "NPC_RESOURCE_CARGO_FLUSH_FAILED" };
+    entity.nativeCargoItems = nativeNpcStore.buildNativeCargoItems(entityID);
+    return {
+      success: true,
+      data: {
+        itemIDs: changedItems.map((item) => toInt(item.itemID, 0)),
+        quantity: numericQuantity,
+        migratedLegacyQuantity: legacyQuantity,
+      },
+    };
+  }
+
   const existingEntry = entity.nativeCargoItems.find((entry) => (
     toInt(entry && entry.typeID, 0) === numericTypeID &&
     toInt(entry && entry.moduleID, 0) <= 0
@@ -1525,7 +1610,7 @@ function appendNpcMiningCargo(entity, typeID, quantity) {
     existingEntry.quantity = toInt(existingEntry.quantity, 0) + numericQuantity;
     existingEntry.stacksize = existingEntry.quantity;
     ensureNpcCargoStoreEntry(entity, existingEntry);
-    return;
+    return { success: true, data: { itemIDs: [existingEntry.itemID], quantity: numericQuantity } };
   }
 
   const cargoIDResult = nativeNpcStore.allocateCargoID({
@@ -1551,6 +1636,7 @@ function appendNpcMiningCargo(entity, typeID, quantity) {
   };
   entity.nativeCargoItems.push(cargoItem);
   ensureNpcCargoStoreEntry(entity, cargoItem);
+  return { success: true, data: { itemIDs: [cargoItem.itemID], quantity: numericQuantity } };
 }
 
 function clearNpcMiningCargo(entity) {
@@ -1570,9 +1656,15 @@ function clearNpcMiningCargo(entity) {
       Math.max(0, toFiniteNumber(cargoItem && cargoItem.volume, 0));
     if (toInt(cargoItem && cargoItem.itemID, 0) > 0) {
       nativeNpcStore.removeNativeCargo(cargoItem.itemID);
+      if (entity.transient !== true && itemStore.findItemById(cargoItem.itemID)) {
+        itemStore.removeInventoryItem(cargoItem.itemID);
+      }
     }
   }
   entity.nativeCargoItems = retainedCargoItems;
+  if (entity.transient !== true) {
+    database.flushTablesSync([itemStore.ITEMS_TABLE, nativeNpcStore.TABLE.CARGO]);
+  }
   return removedVolumeM3;
 }
 
@@ -1745,6 +1837,19 @@ function collectTrackedMiningNpcEntityIDs() {
   return trackedEntityIDs;
 }
 
+function hasActiveDurableResourceJob(controller) {
+  const npcCharacterID = normalizePositiveInteger(controller && controller.npcCharacterID, 0);
+  const incarnation = normalizePositiveInteger(controller && controller.npcIncarnation, 0);
+  if (!npcCharacterID || !incarnation) return false;
+  try {
+    const job = require(path.join(__dirname, "../../space/npc/npcRuntimePersistence"))
+      .getActiveNpcJob(npcCharacterID, incarnation);
+    return Boolean(job && String(job.jobType || "").startsWith("resource."));
+  } catch (_) {
+    return false;
+  }
+}
+
 function autoEnrollConfiguredMiningNpcs(scene) {
   if (
     !scene ||
@@ -1758,6 +1863,7 @@ function autoEnrollConfiguredMiningNpcs(scene) {
       controller &&
       normalizePositiveInteger(controller.entityID, 0) > 0 &&
       !trackedEntityIDs.has(normalizePositiveInteger(controller.entityID, 0)) &&
+      !hasActiveDurableResourceJob(controller) &&
       isConfiguredNpcActivityAutoEnrollEnabled(controller)
     ));
   const miners = candidates.filter((controller) => (
@@ -1862,9 +1968,15 @@ function pruneMiningFleet(fleetRecord) {
     return null;
   }
   fleetRecord.minerEntityIDs = (Array.isArray(fleetRecord.minerEntityIDs) ? fleetRecord.minerEntityIDs : [])
-    .filter((entityID) => npcService.getControllerByEntityID(entityID));
+    .filter((entityID) => {
+      const controller = npcService.getControllerByEntityID(entityID);
+      return controller && !hasActiveDurableResourceJob(controller);
+    });
   fleetRecord.haulerEntityIDs = (Array.isArray(fleetRecord.haulerEntityIDs) ? fleetRecord.haulerEntityIDs : [])
-    .filter((entityID) => npcService.getControllerByEntityID(entityID));
+    .filter((entityID) => {
+      const controller = npcService.getControllerByEntityID(entityID);
+      return controller && !hasActiveDurableResourceJob(controller);
+    });
   fleetRecord.responseEntityIDs = (Array.isArray(fleetRecord.responseEntityIDs) ? fleetRecord.responseEntityIDs : [])
     .filter((entityID) => npcService.getControllerByEntityID(entityID));
   if (fleetRecord.haulerEntityIDs.length <= 0) {
@@ -3265,6 +3377,9 @@ module.exports = {
   appendNpcMiningCargo,
   clearNpcMiningCargo,
   getNpcOreCargoSummary,
+  getNpcCargoCapacityM3,
+  syncMiningApproachOrder,
+  syncMiningTargetLock,
   getMiningFleetsForSystem,
   pruneMiningFleet,
   handleSceneCreated,
@@ -3279,6 +3394,7 @@ module.exports = {
   _testing: {
     createMiningFleetRecord,
     autoEnrollConfiguredMiningNpcs,
+    hasActiveDurableResourceJob,
     buildConfiguredActivityGroupKey,
     getSecurityBandForSystemID,
     resolveMiningFleetQuery,

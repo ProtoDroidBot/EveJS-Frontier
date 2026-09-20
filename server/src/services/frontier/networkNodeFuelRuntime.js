@@ -40,6 +40,10 @@ const { resolveItemByTypeID } = require(path.join(__dirname, "../inventory/itemT
 const { ASSEMBLY_STATUS_OFFLINE, ASSEMBLY_STATUS_ONLINE, buildAssemblyTransitionTransactionData, isAssemblyActivationPending, isValidAssemblyTransitionSignature, readConstructionState, } = require(path.join(__dirname, "./deploymentRuntime"));
 const { readStaticRows, TABLE } = require(path.join(__dirname, "../_shared/referenceData"));
 const NETWORK_NODE_TYPE_ID = 88092;
+// Structure fuel bays use the canonical EVE inventory flag. The Network Node
+// does not persist ordinary rows under this flag: it is a virtual inventory
+// backed by the node's local/Sui fuel state.
+const NETWORK_NODE_FUEL_BAY_FLAG = 172;
 const FUEL_INFO_KEY = "evejsFrontierNetworkNodeFuel";
 const SUI_FUEL_INFO_KEY = "evejsSuiNetworkNodeFuel";
 const FUEL_TRANSACTION_TTL_MS = 2 * 60 * 1000;
@@ -250,6 +254,72 @@ function writeNetworkNodeFuelState(itemID, state) {
         };
     });
 }
+function applyFuelDeltaToNodeItem(currentItem, fuelTypeID, quantityDelta, nowMs = Date.now()) {
+    if (!currentItem || toInt(currentItem.typeID, 0) !== NETWORK_NODE_TYPE_ID) {
+        throw Object.assign(new Error("ASSEMBLY_NOT_FOUND"), { code: "ASSEMBLY_NOT_FOUND" });
+    }
+    const numericTypeID = toInt(fuelTypeID, 0);
+    if (!isAcceptedNetworkNodeFuelType(numericTypeID)) {
+        throw Object.assign(new Error("UNSUPPORTED_FUEL_TYPE"), { code: "UNSUPPORTED_FUEL_TYPE" });
+    }
+    const info = parseCustomInfo(currentItem.customInfo);
+    const observation = info[SUI_FUEL_INFO_KEY];
+    if (suiFuelTransferConflicts(observation)) {
+        throw Object.assign(new Error("ASSEMBLY_STATE_PENDING"), { code: "ASSEMBLY_STATE_PENDING" });
+    }
+    // Recalculate against the item snapshot being committed. Validation may
+    // have happened earlier (or in a prepare/execute round trip), so using the
+    // serialized reserve directly here would discard fuel burned and partial
+    // intervals accrued before the atomic inventory mutation.
+    const current = calculateNetworkNodeFuelBurn(currentItem, nowMs).state;
+    if (current.quantity > 0 && current.typeID !== numericTypeID) {
+        throw Object.assign(new Error("MIXED_FUEL_TYPES"), { code: "MIXED_FUEL_TYPES" });
+    }
+    const nextQuantity = current.quantity + toInt(quantityDelta, 0);
+    if (!Number.isSafeInteger(nextQuantity) || nextQuantity < 0) {
+        throw Object.assign(new Error("INSUFFICIENT_STORED_FUEL"), {
+            code: "INSUFFICIENT_STORED_FUEL",
+        });
+    }
+    const unitVolume = resolveFuelTypeVolume(numericTypeID);
+    if (!(unitVolume > 0) || nextQuantity * unitVolume >
+        getNetworkNodeFuelAttributes().fuelMaxCapacityVolume + CAPACITY_VOLUME_EPSILON) {
+        throw Object.assign(new Error("FUEL_CAPACITY_EXCEEDED"), { code: "FUEL_CAPACITY_EXCEEDED" });
+    }
+    if (observation) {
+        const quantityDeltaFromChain = nextQuantity - wholeFuelQuantity(observation.quantity);
+        observation.pending = quantityDeltaFromChain ? {
+            id: crypto.randomUUID(),
+            typeID: numericTypeID,
+            quantityDelta: quantityDeltaFromChain,
+        } : undefined;
+        info[SUI_FUEL_INFO_KEY] = observation;
+        info[FUEL_INFO_KEY] = projectedSuiFuel(observation);
+    }
+    else if (nextQuantity > 0 || current.burnRemainderMs > 0) {
+        const oldTypeID = toInt(current.burnTypeID, current.typeID);
+        const oldEfficiency = NETWORK_NODE_FUEL_CONFIG.find(entry => entry.typeID === oldTypeID)?.efficiency;
+        const newEfficiency = NETWORK_NODE_FUEL_CONFIG.find(entry => entry.typeID === numericTypeID)?.efficiency;
+        const burnRemainderMs = Math.max(0, toInt(current.burnRemainderMs, 0));
+        info[FUEL_INFO_KEY] = {
+            ...current,
+            typeID: nextQuantity > 0 ? numericTypeID : 0,
+            quantity: nextQuantity,
+            updatedAtMs: nowMs,
+            burnUpdatedAtMs: current.quantity > 0 ? current.burnUpdatedAtMs : nowMs,
+            // Preserve the fraction of one unit already consumed when an empty bay
+            // changes fuel type. Efficiencies scale the length of a unit interval.
+            burnRemainderMs: oldEfficiency && newEfficiency
+                ? Math.ceil(burnRemainderMs * newEfficiency / oldEfficiency)
+                : burnRemainderMs,
+            burnTypeID: numericTypeID,
+        };
+    }
+    else {
+        delete info[FUEL_INFO_KEY];
+    }
+    return { ...currentItem, customInfo: JSON.stringify(info) };
+}
 /** Pure accounting shared by ticks and status transitions inside a store update. */
 function calculateNetworkNodeFuelBurn(item, nowMs = Date.now()) {
     const state = readNetworkNodeFuelState(item);
@@ -279,14 +349,23 @@ function calculateNetworkNodeFuelBurn(item, nowMs = Date.now()) {
     };
 }
 function publishFuelBurn(item, consumedQuantity) {
-    if (!fuelNoticePublisher || consumedQuantity <= 0)
+    if (consumedQuantity <= 0)
         return;
     publishFuelChanged(item);
 }
+function publishFuelOperationalStatus(item) {
+    try {
+        require("./networkNodeEnergyRuntime").publishNetworkNodeOperationalStatus(toInt(item.itemID), { reason: "fuel_changed" });
+    }
+    catch (error) {
+        require("../../utils/logger").warn(`[NetworkNodeFuel] Status signal failed: ${error.message}`);
+    }
+}
 function publishFuelChanged(item) {
+    const fuel = readNetworkNodeFuelState(item);
+    publishFuelOperationalStatus(item);
     if (!fuelNoticePublisher)
         return;
-    const fuel = readNetworkNodeFuelState(item);
     try {
         fuelNoticePublisher({
             characterID: toInt(item.ownerID), networkNodeID: toInt(item.itemID),
@@ -331,11 +410,12 @@ function settleNetworkNodeFuel(itemID, nowMs = Date.now()) {
         return { ...currentItem, customInfo: JSON.stringify(info) };
     });
     if (result.success) {
+        if (calculated.consumedQuantity > 0) {
+            publishFuelChanged(result.data);
+        }
         if (calculated.state.quantity === 0) {
             require("./deploymentRuntime").notifyAssemblyFuelDepleted(result.data, result.previousData);
         }
-        else
-            publishFuelBurn(result.data, calculated.consumedQuantity);
     }
     return { ...result, consumedQuantity: result.success ? calculated.consumedQuantity : 0 };
 }
@@ -369,7 +449,7 @@ function startNetworkNodeFuelBurn() {
     fuelTimer.unref();
     return fuelTimer;
 }
-function validateFuelNetworkNode(characterID, networkNodeID) {
+function validateFuelNetworkNode(characterID, networkNodeID, options = {}) {
     const ownerID = toInt(characterID, 0);
     const nodeID = toInt(networkNodeID, 0);
     if (ownerID <= 0) {
@@ -388,16 +468,49 @@ function validateFuelNetworkNode(characterID, networkNodeID) {
     if (isAssemblyActivationPending(item)) {
         return { errorMsg: "ASSEMBLY_ACTIVATING" };
     }
-    const settled = settleNetworkNodeFuel(nodeID);
-    if (!settled.success)
-        return { errorMsg: settled.errorMsg };
-    item = settled.data;
+    if (options.settle !== false) {
+        const settled = settleNetworkNodeFuel(nodeID);
+        if (!settled.success)
+            return { errorMsg: settled.errorMsg };
+        item = settled.data;
+    }
     const constructionState = readConstructionState(item);
     if (constructionState.assemblyStatus !== ASSEMBLY_STATUS_OFFLINE &&
         constructionState.assemblyStatus !== ASSEMBLY_STATUS_ONLINE) {
         return { errorMsg: "ASSEMBLY_UNDER_CONSTRUCTION" };
     }
     return { item };
+}
+function validateNetworkNodeFuelInventory(characterID, networkNodeID, options = {}) {
+    // Endpoint discovery is read-only. Actual deposits and withdrawals settle
+    // the reserve immediately before their atomic commit; merely listing a
+    // historical empty node must not cascade unrelated assemblies offline.
+    const result = validateFuelNetworkNode(characterID, networkNodeID, { settle: false });
+    if (result.errorMsg)
+        return result;
+    const access = options.access;
+    if (access) {
+        if (access.authorized !== true)
+            return { errorMsg: "ACCESS_DENIED" };
+        if (toInt(access.solarSystemID, 0) <= 0 ||
+            toInt(result.item.locationID, 0) !== toInt(access.solarSystemID, 0)) {
+            return { errorMsg: "ASSEMBLY_NOT_IN_CURRENT_SYSTEM" };
+        }
+        if (access.inRange !== true)
+            return { errorMsg: "ASSEMBLY_OUT_OF_RANGE" };
+    }
+    const fuelState = calculateNetworkNodeFuelBurn(result.item).state;
+    const unitVolume = fuelState.typeID > 0 ? resolveFuelTypeVolume(fuelState.typeID) : 0;
+    return {
+        item: result.item,
+        state: readConstructionState(result.item),
+        kind: "network_node_fuel",
+        flagID: NETWORK_NODE_FUEL_BAY_FLAG,
+        inventoryOwnerID: toInt(characterID, 0),
+        capacity: getNetworkNodeFuelAttributes().fuelMaxCapacityVolume,
+        usedVolume: fuelState.quantity * unitVolume,
+        fuelState,
+    };
 }
 function normalizeDepositItems(rawItems) {
     const normalized = [];
@@ -421,7 +534,7 @@ function normalizeDepositItems(rawItems) {
  * Validate a deposit request without mutating. Returns the validated context
  * used both at prepare time and again at execute time.
  */
-function validateFuelDeposit({ characterID, networkNodeID, sourceItemID, sourceFlagID, items, }) {
+function validateFuelDeposit({ characterID, networkNodeID, sourceItemID, sourceFlagID, sourceFlagIDs, items, }) {
     const nodeResult = validateFuelNetworkNode(characterID, networkNodeID);
     if (nodeResult.errorMsg) {
         return nodeResult;
@@ -434,6 +547,9 @@ function validateFuelDeposit({ characterID, networkNodeID, sourceItemID, sourceF
     }
     const sourceLocationID = toInt(sourceItemID, 0);
     const sourceFlag = toInt(sourceFlagID, -1);
+    const allowedSourceFlags = Array.isArray(sourceFlagIDs)
+        ? new Set(sourceFlagIDs.map(flag => toInt(flag, -1)).filter(flag => flag >= 0))
+        : null;
     if (sourceLocationID <= 0) {
         return { errorMsg: "INVALID_SOURCE" };
     }
@@ -446,7 +562,9 @@ function validateFuelDeposit({ characterID, networkNodeID, sourceItemID, sourceF
         if (!stack ||
             toInt(stack.ownerID, 0) !== ownerID ||
             toInt(stack.locationID, 0) !== sourceLocationID ||
-            (sourceFlag >= 0 && toInt(stack.flagID, -1) !== sourceFlag)) {
+            (allowedSourceFlags
+                ? !allowedSourceFlags.has(toInt(stack.flagID, -1))
+                : sourceFlag >= 0 && toInt(stack.flagID, -1) !== sourceFlag)) {
             return { errorMsg: "SOURCE_ITEM_NOT_FOUND" };
         }
         const stackTypeID = toInt(stack.typeID, 0);
@@ -463,7 +581,12 @@ function validateFuelDeposit({ characterID, networkNodeID, sourceItemID, sourceF
             return { errorMsg: "INSUFFICIENT_SOURCE_FUEL" };
         }
         totalQuantity += request.quantity;
-        sourceStacks.push({ ...request, typeID: stackTypeID });
+        sourceStacks.push({
+            ...request,
+            typeID: stackTypeID,
+            sourceLocationID: toInt(stack.locationID, 0),
+            sourceFlagID: toInt(stack.flagID, -1),
+        });
     }
     if (!isAcceptedNetworkNodeFuelType(fuelTypeID)) {
         return { errorMsg: "UNSUPPORTED_FUEL_TYPE" };
@@ -596,105 +719,96 @@ function prepareNetworkNodeFuelWithdraw(options) {
     });
     return { success: true, data: prepared };
 }
-function commitFuelDeposit(transaction) {
-    const validation = validateFuelDeposit(transaction.request);
+/** Consume ordinary inventory stacks into the Network Node's virtual bay. */
+function depositNetworkNodeFuelFromInventory(options) {
+    const settled = settleNetworkNodeFuel(toInt(options.networkNodeID, 0));
+    if (!settled.success)
+        return settled;
+    const validation = validateFuelDeposit({
+        characterID: options.characterID,
+        networkNodeID: options.networkNodeID,
+        sourceItemID: options.sourceItemID ?? options.sourceLocationID,
+        sourceFlagID: options.sourceFlagID,
+        sourceFlagIDs: options.sourceFlagIDs,
+        items: options.items ?? options.stacks,
+    });
     if (validation.errorMsg) {
         return { success: false, errorMsg: validation.errorMsg, params: validation.params };
     }
-    const changes = [];
-    const consumed = [];
-    for (const stack of validation.sourceStacks) {
-        const result = itemStore.consumeInventoryItemQuantity(stack.itemID, stack.quantity);
-        if (!result || result.success !== true) {
-            for (const restore of consumed.reverse()) {
-                itemStore.grantItemsToCharacterLocation(transaction.request.characterID, transaction.request.sourceItemID, Math.max(0, transaction.request.sourceFlagID), [{ itemType: validation.fuelTypeID, quantity: restore.quantity }]);
-            }
-            return {
-                success: false,
-                errorMsg: result && result.errorMsg ? result.errorMsg : "FUEL_CONSUME_FAILED",
-            };
-        }
-        consumed.push(stack);
-        changes.push(...((result.data && result.data.changes) || []));
-    }
-    const nextQuantity = validation.fuelState.quantity + validation.totalQuantity;
-    const writeResult = writeNetworkNodeFuelState(transaction.request.networkNodeID, {
-        ...validation.fuelState,
-        typeID: validation.fuelTypeID,
-        quantity: nextQuantity,
-        updatedAtMs: Date.now(),
-        burnUpdatedAtMs: validation.fuelState.quantity > 0 ? validation.fuelState.burnUpdatedAtMs : Date.now(),
-    });
-    if (!writeResult || writeResult.success !== true) {
-        for (const restore of consumed.reverse()) {
-            itemStore.grantItemsToCharacterLocation(transaction.request.characterID, transaction.request.sourceItemID, Math.max(0, transaction.request.sourceFlagID), [{ itemType: validation.fuelTypeID, quantity: restore.quantity }]);
-        }
-        return {
-            success: false,
-            errorMsg: writeResult && writeResult.errorMsg
-                ? writeResult.errorMsg
-                : "FUEL_STATE_WRITE_FAILED",
-        };
-    }
+    const committed = itemStore.consumeInventoryItemsAndUpdateItem(validation.sourceStacks.map((stack) => ({
+        itemID: stack.itemID,
+        quantity: stack.quantity,
+        expected: {
+            ownerID: toInt(options.characterID, 0),
+            locationID: stack.sourceLocationID,
+            flagID: stack.sourceFlagID,
+            typeID: validation.fuelTypeID,
+        },
+    })), toInt(options.networkNodeID, 0), (currentNode) => applyFuelDeltaToNodeItem(currentNode, validation.fuelTypeID, validation.totalQuantity), options.flush === true ? { flush: true } : {});
+    if (!committed?.success)
+        return committed || { success: false, errorMsg: "FUEL_CONSUME_FAILED" };
+    const fuelState = readNetworkNodeFuelState(committed.data.item);
+    if (options.publishNotice === true)
+        publishFuelChanged(committed.data.item);
+    else
+        publishFuelOperationalStatus(committed.data.item);
     return {
         success: true,
         data: {
-            networkNodeID: transaction.request.networkNodeID,
-            fuelTypeID: validation.fuelTypeID,
-            quantity: nextQuantity,
+            networkNodeID: toInt(options.networkNodeID, 0),
+            fuelTypeID: fuelState.typeID,
+            quantity: fuelState.quantity,
             depositedQuantity: validation.totalQuantity,
-            solarSystemID: toInt(validation.item.locationID, 0),
-            changes,
+            solarSystemID: toInt(committed.data.item.locationID, 0),
+            changes: committed.data.changes,
         },
     };
 }
-function commitFuelWithdraw(transaction) {
-    const validation = validateFuelWithdraw(transaction.request);
+/** Materialize virtual node fuel into normal inventory in one item-table commit. */
+function withdrawNetworkNodeFuelToInventory(options) {
+    const settled = settleNetworkNodeFuel(toInt(options.networkNodeID, 0));
+    if (!settled.success)
+        return settled;
+    const validation = validateFuelWithdraw({
+        characterID: options.characterID,
+        networkNodeID: options.networkNodeID,
+        fuelTypeID: options.fuelTypeID ?? options.typeID,
+        quantity: options.quantity,
+        destinationItemID: options.destinationItemID ?? options.destinationLocationID,
+        destinationFlagID: options.destinationFlagID,
+    });
     if (validation.errorMsg) {
         return { success: false, errorMsg: validation.errorMsg, params: validation.params };
     }
-    const nextQuantity = validation.fuelState.quantity - validation.quantity;
-    const writeResult = writeNetworkNodeFuelState(transaction.request.networkNodeID, {
-        ...validation.fuelState,
-        typeID: validation.fuelTypeID,
-        quantity: nextQuantity,
-        updatedAtMs: Date.now(),
-    });
-    if (!writeResult || writeResult.success !== true) {
-        return {
-            success: false,
-            errorMsg: writeResult && writeResult.errorMsg
-                ? writeResult.errorMsg
-                : "FUEL_STATE_WRITE_FAILED",
-        };
-    }
-    const grantResult = itemStore.grantItemsToCharacterLocation(transaction.request.characterID, validation.destinationID, validation.destinationFlag, [{ itemType: validation.fuelTypeID, quantity: validation.quantity }]);
-    if (!grantResult || grantResult.success !== true) {
-        writeNetworkNodeFuelState(transaction.request.networkNodeID, {
-            ...validation.fuelState,
-        });
-        return {
-            success: false,
-            errorMsg: grantResult && grantResult.errorMsg
-                ? grantResult.errorMsg
-                : "FUEL_WITHDRAW_GRANT_FAILED",
-        };
-    }
-    const changes = (grantResult.data && grantResult.data.changes) || [];
-    if (nextQuantity === 0) {
-        require("./deploymentRuntime").offlineAssemblyForFuelDepletion(transaction.request.networkNodeID);
+    const committed = itemStore.grantStackableItemsToCharacterLocationAndUpdateItem(toInt(options.characterID, 0), validation.destinationID, validation.destinationFlag, [{ itemType: validation.fuelTypeID, quantity: validation.quantity }], toInt(options.networkNodeID, 0), (currentNode) => applyFuelDeltaToNodeItem(currentNode, validation.fuelTypeID, -validation.quantity), options.flush === true ? { flush: true } : {});
+    if (!committed?.success)
+        return committed || { success: false, errorMsg: "FUEL_WITHDRAW_GRANT_FAILED" };
+    const fuelState = readNetworkNodeFuelState(committed.data.item);
+    if (options.publishNotice === true)
+        publishFuelChanged(committed.data.item);
+    else
+        publishFuelOperationalStatus(committed.data.item);
+    if (fuelState.quantity === 0) {
+        require("./deploymentRuntime").offlineAssemblyForFuelDepletion(toInt(options.networkNodeID, 0));
     }
     return {
         success: true,
         data: {
-            networkNodeID: transaction.request.networkNodeID,
+            networkNodeID: toInt(options.networkNodeID, 0),
             fuelTypeID: validation.fuelTypeID,
-            quantity: nextQuantity,
+            quantity: fuelState.quantity,
             withdrawnQuantity: validation.quantity,
-            solarSystemID: toInt(validation.item.locationID, 0),
-            changes,
+            solarSystemID: toInt(committed.data.item.locationID, 0),
+            changes: committed.data.changes,
+            grantedItems: committed.data.grantedItems,
         },
     };
+}
+function commitFuelDeposit(transaction) {
+    return depositNetworkNodeFuelFromInventory(transaction.request);
+}
+function commitFuelWithdraw(transaction) {
+    return withdrawNetworkNodeFuelToInventory(transaction.request);
 }
 /**
  * Execute a prepared fuel transaction exactly once. The pending entry is
@@ -742,6 +856,141 @@ function getNetworkNodeFuelStatus(characterID, networkNodeID) {
         },
     };
 }
+/**
+ * Session-free, scoped NPC fueling. The exact stack consumption, local fuel
+ * reserve/chain intent, and idempotency receipt are one item-table commit.
+ */
+function depositNpcNetworkNodeFuel(actor, networkNodeID, rawItems, options = {}) {
+    const operationKey = String(options.operationKey || "").trim();
+    if (!operationKey || operationKey.length > 256) {
+        return { success: false, errorMsg: "NPC_FUEL_OPERATION_REQUIRED" };
+    }
+    const lifecycle = require("./deploymentRuntime").getNpcAssemblyLifecycle(actor, networkNodeID, options.jobID || null);
+    if (!lifecycle.success)
+        return lifecycle;
+    const node = lifecycle.data.item;
+    if (toInt(node.typeID, 0) !== NETWORK_NODE_TYPE_ID) {
+        return { success: false, errorMsg: "ASSEMBLY_NOT_NETWORK_NODE" };
+    }
+    const existingInfo = parseCustomInfo(node.customInfo);
+    const receipts = Array.isArray(existingInfo.evejsNpcNetworkNodeFuelReceipts)
+        ? existingInfo.evejsNpcNetworkNodeFuelReceipts
+        : [];
+    const previousReceipt = receipts.find((entry) => entry.operationKey === operationKey);
+    if (previousReceipt) {
+        return { success: true, data: { ...previousReceipt, idempotent: true } };
+    }
+    const requests = Array.isArray(rawItems) ? rawItems : [];
+    if (requests.length === 0) {
+        return { success: false, errorMsg: "NETWORK_NODE_FUEL_REQUIRED" };
+    }
+    let fuelTypeID = 0;
+    let totalQuantity = 0;
+    const consumptions = [];
+    for (const request of requests) {
+        const item = itemStore.findItemById(toInt(request && request.itemID, 0));
+        const quantity = toInt(request && request.quantity, 0);
+        if (!item || quantity <= 0 || quantity > (toInt(item.singleton, 0) === 1
+            ? 1
+            : toInt(item.stacksize ?? item.quantity, 0))) {
+            return { success: false, errorMsg: "INSUFFICIENT_SOURCE_FUEL" };
+        }
+        if (request.ownerID != null && toInt(request.ownerID, 0) !== toInt(item.ownerID, 0) ||
+            request.locationID != null && toInt(request.locationID, 0) !== toInt(item.locationID, 0) ||
+            request.flagID != null && toInt(request.flagID, -1) !== toInt(item.flagID, -1)) {
+            return { success: false, errorMsg: "SOURCE_ITEM_NOT_FOUND" };
+        }
+        const typeID = toInt(item.typeID, 0);
+        if (!fuelTypeID)
+            fuelTypeID = typeID;
+        if (typeID !== fuelTypeID)
+            return { success: false, errorMsg: "MIXED_FUEL_TYPES" };
+        totalQuantity += quantity;
+        consumptions.push({
+            itemID: item.itemID,
+            quantity,
+            expected: {
+                ownerID: item.ownerID,
+                locationID: item.locationID,
+                flagID: item.flagID,
+                typeID,
+            },
+        });
+    }
+    if (!isAcceptedNetworkNodeFuelType(fuelTypeID)) {
+        return { success: false, errorMsg: "UNSUPPORTED_FUEL_TYPE" };
+    }
+    const currentFuel = calculateNetworkNodeFuelBurn(node).state;
+    const chainFuel = readSuiNetworkNodeFuel(node);
+    if (chainFuel?.pending)
+        return { success: false, errorMsg: "ASSEMBLY_STATE_PENDING" };
+    if ((currentFuel.quantity > 0 && currentFuel.typeID !== fuelTypeID) ||
+        (chainFuel?.quantity > 0 && chainFuel.typeID !== fuelTypeID)) {
+        return { success: false, errorMsg: "MIXED_FUEL_TYPES" };
+    }
+    const unitVolume = resolveFuelTypeVolume(fuelTypeID);
+    if (!(unitVolume > 0))
+        return { success: false, errorMsg: "UNSUPPORTED_FUEL_TYPE" };
+    const nextQuantity = currentFuel.quantity + totalQuantity;
+    if (nextQuantity * unitVolume >
+        getNetworkNodeFuelAttributes().fuelMaxCapacityVolume + CAPACITY_VOLUME_EPSILON) {
+        return { success: false, errorMsg: "FUEL_CAPACITY_EXCEEDED" };
+    }
+    const depositedAtMs = Date.now();
+    const commit = itemStore.consumeInventoryItemsAndUpdateItem(consumptions, node.itemID, (currentNode) => {
+        const info = parseCustomInfo(currentNode.customInfo);
+        const observation = info[SUI_FUEL_INFO_KEY];
+        if (observation) {
+            if (observation.pending)
+                throw new Error("ASSEMBLY_STATE_PENDING");
+            observation.pending = {
+                id: crypto.randomUUID(),
+                typeID: fuelTypeID,
+                quantityDelta: totalQuantity,
+            };
+            info[SUI_FUEL_INFO_KEY] = observation;
+            info[FUEL_INFO_KEY] = projectedSuiFuel(observation);
+        }
+        else {
+            info[FUEL_INFO_KEY] = {
+                ...currentFuel,
+                typeID: fuelTypeID,
+                quantity: nextQuantity,
+                updatedAtMs: depositedAtMs,
+                burnUpdatedAtMs: currentFuel.quantity > 0
+                    ? currentFuel.burnUpdatedAtMs
+                    : depositedAtMs,
+                burnTypeID: fuelTypeID,
+            };
+        }
+        const prior = Array.isArray(info.evejsNpcNetworkNodeFuelReceipts)
+            ? info.evejsNpcNetworkNodeFuelReceipts
+            : [];
+        info.evejsNpcNetworkNodeFuelReceipts = [...prior, {
+                operationKey,
+                actorID: Number(actor.actorID),
+                factionKey: String(actor.factionKey),
+                fuelTypeID,
+                depositedQuantity: totalQuantity,
+                depositedAtMs,
+            }].slice(-32);
+        return { ...currentNode, customInfo: JSON.stringify(info) };
+    }, { flush: true });
+    if (!commit.success)
+        return commit;
+    publishFuelChanged(commit.data.item);
+    return {
+        success: true,
+        data: {
+            networkNodeID: node.itemID,
+            fuelTypeID,
+            depositedQuantity: totalQuantity,
+            quantity: nextQuantity,
+            operationKey,
+            changes: commit.data.changes,
+        },
+    };
+}
 module.exports = {
     FUEL_INFO_KEY,
     SUI_FUEL_INFO_KEY,
@@ -752,6 +1001,7 @@ module.exports = {
     acknowledgeSuiNetworkNodeFuel,
     getPendingNetworkNodeFuelTransactionNodeID,
     NETWORK_NODE_TYPE_ID,
+    NETWORK_NODE_FUEL_BAY_FLAG,
     NETWORK_NODE_FUEL_CONFIG,
     calculateNetworkNodeFuelBurn,
     settleNetworkNodeFuel,
@@ -766,6 +1016,10 @@ module.exports = {
     isAcceptedNetworkNodeFuelType,
     prepareNetworkNodeFuelDeposit,
     prepareNetworkNodeFuelWithdraw,
+    validateNetworkNodeFuelInventory,
+    depositNetworkNodeFuelFromInventory,
+    withdrawNetworkNodeFuelToInventory,
+    depositNpcNetworkNodeFuel,
     readNetworkNodeFuelState,
     writeNetworkNodeFuelState,
     _testing: {

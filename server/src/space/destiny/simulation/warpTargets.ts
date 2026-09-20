@@ -1,5 +1,9 @@
 "use strict";
 
+const {
+  getEntityCollisionBroadphaseRadius,
+} = require("./collisions");
+
 function defaultToFiniteNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
@@ -106,7 +110,10 @@ function createDestinyWarpTargetPlanner(deps: Record<string, any> = {}) {
 
   function getStargateWarpExitPoint(entity, stargate, minimumRange = 0) {
     const gateRadius = resolveStargatePhysicalRadius(stargate);
-    const shipRadius = Math.max(0, toFiniteNumber(entity && entity.radius, 0));
+    const shipRadius = Math.max(
+      0,
+      toFiniteNumber(getEntityCollisionBroadphaseRadius(entity), 0),
+    );
     const minimumOffset = gateRadius + shipRadius + 500;
     const requestedRange = Math.max(
       minimumOffset,
@@ -134,11 +141,17 @@ function createDestinyWarpTargetPlanner(deps: Record<string, any> = {}) {
     minimumRange = 0,
   ) {
     const gateRadius = resolveStargatePhysicalRadius(stargate);
+    const shipRadius = Math.max(
+      0,
+      toFiniteNumber(getEntityCollisionBroadphaseRadius(entity), 0),
+    );
     const requestedRange = Math.max(0, toFiniteNumber(minimumRange, 0));
     const explicitSurfaceRange =
       requestedRange > MAX_STARGATE_JUMP_DISTANCE_METERS
         ? requestedRange
         : 0;
+    const safeSurfaceOffset = gateRadius + shipRadius + 500;
+    const requestedSurfaceOffset = gateRadius + explicitSurfaceRange;
     const gatePosition = cloneVector(stargate && stargate.position);
     const fallbackDirection = normalizeVector(
       entity && entity.direction ? entity.direction : DEFAULT_RIGHT,
@@ -151,7 +164,10 @@ function createDestinyWarpTargetPlanner(deps: Record<string, any> = {}) {
 
     return addVectors(
       gatePosition,
-      scaleVector(fromGateToShip, gateRadius + explicitSurfaceRange),
+      scaleVector(
+        fromGateToShip,
+        Math.max(safeSurfaceOffset, requestedSurfaceOffset),
+      ),
     );
   }
 

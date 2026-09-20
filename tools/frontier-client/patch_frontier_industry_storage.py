@@ -18,6 +18,7 @@ ADAPTER = Path(__file__).with_name("industry_storage_adapter.py")
 PROFILES = {
     "frontier/industry/client/ui/controller.pyc": ("controller", "4d09160ff67c023c2135a2fe0306d5dec9f6f01b9afaa19ed55a43639865d423"),
     "frontier/industry/client/facility.pyc": ("facility", "af9fcccdd843b3ceb3276f235cef7de588cfa25ff1d1223d072c8fc6d3d69abe"),
+    "frontier/industry/client/modular/facility.pyc": ("modular_facility", "68aca777764c7a3646224dba9c8166bb294859e3e03129f0313f27d3cad8366d"),
     "frontier/smart_assemblies/client/storage/smart_storage_inventory.pyc": ("storage", "51c2936c149ce051a1c5c5a183a4d6a86d743832834438bf968363e9a4a3e4ce"),
     "frontier/industry/client/ui/active_blueprint_panel.pyc": ("panel", "51ee3c0ef8afd74c4247a9dac9e9c9e69611962dd451282e7ddadd4aaa36ffbd"),
     "frontier/industry/client/industry_svc.pyc": ("service", "6a75a99b60098ab4434cc9e4739e6193a301d5096d1d209a9728d4c4eb5bc40d"),
@@ -57,6 +58,16 @@ PREVIOUS_WINDOW_WRAPPER_SHA256 = {
     "service": "fd7554eb2dde79f583389f3eec20224313907fcf70537b46e98e88aaf00b9775",
     "assembly_window": "99ad0ac3f1a346e5bb83830640b8c3f4a711067cbe70429a95f5500517dfcd40",
 }
+# Exact seven-member release immediately before job-lane support. The six
+# existing modules were wrapped while the modular facility remained retail.
+PREVIOUS_JOB_LANE_WRAPPER_SHA256 = {
+    "controller": "4625df803dc242fe29244ebcc2cedad90b62947e7f9181500381a440a7b6a93d",
+    "facility": "1f15b24a49303f479a0bdf71736f3fb06c9d67bb700d533ce65ad7587e433b53",
+    "storage": "38389e7baadd9b1293e88b34cda4552c52178f6f95224ffc92b607b801193b21",
+    "panel": "ee9508c539d8ebfe408ad6a01cb4e6dcafa25567881ff43148f2789af61a8abb",
+    "service": "9f9fb81bb261a3f59d45da9c45212fe741a466d3fd15d7e92a457397f338439f",
+    "assembly_window": "b640b0466a0ce2f6b06128afab13af23c9efc3be282b59e493bf4ca3d99ecfde",
+}
 SOURCE_SENTINEL = b"EVEJS_INDUSTRY_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_INDUSTRY_ADAPTER_CODE_V1"
 
@@ -88,7 +99,8 @@ def inspect_member(member, kind, expected):
         return "source", member
     previous = digest in (PREVIOUS_WRAPPER_SHA256.get(kind), PREVIOUS_PANEL_WRAPPER_SHA256.get(kind),
                           PREVIOUS_BLUEPRINT_WRAPPER_SHA256.get(kind),
-                          PREVIOUS_WINDOW_WRAPPER_SHA256.get(kind))
+                          PREVIOUS_WINDOW_WRAPPER_SHA256.get(kind),
+                          PREVIOUS_JOB_LANE_WRAPPER_SHA256.get(kind))
     try:
         wrapper = marshal.loads(member[16:])
         if not isinstance(wrapper, types.CodeType):
@@ -121,7 +133,8 @@ def inspect_archive(archive, build=BUILD):
             states[name], originals[name] = inspect_member(member, kind, expected)
     unique = set(states.values())
     for generation in (PREVIOUS_WRAPPER_SHA256, PREVIOUS_PANEL_WRAPPER_SHA256,
-                       PREVIOUS_BLUEPRINT_WRAPPER_SHA256, PREVIOUS_WINDOW_WRAPPER_SHA256):
+                       PREVIOUS_BLUEPRINT_WRAPPER_SHA256, PREVIOUS_WINDOW_WRAPPER_SHA256,
+                       PREVIOUS_JOB_LANE_WRAPPER_SHA256):
         if digests == {name: generation.get(kind, expected) for name, (kind, expected) in PROFILES.items()}:
             return "outdated", states, originals
     if "outdated" in unique:

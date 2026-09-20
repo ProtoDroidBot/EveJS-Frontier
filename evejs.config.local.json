@@ -1109,6 +1109,22 @@
 
   "smartAssemblyBaseDappUrl": "https://dev.dapps.evefrontier.com",
 
+  // Number of independently occupied production lanes exposed by non-portable Frontier Smart Industry assemblies.
+  // Creation-hosted Industry modules and portable Industry assemblies are always limited to lane 1.
+  // Each lane accepts at most one running or discontinuing job and has its own owner-managed access policy. Lane 1 remains the legacy client lane.
+  // Valid values: Integer lane count from 1 through 16.
+  // Default: 4.
+
+  "frontierSmartIndustryJobLaneCount": 4,
+
+  // Optional per-type lane counts for compatible Frontier Smart Industry facilities.
+  // Keys are Smart Industry type IDs and values are lane counts. Missing type IDs fall back to frontierSmartIndustryJobLaneCount.
+  // Creation-hosted Industry modules and portable Industry assemblies remain limited to lane 1 even when their type ID is present.
+  // Valid values: JSON object mapping compatible Smart Industry type IDs to integer lane counts from 1 through 16.
+  // Default: {}.
+
+  "frontierSmartIndustryJobLaneCountByTypeID": {},
+
   // Base URL sent to the client for image and icon requests.
   // Valid values: Absolute URL string ending with a slash, for example "http://127.0.0.1:26001/".
   // Default: "http://127.0.0.1:26001/".
@@ -1607,6 +1623,144 @@
   // Default: true.
 
   "frontierScanningRenderOutOfRangeSignatures": true,
+
+  // Enables server-authoritative remote solar-system surveys. Network Nodes are the temporary dApp source; the scan contracts remain source-neutral.
+  // Valid values: true or false.
+  // Default: true.
+
+  "frontierRemoteScanningEnabled": true,
+
+  // Maximum configurable remote scanning reach from a Network Node, measured along stargate connections in solar-system hops.
+  // Valid values: Integer from 0 through 25 stargate hops.
+  // Default: 3.
+
+  "frontierNetworkNodeScanRangeJumps": 3,
+
+  // Minimum delay between new remote scan jobs from the same scanner source.
+  // Valid values: Non-negative milliseconds.
+  // Default: 5000.
+
+  "frontierRemoteScanCooldownMs": 5000,
+
+  // Transient Network Node energy headroom required to start a cold survey.
+  // Valid values: Non-negative energy units.
+  // Default: 25.
+
+  "frontierRemoteScanSurveyEnergyCost": 25,
+
+  // Transient Network Node energy headroom required to start a deep survey.
+  // Valid values: Non-negative energy units.
+  // Default: 75.
+
+  "frontierRemoteScanDeepEnergyCost": 75,
+
+  // Temporary Network Node remote-scanner strength for gravimetric aggregate signals.
+  // Valid values: Positive multiplier.
+  // Default: 1.
+
+  "frontierNetworkNodeScanGravimetricStrength": 1,
+
+  // Temporary Network Node remote-scanner strength for electromagnetic aggregate signals.
+  // Valid values: Positive multiplier.
+  // Default: 1.
+
+  "frontierNetworkNodeScanElectromagneticStrength": 1,
+
+  // Temporary Network Node remote-scanner strength for thermal aggregate signals.
+  // Valid values: Positive multiplier.
+  // Default: 1.
+
+  "frontierNetworkNodeScanThermalStrength": 1,
+
+  // Maximum age of a cold per-system contribution-index snapshot before it is rebuilt.
+  // Valid values: Non-negative milliseconds.
+  // Default: 15000.
+
+  "frontierRemoteScanIndexTtlMs": 15000,
+
+  // Durable retention and staleness lifetime for a completed remote scan result.
+  // Valid values: Positive milliseconds.
+  // Default: 3600000.
+
+  "frontierRemoteScanResultTtlMs": 3600000,
+
+  // Maximum sparse occupied heat-map cells serialized in one remote result.
+  // Valid values: Integer from 1 through 1024.
+  // Default: 256.
+
+  "frontierRemoteScanMaxHeatCells": 256,
+
+  // Maximum redacted dungeon-site observations serialized in one remote result.
+  // Valid values: Integer from 1 through 512.
+  // Default: 128.
+
+  "frontierRemoteScanMaxSites": 128,
+
+  // Maximum aggregate resource-field observations serialized in one remote result.
+  // Valid values: Integer from 1 through 512.
+  // Default: 128.
+
+  "frontierRemoteScanMaxResources": 128,
+
+  // Maximum serialized size of one completed remote scan result before weakest observations are removed.
+  // Valid values: Integer bytes greater than or equal to 4096.
+  // Default: 524288.
+
+  "frontierRemoteScanMaxPayloadBytes": 524288,
+
+  // Maximum sparse spatial subdivision depth for cold survey heat maps.
+  // Valid values: Integer from 1 through 8.
+  // Default: 4.
+
+  "frontierRemoteScanSurveyOctreeDepth": 4,
+
+  // Maximum sparse spatial subdivision depth for deep survey heat maps.
+  // Valid values: Integer from 1 through 8.
+  // Default: 6.
+
+  "frontierRemoteScanDeepOctreeDepth": 6,
+
+  // Allows a deep remote survey to warm a dormant target system without attaching the scanning character.
+  // Valid values: true or false.
+  // Default: true.
+
+  "frontierRemoteScanDeepWarmupEnabled": true,
+
+  // Hard timeout for target-system warm-up initiated by a deep remote survey.
+  // Valid values: Positive milliseconds.
+  // Default: 15000.
+
+  "frontierRemoteScanDeepWarmupTimeoutMs": 15000,
+
+  // Maximum number of distinct solar systems that remote deep scans may warm concurrently.
+  // Valid values: Integer from 1 through 64.
+  // Default: 4.
+
+  "frontierRemoteScanMaxConcurrentWarmups": 4,
+
+  // Default gravimetric decay half-life for normalized travel signature blooms.
+  // Valid values: Positive milliseconds.
+  // Default: 300000.
+
+  "frontierSignatureBloomGravimetricHalfLifeMs": 300000,
+
+  // Default electromagnetic decay half-life for normalized travel signature blooms.
+  // Valid values: Positive milliseconds.
+  // Default: 180000.
+
+  "frontierSignatureBloomElectromagneticHalfLifeMs": 180000,
+
+  // Default thermal decay half-life for normalized travel signature blooms.
+  // Valid values: Positive milliseconds.
+  // Default: 120000.
+
+  "frontierSignatureBloomThermalHalfLifeMs": 120000,
+
+  // Minimum durable retention for a travel signature bloom when the publisher does not provide an expiry.
+  // Valid values: Positive milliseconds.
+  // Default: 1800000.
+
+  "frontierSignatureBloomRetentionMs": 1800000,
 
   // Proxy node ID reported to the client and used when generating bound object IDs.
   // Valid values: Integer node ID. 65450 matches the traditional 0xFFAA value.

@@ -22,6 +22,13 @@ const CONSTRUCTION_SITE_LIMIT = 25;
 const PORTABLE_BUILD_RADIUS_METERS = 2_500;
 const NETWORK_NODE_BUILD_RADIUS_METERS = 80_000;
 const NETWORK_NODE_ASSEMBLY_TYPE_ID = 88_092;
+const LAGRANGE_POINT_GROUP_ID = 4_870;
+const NPC_NODE_MIN_ANCHOR_OFFSET_METERS = 10_000;
+const NPC_NODE_MAX_ANCHOR_OFFSET_METERS = 40_000;
+const NPC_SITE_MIN_NODE_OFFSET_METERS = 10_000;
+const NPC_SITE_MAX_NODE_OFFSET_METERS = 60_000;
+const FRONTIER_ASSEMBLY_RADIUS_FALLBACK_METERS = 250;
+const NPC_PLACEMENT_ATTEMPTS = 32;
 // Client type list 939 (Portable Assemblies) in build 3502403.
 const PORTABLE_ASSEMBLY_TYPE_IDS = new Set([87_160, 87_161, 87_162, 87_566]);
 const SLINGSHOT_GATE_TYPE_IDS = new Set([95_627, 95_677]);
@@ -43,6 +50,10 @@ const activationTimers = new Map();
 const pendingAssemblyTransitions = new Map();
 let buildDefinitionsByTypeID = null;
 let solarSystemsByID = null;
+
+function isPortableAssemblyType(typeID) {
+  return PORTABLE_ASSEMBLY_TYPE_IDS.has(toInt(typeID, 0));
+}
 
 function toInt(value, fallback = 0) {
   const numeric = Number(value);
@@ -336,6 +347,84 @@ function readConstructionState(item) {
     solarSystemID: toInt(state.solarSystemID, toInt(item && item.locationID, 0)),
     targetSolarSystemID: toInt(state.targetSolarSystemID, 0),
   };
+}
+
+function getFrontierAssemblyFootprintRadius(definition) {
+  const assembly = itemStore.getItemMetadata(definition && definition.assemblyTypeID);
+  const site = itemStore.getItemMetadata(definition && definition.constructionSiteTypeID);
+  return Math.max(
+    FRONTIER_ASSEMBLY_RADIUS_FALLBACK_METERS,
+    toFiniteNumber(assembly && assembly.radius, 0),
+    toFiniteNumber(site && site.radius, 0),
+  );
+}
+
+function listFrontierAssemblyObstacles(solarSystemID) {
+  return itemStore.listSystemSpaceItems(solarSystemID).flatMap((item) => {
+    const state = readConstructionState(item);
+    const position = normalizeWorldVector(item && item.spaceState && item.spaceState.position);
+    if (!state || !position) return [];
+    const assembly = itemStore.getItemMetadata(state.assemblyTypeID);
+    const site = itemStore.getItemMetadata(item.typeID);
+    return [{
+      itemID: toInt(item.itemID, 0),
+      position,
+      radius: Math.max(
+        FRONTIER_ASSEMBLY_RADIUS_FALLBACK_METERS,
+        toFiniteNumber(item.spaceRadius, 0),
+        toFiniteNumber(item.radius, 0),
+        toFiniteNumber(assembly && assembly.radius, 0),
+        toFiniteNumber(site && site.radius, 0),
+      ),
+      assemblyTypeID: state.assemblyTypeID,
+    }];
+  });
+}
+
+function findFrontierAssemblyOverlap(position, radius, obstacles, ignoredItemID = 0) {
+  const target = normalizeWorldVector(position);
+  if (!target) return null;
+  const targetRadius = Math.max(
+    FRONTIER_ASSEMBLY_RADIUS_FALLBACK_METERS,
+    toFiniteNumber(radius, 0),
+  );
+  for (const obstacle of Array.isArray(obstacles) ? obstacles : []) {
+    if (toInt(obstacle && obstacle.itemID, 0) === toInt(ignoredItemID, -1)) continue;
+    const obstaclePosition = normalizeWorldVector(obstacle && obstacle.position);
+    if (!obstaclePosition) continue;
+    const obstacleRadius = Math.max(
+      FRONTIER_ASSEMBLY_RADIUS_FALLBACK_METERS,
+      toFiniteNumber(obstacle && obstacle.radius, 0),
+    );
+    const distance = vectorDistance(target, obstaclePosition);
+    const requiredClearance = targetRadius + obstacleRadius;
+    if (distance < requiredClearance) {
+      return {
+        blockerItemID: toInt(obstacle && obstacle.itemID, 0) || null,
+        blockerAssemblyTypeID: toInt(obstacle && obstacle.assemblyTypeID, 0) || null,
+        blockerRadius: obstacleRadius,
+        conflictKind: "assembly-footprint-overlap",
+        distance,
+        minimumDistance: requiredClearance,
+        targetRadius,
+      };
+    }
+  }
+  return null;
+}
+
+function validateFrontierAssemblyClearance(solarSystemID, definition, position, options: Record<string, any> = {}) {
+  const radius = getFrontierAssemblyFootprintRadius(definition);
+  const obstacles = options.obstacles || listFrontierAssemblyObstacles(solarSystemID);
+  const conflict = findFrontierAssemblyOverlap(
+    position,
+    radius,
+    obstacles,
+    options.ignoredItemID,
+  );
+  return conflict
+    ? { success: false as const, errorMsg: "ASSEMBLY_PLACEMENT_OCCUPIED", data: conflict }
+    : { success: true as const, data: { radius, checkedAssemblies: obstacles.length } };
 }
 
 function isAssemblyActivationPending(item) {
@@ -651,21 +740,12 @@ function listCompletedNetworkNodeBuildAnchors(session, characterID, solarSystemI
   return anchors;
 }
 
-function isInOwnedNetworkNodeBuildZone(session, characterID, solarSystemID, shipPosition) {
-  // The build UI selects its direct-field/depot mode from the nearest node to
-  // the ship, including other owners' nodes, before checking zone ownership.
-  let closestNode = null;
-  let closestDistance = Number.POSITIVE_INFINITY;
-  for (const item of itemStore.listSystemSpaceItems(solarSystemID)) {
-    if (toInt(item.typeID, 0) !== NETWORK_NODE_ASSEMBLY_TYPE_ID) continue;
-    const entity = getSpaceRuntime().getEntity(session, item.itemID);
-    const distance = vectorDistance(shipPosition, entity?.position || item.spaceState?.position);
-    if (distance <= NETWORK_NODE_BUILD_RADIUS_METERS && distance < closestDistance) {
-      closestNode = item;
-      closestDistance = distance;
-    }
-  }
-  return closestNode !== null && toInt(closestNode.ownerID, 0) === characterID;
+function isWithinNetworkNodeBuildZone(position, networkNodeAnchors) {
+  const worldPosition = normalizeWorldVector(position);
+  if (!worldPosition) return false;
+  return normalizeBuildAnchors(networkNodeAnchors).some((anchor) => (
+    vectorDistance(worldPosition, anchor.position) <= NETWORK_NODE_BUILD_RADIUS_METERS
+  ));
 }
 
 function getItemQuantity(item) {
@@ -690,6 +770,35 @@ function hasRequiredMaterials(cost, deposited) {
   return Object.entries<any>(cost).every(([typeID, required]) => (
     toInt(deposited[typeID], 0) >= toInt(required, 0)
   ));
+}
+
+function buildConstructionMaterialConsumption(itemID, constructionCost, ownerID = null) {
+  const children = itemStore.listContainerItems(ownerID, itemID, null)
+    .sort((left, right) => toInt(left.itemID, 0) - toInt(right.itemID, 0));
+  const plan: any[] = [];
+  for (const [rawTypeID, rawQuantity] of Object.entries<any>(constructionCost)) {
+    const typeID = toInt(rawTypeID, 0);
+    let remaining = toInt(rawQuantity, 0);
+    for (const child of children) {
+      if (remaining <= 0 || toInt(child.typeID, 0) !== typeID) continue;
+      const quantity = Math.min(remaining, getItemQuantity(child));
+      if (quantity > 0) {
+        plan.push({
+          itemID: toInt(child.itemID, 0),
+          quantity,
+          expected: {
+            ownerID: toInt(child.ownerID, 0),
+            locationID: toInt(itemID, 0),
+            flagID: toInt(child.flagID, 0),
+            typeID,
+          },
+        });
+        remaining -= quantity;
+      }
+    }
+    if (remaining > 0) return null;
+  }
+  return plan;
 }
 
 function restorePlacementMaterials(characterID, consumed) {
@@ -1027,6 +1136,102 @@ function validateOwnedSmartGate(session, itemID) {
   return validation;
 }
 
+function validateOwnedSmartCatapult(session, itemID) {
+  const source = validateOwnedSmartGate(session, itemID);
+  if (source.success === false) return source;
+  if (!isSlingshotGateType(source.state.assemblyTypeID)) {
+    return { success: false as const, errorMsg: "ASSEMBLY_NOT_SMART_CATAPULT" };
+  }
+  return source;
+}
+
+function validateCatapultDestination(source, destinationSolarSystemID) {
+  const destinationSystemID = toInt(destinationSolarSystemID, 0);
+  if (destinationSystemID <= 0 || !getSolarSystemRecord(destinationSystemID)) {
+    return { success: false as const, errorMsg: "SMART_CATAPULT_DESTINATION_UNAVAILABLE" };
+  }
+  if (destinationSystemID === source.state.solarSystemID) {
+    return { success: false as const, errorMsg: "SMART_CATAPULT_SAME_SYSTEM" };
+  }
+  const distanceLightYears = getSolarSystemDistanceLightYears(
+    source.state.solarSystemID,
+    destinationSystemID,
+  );
+  if (!Number.isFinite(distanceLightYears)) {
+    return { success: false as const, errorMsg: "SMART_CATAPULT_DESTINATION_UNAVAILABLE" };
+  }
+  if (distanceLightYears > source.definition.smartGate.rangeLightYears) {
+    return {
+      success: false as const,
+      errorMsg: "SMART_CATAPULT_OUT_OF_RANGE",
+      data: { distanceLightYears, rangeLightYears: source.definition.smartGate.rangeLightYears },
+    };
+  }
+  return { success: true as const, destinationSystemID, distanceLightYears };
+}
+
+function getAvailableCatapultSystems(session, gateID) {
+  const source = validateOwnedSmartCatapult(session, gateID);
+  if (source.success === false) return source;
+  // Initialize the lazily loaded static-system index before iterating it.
+  getSolarSystemRecord(source.state.solarSystemID);
+  const systems = [...(solarSystemsByID?.keys() || [])]
+    .map(systemID => validateCatapultDestination(source, systemID))
+    .filter(result => result.success)
+    .sort((left, right) => left.distanceLightYears - right.distanceLightYears ||
+      left.destinationSystemID - right.destinationSystemID)
+    .map(result => result.destinationSystemID);
+  return { success: true as const, data: { systems, source } };
+}
+
+function updateCatapultDestination(session, source, destinationSolarSystemID) {
+  if (source.state.assemblyStatus !== ASSEMBLY_STATUS_OFFLINE) {
+    return { success: false as const, errorMsg: "SMART_CATAPULT_MUST_BE_OFFLINE" };
+  }
+  const destination = destinationSolarSystemID > 0
+    ? validateCatapultDestination(source, destinationSolarSystemID)
+    : { success: true as const, destinationSystemID: 0, distanceLightYears: 0 };
+  if (destination.success === false) return destination;
+  const updateResult = itemStore.updateInventoryItem(source.item.itemID, currentItem => ({
+    ...currentItem,
+    customInfo: writeConstructionState(currentItem, {
+      ...source.state,
+      destinationGateID: 0,
+      targetSolarSystemID: destination.destinationSystemID,
+    }),
+  }));
+  if (!updateResult.success || !updateResult.data) {
+    return updateResult.success
+      ? { success: false as const, errorMsg: "SMART_CATAPULT_DESTINATION_UPDATE_FAILED" }
+      : updateResult;
+  }
+  const state = readConstructionState(updateResult.data);
+  const presentation = refreshAssemblyStatePresentation(session, updateResult.data, state);
+  syncChanges(session, [{ item: updateResult.data, previousData: updateResult.previousData }]);
+  clearPendingAssemblyTransitionsForItem(source.item.itemID);
+  return {
+    success: true as const,
+    data: {
+      item: updateResult.data,
+      destinationSolarSystemID: destination.destinationSystemID,
+      distanceLightYears: destination.distanceLightYears,
+      presentation,
+    },
+  };
+}
+
+function setCatapultDestination(session, gateID, destinationSolarSystemID) {
+  const source = validateOwnedSmartCatapult(session, gateID);
+  if (source.success === false) return source;
+  return updateCatapultDestination(session, source, toInt(destinationSolarSystemID, 0));
+}
+
+function clearCatapultDestination(session, gateID) {
+  const source = validateOwnedSmartCatapult(session, gateID);
+  if (source.success === false) return source;
+  return updateCatapultDestination(session, source, 0);
+}
+
 function beginAssemblyStateTransition(session, itemID, targetStatus) {
   const numericTargetStatus = toInt(targetStatus, 0);
   if (
@@ -1047,12 +1252,15 @@ function beginAssemblyStateTransition(session, itemID, targetStatus) {
     const energy = require("./networkNodeEnergyRuntime").validateAssemblyOnline(validation.item);
     if (!energy.success) return energy;
   }
-  if (
-    numericTargetStatus === ASSEMBLY_STATUS_ONLINE &&
-    isSmartGateDefinition(validation.definition) &&
-    validation.state.targetSolarSystemID <= 0
-  ) {
-    return { success: false as const, errorMsg: "SMART_GATE_DESTINATION_REQUIRED" };
+  if (numericTargetStatus === ASSEMBLY_STATUS_ONLINE && isSmartGateDefinition(validation.definition)) {
+    if (isSlingshotGateType(validation.state.assemblyTypeID)) {
+      const destination = validateCatapultDestination(validation, validation.state.targetSolarSystemID);
+      if (validation.state.destinationGateID > 0 || destination.success === false) {
+        return { success: false as const, errorMsg: "SMART_CATAPULT_DESTINATION_REQUIRED" };
+      }
+    } else if (validation.state.targetSolarSystemID <= 0) {
+      return { success: false as const, errorMsg: "SMART_GATE_DESTINATION_REQUIRED" };
+    }
   }
 
   const nowMs = Date.now();
@@ -1604,10 +1812,67 @@ function commitGateLinkTransition(
   return updateResult;
 }
 
+function validateCatapultJump(session, gateID) {
+  const source = validateSmartGateForTraversal(session, gateID);
+  if (source.success === false) return source;
+  if (!isSlingshotGateType(source.state.assemblyTypeID)) {
+    return { success: false as const, errorMsg: "ASSEMBLY_NOT_SMART_CATAPULT" };
+  }
+  if (source.state.assemblyStatus !== ASSEMBLY_STATUS_ONLINE) {
+    return { success: false as const, errorMsg: "SMART_CATAPULT_OFFLINE" };
+  }
+  if (source.state.destinationGateID > 0 || source.state.targetSolarSystemID <= 0) {
+    return { success: false as const, errorMsg: "SMART_CATAPULT_DESTINATION_REQUIRED" };
+  }
+  const destination = validateCatapultDestination(source, source.state.targetSolarSystemID);
+  if (destination.success === false) return destination;
+  const shipItem = itemStore.getActiveShipItem(source.characterID);
+  if (
+    !shipItem ||
+    toInt(shipItem.locationID, 0) !== source.state.solarSystemID ||
+    toInt(shipItem.flagID, -1) !== 0
+  ) {
+    return { success: false as const, errorMsg: "SHIP_NOT_IN_SPACE" };
+  }
+  return { success: true as const, destination, shipItem, source };
+}
+
+function jumpWithCatapult(session, gateID) {
+  const validation = validateCatapultJump(session, gateID);
+  if (validation.success === false) return validation;
+  const transitionResult = getSpaceTransitions().jumpSessionToSolarSystem(
+    session,
+    validation.destination.destinationSystemID,
+    { stargateJumpCloak: true },
+  );
+  if (!transitionResult || transitionResult.success !== true) {
+    return transitionResult || {
+      success: false as const,
+      errorMsg: "SMART_CATAPULT_JUMP_FAILED",
+    };
+  }
+  log.info(
+    `[FrontierDeployment] Catapult jump completed char=${validation.source.characterID} ` +
+      `source=${validation.source.item.itemID} system=${validation.destination.destinationSystemID} ` +
+      `distanceLy=${validation.destination.distanceLightYears.toFixed(3)}`,
+  );
+  return {
+    success: true as const,
+    data: {
+      source: validation.source.item,
+      destinationSolarSystemID: validation.destination.destinationSystemID,
+      transition: transitionResult.data,
+    },
+  };
+}
+
 function validateGateJump(session, gateID) {
   const source = validateSmartGateForTraversal(session, gateID);
   if (source.success === false) {
     return source;
+  }
+  if (isSlingshotGateType(source.state.assemblyTypeID)) {
+    return { success: false as const, errorMsg: "ASSEMBLY_NOT_SMART_GATE" };
   }
   if (source.state.assemblyStatus !== ASSEMBLY_STATUS_ONLINE) {
     return { success: false as const, errorMsg: "SMART_GATE_OFFLINE" };
@@ -2126,11 +2391,16 @@ function buildDeployable(session, assemblyTypeID, rawPosition, rawRotation) {
       },
     };
   }
+  const clearance = validateFrontierAssemblyClearance(
+    solarSystemID,
+    definition,
+    position,
+  );
+  if (!clearance.success) return clearance;
 
-  const directFieldPlacement = PORTABLE_ASSEMBLY_TYPE_IDS.has(definition.assemblyTypeID) &&
-    !isInOwnedNetworkNodeBuildZone(session, characterID, solarSystemID, shipEntity.position);
-  if (definition.assemblyTypeID === NETWORK_NODE_ASSEMBLY_TYPE_ID ||
-      definition.constructionSiteTypeID <= 0 || directFieldPlacement) {
+  const directPlacement = isPortableAssemblyType(definition.assemblyTypeID) &&
+    !isWithinNetworkNodeBuildZone(position, networkNodeAnchors);
+  if (directPlacement) {
     return placeDirectAssembly({
       characterID,
       definition,
@@ -2142,6 +2412,9 @@ function buildDeployable(session, assemblyTypeID, rawPosition, rawRotation) {
       shipItem,
       solarSystemID,
     });
+  }
+  if (definition.constructionSiteTypeID <= 0) {
+    return { success: false as const, errorMsg: "CONSTRUCTION_SITE_TYPE_NOT_FOUND" };
   }
 
   const activeSites = itemStore.listOwnedItems(characterID).filter((item) => {
@@ -2217,6 +2490,1030 @@ function buildDeployable(session, assemblyTypeID, rawPosition, rawRotation) {
       shipDistance,
     },
   };
+}
+
+/**
+ * Validate a player deployment without creating an inventory item or consuming
+ * materials. Construction templates use this as their compiler authority so a
+ * preview and the eventual BuildDeployable call follow the same Frontier
+ * placement, clearance, and direct-vs-site rules.
+ */
+function previewDeployablePlacement(
+  session,
+  assemblyTypeID,
+  rawPosition,
+  rawRotation,
+  options: Record<string, any> = {},
+) {
+  const characterID = getCharacterID(session);
+  const solarSystemID = getSolarSystemID(session);
+  if (characterID <= 0 || solarSystemID <= 0) {
+    return { success: false as const, errorMsg: "NOT_IN_SPACE" };
+  }
+
+  const definition = getBuildDefinition(assemblyTypeID);
+  if (!definition) {
+    return { success: false as const, errorMsg: "ASSEMBLY_TYPE_NOT_SUPPORTED" };
+  }
+
+  const clientPosition = normalizeWorldVector(rawPosition);
+  const dunRotation = normalizeRotationDegrees(rawRotation);
+  if (!clientPosition || !dunRotation) {
+    return { success: false as const, errorMsg: "INVALID_DEPLOYMENT_PLACEMENT" };
+  }
+
+  const shipItem = itemStore.getActiveShipItem(characterID);
+  const shipEntity = getSessionShipEntity(session, shipItem);
+  if (
+    !shipItem ||
+    !shipEntity ||
+    toInt(shipItem.locationID, 0) !== solarSystemID ||
+    toInt(shipItem.flagID, -1) !== 0
+  ) {
+    return { success: false as const, errorMsg: "SHIP_NOT_IN_SPACE" };
+  }
+
+  const networkNodeAnchors = definition.assemblyTypeID === NETWORK_NODE_ASSEMBLY_TYPE_ID
+    ? []
+    : [
+        ...listCompletedNetworkNodeBuildAnchors(session, characterID, solarSystemID),
+        ...normalizeBuildAnchors(options.additionalNetworkNodeAnchors),
+      ];
+  const placement = resolveDeploymentPosition(clientPosition, shipEntity.position, {
+    networkNodeAnchors,
+  });
+  if (!placement || !placement.position) {
+    return { success: false as const, errorMsg: "INVALID_DEPLOYMENT_PLACEMENT" };
+  }
+  if (!placement.withinRange) {
+    return {
+      success: false as const,
+      errorMsg: "DEPLOYMENT_TOO_FAR",
+      data: {
+        buildAnchor: placement.buildAnchor,
+        buildAnchorItemID: placement.buildAnchorItemID,
+        deploymentDistance: placement.deploymentDistance,
+        maxDeploymentDistance: placement.maxDeploymentDistance,
+        positionFrame: placement.frame,
+        shipDistance: placement.shipDistance,
+      },
+    };
+  }
+
+  const clearance = validateFrontierAssemblyClearance(
+    solarSystemID,
+    definition,
+    placement.position,
+  );
+  if (!clearance.success) return clearance;
+
+  const directPlacement = isPortableAssemblyType(definition.assemblyTypeID) &&
+    !isWithinNetworkNodeBuildZone(placement.position, networkNodeAnchors);
+
+  if (!directPlacement) {
+    const siteMetadata = itemStore.getItemMetadata(definition.constructionSiteTypeID);
+    if (!siteMetadata || toInt(siteMetadata.typeID, 0) <= 0) {
+      return { success: false as const, errorMsg: "CONSTRUCTION_SITE_TYPE_NOT_FOUND" };
+    }
+  }
+
+  const capacity = getConstructionSiteCapacity(characterID);
+  return {
+    success: true as const,
+    data: {
+      buildAnchor: placement.buildAnchor,
+      buildAnchorItemID: placement.buildAnchorItemID,
+      definition,
+      deploymentDistance: placement.deploymentDistance,
+      directPlacement,
+      dunRotation,
+      position: placement.position,
+      positionFrame: placement.frame,
+      shipDistance: placement.shipDistance,
+      constructionSiteCapacity: capacity,
+      queuedForSiteCapacity: !directPlacement && capacity.available <= 0,
+    },
+  };
+}
+
+function getConstructionSiteCapacity(ownerID) {
+  const numericOwnerID = toInt(ownerID, 0);
+  const active = numericOwnerID > 0
+    ? itemStore.listOwnedItems(numericOwnerID).filter((item) => {
+        const state = readConstructionState(item);
+        return state && state.assemblyStatus === ASSEMBLY_STATUS_UNDER_CONSTRUCTION;
+      }).length
+    : 0;
+  return {
+    active,
+    available: Math.max(0, CONSTRUCTION_SITE_LIMIT - active),
+    limit: CONSTRUCTION_SITE_LIMIT,
+  };
+}
+
+function readNpcConstructionMetadata(item) {
+  const value = parseCustomInfo(item && item.customInfo).evejsNpcConstruction;
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function writeNpcConstructionMetadata(item, metadata) {
+  const info = parseCustomInfo(item && item.customInfo);
+  info.evejsNpcConstruction = metadata;
+  return JSON.stringify(info);
+}
+
+function findNpcAssemblyByJobID(jobID) {
+  const normalized = String(jobID || "").trim();
+  if (!normalized) return null;
+  return Object.values<any>(itemStore.getAllItems()).find((item) =>
+    readNpcConstructionMetadata(item)?.jobID === normalized) || null;
+}
+
+function validateNpcAssemblyActor(actor, options: Record<string, any> = {}): any {
+  try {
+    return {
+      success: true as const,
+      data: require("../../space/npc/npcAssemblyActorContext")
+        .normalizeNpcAssemblyActorContext(actor, options),
+    };
+  } catch (error) {
+    return {
+      success: false as const,
+      errorMsg: error.code || "NPC_ASSEMBLY_ACTOR_INVALID",
+    };
+  }
+}
+
+function listNpcNetworkNodeBuildAnchors(ownerPrincipalID, solarSystemID) {
+  return itemStore.listSystemSpaceItems(solarSystemID).flatMap((item) => {
+    if (toInt(item.typeID, 0) !== NETWORK_NODE_ASSEMBLY_TYPE_ID ||
+        toInt(item.ownerID, 0) !== ownerPrincipalID ||
+        !isCompletedNetworkNodeBuildAnchorState(readConstructionState(item))) return [];
+    const position = normalizeWorldVector(item.spaceState && item.spaceState.position);
+    return position ? [{
+      itemID: toInt(item.itemID, 0),
+      kind: "network-node",
+      position,
+    }] : [];
+  });
+}
+
+function normalizeNpcPlacementAnchors(value) {
+  return (Array.isArray(value) ? value : []).flatMap((entry) => {
+    const position = normalizeWorldVector(entry && (entry.position || entry));
+    if (!position) return [];
+    return [{
+      itemID: toInt(entry && (entry.itemID || entry.anchorItemID), 0) || null,
+      kind: normalizeText(entry && (entry.kind || entry.anchorKind)).trim().toLowerCase(),
+      groupID: toInt(entry && entry.groupID, 0),
+      position,
+    }];
+  }).sort((left, right) => (
+    toInt(left.itemID, Number.MAX_SAFE_INTEGER) -
+      toInt(right.itemID, Number.MAX_SAFE_INTEGER) ||
+    left.kind.localeCompare(right.kind) ||
+    left.position.x - right.position.x ||
+    left.position.y - right.position.y ||
+    left.position.z - right.position.z
+  ));
+}
+
+function deterministicNpcPlacement(seed) {
+  const digest = crypto.createHash("sha256").update(String(seed || "npc-construction")).digest();
+  const fraction = (offset) => digest.readUInt32BE(offset) / 0xffff_ffff;
+  const azimuth = fraction(0) * Math.PI * 2;
+  const vertical = (fraction(4) * 2) - 1;
+  const planar = Math.sqrt(Math.max(0, 1 - (vertical * vertical)));
+  return {
+    direction: {
+      x: Math.cos(azimuth) * planar,
+      y: Math.sin(azimuth) * planar,
+      z: vertical,
+    },
+    fraction: fraction(8),
+    anchorFraction: fraction(12),
+  };
+}
+
+function offsetNpcPlacement(anchor, deterministic, minimum, maximum) {
+  const distance = minimum + ((maximum - minimum) * deterministic.fraction);
+  return {
+    distance,
+    position: {
+      x: anchor.x + deterministic.direction.x * distance,
+      y: anchor.y + deterministic.direction.y * distance,
+      z: anchor.z + deterministic.direction.z * distance,
+    },
+  };
+}
+
+function selectDeterministicNpcAnchor(anchors, deterministic) {
+  if (!anchors.length) return null;
+  const index = Math.min(
+    anchors.length - 1,
+    Math.floor(deterministic.anchorFraction * anchors.length),
+  );
+  return anchors[index];
+}
+
+/**
+ * Resolve authoritative NPC construction coordinates. Network Nodes may use
+ * any finite world coordinate in the system; when no coordinate was authored,
+ * Lagrange points are preferred over other celestial anchors. All dependent
+ * construction sites must be inside a completed, actor-owned node's build
+ * radius, independently of the builder ship's current position.
+ */
+function resolveNpcConstructionPlacement(input: Record<string, any> = {}) {
+  const assemblyTypeID = toInt(input.assemblyTypeID, 0);
+  const requestedPosition = normalizeWorldVector(input.position);
+  const shipPosition = normalizeWorldVector(input.shipPosition);
+  const deterministic = deterministicNpcPlacement(
+    `${input.jobID || "npc-construction"}:${assemblyTypeID}:${input.solarSystemID || 0}:` +
+      `${Math.max(0, toInt(input.placementAttempt, 0))}`,
+  );
+
+  if (assemblyTypeID === NETWORK_NODE_ASSEMBLY_TYPE_ID) {
+    if (requestedPosition) {
+      return {
+        success: true as const,
+        data: {
+          anchorKind: "explicit",
+          anchorItemID: null,
+          buildAnchor: "system",
+          buildAnchorItemID: null,
+          deploymentDistance: 0,
+          placementPreference: "explicit",
+          position: requestedPosition,
+          unrestrictedInSystem: true,
+        },
+      };
+    }
+    const systemAnchors = normalizeNpcPlacementAnchors(input.systemAnchors);
+    const lagrangeAnchors = systemAnchors.filter((anchor) => (
+      anchor.groupID === LAGRANGE_POINT_GROUP_ID ||
+      anchor.kind === "lagrangepoint" ||
+      anchor.kind === "lagrange"
+    ));
+    const preferred = lagrangeAnchors.length ? lagrangeAnchors : systemAnchors;
+    const anchor = selectDeterministicNpcAnchor(preferred, deterministic);
+    const fallback = shipPosition || { x: 0, y: 0, z: 0 };
+    const offset = offsetNpcPlacement(
+      anchor?.position || fallback,
+      deterministic,
+      NPC_NODE_MIN_ANCHOR_OFFSET_METERS,
+      NPC_NODE_MAX_ANCHOR_OFFSET_METERS,
+    );
+    return {
+      success: true as const,
+      data: {
+        anchorKind: anchor?.kind || "system-fallback",
+        anchorItemID: anchor?.itemID || null,
+        buildAnchor: lagrangeAnchors.length ? "lagrange-point" : "system",
+        buildAnchorItemID: anchor?.itemID || null,
+        deploymentDistance: offset.distance,
+        placementPreference: lagrangeAnchors.length
+          ? "lagrange"
+          : anchor ? "celestial-fallback" : "ship-fallback",
+        position: offset.position,
+        unrestrictedInSystem: true,
+      },
+    };
+  }
+
+  const networkNodeAnchors = normalizeNpcPlacementAnchors(input.networkNodeAnchors);
+  if (!networkNodeAnchors.length) {
+    return { success: false as const, errorMsg: "NPC_NETWORK_NODE_REQUIRED" };
+  }
+  const requestedNetworkNodeID = toInt(input.networkNodeID, 0);
+  let anchor = requestedNetworkNodeID > 0
+    ? networkNodeAnchors.find((entry) => entry.itemID === requestedNetworkNodeID) || null
+    : null;
+  if (requestedNetworkNodeID > 0 && !anchor) {
+    return { success: false as const, errorMsg: "NPC_NETWORK_NODE_NOT_FOUND" };
+  }
+  if (!anchor && requestedPosition) {
+    anchor = [...networkNodeAnchors].sort((left, right) => (
+      vectorDistance(requestedPosition, left.position) -
+      vectorDistance(requestedPosition, right.position)
+    ))[0] || null;
+  }
+  anchor ||= selectDeterministicNpcAnchor(networkNodeAnchors, deterministic);
+  const requestedDistance = requestedPosition
+    ? vectorDistance(requestedPosition, anchor.position)
+    : Number.POSITIVE_INFINITY;
+  if (requestedPosition && requestedDistance > NETWORK_NODE_BUILD_RADIUS_METERS) {
+    return {
+      success: false as const,
+      errorMsg: "NPC_CONSTRUCTION_OUTSIDE_NETWORK_NODE",
+      data: {
+        buildAnchorItemID: anchor.itemID,
+        deploymentDistance: requestedDistance,
+        maxDeploymentDistance: NETWORK_NODE_BUILD_RADIUS_METERS,
+      },
+    };
+  }
+  const offset = requestedPosition
+    ? { distance: requestedDistance, position: requestedPosition }
+    : offsetNpcPlacement(
+      anchor.position,
+      deterministic,
+      NPC_SITE_MIN_NODE_OFFSET_METERS,
+      NPC_SITE_MAX_NODE_OFFSET_METERS,
+    );
+  return {
+    success: true as const,
+    data: {
+      anchorKind: "network-node",
+      anchorItemID: anchor.itemID,
+      buildAnchor: "network-node",
+      buildAnchorItemID: anchor.itemID,
+      deploymentDistance: offset.distance,
+      maxDeploymentDistance: NETWORK_NODE_BUILD_RADIUS_METERS,
+      networkNodeID: anchor.itemID,
+      placementPreference: requestedPosition ? "explicit-near-node" : "around-network-node",
+      position: offset.position,
+      unrestrictedInSystem: false,
+    },
+  };
+}
+
+function listNpcSystemPlacementAnchors(solarSystemID) {
+  return require(path.join(__dirname, "../../space/worldData"))
+    .getCelestialsForSystem(solarSystemID)
+    .map((entry) => ({
+      itemID: toInt(entry && entry.itemID, 0),
+      kind: normalizeText(entry && (entry.kind || entry.anchorKind)).trim().toLowerCase(),
+      groupID: toInt(entry && entry.groupID, 0),
+      position: entry && entry.position,
+    }));
+}
+
+/** Plan a collision-free site; the builder must still enter player placement range. */
+function planNpcConstructionSitePlacement(actorInput, input: Record<string, any>) {
+  const actorResult = validateNpcAssemblyActor(actorInput, {
+    requireSui: input && input.requireSui === true,
+  });
+  if (!actorResult.success) return actorResult;
+  const actor = actorResult.data;
+  const definition = getBuildDefinition(input && input.assemblyTypeID);
+  if (!definition) return { success: false as const, errorMsg: "ASSEMBLY_TYPE_NOT_SUPPORTED" };
+  if (input?.allowDirect === true && !isPortableAssemblyType(definition.assemblyTypeID)) {
+    return { success: false as const, errorMsg: "DIRECT_ASSEMBLY_PORTABLE_ONLY" };
+  }
+  const networkNodeAnchors = definition.assemblyTypeID === NETWORK_NODE_ASSEMBLY_TYPE_ID
+    ? []
+    : listNpcNetworkNodeBuildAnchors(actor.ownerPrincipalID, actor.solarSystemID);
+  const systemAnchors = definition.assemblyTypeID === NETWORK_NODE_ASSEMBLY_TYPE_ID
+    ? listNpcSystemPlacementAnchors(actor.solarSystemID)
+    : [];
+  const attempts = normalizeWorldVector(input && input.position) ? 1 : NPC_PLACEMENT_ATTEMPTS;
+  if (input?.allowDirect === true &&
+      definition.assemblyTypeID !== NETWORK_NODE_ASSEMBLY_TYPE_ID) {
+    const shipPosition = normalizeWorldVector(input && input.shipPosition);
+    const requestedPosition = normalizeWorldVector(input && input.position) || shipPosition;
+    const withinNetworkNodeBuildZone = isWithinNetworkNodeBuildZone(
+      requestedPosition,
+      networkNodeAnchors,
+    );
+    if (!withinNetworkNodeBuildZone) {
+      const directPlacement = resolveDeploymentPosition(requestedPosition, shipPosition, {
+        networkNodeAnchors: [],
+      });
+      if (!directPlacement || !directPlacement.withinRange) {
+        return { success: false as const, errorMsg: "DEPLOYMENT_TOO_FAR", data: directPlacement };
+      }
+      const clearance = validateFrontierAssemblyClearance(
+        actor.solarSystemID,
+        definition,
+        directPlacement.position,
+      );
+      if (!clearance.success) return clearance;
+      return {
+        success: true as const,
+        data: {
+          anchorKind: "ship",
+          anchorItemID: actor.shipID,
+          buildAnchor: "ship",
+          buildAnchorItemID: actor.shipID,
+          deploymentDistance: directPlacement.deploymentDistance,
+          maxDeploymentDistance: directPlacement.maxDeploymentDistance,
+          placementPreference: "direct-near-ship",
+          position: directPlacement.position,
+          unrestrictedInSystem: false,
+          placementAttempt: 0,
+          directPlacement: true,
+          clearance: clearance.data,
+        },
+      };
+    }
+  }
+  if (definition.constructionSiteTypeID <= 0) {
+    return { success: false as const, errorMsg: "NPC_CONSTRUCTION_SITE_REQUIRED" };
+  }
+  let lastConflict = null;
+  for (let placementAttempt = 0; placementAttempt < attempts; placementAttempt += 1) {
+    const placementResult = resolveNpcConstructionPlacement({
+      assemblyTypeID: definition.assemblyTypeID,
+      jobID: input && input.jobID,
+      networkNodeID: input && input.networkNodeID,
+      networkNodeAnchors,
+      placementAttempt,
+      position: input && input.position,
+      shipPosition: input && input.shipPosition,
+      solarSystemID: actor.solarSystemID,
+      systemAnchors,
+    });
+    if (!placementResult.success) return placementResult;
+    const clearance = validateFrontierAssemblyClearance(
+      actor.solarSystemID,
+      definition,
+      placementResult.data.position,
+    );
+    if (clearance.success) {
+      return {
+        success: true as const,
+        data: {
+          ...placementResult.data,
+          directPlacement: false,
+          clearance: clearance.data,
+          placementAttempt,
+        },
+      };
+    }
+    lastConflict = clearance;
+  }
+  return lastConflict || { success: false as const, errorMsg: "ASSEMBLY_PLACEMENT_OCCUPIED" };
+}
+
+function restoreNpcDirectMaterials(consumed) {
+  const changes: any[] = [];
+  for (const entry of Array.isArray(consumed) ? consumed : []) {
+    const restored = itemStore.grantItemToOwnerLocation(
+      toInt(entry.ownerID, 0),
+      toInt(entry.locationID, 0),
+      toInt(entry.flagID, 0),
+      toInt(entry.typeID, 0),
+      toInt(entry.quantity, 0),
+      { singleton: 0 },
+    );
+    if (!restored.success) return { ...restored, data: { changes } };
+    changes.push(...(restored.data && restored.data.changes || []));
+  }
+  return { success: true as const, data: { changes } };
+}
+
+/** Direct completed-assembly placement for a durable NPC construction job. */
+function placeNpcDirectAssembly(actorInput, input: Record<string, any>) {
+  const actorResult = validateNpcAssemblyActor(actorInput, {
+    requireSui: input && input.requireSui === true,
+  });
+  if (!actorResult.success) return actorResult;
+  const actor = actorResult.data;
+  const jobID = String(input && input.jobID || "").trim();
+  if (!jobID) return { success: false as const, errorMsg: "NPC_CONSTRUCTION_JOB_REQUIRED" };
+  const existing = findNpcAssemblyByJobID(jobID);
+  if (existing) {
+    const metadata = readNpcConstructionMetadata(existing);
+    if (metadata?.operator?.actorID !== actor.actorID || metadata?.factionKey !== actor.factionKey) {
+      return { success: false as const, errorMsg: "NPC_CONSTRUCTION_JOB_CONFLICT" };
+    }
+    return { success: true as const, data: { item: existing, directPlacement: true, idempotent: true } };
+  }
+  const definition = getBuildDefinition(input && input.assemblyTypeID);
+  if (!definition) return { success: false as const, errorMsg: "ASSEMBLY_TYPE_NOT_SUPPORTED" };
+  if (!isPortableAssemblyType(definition.assemblyTypeID)) {
+    return { success: false as const, errorMsg: "DIRECT_ASSEMBLY_PORTABLE_ONLY" };
+  }
+  if (Boolean(definition.createOnChain) && (!actor.suiProfileObjectID || !actor.suiWalletAddress)) {
+    return { success: false as const, errorMsg: "NPC_SUI_PROFILE_REQUIRED" };
+  }
+  const shipPosition = normalizeWorldVector(input && input.shipPosition);
+  const rotation = normalizeRotationDegrees(input && input.rotation || { yaw: 0, pitch: 0, roll: 0 });
+  if (!shipPosition || !rotation) return { success: false as const, errorMsg: "INVALID_DEPLOYMENT_PLACEMENT" };
+  const suppliedPlacement = input && input.plannedPlacement;
+  const placementResult = suppliedPlacement && normalizeWorldVector(suppliedPlacement.position)
+    ? { success: true as const, data: suppliedPlacement }
+    : planNpcConstructionSitePlacement(actor, { ...input, allowDirect: true });
+  if (!placementResult.success) return placementResult;
+  const plannedPlacement = placementResult.data;
+  const anchors = definition.assemblyTypeID === NETWORK_NODE_ASSEMBLY_TYPE_ID
+    ? []
+    : listNpcNetworkNodeBuildAnchors(actor.ownerPrincipalID, actor.solarSystemID);
+  if (isWithinNetworkNodeBuildZone(plannedPlacement.position, anchors)) {
+    return { success: false as const, errorMsg: "DIRECT_ASSEMBLY_NETWORK_NODE_REQUIRES_SITE" };
+  }
+  const placement = resolveDeploymentPosition(plannedPlacement.position, shipPosition, {
+    networkNodeAnchors: anchors,
+  });
+  if (!placement || !placement.position) return { success: false as const, errorMsg: "INVALID_DEPLOYMENT_PLACEMENT" };
+  if (!placement.withinRange) return { success: false as const, errorMsg: "DEPLOYMENT_TOO_FAR", data: placement };
+  const clearance = validateFrontierAssemblyClearance(actor.solarSystemID, definition, placement.position);
+  if (!clearance.success) return clearance;
+
+  const materialPlan = Array.isArray(input.materialPlan) ? input.materialPlan : [];
+  const consumption: any[] = [];
+  for (const [rawTypeID, rawQuantity] of Object.entries<any>(definition.constructionCost)) {
+    const typeID = toInt(rawTypeID, 0);
+    let remaining = toInt(rawQuantity, 0);
+    for (const entry of materialPlan) {
+      if (remaining <= 0 || toInt(entry && entry.typeID, 0) !== typeID) continue;
+      const item = itemStore.findItemById(toInt(entry.itemID, 0));
+      if (!item || toInt(item.ownerID, 0) !== toInt(entry.ownerID, 0) ||
+          toInt(item.locationID, 0) !== toInt(entry.locationID, 0) ||
+          toInt(item.flagID, -1) !== toInt(entry.flagID, -1)) {
+        return { success: false as const, errorMsg: "NPC_CONSTRUCTION_MATERIAL_MOVED" };
+      }
+      const quantity = Math.min(remaining, toInt(entry.quantity, 0), getItemQuantity(item));
+      if (quantity > 0) {
+        consumption.push({
+          itemID: item.itemID,
+          quantity,
+          expected: {
+            ownerID: item.ownerID,
+            locationID: item.locationID,
+            flagID: item.flagID,
+            typeID: item.typeID,
+          },
+        });
+        remaining -= quantity;
+      }
+    }
+    if (remaining > 0) return { success: false as const, errorMsg: "INSUFFICIENT_CONSTRUCTION_MATERIAL" };
+  }
+  const consumed = itemStore.consumeInventoryItems(consumption, { flush: true });
+  if (!consumed.success) return consumed;
+  const assemblyMetadata = itemStore.getItemMetadata(definition.assemblyTypeID);
+  if (!assemblyMetadata) {
+    restoreNpcDirectMaterials(consumed.data.consumed);
+    return { success: false as const, errorMsg: "ASSEMBLY_TYPE_NOT_FOUND" };
+  }
+  const nowMs = Date.now();
+  const state = {
+    activationCompleteAtMs: definition.durationSeconds > 0 ? nowMs + definition.durationSeconds * 1000 : 0,
+    assemblyStatus: definition.durationSeconds > 0 || definition.createOnChain
+      ? ASSEMBLY_STATUS_OFFLINE : ASSEMBLY_STATUS_ONLINE,
+    assemblyTypeID: definition.assemblyTypeID,
+    completeAtMs: 0,
+    completedAtMs: nowMs,
+    constructionCost: definition.constructionCost,
+    constructionSiteTypeID: 0,
+    createdAtMs: nowMs,
+    durationSeconds: definition.durationSeconds,
+    ownerID: actor.ownerPrincipalID,
+    solarSystemID: actor.solarSystemID,
+  };
+  const operator = require("../../space/npc/npcAssemblyActorContext").publicNpcAssemblyOperator(actor);
+  const info = parseCustomInfo(writeConstructionState(null, state, false));
+  info.evejsNpcConstruction = {
+    version: 2,
+    jobID,
+    phase: "constructed",
+    operator,
+    builderNpcProfileObjectID: actor.suiProfileObjectID,
+    factionKey: actor.factionKey,
+    placement: JSON.parse(JSON.stringify({ ...plannedPlacement, position: placement.position })),
+    registeredForFaction: false,
+    createdAtMs: nowMs,
+    completedAtMs: nowMs,
+  };
+  const created = itemStore.createSpaceItemForOwner(
+    actor.ownerPrincipalID,
+    actor.solarSystemID,
+    assemblyMetadata,
+    {
+      customInfo: JSON.stringify(info),
+      dunRotation: rotation,
+      mode: "STOP",
+      position: placement.position,
+    },
+  );
+  if (!created.success || !created.data) {
+    restoreNpcDirectMaterials(consumed.data.consumed);
+    return created;
+  }
+  const spawned = getSpaceRuntime().spawnDynamicInventoryEntity(
+    actor.solarSystemID,
+    created.data.itemID,
+    { broadcast: true },
+  );
+  if (!spawned.success) {
+    itemStore.removeInventoryItem(created.data.itemID, { removeContents: true });
+    restoreNpcDirectMaterials(consumed.data.consumed);
+    return spawned;
+  }
+  if (definition.createOnChain) {
+    try {
+      recordInitialSuiAssemblyState({
+        itemId: String(created.data.itemID),
+        ownerId: Number(created.data.ownerID),
+        typeId: Number(created.data.typeID),
+        status: state.assemblyStatus,
+      });
+    } catch (error) {
+      getSpaceRuntime().removeDynamicEntity(actor.solarSystemID, created.data.itemID, { broadcast: true });
+      itemStore.removeInventoryItem(created.data.itemID, { removeContents: true });
+      restoreNpcDirectMaterials(consumed.data.consumed);
+      return { success: false as const, errorMsg: error.code || "ASSEMBLY_STATE_UNAVAILABLE" };
+    }
+  }
+  syncChanges(null, [...(consumed.data.changes || []), ...(created.changes || [])]);
+  scheduleAssemblyActivation(created.data.itemID, null);
+  return {
+    success: true as const,
+    data: {
+      item: created.data,
+      definition,
+      directPlacement: true,
+      deploymentDistance: placement.deploymentDistance,
+      positionFrame: "world",
+      placement: info.evejsNpcConstruction.placement,
+    },
+  };
+}
+
+/** Session-free construction-site placement for a durable NPC actor. */
+function placeNpcConstructionSite(actorInput, input: Record<string, any>) {
+  const actorResult = validateNpcAssemblyActor(actorInput, {
+    requireSui: input && input.requireSui === true,
+  });
+  if (!actorResult.success) return actorResult;
+  const actor = actorResult.data;
+  const jobID = String(input && input.jobID || "").trim();
+  if (!jobID) return { success: false as const, errorMsg: "NPC_CONSTRUCTION_JOB_REQUIRED" };
+  const existing = findNpcAssemblyByJobID(jobID);
+  if (existing) {
+    const metadata = readNpcConstructionMetadata(existing);
+    if (metadata?.operator?.actorID !== actor.actorID ||
+        metadata?.operator?.factionKey !== actor.factionKey) {
+      return { success: false as const, errorMsg: "NPC_CONSTRUCTION_JOB_CONFLICT" };
+    }
+    return {
+      success: true as const,
+      data: { item: existing, idempotent: true, placement: metadata?.placement || null },
+    };
+  }
+  const definition = getBuildDefinition(input && input.assemblyTypeID);
+  if (!definition) return { success: false as const, errorMsg: "ASSEMBLY_TYPE_NOT_SUPPORTED" };
+  if (Boolean(definition.createOnChain) && (!actor.suiProfileObjectID || !actor.suiWalletAddress)) {
+    return { success: false as const, errorMsg: "NPC_SUI_PROFILE_REQUIRED" };
+  }
+  const shipPosition = normalizeWorldVector(input && input.shipPosition);
+  const rotation = normalizeRotationDegrees(input && input.rotation || { yaw: 0, pitch: 0, roll: 0 });
+  if (!shipPosition || !rotation) {
+    return { success: false as const, errorMsg: "INVALID_DEPLOYMENT_PLACEMENT" };
+  }
+  if (definition.constructionSiteTypeID <= 0) {
+    return { success: false as const, errorMsg: "NPC_CONSTRUCTION_SITE_REQUIRED" };
+  }
+  const suppliedPlacement = input && input.plannedPlacement;
+  const placementResult = suppliedPlacement &&
+      normalizeWorldVector(suppliedPlacement.position) &&
+      vectorDistance(suppliedPlacement.position, input.position) <= 1e-6
+    ? { success: true as const, data: suppliedPlacement }
+    : planNpcConstructionSitePlacement(actor, input);
+  if (!placementResult.success) return placementResult;
+  const plannedPlacement = placementResult.data;
+  const anchors = definition.assemblyTypeID === NETWORK_NODE_ASSEMBLY_TYPE_ID
+    ? []
+    : listNpcNetworkNodeBuildAnchors(actor.ownerPrincipalID, actor.solarSystemID);
+  if (definition.assemblyTypeID !== NETWORK_NODE_ASSEMBLY_TYPE_ID) {
+    const selectedNodeID = toInt(plannedPlacement.networkNodeID, 0);
+    const selectedNode = anchors.find((entry) => entry.itemID === selectedNodeID);
+    if (!selectedNode) {
+      return { success: false as const, errorMsg: "NPC_NETWORK_NODE_NOT_FOUND" };
+    }
+    if (vectorDistance(plannedPlacement.position, selectedNode.position) > NETWORK_NODE_BUILD_RADIUS_METERS) {
+      return { success: false as const, errorMsg: "NPC_CONSTRUCTION_OUTSIDE_NETWORK_NODE" };
+    }
+  }
+  const placement = resolveDeploymentPosition(plannedPlacement.position, shipPosition, {
+    networkNodeAnchors: anchors,
+  });
+  if (!placement || !placement.position) {
+    return { success: false as const, errorMsg: "INVALID_DEPLOYMENT_PLACEMENT" };
+  }
+  if (!placement.withinRange) {
+    return { success: false as const, errorMsg: "DEPLOYMENT_TOO_FAR", data: placement };
+  }
+  const clearance = validateFrontierAssemblyClearance(
+    actor.solarSystemID,
+    definition,
+    placement.position,
+  );
+  if (!clearance.success) return clearance;
+  const activeSites = itemStore.listOwnedItems(actor.ownerPrincipalID).filter((item) =>
+    readConstructionState(item)?.assemblyStatus === ASSEMBLY_STATUS_UNDER_CONSTRUCTION);
+  if (activeSites.length >= CONSTRUCTION_SITE_LIMIT) {
+    return { success: false as const, errorMsg: "TOO_MANY_CONSTRUCTION_SITES" };
+  }
+  const directPlacement = false;
+  const placedTypeID = definition.constructionSiteTypeID;
+  const metadata = itemStore.getItemMetadata(placedTypeID);
+  if (!metadata || toInt(metadata.typeID, 0) !== placedTypeID) {
+    return {
+      success: false as const,
+      errorMsg: "CONSTRUCTION_SITE_TYPE_NOT_FOUND",
+    };
+  }
+  const nowMs = Date.now();
+  const state = {
+    assemblyStatus: ASSEMBLY_STATUS_UNDER_CONSTRUCTION,
+    assemblyTypeID: definition.assemblyTypeID,
+    completeAtMs: 0,
+    completedAtMs: 0,
+    constructionCost: definition.constructionCost,
+    constructionSiteTypeID: definition.constructionSiteTypeID,
+    createdAtMs: nowMs,
+    destinationGateID: 0,
+    durationSeconds: definition.durationSeconds,
+    ownerID: actor.ownerPrincipalID,
+    solarSystemID: actor.solarSystemID,
+    targetSolarSystemID: 0,
+  };
+  const operator = require("../../space/npc/npcAssemblyActorContext")
+    .publicNpcAssemblyOperator(actor);
+  const constructionInfo = parseCustomInfo(writeConstructionState(null, state, false));
+  constructionInfo.evejsNpcConstruction = {
+    version: 2,
+    jobID,
+    phase: "site",
+    operator,
+    builderNpcProfileObjectID: actor.suiProfileObjectID,
+    factionKey: actor.factionKey,
+    placement: {
+      anchorKind: plannedPlacement.anchorKind,
+      anchorItemID: plannedPlacement.anchorItemID,
+      buildAnchor: plannedPlacement.buildAnchor,
+      networkNodeID: plannedPlacement.networkNodeID || null,
+      placementAttempt: plannedPlacement.placementAttempt,
+      placementPreference: plannedPlacement.placementPreference,
+      position: placement.position,
+      unrestrictedInSystem: plannedPlacement.unrestrictedInSystem === true,
+    },
+    registeredForFaction: false,
+    createdAtMs: nowMs,
+  };
+  const createResult = itemStore.createSpaceItemForOwner(
+    actor.ownerPrincipalID,
+    actor.solarSystemID,
+    metadata,
+    {
+      customInfo: JSON.stringify(constructionInfo),
+      dunRotation: rotation,
+      mode: "STOP",
+      position: placement.position,
+    },
+  );
+  if (!createResult.success || !createResult.data) return createResult;
+  const spawnResult = getSpaceRuntime().spawnDynamicInventoryEntity(
+    actor.solarSystemID,
+    createResult.data.itemID,
+    { broadcast: true },
+  );
+  if (!spawnResult.success) {
+    const rollback = itemStore.removeInventoryItem(createResult.data.itemID, { removeContents: true });
+    return { ...spawnResult, rollbackError: rollback.success ? null : rollback.errorMsg };
+  }
+  syncChanges(null, createResult.changes || []);
+  log.info(
+    `[FrontierDeployment] NPC construction placed actor=${actor.actorID} ` +
+      `item=${createResult.data.itemID} type=${definition.assemblyTypeID} ` +
+      `system=${actor.solarSystemID} faction=${actor.factionKey}`,
+  );
+  return {
+    success: true as const,
+    data: {
+      item: createResult.data,
+      definition,
+      directPlacement,
+      deploymentDistance: placement.deploymentDistance,
+      positionFrame: "world",
+      buildAnchor: plannedPlacement.buildAnchor,
+      buildAnchorItemID: plannedPlacement.buildAnchorItemID,
+      placement: constructionInfo.evejsNpcConstruction.placement,
+    },
+  };
+}
+
+function validateNpcConstructionItem(actor, itemID, jobID = null): any {
+  const actorResult = validateNpcAssemblyActor(actor);
+  if (!actorResult.success) return actorResult;
+  const item = itemStore.findItemById(toInt(itemID, 0));
+  const state = readConstructionState(item);
+  const metadata = readNpcConstructionMetadata(item);
+  if (!item || !state || !metadata) {
+    return { success: false as const, errorMsg: "CONSTRUCTION_SITE_NOT_FOUND" };
+  }
+  if (toInt(item.ownerID, 0) !== actorResult.data.ownerPrincipalID ||
+      metadata.operator?.actorID !== actorResult.data.actorID ||
+      metadata.factionKey !== actorResult.data.factionKey ||
+      (jobID && metadata.jobID !== jobID)) {
+    return { success: false as const, errorMsg: "CONSTRUCTION_SITE_ACCESS_DENIED" };
+  }
+  return { success: true as const, actor: actorResult.data, item, state, metadata };
+}
+
+/** Move exact reserved stacks to the construction root in one item-table write. */
+function depositNpcConstructionMaterials(actor, itemID, materialPlan, jobID = null) {
+  const validation = validateNpcConstructionItem(actor, itemID, jobID);
+  if (!validation.success) return validation;
+  if (validation.state.assemblyStatus !== ASSEMBLY_STATUS_UNDER_CONSTRUCTION) {
+    return { success: true as const, data: { alreadyComplete: true } };
+  }
+  const deposited = aggregateContainerItems(null, validation.item.itemID);
+  if (hasRequiredMaterials(validation.state.constructionCost, deposited)) {
+    return { success: true as const, data: { deposited, idempotent: true } };
+  }
+  const entries = Array.isArray(materialPlan) ? materialPlan : [];
+  const requested: any[] = [];
+  for (const [rawTypeID, rawQuantity] of Object.entries<any>(validation.state.constructionCost)) {
+    const typeID = toInt(rawTypeID, 0);
+    let outstanding = Math.max(0, toInt(rawQuantity, 0) - toInt(deposited[String(typeID)], 0));
+    for (const entry of entries) {
+      if (outstanding <= 0 || toInt(entry.typeID, 0) !== typeID) continue;
+      const item = itemStore.findItemById(toInt(entry.itemID, 0));
+      if (!item || toInt(item.locationID, 0) === validation.item.itemID) continue;
+      if (toInt(item.locationID, 0) !== toInt(entry.locationID, 0) ||
+          toInt(item.flagID, -1) !== toInt(entry.flagID, -1) ||
+          toInt(item.ownerID, 0) !== toInt(entry.ownerID, 0)) {
+        return { success: false as const, errorMsg: "NPC_CONSTRUCTION_MATERIAL_MOVED" };
+      }
+      const quantity = Math.min(outstanding, toInt(entry.quantity, 0), getItemQuantity(item));
+      if (quantity > 0) {
+        requested.push({
+          itemID: item.itemID,
+          quantity,
+          destinationLocationID: validation.item.itemID,
+          destinationFlagID: 0,
+        });
+        outstanding -= quantity;
+      }
+    }
+    if (outstanding > 0) {
+      return { success: false as const, errorMsg: "INSUFFICIENT_CONSTRUCTION_MATERIAL" };
+    }
+  }
+  if (requested.length > 0) {
+    const result = itemStore.moveItemsToLocations(requested);
+    if (!result.success) return result;
+    syncChanges(null, result.data && result.data.changes || []);
+  }
+  const depositedAfter = aggregateContainerItems(null, validation.item.itemID);
+  if (!hasRequiredMaterials(validation.state.constructionCost, depositedAfter)) {
+    return { success: false as const, errorMsg: "CONSTRUCTION_MATERIALS_INCOMPLETE" };
+  }
+  return { success: true as const, data: { deposited: depositedAfter, moves: requested } };
+}
+
+function completeNpcConstruction(actor, itemID, jobID = null) {
+  const validation = validateNpcConstructionItem(actor, itemID, jobID);
+  if (!validation.success) return validation;
+  const completed = completeConstruction(itemID, { force: true, session: null, flush: true });
+  if (!completed.success) return completed;
+  const update = itemStore.updateInventoryItem(itemID, (currentItem) => {
+    const metadata = readNpcConstructionMetadata(currentItem);
+    return {
+      ...currentItem,
+      customInfo: writeNpcConstructionMetadata(currentItem, {
+        ...metadata,
+        phase: "constructed",
+        completedAtMs: metadata.completedAtMs || Date.now(),
+      }),
+    };
+  });
+  if (!update.success) return update;
+  const state = readConstructionState(update.data);
+  const definition = state && getBuildDefinition(state.assemblyTypeID);
+  let suiStatusIntent = null;
+  if (definition?.createOnChain) {
+    try {
+      suiStatusIntent = recordInitialSuiAssemblyState({
+        itemId: String(update.data.itemID),
+        ownerId: Number(update.data.ownerID),
+        typeId: Number(update.data.typeID),
+        status: state.assemblyStatus,
+      });
+    } catch (error) {
+      return { success: false as const, errorMsg: error.code || "ASSEMBLY_STATE_UNAVAILABLE" };
+    }
+    if (!suiStatusIntent) {
+      return { success: false as const, errorMsg: "ASSEMBLY_STATE_UNAVAILABLE" };
+    }
+  }
+  return {
+    success: true as const,
+    data: { item: itemStore.findItemById(itemID), presentation: completed.data?.presentation, suiStatusIntent },
+  };
+}
+
+function getNpcAssemblyLifecycle(actor, itemID, jobID = null) {
+  const validation = validateNpcConstructionItem(actor, itemID, jobID);
+  if (!validation.success) return validation;
+  const definition = getBuildDefinition(validation.state.assemblyTypeID);
+  return {
+    success: true as const,
+    data: {
+      item: validation.item,
+      state: validation.state,
+      metadata: validation.metadata,
+      createOnChain: Boolean(definition && definition.createOnChain),
+      activationPending: isAssemblyActivationPending(validation.item),
+      suiStatusIntent: require("./suiAssemblyState").readSuiAssemblyStatusIntent(validation.item),
+    },
+  };
+}
+
+/** Records a scoped NPC lifecycle intent; the supervised Sui worker signs it. */
+function requestNpcAssemblyState(actor, itemID, targetStatus, jobID = null) {
+  const validation = validateNpcConstructionItem(actor, itemID, jobID);
+  if (!validation.success) return validation;
+  const requested = toInt(targetStatus, 0);
+  if (![ASSEMBLY_STATUS_OFFLINE, ASSEMBLY_STATUS_ONLINE].includes(requested)) {
+    return { success: false as const, errorMsg: "INVALID_ASSEMBLY_STATE" };
+  }
+  if (validation.state.assemblyStatus === ASSEMBLY_STATUS_UNDER_CONSTRUCTION) {
+    return { success: false as const, errorMsg: "ASSEMBLY_UNDER_CONSTRUCTION" };
+  }
+  if (isAssemblyActivationPending(validation.item)) {
+    return { success: false as const, errorMsg: "ASSEMBLY_ACTIVATING" };
+  }
+  const definition = getBuildDefinition(validation.state.assemblyTypeID);
+  if (!definition) return { success: false as const, errorMsg: "ASSEMBLY_TYPE_NOT_SUPPORTED" };
+  if (definition.createOnChain &&
+      !require("./suiAssemblyState").isSuiAssemblyStateAuthoritative()) {
+    return { success: false as const, errorMsg: "ASSEMBLY_STATE_UNAVAILABLE" };
+  }
+  if (requested === ASSEMBLY_STATUS_ONLINE && !hasNetworkNodeFuelForOnline(validation.item)) {
+    return { success: false as const, errorMsg: "NETWORK_NODE_FUEL_REQUIRED" };
+  }
+  if (requested === ASSEMBLY_STATUS_ONLINE) {
+    const energy = require("./networkNodeEnergyRuntime").validateAssemblyOnline(validation.item);
+    if (!energy.success) return energy;
+    if (isSmartGateDefinition(definition)) {
+      if (isSlingshotGateType(validation.state.assemblyTypeID)) {
+        const destination = validateCatapultDestination(validation, validation.state.targetSolarSystemID);
+        if (validation.state.destinationGateID > 0 || destination.success === false) {
+          return { success: false as const, errorMsg: "SMART_CATAPULT_DESTINATION_REQUIRED" };
+        }
+      } else if (validation.state.targetSolarSystemID <= 0) {
+        return { success: false as const, errorMsg: "SMART_GATE_DESTINATION_REQUIRED" };
+      }
+    }
+  }
+  const pending = require("./suiAssemblyState").readSuiAssemblyStatusIntent(validation.item);
+  if (validation.state.assemblyStatus === requested &&
+      (!definition.createOnChain || pending?.targetStatus === requested || !pending)) {
+    return { success: true as const, data: { item: validation.item, idempotent: true, pending } };
+  }
+  const update = itemStore.updateInventoryItem(itemID, (currentItem) => ({
+    ...currentItem,
+    customInfo: writeConstructionState(currentItem, {
+      ...readConstructionState(currentItem),
+      assemblyStatus: requested,
+    }, definition.createOnChain),
+  }));
+  if (!update.success) return update;
+  refreshAssemblyStatePresentation(null, update.data, readConstructionState(update.data));
+  syncChanges(null, [{ item: update.data, previousData: update.previousData }]);
+  return {
+    success: true as const,
+    data: {
+      item: update.data,
+      pending: definition.createOnChain
+        ? require("./suiAssemblyState").readSuiAssemblyStatusIntent(update.data)
+        : null,
+    },
+  };
+}
+
+function registerNpcAssemblyForFaction(actor, itemID, input: Record<string, any> = {}) {
+  const validation = validateNpcConstructionItem(actor, itemID, input.jobID || null);
+  if (!validation.success) return validation;
+  const commandNodeID = toInt(input.commandNodeID, 0);
+  if (commandNodeID > 0) {
+    const commandNode = itemStore.findItemById(commandNodeID);
+    const commandMetadata = readNpcConstructionMetadata(commandNode);
+    if (!commandNode || !commandMetadata ||
+        commandMetadata.factionKey !== validation.actor.factionKey) {
+      return { success: false as const, errorMsg: "NPC_COMMAND_NODE_ACCESS_DENIED" };
+    }
+  }
+  const update = itemStore.updateInventoryItem(itemID, (currentItem) => {
+    const metadata = readNpcConstructionMetadata(currentItem);
+    return {
+      ...currentItem,
+      customInfo: writeNpcConstructionMetadata(currentItem, {
+        ...metadata,
+        phase: "registered",
+        registeredForFaction: true,
+        registeredAtMs: metadata.registeredAtMs || Date.now(),
+        commandNodeID: commandNodeID || null,
+      }),
+    };
+  });
+  return update.success
+    ? { success: true as const, data: { item: update.data, metadata: readNpcConstructionMetadata(update.data) } }
+    : update;
 }
 
 function getDepositedItemsByType(session, itemID) {
@@ -2300,7 +3597,11 @@ function completeConstruction(itemID, options: Record<string, any> = {}) {
     return { success: true as const, data: { item, alreadyComplete: true } };
   }
 
-  const deposited = aggregateContainerItems(item.ownerID, item.itemID);
+  // NPC builders can spend faction-owned cargo while the assembly itself is
+  // owned by the durable NPC Character. Player construction retains its
+  // original same-owner accounting rule.
+  const materialOwnerID = readNpcConstructionMetadata(item) ? null : item.ownerID;
+  const deposited = aggregateContainerItems(materialOwnerID, item.itemID);
   if (!hasRequiredMaterials(state.constructionCost, deposited)) {
     return { success: false as const, errorMsg: "CONSTRUCTION_MATERIALS_INCOMPLETE" };
   }
@@ -2308,21 +3609,6 @@ function completeConstruction(itemID, options: Record<string, any> = {}) {
   const definition = getBuildDefinition(state.assemblyTypeID);
   if (!assemblyMetadata || !definition) {
     return { success: false as const, errorMsg: "ASSEMBLY_TYPE_NOT_FOUND" };
-  }
-
-  const materialChanges: any[] = [];
-  for (const [typeID, quantity] of Object.entries(state.constructionCost)) {
-    const takeResult = itemStore.takeItemTypeFromCharacterLocation(
-      item.ownerID,
-      item.itemID,
-      null,
-      toInt(typeID, 0),
-      quantity,
-    );
-    if (!takeResult.success) {
-      return takeResult;
-    }
-    materialChanges.push(...((takeResult.data && takeResult.data.changes) || []));
   }
 
   const durationSeconds = definition.durationSeconds;
@@ -2333,19 +3619,32 @@ function completeConstruction(itemID, options: Record<string, any> = {}) {
   const completedAssemblyStatus = activationCompleteAtMs > 0 || definition.createOnChain
     ? ASSEMBLY_STATUS_OFFLINE
     : ASSEMBLY_STATUS_ONLINE;
-  const updateResult = itemStore.updateInventoryItem(item.itemID, (currentItem) => ({
-    ...currentItem,
-    customInfo: writeConstructionState(currentItem, {
-      ...state,
-      activationCompleteAtMs,
-      assemblyStatus: completedAssemblyStatus,
-      completeAtMs: 0,
-      completedAtMs,
-      durationSeconds,
+  const materialPlan = buildConstructionMaterialConsumption(
+    item.itemID,
+    state.constructionCost,
+    materialOwnerID,
+  );
+  if (!materialPlan) {
+    return { success: false as const, errorMsg: "CONSTRUCTION_MATERIALS_INCOMPLETE" };
+  }
+  const updateResult = itemStore.consumeInventoryItemsAndUpdateItem(
+    materialPlan,
+    item.itemID,
+    (currentItem) => ({
+      ...currentItem,
+      customInfo: writeConstructionState(currentItem, {
+        ...state,
+        activationCompleteAtMs,
+        assemblyStatus: completedAssemblyStatus,
+        completeAtMs: 0,
+        completedAtMs,
+        durationSeconds,
+      }),
+      itemName: assemblyMetadata.name || currentItem.itemName,
+      typeID: state.assemblyTypeID,
     }),
-    itemName: assemblyMetadata.name || currentItem.itemName,
-    typeID: state.assemblyTypeID,
-  }));
+    { flush: options.flush === true },
+  );
   if (!updateResult.success) {
     return updateResult;
   }
@@ -2371,8 +3670,7 @@ function completeConstruction(itemID, options: Record<string, any> = {}) {
     );
   }
   syncChanges(findAssemblyOwnerSession(options.session, item.ownerID), [
-    ...materialChanges,
-    { item: updateResult.data, previousData: updateResult.previousData },
+    ...((updateResult.data && updateResult.data.changes) || []),
   ]);
   log.info(
     `[FrontierDeployment] Construction completed item=${item.itemID} ` +
@@ -2380,7 +3678,7 @@ function completeConstruction(itemID, options: Record<string, any> = {}) {
   );
   return {
     success: true as const,
-    data: { item: updateResult.data, presentation: spawnResult },
+    data: { item: updateResult.data.item, presentation: spawnResult },
   };
 }
 
@@ -2584,10 +3882,9 @@ function validateDismantleAssembly(session, itemID) {
     return { success: false as const, errorMsg: "SMART_GATE_MUST_BE_UNLINKED" };
   }
   const industryProduction = require("./industryProduction");
-  const production = industryProduction.getProduction(item);
   if (
     industryProduction.invalidStoredProduction(item) ||
-    (production && production.state !== "STOPPED")
+    industryProduction.hasActiveProduction(item)
   ) {
     return { success: false as const, errorMsg: "ASSEMBLY_OCCUPIED" };
   }
@@ -2625,6 +3922,22 @@ function dismantleAssembly(session, itemID, options: Record<string, any> = {}) {
   clearCompletionTimer(item.itemID);
   clearActivationTimer(item.itemID);
   clearPendingAssemblyTransitionsForItem(item.itemID);
+  const requestCleanup = require("./smartAssemblyRequestRuntime")
+    .cancelRequestsForAssembly(item.itemID, "ASSEMBLY_DISMANTLED");
+  if (!requestCleanup || requestCleanup.success !== true) {
+    log.warn(
+      `[FrontierDeployment] Request cleanup failed for dismantled assembly ` +
+        `item=${item.itemID} reason=${requestCleanup && requestCleanup.errorMsg || "UNKNOWN"}`,
+    );
+  }
+  const accessCleanup = require("./assemblyAccessRuntime")
+    .cancelRequestsForAssembly(item.itemID, "ASSEMBLY_DISMANTLED");
+  if (!accessCleanup || accessCleanup.success !== true) {
+    log.warn(
+      `[FrontierDeployment] Access cleanup failed for dismantled assembly ` +
+        `item=${item.itemID} reason=${accessCleanup && accessCleanup.errorMsg || "UNKNOWN"}`,
+    );
+  }
   const spaceRuntime = getSpaceRuntime();
   spaceRuntime.removeDynamicEntity(state.solarSystemID, item.itemID, {
     broadcast: true,
@@ -2739,7 +4052,7 @@ function adminSpawnAssembly(session, assemblyTypeID, rawPosition, options: Recor
     return {
       success: false as const,
       errorMsg: isSlingshotGateType(numericTypeID)
-        ? "SMART_GATE_LINK_NOT_SUPPORTED"
+        ? "SMART_CATAPULT_DESTINATION_REQUIRED"
         : "SMART_GATE_DESTINATION_REQUIRED",
     };
   }
@@ -2865,18 +4178,25 @@ function adminSetAssemblyState(session, itemID, targetStatus) {
   }
   if (numericTargetStatus === ASSEMBLY_STATUS_ONLINE && isSmartGateDefinition(definition)) {
     if (isSlingshotGateType(state.assemblyTypeID)) {
-      return { success: false as const, errorMsg: "SMART_GATE_LINK_NOT_SUPPORTED" };
-    }
-    const destination = validateSmartGate(state.destinationGateID);
-    if (
-      destination.success === false ||
-      destination.state.destinationGateID !== numericItemID ||
-      destination.state.solarSystemID !== state.targetSolarSystemID ||
-      destination.state.targetSolarSystemID !== state.solarSystemID ||
-      destination.state.assemblyTypeID !== state.assemblyTypeID ||
-      toInt(destination.item.ownerID, 0) !== toInt(item.ownerID, 0)
-    ) {
-      return { success: false as const, errorMsg: "SMART_GATE_DESTINATION_REQUIRED" };
+      const catapultDestination = validateCatapultDestination(
+        { definition, item, state },
+        state.targetSolarSystemID,
+      );
+      if (state.destinationGateID > 0 || catapultDestination.success === false) {
+        return { success: false as const, errorMsg: "SMART_CATAPULT_DESTINATION_REQUIRED" };
+      }
+    } else {
+      const destination = validateSmartGate(state.destinationGateID);
+      if (
+        destination.success === false ||
+        destination.state.destinationGateID !== numericItemID ||
+        destination.state.solarSystemID !== state.targetSolarSystemID ||
+        destination.state.targetSolarSystemID !== state.solarSystemID ||
+        destination.state.assemblyTypeID !== state.assemblyTypeID ||
+        toInt(destination.item.ownerID, 0) !== toInt(item.ownerID, 0)
+      ) {
+        return { success: false as const, errorMsg: "SMART_GATE_DESTINATION_REQUIRED" };
+      }
     }
   }
 
@@ -3218,9 +4538,8 @@ function adminRemoveAssembly(session, itemID) {
   // A paid industry run can temporarily have no escrow rows. Its owed products
   // still occupy the facility until the run completes and they are withdrawn.
   const industryProduction = require("./industryProduction");
-  const production = industryProduction.getProduction(item);
   if (industryProduction.invalidStoredProduction(item) ||
-      (production && production.state !== "STOPPED")) {
+      industryProduction.hasActiveProduction(item)) {
     return { success: false as const, errorMsg: "ASSEMBLY_OCCUPIED" };
   }
   const inboundGate = listAssemblies().find(
@@ -3311,6 +4630,22 @@ function adminRemoveAssembly(session, itemID) {
   clearCompletionTimer(numericItemID);
   clearActivationTimer(numericItemID);
   clearPendingAssemblyTransitionsForItem(numericItemID);
+  const requestCleanup = require("./smartAssemblyRequestRuntime")
+    .cancelRequestsForAssembly(numericItemID, "ASSEMBLY_REMOVED");
+  if (!requestCleanup || requestCleanup.success !== true) {
+    log.warn(
+      `[FrontierDeployment] Request cleanup failed for removed assembly ` +
+        `item=${numericItemID} reason=${requestCleanup && requestCleanup.errorMsg || "UNKNOWN"}`,
+    );
+  }
+  const accessCleanup = require("./assemblyAccessRuntime")
+    .cancelRequestsForAssembly(numericItemID, "ASSEMBLY_REMOVED");
+  if (!accessCleanup || accessCleanup.success !== true) {
+    log.warn(
+      `[FrontierDeployment] Access cleanup failed for removed assembly ` +
+        `item=${numericItemID} reason=${accessCleanup && accessCleanup.errorMsg || "UNKNOWN"}`,
+    );
+  }
   syncAdminChanges(
     session,
     item.ownerID,
@@ -3498,7 +4833,21 @@ module.exports = {
   beginGateUnlinkTransition,
   beginAssemblyStateTransition,
   buildDeployable,
+  previewDeployablePlacement,
+  getConstructionSiteCapacity,
+  CONSTRUCTION_SITE_LIMIT,
+  planNpcConstructionSitePlacement,
+  placeNpcConstructionSite,
+  placeNpcDirectAssembly,
+  depositNpcConstructionMaterials,
+  completeNpcConstruction,
+  getNpcAssemblyLifecycle,
+  requestNpcAssemblyState,
+  registerNpcAssemblyForFaction,
+  findNpcAssemblyByJobID,
+  readNpcConstructionMetadata,
   cancelConstruction,
+  clearCatapultDestination,
   dismantleAssembly,
   commitGateJumpTransition,
   commitGateLinkTransition,
@@ -3508,15 +4857,18 @@ module.exports = {
   completeAssemblyActivation,
   scheduleAssemblyActivation,
   isAssemblyActivationPending,
+  isPortableAssemblyType,
   depositItems,
   getDepositedItemsByType,
   getAssemblyRecord,
+  getAvailableCatapultSystems,
   getSmartGateLinkStatus,
   hasAssemblyAdminPrivileges,
   hydrateConstructionEntityFromInventoryItem,
   listAssemblies,
   listAssemblyDefinitions,
   listOwnedSmartGates,
+  jumpWithCatapult,
   linkSmartGates,
   listMyAssemblies,
   recordAssemblyInteraction,
@@ -3526,6 +4878,7 @@ module.exports = {
   reconcileSponsoredAssemblyState,
   reconcileSuiAssemblyState,
   recordInitialSuiAssemblyState,
+  setCatapultDestination,
   unlinkSmartGate,
   // Shared with the Network Node fuel runtime, which reuses the assembly
   // transition transaction/signature conventions and construction state.
@@ -3536,6 +4889,7 @@ module.exports = {
     buildDismantleCargoPlan,
     buildDefinitionsFromRows,
     buildAssemblyTransitionTransactionData,
+    buildConstructionMaterialConsumption,
     isValidAssemblyTransitionSignature,
     isCompletedNetworkNodeBuildAnchorState,
     getSmartGateActivationState,
@@ -3546,6 +4900,9 @@ module.exports = {
     normalizeQuantityMap,
     normalizeRotationDegrees,
     normalizeWorldVector,
+    findFrontierAssemblyOverlap,
+    resolveNpcConstructionPlacement,
+    validateFrontierAssemblyClearance,
     resolveDeploymentPosition,
     readConstructionState,
     writeConstructionState,

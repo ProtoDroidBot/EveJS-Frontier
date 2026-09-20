@@ -151,6 +151,9 @@ const {
 const {
   getStargateSystemForwardDirection,
 } = require(path.join(__dirname, "./stargateOrientation"));
+const {
+  getEntityCollisionBroadphaseRadius,
+} = require(path.join(__dirname, "./destiny/simulation/collisions"));
 const TRANSITION_GUARD_WINDOW_MS = 5000;
 const STARGATE_JUMP_HANDOFF_DELAY_MS = 1250;
 const STARGATE_JUMP_RANGE_METERS = 2500;
@@ -1251,9 +1254,20 @@ function getResolvedStargateForwardDirection(stargate) {
 }
 
 function resolveShipRadiusMeters(ship) {
+  const collisionRadius = Math.max(
+    0,
+    toFiniteNumber(getEntityCollisionBroadphaseRadius(ship), 0),
+  );
+  if (collisionRadius > 0) {
+    return collisionRadius;
+  }
+
   const directRadius = Math.max(
     0,
-    toFiniteNumber(ship && (ship.radius ?? ship.spaceRadius), 0),
+    toFiniteNumber(
+      ship && (ship.collisionRadius ?? ship.radius ?? ship.spaceRadius),
+      0,
+    ),
   );
   if (directRadius > 0) {
     return directRadius;
@@ -1296,7 +1310,18 @@ function buildOffsetSpawnState(anchor, options: Record<PropertyKey, any> = {}) {
   );
   const minOffset = Math.max(toFiniteNumber(options.minOffset, 0), 0);
   const clearance = Math.max(toFiniteNumber(options.clearance, 0), 0);
-  const offset = Math.max(toFiniteNumber(anchor && anchor.radius, 0) + clearance, minOffset);
+  const shipRadius = Math.max(toFiniteNumber(options.shipRadius, 0), 0);
+  const anchorRadius = Math.max(
+    toFiniteNumber(
+      options.anchorRadius,
+      anchor && (anchor.collisionRadius ?? anchor.radius),
+    ),
+    0,
+  );
+  const offset = Math.max(
+    anchorRadius + shipRadius + clearance,
+    minOffset,
+  );
   const position = addVectors(anchorPosition, scaleVector(direction, offset));
 
   return {
@@ -1305,12 +1330,13 @@ function buildOffsetSpawnState(anchor, options: Record<PropertyKey, any> = {}) {
   };
 }
 
-function buildSolarSystemSpawnState(solarSystemID) {
+function buildSolarSystemSpawnState(solarSystemID, ship = null) {
   const system = worldData.getSolarSystemByID(solarSystemID);
   if (!system) {
     return null;
   }
 
+  const shipRadius = resolveShipRadiusMeters(ship);
   const stargates = worldData.getStargatesForSystem(solarSystemID);
   if (stargates.length > 0) {
     const stargate = stargates[0];
@@ -1319,7 +1345,9 @@ function buildSolarSystemSpawnState(solarSystemID) {
       anchorID: stargate.itemID,
       anchorName: stargate.itemName || `Stargate ${stargate.itemID}`,
       ...buildOffsetSpawnState(stargate, {
-        minOffset: Math.max(resolveStargatePhysicalRadius(stargate) * 0.4, 5000),
+        anchorRadius: resolveStargatePhysicalRadius(stargate),
+        shipRadius,
+        clearance: 500,
       }),
     };
   }
@@ -1333,6 +1361,7 @@ function buildSolarSystemSpawnState(solarSystemID) {
       anchorName: station.stationName || `Station ${station.stationID}`,
       ...buildOffsetSpawnState(station, {
         minOffset: Math.max((station.radius || 15000) * 0.4, 5000),
+        shipRadius,
         clearance: 5000,
       }),
     };
@@ -1351,6 +1380,7 @@ function buildSolarSystemSpawnState(solarSystemID) {
       anchorName: celestial.itemName || `Celestial ${celestial.itemID}`,
       ...buildOffsetSpawnState(celestial, {
         minOffset: 100000,
+        shipRadius,
         clearance: celestial.kind === "sun" || celestial.groupID === 6
           ? 250000
           : 25000,
@@ -4231,7 +4261,10 @@ function jumpSessionToSolarSystem(session, solarSystemID, options: Record<Proper
       getDockedLocationID(session) ||
       0,
     ) || 0;
-    const spawnState = options.spawnStateOverride || buildSolarSystemSpawnState(targetSolarSystemID);
+    const spawnState = options.spawnStateOverride || buildSolarSystemSpawnState(
+      targetSolarSystemID,
+      activeShip,
+    );
     if (!spawnState) {
       return {
         success: false,
@@ -4716,6 +4749,7 @@ module.exports._testing = {
     preserveShipConditionStateForTransition,
   buildBoundResultForTesting: buildBoundResult,
   buildGateSpawnState,
+  buildOffsetSpawnState,
   completeStargateJumpForTesting: completeStargateJump,
   clearStargateJumpQueuesForTesting() {
     stargateJumpQueuesByDestination.clear();

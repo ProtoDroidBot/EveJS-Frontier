@@ -9,11 +9,12 @@ const { selectAutoFitFlagForNpcModuleType, isNpcChargeCompatibleWithModule, reso
 const { buildNpcDefinition, resolveNpcProfile, } = require(path.join(__dirname, "./npcData"));
 const { validateNpcHardwareDefinition, } = require(path.join(__dirname, "./npcHardwareCatalog"));
 const { resolveNpcSpawnGroupPlan, } = require(path.join(__dirname, "./npcSelection"));
-const { registerController, getControllerByEntityID, unregisterController, } = require(path.join(__dirname, "./npcRegistry"));
+const { registerController, getControllerByEntityID, unregisterController, listControllers, } = require(path.join(__dirname, "./npcRegistry"));
 const { tickScene: tickBehaviorScene, normalizeBehaviorOverrides, } = require(path.join(__dirname, "./npcBehaviorLoop"));
 const { cloneVector, normalizeVector, resolveAnchor, buildSpawnStateForDefinition, } = require(path.join(__dirname, "./npcAnchors"));
 const { buildNpcEntityIdentity, } = require(path.join(__dirname, "./npcPresentation"));
 const nativeNpcStore = require(path.join(__dirname, "./nativeNpcStore"));
+const npcRuntimePersistence = require(path.join(__dirname, "./npcRuntimePersistence"));
 const { ensureNpcPilotIdentity, applyNpcPilotIdentity } = require("./npcPilotIdentityRuntime");
 const { getNpcPilotIdentityStore } = require("./npcPilotIdentityStore");
 const { ENTITY_TYPE, } = require(path.join(__dirname, "../entityConstants"));
@@ -539,6 +540,7 @@ function buildNativeControllerRecord(context, definition, entityRecord, spawnSta
         entityID: entityRecord.entityID,
         npcCharacterID: entityRecord.npcCharacterID || null,
         npcIdentitySlot: entityRecord.npcIdentitySlot || null,
+        npcIncarnation: entityRecord.npcIncarnation || 1,
         systemID: entityRecord.systemID,
         profileID: definition.profile.profileID,
         loadoutID: definition.loadout.loadoutID,
@@ -597,6 +599,9 @@ function buildNativeRuntimeShipSpec(entityRecord, definition = null) {
         npcFactionID: entityRecord.warFactionID,
         npcFactionKey,
         npcProfileID: entityRecord.profileID || null,
+        playerFittingHullTypeID: toPositiveInt(entityRecord.playerFittingHullTypeID, 0) || null,
+        npcFittingProfileID: entityRecord.npcFittingProfileID || null,
+        npcFittingRestrictions: cloneValue(entityRecord.npcFittingRestrictions || null),
         securityStatus: entityRecord.securityStatus,
         bounty: entityRecord.bounty,
         npcEntityType: entityRecord.npcEntityType,
@@ -677,6 +682,9 @@ function applyNativeRuntimeNpcPresentation(entity, entityRecord, definition = nu
             definition.profile.frontierFactionKey) ||
         "").trim().toLowerCase() || null;
     entity.npcProfileID = entityRecord.profileID || null;
+    entity.playerFittingHullTypeID = toPositiveInt(entityRecord.playerFittingHullTypeID, 0) || null;
+    entity.npcFittingProfileID = entityRecord.npcFittingProfileID || null;
+    entity.npcFittingRestrictions = cloneValue(entityRecord.npcFittingRestrictions || null);
     entity.slimTypeID = entityRecord.slimTypeID;
     entity.slimGroupID = entityRecord.slimGroupID;
     entity.slimCategoryID = entityRecord.slimCategoryID;
@@ -764,6 +772,7 @@ function registerNativeRuntimeController(entityRecord, controllerRecord, definit
         ...cloneValue(controllerRecord),
         npcCharacterID: entityRecord.npcCharacterID || null,
         npcIdentitySlot: entityRecord.npcIdentitySlot || null,
+        npcIncarnation: entityRecord.npcIncarnation || 1,
         behaviorProfile: cloneValue(definition && definition.behaviorProfile || {}),
         behaviorRole: String(definition && definition.behaviorPolicy && definition.behaviorPolicy.role || "authored"),
         behaviorActivity: String(definition && definition.behaviorPolicy && definition.behaviorPolicy.activity || "authored"),
@@ -788,6 +797,12 @@ function registerNativeRuntimeController(entityRecord, controllerRecord, definit
 }
 function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, definition, options = {}) {
     definition = applyNpcBehaviorConfig(definition);
+    if (entityRecord && entityRecord.transient !== true) {
+        npcRuntimePersistence.initializeNpcRuntimePersistence();
+        if (npcRuntimePersistence.isNpcEntityQuarantined(entityRecord.entityID)) {
+            return { success: false, errorMsg: "NPC_PERSISTENCE_QUARANTINED" };
+        }
+    }
     const storedScopeResolution = nativeNpcStore.validateStoredEntityScopeMetadata(entityRecord);
     if (!storedScopeResolution.success) {
         return {
@@ -822,8 +837,27 @@ function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, d
         log.warn(`[NativeNpc] Pilot identity unavailable: ${error.message}`);
         return { success: false, errorMsg: "NPC_PILOT_IDENTITY_FAILED" };
     }
+    let spawnLease = null;
+    if (entityRecord.transient !== true) {
+        try {
+            const leaseResult = npcRuntimePersistence.acquireSpawnLease({
+                npcCharacterID: entityRecord.npcCharacterID,
+                entityID: entityRecord.entityID,
+                incarnation: entityRecord.npcIncarnation || 1,
+            });
+            if (!leaseResult.success)
+                return leaseResult;
+            spawnLease = leaseResult.data;
+        }
+        catch (error) {
+            log.warn(`[NativeNpc] Spawn lease unavailable entity=${entityRecord.entityID}: ${error.message}`);
+            return { success: false, errorMsg: "NPC_SPAWN_LEASE_CONFLICT" };
+        }
+    }
     if (existingEntity) {
         const controller = registerNativeRuntimeController(entityRecord, controllerRecord, definition);
+        if (spawnLease)
+            controller.npcSpawnLeaseToken = spawnLease.token;
         applyNativeRuntimeNpcPresentation(existingEntity, entityRecord, definition);
         if (typeof spaceRuntime.applyRuntimeEntityScopeMetadata === "function") {
             spaceRuntime.applyRuntimeEntityScopeMetadata(existingEntity, entityScopeMetadata);
@@ -847,6 +881,9 @@ function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, d
         entityScopeMetadata,
     });
     if (!spawnResult.success || !spawnResult.data || !spawnResult.data.entity) {
+        if (spawnLease) {
+            npcRuntimePersistence.releaseSpawnLease(entityRecord.npcCharacterID, spawnLease.token);
+        }
         return {
             success: false,
             errorMsg: spawnResult.errorMsg || "NPC_NATIVE_RUNTIME_SPAWN_FAILED",
@@ -854,6 +891,8 @@ function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, d
     }
     const entity = applyNativeRuntimeNpcPresentation(spawnResult.data.entity, entityRecord, definition);
     const controller = registerNativeRuntimeController(entityRecord, controllerRecord, definition);
+    if (spawnLease)
+        controller.npcSpawnLeaseToken = spawnLease.token;
     if (runtimeKind === "nativeAmbient") {
         syncNativeAmbientIdleState(scene, entity, controller, definition);
     }
@@ -1027,6 +1066,9 @@ function dematerializeNativeController(controller, options = {}) {
         });
     }
     unregisterController(entityID);
+    if (runtimeController && runtimeController.npcCharacterID) {
+        npcRuntimePersistence.releaseSpawnLease(runtimeController.npcCharacterID, runtimeController.npcSpawnLeaseToken || null);
+    }
     scheduleNpcIffVerdictRefresh(systemID);
     return {
         success: true,
@@ -1107,6 +1149,22 @@ function spawnNativeNpcEntityInContext(context, definition, options = {}) {
             definition.profile.npcFactionKey ||
             definition.profile.frontierFactionKey ||
             "").trim().toLowerCase() || null,
+        playerFittingHullTypeID: toPositiveInt(options.playerFittingHullTypeID ??
+            definition.profile.playerFittingHullTypeID ??
+            ((identity.categoryID === 6 ? identity.typeID : 0) ||
+                (identity.slimCategoryID === 6 ? identity.slimTypeID : 0)), 0) || null,
+        npcFittingProfileID: String(options.npcFittingProfileID ?? definition.profile.npcFittingProfileID ?? "").trim() || null,
+        npcFittingRestrictions: cloneValue(options.npcFittingRestrictions ?? definition.profile.npcFittingRestrictions ?? null),
+        npcFittingTrust: cloneValue(options.npcFittingTrust ?? definition.profile.npcFittingTrust ?? null),
+        trustedFitterCharacterIDs: cloneValue(options.trustedFitterCharacterIDs ??
+            definition.profile.trustedFitterCharacterIDs ??
+            null),
+        deniedFitterCharacterIDs: cloneValue(options.deniedFitterCharacterIDs ??
+            definition.profile.deniedFitterCharacterIDs ??
+            null),
+        npcEquipmentLossPolicy: ["return", "destroy"].includes(String(options.npcEquipmentLossPolicy ?? definition.profile.npcEquipmentLossPolicy ?? "").trim().toLowerCase())
+            ? String(options.npcEquipmentLossPolicy ?? definition.profile.npcEquipmentLossPolicy).trim().toLowerCase()
+            : null,
         securityStatus: identity.securityStatus,
         bounty: identity.bounty,
         npcEntityType: identity.npcEntityType,
@@ -1161,6 +1219,37 @@ function spawnNativeNpcEntityInContext(context, definition, options = {}) {
         log.warn(`[NativeNpc] Pilot identity allocation failed: ${error.message}`);
         return { success: false, errorMsg: "NPC_PILOT_IDENTITY_FAILED" };
     }
+    if (options.transient !== true && entityRecord.npcCharacterID) {
+        npcRuntimePersistence.retireStaleNpcJobs(entityRecord.npcCharacterID, toPositiveInt(entityRecord.npcIncarnation, 1));
+    }
+    let spawnOperation = null;
+    if (options.transient !== true) {
+        spawnOperation = npcRuntimePersistence.beginNpcOperation("spawn", `spawn:${entityRecord.entityID}:${toPositiveInt(entityRecord.npcIncarnation, 1)}`, {
+            entityID: entityRecord.entityID,
+            npcCharacterID: toPositiveInt(entityRecord.npcCharacterID, 0) || null,
+            incarnation: toPositiveInt(entityRecord.npcIncarnation, 1),
+            systemID: entityRecord.systemID,
+            expectedModuleIDs: [],
+            expectedCargoIDs: [],
+        }).data;
+    }
+    const compensateSpawn = (reason) => {
+        nativeNpcStore.removeNativeEntityCascade(entityRecord.entityID, {
+            skipPersistenceJournal: true,
+        });
+        if (spawnOperation) {
+            npcRuntimePersistence.failNpcOperation(spawnOperation.operationID, reason, {
+                compensated: true,
+                flushTables: [
+                    nativeNpcStore.TABLE.ENTITIES,
+                    nativeNpcStore.TABLE.MODULES,
+                    nativeNpcStore.TABLE.CARGO,
+                    nativeNpcStore.TABLE.CONTROLLERS,
+                    "npcPilotIdentities",
+                ],
+            });
+        }
+    };
     const entityWriteResult = nativeNpcStore.upsertNativeEntity(entityRecord, {
         transient: options.transient === true,
     });
@@ -1168,25 +1257,46 @@ function spawnNativeNpcEntityInContext(context, definition, options = {}) {
         if (entityRecord.npcCharacterID) {
             getNpcPilotIdentityStore().release(entityRecord.npcCharacterID, entityRecord.entityID);
         }
+        if (spawnOperation) {
+            npcRuntimePersistence.failNpcOperation(spawnOperation.operationID, entityWriteResult.errorMsg || "entity write failed", {
+                compensated: true,
+            });
+        }
         return entityWriteResult;
+    }
+    if (spawnOperation) {
+        npcRuntimePersistence.checkpointNpcOperation(spawnOperation.operationID, "entity-written", {}, { flushTables: [nativeNpcStore.TABLE.ENTITIES, "npcPilotIdentities"] });
     }
     const moduleResult = buildNativeModuleRecords(entityRecord, definition, options);
     if (!moduleResult.success) {
-        nativeNpcStore.removeNativeEntityCascade(entityRecord.entityID);
+        compensateSpawn(moduleResult.errorMsg || "module write failed");
         return moduleResult;
+    }
+    if (spawnOperation) {
+        npcRuntimePersistence.checkpointNpcOperation(spawnOperation.operationID, "modules-written", {
+            expectedModuleIDs: (moduleResult.data || []).map((record) => record.moduleID),
+        }, { flushTables: [nativeNpcStore.TABLE.MODULES] });
     }
     const cargoResult = buildNativeCargoRecords(entityRecord, moduleResult.data || [], definition, options);
     if (!cargoResult.success) {
-        nativeNpcStore.removeNativeEntityCascade(entityRecord.entityID);
+        compensateSpawn(cargoResult.errorMsg || "cargo write failed");
         return cargoResult;
+    }
+    if (spawnOperation) {
+        npcRuntimePersistence.checkpointNpcOperation(spawnOperation.operationID, "cargo-written", {
+            expectedCargoIDs: (cargoResult.data || []).map((record) => record.cargoID),
+        }, { flushTables: [nativeNpcStore.TABLE.CARGO] });
     }
     const controllerRecord = buildNativeControllerRecord(context, definition, entityRecord, spawnState, options);
     const controllerWriteResult = nativeNpcStore.upsertNativeController(controllerRecord, {
         transient: options.transient === true,
     });
     if (!controllerWriteResult.success) {
-        nativeNpcStore.removeNativeEntityCascade(entityRecord.entityID);
+        compensateSpawn(controllerWriteResult.errorMsg || "controller write failed");
         return controllerWriteResult;
+    }
+    if (spawnOperation) {
+        npcRuntimePersistence.checkpointNpcOperation(spawnOperation.operationID, "controller-written", {}, { flushTables: [nativeNpcStore.TABLE.CONTROLLERS] });
     }
     let materializeResult = {
         success: true,
@@ -1198,13 +1308,24 @@ function spawnNativeNpcEntityInContext(context, definition, options = {}) {
     if (options.materializeRuntime !== false) {
         materializeResult = materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, definition, options);
         if (!materializeResult.success || !materializeResult.data) {
-            nativeNpcStore.removeNativeEntityCascade(entityRecord.entityID);
+            compensateSpawn(materializeResult.errorMsg || "runtime materialization failed");
             return materializeResult;
         }
         if (options.skipInitialBehaviorTick !== true &&
             options.deferInitialBehaviorTick !== true) {
             tickBehaviorScene(scene, scene.getCurrentSimTimeMs());
         }
+    }
+    if (spawnOperation) {
+        npcRuntimePersistence.commitNpcOperation(spawnOperation.operationID, {
+            flushTables: [
+                nativeNpcStore.TABLE.ENTITIES,
+                nativeNpcStore.TABLE.MODULES,
+                nativeNpcStore.TABLE.CARGO,
+                nativeNpcStore.TABLE.CONTROLLERS,
+                "npcPilotIdentities",
+            ],
+        });
     }
     return {
         success: true,
@@ -1371,6 +1492,73 @@ function cleanupStaleNativeStartupControllers(scene) {
     }
     return removed;
 }
+function rehydrateStoredNativeControllers(scene, options = {}) {
+    if (!scene)
+        return { success: false, errorMsg: "SCENE_NOT_FOUND", data: [] };
+    npcRuntimePersistence.initializeNpcRuntimePersistence();
+    const results = [];
+    for (const controllerRecord of nativeNpcStore.listNativeControllersForSystem(scene.systemID)) {
+        const entityRecord = nativeNpcStore.getNativeEntity(controllerRecord.entityID);
+        if (!entityRecord || entityRecord.transient === true || controllerRecord.transient === true) {
+            continue;
+        }
+        // Authored startup populations have their own exact-count reconciliation
+        // and are deliberately recreated by npcService after stale cleanup.
+        if (String(controllerRecord.startupRuleID || "").trim())
+            continue;
+        if (npcRuntimePersistence.isNpcEntityQuarantined(controllerRecord.entityID)) {
+            results.push({
+                entityID: controllerRecord.entityID,
+                success: false,
+                errorMsg: "NPC_PERSISTENCE_QUARANTINED",
+            });
+            continue;
+        }
+        const result = materializeStoredNativeController(scene, controllerRecord.entityID, {
+            broadcast: options.broadcast === true,
+        });
+        results.push({
+            entityID: controllerRecord.entityID,
+            success: result.success === true,
+            errorMsg: result.errorMsg || null,
+        });
+    }
+    return {
+        success: results.every((entry) => entry.success),
+        data: results,
+    };
+}
+function checkpointAllNativeRuntimeState(options = {}) {
+    const results = [];
+    for (const controller of listControllers()) {
+        const entityID = toPositiveInt(controller && controller.entityID, 0);
+        const systemID = toPositiveInt(controller && controller.systemID, 0);
+        const scene = spaceRuntime.scenes instanceof Map
+            ? spaceRuntime.scenes.get(systemID)
+            : null;
+        const runtimeEntity = scene && scene.getEntityByID(entityID);
+        const entityRecord = nativeNpcStore.getNativeEntity(entityID);
+        const controllerRecord = nativeNpcStore.getNativeController(entityID);
+        if (!entityRecord || !controllerRecord || entityRecord.transient === true)
+            continue;
+        const entityResult = runtimeEntity
+            ? nativeNpcStore.upsertNativeEntity(buildStoredEntityRecordFromRuntimeEntity(entityRecord, runtimeEntity), { durable: false })
+            : { success: true, skipped: true };
+        const controllerResult = nativeNpcStore.upsertNativeController(buildStoredControllerRecordFromRuntimeController(controllerRecord, controller), { durable: false });
+        results.push({ entityID, entityResult, controllerResult });
+    }
+    const flush = require(path.join(__dirname, "../../gameStore")).flushTablesSync([
+        nativeNpcStore.TABLE.ENTITIES,
+        nativeNpcStore.TABLE.MODULES,
+        nativeNpcStore.TABLE.CARGO,
+        nativeNpcStore.TABLE.CONTROLLERS,
+    ]);
+    return {
+        success: flush.success && results.every((entry) => entry.entityResult.success && entry.controllerResult.success),
+        reason: String(options.reason || "checkpoint"),
+        data: results,
+    };
+}
 function destroyNativeNpcController(controller, options = {}) {
     const entityID = toPositiveInt(controller && (controller.entityID ||
         controller.itemID), 0);
@@ -1379,6 +1567,28 @@ function destroyNativeNpcController(controller, options = {}) {
         return {
             success: false,
             errorMsg: "NPC_NOT_FOUND",
+        };
+    }
+    const storedEntityRecord = nativeNpcStore.getNativeEntity(entityID);
+    if (storedEntityRecord && storedEntityRecord.transient !== true) {
+        npcRuntimePersistence.beginNpcOperation("destroy", `destroy:${entityID}:${toPositiveInt(storedEntityRecord.npcIncarnation, 1)}`, {
+            entityID,
+            npcCharacterID: toPositiveInt(storedEntityRecord.npcCharacterID, 0) || null,
+            incarnation: toPositiveInt(storedEntityRecord.npcIncarnation, 1),
+            destroyed: options.destroyed === true,
+            equipmentLossPolicy: options.equipmentLossPolicy || null,
+        });
+    }
+    const equipmentSettlement = require("./npcFittingService")
+        .settleNpcEquipmentBeforeRemoval(entityID, {
+        destroyed: options.destroyed === true,
+        lossPolicy: options.equipmentLossPolicy,
+    });
+    if (!equipmentSettlement || equipmentSettlement.success !== true) {
+        return {
+            success: false,
+            errorMsg: equipmentSettlement && equipmentSettlement.errorMsg ||
+                "NPC_EQUIPMENT_SETTLEMENT_FAILED",
         };
     }
     const scene = spaceRuntime.ensureScene(systemID);
@@ -1406,7 +1616,13 @@ function destroyNativeNpcController(controller, options = {}) {
         });
     }
     unregisterController(entityID);
-    nativeNpcStore.removeNativeEntityCascade(entityID);
+    const removal = nativeNpcStore.removeNativeEntityCascade(entityID, {
+        destroyed: options.destroyed === true,
+        equipmentLossPolicy: options.equipmentLossPolicy,
+        skipEquipmentSettlement: true,
+    });
+    if (!removal || removal.success !== true)
+        return removal;
     scheduleNpcIffVerdictRefresh(systemID);
     return {
         success: true,
@@ -1422,7 +1638,9 @@ module.exports = {
     refreshNativeNpcPilotIdentity,
     isNativeAmbientRuleOptions,
     materializeStoredNativeController,
+    rehydrateStoredNativeControllers,
     persistNativeRuntimeEntity,
+    checkpointAllNativeRuntimeState,
     dematerializeNativeController,
     spawnNativeDefinitionsInContext,
     spawnNativeNpcEntityInContext,
@@ -1431,4 +1649,10 @@ module.exports = {
     cleanupStaleNativeStartupControllers,
     destroyNativeNpcController,
 };
+npcRuntimePersistence.installNpcPersistenceShutdownHook((reason) => {
+    const result = checkpointAllNativeRuntimeState({ reason });
+    if (!result.success)
+        throw new Error("NPC runtime checkpoint failed");
+});
+npcRuntimePersistence.installNpcPersistenceCheckpointTimer((reason) => checkpointAllNativeRuntimeState({ reason }));
 //# sourceMappingURL=nativeNpcService.js.map

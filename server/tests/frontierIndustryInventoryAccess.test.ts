@@ -75,6 +75,12 @@ function fixture() {
         : !options.access.inRange ? { errorMsg: "ASSEMBLY_OUT_OF_RANGE" }
           : { capacity: 30000 },
     },
+    "./networkNodeFuelRuntime": {
+      NETWORK_NODE_TYPE_ID: 88092,
+      NETWORK_NODE_FUEL_BAY_FLAG: 172,
+      isAcceptedNetworkNodeFuelType: typeID => [77818, 88319, 88335].includes(Number(typeID)),
+      validateNetworkNodeFuelInventory: () => ({ errorMsg: "ASSEMBLY_NOT_FOUND" }),
+    },
     "../../_secondary/fitting/fittingRuntime": {
       getShipFittingSnapshot: () => ({ resourceState: { miningCapacity: state.miningCapacity } }),
     },

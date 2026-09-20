@@ -379,7 +379,7 @@ test("deposit enforces the volume-budget capacity and single fuel type", () => {
         items: [{ itemID: d1.itemID, quantity: 100 }],
     }).errorMsg, "MIXED_FUEL_TYPES");
 });
-test("mid-drain failure restores already-consumed source stacks", () => {
+test("atomic fuel deposit failure leaves source stacks and node unchanged", () => {
     const node = createTestNetworkNode();
     const { container, stack } = createFuelSource(OWNER_ID, FUEL_UNSTABLE, 1000);
     const prepared = networkNodeFuelRuntime.prepareNetworkNodeFuelDeposit({
@@ -390,15 +390,11 @@ test("mid-drain failure restores already-consumed source stacks", () => {
         items: [{ itemID: stack.itemID, quantity: 400 }],
     });
     assert.equal(prepared.success, true, prepared.errorMsg);
-    // Let the source drain succeed, then fail the node-state write so the
-    // compensation path has consumed stacks to restore.
-    const realUpdate = itemStore.updateInventoryItem;
-    itemStore.updateInventoryItem = (itemID, updater) => {
-        if (Number(itemID) === Number(node.itemID)) {
-            return { success: false, errorMsg: "WRITE_ERROR" };
-        }
-        return realUpdate(itemID, updater);
-    };
+    const realCommit = itemStore.consumeInventoryItemsAndUpdateItem;
+    itemStore.consumeInventoryItemsAndUpdateItem = () => ({
+        success: false,
+        errorMsg: "WRITE_ERROR",
+    });
     let executed;
     try {
         executed = networkNodeFuelRuntime.executeNetworkNodeFuelTransaction({
@@ -409,7 +405,7 @@ test("mid-drain failure restores already-consumed source stacks", () => {
         });
     }
     finally {
-        itemStore.updateInventoryItem = realUpdate;
+        itemStore.consumeInventoryItemsAndUpdateItem = realCommit;
     }
     assert.equal(executed.success, false);
     assert.equal(networkNodeFuelRuntime.readNetworkNodeFuelState(itemStore.findItemById(node.itemID)).quantity, 0, "failed commit must not store fuel");
@@ -419,7 +415,7 @@ test("mid-drain failure restores already-consumed source stacks", () => {
         .reduce((total, item) => total + (Number(item.stacksize ?? item.quantity) || 0), 0);
     assert.equal(totalUnstableInContainer, 1000, "all consumed units must be restored to the source container");
 });
-test("withdraw succeeds, validates, and restores on grant failure", () => {
+test("withdraw succeeds, validates, and remains atomic on grant failure", () => {
     const node = createTestNetworkNode();
     const { container, stack } = createFuelSource();
     const prepared = networkNodeFuelRuntime.prepareNetworkNodeFuelDeposit({
@@ -483,7 +479,7 @@ test("withdraw succeeds, validates, and restores on grant failure", () => {
         .filter((item) => Number(item.typeID) === FUEL_UNSTABLE)
         .reduce((total, item) => total + (Number(item.stacksize) || 0), 0);
     assert.equal(destinationTotal, 900, "500 leftover + 400 withdrawn");
-    // Grant failure rolls the node quantity back.
+    // The combined grant/node update failing leaves the node unchanged.
     const rollbackPrepared = networkNodeFuelRuntime.prepareNetworkNodeFuelWithdraw({
         characterID: OWNER_ID,
         networkNodeID: node.itemID,
@@ -492,8 +488,8 @@ test("withdraw succeeds, validates, and restores on grant failure", () => {
         destinationItemID: container.itemID,
         destinationFlagID: CARGO_FLAG,
     });
-    const realGrant = itemStore.grantItemsToCharacterLocation;
-    itemStore.grantItemsToCharacterLocation = () => ({
+    const realGrant = itemStore.grantStackableItemsToCharacterLocationAndUpdateItem;
+    itemStore.grantStackableItemsToCharacterLocationAndUpdateItem = () => ({
         success: false,
         errorMsg: "WRITE_ERROR",
     });
@@ -507,7 +503,7 @@ test("withdraw succeeds, validates, and restores on grant failure", () => {
         });
     }
     finally {
-        itemStore.grantItemsToCharacterLocation = realGrant;
+        itemStore.grantStackableItemsToCharacterLocationAndUpdateItem = realGrant;
     }
     assert.equal(rollbackResult.success, false);
     assert.equal(networkNodeFuelRuntime.readNetworkNodeFuelState(itemStore.findItemById(node.itemID)).quantity, 600, "failed withdraw must restore the stored quantity");

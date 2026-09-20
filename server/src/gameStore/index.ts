@@ -169,6 +169,7 @@ const RECOVERABLE_EMPTY_TABLES = new Set([
   "wormholeRuntimeState",
   "probeRuntimeState",
   "dungeonRuntimeState",
+  "stargateRuntimeState",
   "missionRuntimeState",
   "planetRuntimeState",
   "planetOrbitalState",
@@ -221,6 +222,9 @@ const SQLITE_TABLES = new Set([
   "playerBounties",
   "rafflesRuntime",
   "savedFittings",
+  "creationPresets",
+  "smartAssemblyConstructionTemplates",
+  "smartAssemblyDeploymentPlans",
   "shipCosmetics",
   "solarSystemInterferenceState",
   "structurePaintwork",
@@ -253,6 +257,9 @@ const SQLITE_TABLES = new Set([
   "reprocessingFacilityState",
   "sharedBookmarkFolders",
   "shipLogoFittings",
+  "smartAssemblyRequests",
+  "assemblyAccessPolicies",
+  "stargateRuntimeState",
   "structureAssetSafety",
   // Fourth wave: tables that appear in persistence-style tests (verified the
   // tests seed via data.json fixtures / assert via the service, not by reading
@@ -289,6 +296,8 @@ const SQLITE_TABLES = new Set([
   "chatStaticContracts",
   "chatBacklog",
   "contractRuntime",
+  "remoteSystemScans",
+  "systemSignatureEvents",
 ]);
 const SQLITE_DB_PATH = path.resolve(DATA_DIR, "..", "gamestore.sqlite");
 let sqliteRecoveryRequired = true;
@@ -1161,6 +1170,28 @@ function flushAllSync() {
 // ── Graceful shutdown ───────────────────────────────────────────────
 
 let shutdownInProgress = false;
+const shutdownHooks = new Set<any>();
+
+function registerShutdownHook(hook) {
+  if (typeof hook !== "function") {
+    throw new TypeError("database shutdown hook must be a function");
+  }
+  shutdownHooks.add(hook);
+  return () => shutdownHooks.delete(hook);
+}
+
+function runShutdownHooks(reason) {
+  const errors: any[] = [];
+  for (const hook of [...shutdownHooks]) {
+    try {
+      hook(reason);
+    } catch (error) {
+      errors.push(error);
+      dbErr(`shutdown hook FAILED for ${reason}: ${error.message}`);
+    }
+  }
+  return { success: errors.length === 0, errors };
+}
 
 function flushDirtyTablesForShutdown(reason) {
   if (shutdownInProgress) {
@@ -1168,6 +1199,7 @@ function flushDirtyTablesForShutdown(reason) {
   }
   shutdownInProgress = true;
   dbLog(`received ${reason}, flushing cache to disk...`);
+  runShutdownHooks(reason);
   flushAllSync();
   return true;
 }
@@ -1193,7 +1225,10 @@ process.on("beforeExit", () => {
   if (process[TEST_STORE_CLEANUP_SYMBOL] === true) {
     return;
   }
-  if (dirty.size > 0 || inFlightFlushes.size > 0) {
+  // Hooks may need to create their final checkpoint even when the database was
+  // clean before the event loop became empty. Processes with no hooks retain
+  // the quiet, no-op behavior used by probes and migration tooling.
+  if (shutdownHooks.size > 0 || dirty.size > 0 || inFlightFlushes.size > 0) {
     flushDirtyTablesForShutdown("beforeExit");
   }
 });
@@ -1203,7 +1238,11 @@ process.on("exit", () => {
     return;
   }
   // Last-chance sync flush for any remaining dirty tables
-  if (dirty.size > 0 || inFlightFlushes.size > 0) {
+  if (
+    (!shutdownInProgress && shutdownHooks.size > 0) ||
+    dirty.size > 0 ||
+    inFlightFlushes.size > 0
+  ) {
     flushDirtyTablesForShutdown("exit");
   }
 });
@@ -1394,6 +1433,7 @@ module.exports = {
   flushTableSync,
   flushTablesSync,
   flushAllSync,
+  registerShutdownHook,
   // Internal hooks for migration tooling and tests.
   _dataDir: DATA_DIR,
   _sqliteDbPath: SQLITE_DB_PATH,

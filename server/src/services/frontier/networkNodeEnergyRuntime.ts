@@ -8,6 +8,9 @@ const { NETWORK_NODE_RADIUS_METERS, NETWORK_NODE_TYPE_ID, DEFAULT_NETWORK_NODE_M
   getAssemblyEnergyRequirements, getConfiguredAssemblyEnergyRequirements, isAssemblyEnergyConfigLoaded,
   getAssemblyEnergyConfigSource } = require("./networkNodeEnergyConfig");
 const ENERGY_INFO_KEY = "evejsFrontierEnergy";
+const LOW_FUEL_RATIO = 0.2;
+const MEDIUM_POWER_USAGE_RATIO = 0.5;
+const HIGH_POWER_USAGE_RATIO = 0.8;
 let reconciling = false;
 // Observations are scoped to the running deployment and refreshed by its worker.
 // Do not persist them across restarts, where the active chain may have changed.
@@ -84,8 +87,10 @@ function assemblyKind(item, component) {
 function activeIndustry(item) {
   const blueprints = require("./industryBlueprints");
   if (!blueprints.isIndustryFacilityType(item.typeID)) return null;
-  const production = require("./industryProduction").getProduction(item);
-  if (!production || !["RUNNING", "DISCONTINUING"].includes(production.state)) return null;
+  const active = require("./industryProduction").getProductions(item)
+    .find(({ production }) => production && ["RUNNING", "DISCONTINUING"].includes(production.state));
+  if (!active) return null;
+  const { laneID, production } = active;
   const blueprint = blueprints.getSelectedBlueprint(item);
   const products = Object.values<any>(blueprint?.outputs || {}).map(slot => {
     const name = itemStore.getItemMetadata(slot.type_id)?.name;
@@ -95,7 +100,8 @@ function activeIndustry(item) {
       quantityPerRun: Number(slot.quantity_per_run),
     };
   }).sort((a, b) => a.typeID - b.typeID);
-  return { state: production.state, jobID: production.jobID, runEndAtMs: production.runEndAtMs, products };
+  return { laneID, state: production.state, jobID: production.jobID,
+    runEndAtMs: production.runEndAtMs, products };
 }
 function completed(item) {
   const state = deployment().readConstructionState(item);
@@ -136,6 +142,106 @@ function energyUsed(view, nodeID, excludedID = 0) {
     view.bindings.get(Number(item.itemID)) === nodeID && deployment().readConstructionState(item).assemblyStatus === 2
     ? view.costs.get(Number(item.typeID)) : 0), 0);
 }
+
+function getPowerUsageLevel(online, energyUsed, energyProduction, overLimit = false) {
+  if (overLimit || energyUsed > energyProduction) return "over_limit";
+  if (!online || energyProduction <= 0) return "offline";
+  const ratio = energyProduction > 0 ? energyUsed / energyProduction : 0;
+  if (ratio <= MEDIUM_POWER_USAGE_RATIO) return "low";
+  if (ratio <= HIGH_POWER_USAGE_RATIO) return "medium";
+  return "high";
+}
+
+function buildNetworkNodeOperationalStatus(node, view, options: Record<string, any> = {}) {
+  const fuelRuntime = require("./networkNodeFuelRuntime");
+  const fuel = fuelRuntime.readNetworkNodeFuelState(node);
+  const fuelVolume = fuel.typeID > 0
+    ? Math.max(0, Number(require("../inventory/itemStore").getInventoryItemUnitVolume({ typeID: fuel.typeID })))
+    : 0;
+  const fuelCapacityVolume = fuelRuntime.getNetworkNodeFuelAttributes().fuelMaxCapacityVolume;
+  const fuelUsedVolume = fuel.quantity * fuelVolume;
+  const fuelRatio = fuelCapacityVolume > 0 ? fuelUsedVolume / fuelCapacityVolume : 0;
+  const observed = readSuiNetworkNodeEnergy(node);
+  const maxEnergy = observed?.maxEnergy ?? getNetworkNodeEnergyCapacity(node.typeID);
+  const online = nodeOnline(node);
+  const energyProduction = observed?.currentEnergyProduction ?? (online ? maxEnergy : 0);
+  const actualEnergyUsed = observed?.energyUsed ?? energyUsed(view, Number(node.itemID));
+  const reportedEnergyUsed = Math.max(actualEnergyUsed, Number(options.projectedEnergyUsed) || 0);
+  const overLimit = options.errorCode === "NETWORK_NODE_ENERGY_EXCEEDED" ||
+    reportedEnergyUsed > energyProduction;
+  const usageRatio = energyProduction > 0
+    ? reportedEnergyUsed / energyProduction
+    : (reportedEnergyUsed > 0 ? null : 0);
+  const fuelLevel = fuel.quantity <= 0 ? "empty" : fuelRatio <= LOW_FUEL_RATIO ? "low" : "normal";
+  const powerUsageLevel = getPowerUsageLevel(online, reportedEnergyUsed, energyProduction, overLimit);
+  const activeFlags = [
+    ...(fuelLevel === "empty" ? ["FUEL_EMPTY"] : fuelLevel === "low" ? ["FUEL_LOW"] : []),
+    `POWER_USAGE_${powerUsageLevel.toUpperCase()}`,
+    ...(overLimit ? ["POWER_LIMIT_EXCEEDED"] : []),
+  ];
+  return {
+    fuel: {
+      level: fuelLevel,
+      low: fuelLevel === "empty" || fuelLevel === "low",
+      typeID: fuel.typeID,
+      quantity: fuel.quantity,
+      capacityVolume: fuelCapacityVolume,
+      usedVolume: fuelUsedVolume,
+      fillRatio: fuelRatio,
+    },
+    power: {
+      usageLevel: powerUsageLevel,
+      usageRatio,
+      energyUsed: reportedEnergyUsed,
+      actualEnergyUsed,
+      energyProduction,
+      maxEnergy,
+      energyAvailable: Math.max(0, energyProduction - actualEnergyUsed),
+      overLimit,
+    },
+    activeFlags,
+    ...(options.errorCode ? {
+      error: {
+        code: String(options.errorCode),
+        requestedAssemblyID: positiveID(options.requestedAssemblyID) || null,
+        requestedEnergy: Math.max(0, Number(options.requestedEnergy) || 0),
+      },
+    } : {}),
+  };
+}
+
+function publishNetworkNodeOperationalStatus(nodeID, options: Record<string, any> = {}) {
+  const view = snapshot();
+  const node = view.nodes.find(candidate => Number(candidate.itemID) === Number(nodeID));
+  if (!node) return { success: false as const, errorMsg: "ASSEMBLY_NOT_FOUND" };
+  const status = buildNetworkNodeOperationalStatus(node, view, options);
+  // The journal records band transitions, not every fuel tick or energy-unit
+  // change. Exact counters remain available from getNetworkNodeEnergyStatus.
+  const signalStatus = {
+    fuel: {
+      level: status.fuel.level,
+      low: status.fuel.low,
+      typeID: status.fuel.typeID,
+    },
+    power: {
+      usageLevel: status.power.usageLevel,
+      overLimit: status.power.overLimit,
+    },
+    activeFlags: status.activeFlags,
+    ...(status.error ? { error: status.error } : {}),
+  };
+  try {
+    const published = require("./smartAssemblyRequestRuntime").publishAssemblyStatusSignal(
+      Number(node.itemID),
+      "network_node.resources",
+      signalStatus,
+      { ownerID: Number(node.ownerID), actorAssemblyID: Number(node.itemID) },
+    );
+    return { ...published, status };
+  } catch (error) {
+    return { success: false as const, errorMsg: "ASSEMBLY_SIGNAL_PUBLISH_FAILED", status };
+  }
+}
 function writeBinding(item, networkNodeID, autoConnect) {
   const previous = info(item)[ENERGY_INFO_KEY];
   if (previous?.networkNodeID === networkNodeID && previous?.autoConnect === autoConnect) return { success: true, data: item };
@@ -165,6 +271,14 @@ function reconcileNetworkNodeEnergy() {
       const cost = view.costs.get(Number(item.typeID));
       const node = view.nodes.find(node => Number(node.itemID) === nodeID);
       if (!nodeID || !nodeOnline(node) || (isAssemblyEnergyConfigLoaded() && remaining.get(nodeID) < cost)) {
+        if (nodeID && node && isAssemblyEnergyConfigLoaded() && remaining.get(nodeID) < cost) {
+          publishNetworkNodeOperationalStatus(nodeID, {
+            errorCode: "NETWORK_NODE_ENERGY_EXCEEDED",
+            requestedAssemblyID: item.itemID,
+            requestedEnergy: cost,
+            projectedEnergyUsed: getNetworkNodeEnergyCapacity(node.typeID) - remaining.get(nodeID) + cost,
+          });
+        }
         const offline = deployment().offlineAssemblyForFuelDepletion(item.itemID);
         if (!offline.success) throw new Error(`Cannot take unpowered assembly ${item.itemID} offline`);
       } else remaining.set(nodeID, remaining.get(nodeID) - cost);
@@ -189,7 +303,10 @@ function validateAssemblyOnline(item) {
   // A confirmed online assembly already has its reservation. Pending local
   // transitions do not prove that the chain has reserved or released anything.
   if (observed && deployment().readConstructionState(item).assemblyStatus === 2 &&
-      !require("./suiAssemblyState").readSuiAssemblyStatusIntent(item)) return { success: true as const };
+      !require("./suiAssemblyState").readSuiAssemblyStatusIntent(item)) {
+    publishNetworkNodeOperationalStatus(nodeID);
+    return { success: true as const };
+  }
   // Native commits can queue online requests before the worker submits them.
   // Hold their cost for admission only; the displayed total stays chain-derived.
   const pendingEnergy = observed ? view.items.reduce((total, candidate) => total + (
@@ -199,8 +316,16 @@ function validateAssemblyOnline(item) {
   const available = observed ? Math.max(0, observed.currentEnergyProduction - observed.energyUsed - pendingEnergy)
     : getNetworkNodeEnergyCapacity(node.typeID) - energyUsed(view, nodeID, Number(item.itemID));
   if (view.costs.get(Number(item.typeID)) > available) {
+    publishNetworkNodeOperationalStatus(nodeID, {
+      errorCode: "NETWORK_NODE_ENERGY_EXCEEDED",
+      requestedAssemblyID: item.itemID,
+      requestedEnergy: view.costs.get(Number(item.typeID)),
+      projectedEnergyUsed: (observed?.energyUsed ?? energyUsed(view, nodeID, Number(item.itemID))) +
+        pendingEnergy + view.costs.get(Number(item.typeID)),
+    });
     return { success: false as const, errorMsg: "NETWORK_NODE_ENERGY_EXCEEDED" };
   }
+  publishNetworkNodeOperationalStatus(nodeID);
   return { success: true as const };
 }
 function getAssemblyEnergyState(itemID) {
@@ -234,6 +359,8 @@ function getNetworkNodeEnergyStatus(characterID, nodeID) {
   const maxEnergy = observed?.maxEnergy ?? getNetworkNodeEnergyCapacity(node.typeID);
   const production = observed?.currentEnergyProduction ?? (nodeOnline(node) ? maxEnergy : 0);
   const used = observed?.energyUsed ?? energyUsed(view, Number(nodeID));
+  const operational = buildNetworkNodeOperationalStatus(node, view);
+  publishNetworkNodeOperationalStatus(nodeID);
   const componentsByType = new Map(components().map(component => [Number(component.typeID ?? component._key), component]));
   const entry = item => ({ itemID: Number(item.itemID), typeID: Number(item.typeID),
     name: item.itemName || itemStore.getItemMetadata(item.typeID)?.name || `Assembly ${item.itemID}`,
@@ -262,6 +389,12 @@ function getNetworkNodeEnergyStatus(characterID, nodeID) {
   };
   return { success: true as const, data: { networkNodeID: Number(nodeID), radiusMeters: NETWORK_NODE_RADIUS_METERS,
     maxEnergy, energyUsed: used, energyAvailable: Math.max(0, production - used),
+    fuelLevel: operational.fuel.level, lowFuel: operational.fuel.low,
+    fuelFillRatio: operational.fuel.fillRatio,
+    powerUsageLevel: operational.power.usageLevel,
+    powerUsageRatio: operational.power.usageRatio,
+    overPowerLimit: operational.power.overLimit,
+    resourceSignals: operational,
     online: nodeOnline(node), energyConfigSource: getAssemblyEnergyConfigSource(),
     connectedAssemblies: view.items.filter(item => view.bindings.get(Number(item.itemID)) === Number(nodeID)).map(entry),
     nearbyAssemblies: view.items.filter(item => Number(item.typeID) !== NETWORK_NODE_TYPE_ID && eligible(item, node) &&
@@ -302,6 +435,7 @@ function changeConnection(session, assemblyID, nodeID, connect) {
 module.exports = { ENERGY_INFO_KEY, getAssemblyEnergyConfig, getNetworkNodeEnergyCapacity,
   projectSuiNetworkNodeEnergy, clearSuiNetworkNodeEnergy,
   getAssemblyEnergyState, getNetworkNodeEnergyStatus, validateAssemblyOnline, reconcileNetworkNodeEnergy,
+  buildNetworkNodeOperationalStatus, publishNetworkNodeOperationalStatus,
   connectAssembly: (session, assemblyID, nodeID) => changeConnection(session, assemblyID, nodeID, true),
   disconnectAssembly: (session, assemblyID, nodeID) => changeConnection(session, assemblyID, nodeID, false),
 };

@@ -724,6 +724,23 @@ function Read-NpcDeployment {
         }
         $validated[$field] = $address
     }
+    $hasAccessPackage = $manifest.Contains('accessPackageId')
+    $hasAccessOrigin = $manifest.Contains('accessTypeOrigin')
+    if ($hasAccessPackage -ne $hasAccessOrigin) {
+        throw 'NPC deployment accessPackageId and accessTypeOrigin must be configured together.'
+    }
+    if ($hasAccessPackage) {
+        foreach ($field in @('accessPackageId', 'accessTypeOrigin')) {
+            if ($manifest[$field] -isnot [string]) {
+                throw "NPC deployment $field must be a canonical nonzero Sui address."
+            }
+            $address = Assert-SuiAddress -Value $manifest[$field] -Label "NPC deployment $field"
+            if ($address -eq ('0x' + ('0' * 64))) {
+                throw "NPC deployment $field must be a canonical nonzero Sui address."
+            }
+            $validated[$field] = $address
+        }
+    }
     $expected = @{ worldPackageId = $PackageId; objectRegistryId = $ObjectRegistryId; adminAclId = $AdminAclId }
     foreach ($field in $expected.Keys) {
         if ($validated[$field] -cne $expected[$field]) {

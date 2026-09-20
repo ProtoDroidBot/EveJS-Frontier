@@ -36,6 +36,9 @@ MAP_VIEW_PATCHER = SCRIPT_DIR / "patch_frontier_map_view.py"
 FITTING_COMPATIBILITY_PATCHER = SCRIPT_DIR / "patch_frontier_fitting.py"
 INVENTORY_VIEW_PATCHER = SCRIPT_DIR / "patch_frontier_inventory.py"
 COLLISION_VFX_PATCHER = SCRIPT_DIR / "patch_frontier_collision_vfx.py"
+CREATION_TRANSFORM_PATCHER = (
+    SCRIPT_DIR / "patch_frontier_creation_transform.py"
+)
 PEM_CERTIFICATE_RE = re.compile(
     rb"-----BEGIN CERTIFICATE-----\s+([A-Za-z0-9+/=\r\n]+?)\s+"
     rb"-----END CERTIFICATE-----",
@@ -751,6 +754,14 @@ def code_patch_states(archive: Path, build: int) -> dict:
         if collision_vfx not in {"source", "patched", "outdated"}:
             raise FrontierWindowsError(f"Unexpected collision VFX state: {collision_vfx}")
         states["collisionVfx"] = collision_vfx
+        creation_transform = run_python_patcher(
+            CREATION_TRANSFORM_PATCHER, archive, build, check=True
+        )
+        if creation_transform not in {"source", "patched", "outdated"}:
+            raise FrontierWindowsError(
+                f"Unexpected Creation transform state: {creation_transform}"
+            )
+        states["creationTransform"] = creation_transform
     return states
 
 
@@ -762,6 +773,7 @@ def expected_code_states(build: int, state: str) -> dict:
         result["fittingCompatibility"] = state
         result["inventoryView"] = state
         result["collisionVfx"] = state
+        result["creationTransform"] = state
     return result
 
 
@@ -787,6 +799,8 @@ def patch_code_archive(archive: Path, build: int) -> dict:
         run_python_patcher(INVENTORY_VIEW_PATCHER, archive, build, check=False)
     if states.get("collisionVfx") in {"source", "outdated"}:
         run_python_patcher(COLLISION_VFX_PATCHER, archive, build, check=False)
+    if states.get("creationTransform") in {"source", "outdated"}:
+        run_python_patcher(CREATION_TRANSFORM_PATCHER, archive, build, check=False)
     patched = code_patch_states(archive, build)
     if patched != expected_code_states(build, "patched"):
         raise FrontierWindowsError(f"code.ccp did not reach the exact patched state: {patched}")
@@ -1372,6 +1386,7 @@ def check_stage(
     allow_inventory_view_source: bool = False,
     allow_collision_vfx_source: bool = False,
     allow_collision_vfx_outdated: bool = False,
+    allow_creation_transform_source: bool = False,
 ) -> dict:
     stage_root = stage_root.resolve()
     marker_path, marker = load_stage(stage_root)
@@ -1412,6 +1427,9 @@ def check_stage(
     if (allow_collision_vfx_outdated and build == 3502403
             and code_states.get("collisionVfx") == "outdated"):
         expected_states["collisionVfx"] = "outdated"
+    if (allow_creation_transform_source and build == 3502403
+            and code_states.get("creationTransform") in {"source", "outdated"}):
+        expected_states["creationTransform"] = code_states["creationTransform"]
     if code_states != expected_states:
         raise FrontierWindowsError(f"code.ccp patch state is not fully enabled: {code_states}")
     verify_placebo(paths["commonIni"])
@@ -1489,7 +1507,8 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
                 allow_fitting_compatibility_outdated=True,
                 allow_inventory_view_source=True,
                 allow_collision_vfx_source=True,
-                allow_collision_vfx_outdated=True, **check_options)
+                allow_collision_vfx_outdated=True,
+                allow_creation_transform_source=True, **check_options)
     marker_path, marker = load_stage(stage_root)
     build = int(marker["build"])
     paths = stage_paths(stage_root, marker)
@@ -1498,14 +1517,16 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             and states.get("mapViewLifecycle") == "patched"
             and states.get("fittingCompatibility") == "patched"
             and states.get("inventoryView") == "patched"
-            and states.get("collisionVfx") == "patched"):
+            and states.get("collisionVfx") == "patched"
+            and states.get("creationTransform") == "patched"):
         return check_stage(stage_root, **check_options)
     if (build != 3502403
             or states.get("industryStorage") not in {"source", "patched", "outdated"}
             or states.get("mapViewLifecycle") not in {"source", "patched"}
             or states.get("fittingCompatibility") not in {"source", "patched", "outdated"}
             or states.get("inventoryView") not in {"source", "patched"}
-            or states.get("collisionVfx") not in {"source", "patched", "outdated"}):
+            or states.get("collisionVfx") not in {"source", "patched", "outdated"}
+            or states.get("creationTransform") not in {"source", "patched", "outdated"}):
         raise FrontierWindowsError("Stage cannot receive the current code adapters")
     _, profile = resolve_profile(build, str(marker["nativeBlue"]), check_options.get("profile_path"))
     touched = [paths["code"], paths["manifest"], marker_path]
@@ -1525,6 +1546,8 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             run_python_patcher(INVENTORY_VIEW_PATCHER, paths["code"], build, check=False)
         if states["collisionVfx"] != "patched":
             run_python_patcher(COLLISION_VFX_PATCHER, paths["code"], build, check=False)
+        if states["creationTransform"] != "patched":
+            run_python_patcher(CREATION_TRANSFORM_PATCHER, paths["code"], build, check=False)
         refresh_manifest_atomic(paths["manifest"], stage_root, profile)
         for path in touched[:2]:
             marker["currentHashes"][path.relative_to(stage_root).as_posix()] = sha256_file(path)
@@ -1548,6 +1571,10 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             marker["collisionVfxPatchState"] = "patched"
             marker["collisionVfxPatchBackup"] = str(backup_root)
             marker["preCollisionVfxHashes"] = original_hashes
+        if states["creationTransform"] != "patched":
+            marker["creationTransformPatchState"] = "patched"
+            marker["creationTransformPatchBackup"] = str(backup_root)
+            marker["preCreationTransformHashes"] = original_hashes
         write_json_atomic(marker_path, marker)
         return check_stage(stage_root, **check_options)
     except BaseException:
@@ -1629,6 +1656,7 @@ def patch_stage(
                 "fittingCompatibilityPatchState": code_states.get("fittingCompatibility"),
                 "inventoryViewPatchState": code_states.get("inventoryView"),
                 "collisionVfxPatchState": code_states.get("collisionVfx"),
+                "creationTransformPatchState": code_states.get("creationTransform"),
                 "fileStates": {
                     "nativeBlue": "exact-target",
                     "codeCcp": "exact-patched",

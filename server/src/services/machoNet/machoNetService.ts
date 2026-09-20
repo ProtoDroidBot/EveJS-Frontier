@@ -212,6 +212,7 @@ class MachoNetService extends BaseService {
         ["structureDeliveries", null],
         ["structure", null],
         ["structureCynoBeaconMgr", null],
+        ["jumpDriveMgr", null],
         ["structureJumpBridgeMgr", null],
         ["structureDeployment", null],
         ["structureProfiles", null],

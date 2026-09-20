@@ -17,9 +17,15 @@ const {
   unwrapMarshalValue,
 } = require("../src/services/_shared/serviceHelpers");
 const creationRuntime = require("../src/services/frontier/creationRuntime");
+const {
+  rotateCreationCellOffset,
+  validateCreationLayout,
+} = require("../src/services/frontier/creationLayoutValidation");
 const creationAbilityRuntime = require("../src/services/frontier/creationAbilityRuntime");
 const fuelTankRuntime = require("../src/services/frontier/fuelTankRuntime");
 const {
+  getCreationModule,
+  getCreationPart,
   getCreationTemplate,
 } = require("../src/services/frontier/creationStaticData");
 const iffRuntime = require("../src/services/frontier/iffRuntime");
@@ -351,6 +357,58 @@ function addCreationModuleToFixture(fixture, typeID) {
   );
   assert.equal(shipUpdate.success, true, shipUpdate.errorMsg);
   return moduleItem;
+}
+
+function cloneCreationState(state) {
+  return JSON.parse(JSON.stringify(state));
+}
+
+function stateWithInteriorModule(state, itemID, typeID, placement) {
+  const candidate = cloneCreationState(state);
+  candidate.modules.push({ itemID, typeID });
+  candidate.interiorPlacements.push({ itemID, ...placement });
+  return candidate;
+}
+
+function findValidInteriorPlacement(state, template, itemID, typeID) {
+  const definition = getCreationModule(typeID);
+  const occupancy = definition?.placement?.occupancy?.cells;
+  assert.ok(Array.isArray(occupancy), `type ${typeID} must be an interior module`);
+
+  for (const [rawPartID, partReference] of Object.entries<any>(template.parts || {})) {
+    const partID = Number(rawPartID);
+    const part = getCreationPart(partReference.graphic_id);
+    for (const rotationZ of [0, 90, 180, 270]) {
+      const offsets = occupancy.map((cell) =>
+        rotateCreationCellOffset(Number(cell.x), Number(cell.y), 0, rotationZ));
+      const anchors = new Set<string>();
+      for (const partCell of Array.isArray(part?.cells) ? part.cells : []) {
+        for (const [dx, dy] of offsets) {
+          anchors.add(`${Number(partCell.x) - dx}:${Number(partCell.y) - dy}`);
+        }
+      }
+      for (const anchor of anchors) {
+        const [x, y] = anchor.split(":").map(Number);
+        const placement = {
+          partID,
+          x,
+          y,
+          z: 0,
+          rotation: { x: 0, y: 0, z: rotationZ },
+        };
+        const candidate = stateWithInteriorModule(
+          state,
+          itemID,
+          typeID,
+          placement,
+        );
+        if (validateCreationLayout(candidate, template).length === 0) {
+          return placement;
+        }
+      }
+    }
+  }
+  assert.fail(`no valid SDE placement found for Creation module type ${typeID}`);
 }
 
 function expireLaunchBayCooldown(moduleItemID) {
@@ -1482,6 +1540,69 @@ test("Creation module removal immediately refreshes live cargo and fuel capacity
   assert.equal(refresh.mock.callCount(), 2);
 });
 
+test("Creation draft validation rejects invalid SDE geometry before inventory mutation", () => {
+  const shipGrant = itemStore.grantItemToCharacterLocation(
+    OWNER_ID,
+    64000001,
+    itemStore.ITEM_FLAGS.HANGAR,
+    95276,
+    1,
+    { individualItems: true, singleton: 1 },
+  );
+  assert.equal(shipGrant.success, true, shipGrant.errorMsg);
+  const ship = shipGrant.data.items[0];
+  const ensured = creationRuntime.ensureCreationState(ship, OWNER_ID);
+  assert.equal(ensured.success, true, ensured.errorMsg);
+  const moduleGrant = itemStore.grantItemToCharacterLocation(
+    OWNER_ID,
+    ship.itemID,
+    itemStore.ITEM_FLAGS.CARGO_HOLD,
+    TYPE_BEACON,
+    1,
+    { individualItems: true, singleton: 1 },
+  );
+  assert.equal(moduleGrant.success, true, moduleGrant.errorMsg);
+  const moduleItem = moduleGrant.data.items[0];
+  const template = getCreationTemplate(ship.typeID);
+  const partID = Number(Object.keys(template.parts)[0]);
+  const stateBefore = creationRuntime.readCreationState(
+    itemStore.findItemById(ship.itemID),
+  );
+  const mutationVersionBefore = itemStore.getItemMutationVersion();
+  const diagnostics = unwrapMarshalValue(
+    new CreationService().Handle_commit_management_draft([ship.itemID, [{
+      op: "add",
+      itemID: moduleItem.itemID,
+      typeID: TYPE_BEACON,
+      partID,
+      sourceLocationID: ship.itemID,
+      sourceFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
+      x: 1000,
+      y: 1000,
+      z: 0,
+      rotationX: 0,
+      rotationY: 0,
+      rotationZ: 0,
+    }]], {
+      charid: OWNER_ID,
+      characterID: OWNER_ID,
+      shipid: ship.itemID,
+      shipID: ship.itemID,
+      sendNotification() {},
+    }),
+  );
+
+  assert.ok(diagnostics.some((entry) =>
+    entry.code === "invalid_placement" &&
+    entry.params.reason === "CELL_OUTSIDE_PART"));
+  assert.equal(itemStore.getItemMutationVersion(), mutationVersionBefore);
+  assert.equal(itemStore.findItemById(moduleItem.itemID).flagID, itemStore.ITEM_FLAGS.CARGO_HOLD);
+  assert.deepEqual(
+    creationRuntime.readCreationState(itemStore.findItemById(ship.itemID)),
+    stateBefore,
+  );
+});
+
 test("Creation fitting splits one singleton and Dogma bridges online state", () => {
   const stationID = 64000001;
   const shipGrant = itemStore.grantItemToCharacterLocation(
@@ -1512,8 +1633,12 @@ test("Creation fitting splits one singleton and Dogma bridges online state", () 
   assert.equal(sourceStack.stacksize, 2);
 
   const template = getCreationTemplate(ship.typeID);
-  const partID = Number(Object.keys(template && template.parts || {})[0]) || 0;
-  assert.ok(partID > 0);
+  const beaconPlacement = findValidInteriorPlacement(
+    initiallyEnsured.data.state,
+    template,
+    sourceStack.itemID,
+    TYPE_BEACON,
+  );
 
   const notifications: any[] = [];
   const session: Record<string, any> = {
@@ -1534,15 +1659,15 @@ test("Creation fitting splits one singleton and Dogma bridges online state", () 
       op: "add",
       itemID: sourceStack.itemID,
       typeID: TYPE_BEACON,
-      partID,
+      partID: beaconPlacement.partID,
       sourceLocationID: ship.itemID,
       sourceFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
-      x: 0,
-      y: 0,
-      z: 0,
-      rotationX: 0,
-      rotationY: 0,
-      rotationZ: 0,
+      x: beaconPlacement.x,
+      y: beaconPlacement.y,
+      z: beaconPlacement.z,
+      rotationX: beaconPlacement.rotation.x,
+      rotationY: beaconPlacement.rotation.y,
+      rotationZ: beaconPlacement.rotation.z,
     }]], session),
   );
   assert.deepEqual(commitDiagnostics, []);
@@ -1791,6 +1916,8 @@ test("Creation live entities enforce their derived capacitor and retain active m
   );
   assert.equal(shipGrant.success, true, shipGrant.errorMsg);
   const ship = shipGrant.data.items[0];
+  const ensured = creationRuntime.ensureCreationState(ship, OWNER_ID);
+  assert.equal(ensured.success, true, ensured.errorMsg);
   const moduleGrant = itemStore.grantItemToCharacterLocation(
     OWNER_ID,
     ship.itemID,
@@ -1812,16 +1939,24 @@ test("Creation live entities enforce their derived capacitor and retain active m
   assert.equal(blackstartGrant.success, true, blackstartGrant.errorMsg);
   const sourceBlackstart = blackstartGrant.data.items[0];
   const template = getCreationTemplate(ship.typeID);
-  const partID = Number(Object.keys(template && template.parts || {})[0]) || 0;
-  const occupiedPartIDs = new Set(
-    (template && Array.isArray(template.interior_modules)
-      ? template.interior_modules
-      : []).map((module) => Number(module.part_id)),
+  const transponderPlacement = findValidInteriorPlacement(
+    ensured.data.state,
+    template,
+    sourceModule.itemID,
+    TYPE_TRANSPONDER,
   );
-  const blackstartPartID = Number(
-    Object.keys(template && template.parts || {})
-      .find((candidate) => !occupiedPartIDs.has(Number(candidate))),
-  ) || partID;
+  const stateWithTransponder = stateWithInteriorModule(
+    ensured.data.state,
+    sourceModule.itemID,
+    TYPE_TRANSPONDER,
+    transponderPlacement,
+  );
+  const blackstartPlacement = findValidInteriorPlacement(
+    stateWithTransponder,
+    template,
+    sourceBlackstart.itemID,
+    TYPE_BLACKSTART_CELL,
+  );
   const commit = creationRuntime.commitCreationDraft(
     ship,
     OWNER_ID,
@@ -1830,29 +1965,29 @@ test("Creation live entities enforce their derived capacitor and retain active m
         op: "add",
         itemID: sourceModule.itemID,
         typeID: TYPE_TRANSPONDER,
-        partID,
+        partID: transponderPlacement.partID,
         sourceLocationID: ship.itemID,
         sourceFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
-        x: 0,
-        y: 0,
-        z: 0,
-        rotationX: 0,
-        rotationY: 0,
-        rotationZ: 0,
+        x: transponderPlacement.x,
+        y: transponderPlacement.y,
+        z: transponderPlacement.z,
+        rotationX: transponderPlacement.rotation.x,
+        rotationY: transponderPlacement.rotation.y,
+        rotationZ: transponderPlacement.rotation.z,
       },
       {
         op: "add",
         itemID: sourceBlackstart.itemID,
         typeID: TYPE_BLACKSTART_CELL,
-        partID: blackstartPartID,
+        partID: blackstartPlacement.partID,
         sourceLocationID: ship.itemID,
         sourceFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
-        x: 0,
-        y: 0,
-        z: 0,
-        rotationX: 0,
-        rotationY: 0,
-        rotationZ: 0,
+        x: blackstartPlacement.x,
+        y: blackstartPlacement.y,
+        z: blackstartPlacement.z,
+        rotationX: blackstartPlacement.rotation.x,
+        rotationY: blackstartPlacement.rotation.y,
+        rotationZ: blackstartPlacement.rotation.z,
       },
     ],
     null,

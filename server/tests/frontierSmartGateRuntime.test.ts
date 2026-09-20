@@ -24,6 +24,7 @@ test.mock.method(reference, "readStaticRows", table => {
 
 const store = require("../src/services/inventory/itemStore");
 const space = require("../src/space/runtime");
+const transitions = require("../src/space/transitions");
 const character = require("../src/services/character/characterState");
 const energy = require("../src/services/frontier/networkNodeEnergyRuntime");
 const deployment = require("../src/services/frontier/deploymentRuntime");
@@ -31,9 +32,17 @@ const deployment = require("../src/services/frontier/deploymentRuntime");
 function fixture(t) {
   const items = new Map<number, any>();
   const changed: number[] = [];
+  const jumps: Array<{ characterID: number; solarSystemID: number; options: any }> = [];
   let failItemID = 0;
   t.mock.method(store, "findItemById", itemID => items.get(Number(itemID)) || null);
   t.mock.method(store, "listOwnedItems", ownerID => [...items.values()].filter(item => item.ownerID === ownerID));
+  t.mock.method(store, "getActiveShipItem", characterID => ({
+    itemID: Number(characterID) + 1_000_000,
+    ownerID: Number(characterID),
+    locationID: 30000004,
+    flagID: 0,
+    radius: 50,
+  }));
   t.mock.method(store, "updateInventoryItem", (itemID, updater) => {
     if (Number(itemID) === failItemID) return { success: false, errorMsg: "WRITE_ERROR" };
     const previousData = structuredClone(items.get(Number(itemID)));
@@ -43,6 +52,10 @@ function fixture(t) {
   });
   t.mock.method(energy, "reconcileNetworkNodeEnergy", () => {});
   t.mock.method(character, "emitItemsChangedForSession", (_session, item) => { changed.push(item.itemID); });
+  t.mock.method(transitions, "jumpSessionToSolarSystem", (session, solarSystemID, options) => {
+    jumps.push({ characterID: session.characterID, solarSystemID, options });
+    return { success: true, data: { solarSystemID } };
+  });
   // No live scenes or database writes are involved in this validation fixture.
   const previousScenes = space.scenes;
   space.scenes = new Map();
@@ -55,7 +68,7 @@ function fixture(t) {
     deployment._testing.clearPendingAssemblyTransitions();
   });
   return {
-    items, changed,
+    items, changed, jumps,
     session: { characterID: OWNER, solarsystemid2: 30000004, sendNotification() {} },
     failWritesTo(itemID) { failItemID = itemID; },
     gate(itemID, solarSystemID = 30000004, overrides: Record<string, any> = {}) {
@@ -74,6 +87,62 @@ function fixture(t) {
     state(itemID) { return deployment.readConstructionState(items.get(itemID)); },
   };
 }
+
+test("Smart Catapult selects an in-range solar system without a destination gate", t => {
+  const f = fixture(t);
+  f.gate(1, 30000004, { typeID: 95627 });
+  assert.deepEqual(
+    deployment.getAvailableCatapultSystems(f.session, 1).data.systems,
+    [30000005, 30000006, 30000007],
+  );
+  const selected = deployment.setCatapultDestination(f.session, 1, 30000006);
+  assert.equal(selected.success, true);
+  assert.equal(selected.data.destinationSolarSystemID, 30000006);
+  assert.equal(f.state(1).destinationGateID, 0);
+  assert.equal(f.state(1).targetSolarSystemID, 30000006);
+  assert.deepEqual(f.changed, [1]);
+
+  assert.equal(deployment.setCatapultDestination(f.session, 1, 30000004).errorMsg,
+    "SMART_CATAPULT_SAME_SYSTEM");
+  assert.equal(deployment.setCatapultDestination(f.session, 1, 39999999).errorMsg,
+    "SMART_CATAPULT_DESTINATION_UNAVAILABLE");
+  f.gate(2, 30000004, { typeID: TYPE });
+  assert.equal(deployment.setCatapultDestination(f.session, 2, 30000005).errorMsg,
+    "ASSEMBLY_NOT_SMART_CATAPULT");
+
+  f.gate(1, 30000004, { typeID: 95627, targetSolarSystemID: 30000006, assemblyStatus: 2 });
+  assert.equal(deployment.clearCatapultDestination(f.session, 1).errorMsg,
+    "SMART_CATAPULT_MUST_BE_OFFLINE");
+  f.gate(1, 30000004, { typeID: 95627, targetSolarSystemID: 30000006 });
+  assert.equal(deployment.clearCatapultDestination(f.session, 1).success, true);
+  assert.equal(f.state(1).targetSolarSystemID, 0);
+});
+
+test("Smart Catapult jumps directly to its configured system with no far-side assembly", t => {
+  const f = fixture(t);
+  f.gate(1, 30000004, {
+    typeID: 95627,
+    assemblyStatus: 2,
+    destinationGateID: 0,
+    targetSolarSystemID: 30000006,
+  });
+  const traveler = { ...f.session, characterID: OWNER + 99 };
+  const result = deployment.jumpWithCatapult(traveler, 1);
+  assert.equal(result.success, true);
+  assert.equal(result.data.destinationSolarSystemID, 30000006);
+  assert.deepEqual(f.jumps, [{
+    characterID: OWNER + 99,
+    solarSystemID: 30000006,
+    options: { stargateJumpCloak: true },
+  }]);
+  assert.equal(f.items.size, 1, "no destination gate is required");
+
+  f.gate(1, 30000004, { typeID: 95627, assemblyStatus: 2, targetSolarSystemID: 0 });
+  assert.equal(deployment.jumpWithCatapult(traveler, 1).errorMsg,
+    "SMART_CATAPULT_DESTINATION_REQUIRED");
+  f.gate(1, 30000004, { typeID: 95627, targetSolarSystemID: 30000006 });
+  assert.equal(deployment.jumpWithCatapult(traveler, 1).errorMsg, "SMART_CATAPULT_OFFLINE");
+});
 
 test("owner status reports only completed same-type owned candidates and exact configured distance", t => {
   const f = fixture(t);

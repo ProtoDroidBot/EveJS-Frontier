@@ -5,6 +5,7 @@ const test = require("node:test");
 const itemStore = require("../src/services/inventory/itemStore");
 const characterState = require("../src/services/character/characterState");
 const smartStorageUnitRuntime = require("../src/services/frontier/smartStorageUnitRuntime");
+const networkNodeFuel = require("../src/services/frontier/networkNodeFuelRuntime");
 const { registerSuiAssemblyStateRunner, registerSuiAssemblyStatesRunner, } = require("../src/services/frontier/suiAssemblyState");
 const { getStorageUnitProtoTypes, } = require("../src/_secondary/express/gatewayServices/assemblyStorageUnitProto");
 const { EXECUTE_DEPOSIT_ITEMS_REQUEST, EXECUTE_WITHDRAW_ITEMS_REQUEST, GET_INVENTORY_REQUEST, INVENTORY_ITEM_DEPOSITED_NOTICE, INVENTORY_ITEM_WITHDRAWN_NOTICE, PREPARE_DEPOSIT_ITEMS_REQUEST, PREPARE_WITHDRAW_ITEMS_REQUEST, createAssemblyStorageUnitGatewayService, } = require("../src/_secondary/express/gatewayServices/assemblyStorageUnitGatewayService");
@@ -15,6 +16,8 @@ const SOLAR_SYSTEM_ID = 30000004;
 const STORAGE_TYPE_ID = 77917;
 const TURRET_TYPE_ID = 92279;
 const FIELD_STORAGE_TYPE_ID = 87566;
+const NETWORK_NODE_TYPE_ID = 88092;
+const NETWORK_FUEL_TYPE_ID = 77818;
 const SHIP_TYPE_ID = 95276;
 const MATERIAL_TYPE_ID = 78423; // Water Ice, 0.1 m³ per unit
 const CARGO_FLAG = 5;
@@ -83,6 +86,25 @@ function createFieldStorage(ownerID = OWNER_ID, assemblyStatus = 2) {
         customInfo: JSON.stringify({ evejsFrontierConstruction: {
                 assemblyStatus,
                 assemblyTypeID: FIELD_STORAGE_TYPE_ID,
+                completedAtMs: 1,
+                createdAtMs: 1,
+                ownerID,
+                solarSystemID: SOLAR_SYSTEM_ID,
+            } }),
+    }));
+    assert.equal(update.success, true, update.errorMsg);
+    return update.data;
+}
+function createNetworkNode(ownerID = OWNER_ID, assemblyStatus = 1) {
+    const node = grantOne(ownerID, SOLAR_SYSTEM_ID, 0, NETWORK_NODE_TYPE_ID, 1, {
+        individualItems: true,
+        singleton: 1,
+    });
+    const update = itemStore.updateInventoryItem(node.itemID, current => ({
+        ...current,
+        customInfo: JSON.stringify({ evejsFrontierConstruction: {
+                assemblyStatus,
+                assemblyTypeID: NETWORK_NODE_TYPE_ID,
                 completedAtMs: 1,
                 createdAtMs: 1,
                 ownerID,
@@ -701,6 +723,56 @@ test("Field Storage cargo is a source and destination for Smart Storage transfer
     assert.equal(withdrawn.data.destinationStorageUnitID, 0);
     assert.equal(totalAt(OWNER_ID, field.itemID, 0, MATERIAL_TYPE_ID), 25);
     assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, MATERIAL_TYPE_ID), 5);
+});
+test("Network Node fuel bay is a bidirectional Smart Storage transfer endpoint", async () => {
+    const unit = createStorageUnit();
+    const node = createNetworkNode();
+    const ship = createShip();
+    const access = createAccess(ship);
+    grantOne(OWNER_ID, unit.itemID, STORAGE_FLAG, NETWORK_FUEL_TYPE_ID, 100);
+    const deposit = await smartStorageUnitRuntime.prepareStorageWithdraw({
+        access,
+        characterID: OWNER_ID,
+        destinationAccess: access,
+        destinationStorageUnitID: node.itemID,
+        stacks: [{ typeID: NETWORK_FUEL_TYPE_ID, quantity: 60 }],
+        storageUnitID: unit.itemID,
+    });
+    assert.equal(deposit.success, true, deposit.errorMsg);
+    const deposited = await smartStorageUnitRuntime.executeStorageTransaction({
+        access,
+        action: "storageunit-withdraw",
+        characterID: OWNER_ID,
+        destinationAccess: access,
+        signature: VALID_SIGNATURE,
+        transactionUUID: deposit.data.transactionUUID,
+    });
+    assert.equal(deposited.success, true, deposited.errorMsg);
+    assert.equal(deposited.data.destinationAssemblyKind, "network_node_fuel");
+    assert.equal(networkNodeFuel.readNetworkNodeFuelState(itemStore.findItemById(node.itemID)).quantity, 60);
+    assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, NETWORK_FUEL_TYPE_ID), 40);
+    const withdraw = await smartStorageUnitRuntime.prepareStorageDeposit({
+        access,
+        characterID: OWNER_ID,
+        sourceAccess: access,
+        sourceFlagID: networkNodeFuel.NETWORK_NODE_FUEL_BAY_FLAG,
+        sourceLocationID: node.itemID,
+        stacks: [{ typeID: NETWORK_FUEL_TYPE_ID, quantity: 20 }],
+        storageUnitID: unit.itemID,
+    });
+    assert.equal(withdraw.success, true, withdraw.errorMsg);
+    const withdrawn = await smartStorageUnitRuntime.executeStorageTransaction({
+        access,
+        action: "storageunit-deposit",
+        characterID: OWNER_ID,
+        sourceAccess: access,
+        signature: VALID_SIGNATURE,
+        transactionUUID: withdraw.data.transactionUUID,
+    });
+    assert.equal(withdrawn.success, true, withdrawn.errorMsg);
+    assert.equal(withdrawn.data.sourceAssemblyKind, "network_node_fuel");
+    assert.equal(networkNodeFuel.readNetworkNodeFuelState(itemStore.findItemById(node.itemID)).quantity, 40);
+    assert.equal(totalAt(OWNER_ID, unit.itemID, STORAGE_FLAG, NETWORK_FUEL_TYPE_ID), 60);
 });
 test("storage-to-storage withdrawal revalidates destination capacity before commit", () => {
     const source = createStorageUnit();

@@ -6,6 +6,7 @@ const { readConstructionState, isAssemblyActivationPending,
   ASSEMBLY_STATUS_UNDER_CONSTRUCTION } = require("./deploymentRuntime");
 const inventoryAccess = require("./industryInventoryAccess");
 const { SMART_STORAGE_FLAG } = require("./smartStorageUnitRuntime");
+const networkNodeFuel = require("./networkNodeFuelRuntime");
 const { runWithSuiAssemblyStates } = require("./suiAssemblyState");
 
 // Server escrow partitions, deliberately separate from cargo, fittings and SSU
@@ -96,13 +97,96 @@ function validateCreationHostedFacility(session, facility, facilityID, options: 
   } };
 }
 
+function validateNpcFacility(facility, facilityID, options: Record<string, any> = {}) {
+  if (!options?.npcActor) return null;
+  try {
+    const actorContext = require("../../space/npc/npcAssemblyActorContext");
+    const nativeNpcStore = require("../../space/npc/nativeNpcStore");
+    const actor = actorContext.normalizeNpcAssemblyActorContext(options.npcActor);
+    const durableEntity = nativeNpcStore.getNativeEntity(actor.shipID);
+    const currentActor = actorContext.createNpcAssemblyActorContext(durableEntity);
+    if (currentActor.actorID !== actor.actorID || currentActor.shipID !== actor.shipID ||
+        currentActor.solarSystemID !== actor.solarSystemID ||
+        currentActor.factionKey !== actor.factionKey) return fail("ACCESS_DENIED");
+
+    const requestedLaneID = positiveInteger(options.laneID);
+    const npcSession = {
+      characterID: actor.actorID,
+      charid: actor.actorID,
+      corporationID: positiveInteger(durableEntity?.corporationID),
+      tribeID: positiveInteger(durableEntity?.tribeID || durableEntity?.tribeId),
+      solarsystemid2: actor.solarSystemID,
+      _space: { systemID: actor.solarSystemID, shipID: actor.shipID },
+    };
+    const ownerAccess = Number(facility.ownerID) === actor.actorID;
+    const delegatedLaneAccess = requestedLaneID > 0 &&
+      require("./industryProduction").canUseLane(facility, npcSession, requestedLaneID);
+    if (!ownerAccess) {
+      if (!delegatedLaneAccess) return fail(requestedLaneID > 0
+        ? "JOB_LANE_ACCESS_DENIED" : "ACCESS_DENIED");
+      const assemblyAccess = require("./assemblyAccessRuntime").resolveAccess(
+        { ...actor, incarnation: positiveInteger(durableEntity?.npcIncarnation) },
+        facilityID,
+        ["operate"],
+      );
+      if (!assemblyAccess?.success) return fail(assemblyAccess?.errorMsg || "ACCESS_DENIED");
+    }
+    if (getItemSolarSystemID(facility) !== actor.solarSystemID) {
+      return fail("FACILITY_NOT_IN_CURRENT_SYSTEM");
+    }
+    const state = readConstructionState(facility);
+    if (state?.assemblyStatus === ASSEMBLY_STATUS_UNDER_CONSTRUCTION) {
+      return fail("ASSEMBLY_UNDER_CONSTRUCTION");
+    }
+    if (isAssemblyActivationPending(facility)) return fail("ASSEMBLY_ACTIVATING");
+
+    const ship = itemStore.findItemById(actor.shipID);
+    if (!ship || Number(ship.categoryID) !== 6 ||
+        getItemSolarSystemID(ship) !== actor.solarSystemID) return fail("INVALID_SHIP");
+    const scene = options.scene || spaceRuntime.getSceneForSession(npcSession);
+    const shipEntity = scene?.getEntityByID?.(actor.shipID) ||
+      spaceRuntime.getEntity(npcSession, actor.shipID);
+    const facilityEntity = scene?.getEntityByID?.(Number(facility.itemID)) ||
+      spaceRuntime.getEntity(npcSession, facility.itemID);
+    if (!shipEntity || !facilityEntity || !canEntitiesInteractLocally(shipEntity, facilityEntity)) {
+      return fail("FACILITY_OUT_OF_RANGE");
+    }
+    const distance = scene?.getCommandTimeEntitySurfaceDistance
+      ? scene.getCommandTimeEntitySurfaceDistance(shipEntity, facilityEntity)
+      : Infinity;
+    if (!Number.isFinite(distance) || distance > MAX_INTERACTION_DISTANCE) {
+      return fail("FACILITY_OUT_OF_RANGE");
+    }
+    return { success: true as const, data: {
+      facility,
+      characterID: actor.actorID,
+      ship,
+      shipEntity,
+      npcActor: actor,
+      inventoryOwnerID: positiveInteger(durableEntity?.ownerID) || actor.actorID,
+      delegatedLaneAccess: !ownerAccess,
+    } };
+  } catch (error) {
+    return fail(error?.code || error?.message || "ACCESS_DENIED");
+  }
+}
+
 function validateFacility(session, facilityID, options: Record<string, any> = {}) {
   const characterID = positiveInteger(session?.characterID || session?.charid);
   const facility = itemStore.findItemById(positiveInteger(facilityID));
   if (!facility || !blueprints.isIndustryFacilityType(facility.typeID)) return fail("FACILITY_NOT_FOUND");
+  const npcAccess = validateNpcFacility(facility, facilityID, options);
+  if (npcAccess) return npcAccess;
   const hosted = validateCreationHostedFacility(session, facility, facilityID, options);
   if (hosted) return hosted;
-  if (!characterID || Number(facility.ownerID) !== characterID) return fail("ACCESS_DENIED");
+  if (!characterID) return fail("ACCESS_DENIED");
+  const ownerAccess = Number(facility.ownerID) === characterID;
+  const requestedLaneID = positiveInteger(options?.laneID);
+  const delegatedLaneAccess = requestedLaneID > 0 &&
+    require("./industryProduction").canUseLane(facility, session, requestedLaneID);
+  if (!ownerAccess && !delegatedLaneAccess) {
+    return fail(requestedLaneID > 0 ? "JOB_LANE_ACCESS_DENIED" : "ACCESS_DENIED");
+  }
   const solarSystemID = getSessionSolarSystemID(session);
   if (solarSystemID <= 0 || getItemSolarSystemID(facility) !== solarSystemID ||
       session?.stationid || session?.stationid2) return fail("FACILITY_NOT_IN_CURRENT_SYSTEM");
@@ -253,6 +337,31 @@ function withdrawItems(session, facilityID, rawItems, inventoryID, flagID, side 
   }
   const fits = validateWithdrawalCapacity(destination.data, requested, volume);
   if (!fits.success) return fits;
+  if (destination.data.virtualInventory === "network_node_fuel") {
+    const deposited = networkNodeFuel.depositNetworkNodeFuelFromInventory({
+      characterID: access.data.characterID,
+      networkNodeID: destination.data.networkNodeID,
+      sourceLocationID: facility.itemID,
+      sourceFlagID: side === "inputs" ? INDUSTRY_INPUT_FLAG : INDUSTRY_OUTPUT_FLAG,
+      items: moves.map(move => ({ itemID: move.itemID, quantity: move.quantity })),
+      publishNotice: true,
+    });
+    if (!deposited.success) return deposited;
+    return { success: true as const, data: {
+      facility,
+      characterID: access.data.characterID,
+      side,
+      items: Object.fromEntries(requested),
+      changes: deposited.data.changes,
+      storageTransfers: [],
+      networkNodeFuelTransfer: {
+        networkNodeID: destination.data.networkNodeID,
+        direction: "deposit",
+        fuelTypeID: deposited.data.fuelTypeID,
+        quantity: deposited.data.depositedQuantity,
+      },
+    } };
+  }
   return commit(access.data, moves, Object.fromEntries(requested), side);
 }
 
@@ -297,6 +406,21 @@ function prepareJettisonWithdrawal(
 }
 
 function validateWithdrawalCapacity(destination, requested, volume) {
+  if (destination.virtualInventory === "network_node_fuel") {
+    const requestedTypes = Array.from(requested, entry => Number(entry[0]));
+    if (requestedTypes.length !== 1 ||
+        !networkNodeFuel.isAcceptedNetworkNodeFuelType(requestedTypes[0])) {
+      return fail("INVALID_DESTINATION_TYPE");
+    }
+    const fuelState = destination.fuelState || { typeID: 0, quantity: 0 };
+    if (fuelState.quantity > 0 && Number(fuelState.typeID) !== requestedTypes[0]) {
+      return fail("MIXED_FUEL_TYPES");
+    }
+    if (!Number.isFinite(volume) || destination.usedVolume + volume > destination.capacity + 1e-6) {
+      return fail("FUEL_CAPACITY_EXCEEDED");
+    }
+    return { success: true as const };
+  }
   // Ownership controls which rows may move; SSU capacity is per character,
   // while other destination inventories count every owner's rows.
   const destinationRows = itemStore.listContainerItems(destination.inventoryOwnerID ?? null,
@@ -323,8 +447,7 @@ function validateWithdrawalCapacity(destination, requested, volume) {
 function validateStoppedProduction(facility) {
   const productionRuntime = require("./industryProduction");
   if (productionRuntime.invalidStoredProduction(facility)) return fail("INVALID_PRODUCTION_STATE");
-  const production = productionRuntime.getProduction(facility);
-  if (production && production.state !== "STOPPED") return fail("PRODUCTION_ALREADY_RUNNING");
+  if (productionRuntime.hasActiveProduction(facility)) return fail("PRODUCTION_ALREADY_RUNNING");
   return { success: true as const };
 }
 
@@ -366,6 +489,33 @@ function emptyActiveBlueprintItems(session, facilityID, storageUnitID, options: 
   // mutation. A failure can never leave only one side emptied.
   const fits = validateWithdrawalCapacity(destination.data, totals, volume);
   if (!fits.success) return fits;
+  if (destination.data.virtualInventory === "network_node_fuel") {
+    const deposited = networkNodeFuel.depositNetworkNodeFuelFromInventory({
+      characterID,
+      networkNodeID: destination.data.networkNodeID,
+      sourceLocationID: facility.itemID,
+      sourceFlagID: -1,
+      sourceFlagIDs: [INDUSTRY_INPUT_FLAG, INDUSTRY_OUTPUT_FLAG],
+      items: moves.map(move => ({ itemID: move.itemID, quantity: move.quantity })),
+      publishNotice: true,
+    });
+    if (!deposited.success) return deposited;
+    return { success: true as const, data: {
+      facility,
+      characterID,
+      side: "all",
+      items: Object.fromEntries(totals),
+      itemsBySide,
+      changes: deposited.data.changes,
+      storageTransfers: [],
+      networkNodeFuelTransfer: {
+        networkNodeID: destination.data.networkNodeID,
+        direction: "deposit",
+        fuelTypeID: deposited.data.fuelTypeID,
+        quantity: deposited.data.depositedQuantity,
+      },
+    } };
+  }
   const result = commit(access.data, moves, Object.fromEntries(totals), "all");
   return result.success ? { ...result, data: { ...result.data, itemsBySide } } : result;
 }
@@ -495,6 +645,58 @@ function depositStorageInputItems(session, facilityID, storageUnitID, rawItems,
   }
   const source = inventoryAccess.resolveTransferInventory(session, storageUnitID, options);
   if (!source.success) return fail("INVALID_SOURCE");
+  if (source.data.virtualInventory === "network_node_fuel") {
+    return withStorageStates(session, facilityID, [{
+      inventoryID: positiveInteger(storageUnitID),
+      flagID: source.data.flagID,
+    }], () => {
+      const currentAccess = validateFacility(session, facilityID, options);
+      if (!currentAccess.success) return currentAccess;
+      const currentSource = inventoryAccess.resolveTransferInventory(session, storageUnitID, options);
+      if (!currentSource.success || currentSource.data.virtualInventory !== "network_node_fuel") {
+        return fail("INVALID_SOURCE");
+      }
+      const entries = Array.from(requested);
+      if (entries.length !== 1) return fail("INVALID_INPUT_TYPE");
+      const [typeID, quantity] = entries[0];
+      const blueprint = blueprints.getSelectedBlueprint(currentAccess.data.facility);
+      const slot = blueprint?.inputs?.[typeID];
+      if (!blueprint) return fail("BLUEPRINT_NOT_LOADED");
+      if (!slot || !networkNodeFuel.isAcceptedNetworkNodeFuelType(typeID)) return fail("INVALID_INPUT_TYPE");
+      const totals = getFacilityItems(currentAccess.data.facility).inputs;
+      if ((totals[typeID] || 0) + quantity > slot.max_storable_quantity) {
+        return fail("INPUT_CAPACITY_EXCEEDED");
+      }
+      const fuelState = currentSource.data.fuelState;
+      if (fuelState.typeID !== typeID || fuelState.quantity < quantity) {
+        return fail("INSUFFICIENT_SOURCE_ITEMS");
+      }
+      const withdrawn = networkNodeFuel.withdrawNetworkNodeFuelToInventory({
+        characterID: currentAccess.data.characterID,
+        networkNodeID: positiveInteger(storageUnitID),
+        fuelTypeID: typeID,
+        quantity,
+        destinationLocationID: currentAccess.data.facility.itemID,
+        destinationFlagID: INDUSTRY_INPUT_FLAG,
+        publishNotice: true,
+      });
+      if (!withdrawn.success) return withdrawn;
+      return { success: true as const, data: {
+        facility: currentAccess.data.facility,
+        characterID: currentAccess.data.characterID,
+        side: "inputs",
+        items: { [typeID]: quantity },
+        changes: withdrawn.data.changes,
+        storageTransfers: [],
+        networkNodeFuelTransfer: {
+          networkNodeID: positiveInteger(storageUnitID),
+          direction: "withdraw",
+          fuelTypeID: typeID,
+          quantity,
+        },
+      } };
+    }, options);
+  }
   const rows = itemStore.listContainerItems(access.data.characterID, positiveInteger(storageUnitID), source.data.flagID)
     .filter(item => !item.singleton).sort((left, right) => left.itemID - right.itemID);
   const selected = new Map();
@@ -561,6 +763,13 @@ module.exports = {
   withdrawItems: withdrawItemsWithStorageState, emptyActiveBlueprint, loadBlueprint,
   validateFacility,
   getProduction: (...args) => require("./industryProduction").getProduction(...args),
+  configuredLaneCount: (...args) => require("./industryProduction").configuredLaneCount(...args),
+  configuredLaneCountForType: (...args) => require("./industryProduction").configuredLaneCountForType(...args),
+  getFacilityLaneCount: (...args) => require("./industryProduction").getFacilityLaneCount(...args),
+  getProductions: (...args) => require("./industryProduction").getProductions(...args),
+  getJobLanes: (...args) => require("./industryProduction").getJobLanes(...args),
+  setLaneAccessPolicy: (...args) => require("./industryProduction").setLaneAccessPolicy(...args),
+  hasActiveProduction: (...args) => require("./industryProduction").hasActiveProduction(...args),
   startProduction: (...args) => require("./industryProduction").startProduction(...args),
   discontinueProduction: (...args) => require("./industryProduction").discontinueProduction(...args),
   advanceProduction: (...args) => require("./industryProduction").advanceProduction(...args),

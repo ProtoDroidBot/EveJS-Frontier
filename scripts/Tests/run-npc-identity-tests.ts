@@ -11,7 +11,8 @@ if (help) {
   const { runtimeRoot, staticRoot } = resolveBuildInputs(build);
   const tests = [
     "npcPilotIdentityStore", "npcIdentityAllocation", "nativeNpcIdentityPersistence",
-    "frontierNpcPilotIdentity", "nativeNpcPersistence", "npcStartupIdentitySlots", "beltRatIdentitySlots",
+    "frontierNpcPilotIdentity", "frontierAssemblyAccess", "nativeNpcPersistence", "npcBehaviorTreeRuntime", "npcPhaseZeroPersistence", "npcFittingService", "npcResourceJobService", "npcConstructionJobService",
+    "npcStartupIdentitySlots", "beltRatIdentitySlots",
     "frontierSuiCharacterProvisioning", "frontierSuiNpcCharacterProvisioning", "frontierSuiNpcFactionFunding", "frontierSuiNpcIdentitySync",
     "frontierSuiNpcWorldConfig", "frontierSuiNpcProfile",
   ].map(name => `server/tests/${name}.test.js`);

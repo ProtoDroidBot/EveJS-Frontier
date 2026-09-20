@@ -39,12 +39,38 @@ const ERROR_MESSAGES: Record<string, string> = {
   SPONSOR_BUSY: "An assembly transaction is awaiting a signature. Try again when it finishes.",
   DEPLOYMENT_UNAVAILABLE: "The blockchain connection is still synchronizing. Try again shortly.",
   ENERGY_REQUEST_FAILED: "The energy grid could not be updated. Refresh its status and try again.",
+  REMOTE_SCANNING_DISABLED: "Remote solar-system scanning is disabled on this server.",
+  REMOTE_SCAN_SOURCE_INVALID: "Select a valid Network Node scanner source.",
+  REMOTE_SCAN_SOURCE_UNAVAILABLE: "That Network Node cannot currently provide remote scans.",
+  REMOTE_SCAN_SOURCE_OFFLINE: "Bring the Network Node online before starting a remote scan.",
+  REMOTE_SCAN_OPERATION_KEY_INVALID: "The remote scan operation key is invalid.",
+  REMOTE_SCAN_SYSTEM_NOT_FOUND: "Select a valid destination solar system.",
+  REMOTE_SCAN_MODE_INVALID: "Select a supported remote scan mode.",
+  REMOTE_SCAN_DEEP_DISABLED: "Deep remote scans are disabled on this server.",
+  REMOTE_SCAN_RANGE_INVALID: "Select a scan range within this Network Node's configured hop limit.",
+  REMOTE_SCAN_LAYERS_INVALID: "Select at least one supported remote scan layer.",
+  REMOTE_SCAN_OUT_OF_RANGE: "The destination solar system is outside the selected stargate-hop range.",
+  REMOTE_SCAN_INSUFFICIENT_ENERGY: "The Network Node has insufficient available energy for this scan.",
+  REMOTE_SCAN_COOLDOWN: "The Network Node scanner is cooling down. Try again shortly.",
+  REMOTE_SCAN_NOT_FOUND: "That remote scan job does not exist.",
+  REMOTE_SCAN_NOT_READY: "That remote scan has not finished yet.",
+  REMOTE_SCAN_ALREADY_COMPLETE: "That remote scan has already finished and cannot be cancelled.",
+  REMOTE_SCAN_WARMUP_TIMEOUT: "The target solar system did not warm up before the scan timed out.",
+  REMOTE_SCAN_WARMUP_BUSY: "Remote scan warm-up capacity is busy. Try again shortly.",
+  REMOTE_SCAN_WARMUP_FAILED: "The target solar system could not be prepared for a deep scan.",
+  REMOTE_SCAN_PERSIST_FAILED: "The remote scan job could not be saved. Try again.",
+  REMOTE_SCAN_FAILED: "The remote solar-system scan failed. Try again.",
 };
 
-function failed(rawCode: unknown) {
+function failed(rawCode: unknown, params?: unknown) {
   const errorMsg = typeof rawCode === "string" && Object.hasOwn(ERROR_MESSAGES, rawCode)
     ? rawCode : "ENERGY_REQUEST_FAILED";
-  return { success: false as const, errorMsg, message: ERROR_MESSAGES[errorMsg] };
+  return {
+    success: false as const,
+    errorMsg,
+    message: ERROR_MESSAGES[errorMsg],
+    ...(params && typeof params === "object" ? { params } : {}),
+  };
 }
 
 function positiveID(value: unknown) {
@@ -57,9 +83,10 @@ function positiveID(value: unknown) {
 export function createSmartAssemblyEnergyApi(overrides: Record<string, any> = {}) {
   const auth = overrides.auth || createSmartStorageApi(overrides.authDependencies, {
     scope: "Smart Assembly energy grid",
-    description: "This signature authorizes viewing the Network Node's nearby Smart Assembly radar and connecting or disconnecting assemblies you own in your active in-game character's energy grid.",
+    description: "This signature authorizes viewing the Network Node's nearby Smart Assembly radar, starting privacy-preserving remote solar-system scans, and connecting or disconnecting assemblies you own in your active in-game character's energy grid.",
   });
   const runtime = () => overrides.runtime || require("../../services/frontier/networkNodeEnergyRuntime");
+  const scanRuntime = () => overrides.scanRuntime || require("../../services/frontier/remoteSystemScanRuntime");
   const runWithState = overrides.runWithState || (overrides.runtime ? (_nodeID, operation) => operation() :
     (nodeID, operation) => require("../../services/frontier/suiAssemblyState").runWithSuiAssemblyState(nodeID, operation));
   const runMutation = overrides.runMutation || (overrides.runtime ? operation => operation() :
@@ -110,6 +137,25 @@ export function createSmartAssemblyEnergyApi(overrides: Record<string, any> = {}
     } catch (error: any) { return failed(error?.code || "ENERGY_REQUEST_FAILED"); }
   }
 
+  async function scanOperation(authorization: unknown, rawID: unknown,
+    operation: (service: any, context: any) => any) {
+    const context = resolve(authorization, rawID);
+    if (!context.success) return context;
+    try {
+      const result = await runWithState(context.data.networkNodeID, () => {
+        const current = resolve(authorization, rawID);
+        if (!current.success) return current;
+        if (current.data.characterID !== context.data.characterID ||
+            current.data.walletAddress !== context.data.walletAddress) return failed("ACCESS_DENIED");
+        return operation(scanRuntime(), current.data);
+      });
+      return result?.success ? result : failed(result?.errorMsg, result?.params);
+    } catch (error: any) {
+      return failed(error?.code && Object.hasOwn(ERROR_MESSAGES, error.code)
+        ? error.code : "REMOTE_SCAN_FAILED");
+    }
+  }
+
   return {
     async challenge(body: any) {
       const result = await auth.challenge({ walletAddress: body?.walletAddress });
@@ -122,6 +168,31 @@ export function createSmartAssemblyEnergyApi(overrides: Record<string, any> = {}
     status,
     connect: (authorization: unknown, rawID: unknown, body: any) => change(authorization, rawID, body, "connect"),
     disconnect: (authorization: unknown, rawID: unknown, body: any) => change(authorization, rawID, body, "disconnect"),
+    scanConfig: (authorization: unknown, rawID: unknown, body: any = {}) =>
+      scanOperation(authorization, rawID, (service, context) =>
+        service.getNetworkNodeScanConfiguration(
+          context.characterID, context.networkNodeID, context.session, body?.rangeJumps,
+        )),
+    startScan: (authorization: unknown, rawID: unknown, body: any) =>
+      scanOperation(authorization, rawID, (service, context) =>
+        service.startRemoteSystemScan(
+          context.characterID, context.networkNodeID, body, context.session,
+        )),
+    scanStatus: (authorization: unknown, rawID: unknown, scanID: unknown) =>
+      scanOperation(authorization, rawID, (service, context) =>
+        service.getRemoteSystemScan(
+          context.characterID, context.networkNodeID, scanID, context.session,
+        )),
+    scanResult: (authorization: unknown, rawID: unknown, scanID: unknown) =>
+      scanOperation(authorization, rawID, (service, context) =>
+        service.getRemoteSystemScanResult(
+          context.characterID, context.networkNodeID, scanID, context.session,
+        )),
+    cancelScan: (authorization: unknown, rawID: unknown, scanID: unknown) =>
+      scanOperation(authorization, rawID, (service, context) =>
+        service.cancelRemoteSystemScan(
+          context.characterID, context.networkNodeID, scanID, context.session,
+        )),
   };
 }
 
@@ -157,10 +228,12 @@ export function mountSmartAssemblyEnergyEndpoints(app: any, options: Record<stri
       const result = await handler(getApi(), req);
       const code = result.success ? 200 : ["NETWORK_NODE_ENERGY_CONFIG_UNAVAILABLE", "NETWORK_NODE_ENERGY_STATE_UNAVAILABLE", "ASSEMBLY_STATE_UNAVAILABLE", "DEPLOYMENT_UNAVAILABLE"].includes(result.errorMsg) ? 503
         : result.errorMsg === "TOO_MANY_REQUESTS" ? 429
+        : result.errorMsg === "REMOTE_SCAN_COOLDOWN" ? 429
+        : ["REMOTE_SCAN_WARMUP_TIMEOUT", "REMOTE_SCAN_WARMUP_BUSY", "REMOTE_SCAN_WARMUP_FAILED", "REMOTE_SCAN_SOURCE_UNAVAILABLE"].includes(result.errorMsg) ? 503
         : /^(AUTH_|INVALID_SIGNATURE$|CHARACTER_NOT_ONLINE$|MULTIPLE_ACTIVE)/.test(result.errorMsg) ? 401
           : /^(ACCESS_DENIED|ASSEMBLY_ACCESS_DENIED|ASSEMBLY_NOT_OWNED|ASSEMBLY_NOT_IN_CURRENT_SYSTEM)$/.test(result.errorMsg) ? 403
             : result.errorMsg === "ENERGY_REQUEST_FAILED" ? 500 : /NOT_FOUND$/.test(result.errorMsg) ? 404
-              : /^INVALID_/.test(result.errorMsg) ? 400 : 409;
+              : /^INVALID_|_INVALID$/.test(result.errorMsg) ? 400 : 409;
       res.status(code).json(result);
     } catch { res.status(500).json(failed("ENERGY_REQUEST_FAILED")); }
   };
@@ -169,4 +242,9 @@ export function mountSmartAssemblyEnergyEndpoints(app: any, options: Record<stri
   app.post(`${PREFIX}/:networkNodeID/status`, route((service, req) => service.status(req.headers.authorization, req.params.networkNodeID)));
   app.post(`${PREFIX}/:networkNodeID/connect`, route((service, req) => service.connect(req.headers.authorization, req.params.networkNodeID, req.body)));
   app.post(`${PREFIX}/:networkNodeID/disconnect`, route((service, req) => service.disconnect(req.headers.authorization, req.params.networkNodeID, req.body)));
+  app.post(`${PREFIX}/:networkNodeID/scanning/config`, route((service, req) => service.scanConfig(req.headers.authorization, req.params.networkNodeID, req.body)));
+  app.post(`${PREFIX}/:networkNodeID/scanning/start`, route((service, req) => service.startScan(req.headers.authorization, req.params.networkNodeID, req.body)));
+  app.post(`${PREFIX}/:networkNodeID/scanning/:scanID/status`, route((service, req) => service.scanStatus(req.headers.authorization, req.params.networkNodeID, req.params.scanID)));
+  app.post(`${PREFIX}/:networkNodeID/scanning/:scanID/result`, route((service, req) => service.scanResult(req.headers.authorization, req.params.networkNodeID, req.params.scanID)));
+  app.post(`${PREFIX}/:networkNodeID/scanning/:scanID/cancel`, route((service, req) => service.cancelScan(req.headers.authorization, req.params.networkNodeID, req.params.scanID)));
 }

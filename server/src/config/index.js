@@ -1614,6 +1614,40 @@ const CONFIG_ENTRY_DEFINITIONS = [
         validValues: 'Absolute HTTP(S) base URL without a query or fragment, for example "http://localhost:5174". Trailing slashes are removed before advertising it.',
     },
     {
+        key: "frontierSmartIndustryJobLaneCount",
+        defaultValue: 4,
+        envVar: "EVEJS_FRONTIER_SMART_INDUSTRY_JOB_LANE_COUNT",
+        envType: "number",
+        minValue: 1,
+        maxValue: 16,
+        description: [
+            "Number of independently occupied production lanes exposed by non-portable Frontier Smart Industry assemblies.",
+            "Creation-hosted Industry modules and portable Industry assemblies are always limited to lane 1.",
+            "Each lane accepts at most one running or discontinuing job and has its own owner-managed access policy. Lane 1 remains the legacy client lane.",
+        ],
+        validValues: "Integer lane count from 1 through 16.",
+        validateValue(value) {
+            if (!Number.isInteger(value)) {
+                throw new Error("frontierSmartIndustryJobLaneCount must be a whole number.");
+            }
+            return value;
+        },
+    },
+    {
+        key: "frontierSmartIndustryJobLaneCountByTypeID",
+        defaultValue: {},
+        envVar: "EVEJS_FRONTIER_SMART_INDUSTRY_JOB_LANE_COUNT_BY_TYPE_ID",
+        envType: "json",
+        valueType: "json",
+        description: [
+            "Optional per-type lane counts for compatible Frontier Smart Industry facilities.",
+            "Keys are Smart Industry type IDs and values are lane counts. Missing type IDs fall back to frontierSmartIndustryJobLaneCount.",
+            "Creation-hosted Industry modules and portable Industry assemblies remain limited to lane 1 even when their type ID is present.",
+        ],
+        validValues: "JSON object mapping compatible Smart Industry type IDs to integer lane counts from 1 through 16.",
+        validateValue: validateFrontierSmartIndustryJobLaneCountByTypeID,
+    },
+    {
         key: "imageServerUrl",
         defaultValue: "http://127.0.0.1:26001/",
         envVar: "EVEJS_IMAGE_SERVER_URL",
@@ -2368,6 +2402,221 @@ const CONFIG_ENTRY_DEFINITIONS = [
         validValues: "true or false.",
     },
     {
+        key: "frontierRemoteScanningEnabled",
+        defaultValue: true,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCANNING_ENABLED",
+        envType: "boolean",
+        description: "Enables server-authoritative remote solar-system surveys. Network Nodes are the temporary dApp source; the scan contracts remain source-neutral.",
+        validValues: "true or false.",
+    },
+    {
+        key: "frontierNetworkNodeScanRangeJumps",
+        defaultValue: 3,
+        envVar: "EVEJS_FRONTIER_NETWORK_NODE_SCAN_RANGE_JUMPS",
+        envType: "number",
+        minValue: 0,
+        maxValue: 25,
+        description: "Maximum configurable remote scanning reach from a Network Node, measured along stargate connections in solar-system hops.",
+        validValues: "Integer from 0 through 25 stargate hops.",
+    },
+    {
+        key: "frontierRemoteScanCooldownMs",
+        defaultValue: 5_000,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_COOLDOWN_MS",
+        envType: "number",
+        minValue: 0,
+        description: "Minimum delay between new remote scan jobs from the same scanner source.",
+        validValues: "Non-negative milliseconds.",
+    },
+    {
+        key: "frontierRemoteScanSurveyEnergyCost",
+        defaultValue: 25,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_SURVEY_ENERGY_COST",
+        envType: "number",
+        minValue: 0,
+        description: "Transient Network Node energy headroom required to start a cold survey.",
+        validValues: "Non-negative energy units.",
+    },
+    {
+        key: "frontierRemoteScanDeepEnergyCost",
+        defaultValue: 75,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_DEEP_ENERGY_COST",
+        envType: "number",
+        minValue: 0,
+        description: "Transient Network Node energy headroom required to start a deep survey.",
+        validValues: "Non-negative energy units.",
+    },
+    {
+        key: "frontierNetworkNodeScanGravimetricStrength",
+        defaultValue: 1,
+        envVar: "EVEJS_FRONTIER_NETWORK_NODE_SCAN_GRAVIMETRIC_STRENGTH",
+        envType: "number",
+        minValue: 0,
+        exclusiveMinValue: true,
+        description: "Temporary Network Node remote-scanner strength for gravimetric aggregate signals.",
+        validValues: "Positive multiplier.",
+    },
+    {
+        key: "frontierNetworkNodeScanElectromagneticStrength",
+        defaultValue: 1,
+        envVar: "EVEJS_FRONTIER_NETWORK_NODE_SCAN_ELECTROMAGNETIC_STRENGTH",
+        envType: "number",
+        minValue: 0,
+        exclusiveMinValue: true,
+        description: "Temporary Network Node remote-scanner strength for electromagnetic aggregate signals.",
+        validValues: "Positive multiplier.",
+    },
+    {
+        key: "frontierNetworkNodeScanThermalStrength",
+        defaultValue: 1,
+        envVar: "EVEJS_FRONTIER_NETWORK_NODE_SCAN_THERMAL_STRENGTH",
+        envType: "number",
+        minValue: 0,
+        exclusiveMinValue: true,
+        description: "Temporary Network Node remote-scanner strength for thermal aggregate signals.",
+        validValues: "Positive multiplier.",
+    },
+    {
+        key: "frontierRemoteScanIndexTtlMs",
+        defaultValue: 15_000,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_INDEX_TTL_MS",
+        envType: "number",
+        minValue: 0,
+        description: "Maximum age of a cold per-system contribution-index snapshot before it is rebuilt.",
+        validValues: "Non-negative milliseconds.",
+    },
+    {
+        key: "frontierRemoteScanResultTtlMs",
+        defaultValue: 3_600_000,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_RESULT_TTL_MS",
+        envType: "number",
+        minValue: 1,
+        description: "Durable retention and staleness lifetime for a completed remote scan result.",
+        validValues: "Positive milliseconds.",
+    },
+    {
+        key: "frontierRemoteScanMaxHeatCells",
+        defaultValue: 256,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_MAX_HEAT_CELLS",
+        envType: "number",
+        minValue: 1,
+        maxValue: 1024,
+        description: "Maximum sparse occupied heat-map cells serialized in one remote result.",
+        validValues: "Integer from 1 through 1024.",
+    },
+    {
+        key: "frontierRemoteScanMaxSites",
+        defaultValue: 128,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_MAX_SITES",
+        envType: "number",
+        minValue: 1,
+        maxValue: 512,
+        description: "Maximum redacted dungeon-site observations serialized in one remote result.",
+        validValues: "Integer from 1 through 512.",
+    },
+    {
+        key: "frontierRemoteScanMaxResources",
+        defaultValue: 128,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_MAX_RESOURCES",
+        envType: "number",
+        minValue: 1,
+        maxValue: 512,
+        description: "Maximum aggregate resource-field observations serialized in one remote result.",
+        validValues: "Integer from 1 through 512.",
+    },
+    {
+        key: "frontierRemoteScanMaxPayloadBytes",
+        defaultValue: 524_288,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_MAX_PAYLOAD_BYTES",
+        envType: "number",
+        minValue: 4_096,
+        description: "Maximum serialized size of one completed remote scan result before weakest observations are removed.",
+        validValues: "Integer bytes greater than or equal to 4096.",
+    },
+    {
+        key: "frontierRemoteScanSurveyOctreeDepth",
+        defaultValue: 4,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_SURVEY_OCTREE_DEPTH",
+        envType: "number",
+        minValue: 1,
+        maxValue: 8,
+        description: "Maximum sparse spatial subdivision depth for cold survey heat maps.",
+        validValues: "Integer from 1 through 8.",
+    },
+    {
+        key: "frontierRemoteScanDeepOctreeDepth",
+        defaultValue: 6,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_DEEP_OCTREE_DEPTH",
+        envType: "number",
+        minValue: 1,
+        maxValue: 8,
+        description: "Maximum sparse spatial subdivision depth for deep survey heat maps.",
+        validValues: "Integer from 1 through 8.",
+    },
+    {
+        key: "frontierRemoteScanDeepWarmupEnabled",
+        defaultValue: true,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_DEEP_WARMUP_ENABLED",
+        envType: "boolean",
+        description: "Allows a deep remote survey to warm a dormant target system without attaching the scanning character.",
+        validValues: "true or false.",
+    },
+    {
+        key: "frontierRemoteScanDeepWarmupTimeoutMs",
+        defaultValue: 15_000,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_DEEP_WARMUP_TIMEOUT_MS",
+        envType: "number",
+        minValue: 1,
+        description: "Hard timeout for target-system warm-up initiated by a deep remote survey.",
+        validValues: "Positive milliseconds.",
+    },
+    {
+        key: "frontierRemoteScanMaxConcurrentWarmups",
+        defaultValue: 4,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_MAX_CONCURRENT_WARMUPS",
+        envType: "number",
+        minValue: 1,
+        maxValue: 64,
+        description: "Maximum number of distinct solar systems that remote deep scans may warm concurrently.",
+        validValues: "Integer from 1 through 64.",
+    },
+    {
+        key: "frontierSignatureBloomGravimetricHalfLifeMs",
+        defaultValue: 300_000,
+        envVar: "EVEJS_FRONTIER_SIGNATURE_BLOOM_GRAVIMETRIC_HALF_LIFE_MS",
+        envType: "number",
+        minValue: 1,
+        description: "Default gravimetric decay half-life for normalized travel signature blooms.",
+        validValues: "Positive milliseconds.",
+    },
+    {
+        key: "frontierSignatureBloomElectromagneticHalfLifeMs",
+        defaultValue: 180_000,
+        envVar: "EVEJS_FRONTIER_SIGNATURE_BLOOM_ELECTROMAGNETIC_HALF_LIFE_MS",
+        envType: "number",
+        minValue: 1,
+        description: "Default electromagnetic decay half-life for normalized travel signature blooms.",
+        validValues: "Positive milliseconds.",
+    },
+    {
+        key: "frontierSignatureBloomThermalHalfLifeMs",
+        defaultValue: 120_000,
+        envVar: "EVEJS_FRONTIER_SIGNATURE_BLOOM_THERMAL_HALF_LIFE_MS",
+        envType: "number",
+        minValue: 1,
+        description: "Default thermal decay half-life for normalized travel signature blooms.",
+        validValues: "Positive milliseconds.",
+    },
+    {
+        key: "frontierSignatureBloomRetentionMs",
+        defaultValue: 1_800_000,
+        envVar: "EVEJS_FRONTIER_SIGNATURE_BLOOM_RETENTION_MS",
+        envType: "number",
+        minValue: 1,
+        description: "Minimum durable retention for a travel signature bloom when the publisher does not provide an expiry.",
+        validValues: "Positive milliseconds.",
+    },
+    {
         key: "proxyNodeId",
         defaultValue: 0xffaa,
         envVar: "EVEJS_PROXY_NODE_ID",
@@ -2880,6 +3129,27 @@ function buildValidatedConfigValues(rawValues = {}, options = {}) {
             "adaptiveTickRateMemoryHighPercent.");
     }
     return nextValues;
+}
+function validateFrontierSmartIndustryJobLaneCountByTypeID(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("frontierSmartIndustryJobLaneCountByTypeID must be a JSON object.");
+    }
+    const compatibleTypeIDs = new Set(Object.keys(require("../services/frontier/industryStaticData.json").facilities || {}));
+    const normalized = {};
+    for (const [rawTypeID, laneCount] of Object.entries(value)) {
+        const typeID = String(rawTypeID).trim();
+        if (!/^[1-9][0-9]*$/.test(typeID) || !Number.isSafeInteger(Number(typeID))) {
+            throw new Error(`frontierSmartIndustryJobLaneCountByTypeID key ${JSON.stringify(rawTypeID)} must be a positive integer type ID.`);
+        }
+        if (!compatibleTypeIDs.has(typeID)) {
+            throw new Error(`frontierSmartIndustryJobLaneCountByTypeID type ID ${typeID} is not a compatible Smart Industry facility.`);
+        }
+        if (!Number.isInteger(laneCount) || laneCount < 1 || laneCount > 16) {
+            throw new Error(`frontierSmartIndustryJobLaneCountByTypeID[${typeID}] must be an integer from 1 through 16.`);
+        }
+        normalized[typeID] = laneCount;
+    }
+    return normalized;
 }
 function saveLocalConfig(rawValues = {}) {
     const currentLocalRawConfig = normalizePersistedConfig(readJsonConfig(localConfigPath));

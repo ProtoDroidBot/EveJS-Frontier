@@ -23,6 +23,14 @@ const {
   setCreationPowerState,
 } = require(path.join(__dirname, "./creationRuntime"));
 const {
+  applyCreationPreset,
+  deleteCreationPreset,
+  listCreationPresets,
+  previewCreationPreset,
+  saveCreationPreset,
+  updateCreationPresetMetadata,
+} = require(path.join(__dirname, "./creationPresetRuntime"));
+const {
   dispatchCreationAbility,
   normalizeAbilityId,
 } = require(path.join(__dirname, "./creationAbilityRuntime"));
@@ -170,6 +178,17 @@ function resolveOwnedCreationItem(requestedItemID, session) {
   return { item, characterID };
 }
 
+function resolveActiveOwnedCreationItem(requestedItemID, session) {
+  const owned = resolveOwnedCreationItem(requestedItemID, session);
+  const activeShipID = normalizePositiveInteger(
+    session && session._space && session._space.shipID ||
+      session && (session.activeShipID || session.shipID || session.shipid),
+  );
+  return owned && activeShipID === normalizePositiveInteger(owned.item.itemID)
+    ? owned
+    : null;
+}
+
 function resolveOwnedCreation(requestedItemID, session) {
   const owned = resolveOwnedCreationItem(requestedItemID, session);
   if (!owned) {
@@ -250,6 +269,77 @@ function buildServerTimeResult(serverTime) {
   return buildDict([["server_time", serverTime || currentFileTime()]]);
 }
 
+function marshalPresetValue(value) {
+  if (Array.isArray(value)) {
+    return buildList(value.map((entry) => marshalPresetValue(entry)));
+  }
+  if (value && typeof value === "object") {
+    return buildDict(Object.entries<any>(value)
+      .map(([key, entry]) => [key, marshalPresetValue(entry)]));
+  }
+  return value;
+}
+
+function buildPresetResult(result) {
+  return buildDict([
+    ["success", result && result.success === true],
+    ["diagnostics", diagnosticList(result && result.diagnostics)],
+    ["data", result && result.data ? marshalPresetValue(result.data) : null],
+  ]);
+}
+
+function presentCreationCommit(result, owned, session) {
+  if (result.success !== true) {
+    return;
+  }
+  if (session && typeof session.sendNotification === "function") {
+    try {
+      const snapshot = buildCreationSnapshot(
+        result.data.item,
+        owned.characterID,
+        result.data.state,
+        result.data.template,
+        {
+          getLoadedCharge(moduleItemID) {
+            const loaded = getCreationModuleChargeState(
+              owned.characterID,
+              moduleItemID,
+            );
+            if (!loaded.success || !loaded.data.item) {
+              return null;
+            }
+            return {
+              count: loaded.data.quantity,
+              typeID: loaded.data.item.typeID,
+            };
+          },
+        },
+      );
+      session.sendNotification(
+        "OnCreationChanged",
+        "clientID",
+        [owned.item.itemID, snapshot],
+      );
+    } catch (error) {
+      log.warn(
+        `[creation] snapshot notification failed ship=${owned.item.itemID}: ` +
+        `${error && error.message ? error.message : error}`,
+      );
+    }
+  }
+  if (session && session._space) {
+    try {
+      const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
+      spaceRuntime.refreshShipDerivedState(session, { broadcast: true });
+    } catch (error) {
+      log.warn(
+        `[creation] derived-state refresh failed ship=${owned.item.itemID}: ` +
+        `${error && error.message ? error.message : error}`,
+      );
+    }
+  }
+}
+
 class CreationService extends BaseService {
   constructor() {
     super("creation");
@@ -282,64 +372,123 @@ class CreationService extends BaseService {
       `changes=${Array.isArray(changes) ? changes.length : 0} ` +
       `accepted=${result.success === true} diagnostics=${result.diagnostics.length}`,
     );
-    if (
-      result.success === true &&
-      session &&
-      typeof session.sendNotification === "function"
-    ) {
-      try {
-        const snapshot = buildCreationSnapshot(
-          result.data.item,
-          owned.characterID,
-          result.data.state,
-          result.data.template,
-          {
-            getLoadedCharge(moduleItemID) {
-              const loaded = getCreationModuleChargeState(
-                owned.characterID,
-                moduleItemID,
-              );
-              if (!loaded.success || !loaded.data.item) {
-                return null;
-              }
-              return {
-                count: loaded.data.quantity,
-                typeID: loaded.data.item.typeID,
-              };
-            },
-          },
-        );
-        session.sendNotification(
-          "OnCreationChanged",
-          "clientID",
-          [owned.item.itemID, snapshot],
-        );
-      } catch (error) {
-        // The draft has already been durably committed. A transient client
-        // notification failure must not turn it into a retryable mutation.
-        log.warn(
-          `[creation] snapshot notification failed ship=${owned.item.itemID}: ` +
-          `${error && error.message ? error.message : error}`,
-        );
-      }
-    }
-    if (result.success === true && session && session._space) {
-      try {
-        const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
-        spaceRuntime.refreshShipDerivedState(session, {
-          broadcast: true,
-        });
-      } catch (error) {
-        // The fitting draft is already durable. Keep the client mutation
-        // successful and let the next ordinary ship refresh converge if its
-        // live-space presentation is temporarily unavailable.
-        log.warn(
-          `[creation] derived-state refresh failed ship=${owned.item.itemID}: ` +
-          `${error && error.message ? error.message : error}`,
-        );
-      }
-    }
+    presentCreationCommit(result, owned, session);
     return diagnosticList(result.diagnostics);
+  }
+
+  Handle_list_presets(_args, session) {
+    const characterID = resolveSessionCharacterID(session);
+    return buildList(listCreationPresets(characterID)
+      .map((preset) => marshalPresetValue(preset)));
+  }
+
+  Handle_get_presets(args, session) {
+    return this.Handle_list_presets(args, session);
+  }
+
+  Handle_save_preset(args, session) {
+    const [requestedItemID, name, description] = unpackArgs(args);
+    const owned = resolveActiveOwnedCreationItem(requestedItemID, session);
+    if (!owned) {
+      return buildPresetResult({
+        success: false,
+        diagnostics: [{
+          code: "item_unavailable",
+          severity: "blocker",
+          params: { reason: "ACTIVE_CREATION_REQUIRED" },
+        }],
+      });
+    }
+    return buildPresetResult(saveCreationPreset(
+      owned.item,
+      owned.characterID,
+      name,
+      description,
+    ));
+  }
+
+  Handle_rename_preset(args, session) {
+    const [presetID, name, description] = unpackArgs(args);
+    const characterID = resolveSessionCharacterID(session);
+    const changes: Record<string, any> = { name };
+    if (description !== undefined && description !== null) {
+      changes.description = description;
+    }
+    const result = updateCreationPresetMetadata(
+      characterID,
+      String(presetID || ""),
+      changes,
+    );
+    return buildPresetResult(result.success
+      ? { success: true, diagnostics: [], data: result.data }
+      : {
+          success: false,
+          diagnostics: [{
+            code: "item_unavailable",
+            severity: "blocker",
+            params: { reason: result.errorMsg || "PRESET_RENAME_FAILED" },
+          }],
+        });
+  }
+
+  Handle_delete_preset(args, session) {
+    const [presetID] = unpackArgs(args);
+    const characterID = resolveSessionCharacterID(session);
+    const result = deleteCreationPreset(characterID, String(presetID || ""));
+    return buildPresetResult(result.success
+      ? { success: true, diagnostics: [], data: result.data }
+      : {
+          success: false,
+          diagnostics: [{
+            code: "item_unavailable",
+            severity: "blocker",
+            params: { reason: result.errorMsg || "PRESET_DELETE_FAILED" },
+          }],
+        });
+  }
+
+  Handle_preview_preset(args, session) {
+    const [requestedItemID, presetID] = unpackArgs(args);
+    const owned = resolveActiveOwnedCreationItem(requestedItemID, session);
+    if (!owned) {
+      return buildPresetResult({
+        success: false,
+        diagnostics: [{
+          code: "item_unavailable",
+          severity: "blocker",
+          params: { reason: "ACTIVE_CREATION_REQUIRED" },
+        }],
+      });
+    }
+    return buildPresetResult(previewCreationPreset(
+      owned.item,
+      owned.characterID,
+      String(presetID || ""),
+    ));
+  }
+
+  Handle_apply_preset(args, session) {
+    const [requestedItemID, presetID, previewToken] = unpackArgs(args);
+    const owned = resolveActiveOwnedCreationItem(requestedItemID, session);
+    if (!owned) {
+      return buildPresetResult({
+        success: false,
+        diagnostics: [{
+          code: "item_unavailable",
+          severity: "blocker",
+          params: { reason: "ACTIVE_CREATION_REQUIRED" },
+        }],
+      });
+    }
+    const result = applyCreationPreset(
+      owned.item,
+      owned.characterID,
+      String(presetID || ""),
+      String(previewToken || ""),
+      session,
+    );
+    presentCreationCommit(result, owned, session);
+    return buildPresetResult(result);
   }
 
   Handle_take_command(args, session) {
@@ -466,4 +615,5 @@ module.exports = CreationService;
 module.exports.buildCreationSnapshot = buildCreationSnapshot;
 module.exports.resolveOwnedCreation = resolveOwnedCreation;
 module.exports.resolveOwnedCreationItem = resolveOwnedCreationItem;
+module.exports.resolveActiveOwnedCreationItem = resolveActiveOwnedCreationItem;
 module.exports.resolveSessionCharacterID = resolveSessionCharacterID;

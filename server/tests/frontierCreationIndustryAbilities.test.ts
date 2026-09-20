@@ -195,6 +195,18 @@ test("Creation-host validation keeps module tabs separate and rejects remote, ca
     characterID: OWNER_ID,
   } };
   assert.equal(industryRuntime.validateFacility(f.session, f.printer.itemID, options).success, true);
+  const fittedPrinter = itemStore.findItemById(f.printer.itemID);
+  assert.equal(industryRuntime.getFacilityLaneCount(fittedPrinter), 1);
+  assert.deepEqual(industryRuntime.getJobLanes(fittedPrinter, f.session)
+    .filter(lane => lane.enabled).map(lane => lane.laneID), [1]);
+  assert.equal(industryRuntime.startProduction(
+    f.session,
+    f.printer.itemID,
+    PRINTER_BLUEPRINT_ID,
+    "unused-invalid-lane-hash",
+    1,
+    { ...options, laneID: 2 },
+  ).errorMsg, "INVALID_JOB_LANE");
   assert.equal(industryRuntime.validateFacility({ ...f.session, stationid: STATION_ID + 1,
     stationid2: STATION_ID + 1, locationid: STATION_ID + 1 }, f.printer.itemID, options).success, false);
   assert.equal(industryRuntime.validateFacility(f.session, f.processor.itemID, options).success, false,

@@ -5,7 +5,8 @@ const log = require(path.join(__dirname, "../../utils/logger"));
 const { ITEM_FLAGS, SHIP_CATEGORY_ID, findItemById, grantItemsToCharacterLocation, listContainerItems, moveItemToLocation, moveItemsToLocationsAndUpdateItem, removeInventoryItem, updateInventoryItem, updateShipItem, } = require(path.join(__dirname, "../inventory/itemStore"));
 const { syncInventoryItemForSession, } = require(path.join(__dirname, "../character/characterState"));
 const { getCreationModule, getCreationTemplate, } = require(path.join(__dirname, "./creationStaticData"));
-const { applyModifierGroups, appendDirectModifierEntries, buildEffectiveItemAttributeMap, getAttributeIDByNames, getPassiveModifierEffectRecords, getModuleChargeGroupIDs, getTypeDogmaEffects, } = require(path.join(__dirname, "../fitting/liveFittingState"));
+const { validateCreationLayout, } = require(path.join(__dirname, "./creationLayoutValidation"));
+const { applyModifierGroups, appendDirectModifierEntries, buildEffectiveItemAttributeMap, buildShipResourceState, getAttributeIDByNames, getPassiveModifierEffectRecords, getModuleChargeGroupIDs, getTypeDogmaEffects, } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const { buildGodmaShipEffectEvent, buildModuleAttributeChangeEvent, sendOnMultiEvent, } = require(path.join(__dirname, "../_shared/godmaMultiEvent"));
 const { currentFileTime, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const { ABILITY_RELOAD, ABILITY_UNLOAD, getModuleBehaviorName, getRegisteredBehaviorAbilities, getRegisteredTypeAbilities, resolveCreationAbilityHandler, } = require(path.join(__dirname, "./creationAbilityRuntime"));
@@ -570,12 +571,14 @@ function validateCreationModuleRemoval(item, change) {
             reason: "INDUSTRY_PRODUCTION_STATE_INVALID",
         });
     }
-    const production = industryProduction.getProduction(item);
-    if (production && production.state !== "STOPPED") {
+    const production = industryProduction.getProductions(item)
+        .find(({ production }) => production && production.state !== "STOPPED");
+    if (production) {
         return buildDiagnostic("invalid_post_commit_state", change, {
             reason: "INDUSTRY_JOB_ACTIVE",
-            jobID: production.jobID,
-            state: production.state,
+            laneID: production.laneID,
+            jobID: production.production.jobID,
+            state: production.production.state,
         });
     }
     const industryRuntime = require(path.join(__dirname, "./industryRuntime"));
@@ -960,36 +963,57 @@ function syncInventoryChangesForSession(session, changes) {
         syncInventoryItemForSession(session, change.item, change.previousData || change.previousState || {}, { emitCfgLocation: true });
     }
 }
-function commitCreationDraft(item, characterID, rawChanges, session) {
-    const ensured = ensureCreationState(item, characterID);
-    if (!ensured.success) {
-        return {
-            success: false,
-            diagnostics: [buildDiagnostic("invalid_post_commit_state", null, {
-                    reason: ensured.errorMsg || "CREATION_STATE_UNAVAILABLE",
-                })],
-        };
+function remapCreationStateItemIDs(state, itemIDMap) {
+    const resolveItemID = (value) => {
+        const itemID = toInt(value, 0);
+        return itemIDMap instanceof Map && itemIDMap.has(itemID)
+            ? toInt(itemIDMap.get(itemID), itemID)
+            : itemID;
+    };
+    return normalizeCreationState({
+        ...cloneValue(state),
+        modules: (state.modules || []).map((module) => ({
+            ...module,
+            itemID: resolveItemID(module.itemID),
+        })),
+        interiorPlacements: (state.interiorPlacements || []).map((placement) => ({
+            ...placement,
+            itemID: resolveItemID(placement.itemID),
+        })),
+        hardpoints: (state.hardpoints || []).map((hardpoint) => ({
+            ...hardpoint,
+            interiorItemID: resolveItemID(hardpoint.interiorItemID),
+            attachedItemID: hardpoint.attachedItemID == null
+                ? null
+                : resolveItemID(hardpoint.attachedItemID),
+        })),
+    });
+}
+function commitCreationStateTransition(item, characterID, ensured, nextState, inventoryActions, session, event = {}) {
+    const capacityItemIDMap = new Map();
+    for (const action of Array.isArray(inventoryActions) ? inventoryActions : []) {
+        capacityItemIDMap.set(toInt(action.stateItemID, toInt(action.item && action.item.itemID, 0)), toInt(action.item && action.item.itemID, 0));
     }
-    const changes = Array.isArray(rawChanges) ? rawChanges : [];
-    const staged = stageCreationChanges(ensured.data.state, ensured.data.template, item.itemID, characterID, changes);
-    if (staged.diagnostic) {
-        return { success: false, diagnostics: [staged.diagnostic] };
-    }
+    const nextCapacityState = remapCreationStateItemIDs(nextState, capacityItemIDMap) || nextState;
     const previousFuelCapacity = resolveCreationFuelCapacity(ensured.data.item, ensured.data.state, characterID);
-    const nextFuelCapacity = resolveCreationFuelCapacity(ensured.data.item, staged.state, characterID);
+    const nextFuelCapacity = resolveCreationFuelCapacity(ensured.data.item, nextCapacityState, characterID);
     const previousCapacitorCapacity = resolveCreationCapacitorCapacity(ensured.data.state, characterID);
-    const nextCapacitorCapacity = resolveCreationCapacitorCapacity(staged.state, characterID);
+    const nextCapacitorCapacity = resolveCreationCapacitorCapacity(nextCapacityState, characterID);
     const fuelCapacityDecreased = nextFuelCapacity < previousFuelCapacity;
     let voidedFuel = 0;
     let voidedBlackstartEnergy = 0;
     const moveRequests = [];
-    for (const action of staged.inventoryActions) {
+    const moveStateItemIDs = [];
+    const resolvedStateItemIDs = new Map();
+    for (const action of Array.isArray(inventoryActions) ? inventoryActions : []) {
         const currentSource = findItemById(action.item.itemID) || action.item;
+        const stateItemID = toInt(action.stateItemID, toInt(currentSource.itemID, 0));
         if (toInt(currentSource.locationID, 0) === action.locationID &&
             toInt(currentSource.flagID, 0) === action.flagID &&
             (action.fitToCreation !== true ||
                 (toInt(currentSource.singleton, 0) === 1 &&
                     toInt(currentSource.stacksize, 1) === 1))) {
+            resolvedStateItemIDs.set(stateItemID, toInt(currentSource.itemID, 0));
             continue;
         }
         if (!currentSource || toInt(currentSource.itemID, 0) <= 0) {
@@ -1009,7 +1033,7 @@ function commitCreationDraft(item, characterID, rawChanges, session) {
                 quantity: 1,
                 options: {
                     affectsFitting: true,
-                    preserveMovedItemID: true,
+                    preserveMovedItemID: action.preserveMovedItemID !== false,
                     treatDestinationAsFitting: true,
                     ...(repairingLegacyFittedStack
                         ? {
@@ -1019,6 +1043,7 @@ function commitCreationDraft(item, characterID, rawChanges, session) {
                         : {}),
                 },
             });
+            moveStateItemIDs.push(stateItemID);
         }
         else {
             const voidSealedFuel = toInt(currentSource.typeID, 0) === TYPE_FUEL_BLISTER
@@ -1041,9 +1066,22 @@ function commitCreationDraft(item, characterID, rawChanges, session) {
                 destinationFlagID: action.flagID,
                 options: { affectsFitting: true, ...voidSealedFuel },
             });
+            moveStateItemIDs.push(stateItemID);
         }
     }
-    const commitResult = moveItemsToLocationsAndUpdateItem(moveRequests, item.itemID, (currentItem) => {
+    let committedState = nextState;
+    const commitResult = moveItemsToLocationsAndUpdateItem(moveRequests, item.itemID, (currentItem, transaction) => {
+        const moves = transaction && Array.isArray(transaction.moves)
+            ? transaction.moves
+            : [];
+        moves.forEach((move, index) => {
+            const stateItemID = moveStateItemIDs[index];
+            const movedItemID = toInt(move && move.movedItemID, 0);
+            if (stateItemID > 0 && movedItemID > 0) {
+                resolvedStateItemIDs.set(stateItemID, movedItemID);
+            }
+        });
+        committedState = remapCreationStateItemIDs(nextState, resolvedStateItemIDs) || nextState;
         const fuelResult = fuelCapacityDecreased
             ? trimCreationFuelToCapacity(currentItem, nextFuelCapacity)
             : { item: currentItem, voidedFuel: 0 };
@@ -1052,7 +1090,7 @@ function commitCreationDraft(item, characterID, rawChanges, session) {
         voidedBlackstartEnergy = capacitorResult.lostEnergy;
         return {
             ...capacitorResult.item,
-            customInfo: customInfoWithCreationState(capacitorResult.item, staged.state),
+            customInfo: customInfoWithCreationState(capacitorResult.item, committedState),
         };
     }, {
         expectedCategoryID: SHIP_CATEGORY_ID,
@@ -1068,28 +1106,157 @@ function commitCreationDraft(item, characterID, rawChanges, session) {
     }
     syncInventoryChangesForSession(session, commitResult.data.changes);
     notifyCreationStateChanged({
-        reason: "draft_commit",
+        reason: String(event.reason || "draft_commit"),
         session,
         characterID,
         creationID: toInt(item && item.itemID, 0),
         item: commitResult.data.item,
         previousState: ensured.data.state,
-        state: staged.state,
-        changes,
+        state: committedState,
+        ...event,
     });
     return {
         success: true,
         diagnostics: [],
         data: {
             item: commitResult.data.item,
-            state: staged.state,
+            state: committedState,
             template: ensured.data.template,
             previousFuelCapacity,
             nextFuelCapacity,
+            previousCapacitorCapacity,
+            nextCapacitorCapacity,
             voidedFuel,
             voidedBlackstartEnergy,
         },
     };
+}
+function commitResolvedCreationState(item, characterID, rawState, session = null, options = {}) {
+    const ensured = ensureCreationState(item, characterID);
+    if (!ensured.success) {
+        return {
+            success: false,
+            diagnostics: [buildDiagnostic("invalid_post_commit_state", null, {
+                    reason: ensured.errorMsg || "CREATION_STATE_UNAVAILABLE",
+                })],
+        };
+    }
+    const rawModuleSources = new Map((rawState && Array.isArray(rawState.modules) ? rawState.modules : [])
+        .map((module) => [
+        toInt(module && module.itemID, 0),
+        toInt(module && module.sourceItemID, toInt(module && module.itemID, 0)),
+    ]));
+    const optionModuleSources = options.moduleSources &&
+        typeof options.moduleSources === "object"
+        ? options.moduleSources
+        : {};
+    const nextState = normalizeCreationState(rawState);
+    if (!nextState || nextState.templateTypeID !== toInt(item && item.typeID, 0)) {
+        return {
+            success: false,
+            diagnostics: [buildDiagnostic("invalid_post_commit_state", null, {
+                    reason: "CREATION_TEMPLATE_MISMATCH",
+                })],
+        };
+    }
+    const layoutDiagnostics = validateCreationLayout(nextState, ensured.data.template);
+    if (layoutDiagnostics.length > 0) {
+        return { success: false, diagnostics: layoutDiagnostics };
+    }
+    const ownerID = toInt(characterID, 0);
+    const creationID = toInt(item && item.itemID, 0);
+    const nextModuleIDs = new Set();
+    const retainedCurrentModuleIDs = new Set();
+    const sourceUseCounts = new Map();
+    const inventoryActions = [];
+    for (const module of nextState.modules) {
+        const moduleItemID = toInt(module && module.itemID, 0);
+        const sourceItemID = toInt(optionModuleSources[String(moduleItemID)] ??
+            optionModuleSources[moduleItemID] ??
+            rawModuleSources.get(moduleItemID), moduleItemID);
+        const source = findItemById(sourceItemID);
+        const nextSourceUseCount = (sourceUseCounts.get(sourceItemID) || 0) + 1;
+        const availableQuantity = source && toInt(source.singleton, 0) === 1
+            ? 1
+            : Math.max(1, toInt(source && (source.stacksize ?? source.quantity), 1));
+        if (!source ||
+            nextModuleIDs.has(moduleItemID) ||
+            nextSourceUseCount > availableQuantity ||
+            toInt(source.ownerID, 0) !== ownerID ||
+            toInt(source.locationID, 0) !== creationID ||
+            toInt(source.typeID, 0) !== toInt(module && module.typeID, 0) ||
+            ![ITEM_FLAGS.CARGO_HOLD, CREATION_FITTING_FLAG_ID].includes(toInt(source.flagID, -1))) {
+            return {
+                success: false,
+                diagnostics: [buildDiagnostic("item_unavailable", { itemID: moduleItemID }, {
+                        reason: "PRESET_MODULE_UNAVAILABLE",
+                    })],
+            };
+        }
+        nextModuleIDs.add(moduleItemID);
+        sourceUseCounts.set(sourceItemID, nextSourceUseCount);
+        if (toInt(source.flagID, -1) === CREATION_FITTING_FLAG_ID) {
+            retainedCurrentModuleIDs.add(sourceItemID);
+        }
+        inventoryActions.push({
+            item: source,
+            stateItemID: moduleItemID,
+            locationID: creationID,
+            flagID: CREATION_FITTING_FLAG_ID,
+            fitToCreation: true,
+            preserveMovedItemID: sourceItemID === moduleItemID,
+        });
+    }
+    for (const currentModule of ensured.data.state.modules) {
+        const moduleItemID = toInt(currentModule && currentModule.itemID, 0);
+        if (nextModuleIDs.has(moduleItemID) || retainedCurrentModuleIDs.has(moduleItemID)) {
+            continue;
+        }
+        const source = findItemById(moduleItemID);
+        if (!source || toInt(source.ownerID, 0) !== ownerID) {
+            return {
+                success: false,
+                diagnostics: [buildDiagnostic("item_unavailable", { itemID: moduleItemID })],
+            };
+        }
+        const removalDiagnostic = validateCreationModuleRemoval(source, {
+            op: "remove",
+            itemID: moduleItemID,
+        });
+        if (removalDiagnostic) {
+            return { success: false, diagnostics: [removalDiagnostic] };
+        }
+        inventoryActions.push({
+            item: source,
+            locationID: creationID,
+            flagID: ITEM_FLAGS.CARGO_HOLD,
+        });
+    }
+    return commitCreationStateTransition(item, characterID, ensured, nextState, inventoryActions, session, {
+        reason: String(options.reason || "resolved_state_commit"),
+        presetID: options.presetID || null,
+    });
+}
+function commitCreationDraft(item, characterID, rawChanges, session) {
+    const ensured = ensureCreationState(item, characterID);
+    if (!ensured.success) {
+        return {
+            success: false,
+            diagnostics: [buildDiagnostic("invalid_post_commit_state", null, {
+                    reason: ensured.errorMsg || "CREATION_STATE_UNAVAILABLE",
+                })],
+        };
+    }
+    const changes = Array.isArray(rawChanges) ? rawChanges : [];
+    const staged = stageCreationChanges(ensured.data.state, ensured.data.template, item.itemID, characterID, changes);
+    if (staged.diagnostic) {
+        return { success: false, diagnostics: [staged.diagnostic] };
+    }
+    const layoutDiagnostics = validateCreationLayout(staged.state, ensured.data.template);
+    if (layoutDiagnostics.length > 0) {
+        return { success: false, diagnostics: layoutDiagnostics };
+    }
+    return commitCreationStateTransition(item, characterID, ensured, staged.state, staged.inventoryActions, session, { reason: "draft_commit", changes });
 }
 function setCreationPowerState(item, characterID, poweredOff, session = null) {
     const ensured = ensureCreationState(item, characterID);
@@ -1250,6 +1417,51 @@ function getCreationDogmaContext(item, characterID) {
         },
     };
 }
+function getCreationStateCapacities(item, characterID, rawState) {
+    const sourceItemIDs = new Map((rawState && Array.isArray(rawState.modules) ? rawState.modules : [])
+        .map((module) => [
+        toInt(module && module.itemID, 0),
+        toInt(module && module.sourceItemID, toInt(module && module.itemID, 0)),
+    ]));
+    const state = normalizeCreationState(rawState);
+    if (!state) {
+        return null;
+    }
+    const shipItem = findItemById(toInt(item && item.itemID, 0)) || item;
+    const shipID = toInt(shipItem && shipItem.itemID, 0);
+    const ownerID = toInt(characterID, 0);
+    const poweredOff = state.poweredOff === true;
+    const moduleItems = state.modules.map((module) => {
+        const source = findItemById(sourceItemIDs.get(toInt(module.itemID, 0)) || module.itemID);
+        if (!source ||
+            toInt(source.ownerID, 0) !== ownerID ||
+            toInt(source.locationID, 0) !== shipID ||
+            toInt(source.typeID, 0) !== module.typeID) {
+            return null;
+        }
+        return {
+            ...source,
+            moduleState: {
+                ...(source.moduleState || {}),
+                online: toInt(source.typeID, 0) === TYPE_BLACKSTART_CELL
+                    ? isCreationModuleOnline(source)
+                    : !poweredOff && isCreationModuleOnline(source),
+            },
+        };
+    }).filter(Boolean);
+    const moduleModifierEntries = buildCreationShipAttributeModifierEntries(moduleItems);
+    const resourceState = buildShipResourceState(ownerID, shipItem, {
+        additionalAttributeModifierEntries: [
+            ...moduleModifierEntries,
+            ...buildCreationIntrinsicShipAttributeModifierEntries(shipItem, moduleItems, { moduleModifierEntries }),
+        ],
+    });
+    return {
+        cargoCapacity: Math.max(0, toFiniteNumber(resourceState && resourceState.cargoCapacity, 0)),
+        capacitorCapacity: resolveCreationCapacitorCapacity(state, ownerID),
+        fuelCapacity: resolveCreationFuelCapacity(shipItem, state, ownerID),
+    };
+}
 function setCreationModuleOnlineState(item, characterID, moduleItemID, online, session = null) {
     const ensured = ensureCreationState(item, characterID);
     if (!ensured.success) {
@@ -1351,9 +1563,11 @@ module.exports = {
     buildCreationIntrinsicShipAttributeModifierEntries,
     buildCreationShipAttributeModifierEntries,
     commitCreationDraft,
+    commitResolvedCreationState,
     ensureCreationState,
     filterCreationModuleInventoryItems,
     getCreationDogmaContext,
+    getCreationStateCapacities,
     getCreationModuleAbilities,
     isCreationModuleOnline,
     normalizeCreationState,
@@ -1362,5 +1576,6 @@ module.exports = {
     setCreationModuleOnlineState,
     setCreationPowerState,
     stageCreationChanges,
+    validateCreationModuleRemoval,
 };
 //# sourceMappingURL=creationRuntime.js.map

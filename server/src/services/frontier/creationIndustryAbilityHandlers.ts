@@ -56,6 +56,13 @@ function hostedOptions(context) {
   };
 }
 
+function hostedProductionOptions(context) {
+  return {
+    ...context.industryOptions,
+    laneID: positiveInteger(context?.kwargs?.lane_id) || 1,
+  };
+}
+
 function resolveDependencies(context) {
   const overrides = context?.dependencies || {};
   return {
@@ -260,14 +267,14 @@ function registerCreationIndustryAbilityHandlers() {
         context.kwargs.blueprint_id,
         context.kwargs.blueprint_hash,
         null,
-        context.industryOptions,
+        hostedProductionOptions(context),
       ));
     })],
     [ABILITY_INDUSTRY_DISCONTINUE_PRODUCTION, makeHandler(context =>
       finishProduction(context, context.industryDependencies.industryRuntime.discontinueProduction(
         context.session,
         context.moduleItemID,
-        context.industryOptions,
+        hostedProductionOptions(context),
       )))],
     [ABILITY_INDUSTRY_DEPOSIT_INPUT, makeHandler(context => {
       const settled = settle(context);
@@ -322,6 +329,7 @@ module.exports = {
   _testing: {
     blueprintDict,
     hostedOptions,
+    hostedProductionOptions,
     productionData,
     quantityDict,
     validateIndustryContext,

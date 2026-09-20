@@ -18,10 +18,16 @@ export function registerSuiIndustryStorageSnapshotReader(value: SnapshotReader) 
   return () => { if (snapshotReader === value) snapshotReader = null; };
 }
 
-function combine(industryStatus: SuiIndustryStorageSyncState, storageStatus: SuiIndustryStorageSyncState): SuiIndustryStorageSyncStatus {
+function combine(
+  industryStatus: SuiIndustryStorageSyncState,
+  storageStatus: SuiIndustryStorageSyncState,
+  options: { allowDisabledPeer?: boolean } = {},
+): SuiIndustryStorageSyncStatus {
   const status = industryStatus === "error" || storageStatus === "error" ? "error"
     : industryStatus === "disabled" && storageStatus === "disabled" ? "disabled"
-    : [industryStatus, storageStatus].every(value => value === "synced" || value === "disabled") ? "synced"
+    : industryStatus === "synced" && storageStatus === "synced" ? "synced"
+    : options.allowDisabledPeer === true &&
+        [industryStatus, storageStatus].every(value => value === "synced" || value === "disabled") ? "synced"
     : "pending";
   return { status, industryStatus, storageStatus };
 }
@@ -37,7 +43,7 @@ export async function syncIndustryAssemblyTransfer(
   try {
     await flushSuiIndustrySync(industryRequest);
     const industry = await readSuiIndustrySyncStatus(industryRequest);
-    return combine(industry.status, "disabled");
+    return combine(industry.status, "disabled", { allowDisabledPeer: true });
   } catch {
     return combine("error", "disabled");
   }

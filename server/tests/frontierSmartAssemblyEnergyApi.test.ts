@@ -191,6 +191,50 @@ test("grid API preserves actionable range errors and sanitizes unexpected runtim
   assert.equal(JSON.stringify(thrown).includes("private-runtime-detail"), false);
 });
 
+test("Network Node dApp API exposes remote scanning without trusting client identity fields", async () => {
+  const scanCalls: any[] = [];
+  const scanRuntime = {
+    getNetworkNodeScanConfiguration(characterID: number, sourceID: number, session: any, rangeJumps: number) {
+      scanCalls.push({ action: "config", characterID, sourceID, session, rangeJumps });
+      return { success: true, data: { maxRangeJumps: 3, selectedRangeJumps: rangeJumps,
+        entityClasses: ["ships", "bases", "transient_travel"] } };
+    },
+    startRemoteSystemScan(characterID: number, sourceID: number, request: any, session: any) {
+      scanCalls.push({ action: "start", characterID, sourceID, request, session });
+      return { success: true, created: true, data: { scanID: "scan-1", state: "queued" } };
+    },
+    getRemoteSystemScan(characterID: number, sourceID: number, scanID: string, session: any) {
+      scanCalls.push({ action: "status", characterID, sourceID, scanID, session });
+      return { success: true, data: { scanID, state: "complete" } };
+    },
+    getRemoteSystemScanResult(characterID: number, sourceID: number, scanID: string, session: any) {
+      scanCalls.push({ action: "result", characterID, sourceID, scanID, session });
+      return { success: true, data: { scanID, entityClasses: ["ships", "bases", "transient_travel"] } };
+    },
+    cancelRemoteSystemScan(characterID: number, sourceID: number, scanID: string, session: any) {
+      scanCalls.push({ action: "cancel", characterID, sourceID, scanID, session });
+      return { success: true, data: { scanID, state: "cancelled" } };
+    },
+  };
+  const { api, login, session } = fixture({ scanRuntime });
+  const token = await login();
+  assert.equal((await api.scanConfig(token, 50, { rangeJumps: 2 })).success, true);
+  assert.equal((await api.startScan(token, 50, { operationKey: "x", targetSystemID: 7,
+    characterID: 999, scannerSourceID: 999 })).success, true);
+  assert.equal((await api.scanStatus(token, 50, "scan-1")).success, true);
+  assert.equal((await api.scanResult(token, 50, "scan-1")).success, true);
+  assert.equal((await api.cancelScan(token, 50, "scan-1")).success, true);
+  assert.deepEqual(scanCalls.map((call) => [call.action, call.characterID, call.sourceID]), [
+    ["config", session.characterID, 50],
+    ["start", session.characterID, 50],
+    ["status", session.characterID, 50],
+    ["result", session.characterID, 50],
+    ["cancel", session.characterID, 50],
+  ]);
+  assert.equal(scanCalls[1].request.characterID, 999, "the runtime receives the opaque request only");
+  assert.equal(scanCalls[1].characterID, session.characterID, "authorization identity remains server-derived");
+});
+
 test("mounted grid routes enforce origins and authentication and do not cache grid state", async () => {
   const express = require("express");
   const app = express();

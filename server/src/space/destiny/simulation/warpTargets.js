@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+const { getEntityCollisionBroadphaseRadius, } = require("./collisions");
 function defaultToFiniteNumber(value, fallback = 0) {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : fallback;
@@ -83,7 +84,7 @@ function createDestinyWarpTargetPlanner(deps = {}) {
     }
     function getStargateWarpExitPoint(entity, stargate, minimumRange = 0) {
         const gateRadius = resolveStargatePhysicalRadius(stargate);
-        const shipRadius = Math.max(0, toFiniteNumber(entity && entity.radius, 0));
+        const shipRadius = Math.max(0, toFiniteNumber(getEntityCollisionBroadphaseRadius(entity), 0));
         const minimumOffset = gateRadius + shipRadius + 500;
         const requestedRange = Math.max(minimumOffset, toFiniteNumber(minimumRange, 0));
         const gatePosition = cloneVector(stargate && stargate.position);
@@ -93,14 +94,17 @@ function createDestinyWarpTargetPlanner(deps = {}) {
     }
     function getStargateWarpExitEnvelopePoint(entity, stargate, minimumRange = 0) {
         const gateRadius = resolveStargatePhysicalRadius(stargate);
+        const shipRadius = Math.max(0, toFiniteNumber(getEntityCollisionBroadphaseRadius(entity), 0));
         const requestedRange = Math.max(0, toFiniteNumber(minimumRange, 0));
         const explicitSurfaceRange = requestedRange > MAX_STARGATE_JUMP_DISTANCE_METERS
             ? requestedRange
             : 0;
+        const safeSurfaceOffset = gateRadius + shipRadius + 500;
+        const requestedSurfaceOffset = gateRadius + explicitSurfaceRange;
         const gatePosition = cloneVector(stargate && stargate.position);
         const fallbackDirection = normalizeVector(entity && entity.direction ? entity.direction : DEFAULT_RIGHT, DEFAULT_RIGHT);
         const fromGateToShip = normalizeVector(subtractVectors(entity && entity.position, gatePosition), fallbackDirection);
-        return addVectors(gatePosition, scaleVector(fromGateToShip, gateRadius + explicitSurfaceRange));
+        return addVectors(gatePosition, scaleVector(fromGateToShip, Math.max(safeSurfaceOffset, requestedSurfaceOffset)));
     }
     function getStargateWarpLandingPoint(entity, stargate, minimumRange = 0) {
         const requestedClearance = Math.max(0, toFiniteNumber(minimumRange, 0));

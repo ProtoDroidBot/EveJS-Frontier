@@ -5,6 +5,7 @@ const log = require("../../utils/logger");
 
 const ERROR_MESSAGES = Object.freeze({
   ASSEMBLY_CREATE_FAILED: "The assembly could not be created in the current ballpark.",
+  ASSEMBLY_PLACEMENT_OCCUPIED: "That placement overlaps an existing assembly or construction site.",
   ASSEMBLY_TYPE_NOT_FOUND: "This client build does not contain the requested assembly type.",
   ASSEMBLY_TYPE_NOT_SUPPORTED: "This assembly cannot be deployed by the local Frontier server yet.",
   CONSTRUCTION_SITE_TYPE_NOT_FOUND: "The construction-depot type is absent from this client build.",

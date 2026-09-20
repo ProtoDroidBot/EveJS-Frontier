@@ -4,6 +4,7 @@ const { canEntitiesInteractLocally } = require("../../space/destiny/identity/int
 const storage = require("./smartStorageUnitRuntime");
 const turret = require("./smartTurretInventoryRuntime");
 const fieldStorage = require("./fieldStorageInventoryRuntime");
+const networkNodeFuel = require("./networkNodeFuelRuntime");
 const { getShipFittingSnapshot } = require("../../_secondary/fitting/fittingRuntime");
 const { getShipBaseAttributeValue } = require("../fitting/liveFittingState");
 const mining = require("../mining/miningInventory");
@@ -109,6 +110,36 @@ function resolveIndustryInventory(session, inventoryID, requestedFlagID, options
     return { success: true as const, data: { item, capacity: validation.capacity, flagID,
       inventoryKind: "field_storage", inventoryOwnerID: characterID, maxTypeQuantity: 0xffffffff } };
   }
+  if (itemID !== shipID && flagID === networkNodeFuel.NETWORK_NODE_FUEL_BAY_FLAG &&
+      Number(item.typeID) === networkNodeFuel.NETWORK_NODE_TYPE_ID) {
+    const shipEntity = spaceRuntime.getEntity(session, shipID);
+    const targetEntity = spaceRuntime.getEntity(session, itemID);
+    const scene = spaceRuntime.getSceneForSession(session);
+    const visible = shipEntity && targetEntity && canEntitiesInteractLocally(shipEntity, targetEntity);
+    const distance = visible ? scene?.getCommandTimeEntitySurfaceDistance?.(shipEntity, targetEntity) : Infinity;
+    const validation = networkNodeFuel.validateNetworkNodeFuelInventory(characterID, itemID, {
+      access: {
+        authorized: true,
+        activeShipID: shipID,
+        solarSystemID: systemID,
+        inRange: Number.isFinite(distance) && distance <= 5000,
+      },
+    });
+    if (validation.errorMsg) return fail(validation.errorMsg);
+    return { success: true as const, data: {
+      item: validation.item,
+      capacity: validation.capacity,
+      flagID,
+      smartAssemblyID: itemID,
+      smartAssemblyKind: "network_node_fuel",
+      networkNodeID: itemID,
+      inventoryOwnerID: characterID,
+      virtualInventory: "network_node_fuel",
+      fuelState: validation.fuelState,
+      usedVolume: validation.usedVolume,
+      maxTypeQuantity: 0xffffffff,
+    } };
+  }
   if (Number(item.ownerID) !== characterID) return fail("ACCESS_DENIED");
 
   let capacity;
@@ -140,6 +171,9 @@ function resolveIndustryInventory(session, inventoryID, requestedFlagID, options
 
 function isIndustryInventoryItemAllowed(inventory, item) {
   const flagID = inventory?.flagID;
+  if (inventory?.virtualInventory === "network_node_fuel") {
+    return !item?.singleton && networkNodeFuel.isAcceptedNetworkNodeFuelType(item?.typeID);
+  }
   if (inventory?.smartAssemblyID) return !item?.singleton;
   if (flagID === 0 || flagID === ITEM_FLAGS.CARGO_HOLD || flagID === ITEM_FLAGS.FLEET_HANGAR) return true;
   if (flagID === ITEM_FLAGS.SHIP_HANGAR) return Number(item?.categoryID) === 6;
@@ -156,6 +190,9 @@ function getSmartAssemblyInventoryFlag(item) {
   if (!item) return -1;
   if (storage.getStorageComponent(item.typeID)) return storage.SMART_STORAGE_FLAG;
   if (turret.getTurretComponent(item.typeID)) return turret.SMART_TURRET_INVENTORY_FLAG;
+  if (Number(item.typeID) === networkNodeFuel.NETWORK_NODE_TYPE_ID) {
+    return networkNodeFuel.NETWORK_NODE_FUEL_BAY_FLAG;
+  }
   return -1;
 }
 
