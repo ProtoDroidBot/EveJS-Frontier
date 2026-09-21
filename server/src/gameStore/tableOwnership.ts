@@ -227,6 +227,7 @@ define(["sharedSettings"], {
 });
 define([
   "assemblyAccessPolicies",
+  "networkNodeEnergyHolds",
   "remoteSystemScans",
   "smartAssemblyRequests",
   "stargateRuntimeState",

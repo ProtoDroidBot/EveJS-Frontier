@@ -16,7 +16,7 @@ const STATE_VERSION = 1;
 const TERMINAL_STATES = new Set(["complete", "cancelled", "failed"]);
 const RUNNABLE_STATES = new Set(["queued", "warming", "scanning"]);
 const MODES = new Set(["survey", "deep"]);
-const LAYERS = new Set(["sites", "resources", "entities"]);
+const LAYERS = new Set(["sites", "resources", "celestials", "entities"]);
 const MAX_JOBS = 2_000;
 const MAX_SIGNALS = 20_000;
 const activeExecutions = new Map<string, Promise<any>>();
@@ -114,6 +114,21 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
     ));
     return createTableRepository("service:frontier", { strict: true });
   })();
+  const reserveEnergyHold = typeof options.reserveEnergyHold === "function"
+    ? options.reserveEnergyHold
+    : (request) => {
+        const result = require(path.join(__dirname, "./networkNodeEnergyHoldRuntime"))
+          .reserveNetworkNodeEnergyHold(request);
+        if (result && result.success) {
+          require(path.join(__dirname, "./networkNodeEnergyRuntime"))
+            .publishNetworkNodeOperationalStatus(request.networkNodeID);
+        }
+        return result;
+      };
+  const releaseEnergyHold = typeof options.releaseEnergyHold === "function"
+    ? options.releaseEnergyHold
+    : (holdID) => require(path.join(__dirname, "./networkNodeEnergyHoldRuntime"))
+        .releaseNetworkNodeEnergyHold(holdID);
 
   function readState() {
     repository.ensureTable(TABLE);
@@ -292,6 +307,7 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
         entityClasses: ["ships", "bases", "transient_travel"],
         actorClassification: "redacted",
         cooldownMs: Math.max(0, toInt(config.frontierRemoteScanCooldownMs, 5_000)),
+        energyHoldMs: Math.max(1, toInt(config.frontierRemoteScanEnergyHoldMs, 3_600_000)),
         costs: { survey: scanCosts("survey"), deep: scanCosts("deep") },
         reachableSystems: listReachableSystems(source.data.sourceSystemID, selectedRangeJumps),
       },
@@ -389,7 +405,7 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
         if (!cell) {
           cell = { ...coordinates, key, contributions: [], powers: {
             gravimetric: 0, electromagnetic: 0, thermal: 0,
-          }, counts: { ships: 0, bases: 0, transientTravel: 0 } };
+          }, counts: { ships: 0, bases: 0, celestials: 0, stations: 0, transientTravel: 0 } };
           grouped.set(key, cell);
         }
         cell.contributions.push(contribution);
@@ -401,6 +417,8 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
         }
         if (contribution.kind === "ship") cell.counts.ships += 1;
         else if (contribution.kind === "base") cell.counts.bases += 1;
+        else if (contribution.kind === "celestial") cell.counts.celestials += 1;
+        else if (contribution.kind === "station") cell.counts.stations += 1;
         else if (contribution.kind === "transient_travel") cell.counts.transientTravel += 1;
       }
       if (grouped.size > maxCells) depth -= 1;
@@ -432,6 +450,8 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
         entities: {
           ships: countBand(cell.counts.ships),
           bases: countBand(cell.counts.bases),
+          celestials: countBand(cell.counts.celestials),
+          stations: countBand(cell.counts.stations),
           transientTravel: countBand(cell.counts.transientTravel),
         },
         observedAtMs: Math.max(...cell.contributions.map((entry) => toFinite(entry.observedAtMs, snapshot.builtAtMs))),
@@ -450,8 +470,11 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
     const heat = aggregateHeatMap(snapshot, job, source);
     const maxSites = Math.max(1, Math.min(512, toInt(config.frontierRemoteScanMaxSites, 128)));
     const maxResources = Math.max(1, Math.min(512, toInt(config.frontierRemoteScanMaxResources, 128)));
+    const maxCelestials = 512;
     const siteContributions = snapshot.contributions.filter((entry) => entry.kind === "dungeon");
     const resourceContributions = snapshot.contributions.filter((entry) => entry.kind === "resource_field");
+    const celestialContributions = snapshot.contributions.filter((entry) =>
+      entry.kind === "celestial" || entry.kind === "station");
     const observation = (contribution) => {
       const cell = heat.byContributor.get(contribution.contributorKey);
       const confidence = cell ? cell.confidence : 0.02;
@@ -467,10 +490,10 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
         uncertaintyRadiusMeters: resolved.cell && resolved.cell.uncertaintyRadiusMeters || null,
         confidence: resolved.confidence,
         resolutionTier: resolved.tier,
-        family: resolved.tier === "trace" ? "unknown" : metadata.family || "unknown",
-        siteKind: ["identified", "deep"].includes(resolved.tier) ? metadata.siteKind || null : null,
-        displayType: resolved.tier === "deep" ? metadata.displayType || null : null,
-        difficulty: resolved.tier === "deep" ? metadata.difficulty || null : null,
+        family: metadata.family || "unknown",
+        siteKind: metadata.siteKind || "signature",
+        displayType: job.mode === "deep" ? metadata.displayType || null : null,
+        difficulty: job.mode === "deep" ? metadata.difficulty || null : null,
       };
     }).sort((left, right) => right.confidence - left.confidence ||
       left.signatureCode.localeCompare(right.signatureCode)).slice(0, maxSites) : [];
@@ -503,6 +526,27 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
         };
       }).sort((left, right) => right.confidence - left.confidence ||
         left.signatureCode.localeCompare(right.signatureCode)).slice(0, maxResources) : [];
+    const celestialObjects = job.layers.includes("celestials") ? celestialContributions
+      .map((entry) => {
+        const resolved = observation(entry);
+        const metadata = entry.celestialMetadata || {};
+        return {
+          signatureCode: sha(`celestial:${entry.contributorKey}`),
+          cellID: resolved.cell && resolved.cell.cellID || null,
+          approximateCenter: resolved.cell && resolved.cell.approximateCenter || null,
+          uncertaintyRadiusMeters: resolved.cell && resolved.cell.uncertaintyRadiusMeters || null,
+          confidence: resolved.confidence,
+          resolutionTier: resolved.tier,
+          objectClass: metadata.objectClass || entry.kind || "celestial",
+          name: metadata.name || "Unidentified celestial object",
+          groupName: metadata.groupName || metadata.objectClass || entry.kind || "Celestial",
+          typeID: positiveInt(metadata.typeID, 0) || null,
+          radiusMeters: Math.max(0, toFinite(metadata.radiusMeters, 0)),
+          orbitID: positiveInt(metadata.orbitID, 0) || null,
+          station: entry.kind === "station",
+        };
+      }).sort((left, right) => Number(right.station) - Number(left.station) ||
+        left.name.localeCompare(right.name)).slice(0, maxCelestials) : [];
     const heatMapCells = job.layers.includes("entities")
       ? heat.cells.map((cell) => {
         const copy = { ...cell };
@@ -516,6 +560,7 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
     const truncatedLayers: string[] = [];
     if (siteContributions.length > maxSites) truncatedLayers.push("sites");
     if (resourceContributions.length > maxResources) truncatedLayers.push("resources");
+    if (celestialContributions.length > maxCelestials) truncatedLayers.push("celestials");
     if (heat.truncated) truncatedLayers.push("entities");
     const result: Record<string, any> = {
       scanID: job.scanID,
@@ -532,15 +577,20 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
       confidence: Number(overallConfidence.toFixed(6)),
       actorClassification: "redacted",
       entityClasses: ["ships", "bases", "transient_travel"],
+      systemLoadAttempted: warmMetadata.systemLoadAttempted === true,
+      systemLoadSucceeded: warmMetadata.systemLoadSucceeded === true,
+      systemLoadError: warmMetadata.systemLoadError || null,
       warmedByScan: warmMetadata.warmedByScan === true,
       worldRevisionBefore: warmMetadata.worldRevisionBefore ?? snapshot.revision,
       worldRevisionAfter: warmMetadata.worldRevisionAfter ?? snapshot.revision,
       sites,
       resources,
+      celestialObjects,
       heatMapCells,
       sourceRevisions: {
         sites: toInt(snapshot.revisions && snapshot.revisions.dungeon, 0) >>> 0,
         resources: toInt(snapshot.revisions && snapshot.revisions.mining, 0) >>> 0,
+        celestials: toInt(snapshot.revisions && snapshot.revisions.celestial, 0) >>> 0,
         entities: (
           (toInt(snapshot.revisions && snapshot.revisions.inventory, 0) >>> 0) ^
           (toInt(snapshot.revisions && snapshot.revisions.structure, 0) >>> 0) ^
@@ -563,6 +613,7 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
     while (Buffer.byteLength(JSON.stringify(result), "utf8") > maxPayloadBytes) {
       const candidates = [
         ["entities", result.heatMapCells],
+        ["celestials", result.celestialObjects],
         ["resources", result.resources],
         ["sites", result.sites],
       ].filter(([, rows]) => Array.isArray(rows) && rows.length > 0)
@@ -619,9 +670,9 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
       let state = readState();
       let job = state.jobs[scanID];
       if (!job || TERMINAL_STATES.has(job.state)) return job ? publicJob(job) : null;
-      job.state = job.mode === "deep" ? "warming" : "scanning";
+      job.state = "warming";
       job.updatedAtMs = now();
-      appendSignal(state, job, job.mode === "deep" ? "remote_scan.warming" : "remote_scan.started");
+      appendSignal(state, job, "remote_scan.warming");
       if (!writeState(state)) throw Object.assign(new Error("persist failed"), { code: "REMOTE_SCAN_PERSIST_FAILED" });
       try {
         const source = resolveSource({
@@ -638,18 +689,27 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
         if (!before.success) throw Object.assign(new Error("index unavailable"), { code: before.errorMsg });
         let scene = null;
         let warmedByScan = false;
-        if (job.mode === "deep") {
+        let systemLoadError = null;
+        try {
           scene = await sharedWarmup(job.targetSystemID);
-          if (!scene) throw Object.assign(new Error("warm-up unavailable"), { code: "REMOTE_SCAN_WARMUP_FAILED" });
+          if (!scene) throw Object.assign(new Error("system load unavailable"), {
+            code: "REMOTE_SCAN_WARMUP_FAILED",
+          });
           warmedByScan = true;
-          const latest = readState().jobs[scanID];
-          if (!latest || latest.cancelRequested === true) {
-            updateJob(scanID, (entry) => ({ ...entry, state: "cancelled", completedAtMs: now(),
-              cost: { ...entry.cost, committed: false } }), "remote_scan.cancelled");
-            return publicJob(readState().jobs[scanID]);
-          }
-          updateJob(scanID, (entry) => ({ ...entry, state: "scanning" }), "remote_scan.started");
+        } catch (error) {
+          systemLoadError = String(error && error.code || "REMOTE_SCAN_WARMUP_FAILED");
+          if (job.mode === "deep") throw error;
         }
+        const latest = readState().jobs[scanID];
+        if (!latest || latest.cancelRequested === true) {
+          updateJob(scanID, (entry) => ({ ...entry, state: "cancelled", completedAtMs: now(),
+            cost: { ...entry.cost, committed: false } }), "remote_scan.cancelled");
+          return publicJob(readState().jobs[scanID]);
+        }
+        updateJob(scanID, (entry) => ({ ...entry, state: "scanning" }), "remote_scan.started", {
+          systemLoadSucceeded: warmedByScan,
+          systemLoadError,
+        });
         const after = scanIndex.getSystemScanSnapshot(job.targetSystemID, {
           actorSession: job.actorSessionSnapshot,
           forceRebuild: true,
@@ -669,10 +729,13 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
           return job ? publicJob(job) : null;
         }
         const result = buildResult(after.data, job, source.data, {
+          systemLoadAttempted: true,
+          systemLoadSucceeded: warmedByScan,
+          systemLoadError,
           warmedByScan,
           worldRevisionBefore: before.data.revision,
           worldRevisionAfter: after.data.revision,
-          incompleteLayers: [],
+          incompleteLayers: systemLoadError ? ["live_scene"] : [],
         });
         job.state = "complete";
         job.result = result;
@@ -730,12 +793,8 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
     const reachable = listReachableSystems(source.data.sourceSystemID, request.data.rangeJumps);
     const target = reachable.find((entry) => entry.systemID === request.data.targetSystemID);
     if (!target) return { success: false as const, errorMsg: "REMOTE_SCAN_OUT_OF_RANGE" };
-    const cost = scanCosts(request.data.mode);
-    const outstandingCost = Object.values<any>(state.jobs)
-      .filter((job) => job.scannerSourceID === source.data.scannerSourceID &&
-        RUNNABLE_STATES.has(job.state) && job.cost && job.cost.committed !== false)
-      .reduce((sum, job) => sum + Math.max(0, toFinite(job.cost.energy, 0)), 0);
-    if (cost.energy + outstandingCost > toFinite(source.data.energyAvailable, 0)) {
+    const cost: Record<string, any> = scanCosts(request.data.mode);
+    if (cost.energy > toFinite(source.data.energyAvailable, 0)) {
       return { success: false as const, errorMsg: "REMOTE_SCAN_INSUFFICIENT_ENERGY" };
     }
     const cooldownMs = Math.max(0, toInt(config.frontierRemoteScanCooldownMs, 5_000));
@@ -751,6 +810,27 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
     const scanID = String(randomUUID()).trim().toLowerCase();
     if (!scanID) return { success: false as const, errorMsg: "REMOTE_SCAN_FAILED" };
     const startedAtMs = now();
+    const energyHoldDurationMs = Math.max(
+      1,
+      toInt(config.frontierRemoteScanEnergyHoldMs, 3_600_000),
+    );
+    const energyHold = reserveEnergyHold({
+      holdID: `remote-scan:${scanID}`,
+      networkNodeID: source.data.scannerSourceID,
+      energy: cost.energy,
+      availableEnergy: source.data.energyAvailable,
+      createdAtMs: startedAtMs,
+      expiresAtMs: startedAtMs + energyHoldDurationMs,
+      reason: "remote-system-scan",
+      referenceID: scanID,
+    });
+    if (!energyHold || energyHold.success !== true) {
+      return {
+        success: false as const,
+        errorMsg: energyHold && energyHold.errorMsg || "REMOTE_SCAN_ENERGY_HOLD_FAILED",
+      };
+    }
+    cost.hold = clone(energyHold.data);
     const job = {
       scanID,
       operationScopeKey,
@@ -783,8 +863,15 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
     state.jobs[scanID] = job;
     state.operationKeys[operationScopeKey] = scanID;
     appendSignal(state, job, "remote_scan.requested");
+    appendSignal(state, job, "remote_scan.energy_held", {
+      energy: cost.energy,
+      expiresAtMs: cost.hold.expiresAtMs,
+    });
     appendSignal(state, job, "remote_scan.queued");
-    if (!writeState(state)) return { success: false as const, errorMsg: "REMOTE_SCAN_PERSIST_FAILED" };
+    if (!writeState(state)) {
+      if (energyHold.created === true) releaseEnergyHold(cost.hold.holdID);
+      return { success: false as const, errorMsg: "REMOTE_SCAN_PERSIST_FAILED" };
+    }
     queueMicrotask(() => executeScan(scanID));
     return { success: true as const, created: true, data: publicJob(job) };
   }

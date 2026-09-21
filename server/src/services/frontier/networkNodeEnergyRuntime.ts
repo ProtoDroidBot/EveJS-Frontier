@@ -143,6 +143,14 @@ function energyUsed(view, nodeID, excludedID = 0) {
     ? view.costs.get(Number(item.typeID)) : 0), 0);
 }
 
+function temporaryEnergyHeld(nodeID, nowMs = Date.now()) {
+  return Math.max(
+    0,
+    Number(require("./networkNodeEnergyHoldRuntime")
+      .getNetworkNodeHeldEnergy(nodeID, nowMs)) || 0,
+  );
+}
+
 function getPowerUsageLevel(online, energyUsed, energyProduction, overLimit = false) {
   if (overLimit || energyUsed > energyProduction) return "over_limit";
   if (!online || energyProduction <= 0) return "offline";
@@ -165,7 +173,9 @@ function buildNetworkNodeOperationalStatus(node, view, options: Record<string, a
   const maxEnergy = observed?.maxEnergy ?? getNetworkNodeEnergyCapacity(node.typeID);
   const online = nodeOnline(node);
   const energyProduction = observed?.currentEnergyProduction ?? (online ? maxEnergy : 0);
-  const actualEnergyUsed = observed?.energyUsed ?? energyUsed(view, Number(node.itemID));
+  const assemblyEnergyUsed = observed?.energyUsed ?? energyUsed(view, Number(node.itemID));
+  const heldEnergy = temporaryEnergyHeld(Number(node.itemID));
+  const actualEnergyUsed = assemblyEnergyUsed + heldEnergy;
   const reportedEnergyUsed = Math.max(actualEnergyUsed, Number(options.projectedEnergyUsed) || 0);
   const overLimit = options.errorCode === "NETWORK_NODE_ENERGY_EXCEEDED" ||
     reportedEnergyUsed > energyProduction;
@@ -194,6 +204,8 @@ function buildNetworkNodeOperationalStatus(node, view, options: Record<string, a
       usageRatio,
       energyUsed: reportedEnergyUsed,
       actualEnergyUsed,
+      assemblyEnergyUsed,
+      temporaryEnergyHeld: heldEnergy,
       energyProduction,
       maxEnergy,
       energyAvailable: Math.max(0, energyProduction - actualEnergyUsed),
@@ -261,7 +273,12 @@ function reconcileNetworkNodeEnergy() {
   reconciling = true;
   try {
     const view = snapshot();
-    const remaining = new Map<number, number>(view.nodes.map(node => [Number(node.itemID), nodeOnline(node) ? getNetworkNodeEnergyCapacity(node.typeID) : 0]));
+    const remaining = new Map<number, number>(view.nodes.map(node => [
+      Number(node.itemID),
+      nodeOnline(node)
+        ? Math.max(0, getNetworkNodeEnergyCapacity(node.typeID) - temporaryEnergyHeld(node.itemID))
+        : 0,
+    ]));
     for (const item of view.items) {
       if (Number(item.typeID) === NETWORK_NODE_TYPE_ID) continue;
       const nodeID = view.bindings.get(Number(item.itemID)) || 0;
@@ -313,15 +330,18 @@ function validateAssemblyOnline(item) {
     Number(candidate.itemID) !== Number(item.itemID) && view.bindings.get(Number(candidate.itemID)) === nodeID &&
     require("./suiAssemblyState").readSuiAssemblyStatusIntent(candidate)?.targetStatus === 2
       ? view.costs.get(Number(candidate.typeID)) : 0), 0) : 0;
-  const available = observed ? Math.max(0, observed.currentEnergyProduction - observed.energyUsed - pendingEnergy)
-    : getNetworkNodeEnergyCapacity(node.typeID) - energyUsed(view, nodeID, Number(item.itemID));
+  const heldEnergy = temporaryEnergyHeld(nodeID);
+  const available = observed ? Math.max(0,
+    observed.currentEnergyProduction - observed.energyUsed - pendingEnergy - heldEnergy)
+    : getNetworkNodeEnergyCapacity(node.typeID) - heldEnergy -
+      energyUsed(view, nodeID, Number(item.itemID));
   if (view.costs.get(Number(item.typeID)) > available) {
     publishNetworkNodeOperationalStatus(nodeID, {
       errorCode: "NETWORK_NODE_ENERGY_EXCEEDED",
       requestedAssemblyID: item.itemID,
       requestedEnergy: view.costs.get(Number(item.typeID)),
       projectedEnergyUsed: (observed?.energyUsed ?? energyUsed(view, nodeID, Number(item.itemID))) +
-        pendingEnergy + view.costs.get(Number(item.typeID)),
+        pendingEnergy + heldEnergy + view.costs.get(Number(item.typeID)),
     });
     return { success: false as const, errorMsg: "NETWORK_NODE_ENERGY_EXCEEDED" };
   }
@@ -358,7 +378,9 @@ function getNetworkNodeEnergyStatus(characterID, nodeID) {
   }
   const maxEnergy = observed?.maxEnergy ?? getNetworkNodeEnergyCapacity(node.typeID);
   const production = observed?.currentEnergyProduction ?? (nodeOnline(node) ? maxEnergy : 0);
-  const used = observed?.energyUsed ?? energyUsed(view, Number(nodeID));
+  const assemblyEnergyUsed = observed?.energyUsed ?? energyUsed(view, Number(nodeID));
+  const heldEnergy = temporaryEnergyHeld(Number(nodeID));
+  const used = assemblyEnergyUsed + heldEnergy;
   const operational = buildNetworkNodeOperationalStatus(node, view);
   publishNetworkNodeOperationalStatus(nodeID);
   const componentsByType = new Map(components().map(component => [Number(component.typeID ?? component._key), component]));
@@ -388,7 +410,8 @@ function getNetworkNodeEnergyStatus(characterID, nodeID) {
     };
   };
   return { success: true as const, data: { networkNodeID: Number(nodeID), radiusMeters: NETWORK_NODE_RADIUS_METERS,
-    maxEnergy, energyUsed: used, energyAvailable: Math.max(0, production - used),
+    maxEnergy, energyUsed: used, assemblyEnergyUsed, temporaryEnergyHeld: heldEnergy,
+    energyAvailable: Math.max(0, production - used),
     fuelLevel: operational.fuel.level, lowFuel: operational.fuel.low,
     fuelFillRatio: operational.fuel.fillRatio,
     powerUsageLevel: operational.power.usageLevel,

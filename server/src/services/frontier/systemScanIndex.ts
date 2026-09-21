@@ -265,6 +265,71 @@ function createSystemScanIndex(options: Record<string, any> = {}) {
     return null;
   }
 
+  function buildCelestialLayer(systemID) {
+    const contributions: any[] = [];
+    const celestials = typeof worldData.getCelestialsForSystem === "function"
+      ? worldData.getCelestialsForSystem(systemID) || [] : [];
+    for (const celestial of celestials) {
+      if (!celestial || typeof celestial !== "object") continue;
+      const itemID = positiveInt(celestial.itemID, 0);
+      if (!itemID) continue;
+      const objectClass = String(celestial.kind || celestial.groupName || "celestial")
+        .trim().toLowerCase() || "celestial";
+      contributions.push({
+        contributorKey: `celestial:${itemID}`,
+        sourceDomain: "celestial",
+        systemID,
+        position: positionFrom(celestial.position),
+        kind: "celestial",
+        ...signatureProfile(celestial, {
+          baseSignature: objectClass === "sun" ? 100 : objectClass === "planet" ? 80 : 55,
+          gravimetric: 5,
+          electromagnetic: 1.4,
+          thermal: objectClass === "sun" ? 5 : 1,
+        }),
+        observedAtMs: now(),
+        celestialMetadata: {
+          objectClass,
+          name: String(celestial.itemName || celestial.name || celestial.groupName || "Celestial").slice(0, 128),
+          groupName: String(celestial.groupName || objectClass).slice(0, 96),
+          typeID: positiveInt(celestial.typeID, 0) || null,
+          radiusMeters: Math.max(0, toFinite(celestial.radius, 0)),
+          orbitID: positiveInt(celestial.orbitID, 0) || null,
+        },
+      });
+    }
+    const stations = typeof worldData.getStationsForSystem === "function"
+      ? worldData.getStationsForSystem(systemID) || [] : [];
+    for (const station of stations) {
+      if (!station || typeof station !== "object") continue;
+      const stationID = positiveInt(station.stationID || station.itemID, 0);
+      if (!stationID) continue;
+      contributions.push({
+        contributorKey: `station:${stationID}`,
+        sourceDomain: "celestial",
+        systemID,
+        position: positionFrom(station.position),
+        kind: "station",
+        ...signatureProfile({ ...station, typeID: station.stationTypeID || station.typeID }, {
+          baseSignature: 65,
+          gravimetric: 5,
+          electromagnetic: 2.5,
+          thermal: 1.5,
+        }),
+        observedAtMs: now(),
+        celestialMetadata: {
+          objectClass: "station",
+          name: String(station.stationName || station.itemName || `Station ${stationID}`).slice(0, 128),
+          groupName: String(station.stationTypeName || station.groupName || "Station").slice(0, 96),
+          typeID: positiveInt(station.stationTypeID || station.typeID, 0) || null,
+          radiusMeters: Math.max(0, toFinite(station.radius || station.interactionRadius, 0)),
+          orbitID: positiveInt(station.orbitID, 0) || null,
+        },
+      });
+    }
+    return contributions;
+  }
+
   function buildItemLayer(systemID) {
     const contributions = new Map<string, any>();
     for (const item of itemStore.listSystemSpaceItems(systemID) || []) {
@@ -368,12 +433,13 @@ function createSystemScanIndex(options: Record<string, any> = {}) {
     const resourceKeys = new Set(dungeon.filter((row) => row.kind === "resource_field")
       .map((row) => row.contributorKey));
     const generatedResources = buildGeneratedResourceLayer(systemID, resourceKeys);
+    const celestials = buildCelestialLayer(systemID);
     const entities = buildItemLayer(systemID);
     buildStructureLayer(systemID, entities);
     buildNpcLayer(systemID, entities);
     buildLiveLayer(systemID, rebuildOptions.liveScene, entities);
     const blooms = buildBloomLayer(systemID);
-    const contributions = [...dungeon, ...generatedResources, ...entities.values(), ...blooms]
+    const contributions = [...dungeon, ...generatedResources, ...celestials, ...entities.values(), ...blooms]
       .sort((left, right) => left.contributorKey.localeCompare(right.contributorKey));
     for (const contribution of contributions) {
       try {
@@ -394,7 +460,7 @@ function createSystemScanIndex(options: Record<string, any> = {}) {
         delete revisionRow.observedAtMs;
         return revisionRow;
       }))]));
-    for (const domain of ["dungeon", "mining", "inventory", "structure", "npc", "live", "transient"]) {
+    for (const domain of ["dungeon", "mining", "celestial", "inventory", "structure", "npc", "live", "transient"]) {
       if (!Object.hasOwn(revisions, domain)) revisions[domain] = 0;
     }
     const snapshot = {

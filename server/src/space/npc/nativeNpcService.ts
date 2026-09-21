@@ -1136,6 +1136,46 @@ function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, d
     };
   }
 
+  const resumeClearance = require(path.join(__dirname, "./npcWarpOrigins"))
+    .resolveCollisionSafeScenePosition(scene, {
+      position: entityRecord.position,
+      direction: entityRecord.direction,
+      radius: entityRecord.radius,
+    }, {
+      entityRadiusMeters: entityRecord.radius,
+      clearanceMeters: 100,
+      excludeEntityIDs: [entityRecord.entityID],
+    });
+  if (resumeClearance.relocated === true) {
+    entityRecord = {
+      ...entityRecord,
+      position: cloneVector(resumeClearance.position),
+      targetPoint: cloneVector(resumeClearance.position),
+      velocity: { x: 0, y: 0, z: 0 },
+      mode: "STOP",
+      speedFraction: 0,
+    };
+    const saved = nativeNpcStore.upsertNativeEntity(entityRecord, {
+      transient: entityRecord.transient === true,
+    });
+    if (!saved || saved.success !== true) {
+      if (spawnLease) {
+        npcRuntimePersistence.releaseSpawnLease(
+          entityRecord.npcCharacterID,
+          spawnLease.token,
+        );
+      }
+      return {
+        success: false,
+        errorMsg: saved && saved.errorMsg || "NPC_RESUME_POSITION_PERSIST_FAILED",
+      };
+    }
+    log.info(
+      `[NativeNpc] Relocated virtualized NPC ${entityRecord.entityID} to a collision-safe ` +
+        `resume position in system ${scene.systemID}`,
+    );
+  }
+
   const spawnResult = spaceRuntime.spawnDynamicShip(
     scene.systemID,
     buildNativeRuntimeShipSpec(entityRecord, definition),
@@ -2006,6 +2046,52 @@ function cleanupStaleNativeStartupControllers(scene) {
   return removed;
 }
 
+function virtualizeAndDematerializeNativeControllersForScene(
+  scene,
+  options: Record<string, any> = {},
+) {
+  const systemID = toPositiveInt(scene && scene.systemID, 0);
+  if (!scene || !systemID) {
+    return {
+      success: false,
+      errorMsg: "SCENE_NOT_FOUND",
+    };
+  }
+
+  const controllers = listControllers()
+    .filter((controller) => toPositiveInt(controller && controller.systemID, 0) === systemID);
+  const dematerialized: any[] = [];
+  for (const controller of controllers) {
+    const entityID = toPositiveInt(controller && controller.entityID, 0);
+    if (!entityID || !scene.getEntityByID(entityID)) continue;
+    const result = dematerializeNativeController(controller, {
+      broadcast: options.broadcast === true,
+      persistState: true,
+    });
+    if (!result || result.success !== true) {
+      return result || {
+        success: false,
+        errorMsg: "NPC_DEMATERIALIZATION_FAILED",
+      };
+    }
+    dematerialized.push({
+      entityID,
+      systemID,
+      positionVirtualized: true,
+    });
+  }
+
+  return {
+    success: true,
+    data: {
+      systemID,
+      dematerialized,
+      dematerializedCount: dematerialized.length,
+      positionsVirtualized: dematerialized.length,
+    },
+  };
+}
+
 function rehydrateStoredNativeControllers(scene, options: Record<string, any> = {}) {
   if (!scene) return { success: false, errorMsg: "SCENE_NOT_FOUND", data: [] };
   npcRuntimePersistence.initializeNpcRuntimePersistence();
@@ -2191,6 +2277,7 @@ module.exports = {
   persistNativeRuntimeEntity,
   checkpointAllNativeRuntimeState,
   dematerializeNativeController,
+  virtualizeAndDematerializeNativeControllersForScene,
   spawnNativeDefinitionsInContext,
   spawnNativeNpcEntityInContext,
   spawnNativeNpcEntityInSystem,

@@ -12,6 +12,7 @@ const test = require("node:test");
 
 const itemStore = require("../src/services/inventory/itemStore");
 const networkNodeFuelRuntime = require("../src/services/frontier/networkNodeFuelRuntime");
+const sessionRegistry = require("../src/services/chat/sessionRegistry");
 const { registerSuiAssemblyStateRunner } = require("../src/services/frontier/suiAssemblyState");
 const {
   getNetworkNodeProtoTypes,
@@ -757,6 +758,156 @@ test("gateway service: config, get, deposit round trip with one notice", () => {
     Number(types.FuelChangedNotice.decode(notices[1].payloadBuffer).fuel.quantity),
     750,
   );
+});
+
+test("gateway service: deposit and withdraw synchronize exact client inventory deltas", () => {
+  const types = getNetworkNodeProtoTypes();
+  const service = buildService();
+  const node = createTestNetworkNode();
+  const { container, stack } = createFuelSource(OWNER_ID, FUEL_UNSTABLE, 1000);
+  const notifications: any[] = [];
+  const session = {
+    characterID: OWNER_ID,
+    socket: { destroyed: false },
+    sendNotification(...args) {
+      notifications.push(args);
+    },
+  };
+  sessionRegistry.register(session);
+
+  const executeDeposit = (itemID, quantity) => {
+    const prepared = service.handleRequest(
+      PREPARE_DEPOSIT_FUEL_REQUEST,
+      makeEnvelope(types.PrepareDepositFuelRequest, {
+        network_node: { sequential: node.itemID },
+        source: {
+          item: { sequential: container.itemID },
+          flag: { value: CARGO_FLAG },
+        },
+        items: [{ id: { sequential: itemID }, quantity }],
+      }),
+    );
+    assert.equal(prepared.statusCode, 200, prepared.statusMessage);
+    const decoded = types.PrepareDepositFuelResponse.decode(
+      prepared.responsePayloadBuffer,
+    );
+    return service.handleRequest(
+      EXECUTE_DEPOSIT_FUEL_REQUEST,
+      makeEnvelope(types.ExecuteDepositFuelRequest, {
+        prepared_transaction_uuid: decoded.prepared_transaction_uuid,
+        signature: VALID_SIGNATURE,
+      }),
+    );
+  };
+
+  const executeWithdraw = (quantity) => {
+    const prepared = service.handleRequest(
+      PREPARE_WITHDRAW_FUEL_REQUEST,
+      makeEnvelope(types.PrepareWithdrawFuelRequest, {
+        network_node: { sequential: node.itemID },
+        fuel_type: { sequential: FUEL_UNSTABLE },
+        quantity,
+        destination: {
+          item: { sequential: container.itemID },
+          flag: { value: CARGO_FLAG },
+        },
+      }),
+    );
+    assert.equal(prepared.statusCode, 200, prepared.statusMessage);
+    const decoded = types.PrepareWithdrawFuelResponse.decode(
+      prepared.responsePayloadBuffer,
+    );
+    return service.handleRequest(
+      EXECUTE_WITHDRAW_FUEL_REQUEST,
+      makeEnvelope(types.ExecuteWithdrawFuelRequest, {
+        prepared_transaction_uuid: decoded.prepared_transaction_uuid,
+        signature: VALID_SIGNATURE,
+      }),
+    );
+  };
+
+  const findInventoryChange = (itemID) => {
+    for (const notification of notifications) {
+      if (notification[0] !== "OnItemsChanged") continue;
+      const payload = notification[2];
+      const row = payload?.[0]?.items?.find(
+        entry => Number(entry?.fields?.itemID) === Number(itemID),
+      );
+      if (row) return { row, changeDict: payload[1] };
+    }
+    return null;
+  };
+
+  try {
+    const deposited = executeDeposit(stack.itemID, 1000);
+    assert.equal(deposited.statusCode, 200, deposited.statusMessage);
+    assert.equal(itemStore.findItemById(stack.itemID), null);
+    const removal = findInventoryChange(stack.itemID);
+    assert.ok(removal, "a fully deposited stack must be removed from the client inventory");
+    assert.equal(removal.row.fields.locationID, 6);
+    assert.ok(
+      removal.changeDict.entries.some(
+        entry => Number(entry[0]) === 3 && Number(entry[1]) === container.itemID,
+      ),
+      "the removal must identify the stack's former container",
+    );
+
+    notifications.length = 0;
+    const withdrawn = executeWithdraw(250);
+    assert.equal(withdrawn.statusCode, 200, withdrawn.statusMessage);
+    const returnedStack = itemStore.listContainerItems(
+      OWNER_ID,
+      container.itemID,
+      CARGO_FLAG,
+    )
+      .find(item => Number(item.typeID) === FUEL_UNSTABLE);
+    assert.ok(returnedStack, "withdrawn fuel must be granted back to the destination");
+    assert.equal(stackQuantity(returnedStack.itemID), 250);
+    const creation = findInventoryChange(returnedStack.itemID);
+    assert.ok(creation, "withdrawn fuel must be added to the client inventory");
+    assert.equal(creation.row.fields.locationID, container.itemID);
+    assert.equal(creation.row.fields.stacksize, 250);
+    assert.ok(
+      creation.changeDict.entries.some(
+        entry => Number(entry[0]) === 3 && Number(entry[1]) === 0,
+      ),
+      "the new stack must be reported as entering the destination",
+    );
+
+    notifications.length = 0;
+    const merged = executeWithdraw(250);
+    assert.equal(merged.statusCode, 200, merged.statusMessage);
+    assert.equal(stackQuantity(returnedStack.itemID), 500);
+    const merge = findInventoryChange(returnedStack.itemID);
+    assert.ok(merge, "a withdrawal into an existing stack must update the client inventory");
+    assert.equal(merge.row.fields.stacksize, 500);
+    assert.ok(
+      merge.changeDict.entries.some(
+        entry => Number(entry[0]) === 9 && Number(entry[1]) === 250,
+      ),
+      "the stack update must include its exact previous quantity",
+    );
+
+    notifications.length = 0;
+    const partiallyDeposited = executeDeposit(returnedStack.itemID, 125);
+    assert.equal(
+      partiallyDeposited.statusCode,
+      200,
+      partiallyDeposited.statusMessage,
+    );
+    assert.equal(stackQuantity(returnedStack.itemID), 375);
+    const partialDeposit = findInventoryChange(returnedStack.itemID);
+    assert.ok(partialDeposit, "a partial deposit must update the client inventory");
+    assert.equal(partialDeposit.row.fields.stacksize, 375);
+    assert.ok(
+      partialDeposit.changeDict.entries.some(
+        entry => Number(entry[0]) === 9 && Number(entry[1]) === 500,
+      ),
+      "the partial deposit must include the exact pre-deposit quantity",
+    );
+  } finally {
+    sessionRegistry.unregister(session);
+  }
 });
 
 test("gateway service: unauthenticated and error mappings", () => {

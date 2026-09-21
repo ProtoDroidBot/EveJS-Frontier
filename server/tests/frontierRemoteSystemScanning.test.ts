@@ -4,6 +4,17 @@ import test from "node:test";
 const { createRemoteSystemScanRuntime } = require("../src/services/frontier/remoteSystemScanRuntime");
 const { createSystemSignatureEventRuntime } = require("../src/services/frontier/systemSignatureEventRuntime");
 const { createSystemScanIndex } = require("../src/services/frontier/systemScanIndex");
+const {
+  createNetworkNodeEnergyHoldRuntime,
+} = require("../src/services/frontier/networkNodeEnergyHoldRuntime");
+const {
+  initializeSceneIdleLifecycle,
+  recordScenePlayerActivity,
+  getSceneIdleLifecycleState,
+} = require("../src/space/sceneIdleLifecycle");
+const {
+  resolveCollisionSafeScenePosition,
+} = require("../src/space/npc/npcWarpOrigins");
 
 function memoryRepository(initial: any = {}) {
   let value = structuredClone(initial);
@@ -22,6 +33,7 @@ function fixture(overrides: Record<string, any> = {}) {
   let clock = 1_000_000;
   let uuidSequence = 1;
   let warmCount = 0;
+  const energyHolds: any[] = [];
   const repository = memoryRepository();
   const systems = new Map([
     [1, { name: "Origin" }],
@@ -58,11 +70,21 @@ function fixture(overrides: Record<string, any> = {}) {
       resourceSummary: { family: "ore", potentialTypeIDs: [10], remainingTypeIDs: [10],
         originalQuantityBand: "high", remainingQuantityBand: "medium",
         originalMemberCountBand: "10-24", activeMemberCountBand: "5-9", depleted: false } },
+    { contributorKey: "celestial:40000002", sourceDomain: "celestial", systemID: 2,
+      position: { x: 0, y: 0, z: 0 }, kind: "celestial", baseSignature: 100,
+      channelMultiplier: { gravimetric: 5, electromagnetic: 1.4, thermal: 5 }, observedAtMs: clock,
+      celestialMetadata: { objectClass: "sun", name: "Near - Star", groupName: "Sun",
+        typeID: 45031, radiusMeters: 1000000000, orbitID: null } },
+    { contributorKey: "station:64000002", sourceDomain: "celestial", systemID: 2,
+      position: { x: 9000, y: 0, z: 0 }, kind: "station", baseSignature: 65,
+      channelMultiplier: { gravimetric: 5, electromagnetic: 2.5, thermal: 1.5 }, observedAtMs: clock,
+      celestialMetadata: { objectClass: "station", name: "Near I - Keep",
+        groupName: "Frontier BioLab Station", typeID: 85226, radiusMeters: 33811, orbitID: 42000002 } },
   ];
   const scanIndex = {
     getSystemScanSnapshot(systemID: number) {
       return { success: true, data: { systemID, builtAtMs: clock, revision: 42,
-        revisions: { dungeon: 1, mining: 2, inventory: 3, npc: 4, structure: 5, transient: 0 },
+        revisions: { dungeon: 1, mining: 2, celestial: 6, inventory: 3, npc: 4, structure: 5, transient: 0 },
         contributions: structuredClone(contributions) } };
     },
   };
@@ -70,6 +92,7 @@ function fixture(overrides: Record<string, any> = {}) {
     frontierRemoteScanningEnabled: true,
     frontierNetworkNodeScanRangeJumps: 2,
     frontierRemoteScanCooldownMs: 0,
+    frontierRemoteScanEnergyHoldMs: 3_600_000,
     frontierRemoteScanSurveyEnergyCost: 25,
     frontierRemoteScanDeepEnergyCost: 75,
     frontierRemoteScanIndexTtlMs: 0,
@@ -95,9 +118,28 @@ function fixture(overrides: Record<string, any> = {}) {
       scannerSourceClass: "network_node", scannerProfileID: "test-profile", sourceSystemID: 1,
       energyAvailable: 1000, scannerStrength: { gravimetric: 1, electromagnetic: 1, thermal: 1 } } }),
     warmSystem: async () => { warmCount += 1; return { systemID: 2, entities: new Map(), staticEntities: [] }; },
+    reserveEnergyHold: (request: any) => {
+      const hold = {
+        holdID: request.holdID,
+        networkNodeID: request.networkNodeID,
+        energy: request.energy,
+        createdAtMs: request.createdAtMs,
+        expiresAtMs: request.expiresAtMs,
+        reason: request.reason,
+        referenceID: request.referenceID,
+      };
+      energyHolds.push(hold);
+      return { success: true, created: true, data: hold };
+    },
+    releaseEnergyHold: (holdID: string) => {
+      const index = energyHolds.findIndex((hold) => hold.holdID === holdID);
+      if (index >= 0) energyHolds.splice(index, 1);
+      return { success: true, changed: index >= 0 };
+    },
     ...overrides,
   });
   return { runtime, config, repository, contributions,
+    energyHolds,
     advance(ms: number) { clock += ms; }, get warmCount() { return warmCount; } };
 }
 
@@ -110,13 +152,15 @@ test("Network Node scan configuration exposes a selectable stargate-hop range", 
   assert.equal(result.data.selectedRangeJumps, 1);
   assert.deepEqual(result.data.reachableSystems.map((row: any) => [row.systemID, row.hops]), [[1, 0], [2, 1]]);
   assert.deepEqual(result.data.entityClasses, ["ships", "bases", "transient_travel"]);
+  assert.deepEqual(result.data.layers, ["sites", "resources", "celestials", "entities"]);
   assert.equal(result.data.actorClassification, "redacted");
+  assert.equal(result.data.energyHoldMs, 3_600_000);
 });
 
-test("cold surveys are durable, idempotent, bounded, and actor-blind", async () => {
+test("surveys attempt a live system load and remain durable, bounded, and actor-blind", async () => {
   const subject = fixture();
   const request = { operationKey: "ui:scan:1", targetSystemID: 2, mode: "survey",
-    rangeJumps: 1, layers: ["sites", "resources", "entities"] };
+    rangeJumps: 1, layers: ["sites", "resources", "celestials", "entities"] };
   const started = subject.runtime.startRemoteSystemScan(7, 50, request, { characterID: 7 });
   assert.equal(started.success, true);
   assert.equal(started.created, true);
@@ -125,19 +169,129 @@ test("cold surveys are durable, idempotent, bounded, and actor-blind", async () 
   assert.equal(duplicate.success, true);
   assert.equal(duplicate.created, false);
   assert.equal(duplicate.data.scanID, started.data.scanID);
+  assert.equal(subject.energyHolds.length, 1, "idempotent retries do not reserve energy twice");
+  assert.equal(started.data.cost.hold.energy, 25);
+  assert.equal(started.data.cost.hold.expiresAtMs - started.data.startedAtMs, 3_600_000);
   const result = subject.runtime.getRemoteSystemScanResult(7, 50, started.data.scanID, { characterID: 7 });
   assert.equal(result.success, true);
-  assert.equal(result.data.warmedByScan, false);
+  assert.equal(result.data.systemLoadAttempted, true);
+  assert.equal(result.data.systemLoadSucceeded, true);
+  assert.equal(result.data.systemLoadError, null);
+  assert.equal(result.data.warmedByScan, true);
   assert.ok(result.data.heatMapCells.length <= 4);
   assert.equal(result.data.heatMapCells.reduce((sum: number, cell: any) =>
     sum + (cell.entities.ships === "2-4" ? 2 : 0), 0), 2);
   assert.deepEqual(result.data.entityClasses, ["ships", "bases", "transient_travel"]);
+  assert.equal(result.data.celestialObjects.length, 2);
+  assert.equal(result.data.celestialObjects.some((entry: any) => entry.station && entry.name === "Near I - Keep"), true);
+  assert.equal(result.data.sites[0].family, "combat");
+  assert.equal(result.data.sites[0].siteKind, "anomaly");
+  assert.equal(result.data.sites[0].displayType, null,
+    "a survey reveals the generic site type without the specific authored site");
   const serialized = JSON.stringify(result.data);
   for (const secret of ["player-secret", "npc-secret", "owner-secret", "hidden-id"]) {
     assert.equal(serialized.includes(secret), false);
   }
   assert.equal(/playerShips|npcShips|playerBases|npcBases/.test(serialized), false);
-  assert.equal(subject.warmCount, 0, "a cold survey must not warm or create a scene");
+  assert.equal(subject.warmCount, 1, "a survey requests one shared server-side system load");
+});
+
+test("survey load failures fall back to the persistent index while deep scans fail closed", async () => {
+  const unavailable = Object.assign(new Error("scene worker unavailable"), {
+    code: "REMOTE_SCAN_WARMUP_BUSY",
+  });
+  const subject = fixture({ warmSystem: async () => { throw unavailable; } });
+  const survey = subject.runtime.startRemoteSystemScan(7, 50, {
+    operationKey: "survey:cold-fallback", targetSystemID: 2, mode: "survey", rangeJumps: 1,
+  }, { characterID: 7 });
+  await subject.runtime.executeScan(survey.data.scanID);
+  const surveyResult = subject.runtime.getRemoteSystemScanResult(
+    7, 50, survey.data.scanID, { characterID: 7 },
+  );
+  assert.equal(surveyResult.success, true);
+  assert.equal(surveyResult.data.systemLoadAttempted, true);
+  assert.equal(surveyResult.data.systemLoadSucceeded, false);
+  assert.equal(surveyResult.data.systemLoadError, "REMOTE_SCAN_WARMUP_BUSY");
+  assert.deepEqual(surveyResult.data.incompleteLayers, ["live_scene"]);
+
+  const deep = subject.runtime.startRemoteSystemScan(7, 50, {
+    operationKey: "deep:load-required", targetSystemID: 2, mode: "deep", rangeJumps: 1,
+  }, { characterID: 7 });
+  await subject.runtime.executeScan(deep.data.scanID);
+  const deepJob = subject.runtime.getRemoteSystemScan(
+    7, 50, deep.data.scanID, { characterID: 7 },
+  );
+  assert.equal(deepJob.data.state, "failed");
+  assert.equal(deepJob.data.errorMsg, "REMOTE_SCAN_WARMUP_BUSY");
+});
+
+test("scene idle lifecycle expires globally after one hour and resets on player activity", () => {
+  const hourMs = 3_600_000;
+  const scene: any = { sessions: new Map() };
+  initializeSceneIdleLifecycle(scene, 1_000);
+  assert.equal(getSceneIdleLifecycleState(scene, 1_000 + hourMs - 1, hourMs).eligible, false);
+  assert.equal(getSceneIdleLifecycleState(scene, 1_000 + hourMs, hourMs).eligible, true);
+
+  scene.sessions.set("player", {});
+  assert.equal(getSceneIdleLifecycleState(scene, 1_000 + hourMs, hourMs).eligible, false);
+  recordScenePlayerActivity(scene, 1_000 + hourMs);
+  scene.sessions.clear();
+  assert.equal(getSceneIdleLifecycleState(scene, 1_000 + (hourMs * 2) - 1, hourMs).eligible, false);
+  assert.equal(getSceneIdleLifecycleState(scene, 1_000 + (hourMs * 2), hourMs).eligible, true);
+  assert.equal(getSceneIdleLifecycleState(scene, Number.MAX_SAFE_INTEGER, 0).eligible, false);
+});
+
+test("durable Network Node energy holds reserve power until their configured expiry", () => {
+  let clock = 1_000;
+  const holds = createNetworkNodeEnergyHoldRuntime({
+    now: () => clock,
+    repository: memoryRepository(),
+  });
+  const first = holds.reserveNetworkNodeEnergyHold({
+    holdID: "remote-scan:test",
+    networkNodeID: 50,
+    energy: 25,
+    availableEnergy: 100,
+    createdAtMs: clock,
+    expiresAtMs: clock + 3_600_000,
+    reason: "remote-system-scan",
+  });
+  assert.equal(first.success, true);
+  assert.equal(first.created, true);
+  assert.equal(holds.getNetworkNodeHeldEnergy(50), 25);
+  assert.equal(holds.reserveNetworkNodeEnergyHold({
+    holdID: "remote-scan:test",
+    networkNodeID: 50,
+    energy: 25,
+    availableEnergy: 75,
+    createdAtMs: clock,
+    expiresAtMs: clock + 3_600_000,
+    reason: "remote-system-scan",
+  }).created, false);
+  clock += 3_600_000;
+  assert.equal(holds.getNetworkNodeHeldEnergy(50), 0);
+});
+
+test("resume placement keeps clear positions and moves entities out of collision volumes", () => {
+  const scene = {
+    staticEntities: [{ itemID: 10, position: { x: 0, y: 0, z: 0 }, radius: 5_000 }],
+    dynamicEntities: new Map(),
+  };
+  const safe = resolveCollisionSafeScenePosition(scene, {
+    position: { x: 20_000, y: 0, z: 0 },
+    direction: { x: 1, y: 0, z: 0 },
+    radius: 100,
+  }, { entityRadiusMeters: 100, clearanceMeters: 100 });
+  assert.equal(safe.relocated, false);
+
+  const blocked = resolveCollisionSafeScenePosition(scene, {
+    position: { x: 0, y: 0, z: 0 },
+    direction: { x: 1, y: 0, z: 0 },
+    radius: 100,
+  }, { entityRadiusMeters: 100, clearanceMeters: 100 });
+  assert.equal(blocked.relocated, true);
+  assert.equal(blocked.clearanceSatisfied, true);
+  assert.ok(Math.hypot(blocked.position.x, blocked.position.y, blocked.position.z) >= 5_200);
 });
 
 test("range validation rejects unreachable systems before creating a job", () => {
@@ -201,9 +355,12 @@ test("concurrent deep scans share target warm-up and report world revisions", as
   for (const scanID of [first.data.scanID, second.data.scanID]) {
     const result = subject.runtime.getRemoteSystemScanResult(7, 50, scanID, { characterID: 7 });
     assert.equal(result.success, true);
+    assert.equal(result.data.systemLoadSucceeded, true);
     assert.equal(result.data.warmedByScan, true);
     assert.equal(result.data.worldRevisionBefore, 42);
     assert.equal(result.data.worldRevisionAfter, 42);
+    assert.equal(result.data.sites[0].displayType, "Ruined Relay",
+      "a deep scan may reveal the specific authored site");
   }
 });
 
@@ -251,7 +408,15 @@ test("cold index aggregates resource fields and filters private dungeons without
   const index = createSystemScanIndex({
     now: () => 1000,
     config: { frontierRemoteScanIndexTtlMs: 60_000 },
-    worldData: { getSolarSystemByID: (id: number) => id === 2 ? { name: "Near" } : null },
+    worldData: {
+      getSolarSystemByID: (id: number) => id === 2 ? { name: "Near" } : null,
+      getCelestialsForSystem: () => [{ itemID: 40000002, typeID: 45031, groupName: "Sun",
+        kind: "sun", itemName: "Near - Star", radius: 1000000000,
+        position: { x: 0, y: 0, z: 0 } }],
+      getStationsForSystem: () => [{ stationID: 64000002, stationTypeID: 85226,
+        stationName: "Near I - Keep", stationTypeName: "Frontier BioLab Station", radius: 33811,
+        position: { x: 9, y: 0, z: 0 } }],
+    },
     dungeonRuntime: { listActiveInstancesBySystem() { dungeonReads += 1; return [publicInstance, privateInstance]; } },
     dungeonAuthority: { getTemplateByID(id: string) { return id === "public"
       ? { siteFamily: "ore", resourceComposition: { oreTypeIDs: [10] }, name: "Ore Expanse" }
@@ -297,6 +462,8 @@ test("cold index aggregates resource fields and filters private dungeons without
     "ten thousand generated members remain one field contribution");
   assert.equal(hidden.data.contributions.filter((row: any) => row.kind === "ship").length, 2);
   assert.equal(hidden.data.contributions.filter((row: any) => row.kind === "base").length, 2);
+  assert.equal(hidden.data.contributions.filter((row: any) => row.kind === "celestial").length, 1);
+  assert.equal(hidden.data.contributions.filter((row: any) => row.kind === "station").length, 1);
   assert.equal(hidden.data.contributions.find((row: any) => row.contributorKey === "ship:91").scanAttenuation, 0.1);
   assert.equal(JSON.stringify(hidden.data).includes("visibilityInstance"), false);
   const visible = index.getSystemScanSnapshot(2, { actorSession: { characterID: 999 } });

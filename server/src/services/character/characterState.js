@@ -1797,11 +1797,16 @@ function emitItemsChangedBatchForSession(session, changes = [], options = {}) {
     const rows = [];
     let changeDict = options && options.changeDict ? options.changeDict : null;
     for (const change of Array.isArray(changes) ? changes : []) {
-        const item = change && change.item ? change.item : null;
+        const previousState = change && (change.previousData || change.previousState);
+        const item = change && change.item
+            ? change.item
+            : change && change.removed === true && previousState
+                ? buildRemovedItemNotificationState(previousState)
+                : null;
         if (!item) {
             continue;
         }
-        const payload = buildItemChangePayload(item, change.previousData || {});
+        const payload = buildItemChangePayload(item, previousState || {});
         const row = Array.isArray(payload) ? payload[0] : null;
         const rowChangeDict = Array.isArray(payload) ? payload[1] : null;
         if (!row) {

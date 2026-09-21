@@ -1,6 +1,6 @@
 # EveJS-managed efctl workspace configuration. The repository root contains
 # the two pinned submodules under the directory names efctl expects.
-with-frontend: true
+with-frontend: false
 with-graphql: true
 
 world-contracts-url: "https://github.com/ProtoDroidBot/world-contracts.git"

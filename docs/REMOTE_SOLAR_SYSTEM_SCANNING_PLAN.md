@@ -18,9 +18,10 @@ resolved scanning contact.
 
 The design supports two scan modes:
 
-- A **cold survey** reads persistent world indexes without creating a scene.
-- A **deep survey** may reconcile dungeon state and warm the target system when
-  fresher information is required.
+- A **survey** attempts to load the target system, then returns the persistent
+  index as a declared cold fallback if loading is temporarily unavailable.
+- A **deep survey** requires the target system to load so it can reconcile
+  dungeon state and resolve fresher information.
 
 Randomized jump-drive travel also produces a transient signature bloom. The
 bloom enters the same system heat map and decays without exposing the traveling
@@ -38,8 +39,10 @@ ship as an individually rendered entity.
 5. Scanner strength, range, power, fuel, cooldown, and authorization are always
    resolved by the server.
 6. Exact identities and exact positions remain a local-resolution reward.
-7. Deep scans may warm a system, but the scanning character is never attached
-   to the target scene and receives no Destiny ball updates from it.
+7. Every scan attempts to load the target system, but the scanning character is
+   never attached to that scene and receives no Destiny ball updates from it.
+   Loaded scenes unload after a configurable period without player activity;
+   the default is one hour and the policy applies regardless of load source.
 8. Jump-drive code remains the authority for jump behavior and physics. It
    publishes neutral signature-bloom events to the scanning system.
 9. Public observations are actor-blind. Player and NPC ships share the `ship`
@@ -49,6 +52,10 @@ ship as an individually rendered entity.
     range is configurable in stargate hops. Scan jobs remain source-neutral so
     the contract can move to a dedicated scanning Smart Assembly and Creation
     module when those types are authored.
+11. Starting a scan creates a durable power-grid hold for the configured scan
+    energy. The default hold duration is one hour, remains in effect after scan
+    completion or cancellation, and is included in Network Node usage bands,
+    available energy, and new-assembly admission.
 
 ## Existing Server Foundations
 
@@ -65,7 +72,7 @@ second world model.
 | `server/src/services/inventory/itemStore.ts` | Stores ships, Smart Assemblies, persistent positions, ownership, and state | Supply persistent ship and base contributions |
 | `server/src/services/structure/structureState.ts` | Stores conventional structures | Supply player and NPC base contributions |
 | `server/src/space/npc/nativeNpcStore.ts` | Stores durable and virtualized NPC entities and controllers | Supply NPC activity, role, faction, and staleness information |
-| `server/src/space/runtime.ts` | Creates, prepares, and wakes solar-system scenes | Provide controlled deep-scan warm-up and live aggregate capture |
+| `server/src/space/runtime.ts` | Creates, prepares, and wakes solar-system scenes | Provide controlled scan loading, live aggregate capture, and global idle unloading |
 | `server/src/services/ship/mobileScanInhibitorRuntime.ts` | Defines local scan-inhibitor state and volumes | Attenuate or suppress remote contributions inside inhibited volumes |
 | `server/src/services/dungeon/dungeonVisibilityPolicy.ts` | Controls private dungeon visibility | Filter private sites before they enter a remote result |
 
@@ -86,7 +93,7 @@ Dungeon, mining, structure, NPC, ship, and transient-event authorities
                    sparse spatial aggregation
                               |
                               v
-     Remote scan job: authorization, cost, SNR, cooldown, optional warm-up
+       Remote scan job: authorization, cost, SNR, cooldown, load attempt
                               |
                               v
         Redacted sites, resource composition, and entity-type heat map
@@ -107,8 +114,21 @@ The first server release implements the following seams:
 - The Network Node energy dApp API exposes configuration, reachable systems,
   scan start, status, result, and cancellation endpoints under
   `/evejs/energy/:networkNodeID/scanning/...`.
-- Deep scans share one target-system warm-up promise and never attach the
-  requesting character or create remote targetable contacts.
+- All scans share one target-system load promise and never attach the requesting
+  character or create remote targetable contacts. Survey mode can use the
+  persistent index as a declared fallback; deep mode requires the load.
+- Solar-system scenes use one global idle lifecycle. With the default
+  `solarSystemSceneIdleUnloadMs: 3600000`, any scene loaded by startup,
+  traversal, scanning, or another service unloads after one hour without player
+  activity. `0` disables automatic unloading.
+- Cooldown is a residency optimization only. It does not offline structures or
+  alter durable construction or energy state. Native NPC locations are
+  checkpointed before every controller is dematerialized, cooled stargate
+  destinations remain reachable, and player/NPC resume positions are checked
+  against scene collision radii before materialization.
+- Each accepted scan reserves its survey/deep energy on the Network Node for
+  `frontierRemoteScanEnergyHoldMs` (default `3600000`). Holds are durable,
+  idempotent by scan ID, visible in grid status, and expire automatically.
 
 The eventual Sui contract move is intentionally isolated behind the generic
 scanner-source resolver. No authored scanning assembly or Creation module is
@@ -121,7 +141,7 @@ package. It deliberately does not add fields to `world::network_node::NetworkNod
 or publish a temporary scanning object whose type identity would become part of
 the permanent on-chain model. The existing Network Node ownership and signed
 wallet flow authenticate the dApp caller; the server remains authoritative for
-route reach, energy headroom, cooldowns, scan jobs, warm-up, redaction, and
+route reach, energy headroom, cooldowns, scan jobs, system loading, redaction, and
 results.
 
 The server package exposes `npm run test:frontier-remote-scanning` as the focused
@@ -144,7 +164,7 @@ The service owns:
 - Cooldowns
 - Operation-key idempotency
 - Scan timing and job state
-- Optional warm-up coordination
+- Shared target-system load coordination
 - Result redaction and delivery
 - Operational signals
 
@@ -161,6 +181,8 @@ interface SystemScanContribution {
   kind:
     | "dungeon"
     | "resource_field"
+    | "celestial"
+    | "station"
     | "ship"
     | "base"
     | "transient_travel";
@@ -170,6 +192,7 @@ interface SystemScanContribution {
   thermalMultiplier?: number;
   siteMetadata?: SystemScanSiteMetadata;
   resourceSummary?: SystemScanResourceSummary;
+  celestialMetadata?: SystemScanCelestialMetadata;
   sourceRevision: number;
   observedAtMs: number;
 }
@@ -201,6 +224,8 @@ is a recovery path, not the normal query path.
 | --- | --- | --- | --- |
 | Active dungeon instance | `dungeon` | Persisted instance and template | Trigger and active-room state |
 | Ore, gas, or ice field | `resource_field` | Generated site state and remaining totals | Current materialized depletion |
+| Sun, planet, moon, or other SDE celestial | `celestial` | Static celestial table | Not required |
+| NPC station | `station` | Static station and station-type tables | Current availability if applicable |
 | Ship | `ship` | Persistent in-space item or native entity state | Current mass, heat, modules, and emissions; actor origin is not serialized |
 | Structure or assembly | `base` | Structure and inventory state | Online state, modules, and energy use; owner origin is not serialized |
 | Jump-drive bloom | `transient_travel` | Transient signature-event journal | No individual entity required |
@@ -258,6 +283,8 @@ interface RemoteSystemHeatMapCell {
   entities: {
     ships: CountBand;
     bases: CountBand;
+    celestials: CountBand;
+    stations: CountBand;
     transientTravel: CountBand;
   };
   observedAtMs: number;
@@ -280,13 +307,13 @@ allow repeated scans to be averaged into an exact location.
 
 ## Resolution Tiers
 
-| Tier | Dungeon sites | Resources | Entities and bases |
-| --- | --- | --- | --- |
-| Trace | Total unexplained site activity | Ore, gas, or ice presence | Combined unknown activity |
-| Coarse | Site-family count bands | Broad composition percentages | Ship and base categories with count bands |
-| Identified | Stable signature codes and approximate cells | Resource families | Ship or base class and permitted size class, never player/NPC origin |
-| Deep | Permitted dungeon family and type | Type IDs and remaining-quantity bands | Detailed class without character identity |
-| Local | Existing probe and directional behavior | Existing local details | Actual resolvable ballpark contacts |
+| Tier | Dungeon sites | Resources | Celestials and stations | Entities and bases |
+| --- | --- | --- | --- | --- |
+| Trace | Generic site family and site kind; authored site identity withheld | Ore, gas, or ice presence | Stable static object class | Combined unknown activity |
+| Coarse | Generic site family and site kind; authored site identity withheld | Broad composition percentages | Static object name and approximate cell | Ship and base categories with count bands |
+| Identified | Stable signature codes and approximate cells; authored site identity withheld | Resource families | Static object name, class, and approximate cell | Ship or base class and permitted size class, never player/NPC origin |
+| Deep | Authored site identity and difficulty when permitted | Type IDs and remaining-quantity bands | Static object metadata and physical radius | Detailed class without character identity |
+| Local | Existing probe and directional behavior | Existing local details | Existing local details | Actual resolvable ballpark contacts |
 
 Remote resolution must not satisfy target-lock, weapon, approach, or warp
 resolution checks.
@@ -431,26 +458,30 @@ Publish ordered bloom signals for:
 NPC behaviors may use detected bloom signals to investigate recent travel
 without receiving information the detecting scanner did not resolve.
 
-## Cold Survey
+## Survey Loading and Cold Fallback
 
-A cold survey reads persistent contributions and rollups only.
+A survey first requests `ensureSceneReady` for the target system. When that
+load succeeds it captures live aggregate contributions while retaining the
+survey disclosure limits. If capacity, timeout, or bootstrap failure prevents
+loading, it returns persistent contributions and rollups with
+`systemLoadSucceeded: false` and marks `live_scene` incomplete.
 
-- It does not create or wake a scene.
-- It does not materialize dungeon rooms, NPCs, asteroids, or deployables.
-- It returns cached live activity with a timestamp and reduced confidence.
-- It marks unavailable domain layers incomplete instead of inventing data.
-- It is suitable for broad map reconnaissance and frequent refreshes.
+- A load failure does not invent live data or fail an otherwise valid survey.
+- No scanning character is attached to the loaded scene.
+- The global scene-idle policy, rather than a scan-specific lease, unloads the
+  scene after the configured player-inactivity interval.
+- Survey results remain suitable for broad reconnaissance and frequent refreshes.
 
 ## Deep Survey and System Warm Up
 
-A deep survey may reconcile persistent dungeon state and warm the target scene
-when the requested resolution needs current player, NPC, module, thermal, or
-emission information.
+A deep survey requires the target scene to load and may reconcile persistent
+dungeon state when the requested resolution needs current player, NPC, module,
+thermal, or emission information.
 
 ### Execution Order
 
 1. Authorize the scanner and reserve its cost.
-2. Deduplicate concurrent deep scans for the target system.
+2. Deduplicate concurrent scan loads for the target system.
 3. Capture the current domain revision vector.
 4. Reconcile persistent dungeon and generated-mining authority when required.
 5. Call `ensureSceneReady` with a new `purpose: "remote-scan"` option.
@@ -458,15 +489,16 @@ emission information.
 7. Capture live aggregate contributions and transient emissions.
 8. Recheck domain revisions.
 9. Retry once or mark changed layers stale.
-10. Hold a short warm lease, then return control to normal scene lifecycle
-    management.
+10. Return control to global scene lifecycle management; the default idle
+    unload interval is one hour without player activity.
 
 ### Warm Up Controls
 
 - Global and per-system concurrency limits
-- A hard warm-up timeout and cancellation path
-- A cooldown before another scan-triggered warm-up
-- Audit fields for world revision before and after warm-up
+- A hard system-load timeout and cancellation path
+- Global scene-idle unloading, configurable with
+  `solarSystemSceneIdleUnloadMs` (`0` disables it)
+- Audit fields for world revision before and after loading
 - No remote Destiny broadcast
 - No attachment of the scanning character to the target system
 - Normal NPC and dungeon side effects once the system is genuinely awake
@@ -475,6 +507,9 @@ The scan response should expose:
 
 ```ts
 {
+  systemLoadAttempted: true,
+  systemLoadSucceeded: true,
+  systemLoadError: null,
   warmedByScan: true,
   worldRevisionBefore: 41,
   worldRevisionAfter: 43
@@ -539,6 +574,7 @@ interface RemoteSystemScanResult {
   worldRevisionAfter?: number;
   sites: RemoteSiteObservation[];
   resources: RemoteResourceObservation[];
+  celestialObjects: RemoteCelestialObservation[];
   heatMapCells: RemoteSystemHeatMapCell[];
   sourceRevisions: Record<string, number>;
   incompleteLayers: string[];
@@ -547,7 +583,7 @@ interface RemoteSystemScanResult {
 ```
 
 Operation-key idempotency must prevent a retry from charging the scanner or
-warming the system twice.
+loading the system twice.
 
 ## Persistence
 
@@ -604,7 +640,7 @@ configuration-driven until authored SDE attributes exist.
 | Ownership and identity | Return player or NPC class and permitted faction class without exact IDs |
 | Targeting | Remote heat cells and signatures never satisfy target-lock or warp checks |
 | Scan emission | Record source EM activity and optionally a detectable target-system scan ping |
-| Replay control | Use operation-key idempotency so retries do not repeat cost or warm-up |
+| Replay control | Use operation-key idempotency so retries do not repeat cost or system loading |
 
 ## Performance Limits
 
@@ -614,8 +650,8 @@ Initial configurable limits should include:
 - Maximum site rows per result
 - Maximum resource rows per result
 - Maximum serialized result size
-- Maximum concurrent global warm-ups
-- Maximum concurrent warm-ups per target system
+- Maximum concurrent global system loads
+- One shared in-flight load per target system
 - Snapshot cache lifetime
 - Deep-scan timeout
 - Transient signature-event retention
@@ -656,7 +692,7 @@ Completion evidence:
 - Repeated operation keys return the original job.
 - Result schemas enforce bounded arrays and safe numeric values.
 
-### Phase 2 Cold Index
+### Phase 2 Persistent Index
 
 - Add dungeon, resource, structure, Smart Assembly, ship, and NPC contributors.
 - Add the transient signature-event journal and bloom contributor.
@@ -665,7 +701,7 @@ Completion evidence:
 
 Completion evidence:
 
-- A cold survey returns bounded results without creating a scene.
+- A survey can return bounded persistent results when a scene load fails.
 - Dungeon sites can be discovered from persistent state.
 - Large resource sites produce one contribution each.
 
@@ -683,16 +719,19 @@ Completion evidence:
 - Remote observations never enter local contact maps.
 - Repeated scans cannot average uncertainty into exact coordinates.
 
-### Phase 4 Warm Scans
+### Phase 4 System Loading and Lifecycle
 
-- Add controlled dungeon reconciliation and scene warm-up.
+- Add controlled dungeon reconciliation and scene loading for every scan.
 - Add live player, NPC, module, temperature, and emission refinements.
-- Add warm leases, deduplication, cancellation, and timeouts.
+- Add shared load deduplication, cancellation, and timeouts.
+- Add global player-inactivity tracking and configurable scene unloading.
 - Add revision rechecks and stale-layer reporting.
 
 Completion evidence:
 
-- Concurrent deep scans share one warm-up.
+- Concurrent scans share one target-system load.
+- A scene with no players unloads after the configured interval regardless of
+  whether startup, travel, or scanning loaded it.
 - The remote client receives no ballpark entities.
 - Before and after world revisions are reported.
 
@@ -714,7 +753,7 @@ Completion evidence:
 - Integrate cloaking, inhibitors, and private-site policy.
 - Add payload limits and load shedding.
 - Add recovery and fault injection.
-- Add metrics for index age, scan latency, warm-up frequency, payload size,
+- Add metrics for index age, scan latency, load frequency, payload size,
   revision retries, and truncation.
 
 Completion evidence:
@@ -727,11 +766,14 @@ Completion evidence:
 
 ### Index and Scene Behavior
 
-- A cold survey of a dormant system does not create a scene.
-- A deep survey can warm exactly one target system.
-- Concurrent deep surveys share one warm-up operation.
+- Every scan attempts to load exactly one target system.
+- Survey mode declares and safely uses a cold fallback when loading fails.
+- Deep mode fails closed when loading fails.
+- Concurrent surveys share one load operation.
+- Any loaded scene with no player activity unloads after the configured global
+  timeout; active player sessions always prevent unloading.
 - A domain revision change during capture retries or marks the layer stale.
-- A failed warm-up produces a safe retryable error and no partial complete
+- A failed deep load produces a safe retryable error and no partial complete
   result.
 
 ### Dungeon and Resource Behavior
@@ -780,16 +822,16 @@ Completion evidence:
 
 - Invalid scanner sources fail before cost reservation.
 - Duplicate operation keys return the original job.
-- A retry after a lost response does not repeat cost or warm-up.
-- Cancellation releases uncommitted costs and warm-up reservations.
+- A retry after a lost response does not repeat cost or system loading.
+- Cancellation releases uncommitted costs and load reservations.
 - Completed results survive restart until their configured expiry.
 - Truncated results preserve the strongest observations and declare the
   affected layer.
 
 ## Recommended Implementation Order
 
-Implement the cold index first and keep warm-up as an explicit deep-scan
-capability. Define the neutral signature-bloom event API during Phase 1 so the
+Keep the persistent index as the safe survey fallback and require live loading
+for deep resolution. Define the neutral signature-bloom event API during Phase 1 so the
 separate jump-drive work can integrate without importing scanning internals.
 
 The first playable version should reveal broad site, resource, entity, base,

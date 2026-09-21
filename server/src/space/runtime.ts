@@ -421,9 +421,17 @@ const {
   summarizeNpcCombatModule,
 } = require(path.join(__dirname, "./npc/npcCombatDebug"));
 const {
+  resolveCollisionSafeScenePosition,
+} = require(path.join(__dirname, "./npc/npcWarpOrigins"));
+const {
   buildStartupPresenceSummary,
   getSceneActivityState,
 } = require(path.join(__dirname, "./npc/npcSceneActivity"));
+const {
+  initializeSceneIdleLifecycle,
+  recordScenePlayerActivity,
+  getSceneIdleLifecycleState,
+} = require(path.join(__dirname, "./sceneIdleLifecycle"));
 const {
   materializeAmbientStartupControllersForScene,
   dematerializeAmbientStartupControllersForScene,
@@ -38336,6 +38344,21 @@ class SolarSystemScene {
       );
     }
 
+    const resumeClearance = resolveCollisionSafeScenePosition(this, shipEntity, {
+      entityRadiusMeters: shipEntity.radius,
+      clearanceMeters: 100,
+      excludeEntityIDs: [shipEntity.itemID],
+    });
+    if (resumeClearance.relocated === true) {
+      shipEntity.position = cloneVector(resumeClearance.position);
+      shipEntity.targetPoint = cloneVector(resumeClearance.position);
+      resetEntityMotion(shipEntity);
+      log.info(
+        `[SpaceRuntime] Relocated ship=${shipEntity.itemID} to a collision-safe resume ` +
+          `position in system=${this.systemID}`,
+      );
+    }
+
     ensureEntityTargetingState(shipEntity);
     const attachedSceneCurrentSimTimeMs = this.getCurrentSimTimeMs();
     if (options.stargateJumpCloak === true) {
@@ -38613,6 +38636,20 @@ class SolarSystemScene {
         entity,
         options.undockDirection,
         options.speedFraction ?? 1,
+      );
+    }
+    const resumeClearance = resolveCollisionSafeScenePosition(this, entity, {
+      entityRadiusMeters: entity.radius,
+      clearanceMeters: 100,
+      excludeEntityIDs: [entity.itemID],
+    });
+    if (resumeClearance.relocated === true) {
+      entity.position = cloneVector(resumeClearance.position);
+      entity.targetPoint = cloneVector(resumeClearance.position);
+      resetEntityMotion(entity);
+      log.info(
+        `[SpaceRuntime] Relocated boarded ship=${entity.itemID} to a collision-safe ` +
+          `resume position in system=${this.systemID}`,
       );
     }
     forgetEntityFromNativeSubwarpPlans(this, entity);
@@ -44626,9 +44663,11 @@ class SolarSystemScene {
 
 class SpaceRuntime {
   declare _adaptiveTickRateController: any;
+  declare _cooledSolarSystemIDs: any;
   declare _lastTickStartedAtMonotonicMs: any;
   declare _lastTickSummary: any;
   declare _lastAdaptiveTickRateResult: any;
+  declare _lastIdleSceneUnloadSweepAtMs: any;
   declare _pendingAttachUniverseSiteReconciles: any;
   declare _sceneBootstrapGeneration: any;
   declare _sceneBootstrapPromises: any;
@@ -44641,6 +44680,7 @@ class SpaceRuntime {
 
   constructor() {
     this.scenes = new Map();
+    this._cooledSolarSystemIDs = new Set();
     this.solarSystemGateActivationOverrides = new Map();
     this.stargateActivationOverrides = new Map();
     this._pendingAttachUniverseSiteReconciles = new Map();
@@ -44664,6 +44704,7 @@ class SpaceRuntime {
     this._lastTickStartedAtMonotonicMs = getMonotonicTimeMs();
     this._lastTickSummary = null;
     this._lastAdaptiveTickRateResult = null;
+    this._lastIdleSceneUnloadSweepAtMs = Date.now();
     pruneExpiredSpaceItems(Date.now());
     this._tickHandle = null;
     this.armTickTimer();
@@ -44771,6 +44812,9 @@ class SpaceRuntime {
       return this.solarSystemGateActivationOverrides.get(numericSystemID);
     }
     if (keepsAllStargatesActiveDuringLazyLoading()) {
+      return STARGATE_ACTIVATION_STATE.OPEN;
+    }
+    if (this._cooledSolarSystemIDs.has(numericSystemID)) {
       return STARGATE_ACTIVATION_STATE.OPEN;
     }
     return this.isSolarSystemSceneLoaded(numericSystemID)
@@ -45084,6 +45128,7 @@ class SpaceRuntime {
       createdScene._tickIntervalMs = this._tickIntervalMs;
       createdScene._bootstrapGeneration = ++this._sceneBootstrapGeneration;
       createdScene._bootstrapReady = false;
+      initializeSceneIdleLifecycle(createdScene, Date.now());
       this.scenes.set(numericSystemID, createdScene);
       if (bootstrapMetrics) {
         bootstrapMetrics.sceneConstructionElapsedMs =
@@ -45091,6 +45136,7 @@ class SpaceRuntime {
       }
       created = true;
     }
+    this._cooledSolarSystemIDs.delete(numericSystemID);
     const scene = this.scenes.get(numericSystemID);
     let initializeBootstrap = created && options.deferBootstrap !== true;
     if (
@@ -45650,6 +45696,152 @@ class SpaceRuntime {
     const numericSystemID = toInt(systemID, 0);
     const scene = this.scenes.get(numericSystemID);
     return scene ? getSceneActivityState(scene, wallclockNow) : null;
+  }
+
+  getSolarSystemSceneIdleState(systemID, wallclockNow = Date.now()) {
+    const numericSystemID = toInt(systemID, 0);
+    const scene = this.scenes.get(numericSystemID);
+    if (!scene) return null;
+    return getSceneIdleLifecycleState(
+      scene,
+      wallclockNow,
+      Math.max(0, toFiniteNumber(config.solarSystemSceneIdleUnloadMs, 3_600_000)),
+    );
+  }
+
+  recordSolarSystemPlayerActivity(systemID, wallclockNow = Date.now()) {
+    const numericSystemID = toInt(systemID, 0);
+    const scene = this.scenes.get(numericSystemID);
+    return scene ? recordScenePlayerActivity(scene, wallclockNow) : null;
+  }
+
+  unloadSolarSystemScene(systemID, options: Record<string, any> = {}) {
+    const numericSystemID = toInt(systemID, 0);
+    const scene = this.scenes.get(numericSystemID);
+    if (!scene) {
+      return {
+        success: true,
+        unloaded: false,
+        systemID: numericSystemID,
+        reason: "scene-not-loaded",
+      };
+    }
+    if (scene.sessions instanceof Map && scene.sessions.size > 0) {
+      return {
+        success: false,
+        unloaded: false,
+        systemID: numericSystemID,
+        reason: "player-sessions-present",
+      };
+    }
+    if (
+      scene._bootstrapReady === false ||
+      this._sceneBootstrapPromises.has(numericSystemID)
+    ) {
+      return {
+        success: false,
+        unloaded: false,
+        systemID: numericSystemID,
+        reason: "scene-bootstrap-pending",
+      };
+    }
+
+    const pendingReconcile = this._pendingAttachUniverseSiteReconciles.get(numericSystemID);
+    if (pendingReconcile && pendingReconcile.timer) {
+      clearTimeout(pendingReconcile.timer);
+    }
+    this._pendingAttachUniverseSiteReconciles.delete(numericSystemID);
+
+    let npcVirtualization = null;
+    try {
+      const nativeNpcService = lazyRequire("./npc/nativeNpcService");
+      npcVirtualization =
+        nativeNpcService &&
+        typeof nativeNpcService.virtualizeAndDematerializeNativeControllersForScene === "function"
+          ? nativeNpcService.virtualizeAndDematerializeNativeControllersForScene(scene, {
+              broadcast: false,
+            })
+          : { success: false, errorMsg: "NPC_VIRTUALIZATION_UNAVAILABLE" };
+      if (!npcVirtualization || npcVirtualization.success !== true) {
+        return {
+          success: false,
+          unloaded: false,
+          systemID: numericSystemID,
+          reason:
+            npcVirtualization && npcVirtualization.errorMsg ||
+            "npc-virtualization-failed",
+        };
+      }
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Scene unload NPC virtualization failed system=${numericSystemID}: ` +
+          `${error.message}`,
+      );
+      return {
+        success: false,
+        unloaded: false,
+        systemID: numericSystemID,
+        reason: "npc-virtualization-failed",
+      };
+    }
+
+    scene._bootstrapGeneration = ++this._sceneBootstrapGeneration;
+    this.scenes.delete(numericSystemID);
+    if (String(options.reason || "idle-timeout") === "idle-timeout") {
+      this._cooledSolarSystemIDs.add(numericSystemID);
+    }
+    if (options.refreshStargates !== false) {
+      this.refreshStargateActivationStates({
+        broadcast: options.broadcastStargateChanges !== false,
+        targetSystemID: numericSystemID,
+      });
+    }
+    if (options.log !== false) {
+      log.info(
+        `[SpaceRuntime] Unloaded solar-system scene system=${numericSystemID} ` +
+          `reason=${String(options.reason || "idle-timeout")}`,
+      );
+    }
+    return {
+      success: true,
+      unloaded: true,
+      systemID: numericSystemID,
+      reason: String(options.reason || "idle-timeout"),
+      npcVirtualization: npcVirtualization && npcVirtualization.data || null,
+    };
+  }
+
+  unloadIdleSolarSystemScenes(wallclockNow = Date.now(), options: Record<string, any> = {}) {
+    const timeoutMs = Math.max(
+      0,
+      toFiniteNumber(config.solarSystemSceneIdleUnloadMs, 3_600_000),
+    );
+    const result: Record<string, any> = {
+      timeoutMs,
+      checked: 0,
+      unloaded: [],
+      skipped: [],
+    };
+    if (timeoutMs <= 0) return result;
+
+    for (const [systemID, scene] of [...this.scenes.entries()]) {
+      result.checked += 1;
+      const state = getSceneIdleLifecycleState(scene, wallclockNow, timeoutMs);
+      if (!state.eligible) continue;
+      const unload = this.unloadSolarSystemScene(systemID, {
+        reason: "idle-timeout",
+        refreshStargates: false,
+        log: options.log,
+      });
+      if (unload.unloaded) result.unloaded.push(systemID);
+      else result.skipped.push({ systemID, reason: unload.reason });
+    }
+    if (result.unloaded.length > 0) {
+      this.refreshStargateActivationStates({
+        broadcast: options.broadcastStargateChanges !== false,
+      });
+    }
+    return result;
   }
 
   wakeSceneForImmediateUse(sceneOrSystemID, options: Record<string, any> = {}) {
@@ -46840,6 +47032,7 @@ class SpaceRuntime {
           forceSimClockRebase: options.forceSimClockRebase === true,
           previousSimTimeMs,
         });
+    recordScenePlayerActivity(scene, Date.now());
     const attachElapsedMs = Date.now() - attachStartedAtMs;
     if (attachElapsedMs >= 500) {
       log.info(
@@ -46933,6 +47126,7 @@ class SpaceRuntime {
       forceSimClockRebase: options.forceSimClockRebase === true,
       previousSimTimeMs,
     });
+    recordScenePlayerActivity(scene, Date.now());
     if (shouldReconcileUniverseSites && !preparedForEntry) {
       const universeSiteOptions = {
         reason:
@@ -46969,6 +47163,7 @@ class SpaceRuntime {
     const scene = this.scenes.get(Number(session._space.systemID));
     if (scene) {
       scene.detachSession(session, options);
+      recordScenePlayerActivity(scene, Date.now());
       if (scene.sessions instanceof Map && scene.sessions.size === 0) {
         dematerializeAmbientStartupControllersForScene(scene, {
           broadcast: false,
@@ -46998,6 +47193,7 @@ class SpaceRuntime {
     }
 
     const entity = scene.disembarkSession(session, options);
+    recordScenePlayerActivity(scene, Date.now());
     if (scene.sessions instanceof Map && scene.sessions.size === 0) {
       dematerializeAmbientStartupControllersForScene(scene, {
         broadcast: false,
@@ -48050,6 +48246,9 @@ class SpaceRuntime {
         continue;
       }
       const sceneActivity = getSceneActivityState(scene, now);
+      if (sceneActivity.hasSessions) {
+        recordScenePlayerActivity(scene, now);
+      }
       if (!sceneActivity.shouldTick) {
         continue;
       }
@@ -48082,6 +48281,24 @@ class SpaceRuntime {
       tickedSceneCount += 1;
     }
 
+    let idleUnloadSummary = null;
+    const idleUnloadMs = Math.max(
+      0,
+      toFiniteNumber(config.solarSystemSceneIdleUnloadMs, 3_600_000),
+    );
+    const idleUnloadSweepIntervalMs = Math.max(
+      1_000,
+      Math.min(60_000, Math.floor(idleUnloadMs / 4) || 60_000),
+    );
+    if (
+      idleUnloadMs > 0 &&
+      now - toFiniteNumber(this._lastIdleSceneUnloadSweepAtMs, 0) >=
+        idleUnloadSweepIntervalMs
+    ) {
+      this._lastIdleSceneUnloadSweepAtMs = now;
+      idleUnloadSummary = this.unloadIdleSolarSystemScenes(now);
+    }
+
     const finishedAtMonotonicMs = getMonotonicTimeMs();
     const tickSummary: Record<string, any> = {
       startedAtMonotonicMs,
@@ -48091,6 +48308,10 @@ class SpaceRuntime {
       latenessMs: Math.max(0, actualIntervalMs - targetTickIntervalMs),
       sceneCount: this.scenes.size,
       tickedSceneCount,
+      unloadedIdleSceneCount:
+        idleUnloadSummary && Array.isArray(idleUnloadSummary.unloaded)
+          ? idleUnloadSummary.unloaded.length
+          : 0,
     };
     this._lastTickSummary = tickSummary;
     if (!Array.isArray(this._recentTickSummaries)) this._recentTickSummaries = [];
@@ -48421,6 +48642,7 @@ runtimeExports._testing = {
   },
   clearScenes() {
     runtimeExports.scenes.clear();
+    runtimeExports._cooledSolarSystemIDs.clear();
     nextRuntimeEntityID = 900_000_000_000;
     resetFallbackDestinyAllocator();
     passiveShieldRechargeEnabled = DEFAULT_PASSIVE_SHIELD_RECHARGE_ENABLED;

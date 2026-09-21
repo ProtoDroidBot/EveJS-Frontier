@@ -2616,6 +2616,19 @@ const CONFIG_ENTRY_DEFINITIONS: any[] = [
     validValues: "true or false.",
   },
   {
+    key: "solarSystemSceneIdleUnloadMs",
+    defaultValue: 3_600_000,
+    envVar: "EVEJS_SOLAR_SYSTEM_SCENE_IDLE_UNLOAD_MS",
+    envType: "number",
+    minValue: 0,
+    description: [
+      "Unloads any loaded solar-system scene after this much time without player activity, regardless of why the scene was loaded.",
+      "Cooldown changes memory residency only: structures retain their durable operational state, NPC positions are virtualized before dematerialization, and resumed entities receive collision-safe placement.",
+      "Set to 0 to disable automatic scene unloading.",
+    ],
+    validValues: "Non-negative milliseconds; 0 disables automatic unloading.",
+  },
+  {
     key: "frontierNetworkNodeScanRangeJumps",
     defaultValue: 3,
     envVar: "EVEJS_FRONTIER_NETWORK_NODE_SCAN_RANGE_JUMPS",
@@ -2634,6 +2647,18 @@ const CONFIG_ENTRY_DEFINITIONS: any[] = [
     minValue: 0,
     description: "Minimum delay between new remote scan jobs from the same scanner source.",
     validValues: "Non-negative milliseconds.",
+  },
+  {
+    key: "frontierRemoteScanEnergyHoldMs",
+    defaultValue: 3_600_000,
+    envVar: "EVEJS_FRONTIER_REMOTE_SCAN_ENERGY_HOLD_MS",
+    envType: "number",
+    minValue: 1,
+    description: [
+      "Duration that a remote scan reserves its energy cost on the source Network Node power grid.",
+      "The hold remains for the full duration even when the scan completes or is cancelled.",
+    ],
+    validValues: "Positive milliseconds.",
   },
   {
     key: "frontierRemoteScanSurveyEnergyCost",
@@ -2774,7 +2799,7 @@ const CONFIG_ENTRY_DEFINITIONS: any[] = [
     envVar: "EVEJS_FRONTIER_REMOTE_SCAN_DEEP_WARMUP_TIMEOUT_MS",
     envType: "number",
     minValue: 1,
-    description: "Hard timeout for target-system warm-up initiated by a deep remote survey.",
+    description: "Hard timeout for target-system loading initiated by a remote survey.",
     validValues: "Positive milliseconds.",
   },
   {
@@ -2784,7 +2809,7 @@ const CONFIG_ENTRY_DEFINITIONS: any[] = [
     envType: "number",
     minValue: 1,
     maxValue: 64,
-    description: "Maximum number of distinct solar systems that remote deep scans may warm concurrently.",
+    description: "Maximum number of distinct solar systems that remote scans may load concurrently.",
     validValues: "Integer from 1 through 64.",
   },
   {

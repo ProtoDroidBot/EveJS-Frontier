@@ -1630,6 +1630,14 @@
 
   "frontierRemoteScanningEnabled": true,
 
+  // Unloads any loaded solar-system scene after this much time without player activity, regardless of why the scene was loaded.
+  // Cooldown changes memory residency only: structures retain their durable operational state, NPC positions are virtualized before dematerialization, and resumed entities receive collision-safe placement.
+  // Set to 0 to disable automatic scene unloading.
+  // Valid values: Non-negative milliseconds; 0 disables automatic unloading.
+  // Default: 3600000.
+
+  "solarSystemSceneIdleUnloadMs": 3600000,
+
   // Maximum configurable remote scanning reach from a Network Node, measured along stargate connections in solar-system hops.
   // Valid values: Integer from 0 through 25 stargate hops.
   // Default: 3.
@@ -1641,6 +1649,13 @@
   // Default: 5000.
 
   "frontierRemoteScanCooldownMs": 5000,
+
+  // Duration that a remote scan reserves its energy cost on the source Network Node power grid.
+  // The hold remains for the full duration even when the scan completes or is cancelled.
+  // Valid values: Positive milliseconds.
+  // Default: 3600000.
+
+  "frontierRemoteScanEnergyHoldMs": 3600000,
 
   // Transient Network Node energy headroom required to start a cold survey.
   // Valid values: Non-negative energy units.
@@ -1726,13 +1741,13 @@
 
   "frontierRemoteScanDeepWarmupEnabled": true,
 
-  // Hard timeout for target-system warm-up initiated by a deep remote survey.
+  // Hard timeout for target-system loading initiated by a remote survey.
   // Valid values: Positive milliseconds.
   // Default: 15000.
 
   "frontierRemoteScanDeepWarmupTimeoutMs": 15000,
 
-  // Maximum number of distinct solar systems that remote deep scans may warm concurrently.
+  // Maximum number of distinct solar systems that remote scans may load concurrently.
   // Valid values: Integer from 1 through 64.
   // Default: 4.
 
