@@ -1,0 +1,15 @@
+# EveJS-managed efctl workspace configuration. The repository root contains
+# the two pinned submodules under the directory names efctl expects.
+with-frontend: true
+with-graphql: true
+
+world-contracts-url: "https://github.com/ProtoDroidBot/world-contracts.git"
+world-contracts-ref: "452bfe77a46b1be9e4552ef8ba2b418fd9c00b87"
+
+builder-scaffold-url: "https://github.com/ProtoDroidBot/builder-scaffold.git"
+builder-scaffold-ref: "e0038902f3304d0d12e28aab8b1b7f627599d5a7"
+
+git-autocrlf: false
+container-engine: auto-detect
+host: "127.0.0.1"
+expose-postgres: false

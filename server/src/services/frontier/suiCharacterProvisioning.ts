@@ -36,8 +36,7 @@ const SUI_CHARACTER_TRANSACTION_INCLUDE = Object.freeze({
 
 const DEFAULT_WORLD_CONTRACTS_DIRECTORY = path.resolve(
   __dirname,
-  "../../../../..",
-  "3502403",
+  "../../../..",
   "world-contracts",
 );
 

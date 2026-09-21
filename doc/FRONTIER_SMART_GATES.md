@@ -32,7 +32,7 @@ upgrade changes only the catapult call package and preserves its type origin,
 registry, and base-world identity. The current Localnet package/registry pair
 was verified through public RPC inspection.
 
-The authoritative World Contracts checkout is `../3502403/world-contracts`, selected by `FrontierWorld.ps1`. Its deployment range configuration must use the same type IDs and meter values; see that checkout's `env.example`. The server also applies the client-authored range before creating a new chain link, so existing deployments can converge without redeployment. A read alone does not overwrite a differing range.
+The authoritative World Contracts checkout is the pinned `world-contracts` submodule selected by `FrontierWorld.ps1`. Its deployment range configuration must use the same type IDs and meter values; see that checkout's `env.example`. The server also applies the client-authored range before creating a new chain link, so existing deployments can converge without redeployment. A read alone does not overwrite a differing range.
 
 Link and unlink update both in-game endpoints and invalidate their outstanding transition requests. The existing Sui assembly worker mirrors the reciprocal link with its shared transaction journal, owner capabilities, and signed distance proof. It rechecks snapshots before submitting transactions. New dApp links require both gates to be synchronized first.
 

@@ -1,9 +1,10 @@
 # Frontier World Sync
 
 `FrontierWorld.ps1` connects EveJS to the disposable Sui localnet managed by
-`efctl.exe`. It operates on the build-numbered efctl workspace beside this
-repository and publishes the current deployment identity into EveJS only after
-the local chain and generated artifacts agree.
+`efctl.exe`. The EveJS repository root is the default efctl workspace, with
+`world-contracts` and `builder-scaffold` supplied by pinned Git submodules. It
+publishes the current deployment identity into EveJS only after the local chain
+and generated artifacts agree.
 
 The deployment is split into the base world plus NPC, assembly-access,
 catapult, Smart Industry, and transponder feature packages. The public feature
@@ -17,7 +18,9 @@ wrapper ensures EveJS receives the newly deployed values.
 For the current checkout, the defaults resolve to:
 
 ```text
-efctl workspace: D:\carbonengine-stuff_EF\3502403
+efctl workspace: D:\carbonengine-stuff_EF\EveJS-Frontier
+world contracts: D:\carbonengine-stuff_EF\EveJS-Frontier\world-contracts
+builder scaffold: D:\carbonengine-stuff_EF\EveJS-Frontier\builder-scaffold
 EveJS config:    D:\carbonengine-stuff_EF\EveJS-Frontier\_local\frontier-world\3502403\world.private.json
 Feature config:  D:\carbonengine-stuff_EF\EveJS-Frontier\_local\frontier-world\3502403\npc-deployment.json
 ```
@@ -25,8 +28,8 @@ Feature config:  D:\carbonengine-stuff_EF\EveJS-Frontier\_local\frontier-world\3
 The `_local` output is ignored by Git. Its ACL is restricted to the current
 Windows user because it contains the admin signer used by local character
 provisioning. The tool copies no player, governor, or sponsor keys and does not
-copy the world-contracts Git checkout, dependency stores, build output, or
-logs.
+copy either submodule, dependency stores, build output, or logs. Generated
+deployment artifacts remain ignored inside `world-contracts`.
 
 This workflow is independent of the EveJS databases. It neither initializes a
 database nor starts the EveJS server, so the world can be prepared and synced
@@ -131,12 +134,12 @@ artifact hashes. Before activating manually upgraded metadata, verify the live
 module set, exact shared-registry type, retained type origin, UpgradeCap
 owner/policy, and a feature-specific transaction dry run.
 
-The sibling `world-contracts/scripts/deploy-world.sh` cleans deployment outputs
+The `world-contracts/scripts/deploy-world.sh` submodule script cleans deployment outputs
 and performs a fresh publish of all six packages. It is not a per-feature
 upgrade command. Preserve the base package, Object Registry, Admin ACL, feature
 type origins, and registries when upgrading a call implementation. The full
-topology and current upgrade limitations are documented in the sibling
-`3502403/world-contracts/docs/package-topology.md`.
+topology and current upgrade limitations are documented in
+`world-contracts/docs/package-topology.md`.
 
 `down` changes the synchronized state before tearing down the chain. A
 character-provisioning attempt while the state is `syncing`, `starting`,

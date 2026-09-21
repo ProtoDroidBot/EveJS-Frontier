@@ -5,9 +5,10 @@
 Synchronizes the live efctl world into EveJS and manages its Docker localnet.
 
 .DESCRIPTION
-The default efctl workspace is the build-numbered sibling of this repository
-(../3502403). The tool always resolves efctl.exe from PATH unless -EfctlPath is
-provided. It never installs, copies, pins, or updates efctl.
+The default efctl workspace is this repository. Its pinned world-contracts and
+builder-scaffold submodules use the directory names efctl expects. The tool
+always resolves efctl.exe from PATH unless -EfctlPath is provided. It never
+installs, copies, pins, or updates efctl.
 
 The synchronized EveJS file contains the current localnet world IDs and only
 the admin signer needed for character provisioning. It is stored under the
@@ -66,9 +67,8 @@ if ($env:OS -ne 'Windows_NT') {
 $script:ConfigFormat = 'evejs-frontier-world-sync-v1'
 $script:PathComparison = [StringComparison]::OrdinalIgnoreCase
 $RepoRoot = [IO.Path]::GetFullPath($PSScriptRoot)
-$WorkspaceParent = Split-Path -Parent $RepoRoot
 if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
-    $SourceRoot = Join-Path $WorkspaceParent $Build
+    $SourceRoot = $RepoRoot
 }
 $SourceRoot = [IO.Path]::GetFullPath($SourceRoot)
 if ([string]::IsNullOrWhiteSpace($DestinationRoot)) {
@@ -107,7 +107,13 @@ function Assert-SourceWorkspace {
         throw "efctl configuration is missing: $EfctlConfigPath"
     }
     if (-not (Test-Path -LiteralPath $WorldContractsRoot -PathType Container)) {
-        throw "World-contracts checkout is missing: $WorldContractsRoot"
+        throw "World-contracts checkout is missing: $WorldContractsRoot. Run git submodule update --init --recursive."
+    }
+    if (Test-SamePath -Left $SourceRoot -Right $RepoRoot) {
+        $builderScaffoldRoot = Join-Path $SourceRoot 'builder-scaffold'
+        if (-not (Test-Path -LiteralPath $builderScaffoldRoot -PathType Container)) {
+            throw "Builder-scaffold checkout is missing: $builderScaffoldRoot. Run git submodule update --init --recursive."
+        }
     }
 }
 
@@ -296,6 +302,16 @@ function Assert-DockerWorkspaceOwnership {
     }) | Select-Object -First 1
     if ($null -eq $worldMount -or [string]::IsNullOrWhiteSpace([string]$worldMount.Source)) {
         throw 'An existing sui-playground container has no provable /workspace/world-contracts bind mount.'
+    }
+    $mountSource = [string]$worldMount.Source
+    if ($mountSource -match '^/(?:run/desktop/mnt/host|host_mnt)/([a-zA-Z])/(.+)$') {
+        $mountSource = '{0}:\{1}' -f $matches[1].ToUpperInvariant(), $matches[2].Replace('/', '\')
+    }
+    if (-not (Test-SamePath -Left $mountSource -Right $WorldContractsRoot)) {
+        throw (
+            "The existing sui-playground container belongs to '$mountSource', not '$WorldContractsRoot'. " +
+            'Stop it from its original efctl workspace before switching workspaces.'
+        )
     }
 }
 

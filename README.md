@@ -5,7 +5,7 @@ EVE.js is a local EVE Online server emulator. This release targets **EVE 24.01 b
 Join the project Discord: [https://discord.gg/KMuJrMDEBa](https://discord.gg/KMuJrMDEBa)
 
 Clone with `git clone --recurse-submodules <repository-url>` so the pinned
-`builder-scaffold-ai` and `world-contracts-ai` checkouts are downloaded with
+`builder-scaffold` and `world-contracts` checkouts are downloaded with
 the server. For an existing checkout, run `git submodule update --init --recursive`.
 
 ## TypeScript development
@@ -312,8 +312,8 @@ assembly-access, catapult, Smart Industry, and transponder packages.
 type-origin, and registry IDs into `_local/frontier-world/3502403/npc-deployment.json`.
 That filename is historical and now represents all five features. Do not assume
 that a feature module lives at the base-world package address; see
-[Frontier world sync](doc/FRONTIER_WORLD_SYNC.md) and the authoritative sibling
-`3502403/world-contracts/docs/package-topology.md`.
+[Frontier world sync](doc/FRONTIER_WORLD_SYNC.md) and the authoritative
+`world-contracts/docs/package-topology.md` submodule.
 Set
 `EVEJS_SUI_CHARACTER_PROVISIONING_ENABLED=false` only when intentionally
 running isolated tests without a disposable chain.
