@@ -157,6 +157,97 @@ test("Network Node scan configuration exposes a selectable stargate-hop range", 
   assert.equal(result.data.energyHoldMs, 3_600_000);
 });
 
+test("accepted scans queue deterministic Sui alert actions for Network Nodes in neighboring systems", async () => {
+  const writes: any[] = [];
+  const subject = fixture({
+    listNeighborNetworkNodes: () => [
+      { networkNodeID: 50, systemID: 1 },
+      { networkNodeID: 60, systemID: 1 },
+      { networkNodeID: 61, systemID: 3 },
+    ],
+    actionQueue: {
+      async queueServerAction(request: any) {
+        writes.push(structuredClone(request));
+        return { actionID: request.actionID, actionObjectID: `action:${request.actionID}` };
+      },
+    },
+  });
+  const started = subject.runtime.startRemoteSystemScan(7, 50, {
+    operationKey: "ui:neighbor-alerts",
+    targetSystemID: 2,
+    mode: "survey",
+    rangeJumps: 1,
+    layers: ["sites", "entities"],
+  }, { characterID: 7 });
+  assert.equal(started.success, true);
+  await subject.runtime._testing.queueNeighborAlertActions(
+    subject.runtime._testing.readState().jobs[started.data.scanID],
+  );
+  assert.deepEqual(writes.map((entry) => [entry.targetAssemblyID, entry.payload.neighboringSystemID]), [
+    [60, 1],
+    [61, 3],
+  ]);
+  assert.equal(writes.every((entry) => entry.actionType === "intelligence.remote-scan.detected"), true);
+  assert.equal(writes.every((entry) => entry.priority === 200 && entry.priorityFlags === (1 << 8)), true);
+  assert.equal(writes.every((entry) => entry.payload.targetSystemID === 2 &&
+    entry.payload.sourceSystemID === 1 && entry.payload.scanID === started.data.scanID), true);
+  assert.equal(new Set(writes.map((entry) => entry.actionID)).size, 2);
+  assert.equal(started.data.neighborAlertActions.length, 2);
+});
+
+test("a remote scan executes only from its claimed Sui action and completion is replay-safe", async () => {
+  const transitions: string[] = [];
+  let action: any = {
+    actionObjectID: `0x${"9".repeat(64)}`,
+    actionID: "99999999-9999-4999-8999-999999999999",
+    sourceAssemblyID: 50,
+    targetAssemblyID: 50,
+    actionType: "intelligence.remote-scan.execute",
+    serverAction: false,
+    status: 0,
+    outcome: null,
+    payload: {
+      operationKey: "sui-action/99999999-9999-4999-8999-999999999999",
+      targetSystemID: 2,
+      mode: "survey",
+      rangeJumps: 1,
+      layers: ["sites", "entities"],
+    },
+  };
+  const subject = fixture({
+    listNeighborNetworkNodes: () => [],
+    actionQueue: {
+      async readAction() { return structuredClone(action); },
+      async claimServerAction() { transitions.push("claimed"); action.status = 1; return {}; },
+      async releaseServerAction() { transitions.push("released"); action.status = 0; return {}; },
+      async completeServerAction(_id: string, succeeded: boolean, outcome: any) {
+        transitions.push(succeeded ? "fulfilled" : "failed");
+        action.status = succeeded ? 2 : 3;
+        action.outcome = structuredClone(outcome);
+        return {};
+      },
+    },
+  });
+  const executed = await subject.runtime.executeRemoteSystemScanAction(
+    7,
+    50,
+    action.actionObjectID,
+    { characterID: 7 },
+  );
+  assert.equal(executed.success, true, executed.errorMsg);
+  assert.deepEqual(transitions, ["claimed", "fulfilled"]);
+  assert.equal(action.outcome.scanID, executed.data.scanID);
+  const replay = await subject.runtime.executeRemoteSystemScanAction(
+    7,
+    50,
+    action.actionObjectID,
+    { characterID: 7 },
+  );
+  assert.equal(replay.success, true, replay.errorMsg);
+  assert.equal(replay.data.scanID, executed.data.scanID);
+  assert.deepEqual(transitions, ["claimed", "fulfilled"], "a fulfilled action is not claimed twice");
+});
+
 test("surveys attempt a live system load and remain durable, bounded, and actor-blind", async () => {
   const subject = fixture();
   const request = { operationKey: "ui:scan:1", targetSystemID: 2, mode: "survey",

@@ -60,6 +60,11 @@ const ERROR_MESSAGES: Record<string, string> = {
   REMOTE_SCAN_WARMUP_FAILED: "The target solar system could not be prepared for a deep scan.",
   REMOTE_SCAN_PERSIST_FAILED: "The remote scan job could not be saved. Try again.",
   REMOTE_SCAN_FAILED: "The remote solar-system scan failed. Try again.",
+  ASSEMBLY_ACTION_CHAIN_UNAVAILABLE: "The Sui assembly action queue is unavailable. Try again after world synchronization resumes.",
+  ASSEMBLY_ACTION_NOT_FOUND: "That queued Sui assembly action does not exist.",
+  ASSEMBLY_ACTION_COMMITMENT_INVALID: "The queued Sui assembly action payload failed verification.",
+  ASSEMBLY_ACTION_MISMATCH: "That Sui action does not authorize this Network Node scan.",
+  ASSEMBLY_ACTION_NOT_EXECUTABLE: "That Sui assembly action is no longer executable.",
 };
 
 function failed(rawCode: unknown, params?: unknown) {
@@ -175,8 +180,8 @@ export function createSmartAssemblyEnergyApi(overrides: Record<string, any> = {}
         )),
     startScan: (authorization: unknown, rawID: unknown, body: any) =>
       scanOperation(authorization, rawID, (service, context) =>
-        service.startRemoteSystemScan(
-          context.characterID, context.networkNodeID, body, context.session,
+        service.executeRemoteSystemScanAction(
+          context.characterID, context.networkNodeID, body?.actionObjectID, context.session,
         )),
     scanStatus: (authorization: unknown, rawID: unknown, scanID: unknown) =>
       scanOperation(authorization, rawID, (service, context) =>
@@ -229,7 +234,7 @@ export function mountSmartAssemblyEnergyEndpoints(app: any, options: Record<stri
       const code = result.success ? 200 : ["NETWORK_NODE_ENERGY_CONFIG_UNAVAILABLE", "NETWORK_NODE_ENERGY_STATE_UNAVAILABLE", "ASSEMBLY_STATE_UNAVAILABLE", "DEPLOYMENT_UNAVAILABLE"].includes(result.errorMsg) ? 503
         : result.errorMsg === "TOO_MANY_REQUESTS" ? 429
         : result.errorMsg === "REMOTE_SCAN_COOLDOWN" ? 429
-        : ["REMOTE_SCAN_WARMUP_TIMEOUT", "REMOTE_SCAN_WARMUP_BUSY", "REMOTE_SCAN_WARMUP_FAILED", "REMOTE_SCAN_SOURCE_UNAVAILABLE"].includes(result.errorMsg) ? 503
+        : ["REMOTE_SCAN_WARMUP_TIMEOUT", "REMOTE_SCAN_WARMUP_BUSY", "REMOTE_SCAN_WARMUP_FAILED", "REMOTE_SCAN_SOURCE_UNAVAILABLE", "ASSEMBLY_ACTION_CHAIN_UNAVAILABLE"].includes(result.errorMsg) ? 503
         : /^(AUTH_|INVALID_SIGNATURE$|CHARACTER_NOT_ONLINE$|MULTIPLE_ACTIVE)/.test(result.errorMsg) ? 401
           : /^(ACCESS_DENIED|ASSEMBLY_ACCESS_DENIED|ASSEMBLY_NOT_OWNED|ASSEMBLY_NOT_IN_CURRENT_SYSTEM)$/.test(result.errorMsg) ? 403
             : result.errorMsg === "ENERGY_REQUEST_FAILED" ? 500 : /NOT_FOUND$/.test(result.errorMsg) ? 404

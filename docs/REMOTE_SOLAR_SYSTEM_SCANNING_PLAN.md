@@ -56,6 +56,10 @@ ship as an individually rendered entity.
     energy. The default hold duration is one hour, remains in effect after scan
     completion or cancellation, and is included in Network Node usage bands,
     available energy, and new-assembly admission.
+12. The Sui `AssemblyAction` object is the authoritative API request and queue
+    record. The browser task queue and server scan journal are recoverable
+    projections of that object. Raw HTTP scan parameters are never an
+    independent source of authority.
 
 ## Existing Server Foundations
 
@@ -111,9 +115,16 @@ The first server release implements the following seams:
 - `systemSignatureEventRuntime` persists normalized departure/arrival blooms,
   independently decays all three channels, and exposes a neutral API for the
   separate jump-drive implementation.
-- The Network Node energy dApp API exposes configuration, reachable systems,
-  scan start, status, result, and cancellation endpoints under
-  `/evejs/energy/:networkNodeID/scanning/...`.
+- The Network Node dApp creates a shared Sui `AssemblyAction` for each scan.
+  The authenticated start endpoint accepts only its `actionObjectID`; the
+  server verifies the type, source, target, payload commitment, ownership,
+  expiry, and lifecycle on-chain before claiming and executing it.
+- The local dApp queue indexes the same Sui objects. Queued or claimed scans can
+  be recovered after a reload or local queue eviction without creating a new
+  request.
+- Starting a scan creates deterministic server-authored `AssemblyAction`
+  alerts for Network Nodes in directly neighboring systems. Those nodes read
+  the alerts from Sui and can queue later reactions against their action IDs.
 - All scans share one target-system load promise and never attach the requesting
   character or create remote targetable contacts. Survey mode can use the
   persistent index as a declared fallback; deep mode requires the load.
@@ -130,19 +141,25 @@ The first server release implements the following seams:
   `frontierRemoteScanEnergyHoldMs` (default `3600000`). Holds are durable,
   idempotent by scan ID, visible in grid status, and expire automatically.
 
-The eventual Sui contract move is intentionally isolated behind the generic
-scanner-source resolver. No authored scanning assembly or Creation module is
-invented by this release.
+The queue contract remains generic to every Smart Assembly even though the
+first producer and consumer are Network Nodes. No dedicated scanning assembly
+or Creation module is invented by this release.
 
 ### Package and World-Contract Boundary
 
-This release changes the EveJS server package, not the deployed `world` Move
-package. It deliberately does not add fields to `world::network_node::NetworkNode`
-or publish a temporary scanning object whose type identity would become part of
-the permanent on-chain model. The existing Network Node ownership and signed
-wallet flow authenticate the dApp caller; the server remains authoritative for
-route reach, energy headroom, cooldowns, scan jobs, system loading, redaction, and
-results.
+The `world_assembly_access` package now owns a generic deterministic
+`AssemblyAction` object and lifecycle. Owner-authored actions require the
+source assembly's `OwnerCap`; server-authored alerts and server transitions
+require an address in the world's `ServerAddressRegistry`. Payload bytes are
+bound to a SHA-256 commitment, action IDs are deterministic 16-byte UUID keys,
+and claim, release, completion, failure, cancellation, expiry, revision, and
+priority flags are represented on-chain.
+
+The server remains authoritative for gameplay validation and results: route
+reach, energy headroom, cooldowns, scene loading, redaction, and scan output.
+It cannot invent a player scan request because it must consume and claim the
+corresponding Sui action. The server journal stores the action object ID and
+scan state as an operational projection; it does not replace chain authority.
 
 The server package exposes `npm run test:frontier-remote-scanning` as the focused
 verification entry point. When the dedicated scanning Smart Assembly and
@@ -521,13 +538,19 @@ The scan response should expose:
 ### Start Scan
 
 ```ts
-StartRemoteSystemScan({
-  operationKey: string,
-  scannerSourceID: number,
+StartRemoteSystemScan({ actionObjectID: string })
+```
+
+The referenced Sui action contains the committed request payload:
+
+```ts
+{
+  operationKey: `sui-action/${actionID}`,
   targetSystemID: number,
   mode: "survey" | "deep",
-  layers: Array<"sites" | "resources" | "entities">
-})
+  rangeJumps: number,
+  layers: Array<"sites" | "resources" | "celestials" | "entities">
+}
 ```
 
 The server resolves:
@@ -583,7 +606,10 @@ interface RemoteSystemScanResult {
 ```
 
 Operation-key idempotency must prevent a retry from charging the scanner or
-loading the system twice.
+loading the system twice. The server claims the action before reserving energy,
+links the scan ID to the action object, and completes the action with a bounded
+outcome containing the scan ID and terminal state. A retry of a fulfilled
+action returns the already linked job.
 
 ## Persistence
 
@@ -597,6 +623,8 @@ Add a `remoteSystemScans` table containing:
 - Result expiry
 - Bounded final result
 - Safe failure code
+- Authoritative Sui action object ID
+- Deterministic neighboring alert action descriptors
 
 The system scan index may persist durable contributions and system rollups.
 Short-lived live emissions may stay in memory or use a compact transient event
@@ -615,11 +643,15 @@ Publish ordered scan signals for:
 - `remote_scan.cancelled`
 - `remote_scan.failed`
 - `remote_scan.detected`
+- `remote_scan.action_linked`
 
 Signals should include scan ID, target system, source class, phase, confidence,
-and safe error codes. A target-system detection signal can support NPC reactions
-or counter-scanning without exposing the requesting character to ordinary
-clients.
+safe error codes, and the Sui action object ID. A target-system detection signal
+is also materialized as a server-authored Sui action for each eligible Network
+Node in a directly adjacent system, so NPC or assembly reactions can use the
+same queue lifecycle for investigation or counter-scanning without exposing
+the requesting character to ordinary clients or relying on a second
+server-only event API.
 
 ## Authorization and Counterplay
 
@@ -667,10 +699,14 @@ server/src/services/frontier/remoteSystemScanRuntime.ts
 server/src/services/frontier/remoteScanningService.ts
 server/src/services/frontier/systemScanIndex.ts
 server/src/services/frontier/systemSignatureEventRuntime.ts
+server/src/services/frontier/suiAssemblyActionQueue.ts
 server/src/services/frontier/systemScanContributors/
 server/tests/frontierRemoteSystemScanning.test.ts
 server/tests/frontierSystemScanIndex.test.ts
 server/tests/frontierRemoteScanWarmup.test.ts
+smart-assembly-control/src/actions/chain.ts
+smart-assembly-control/src/tasks/scanning.ts
+world-contracts/contracts/world_assembly_access/sources/assembly_access.move
 ```
 
 The existing jump-drive implementation should only need to call

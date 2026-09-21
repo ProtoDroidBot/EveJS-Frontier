@@ -28,6 +28,10 @@ import {
   registerSuiAssemblyRequestLinkBridge,
 } from "./suiAssemblyRequestLink";
 import {
+  createSuiAssemblyActionQueueBridge,
+  registerSuiAssemblyActionQueueBridge,
+} from "./suiAssemblyActionQueue";
+import {
   readSyncedSuiWorldConfig, prepareSuiCharacterIdentity, createSuiCharacterTransaction,
 } from "./suiCharacterProvisioning";
 import {
@@ -1038,6 +1042,12 @@ export function startSuiAssemblySync() {
     getSnapshot: () => buildSuiAssemblySnapshot(currentSnapshotInput()),
     hasPrepared: () => sponsoredAdmin.hasPrepared(),
   }));
+  const unregisterActionQueue = registerSuiAssemblyActionQueueBridge(createSuiAssemblyActionQueueBridge({
+    runExclusive: worker.runExclusive,
+    getContext: () => context,
+    getSnapshot: () => buildSuiAssemblySnapshot(currentSnapshotInput()),
+    hasPrepared: () => sponsoredAdmin.hasPrepared(),
+  }));
   const unregisterState = registerSuiAssemblyStatesRunner((assemblyIDs, operation) => worker.runExclusive(async () => {
     try {
       if (!context) throw new Error(worker.getLastError() || "Assembly synchronization is starting");
@@ -1111,7 +1121,7 @@ export function startSuiAssemblySync() {
   worker.start();
   log.info("[SuiAssemblySync] Automatic Localnet synchronization enabled (5 second scan)");
   return { ...worker, stop() {
-    unregisterStorageSync(); unregisterGateSync(); unregisterIndustrySync(); unregisterTransferSnapshot(); unregisterRequestLink(); unregisterCustodyVerifier(); unregisterAccessVerifier(); unregisterAdmin(); unregisterState(); trackedNetworkNodeBinding = null;
+    unregisterStorageSync(); unregisterGateSync(); unregisterIndustrySync(); unregisterTransferSnapshot(); unregisterActionQueue(); unregisterRequestLink(); unregisterCustodyVerifier(); unregisterAccessVerifier(); unregisterAdmin(); unregisterState(); trackedNetworkNodeBinding = null;
     energyMutationRunner = null;
     const stopped = worker.stop();
     clearAssemblyEnergyConfig();

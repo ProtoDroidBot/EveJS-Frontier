@@ -19,8 +19,10 @@ const MODES = new Set(["survey", "deep"]);
 const LAYERS = new Set(["sites", "resources", "celestials", "entities"]);
 const MAX_JOBS = 2_000;
 const MAX_SIGNALS = 20_000;
-const activeExecutions = new Map<string, Promise<any>>();
-const activeWarmups = new Map<number, Promise<any>>();
+const REMOTE_SCAN_ACTION_TYPE = "intelligence.remote-scan.execute";
+const REMOTE_SCAN_ALERT_ACTION_TYPE = "intelligence.remote-scan.detected";
+const ACTION_PRIORITY = Object.freeze({ NORMAL: 100, HIGH: 200 });
+const ACTION_FLAG = Object.freeze({ PLAYER_INITIATED: 1 << 1, INTELLIGENCE: 1 << 8 });
 
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -59,6 +61,15 @@ function sha(value, length = 24) {
   return crypto.createHash("sha256").update(String(value)).digest("hex").slice(0, length);
 }
 
+function deterministicUUID(value) {
+  const hex = crypto.createHash("sha256").update(String(value)).digest("hex").slice(0, 32).split("");
+  hex[12] = "4";
+  hex[16] = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const joined = hex.join("");
+  return `${joined.slice(0, 8)}-${joined.slice(8, 12)}-${joined.slice(12, 16)}-` +
+    `${joined.slice(16, 20)}-${joined.slice(20)}`;
+}
+
 function emptyState() {
   return { version: STATE_VERSION, nextSequence: 1, jobs: {}, operationKeys: {}, signals: [] };
 }
@@ -94,6 +105,8 @@ function publicJob(job, includeResult = false) {
     completedAtMs: job.completedAtMs || null,
     completesAtMs: job.completesAtMs || null,
     cost: clone(job.cost),
+    chainActionObjectID: job.chainActionObjectID || null,
+    neighborAlertActions: clone(job.neighborAlertActions || []),
     errorMsg: job.errorMsg || null,
   };
   if (includeResult && job.result) result.result = clone(job.result);
@@ -101,6 +114,12 @@ function publicJob(job, includeResult = false) {
 }
 
 function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
+  // These in-flight registries belong to a runtime instance. Keeping them at
+  // module scope caused independently configured runtimes (notably tests and
+  // hot-reloaded services) to join one another's scans when IDs overlapped.
+  const activeExecutions = new Map<string, Promise<any>>();
+  const activeWarmups = new Map<number, Promise<any>>();
+  const activeAlertWrites = new Map<string, Promise<any>>();
   const now = typeof options.now === "function" ? options.now : Date.now;
   const randomUUID = typeof options.randomUUID === "function"
     ? options.randomUUID : () => crypto.randomUUID().toLowerCase();
@@ -129,6 +148,88 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
     ? options.releaseEnergyHold
     : (holdID) => require(path.join(__dirname, "./networkNodeEnergyHoldRuntime"))
         .releaseNetworkNodeEnergyHold(holdID);
+
+  function actionQueue() {
+    return options.actionQueue || require(path.join(__dirname, "./suiAssemblyActionQueue"))
+      .getSuiAssemblyActionQueueBridge();
+  }
+
+  function defaultListNeighborNetworkNodes(targetSystemID) {
+    const adjacentSystems = new Set<number>();
+    for (const gate of worldData.getStargatesForSystem(targetSystemID) || []) {
+      const destination = positiveInt(gate && gate.destinationSolarSystemID, 0);
+      if (destination && destination !== positiveInt(targetSystemID, 0)) adjacentSystems.add(destination);
+    }
+    if (adjacentSystems.size === 0) return [];
+    const itemStore = require(path.join(__dirname, "../inventory/itemStore"));
+    const deployment = require(path.join(__dirname, "./deploymentRuntime"));
+    const { NETWORK_NODE_TYPE_ID } = require(path.join(__dirname, "./networkNodeEnergyConfig"));
+    return Object.values<any>(itemStore.getAllItems())
+      .map((item) => ({ item, state: deployment.readConstructionState(item) }))
+      .filter(({ item, state }) => Number(item && item.typeID) === Number(NETWORK_NODE_TYPE_ID) &&
+        adjacentSystems.has(positiveInt(state && state.solarSystemID || item && item.locationID, 0)) &&
+        state && [1, 2].includes(Number(state.assemblyStatus)))
+      .map(({ item, state }) => ({
+        networkNodeID: positiveInt(item.itemID, 0),
+        systemID: positiveInt(state.solarSystemID || item.locationID, 0),
+      }))
+      .filter((entry) => entry.networkNodeID > 0)
+      .sort((left, right) => left.systemID - right.systemID ||
+        left.networkNodeID - right.networkNodeID);
+  }
+  const listNeighborNetworkNodes = typeof options.listNeighborNetworkNodes === "function"
+    ? options.listNeighborNetworkNodes : defaultListNeighborNetworkNodes;
+
+  function neighborAlertActions(scanID, sourceNetworkNodeID, targetSystemID) {
+    return (listNeighborNetworkNodes(targetSystemID) || [])
+      .filter((entry) => positiveInt(entry && entry.networkNodeID, 0) !==
+        positiveInt(sourceNetworkNodeID, 0))
+      .map((entry) => ({
+        actionID: deterministicUUID(
+          `remote-scan-alert:${scanID}:${positiveInt(entry.networkNodeID, 0)}`,
+        ),
+        targetNetworkNodeID: positiveInt(entry.networkNodeID, 0),
+        neighboringSystemID: positiveInt(entry.systemID, 0),
+      }))
+      .filter((entry) => entry.targetNetworkNodeID > 0 && entry.neighboringSystemID > 0);
+  }
+
+  function queueNeighborAlertActions(job) {
+    if (activeAlertWrites.has(job.scanID)) return activeAlertWrites.get(job.scanID);
+    const execution = (async () => {
+      const bridge = actionQueue();
+      if (!job.neighborAlertActions?.length) return [];
+      if (!bridge) throw Object.assign(new Error("Sui assembly action queue is unavailable"), {
+        code: "ASSEMBLY_ACTION_CHAIN_UNAVAILABLE",
+      });
+      const expiresAtMs = Math.min(
+        job.startedAtMs + 7 * 24 * 60 * 60 * 1000,
+        job.startedAtMs + Math.max(1, toInt(config.frontierRemoteScanResultTtlMs, 3_600_000)),
+      );
+      return Promise.all(job.neighborAlertActions.map((alert) => bridge.queueServerAction({
+        actionID: alert.actionID,
+        sourceAssemblyID: job.scannerSourceID,
+        targetAssemblyID: alert.targetNetworkNodeID,
+        actionType: REMOTE_SCAN_ALERT_ACTION_TYPE,
+        payload: {
+          version: 1,
+          event: "remote_scan.detected",
+          scanID: job.scanID,
+          detectedAtMs: job.startedAtMs,
+          sourceSystemID: job.sourceSystemID,
+          targetSystemID: job.targetSystemID,
+          neighboringSystemID: alert.neighboringSystemID,
+          mode: job.mode,
+          layers: clone(job.layers),
+        },
+        priority: ACTION_PRIORITY.HIGH,
+        priorityFlags: ACTION_FLAG.INTELLIGENCE,
+        expiresAtMs,
+      })));
+    })().finally(() => activeAlertWrites.delete(job.scanID));
+    activeAlertWrites.set(job.scanID, execution);
+    return execution;
+  }
 
   function readState() {
     repository.ensureTable(TABLE);
@@ -859,6 +960,11 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
       cancelRequested: false,
       errorMsg: null,
       result: null,
+      neighborAlertActions: neighborAlertActions(
+        scanID,
+        source.data.scannerSourceID,
+        request.data.targetSystemID,
+      ),
     };
     state.jobs[scanID] = job;
     state.operationKeys[operationScopeKey] = scanID;
@@ -871,6 +977,13 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
     if (!writeState(state)) {
       if (energyHold.created === true) releaseEnergyHold(cost.hold.holdID);
       return { success: false as const, errorMsg: "REMOTE_SCAN_PERSIST_FAILED" };
+    }
+    if (job.neighborAlertActions.length > 0) {
+      void queueNeighborAlertActions(job).catch(() => {
+        // The chain action remains deterministically retryable by the
+        // blockchain-gated scan executor. Legacy direct callers do not make a
+        // server-only alert authoritative when Sui is unavailable.
+      });
     }
     queueMicrotask(() => executeScan(scanID));
     return { success: true as const, created: true, data: publicJob(job) };
@@ -941,6 +1054,81 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
     return readState().signals.filter((signal) => signal.sequence > afterSequence).slice(0, limit);
   }
 
+  async function executeRemoteSystemScanAction(characterID, scannerSourceID, actionObjectID,
+    actorSession: Record<string, any> | null = null) {
+    const bridge = actionQueue();
+    if (!bridge) return { success: false as const, errorMsg: "ASSEMBLY_ACTION_CHAIN_UNAVAILABLE" };
+    let action;
+    try {
+      action = await bridge.readAction(actionObjectID);
+    } catch (error) {
+      return { success: false as const, errorMsg: String(error && error.code ||
+        "ASSEMBLY_ACTION_NOT_FOUND") };
+    }
+    const source = sourceContext(characterID, scannerSourceID, actorSession);
+    if (!source || !source.success) return source;
+    if (action.sourceAssemblyID !== source.data.scannerSourceID ||
+        action.targetAssemblyID !== source.data.scannerSourceID ||
+        action.actionType !== REMOTE_SCAN_ACTION_TYPE ||
+        action.serverAction === true) {
+      return { success: false as const, errorMsg: "ASSEMBLY_ACTION_MISMATCH" };
+    }
+    if (action.status === 2) {
+      const existingID = String(action.outcome && action.outcome.scanID || "").toLowerCase();
+      return existingID
+        ? getRemoteSystemScan(characterID, scannerSourceID, existingID, actorSession)
+        : { success: false as const, errorMsg: "ASSEMBLY_ACTION_MISMATCH" };
+    }
+    if (![0, 1].includes(action.status)) {
+      return { success: false as const, errorMsg: "ASSEMBLY_ACTION_NOT_EXECUTABLE" };
+    }
+    const request = normalizeRequest(action.payload);
+    if (!request.success) return request;
+    try {
+      await bridge.claimServerAction(action.actionObjectID, 60_000);
+      const started = startRemoteSystemScan(
+        characterID,
+        scannerSourceID,
+        request.data,
+        actorSession,
+      );
+      if (!started || started.success !== true) {
+        await bridge.releaseServerAction(action.actionObjectID);
+        return started;
+      }
+      const linked = updateJob(started.data.scanID, (entry) => ({
+        ...entry,
+        chainActionObjectID: action.actionObjectID,
+      }), "remote_scan.action_linked", {
+        actionID: action.actionID,
+        actionObjectID: action.actionObjectID,
+      });
+      if (!linked.success) {
+        await bridge.releaseServerAction(action.actionObjectID);
+        return linked;
+      }
+      started.data = publicJob(linked.data);
+      if (started.data.neighborAlertActions?.length) {
+        try {
+          await (activeAlertWrites.get(started.data.scanID) ||
+            queueNeighborAlertActions(readState().jobs[started.data.scanID]));
+        } catch (error) {
+          await bridge.releaseServerAction(action.actionObjectID);
+          return { success: false as const, errorMsg: String(error && error.code ||
+            "ASSEMBLY_ACTION_CHAIN_UNAVAILABLE") };
+        }
+      }
+      await bridge.completeServerAction(action.actionObjectID, true, {
+        scanID: started.data.scanID,
+        state: started.data.state,
+      });
+      return started;
+    } catch (error) {
+      return { success: false as const, errorMsg: String(error && error.code ||
+        "ASSEMBLY_ACTION_CHAIN_UNAVAILABLE") };
+    }
+  }
+
   return {
     getNetworkNodeScanConfiguration,
     listReachableSystems,
@@ -948,9 +1136,11 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
     getRemoteSystemScan,
     getRemoteSystemScanResult,
     cancelRemoteSystemScan,
+    executeRemoteSystemScanAction,
     executeScan,
     listSignals,
-    _testing: { readState, writeState, buildResult, aggregateHeatMap, normalizeRequest, sourceContext },
+    _testing: { readState, writeState, buildResult, aggregateHeatMap, normalizeRequest, sourceContext,
+      neighborAlertActions, queueNeighborAlertActions },
   };
 }
 

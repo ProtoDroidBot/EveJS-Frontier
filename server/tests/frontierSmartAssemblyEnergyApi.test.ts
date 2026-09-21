@@ -199,8 +199,8 @@ test("Network Node dApp API exposes remote scanning without trusting client iden
       return { success: true, data: { maxRangeJumps: 3, selectedRangeJumps: rangeJumps,
         entityClasses: ["ships", "bases", "transient_travel"] } };
     },
-    startRemoteSystemScan(characterID: number, sourceID: number, request: any, session: any) {
-      scanCalls.push({ action: "start", characterID, sourceID, request, session });
+    executeRemoteSystemScanAction(characterID: number, sourceID: number, actionObjectID: any, session: any) {
+      scanCalls.push({ action: "start", characterID, sourceID, actionObjectID, session });
       return { success: true, created: true, data: { scanID: "scan-1", state: "queued" } };
     },
     getRemoteSystemScan(characterID: number, sourceID: number, scanID: string, session: any) {
@@ -219,8 +219,8 @@ test("Network Node dApp API exposes remote scanning without trusting client iden
   const { api, login, session } = fixture({ scanRuntime });
   const token = await login();
   assert.equal((await api.scanConfig(token, 50, { rangeJumps: 2 })).success, true);
-  assert.equal((await api.startScan(token, 50, { operationKey: "x", targetSystemID: 7,
-    characterID: 999, scannerSourceID: 999 })).success, true);
+  assert.equal((await api.startScan(token, 50, { actionObjectID: "0x123", characterID: 999,
+    scannerSourceID: 999 })).success, true);
   assert.equal((await api.scanStatus(token, 50, "scan-1")).success, true);
   assert.equal((await api.scanResult(token, 50, "scan-1")).success, true);
   assert.equal((await api.cancelScan(token, 50, "scan-1")).success, true);
@@ -231,7 +231,7 @@ test("Network Node dApp API exposes remote scanning without trusting client iden
     ["result", session.characterID, 50],
     ["cancel", session.characterID, 50],
   ]);
-  assert.equal(scanCalls[1].request.characterID, 999, "the runtime receives the opaque request only");
+  assert.equal(scanCalls[1].actionObjectID, "0x123", "only the Sui action object is forwarded");
   assert.equal(scanCalls[1].characterID, session.characterID, "authorization identity remains server-derived");
 });
 
