@@ -60,15 +60,16 @@ closed.
 - `StageFrontierClient.ps1` creates or safely removes only a marker-owned
   build-numbered stage.
 - `PatchFrontierClientTrust.ps1` applies the transaction or runs `-Check`.
-- `StartFrontierServer.ps1` initializes/reuses the isolated runtime and starts
-  loopback-only services with the market disabled.
+- `StartFrontierServer.ps1` initializes/reuses the isolated runtime, builds and
+  starts the configured Smart Assembly dApp, and starts loopback-only services
+  with the market disabled.
 - `FrontierWorld.ps1` manages the efctl Docker localnet and synchronizes its
   deployment identity for EveJS; see
   [FRONTIER_WORLD_SYNC.md](FRONTIER_WORLD_SYNC.md).
 - `PlayFrontier.ps1` checks and launches only the staged client.
 - `CaptureFrontierSession.ps1` captures a launcher session without printing
   credentials and restricts the session-file ACL.
-- `StopFrontier.ps1` stops only a verified background server PID.
+- `StopFrontier.ps1` stops only the verified background server and dApp PIDs.
 
 All support `-Status`, `-Check`, or `-DryRun` where applicable. See
 [FRONTIER_WINDOWS_SETUP.md](FRONTIER_WINDOWS_SETUP.md) for command examples and

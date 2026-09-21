@@ -268,6 +268,7 @@ port is already occupied. It binds these listeners to loopback:
 
 | Listener | Purpose |
 |---|---|
+| `127.0.0.1:443` | Smart Assembly dApp HTTPS |
 | `127.0.0.1:26000` | Game TCP |
 | `127.0.0.1:26101` | Image HTTP |
 | `127.0.0.1:26102` | HTTP and bridge |
@@ -278,7 +279,7 @@ port is already occupied. It binds these listeners to loopback:
 Check the actual listener addresses after startup:
 
 ```powershell
-$ports = 26000,26101,26102,26103,5222,26401
+$ports = 443,26000,26101,26102,26103,5222,26401
 Get-NetTCPConnection -State Listen |
     Where-Object LocalPort -In $ports |
     Sort-Object LocalPort |
@@ -299,8 +300,9 @@ exactly one official `exefile.exe`, never displays token values, writes an
 ignored current-user-only file, and the launcher redacts sensitive arguments
 when reporting its command line.
 
-`StartFrontierServer.ps1 -Background` records the exact child identity. Stop
-only that marker-owned process:
+`StartFrontierServer.ps1` builds and starts the configured Smart Assembly dApp
+as part of the same lifecycle. Background mode records both exact child
+identities. Stop only those marker-owned processes:
 
 ```powershell
 .\StopFrontier.ps1 -Build 3474408

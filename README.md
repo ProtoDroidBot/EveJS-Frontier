@@ -329,17 +329,46 @@ Completed Smart Assemblies automatically mirror to Sui Localnet while the native
 Frontier server runs. See [automatic assembly synchronization](doc/FRONTIER_ASSEMBLY_SYNC.md)
 for supported state, retry behavior, and contract constraints.
 
+The `smart-assembly-control` dApp is pinned as a submodule beside
+`world-contracts`. Initialize all three server-managed repositories after cloning:
+
+```powershell
+git submodule update --init --recursive
+npm run frontier:dapp:install
+```
+
+Set up the trusted local HTTPS certificate once:
+
+```powershell
+npm run frontier:dapp:setup:https
+```
+
+`FrontierWorld.ps1 sync`, `up`, and `restart` now refresh the dApp's public
+configuration automatically from the exact deployment they validated. Starting
+`StartFrontierServer.ps1` builds and starts the HTTPS dApp with the game server;
+`StopFrontier.ps1` stops both marker-owned processes. The explicit
+`frontier:dapp:configure`, `build`, and `start` scripts remain available for
+diagnostics and standalone dApp development.
+
+The dApp forwards its `/evejs/storage`, `/evejs/admin`, `/evejs/energy`,
+`/evejs/gates`, and `/evejs/industry` calls to the local game interface at
+`http://127.0.0.1:26102`. Its runtime `/assembly-config.json` endpoint rereads
+the current world deployment, so a rebuilt local world does not require a new
+dApp bundle.
+
 The server advertises `smartAssemblyBaseDappUrl` through MachoNet global
-config with a default of `http://localhost:5173`. To use another base URL, set
+config. This checkout sets it to `https://dev.dapps.evefrontier.com`, matching
+the dApp's trusted local HTTPS host on port 443. To use another base URL, set
 `smartAssemblyBaseDappUrl` in `evejs.config.local.json` or set the environment
-variable `EVEJS_smartAssemblyBaseDappUrl` before starting the server.
+variable `EVEJS_SMART_ASSEMBLY_BASE_DAPP_URL` before starting the server.
 
 Use an HTTP(S) base URL without a query string or fragment. Trailing slashes
 are removed; the client appends `/client/root/`, `/client/behaviour/`, or
 `/client/networknode/monitor/` plus its assembly and tenant query parameters.
-Run the dApp separately at that address and restart the server and game client
-after changing the setting, since the Smart Assembly service caches the URL
-on startup.
+Restart the server and game client after changing the setting, since the Smart
+Assembly service caches the URL on startup. Run `npm run frontier:dapp:test` to
+validate the dApp's current
+world transaction shapes and game API request/response interfaces.
 
 ## Localhost only
 

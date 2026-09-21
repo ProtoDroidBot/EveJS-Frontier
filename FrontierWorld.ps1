@@ -40,6 +40,7 @@ param(
 
     [string]$SourceRoot,
     [string]$DestinationRoot,
+    [string]$DappRoot,
     [string]$EfctlPath,
     [switch]$DryRun,
 
@@ -48,6 +49,7 @@ param(
     [switch]$SkipDockerOwnershipCheck,
     # Intended for isolated tests or explicit recovery workflows only.
     [switch]$SkipNpcFactionFunding,
+    [switch]$SkipDappSync,
 
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$EfctlArgument = @()
@@ -71,6 +73,10 @@ if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
     $SourceRoot = $RepoRoot
 }
 $SourceRoot = [IO.Path]::GetFullPath($SourceRoot)
+if ([string]::IsNullOrWhiteSpace($DappRoot)) {
+    $DappRoot = Join-Path $RepoRoot 'smart-assembly-control'
+}
+$DappRoot = [IO.Path]::GetFullPath($DappRoot)
 if ([string]::IsNullOrWhiteSpace($DestinationRoot)) {
     $DestinationRoot = Join-Path $RepoRoot (Join-Path '_local\frontier-world' $Build)
 }
@@ -858,9 +864,58 @@ function Publish-WorldSync {
     Write-Output "[evejs-frontier-world] Admin ACL: $($world.AdminAclId)"
     Write-WorldConfig -State ready -World $world -Efctl $Efctl -LastAction $LastAction
     Invoke-NpcFactionFunding
+    Sync-DappConfiguration
     if (-not $DryRun) {
         Write-Output "[evejs-frontier-world] Synced private EveJS config: $WorldConfigPath"
     }
+}
+
+function Sync-DappConfiguration {
+    if ($SkipDappSync) {
+        Write-Output '[evejs-frontier-world] Smart Assembly dApp configuration sync skipped explicitly.'
+        return
+    }
+
+    $configureScript = Join-Path $DappRoot 'scripts\configure-local.mjs'
+    if (-not (Test-Path -LiteralPath $DappRoot -PathType Container) -or
+        -not (Test-Path -LiteralPath $configureScript -PathType Leaf)) {
+        throw (
+            "Smart Assembly dApp checkout is missing or incomplete: $DappRoot. " +
+            'Run git submodule update --init --recursive.'
+        )
+    }
+    if ($DryRun) {
+        Write-Output (
+            '[evejs-frontier-world] Would sync Smart Assembly dApp configuration ' +
+            "from $WorldContractsRoot to $DappRoot"
+        )
+        return
+    }
+
+    $node = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $node) {
+        $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    }
+    if ($null -eq $node) {
+        throw 'Node.js is required to synchronize the Smart Assembly dApp configuration.'
+    }
+
+    Push-Location $DappRoot
+    try {
+        & $node.Source $configureScript `
+            --world-dir $WorldContractsRoot `
+            --network localnet `
+            --force
+        if ($LASTEXITCODE -ne 0) {
+            throw "Smart Assembly dApp configuration sync failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        Pop-Location
+    }
+    Write-Output "[evejs-frontier-world] Synced Smart Assembly dApp configuration: $DappRoot"
 }
 
 function Invoke-NpcFactionFunding {

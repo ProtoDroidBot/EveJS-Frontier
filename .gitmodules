@@ -6,3 +6,7 @@
 	path = world-contracts
 	url = https://github.com/ProtoDroidBot/world-contracts.git
 	branch = world-stuff-001
+[submodule "smart-assembly-control"]
+	path = smart-assembly-control
+	url = https://github.com/ProtoDroidBot/smart-assembly-control.git
+	branch = main

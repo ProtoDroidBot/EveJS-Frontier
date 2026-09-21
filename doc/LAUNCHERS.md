@@ -13,10 +13,10 @@ Use these PowerShell 7 launchers only for the exact Frontier workflow:
 | `SetupFrontierWindows.bat` or `SetupFrontierWindows.ps1` | First setup or a build refresh | Installs/reports prerequisites, prepares build-numbered data and contracts, and stages the discovered Frontier client |
 | `StageFrontierClient.bat` or `StageFrontierClient.ps1` | You need to recreate only the isolated client stage | Copies the build, creates a `ResFiles` junction by default (or copies it with `-CopyResFiles`), and runs the exact patch transaction |
 | `PatchFrontierClientTrust.ps1` | You need to patch or independently check one stage | Applies only exact-build profiles; `-Check` is required before launch and does not mutate |
-| `StartFrontierServer.ps1` | Daily Frontier server use | Initializes/reuses the build-numbered runtime and starts only loopback listeners; the market stays disabled |
+| `StartFrontierServer.ps1` | Daily Frontier server use | Initializes/reuses the build-numbered runtime, builds/starts the Smart Assembly HTTPS dApp, and starts only loopback listeners; the market stays disabled |
 | `PlayFrontier.ps1` | Daily Frontier client use | Runs staged `-Check`, then launches only the staged `exefile.exe` with the local Frontier environment |
 | `CaptureFrontierSession.ps1` | Session-free launch proved insufficient | Captures one official launcher process without displaying credentials and restricts the ignored session file to the current SID |
-| `StopFrontier.ps1` | Stop a server started with `-Background` | Verifies the recorded process identity and stops only that PID |
+| `StopFrontier.ps1` | Stop a server started with `-Background` | Verifies and stops the exact marker-owned server and Smart Assembly dApp PIDs |
 
 The normal order is:
 

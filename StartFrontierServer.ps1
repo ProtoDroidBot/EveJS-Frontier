@@ -45,6 +45,8 @@ $script:RuntimeMarkerKind = 'evejs-frontier-runtime'
 $script:RuntimeMarkerSchemaVersion = 1
 $script:PidMarkerKind = 'evejs-frontier-server-process'
 $script:PidMarkerSchemaVersion = 1
+$script:DappPidMarkerKind = 'evejs-frontier-dapp-process'
+$script:DappPidMarkerSchemaVersion = 1
 $script:PathComparison = [StringComparison]::OrdinalIgnoreCase
 
 $RepoRoot = [IO.Path]::GetFullPath($PSScriptRoot)
@@ -63,10 +65,15 @@ $RuntimeGameStore = Join-Path $RuntimeRoot 'gameStore'
 $RuntimeData = Join-Path $RuntimeGameStore 'data'
 $RuntimeMarker = Join-Path $RuntimeRoot '.evejs-frontier-runtime'
 $PidMarker = Join-Path $RuntimeRoot '.evejs-frontier-server.pid.json'
+$DappPidMarker = Join-Path $RuntimeRoot '.evejs-frontier-dapp.pid.json'
 $StaticRoot = [IO.Path]::GetFullPath(
     (Join-Path $RepoRoot (Join-Path '_local\frontier-sde' $Build))
 )
 $ServerEntry = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'server\index.js'))
+$DappRoot = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'smart-assembly-control'))
+$DappEntry = [IO.Path]::GetFullPath((Join-Path $DappRoot 'scripts\serve.mjs'))
+$DappEnvironmentPath = Join-Path $DappRoot '.env.local'
+$DappDeploymentSourcePath = Join-Path $DappRoot '.deployment-source.json'
 $DefaultSuiWorldConfigPath = [IO.Path]::GetFullPath(
     (Join-Path $RepoRoot (Join-Path '_local\frontier-world' (Join-Path $Build 'world.private.json')))
 )
@@ -366,6 +373,67 @@ function Assert-GeneratedInputs {
     }
 }
 
+function Read-DappPidMarker {
+    if (-not (Test-Path -LiteralPath $DappPidMarker -PathType Leaf)) {
+        return $null
+    }
+    try {
+        $marker = Get-Content -LiteralPath $DappPidMarker -Raw | ConvertFrom-Json
+    }
+    catch {
+        throw "Smart Assembly dApp PID marker is malformed: $DappPidMarker"
+    }
+    Assert-RequiredProperties -Value $marker -Names @(
+        'kind',
+        'schemaVersion',
+        'build',
+        'runtimeRoot',
+        'pid',
+        'processStartTimeUtcTicks',
+        'nodePath',
+        'dappEntry'
+    ) -Description 'Smart Assembly dApp PID marker'
+    if ($marker.kind -ne $script:DappPidMarkerKind -or
+        [int]$marker.schemaVersion -ne $script:DappPidMarkerSchemaVersion -or
+        [string]$marker.build -ne $Build -or
+        -not (Test-SamePath -Left ([string]$marker.runtimeRoot) -Right $RuntimeRoot) -or
+        -not (Test-SamePath -Left ([string]$marker.dappEntry) -Right $DappEntry) -or
+        [int64]$marker.pid -le 0 -or [int64]$marker.processStartTimeUtcTicks -le 0) {
+        throw "Smart Assembly dApp PID marker is not owned by build ${Build}: $DappPidMarker"
+    }
+    return $marker
+}
+
+function Get-OwnedDappProcessState {
+    $marker = Read-DappPidMarker
+    if ($null -eq $marker) {
+        return [pscustomobject]@{ State = 'absent'; Marker = $null; Process = $null }
+    }
+
+    $process = Get-Process -Id ([int]$marker.pid) -ErrorAction SilentlyContinue
+    if ($null -eq $process) {
+        return [pscustomobject]@{ State = 'stale'; Marker = $marker; Process = $null }
+    }
+    try {
+        $actualPath = [IO.Path]::GetFullPath($process.Path)
+        $actualStartTicks = $process.StartTime.ToUniversalTime().Ticks
+    }
+    catch {
+        throw "Cannot verify Smart Assembly dApp process identity for PID $($marker.pid): $($_.Exception.Message)"
+    }
+    if (-not (Test-SamePath -Left $actualPath -Right ([string]$marker.nodePath)) -or
+        [int64]$actualStartTicks -ne [int64]$marker.processStartTimeUtcTicks) {
+        throw "PID $($marker.pid) is not the marker-owned Smart Assembly dApp process; refusing to act on it."
+    }
+    $cimProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $($marker.pid)"
+    if ($null -eq $cimProcess -or
+        [string]::IsNullOrWhiteSpace([string]$cimProcess.CommandLine) -or
+        ([string]$cimProcess.CommandLine).IndexOf($DappEntry, $script:PathComparison) -lt 0) {
+        throw "PID $($marker.pid) command line does not identify $DappEntry; refusing to act on it."
+    }
+    return [pscustomobject]@{ State = 'running'; Marker = $marker; Process = $process }
+}
+
 function Copy-GeneratedRuntimeSupportFiles {
     param(
         [Parameter(Mandatory)] [string]$TargetGameStore,
@@ -480,6 +548,78 @@ function Get-NodePath {
     return [IO.Path]::GetFullPath($nodeCommand.Source)
 }
 
+function Get-PnpmPath {
+    $pnpmCommand = Get-Command pnpm.cmd -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $pnpmCommand) {
+        $pnpmCommand = Get-Command pnpm -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    }
+    if ($null -eq $pnpmCommand) {
+        throw 'pnpm is not available in PATH. Install or enable the package manager declared by smart-assembly-control/package.json.'
+    }
+    return [IO.Path]::GetFullPath($pnpmCommand.Source)
+}
+
+function Assert-DappDependencies {
+    $packagePath = Join-Path $DappRoot 'package.json'
+    $modulesPath = Join-Path $DappRoot 'node_modules'
+    if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $DappEntry -PathType Leaf)) {
+        throw (
+            "Smart Assembly dApp checkout is missing or incomplete: $DappRoot. " +
+            'Run git submodule update --init --recursive.'
+        )
+    }
+    if (-not (Test-Path -LiteralPath $modulesPath -PathType Container)) {
+        throw 'Smart Assembly dApp dependencies are missing. Run: npm run frontier:dapp:install'
+    }
+    if (-not (Test-Path -LiteralPath $DappEnvironmentPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $DappDeploymentSourcePath -PathType Leaf)) {
+        throw (
+            'Smart Assembly dApp deployment configuration is missing. ' +
+            "Run: .\FrontierWorld.ps1 sync -Build $Build"
+        )
+    }
+    try {
+        $deploymentSource = Get-Content -LiteralPath $DappDeploymentSourcePath -Raw |
+            ConvertFrom-Json
+    }
+    catch {
+        throw (
+            'Smart Assembly dApp deployment configuration is unreadable. ' +
+            "Run: .\FrontierWorld.ps1 sync -Build $Build"
+        )
+    }
+    $worldDir = if ($null -ne $deploymentSource.PSObject.Properties['worldDir']) {
+        [string]$deploymentSource.worldDir
+    }
+    else { '' }
+    if ([string]$deploymentSource.network -ne 'localnet' -or
+        [string]::IsNullOrWhiteSpace($worldDir) -or
+        -not (Test-Path -LiteralPath (
+            Join-Path $worldDir 'deployments\localnet\extracted-object-ids.json'
+        ) -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (
+            Join-Path $worldDir 'deployments\localnet\npc-deployment.json'
+        ) -PathType Leaf)) {
+        throw (
+            'Smart Assembly dApp deployment configuration is not a current localnet source. ' +
+            "Run: .\FrontierWorld.ps1 sync -Build $Build"
+        )
+    }
+}
+
+function Build-Dapp {
+    param([Parameter(Mandatory)] [string]$PnpmPath)
+
+    Write-Host '[evejs-frontier] Building Smart Assembly dApp ...'
+    & $PnpmPath --dir $DappRoot run build
+    if ($LASTEXITCODE -ne 0) {
+        throw "Smart Assembly dApp build failed with exit code $LASTEXITCODE."
+    }
+}
+
 function Test-SuiWorldSyncRequired {
     $enabled = [string]$env:EVEJS_SUI_CHARACTER_PROVISIONING_ENABLED
     if (-not [string]::IsNullOrWhiteSpace($enabled) -and
@@ -589,7 +729,7 @@ function Assert-ServerDependencies {
 }
 
 function Get-RequiredFrontierListeners {
-    $requiredPorts = @(26000, 26101, 26102, 26103, 5222, 26401)
+    $requiredPorts = @(443, 26000, 26101, 26102, 26103, 5222, 26401)
     if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
         return @(
             Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
@@ -641,6 +781,20 @@ function Assert-RuntimeInactiveForReset {
         }
         throw (
             "Refusing to reset while a stale PID marker exists. " +
+            "Run .\StopFrontier.ps1 -Build $Build first."
+        )
+    }
+
+    if (Test-Path -LiteralPath $DappPidMarker) {
+        $ownedDappState = Get-OwnedDappProcessState
+        if ($ownedDappState.State -eq 'running') {
+            throw (
+                'Refusing to reset while the marker-owned Smart Assembly dApp is ' +
+                "running as PID $($ownedDappState.Marker.pid). Run .\StopFrontier.ps1 -Build $Build first."
+            )
+        }
+        throw (
+            'Refusing to reset while a stale Smart Assembly dApp PID marker exists. ' +
             "Run .\StopFrontier.ps1 -Build $Build first."
         )
     }
@@ -763,6 +917,7 @@ function Show-FrontierStatus {
     if (-not (Test-Path -LiteralPath $RuntimeRoot)) {
         Write-Output "[evejs-frontier] Runtime: not initialized ($RuntimeRoot)"
         Write-Output '[evejs-frontier] Background process: not running'
+        Write-Output '[evejs-frontier] Smart Assembly dApp: not running'
         return
     }
     [void](Assert-RecognizedRuntime)
@@ -777,6 +932,18 @@ function Show-FrontierStatus {
         }
         default {
             Write-Output '[evejs-frontier] Background process: not running'
+        }
+    }
+    $dappProcessState = Get-OwnedDappProcessState
+    switch ($dappProcessState.State) {
+        'running' {
+            Write-Output "[evejs-frontier] Smart Assembly dApp: running pid=$($dappProcessState.Marker.pid)"
+        }
+        'stale' {
+            Write-Output "[evejs-frontier] Smart Assembly dApp: stale marker pid=$($dappProcessState.Marker.pid)"
+        }
+        default {
+            Write-Output '[evejs-frontier] Smart Assembly dApp: not running'
         }
     }
 }
@@ -807,7 +974,10 @@ if ($DryRun) {
     if (-not $InitializeOnly) {
         Assert-SuiWorldSyncCurrent
         [void](Get-NodePath)
+        [void](Get-PnpmPath)
         Assert-ServerDependencies
+        Assert-DappDependencies
+        Write-Output '[evejs-frontier] Dry run: would build and start the Smart Assembly dApp on 127.0.0.1:443'
         Write-Output "[evejs-frontier] Dry run: would start build $Build $(if ($Background) { 'in the background' } else { 'in the foreground' })"
     }
     return
@@ -834,9 +1004,21 @@ if ($ownedProcessState.State -eq 'stale') {
     Write-Warning "Removed stale background PID marker for PID $($ownedProcessState.Marker.pid)."
 }
 
+$ownedDappProcessState = Get-OwnedDappProcessState
+if ($ownedDappProcessState.State -eq 'running') {
+    throw "Smart Assembly dApp is already running as PID $($ownedDappProcessState.Marker.pid)."
+}
+if ($ownedDappProcessState.State -eq 'stale') {
+    Remove-Item -LiteralPath $DappPidMarker -Force
+    Write-Warning "Removed stale Smart Assembly dApp PID marker for PID $($ownedDappProcessState.Marker.pid)."
+}
+
 $NodePath = Get-NodePath
+$PnpmPath = Get-PnpmPath
 & (Join-Path $RepoRoot 'tools\BuildTypeScript.ps1')
 Assert-ServerDependencies
+Assert-DappDependencies
+Build-Dapp -PnpmPath $PnpmPath
 Assert-ListenerPortsAvailable
 $ServerEnvironment = Get-ServerEnvironment
 
@@ -847,6 +1029,7 @@ Write-Host '[evejs-frontier] HTTP/bridge: 127.0.0.1:26102'
 Write-Host '[evejs-frontier] Secure public gateway: 127.0.0.1:26103'
 Write-Host '[evejs-frontier] XMPP: 127.0.0.1:5222'
 Write-Host '[evejs-frontier] Monitor: 127.0.0.1:26401'
+Write-Host '[evejs-frontier] Smart Assembly dApp: https://dev.dapps.evefrontier.com (127.0.0.1:443)'
 Write-Host "[evejs-frontier] Sui world config: $SuiWorldConfigPath"
 Write-Host (
     "[evejs-frontier] Profile: Frontier $ClientVersion build $Build, " +
@@ -856,10 +1039,32 @@ Write-Host (
 if ($Background) {
     $stdoutLog = Join-Path $RuntimeRoot 'server.stdout.log'
     $stderrLog = Join-Path $RuntimeRoot 'server.stderr.log'
+    $dappStdoutLog = Join-Path $RuntimeRoot 'dapp.stdout.log'
+    $dappStderrLog = Join-Path $RuntimeRoot 'dapp.stderr.log'
     $quotedServerEntry = '"' + $ServerEntry + '"'
+    $quotedDappEntry = '"' + $DappEntry + '"'
     $process = $null
+    $dappProcess = $null
     $pidMarkerWritten = $false
+    $dappPidMarkerWritten = $false
+    $startupComplete = $false
     try {
+        $dappProcess = Start-Process -FilePath $NodePath `
+            -ArgumentList @($quotedDappEntry) `
+            -WorkingDirectory $DappRoot `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $dappStdoutLog `
+            -RedirectStandardError $dappStderrLog `
+            -PassThru
+        Start-Sleep -Milliseconds 750
+        $dappProcess.Refresh()
+        if ($dappProcess.HasExited) {
+            throw (
+                "Smart Assembly dApp exited during startup with code $($dappProcess.ExitCode). " +
+                "See $dappStderrLog"
+            )
+        }
+
         $process = Invoke-WithChildEnvironment -Environment $ServerEnvironment -Action {
             Start-Process -FilePath $NodePath `
                 -ArgumentList @('--enable-source-maps', $quotedServerEntry) `
@@ -877,6 +1082,21 @@ if ($Background) {
                 "See $stderrLog"
             )
         }
+        $dappPidMarkerValue = [ordered]@{
+            kind = $script:DappPidMarkerKind
+            schemaVersion = $script:DappPidMarkerSchemaVersion
+            build = $Build
+            runtimeRoot = $RuntimeRoot
+            pid = $dappProcess.Id
+            processStartTimeUtcTicks = $dappProcess.StartTime.ToUniversalTime().Ticks
+            nodePath = $NodePath
+            dappEntry = $DappEntry
+            startedAtUtc = [DateTime]::UtcNow.ToString('o')
+            stdoutLog = $dappStdoutLog
+            stderrLog = $dappStderrLog
+        }
+        Write-JsonAtomic -Path $DappPidMarker -Value $dappPidMarkerValue
+        $dappPidMarkerWritten = $true
         $pidMarkerValue = [ordered]@{
             kind = $script:PidMarkerKind
             schemaVersion = $script:PidMarkerSchemaVersion
@@ -892,34 +1112,89 @@ if ($Background) {
         }
         Write-JsonAtomic -Path $PidMarker -Value $pidMarkerValue
         $pidMarkerWritten = $true
+        $startupComplete = $true
     }
     finally {
-        if (-not $pidMarkerWritten -and $null -ne $process) {
-            try {
-                $process.Refresh()
-                if (-not $process.HasExited) {
-                    $process.Kill($true)
-                    if (-not $process.WaitForExit(10000)) {
-                        throw "PID $($process.Id) did not exit within 10 seconds."
+        if (-not $startupComplete) {
+            $cleanupFailures = [Collections.Generic.List[string]]::new()
+            foreach ($startedProcess in @($process, $dappProcess)) {
+                if ($null -eq $startedProcess) {
+                    continue
+                }
+                try {
+                    $startedProcess.Refresh()
+                    if (-not $startedProcess.HasExited) {
+                        $startedProcess.Kill($true)
+                        if (-not $startedProcess.WaitForExit(10000)) {
+                            throw "PID $($startedProcess.Id) did not exit within 10 seconds."
+                        }
                     }
                 }
+                catch {
+                    $cleanupFailures.Add($_.Exception.Message)
+                }
             }
-            catch {
+            foreach ($markerPath in @(
+                $(if ($pidMarkerWritten) { $PidMarker }),
+                $(if ($dappPidMarkerWritten) { $DappPidMarker })
+            )) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$markerPath)) {
+                    try { Remove-Item -LiteralPath $markerPath -Force }
+                    catch { $cleanupFailures.Add($_.Exception.Message) }
+                }
+            }
+            if ($cleanupFailures.Count -gt 0) {
                 throw (
                     "Background startup failed and the newly started child could not be " +
-                    "proven stopped: $($_.Exception.Message)"
+                    "proven stopped: $($cleanupFailures -join '; ')"
                 )
             }
         }
     }
     Write-Output "[evejs-frontier] Background server started: pid=$($process.Id)"
+    Write-Output "[evejs-frontier] Smart Assembly dApp started: pid=$($dappProcess.Id)"
     Write-Output "[evejs-frontier] Stop with: .\StopFrontier.ps1 -Build $Build"
     return
 }
 
 Write-Host '[evejs-frontier] Running in the foreground; press Ctrl+C to stop.'
+$dappStdoutLog = Join-Path $RuntimeRoot 'dapp.stdout.log'
+$dappStderrLog = Join-Path $RuntimeRoot 'dapp.stderr.log'
+$quotedDappEntry = '"' + $DappEntry + '"'
+$dappProcess = $null
+$dappPidMarkerWritten = $false
 $exitCode = 1
 try {
+    $dappProcess = Start-Process -FilePath $NodePath `
+        -ArgumentList @($quotedDappEntry) `
+        -WorkingDirectory $DappRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $dappStdoutLog `
+        -RedirectStandardError $dappStderrLog `
+        -PassThru
+    Start-Sleep -Milliseconds 750
+    $dappProcess.Refresh()
+    if ($dappProcess.HasExited) {
+        throw (
+            "Smart Assembly dApp exited during startup with code $($dappProcess.ExitCode). " +
+            "See $dappStderrLog"
+        )
+    }
+    Write-JsonAtomic -Path $DappPidMarker -Value ([ordered]@{
+        kind = $script:DappPidMarkerKind
+        schemaVersion = $script:DappPidMarkerSchemaVersion
+        build = $Build
+        runtimeRoot = $RuntimeRoot
+        pid = $dappProcess.Id
+        processStartTimeUtcTicks = $dappProcess.StartTime.ToUniversalTime().Ticks
+        nodePath = $NodePath
+        dappEntry = $DappEntry
+        startedAtUtc = [DateTime]::UtcNow.ToString('o')
+        stdoutLog = $dappStdoutLog
+        stderrLog = $dappStderrLog
+    })
+    $dappPidMarkerWritten = $true
+    Write-Host "[evejs-frontier] Smart Assembly dApp started: pid=$($dappProcess.Id)"
     Invoke-WithChildEnvironment -Environment $ServerEnvironment -Action {
         & $NodePath --enable-source-maps $ServerEntry
         $script:exitCode = $LASTEXITCODE
@@ -928,6 +1203,18 @@ try {
 finally {
     if ($null -eq $exitCode) {
         $exitCode = 1
+    }
+    if ($null -ne $dappProcess) {
+        $dappProcess.Refresh()
+        if (-not $dappProcess.HasExited) {
+            $dappProcess.Kill($true)
+            if (-not $dappProcess.WaitForExit(10000)) {
+                throw "Smart Assembly dApp PID $($dappProcess.Id) did not exit within 10 seconds."
+            }
+        }
+    }
+    if ($dappPidMarkerWritten -and (Test-Path -LiteralPath $DappPidMarker -PathType Leaf)) {
+        Remove-Item -LiteralPath $DappPidMarker -Force
     }
 }
 if ($exitCode -ne 0) {

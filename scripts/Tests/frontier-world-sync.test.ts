@@ -152,11 +152,15 @@ function writeFakeEfctl(root) {
 }
 
 function runWorld(args, environment) {
-  const worldArgs = environment?.EVEJS_TEST_RUN_NPC_FACTION_FUNDING === "1"
-    ? args
-    : [args[0], "-SkipNpcFactionFunding", ...args.slice(1)];
+  const switches = [];
+  if (environment?.EVEJS_TEST_RUN_NPC_FACTION_FUNDING !== "1")
+    switches.push("-SkipNpcFactionFunding");
+  if (environment?.EVEJS_TEST_RUN_DAPP_SYNC !== "1")
+    switches.push("-SkipDappSync");
+  const worldArgs = [args[0], ...switches, ...args.slice(1)];
   const childEnvironment = { ...environment };
   delete childEnvironment.EVEJS_TEST_RUN_NPC_FACTION_FUNDING;
+  delete childEnvironment.EVEJS_TEST_RUN_DAPP_SYNC;
   return spawnSync(
     POWERSHELL,
     [
@@ -222,6 +226,75 @@ test(
     assert.equal(text.includes("PLAYER_B_PRIVATE_KEY"), false);
     assert.equal(text.includes("GOVERNOR_PRIVATE_KEY"), false);
     assert.equal(fs.existsSync(log), false, "sync must not run an efctl lifecycle command");
+  },
+);
+
+test(
+  "Frontier world sync refreshes the Smart Assembly dApp from the same deployment",
+  { skip: !canRunPowerShell },
+  (t) => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "evejs dapp world sync "));
+    t.after(() => fs.rmSync(fixture, { force: true, recursive: true }));
+    const source = writeFixture(fixture);
+    const deployment = path.join(source, "world-contracts", "deployments", "localnet");
+    fs.writeFileSync(
+      path.join(deployment, "extracted-object-ids.json"),
+      `${JSON.stringify({
+        network: "localnet",
+        world: {
+          packageId: PACKAGE_ID,
+          objectRegistry: OBJECT_REGISTRY_ID,
+          adminAcl: ADMIN_ACL_ID,
+          energyConfig: `0x${"1".repeat(64)}`,
+          fuelConfig: `0x${"2".repeat(64)}`,
+        },
+        features: {
+          npc: { packageId: NPC_PACKAGE_ID, registryId: NPC_REGISTRY_ID },
+          assemblyAccess: { packageId: ACCESS_PACKAGE_ID, registryId: ACCESS_REGISTRY_ID },
+          catapult: { packageId: CATAPULT_PACKAGE_ID, registryId: CATAPULT_REGISTRY_ID },
+          smartIndustry: { packageId: INDUSTRY_PACKAGE_ID, registryId: INDUSTRY_REGISTRY_ID },
+          transponder: { packageId: TRANSPONDER_PACKAGE_ID, registryId: TRANSPONDER_REGISTRY_ID },
+        },
+      }, null, 2)}\n`,
+    );
+    fs.writeFileSync(
+      path.join(deployment, "npc-deployment.json"),
+      `${JSON.stringify(npcManifest(), null, 2)}\n`,
+    );
+
+    const dappRoot = path.join(fixture, "smart-assembly-control");
+    fs.mkdirSync(path.join(dappRoot, "scripts"), { recursive: true });
+    fs.copyFileSync(
+      path.join(REPO_ROOT, "smart-assembly-control", "scripts", "configure-local.mjs"),
+      path.join(dappRoot, "scripts", "configure-local.mjs"),
+    );
+    const result = runWorld([
+      "sync",
+      "-SourceRoot",
+      source,
+      "-DestinationRoot",
+      path.join(fixture, "evejs", "world"),
+      "-DappRoot",
+      dappRoot,
+      "-EfctlPath",
+      writeFakeEfctl(fixture),
+      "-SkipRpcValidation",
+      "-SkipDockerOwnershipCheck",
+    ], { EVEJS_TEST_RUN_DAPP_SYNC: "1" });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Synced Smart Assembly dApp configuration/);
+
+    const sourceRecord = JSON.parse(
+      fs.readFileSync(path.join(dappRoot, ".deployment-source.json"), "utf8"),
+    );
+    assert.equal(
+      path.resolve(sourceRecord.worldDir),
+      path.resolve(source, "world-contracts"),
+    );
+    assert.equal(sourceRecord.network, "localnet");
+    const publicEnvironment = fs.readFileSync(path.join(dappRoot, ".env.local"), "utf8");
+    assert.match(publicEnvironment, new RegExp(NPC_PACKAGE_ID));
+    assert.doesNotMatch(publicEnvironment, /PRIVATE_KEY|suiprivkey/);
   },
 );
 

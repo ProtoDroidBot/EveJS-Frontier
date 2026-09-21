@@ -21,6 +21,7 @@ For the current checkout, the defaults resolve to:
 efctl workspace: D:\carbonengine-stuff_EF\EveJS-Frontier
 world contracts: D:\carbonengine-stuff_EF\EveJS-Frontier\world-contracts
 builder scaffold: D:\carbonengine-stuff_EF\EveJS-Frontier\builder-scaffold
+assembly dApp:    D:\carbonengine-stuff_EF\EveJS-Frontier\smart-assembly-control
 EveJS config:    D:\carbonengine-stuff_EF\EveJS-Frontier\_local\frontier-world\3502403\world.private.json
 Feature config:  D:\carbonengine-stuff_EF\EveJS-Frontier\_local\frontier-world\3502403\npc-deployment.json
 ```
@@ -34,6 +35,12 @@ deployment artifacts remain ignored inside `world-contracts`.
 This workflow is independent of the EveJS databases. It neither initializes a
 database nor starts the EveJS server, so the world can be prepared and synced
 while the rest of the server setup is still incomplete.
+
+Every successful `sync`, `up`, or `restart` also regenerates the dApp's
+public-only `.env.local` and `.deployment-source.json` from the same validated
+`world-contracts` deployment. It never copies the admin signer into the dApp.
+The native Windows server launcher builds and starts that configured dApp
+automatically.
 
 ## Commands
 
@@ -124,6 +131,13 @@ synchronized admin account. When enabled and necessary, the Localnet faucet
 funds the admin, never the faction wallets directly. A dry run reports the
 deficit without transferring; `-SkipNpcFactionFunding` is for isolated tests or
 explicit recovery only.
+
+After wallet funding succeeds, sync runs the checked-in dApp configuration
+generator against the exact `world-contracts` directory used above. A missing
+dApp submodule or rejected public deployment manifest fails the sync and marks
+the private world state as `error`; run `git submodule update --init --recursive`
+or repair the deployment and retry. `-SkipDappSync` is reserved for isolated
+tests or explicit recovery workflows.
 
 ## Package-split validation boundary
 

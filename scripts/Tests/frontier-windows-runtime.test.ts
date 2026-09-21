@@ -283,7 +283,7 @@ test(
       path.join(REPO_ROOT, "StartFrontierServer.ps1"),
       "utf8",
     );
-    const defaultPorts = "@(26000, 26101, 26102, 26103, 5222, 26401)";
+    const defaultPorts = "@(443, 26000, 26101, 26102, 26103, 5222, 26401)";
     assert.equal(
       startSource.includes(defaultPorts),
       true,
@@ -291,7 +291,24 @@ test(
     );
     fs.writeFileSync(
       startScript,
-      startSource.replace(defaultPorts, `@(${resetGuardPort})`),
+      startSource
+        .replace(defaultPorts, `@(${resetGuardPort})`)
+        // This fixture tests marker/reparse/listener guards. The managed test
+        // host denies Win32_Process enumeration, so isolate that unrelated
+        // host capability from the reset assertions below.
+        .replace(
+          "            Get-CimInstance -ClassName Win32_Process -ErrorAction Stop |",
+          "            @() |",
+        )
+        .replace(
+          `    $requiredPorts = @(${resetGuardPort})`,
+          [
+            "    if ($env:EVEJS_TEST_FRONTIER_LISTENER -eq '1') {",
+            `        return @([pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = ${resetGuardPort}; OwningProcess = 1 })`,
+            "    }",
+            `    $requiredPorts = @(${resetGuardPort})`,
+          ].join("\n"),
+        ),
     );
     fs.copyFileSync(path.join(REPO_ROOT, "StopFrontier.ps1"), stopScript);
     const commonModuleRelative = path.join(
@@ -425,12 +442,14 @@ test(
 
     const activeListener = net.createServer();
     await listen(activeListener, resetGuardPort);
+    process.env.EVEJS_TEST_FRONTIER_LISTENER = "1";
     const refusedLiveReset = runScript(startScript, [
       "-Build",
       build,
       "-ResetRuntime",
       "-InitializeOnly",
     ]);
+    delete process.env.EVEJS_TEST_FRONTIER_LISTENER;
     assert.notEqual(refusedLiveReset.status, 0);
     assert.match(
       `${refusedLiveReset.stderr}\n${refusedLiveReset.stdout}`,
@@ -498,6 +517,44 @@ test(
     assert.equal(clearStale.status, 0, clearStale.stderr || clearStale.stdout);
     assert.match(clearStale.stdout, /Removed stale PID marker/);
     assert.equal(fs.existsSync(pidMarkerPath), false);
+
+    const dappPidMarkerPath = path.join(
+      runtimeRoot,
+      ".evejs-frontier-dapp.pid.json",
+    );
+    fs.writeFileSync(
+      dappPidMarkerPath,
+      `${JSON.stringify({
+        kind: "evejs-frontier-dapp-process",
+        schemaVersion: 1,
+        build,
+        runtimeRoot,
+        pid: 2147483647,
+        processStartTimeUtcTicks: 1,
+        nodePath: path.join(fixtureRoot, "node.exe"),
+        dappEntry: path.join(
+          fixtureRoot,
+          "smart-assembly-control",
+          "scripts",
+          "serve.mjs",
+        ),
+      })}\n`,
+    );
+    const dappStaleStatus = runScript(stopScript, ["-Build", build, "-Status"]);
+    assert.equal(
+      dappStaleStatus.status,
+      0,
+      dappStaleStatus.stderr || dappStaleStatus.stdout,
+    );
+    assert.match(dappStaleStatus.stdout, /Smart Assembly dApp: stale marker/);
+    const clearDappStale = runScript(stopScript, ["-Build", build]);
+    assert.equal(
+      clearDappStale.status,
+      0,
+      clearDappStale.stderr || clearDappStale.stdout,
+    );
+    assert.match(clearDappStale.stdout, /Removed stale Smart Assembly dApp PID marker/);
+    assert.equal(fs.existsSync(dappPidMarkerPath), false);
   },
 );
 
@@ -565,7 +622,7 @@ test(
       path.join(REPO_ROOT, "StartFrontierServer.ps1"),
       "utf8",
     );
-    const defaultPorts = "@(26000, 26101, 26102, 26103, 5222, 26401)";
+    const defaultPorts = "@(443, 26000, 26101, 26102, 26103, 5222, 26401)";
     const markerWrite =
       "        Write-JsonAtomic -Path $PidMarker -Value $pidMarkerValue";
     assert.equal(source.includes(defaultPorts), true);
@@ -594,6 +651,11 @@ test(
       path.join(fixtureRoot, "server", "node_modules", "better-sqlite3"),
       { recursive: true },
     );
+    fs.mkdirSync(path.join(fixtureRoot, "tools"), { recursive: true });
+    fs.writeFileSync(
+      path.join(fixtureRoot, "tools", "BuildTypeScript.ps1"),
+      "exit 0\n",
+    );
     const childPidPath = path.join(fixtureRoot, "rollback-child.pid");
     fs.writeFileSync(
       path.join(fixtureRoot, "server", "index.js"),
@@ -604,6 +666,43 @@ test(
         "setInterval(() => {}, 1000);",
         "",
       ].join("\n"),
+    );
+
+    const dappRoot = path.join(fixtureRoot, "smart-assembly-control");
+    const dappPidPath = path.join(fixtureRoot, "rollback-dapp-child.pid");
+    fs.mkdirSync(path.join(dappRoot, "scripts"), { recursive: true });
+    fs.mkdirSync(path.join(dappRoot, "node_modules"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dappRoot, "package.json"),
+      `${JSON.stringify({
+        name: "fixture-dapp",
+        private: true,
+        scripts: { build: "node -e \"process.exit(0)\"" },
+      })}\n`,
+    );
+    fs.writeFileSync(
+      path.join(dappRoot, "scripts", "serve.mjs"),
+      [
+        'import fs from "node:fs";',
+        `fs.writeFileSync(${JSON.stringify(dappPidPath)}, String(process.pid));`,
+        "setInterval(() => {}, 1000);",
+        "",
+      ].join("\n"),
+    );
+    fs.writeFileSync(path.join(dappRoot, ".env.local"), "VITE_SUI_NETWORK=localnet\n");
+    const worldRoot = path.join(fixtureRoot, "world-contracts");
+    const worldArtifact = path.join(
+      worldRoot,
+      "deployments",
+      "localnet",
+      "extracted-object-ids.json",
+    );
+    fs.mkdirSync(path.dirname(worldArtifact), { recursive: true });
+    fs.writeFileSync(worldArtifact, "{}\n");
+    fs.writeFileSync(path.join(path.dirname(worldArtifact), "npc-deployment.json"), "{}\n");
+    fs.writeFileSync(
+      path.join(dappRoot, ".deployment-source.json"),
+      `${JSON.stringify({ worldDir: worldRoot, network: "localnet" })}\n`,
     );
 
     const initialize = runScript(startScript, [
@@ -626,6 +725,9 @@ test(
     assert.equal(fs.existsSync(childPidPath), true);
     const childPid = Number.parseInt(fs.readFileSync(childPidPath, "utf8"), 10);
     assert.equal(Number.isInteger(childPid) && childPid > 0, true);
+    assert.equal(fs.existsSync(dappPidPath), true);
+    const dappPid = Number.parseInt(fs.readFileSync(dappPidPath, "utf8"), 10);
+    assert.equal(Number.isInteger(dappPid) && dappPid > 0, true);
     const processProbe = spawnSync(
       POWERSHELL,
       [
@@ -642,6 +744,22 @@ test(
       0,
       `background child ${childPid} survived failed marker publication`,
     );
+    const dappProcessProbe = spawnSync(
+      POWERSHELL,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `if (Get-Process -Id ${dappPid} -ErrorAction SilentlyContinue) { exit 1 }`,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      dappProcessProbe.status,
+      0,
+      `dApp child ${dappPid} survived failed marker publication`,
+    );
     assert.equal(
       fs.existsSync(path.join(
         fixtureRoot,
@@ -649,6 +767,16 @@ test(
         "frontier-runtime",
         build,
         ".evejs-frontier-server.pid.json",
+      )),
+      false,
+    );
+    assert.equal(
+      fs.existsSync(path.join(
+        fixtureRoot,
+        "_local",
+        "frontier-runtime",
+        build,
+        ".evejs-frontier-dapp.pid.json",
       )),
       false,
     );
