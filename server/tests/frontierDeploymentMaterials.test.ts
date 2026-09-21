@@ -3,6 +3,7 @@
 /** Run through scripts/Tests/run-isolated-tests.js against a disposable game store. */
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const database = require("../src/gameStore");
 const reference = require("../src/services/_shared/referenceData");
 const originalReadStaticRows = reference.readStaticRows;
 
@@ -67,6 +68,19 @@ function quantities(locationID, flagID = null) {
 }
 
 function fixture(t, available = { [MATERIAL_A]: 9, [MATERIAL_B]: 7 }) {
+  const createdCharacter = !database.read("characters", String(OWNER_ID)).success;
+  if (createdCharacter) {
+    const written = database.write("characters", String(OWNER_ID), {
+      characterID: OWNER_ID,
+      characterName: "Deployment Materials Test",
+      typeID: 1373,
+      corporationID: 1000442,
+      stationID: 64000001,
+      solarSystemID: SYSTEM_ID,
+      activeShipID: 0,
+    }, { transient: true });
+    assert.equal(written.success, true, written.errorMsg);
+  }
   const originalItemIDs = new Set(
     itemStore.listOwnedItems(OWNER_ID).map((item) => item.itemID),
   );
@@ -101,6 +115,10 @@ function fixture(t, available = { [MATERIAL_A]: 9, [MATERIAL_B]: 7 }) {
       ? { itemID: ship.itemID, position: { x: 0, y: 0, z: 0 } }
       : null
   ));
+  const listSystemSpaceItems = itemStore.listSystemSpaceItems;
+  t.mock.method(itemStore, "listSystemSpaceItems", (...args) => (
+    listSystemSpaceItems(...args).filter((item) => !originalItemIDs.has(item.itemID))
+  ));
   t.mock.method(energyRuntime, "reconcileNetworkNodeEnergy", () => {});
   deployment._testing.clearBuildDefinitionCache();
   deployment._testing.clearCompletionTimers();
@@ -111,6 +129,7 @@ function fixture(t, available = { [MATERIAL_A]: 9, [MATERIAL_B]: 7 }) {
         itemStore.removeInventoryItem(item.itemID, { removeContents: true });
       }
     }
+    if (createdCharacter) database.remove("characters", String(OWNER_ID));
   });
 
   return {
@@ -118,8 +137,8 @@ function fixture(t, available = { [MATERIAL_A]: 9, [MATERIAL_B]: 7 }) {
     session,
     spawn,
     notifications,
-    place(typeID) {
-      return deployment.buildDeployable(session, typeID, [100, 0, 0], [0, 0, 0]);
+    place(typeID, position = [100, 0, 0]) {
+      return deployment.buildDeployable(session, typeID, position, [0, 0, 0]);
     },
   };
 }
@@ -184,7 +203,7 @@ test("fully consumed stacks leave the store and client inventory, and cannot fun
     assert.equal(removed.locationID, 6);
     assert.equal(removed.previous.get(3), f.ship.itemID);
   }
-  const retry = f.place(DIRECT_TYPE_ID);
+  const retry = f.place(DIRECT_TYPE_ID, [-2_000, 0, 0]);
   assert.equal(retry.success, false);
   assert.equal(retry.errorMsg, "INSUFFICIENT_PLACEMENT_MATERIALS");
   assert.equal(f.spawn.mock.callCount(), 1);

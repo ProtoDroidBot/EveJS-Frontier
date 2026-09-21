@@ -24,6 +24,7 @@ const SYSTEM_ID = 30000004;
 const MATERIAL_TYPE_ID = 990931;
 const ASSEMBLY_TYPE_ID = 990932;
 const PORTABLE_ASSEMBLY_TYPE_ID = 87161;
+const NETWORK_NODE_TYPE_ID = 88092;
 
 function fixture(t) {
   const backupTables = Object.fromEntries(TABLES.map((table) => [
@@ -477,6 +478,29 @@ test("Phase 3 direct placement consumes a reserved material plan without creatin
   assert.equal(stored.checkpoint.constructed, true);
   assert.equal(stored.checkpoint.assemblyItemID, assembly.itemID);
   assert.equal(persistence.listNpcJobReservations(stored.jobID).length, 0);
+});
+
+test("Phase 3 Network Node jobs always bypass the construction-site path", (t) => {
+  fixture(t);
+  const restore = construction.configureNpcConstructionAdapters({
+    resolveDefinition() {
+      return {
+        assemblyTypeID: NETWORK_NODE_TYPE_ID,
+        constructionSiteTypeID: 0,
+        constructionCost: { [MATERIAL_TYPE_ID]: 3 },
+        createOnChain: true,
+        durationSeconds: 0,
+      };
+    },
+  });
+  t.after(restore);
+  const created = construction.createNpcConstructionJob({
+    entityID: ENTITY_ID,
+    assemblyTypeID: NETWORK_NODE_TYPE_ID,
+    idempotencyKey: "phase3:direct-network-node:931",
+  });
+  assert.equal(created.success, true, created.errorMsg);
+  assert.equal(persistence.getNpcJob(created.data.jobID).payload.placementMode, "directAssembly");
 });
 
 test("Phase 3 job checkpoints deployment through Sui confirmation and faction registration", (t) => {

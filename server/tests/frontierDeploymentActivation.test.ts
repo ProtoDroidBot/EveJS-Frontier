@@ -3,6 +3,7 @@
 /** Run through scripts/Tests/run-isolated-tests.js against a disposable game store. */
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const database = require("../src/gameStore");
 const reference = require("../src/services/_shared/referenceData");
 const originalReadStaticRows = reference.readStaticRows;
 
@@ -64,6 +65,19 @@ function grant(locationID, typeID, quantity, options: Record<string, any> = {}) 
 }
 
 function fixture(t) {
+  const createdCharacter = !database.read("characters", String(OWNER_ID)).success;
+  if (createdCharacter) {
+    const written = database.write("characters", String(OWNER_ID), {
+      characterID: OWNER_ID,
+      characterName: "Deployment Activation Test",
+      typeID: 1373,
+      corporationID: 1000442,
+      stationID: 64000001,
+      solarSystemID: SYSTEM_ID,
+      activeShipID: 0,
+    }, { transient: true });
+    assert.equal(written.success, true, written.errorMsg);
+  }
   const originalItemIDs = new Set(
     itemStore.listOwnedItems(OWNER_ID).map(item => item.itemID),
   );
@@ -132,6 +146,7 @@ function fixture(t) {
         itemStore.removeInventoryItem(item.itemID, { removeContents: true });
       }
     }
+    if (createdCharacter) database.remove("characters", String(OWNER_ID));
     if (previousScene) spaceRuntime.scenes.set(SYSTEM_ID, previousScene);
     else spaceRuntime.scenes.delete(SYSTEM_ID);
   });
@@ -268,6 +283,7 @@ test("shared Frontier placement clearance rejects assembly footprint overlap", (
 
 for (const [label, typeID, finalStatus] of [
   ["portable field structure", FIELD_TYPE_ID, 2],
+  ["Network Node", NODE_TYPE_ID, 1],
 ]) {
   test(`direct ${label} placement remains inactive until its configured timer expires`, t => {
     const f = fixture(t);
@@ -295,8 +311,8 @@ test("an anchoring Network Node cannot go online or extend construction range", 
   const placed = f.place(NODE_TYPE_ID);
   assert.equal(placed.success, true, placed.errorMsg);
   const nodeID = placed.data.item.itemID;
-  assert.equal(placed.data.item.typeID, SITE_TYPE_ID);
-  assert.equal(deployment.depositItems(f.session, nodeID, f.ship.itemID, COST).success, true);
+  assert.equal(placed.data.directPlacement, true);
+  assert.equal(placed.data.item.typeID, NODE_TYPE_ID);
   assert.equal(deployment._testing.isCompletedNetworkNodeBuildAnchorState(f.state(nodeID)), false);
   const online = deployment.beginAssemblyStateTransition(
     f.session, nodeID, deployment.ASSEMBLY_STATUS_ONLINE,
@@ -319,7 +335,6 @@ test("the last construction deposit replaces the site immediately and starts the
   const f = fixture(t);
   const node = f.place(NODE_TYPE_ID);
   assert.equal(node.success, true);
-  assert.equal(deployment.depositItems(f.session, node.data.item.itemID, f.ship.itemID, COST).success, true);
   f.tick(DURATION_MS);
   const placed = f.place(ASSEMBLY_TYPE_ID, [10_000, 200, 300]);
   assert.equal(placed.success, true, placed.errorMsg);
@@ -488,7 +503,7 @@ test("legacy completed assemblies without an activation deadline remain active w
   assert.equal(f.broadcasts.length, 0);
 });
 
-test("portable assemblies deploy directly away from nodes and use sites in Network Node zones", t => {
+test("Network Nodes and portable assemblies deploy directly inside and outside Network Node zones", t => {
   const f = fixture(t);
   const portable = f.place(FIELD_TYPE_ID, [-2_000, 0, 0]);
   assert.equal(portable.success, true, portable.errorMsg);
@@ -503,22 +518,16 @@ test("portable assemblies deploy directly away from nodes and use sites in Netwo
 
   const node = f.place(NODE_TYPE_ID, [2_000, 0, 0]);
   assert.equal(node.success, true, node.errorMsg);
-  assert.equal(node.data.directPlacement, undefined);
-  assert.equal(node.data.item.typeID, SITE_TYPE_ID,
-    "a Network Node follows its authored construction-site route");
-  assert.equal(deployment.depositItems(
-    f.session, node.data.item.itemID, f.ship.itemID, COST,
-  ).success, true);
+  assert.equal(node.data.directPlacement, true);
+  assert.equal(node.data.item.typeID, NODE_TYPE_ID,
+    "a Network Node bypasses the construction-depot route");
   f.tick(DURATION_MS);
 
   const nearNode = f.place(FIELD_TYPE_ID, [10_000, 0, 0]);
   assert.equal(nearNode.success, true, nearNode.errorMsg);
-  assert.equal(nearNode.data.directPlacement, undefined);
-  assert.equal(nearNode.data.item.typeID, SITE_TYPE_ID,
-    "portable types use their construction site inside an owned Network Node zone");
-  assert.equal(deployment.depositItems(
-    f.session, nearNode.data.item.itemID, f.ship.itemID, COST,
-  ).success, true);
+  assert.equal(nearNode.data.directPlacement, true);
+  assert.equal(nearNode.data.item.typeID, FIELD_TYPE_ID,
+    "portable types bypass construction depots inside an owned Network Node zone");
   assertActivating(f, nearNode.data.item.itemID, START_MS + DURATION_MS * 3);
   f.tick(DURATION_MS);
   assert.equal(f.state(nearNode.data.item.itemID).assemblyStatus, deployment.ASSEMBLY_STATUS_ONLINE);
@@ -616,7 +625,6 @@ test("dismantling an unfinished construction site returns only deposited materia
   const f = fixture(t);
   const node = f.place(NODE_TYPE_ID);
   assert.equal(node.success, true);
-  assert.equal(deployment.depositItems(f.session, node.data.item.itemID, f.ship.itemID, COST).success, true);
   f.tick(DURATION_MS);
   const placed = f.place(ASSEMBLY_TYPE_ID, [10_000, 0, 0]);
   assert.equal(placed.success, true, placed.errorMsg);
@@ -713,7 +721,6 @@ test("chain reads and sponsored online confirmations cannot bypass a persisted a
   const placed = f.place(NODE_TYPE_ID);
   assert.equal(placed.success, true, placed.errorMsg);
   const itemID = placed.data.item.itemID;
-  assert.equal(deployment.depositItems(f.session, itemID, f.ship.itemID, COST).success, true);
   const identity = { itemId: String(itemID), typeId: NODE_TYPE_ID, ownerId: OWNER_ID };
   const confirmation = {
     transactionUUID: "activation-test-confirmation",

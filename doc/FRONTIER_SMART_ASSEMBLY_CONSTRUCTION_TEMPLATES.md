@@ -71,13 +71,11 @@ The initial server-authoritative implementation now includes:
 
 Placement policy is intentionally strict and shared by both actor paths:
 
-- Portable Assembly client types use `directAssembly` and atomically consume
-  their placement materials only when placed outside a completed owned Network
-  Node build zone;
-- Portable Assemblies placed inside a Network Node build zone use their
-  authored `constructionSite` and build up through deposits; and
-- every non-portable Smart Assembly, including Network Nodes, must use its
-  authored `constructionSite` type and build up through material deposits.
+- Network Nodes and Portable Assembly client types use `directAssembly` and
+  atomically consume their placement materials, whether they are placed from a
+  ship or inside a completed owned Network Node build zone; and
+- every other Smart Assembly uses its authored `constructionSite` type and
+  builds up through material deposits.
 
 Unsupported unattended loadout capabilities fail closed during template save
 or remain explicit authorization actions; they never cause direct custom-info
@@ -146,18 +144,17 @@ construction template.
 Every node declares one placement mode:
 
 - `auto`: use the assembly definition's authoritative deployment path;
-- `directAssembly`: outside Network Node build zones, place a completed
-  Portable Assembly directly and consume its required placement materials
-  atomically; or
+- `directAssembly`: place a Network Node or Portable Assembly directly and
+  consume its required placement materials atomically; or
 - `constructionSite`: place a construction site, deposit materials, wait for
   completion, and then configure the realized Smart Assembly.
 
-`directAssembly` is rejected for every non-portable Smart Assembly and for a
-Portable Assembly whose resolved position is inside a Network Node build zone.
-It never turns an unsupported type into a free completed assembly.
-`constructionSite` is required for non-portable Smart Assemblies and for
-Portable Assemblies in Network Node build zones, and is valid only when the
-assembly definition has an authored construction-site type.
+`directAssembly` is rejected for Smart Assemblies other than Network Nodes and
+Portable Assemblies. It never turns an unsupported type into a free completed
+assembly. `constructionSite` is required for non-exempt Smart Assemblies and is
+valid only when the assembly definition has an authored construction-site type.
+Legacy Network Node or Portable Assembly templates that request
+`constructionSite` are resolved through `directAssembly` instead.
 
 Supported anchor selectors should initially be:
 
@@ -336,10 +333,10 @@ start. If resources or custody change while a node waits, it moves to
 forfeit its logical queue position. NPC travel begins only after both a site
 slot and required resources are available.
 
-Direct Portable Assembly nodes outside Network Node build zones may proceed
-while construction-site nodes are capacity-queued, provided their dependencies
-are satisfied. Portable direct nodes never increment the active construction-
-site count; Portable Assembly nodes inside a Network Node build zone do.
+Direct Network Node and Portable Assembly nodes may proceed while
+construction-site nodes are capacity-queued, provided their dependencies are
+satisfied. These direct nodes never increment the active construction-site
+count, including when a Portable Assembly is inside a Network Node build zone.
 
 Multi-assembly execution is not one database transaction. Every step must be
 idempotent, restart-safe, and compensatable. Cancellation releases unspent
@@ -486,10 +483,9 @@ plan nodes.
 - A template may contain more construction-site nodes than the active-site
   limit. Excess nodes remain durably queued, and one eligible node starts when
   a slot becomes available without requiring the player or NPC to resubmit it.
-- Direct Portable Assembly nodes and construction-site nodes can coexist;
-  portable direct nodes outside Network Node build zones use the costed
-  deployment path and do not consume construction-site capacity, while
-  Portable Assemblies inside a node zone do consume it.
+- Direct Network Node and Portable Assembly nodes can coexist with
+  construction-site nodes; their costed deployment path never consumes
+  construction-site capacity, including inside Network Node build zones.
 - Revision, SDE, adapter, inventory, access, anchor, or obstacle changes make a
   stale preview unusable.
 - Partial failure leaves an inspectable durable plan with exact per-node state;

@@ -149,18 +149,36 @@ test("Smart Assembly protocol exposes Construction Template terminology and acto
   assert.equal(protocol.blueprint_term_reserved_for_manufacturing, true);
   assert.equal(protocol.supports_player_execution, true);
   assert.equal(protocol.supports_npc_execution, true);
-  assert.equal(protocol.direct_assembly_policy, "portable-outside-network-node");
-  assert.equal(protocol.portable_network_node_policy, "construction-site");
+  assert.equal(protocol.direct_assembly_policy, "network-node-and-portable");
+  assert.equal(protocol.network_node_policy, "direct-assembly");
+  assert.equal(protocol.portable_network_node_policy, "direct-assembly");
   assert.equal(protocol.smart_assembly_policy, "construction-site");
   assert.deepEqual(protocol.placement_modes, ["auto", "directAssembly", "constructionSite"]);
 });
 
-test("directAssembly is rejected for non-portable Smart Assemblies", () => {
-  const normalized = runtime.normalizeConstructionTemplate({
-    name: "Invalid direct node",
+test("directAssembly accepts Network Nodes and rejects non-exempt Smart Assemblies", (t) => {
+  t.mock.method(deployment, "listAssemblyDefinitions", () => [
+    { assemblyTypeID: 88092, constructionSiteTypeID: 0 },
+    { assemblyTypeID: 88082, constructionSiteTypeID: 91715 },
+  ]);
+  const directNode = runtime.normalizeConstructionTemplate({
+    name: "Direct node",
     nodes: [{
       nodeID: "network-node",
       assemblyTypeID: 88092,
+      position: { x: 0, y: 0, z: 0 },
+      rotation: { yaw: 0, pitch: 0, roll: 0 },
+      placementMode: "directAssembly",
+      loadout: {},
+    }],
+  });
+  assert.equal(directNode.success, true, JSON.stringify(directNode.diagnostics));
+
+  const normalized = runtime.normalizeConstructionTemplate({
+    name: "Invalid direct assembly",
+    nodes: [{
+      nodeID: "storage-unit",
+      assemblyTypeID: 88082,
       position: { x: 0, y: 0, z: 0 },
       rotation: { yaw: 0, pitch: 0, roll: 0 },
       placementMode: "directAssembly",

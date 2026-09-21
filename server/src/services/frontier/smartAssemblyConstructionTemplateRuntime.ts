@@ -184,7 +184,7 @@ function normalizeConstructionTemplate(input) {
       null,
     );
     const rotation = normalizeRotation(raw.rotation, { yaw: 0, pitch: 0, roll: 0 });
-    const placementMode = normalizePlacementMode(raw.placementMode ?? raw.placement_mode);
+    let placementMode = normalizePlacementMode(raw.placementMode ?? raw.placement_mode);
     const loadout = normalizeLoadout(
       raw.loadout ?? raw.baseLoadout ?? raw.base_loadout,
       assemblyTypeID,
@@ -210,7 +210,12 @@ function normalizeConstructionTemplate(input) {
     if (!placementMode || !PLACEMENT_MODES.has(placementMode)) {
       diagnostics.push(diagnostic("CONSTRUCTION_TEMPLATE_PLACEMENT_MODE_INVALID", nodeID));
     }
-    if (placementMode === "directAssembly" && !deployment.isPortableAssemblyType(assemblyTypeID)) {
+    if (placementMode === "constructionSite" &&
+        deployment.isConstructionDepotExemptAssemblyType(assemblyTypeID)) {
+      placementMode = "directAssembly";
+    }
+    if (placementMode === "directAssembly" &&
+        !deployment.isConstructionDepotExemptAssemblyType(assemblyTypeID)) {
       diagnostics.push(diagnostic("DIRECT_ASSEMBLY_PORTABLE_ONLY", nodeID, { assemblyTypeID }));
     }
     if (!loadout) diagnostics.push(diagnostic("CONSTRUCTION_TEMPLATE_LOADOUT_INVALID", nodeID));
@@ -473,9 +478,15 @@ function previewConstructionTemplate(session, templateID, rawAnchor, options: Re
     node.resolvedPlacementMode = placement.data.directPlacement
       ? "directAssembly"
       : "constructionSite";
-    if (node.placementMode !== "auto" && node.placementMode !== node.resolvedPlacementMode) {
+    const requestedPlacementMode = deployment.isConstructionDepotExemptAssemblyType(
+      node.assemblyTypeID,
+    ) && node.placementMode !== "auto"
+      ? "directAssembly"
+      : node.placementMode;
+    if (requestedPlacementMode !== "auto" &&
+        requestedPlacementMode !== node.resolvedPlacementMode) {
       diagnostics.push(diagnostic("CONSTRUCTION_TEMPLATE_PLACEMENT_MODE_MISMATCH", node.nodeID, {
-        requested: node.placementMode,
+        requested: requestedPlacementMode,
         resolved: node.resolvedPlacementMode,
       }));
       node.previewState = "blocked";
@@ -834,7 +845,12 @@ function advancePlayerConstructionPlan(session, planID) {
       continue;
     }
     const resolvedMode = preview.data.directPlacement ? "directAssembly" : "constructionSite";
-    if (node.placementMode !== "auto" && node.placementMode !== resolvedMode) {
+    const requestedPlacementMode = deployment.isConstructionDepotExemptAssemblyType(
+      node.assemblyTypeID,
+    ) && node.placementMode !== "auto"
+      ? "directAssembly"
+      : node.placementMode;
+    if (requestedPlacementMode !== "auto" && requestedPlacementMode !== resolvedMode) {
       state.status = "blocked";
       state.errorMsg = "CONSTRUCTION_TEMPLATE_PLACEMENT_MODE_MISMATCH";
       continue;

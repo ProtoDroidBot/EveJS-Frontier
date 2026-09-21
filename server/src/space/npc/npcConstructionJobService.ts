@@ -467,6 +467,17 @@ function tickNpcConstructionJob(context) {
     }
     checkpoint.definition = cloneValue(definition);
   }
+  // Migrate durable jobs created under the old depot policy as they are resumed.
+  const constructionDepotExempt = deploymentRuntime.isConstructionDepotExemptAssemblyType(
+    definition.assemblyTypeID,
+  );
+  const placementMode = constructionDepotExempt
+    ? "directAssembly"
+    : payload.placementMode || "constructionSite";
+  if (constructionDepotExempt && !checkpoint.assemblyItemID) {
+    checkpoint.resolvedPlacementMode = "directAssembly";
+    if (checkpoint.placement) checkpoint.placement.directPlacement = true;
+  }
   let actor;
   try {
     const durableEntity = nativeNpcStore.getNativeEntity(
@@ -493,7 +504,7 @@ function tickNpcConstructionJob(context) {
     if (!checkpoint.placement) {
       const planned = adapters.planPlacement(actor, {
         assemblyTypeID: definition.assemblyTypeID,
-        allowDirect: payload.placementMode === "directAssembly",
+        allowDirect: placementMode === "directAssembly",
         jobID: job.jobID,
         networkNodeID: positiveInt(payload.networkNodeID, 0) || null,
         position: payload.position || null,
@@ -512,12 +523,12 @@ function tickNpcConstructionJob(context) {
       checkpoint.placement = cloneValue(planned.data);
       checkpoint.resolvedPlacementMode = planned.data?.directPlacement === false
         ? "constructionSite"
-        : payload.placementMode || "constructionSite";
+        : placementMode;
       checkpoint.placementPlannedAtMs = Date.now();
       return running("travel-placement", checkpoint, nowMs, 50);
     }
     const resolvedPlacementMode = checkpoint.resolvedPlacementMode ||
-      payload.placementMode || "constructionSite";
+      placementMode;
     const travel = adapters.travelToPlacement(
       context,
       actor,
@@ -751,16 +762,19 @@ function createNpcConstructionJob(input: Record<string, any>) {
     const assemblyTypeID = positiveInt(input && input.assemblyTypeID, 0);
     const definition = adapters.resolveDefinition(assemblyTypeID);
     if (!definition) return { success: false, errorMsg: "ASSEMBLY_TYPE_NOT_SUPPORTED" };
-    const placementMode = String(
+    const requestedPlacementMode = String(
       input.placementMode || input.payload?.placementMode || "constructionSite",
     );
-    if (!["constructionSite", "directAssembly"].includes(placementMode)) {
+    if (!["constructionSite", "directAssembly"].includes(requestedPlacementMode)) {
       return { success: false, errorMsg: "NPC_CONSTRUCTION_PLACEMENT_MODE_INVALID" };
     }
-    if (placementMode === "directAssembly" &&
-        !deploymentRuntime.isPortableAssemblyType(assemblyTypeID)) {
+    if (requestedPlacementMode === "directAssembly" &&
+        !deploymentRuntime.isConstructionDepotExemptAssemblyType(assemblyTypeID)) {
       return { success: false, errorMsg: "DIRECT_ASSEMBLY_PORTABLE_ONLY" };
     }
+    const placementMode = deploymentRuntime.isConstructionDepotExemptAssemblyType(assemblyTypeID)
+      ? "directAssembly"
+      : requestedPlacementMode;
     const actor = createNpcAssemblyActorContext(entityRecord, {
       requireSui: definition.createOnChain === true,
     });

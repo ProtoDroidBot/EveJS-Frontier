@@ -55,6 +55,13 @@ function isPortableAssemblyType(typeID) {
   return PORTABLE_ASSEMBLY_TYPE_IDS.has(toInt(typeID, 0));
 }
 
+/** Assemblies that consume their build materials immediately instead of spawning a depot. */
+function isConstructionDepotExemptAssemblyType(typeID) {
+  const assemblyTypeID = toInt(typeID, 0);
+  return assemblyTypeID === NETWORK_NODE_ASSEMBLY_TYPE_ID ||
+    isPortableAssemblyType(assemblyTypeID);
+}
+
 function toInt(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.trunc(numeric) : fallback;
@@ -2398,8 +2405,7 @@ function buildDeployable(session, assemblyTypeID, rawPosition, rawRotation) {
   );
   if (!clearance.success) return clearance;
 
-  const directPlacement = isPortableAssemblyType(definition.assemblyTypeID) &&
-    !isWithinNetworkNodeBuildZone(position, networkNodeAnchors);
+  const directPlacement = isConstructionDepotExemptAssemblyType(definition.assemblyTypeID);
   if (directPlacement) {
     return placeDirectAssembly({
       characterID,
@@ -2567,8 +2573,7 @@ function previewDeployablePlacement(
   );
   if (!clearance.success) return clearance;
 
-  const directPlacement = isPortableAssemblyType(definition.assemblyTypeID) &&
-    !isWithinNetworkNodeBuildZone(placement.position, networkNodeAnchors);
+  const directPlacement = isConstructionDepotExemptAssemblyType(definition.assemblyTypeID);
 
   if (!directPlacement) {
     const siteMetadata = itemStore.getItemMetadata(definition.constructionSiteTypeID);
@@ -2857,7 +2862,8 @@ function planNpcConstructionSitePlacement(actorInput, input: Record<string, any>
   const actor = actorResult.data;
   const definition = getBuildDefinition(input && input.assemblyTypeID);
   if (!definition) return { success: false as const, errorMsg: "ASSEMBLY_TYPE_NOT_SUPPORTED" };
-  if (input?.allowDirect === true && !isPortableAssemblyType(definition.assemblyTypeID)) {
+  if (input?.allowDirect === true &&
+      !isConstructionDepotExemptAssemblyType(definition.assemblyTypeID)) {
     return { success: false as const, errorMsg: "DIRECT_ASSEMBLY_PORTABLE_ONLY" };
   }
   const networkNodeAnchors = definition.assemblyTypeID === NETWORK_NODE_ASSEMBLY_TYPE_ID
@@ -2871,43 +2877,39 @@ function planNpcConstructionSitePlacement(actorInput, input: Record<string, any>
       definition.assemblyTypeID !== NETWORK_NODE_ASSEMBLY_TYPE_ID) {
     const shipPosition = normalizeWorldVector(input && input.shipPosition);
     const requestedPosition = normalizeWorldVector(input && input.position) || shipPosition;
-    const withinNetworkNodeBuildZone = isWithinNetworkNodeBuildZone(
-      requestedPosition,
+    const directPlacement = resolveDeploymentPosition(requestedPosition, shipPosition, {
       networkNodeAnchors,
-    );
-    if (!withinNetworkNodeBuildZone) {
-      const directPlacement = resolveDeploymentPosition(requestedPosition, shipPosition, {
-        networkNodeAnchors: [],
-      });
-      if (!directPlacement || !directPlacement.withinRange) {
-        return { success: false as const, errorMsg: "DEPLOYMENT_TOO_FAR", data: directPlacement };
-      }
-      const clearance = validateFrontierAssemblyClearance(
-        actor.solarSystemID,
-        definition,
-        directPlacement.position,
-      );
-      if (!clearance.success) return clearance;
-      return {
-        success: true as const,
-        data: {
-          anchorKind: "ship",
-          anchorItemID: actor.shipID,
-          buildAnchor: "ship",
-          buildAnchorItemID: actor.shipID,
-          deploymentDistance: directPlacement.deploymentDistance,
-          maxDeploymentDistance: directPlacement.maxDeploymentDistance,
-          placementPreference: "direct-near-ship",
-          position: directPlacement.position,
-          unrestrictedInSystem: false,
-          placementAttempt: 0,
-          directPlacement: true,
-          clearance: clearance.data,
-        },
-      };
+    });
+    if (!directPlacement || !directPlacement.withinRange) {
+      return { success: false as const, errorMsg: "DEPLOYMENT_TOO_FAR", data: directPlacement };
     }
+    const clearance = validateFrontierAssemblyClearance(
+      actor.solarSystemID,
+      definition,
+      directPlacement.position,
+    );
+    if (!clearance.success) return clearance;
+    return {
+      success: true as const,
+      data: {
+        anchorKind: directPlacement.buildAnchor,
+        anchorItemID: directPlacement.buildAnchorItemID,
+        buildAnchor: directPlacement.buildAnchor,
+        buildAnchorItemID: directPlacement.buildAnchorItemID,
+        deploymentDistance: directPlacement.deploymentDistance,
+        maxDeploymentDistance: directPlacement.maxDeploymentDistance,
+        placementPreference: directPlacement.buildAnchor === "network-node"
+          ? "direct-near-network-node"
+          : "direct-near-ship",
+        position: directPlacement.position,
+        unrestrictedInSystem: false,
+        placementAttempt: 0,
+        directPlacement: true,
+        clearance: clearance.data,
+      },
+    };
   }
-  if (definition.constructionSiteTypeID <= 0) {
+  if (input?.allowDirect !== true && definition.constructionSiteTypeID <= 0) {
     return { success: false as const, errorMsg: "NPC_CONSTRUCTION_SITE_REQUIRED" };
   }
   let lastConflict = null;
@@ -2934,7 +2936,7 @@ function planNpcConstructionSitePlacement(actorInput, input: Record<string, any>
         success: true as const,
         data: {
           ...placementResult.data,
-          directPlacement: false,
+          directPlacement: input?.allowDirect === true,
           clearance: clearance.data,
           placementAttempt,
         },
@@ -2981,7 +2983,7 @@ function placeNpcDirectAssembly(actorInput, input: Record<string, any>) {
   }
   const definition = getBuildDefinition(input && input.assemblyTypeID);
   if (!definition) return { success: false as const, errorMsg: "ASSEMBLY_TYPE_NOT_SUPPORTED" };
-  if (!isPortableAssemblyType(definition.assemblyTypeID)) {
+  if (!isConstructionDepotExemptAssemblyType(definition.assemblyTypeID)) {
     return { success: false as const, errorMsg: "DIRECT_ASSEMBLY_PORTABLE_ONLY" };
   }
   if (Boolean(definition.createOnChain) && (!actor.suiProfileObjectID || !actor.suiWalletAddress)) {
@@ -2999,9 +3001,6 @@ function placeNpcDirectAssembly(actorInput, input: Record<string, any>) {
   const anchors = definition.assemblyTypeID === NETWORK_NODE_ASSEMBLY_TYPE_ID
     ? []
     : listNpcNetworkNodeBuildAnchors(actor.ownerPrincipalID, actor.solarSystemID);
-  if (isWithinNetworkNodeBuildZone(plannedPlacement.position, anchors)) {
-    return { success: false as const, errorMsg: "DIRECT_ASSEMBLY_NETWORK_NODE_REQUIRES_SITE" };
-  }
   const placement = resolveDeploymentPosition(plannedPlacement.position, shipPosition, {
     networkNodeAnchors: anchors,
   });
@@ -4857,6 +4856,7 @@ module.exports = {
   completeAssemblyActivation,
   scheduleAssemblyActivation,
   isAssemblyActivationPending,
+  isConstructionDepotExemptAssemblyType,
   isPortableAssemblyType,
   depositItems,
   getDepositedItemsByType,
