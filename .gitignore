@@ -74,3 +74,6 @@ server/tidi_probe.log
 /tools/EveOnlineImporter*
 tools/FRONTIER-COMPATIBILITY.md
 decompiled___init__.py
+builder-scaffold
+world-contracts
+/.pnpm-store
