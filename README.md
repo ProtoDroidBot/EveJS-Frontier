@@ -4,6 +4,10 @@ EVE.js is a local EVE Online server emulator. This release targets **EVE 24.01 b
 
 Join the project Discord: [https://discord.gg/KMuJrMDEBa](https://discord.gg/KMuJrMDEBa)
 
+Clone with `git clone --recurse-submodules <repository-url>` so the pinned
+`builder-scaffold-ai` and `world-contracts-ai` checkouts are downloaded with
+the server. For an existing checkout, run `git submodule update --init --recursive`.
+
 ## TypeScript development
 
 The server, Node tools, tests, and browser editor use TypeScript sources

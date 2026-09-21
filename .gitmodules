@@ -1,0 +1,8 @@
+[submodule "builder-scaffold-ai"]
+	path = builder-scaffold-ai
+	url = https://github.com/ProtoDroidBot/builder-scaffold.git
+	branch = main
+[submodule "world-contracts-ai"]
+	path = world-contracts-ai
+	url = https://github.com/ProtoDroidBot/world-contracts.git
+	branch = world-stuff-001
