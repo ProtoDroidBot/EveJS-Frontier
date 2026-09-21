@@ -590,6 +590,9 @@ export function startSuiAssemblySync() {
       energyConfigId: deployment.world.energyConfig, fuelConfigId: deployment.world.fuelConfig,
       gateConfigId: deployment.world.gateConfig, serverAddressRegistryId: deployment.world.serverAddressRegistry,
       locationRegistryId,
+      catapultPackageId: accessDeployment.catapultPackageId,
+      catapultTypeOrigin: accessDeployment.catapultTypeOrigin,
+      catapultRegistryId: accessDeployment.catapultRegistryId,
     };
     const rpcUrl = "http://127.0.0.1:9000";
     const rpcDeadlineMs = Math.max(1_000, Number(process.env.EVEJS_SUI_ASSEMBLY_RPC_TIMEOUT_MS) || 10_000);
@@ -770,6 +773,7 @@ export function startSuiAssemblySync() {
     const industry = createSuiIndustryChain({ client, world, chain, tenant: "dev", execute: executor.execute,
       industryPackageId: industryDeployment.industryPackageId,
       industryTypeOrigin: industryDeployment.industryTypeOrigin,
+      industryRegistryId: industryDeployment.industryRegistryId,
       assertSnapshotCurrent(facility) {
         const latest = buildSuiIndustrySnapshot(itemStore.getAllItems()).facilities.find(f => f.itemId === facility.itemId);
         if (industryFingerprint(latest) !== industryFingerprint(facility)) {
@@ -784,6 +788,7 @@ export function startSuiAssemblySync() {
         typeOrigin: accessDeployment.accessTypeOrigin,
         worldPackageId: synced.packageId,
         objectRegistryId: synced.objectRegistryId,
+        accessRegistryId: accessDeployment.accessRegistryId,
         tenant: "dev",
       },
     });
@@ -1012,6 +1017,7 @@ export function startSuiAssemblySync() {
         typeOrigin: context.accessDeployment.accessTypeOrigin,
         worldPackageId: context.synced.packageId,
         objectRegistryId: context.synced.objectRegistryId,
+        accessRegistryId: context.accessDeployment.accessRegistryId,
         tenant: "dev",
       },
       proof: {

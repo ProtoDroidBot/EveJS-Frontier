@@ -114,6 +114,22 @@ The eventual Sui contract move is intentionally isolated behind the generic
 scanner-source resolver. No authored scanning assembly or Creation module is
 invented by this release.
 
+### Package and World-Contract Boundary
+
+This release changes the EveJS server package, not the deployed `world` Move
+package. It deliberately does not add fields to `world::network_node::NetworkNode`
+or publish a temporary scanning object whose type identity would become part of
+the permanent on-chain model. The existing Network Node ownership and signed
+wallet flow authenticate the dApp caller; the server remains authoritative for
+route reach, energy headroom, cooldowns, scan jobs, warm-up, redaction, and
+results.
+
+The server package exposes `npm run test:frontier-remote-scanning` as the focused
+verification entry point. When the dedicated scanning Smart Assembly and
+Creation module are authored, their Move package should provide the generic
+scanner-source capability consumed here and may commit request/result hashes on
+chain without changing the durable server job or public result schemas.
+
 ### Remote Scanning Service
 
 Add a dedicated `remoteScanning` service instead of extending the existing

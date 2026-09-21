@@ -28,22 +28,22 @@ An owner has implicit capabilities and does not need a stored self-grant. A dele
 
 Portable and field assemblies use the local durable policy as authority. A smart-assembly grant is created as `local_projection_pending_chain` and is deliberately unusable. A registered Sui verifier must validate a public chain proof through `confirmGrantChainAuthority`; only then does the grant become `sui_confirmed` and enter access resolution.
 
-The authoritative `world::assembly_access` module derives one shared policy object per assembly and one shared grant object per `(policy, UUID)`. Owner issuance requires the assembly's exact `OwnerCap`; player and NPC delegation is capability-, expiry-, and depth-attenuating. The server derives policy, grant, and assembly object IDs from the synchronized Object Registry, type origin, tenant, and item ID, then fetches the live shared objects and verifies the full ancestor chain. Client-supplied object IDs are never authoritative.
+The authoritative `<accessPackageId>::assembly_access` module derives one shared policy object per assembly and one shared grant object per `(policy, UUID)`. Owner issuance requires the assembly's exact `OwnerCap`; player and NPC delegation is capability-, expiry-, and depth-attenuating. The server derives policy, grant, and assembly object IDs from the synchronized Object Registry, type origin, tenant, and item ID, then fetches the live shared objects and verifies the full ancestor chain. Client-supplied object IDs are never authoritative.
 
-Smart grants remain unusable until this verification promotes the local projection to `sui_confirmed`. Portable and field assemblies continue to use the equivalent durable local policy. The deployment writer now refuses to emit a runtime manifest if either `npc` or `assembly_access` is absent from the freshly published world package.
+Smart grants remain unusable until this verification promotes the local projection to `sui_confirmed`. Portable and field assemblies continue to use the equivalent durable local policy. The fresh-deployment writer verifies that the independently published `world_npc` and `world_assembly_access` outputs contain `npc` and `assembly_access` before emitting the combined runtime manifest.
 
-`npc-deployment.json` carries independent `accessPackageId` and `accessTypeOrigin` fields. A fresh publish sets them to the world package. An upgrade must set the call package to the latest implementation and preserve the first package that introduced `assembly_access` as its type origin; NPC and access origins are deliberately not assumed to match.
+`npc-deployment.json` carries independent `accessPackageId`, `accessTypeOrigin`, and `accessRegistryId` fields. A fresh split deployment sets the package and origin to the new `world_assembly_access` package and records its shared registry. An upgrade must set the call package to the latest implementation while preserving the first access package as its type origin and retaining the registry. NPC and access origins are deliberately not assumed to match. The current Localnet has this split package and registry active.
 
 ## Cross-owner custody
 
 An access grant never changes item ownership. Cross-owner storage uses a separate two-part commit:
 
-1. `world::assembly_access` checks a direct, unexpired deposit or withdrawal grant and executes the Storage Unit move. Cross-storage transfers validate both grants in one Sui transaction and emit `AssemblyCustodyTransferred` bound to a 16-byte operation UUID, actor, source, destination, type, and quantity.
+1. `<accessPackageId>::assembly_access` checks a direct, unexpired deposit or withdrawal grant and executes the Storage Unit move. Cross-storage transfers validate both grants in one Sui transaction and emit `AssemblyCustodyTransferred` bound to a 16-byte operation UUID, actor, source, destination, type, and quantity.
 2. The server fetches the finalized successful transaction and matches that exact event before changing the game item owner/location. The item-table write embeds a durable operation fingerprint and receipt, so a retry returns the original result and changed reuse of the UUID is rejected.
 
 Custody capabilities are owner-issued and non-delegable on chain. Both Storage Units must be online, belong to the same tenant, opt into the assembly-access extension, and the game-side assemblies must be online Sui-backed storage in the actor's current system. The server rechecks item ownership, location, type, quantity, and capacity after the asynchronous chain read and flushes the owner/location move before acknowledging success.
 
-The native `Handle_transfer_cross_owner_inventory` RPC supports ship-to-storage deposit, storage-to-ship withdrawal, and storage-to-storage transfer. Player-facing GUI controls and wallet transaction signing still require client work; server/NPC callers and external transaction builders can use the implemented boundary immediately after a fresh world deployment.
+The native `Handle_transfer_cross_owner_inventory` RPC supports ship-to-storage deposit, storage-to-ship withdrawal, and storage-to-storage transfer. Player-facing GUI controls and wallet transaction signing still require client work; server/NPC callers and external transaction builders can use the implemented boundary on a deployment whose access package, type origin, and registry have been synchronized and verified.
 
 ## Remaining client work
 

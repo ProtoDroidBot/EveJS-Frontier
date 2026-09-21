@@ -14,6 +14,7 @@ import {
 } from "../../server/src/services/frontier/suiNpcCharacterProvisioning";
 import { deriveSuiNpcProfileObjectId } from "../../server/src/services/frontier/suiNpcProfile";
 import { assertSuiNpcWorldConfigCurrent, readSuiNpcWorldConfig, type SuiNpcWorldConfig } from "../../server/src/services/frontier/suiNpcWorldConfig";
+import { assertSuiIndustryDeploymentCurrent, readSuiIndustryDeployment } from "../../server/src/services/frontier/suiIndustryDeployment";
 import { SUI_GRPC_BASE_URL, suiGrpcClient } from "../../server/src/services/frontier/suiGrpcClient";
 
 const INCLUDE = { effects: true, objectTypes: true, events: true } as const;
@@ -54,7 +55,7 @@ export function validateNpcDeploymentSimulation(
     throw new Error(`NPC deployment simulation failed: ${error?.message || "no successful execution status"}`);
   }
   const transaction = result.Transaction;
-  const expectedProfileId = deriveSuiNpcProfileObjectId(identity.objectRegistryId, identity.characterObjectId, npcWorld.npcTypeOrigin);
+  const expectedProfileId = deriveSuiNpcProfileObjectId(npcWorld.npcRegistryId, identity.characterObjectId, npcWorld.npcTypeOrigin);
   const changed = transaction.effects?.changedObjects || [];
   const types = transaction.objectTypes || {};
   const created = (objectId: string, type: string) => changed.find(change =>
@@ -119,6 +120,31 @@ export async function verifyNpcDeployment(options: Options = {}, sourceEnv: Node
   const liveChainId = await readLiveSuiChainIdentifier(suiGrpcClient as any);
   assert.equal(liveChainId, synced.chainId.slice(0, 8).toLowerCase(), "Live Localnet differs from the synchronized deployment");
   const npcWorld = readSuiNpcWorldConfig(synced, env);
+  const industry = readSuiIndustryDeployment(synced, env);
+  const deployedObjects = [
+    [npcWorld.npcPackageId, "NPC package", null],
+    [npcWorld.npcRegistryId, "NPC registry", `${npcWorld.npcTypeOrigin}::npc::NpcRegistry`],
+    [npcWorld.accessPackageId, "Assembly access package", null],
+    [npcWorld.accessRegistryId, "Assembly access registry", `${npcWorld.accessTypeOrigin}::assembly_access::AssemblyAccessRegistry`],
+    [npcWorld.catapultPackageId, "Catapult package", null],
+    [npcWorld.catapultRegistryId, "Catapult registry", `${npcWorld.catapultTypeOrigin}::catapult::CatapultRegistry`],
+    [industry.industryPackageId, "Smart Industry package", null],
+    [industry.industryRegistryId, "Smart Industry registry", `${industry.industryTypeOrigin}::smart_industry::SmartIndustryRegistry`],
+    [npcWorld.transponderPackageId, "Transponder package", null],
+    [npcWorld.transponderRegistryId, "Transponder registry", `${npcWorld.transponderTypeOrigin}::transponder::TransponderRegistry`],
+  ] as const;
+  await Promise.all(deployedObjects.map(async ([objectId, label, expectedType]) => {
+    const { object } = await suiGrpcClient.getObject({
+      objectId,
+      ...(expectedType ? { include: { json: true } } : {}),
+      signal: AbortSignal.timeout(15_000),
+    });
+    assert.equal(address(object.objectId), address(objectId), `${label} object ID does not match deployment metadata`);
+    if (expectedType) {
+      assert.equal(object.type, expectedType, `${label} has an incompatible Move type`);
+      assert.equal(object.owner?.$kind, "Shared", `${label} must be shared`);
+    }
+  }));
   // Derive only the public sender address. The signer is never used to sign.
   const sender = options.sender ? address(options.sender) : resolveAdminSigner({ env }).toSuiAddress();
   const world = { packageId: synced.packageId, objectRegistryId: synced.objectRegistryId, adminAclId: synced.adminAclId };
@@ -131,6 +157,7 @@ export async function verifyNpcDeployment(options: Options = {}, sourceEnv: Node
     assert.ok(current && synchronizedIdentity(current) === synchronizedIdentity(synced), "World deployment changed during smoke verification");
     assert.equal(await readLiveSuiChainIdentifier(suiGrpcClient as any), liveChainId, "Localnet changed during smoke verification");
     assertSuiNpcWorldConfigCurrent(npcWorld, current!, env);
+    assertSuiIndustryDeploymentCurrent(industry, current!, env);
   }
   let identity: SuiNpcCharacterIdentity | undefined;
   const attempts = options.npcId === undefined ? 64 : 1;
@@ -138,7 +165,7 @@ export async function verifyNpcDeployment(options: Options = {}, sourceEnv: Node
     const gameCharacterId = options.npcId ?? NPC_CHARACTER_ID_MAX - offset;
     assert.ok(Number.isSafeInteger(gameCharacterId) && gameCharacterId >= NPC_CHARACTER_ID_MIN && gameCharacterId <= NPC_CHARACTER_ID_MAX, "Smoke NPC ID must be in the reserved NPC range");
     const candidate = prepareSuiNpcCharacterIdentity({ gameCharacterId, characterName: "NPC deployment smoke simulation", factionKey: "0-deployment-smoke" }, { world, env });
-    const profileId = deriveSuiNpcProfileObjectId(candidate.objectRegistryId, candidate.characterObjectId, npcWorld.npcTypeOrigin);
+    const profileId = deriveSuiNpcProfileObjectId(npcWorld.npcRegistryId, candidate.characterObjectId, npcWorld.npcTypeOrigin);
     const available = await Promise.all([absent(candidate.characterObjectId), absent(profileId)]);
     if (available.every(Boolean)) { identity = candidate; break; }
   }
@@ -160,7 +187,15 @@ export async function verifyNpcDeployment(options: Options = {}, sourceEnv: Node
   return {
     mode: "simulation-only", checksEnabled: true, signed: false, submitted: false,
     build: synced.build, network: synced.network, endpoint: SUI_GRPC_BASE_URL, chainId: liveChainId,
-    worldPackageId: synced.packageId, npcPackageId: npcWorld.npcPackageId, npcTypeOrigin: npcWorld.npcTypeOrigin,
+    worldPackageId: synced.packageId,
+    npcPackageId: npcWorld.npcPackageId, npcTypeOrigin: npcWorld.npcTypeOrigin, npcRegistryId: npcWorld.npcRegistryId,
+    accessPackageId: npcWorld.accessPackageId, accessTypeOrigin: npcWorld.accessTypeOrigin, accessRegistryId: npcWorld.accessRegistryId,
+    catapultPackageId: npcWorld.catapultPackageId, catapultTypeOrigin: npcWorld.catapultTypeOrigin, catapultRegistryId: npcWorld.catapultRegistryId,
+    industryPackageId: industry.industryPackageId, industryTypeOrigin: industry.industryTypeOrigin,
+    industryRegistryId: industry.industryRegistryId,
+    transponderPackageId: npcWorld.transponderPackageId, transponderTypeOrigin: npcWorld.transponderTypeOrigin,
+    transponderRegistryId: npcWorld.transponderRegistryId,
+    featureDeploymentObjectsVerified: true,
     adminAddress: sender, npcCharacterID: identity.gameCharacterId, factionKey: identity.factionKey,
     factionWalletAddress: identity.walletAddress, ...verified, simulatedObjectsRemainAbsent: true,
   };

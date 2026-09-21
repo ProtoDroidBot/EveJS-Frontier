@@ -16,13 +16,21 @@ catapult. The jump transfers that ship and applies the normal stargate jump
 cloak.
 
 World sync anchors the Slingshot through the normal `Gate` contract, then
-creates a deterministic `world::catapult::Catapult` sidecar from the source Gate
+creates a deterministic `<catapultPackageId>::catapult::Catapult` sidecar from the source Gate
 ID. The sidecar stores the source/destination system IDs, exact distance,
 revision, and update timestamp. Route mutations are sponsored through
 `AdminACL`, require the source Gate offline and unpaired, use optimistic
 revision checks, and enforce the shared `GateConfig` range. A zero destination
 clears the route. Online use can emit `CatapultJumpEvent` without referencing a
 far-side gate.
+
+The catapult is a split feature package. `npc-deployment.json` supplies its
+current call package, stable type origin, and shared `CatapultRegistry`; the
+base-world package continues to own the parent Gate and `GateConfig`. A fresh
+deployment publishes `contracts/world_catapult` separately. A compatible
+upgrade changes only the catapult call package and preserves its type origin,
+registry, and base-world identity. The current Localnet package/registry pair
+was verified through public RPC inspection.
 
 The authoritative World Contracts checkout is `../3502403/world-contracts`, selected by `FrontierWorld.ps1`. Its deployment range configuration must use the same type IDs and meter values; see that checkout's `env.example`. The server also applies the client-authored range before creating a new chain link, so existing deployments can converge without redeployment. A read alone does not overwrite a differing range.
 

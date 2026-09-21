@@ -23,6 +23,7 @@ const world: SuiTransponderWorld = {
   packageId: address(10),
   typeOrigin: address(9),
   objectRegistryId: address(2),
+  transponderRegistryId: address(3),
   tenant: "dev",
 };
 const salt = Uint8Array.from({ length: 32 }, (_, index) => index);
@@ -75,9 +76,11 @@ test("scope key derivation uses the type origin while transactions target the la
   const laterWorld: SuiTransponderWorld = { ...world, packageId: address(11) };
   const later = deriveSuiTransponderCommitmentObjectId(laterWorld, { kind: "tribe", tribeId: 101 });
   const wrongOrigin = deriveSuiTransponderCommitmentObjectId({ ...world, typeOrigin: address(8) }, { kind: "tribe", tribeId: 101 });
+  const wrongRegistry = deriveSuiTransponderCommitmentObjectId({ ...world, transponderRegistryId: address(4) }, { kind: "tribe", tribeId: 101 });
   assert.equal(tribe, later);
   assert.notEqual(tribe, faction);
   assert.notEqual(tribe, wrongOrigin);
+  assert.notEqual(tribe, wrongRegistry);
 
   const digest = computeSuiTransponderCommitment(commitmentInput).commitment;
   const call = moveCall(createSuiTribeTransponderAuthorTransaction({
@@ -86,7 +89,7 @@ test("scope key derivation uses the type origin while transactions target the la
   assert.equal(call.package, world.packageId);
   assert.equal(call.module, "transponder");
   assert.equal(call.function, "author_for_tribe");
-  assert.equal(call.arguments.length, 3);
+  assert.equal(call.arguments.length, 4);
 });
 
 test("author, rotate, revoke and authority-transfer builders select scope-specific entry points", () => {
@@ -96,7 +99,9 @@ test("author, rotate, revoke and authority-transfer builders select scope-specif
   const profile = address(21);
   const factionScope = { kind: "faction", factionKey: "500012-none" } as const;
   const calls = [
-    moveCall(createSuiFactionTransponderAuthorTransaction({ world, npcProfileObjectId: profile, commitment: digest })),
+    moveCall(createSuiFactionTransponderAuthorTransaction({
+      world, characterObjectId: character, npcProfileObjectId: profile, commitment: digest,
+    })),
     moveCall(createSuiTransponderRotateTransaction({ world, scope: commitmentInput.scope,
       commitmentObjectId: record, authorizerObjectId: character, expectedRevision: 1, commitment: digest })),
     moveCall(createSuiTransponderRotateTransaction({ world, scope: factionScope,
@@ -113,7 +118,7 @@ test("author, rotate, revoke and authority-transfer builders select scope-specif
     "author_for_faction", "rotate_for_tribe", "rotate_for_faction",
     "revoke_for_tribe", "revoke_for_faction", "transfer_tribe_authority",
   ]);
-  assert.deepEqual(calls.map(call => call.arguments.length), [3, 4, 4, 3, 3, 4]);
+  assert.deepEqual(calls.map(call => call.arguments.length), [5, 4, 4, 3, 3, 4]);
 });
 
 test("transactions contain only the commitment, never the code or salt", () => {

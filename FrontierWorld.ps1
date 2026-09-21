@@ -714,7 +714,15 @@ function Read-NpcDeployment {
     }
     # Copy only the public runtime schema; never propagate extra source fields.
     $validated = [ordered]@{ schemaVersion = 1; chainId = $ChainId }
-    foreach ($field in @('worldPackageId', 'objectRegistryId', 'adminAclId', 'packageId', 'typeOrigin')) {
+    $runtimeFields = @(
+        'worldPackageId', 'objectRegistryId', 'adminAclId',
+        'packageId', 'typeOrigin', 'npcRegistryId',
+        'accessPackageId', 'accessTypeOrigin', 'accessRegistryId',
+        'catapultPackageId', 'catapultTypeOrigin', 'catapultRegistryId',
+        'industryPackageId', 'industryTypeOrigin', 'industryRegistryId',
+        'transponderPackageId', 'transponderTypeOrigin', 'transponderRegistryId'
+    )
+    foreach ($field in $runtimeFields) {
         if ($manifest[$field] -isnot [string]) {
             throw "NPC deployment $field must be a canonical nonzero Sui address."
         }
@@ -723,23 +731,6 @@ function Read-NpcDeployment {
             throw "NPC deployment $field must be a canonical nonzero Sui address."
         }
         $validated[$field] = $address
-    }
-    $hasAccessPackage = $manifest.Contains('accessPackageId')
-    $hasAccessOrigin = $manifest.Contains('accessTypeOrigin')
-    if ($hasAccessPackage -ne $hasAccessOrigin) {
-        throw 'NPC deployment accessPackageId and accessTypeOrigin must be configured together.'
-    }
-    if ($hasAccessPackage) {
-        foreach ($field in @('accessPackageId', 'accessTypeOrigin')) {
-            if ($manifest[$field] -isnot [string]) {
-                throw "NPC deployment $field must be a canonical nonzero Sui address."
-            }
-            $address = Assert-SuiAddress -Value $manifest[$field] -Label "NPC deployment $field"
-            if ($address -eq ('0x' + ('0' * 64))) {
-                throw "NPC deployment $field must be a canonical nonzero Sui address."
-            }
-            $validated[$field] = $address
-        }
     }
     $expected = @{ worldPackageId = $PackageId; objectRegistryId = $ObjectRegistryId; adminAclId = $AdminAclId }
     foreach ($field in $expected.Keys) {
@@ -770,12 +761,12 @@ function Publish-NpcDeployment {
         }
     }
     if ($DryRun) {
-        Write-Output "[evejs-frontier-world] Would sync public NPC deployment: $NpcConfigPath"
+        Write-Output "[evejs-frontier-world] Would sync public feature deployment: $NpcConfigPath"
         return
     }
     New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
     Write-FrontierJsonAtomic -Path $NpcConfigPath -Value $Manifest
-    Write-Output "[evejs-frontier-world] Synced NPC implementation: $($Manifest.packageId)"
+    Write-Output "[evejs-frontier-world] Synced feature implementations: NPC $($Manifest.packageId)"
 }
 
 function Write-WorldConfig {

@@ -13,8 +13,19 @@ import type { AssemblySnapshot } from "../src/services/frontier/suiAssemblySnaps
 
 const id = (value: number | string) => `0x${BigInt(value).toString(16).padStart(64, "0")}`;
 const packageId = id(900);
+const catapultPackageId = id(905);
+const catapultRegistryId = id(906);
 const signer = Ed25519Keypair.fromSecretKey(new Uint8Array(32).fill(17));
-const world = { packageId, adminAclId: id(901), gateConfigId: id(902), serverAddressRegistryId: id(903), objectRegistryId: id(904) };
+const world = {
+  packageId,
+  adminAclId: id(901),
+  gateConfigId: id(902),
+  serverAddressRegistryId: id(903),
+  objectRegistryId: id(904),
+  catapultPackageId,
+  catapultTypeOrigin: catapultPackageId,
+  catapultRegistryId,
+};
 const catapultKey = bcs.struct("CatapultKey", { gate_id: bcs.Address });
 const schema = bcs.struct("LocationProofMessage", {
   server_address: bcs.Address, player_address: bcs.Address,
@@ -237,13 +248,14 @@ test("Smart Catapult sync creates, confirms, and clears a one-way solar-system r
   assert.equal(f.executed.length, 1);
   assert.equal(f.executed[0].label, "catapult-route:100:3002");
   assert.equal(calls(f.executed[0].transaction)[0].function, "create");
+  assert.equal(calls(f.executed[0].transaction)[0].package, catapultPackageId);
 
   const sidecarId = deriveObjectID(
-    world.objectRegistryId,
-    `${packageId}::catapult::CatapultKey`,
+    world.catapultRegistryId,
+    `${catapultPackageId}::catapult::CatapultKey`,
     catapultKey.serialize({ gate_id: id(100) }).toBytes(),
   );
-  f.objects.set(sidecarId, move(`${packageId}::catapult::Catapult`, {
+  f.objects.set(sidecarId, move(`${catapultPackageId}::catapult::Catapult`, {
     gate_id: id(100), gate_key: { fields: { item_id: "100", tenant: "dev" } },
     type_id: "95627", source_solar_system_id: "3001",
     destination_solar_system_id: { fields: { vec: ["3002"] } },

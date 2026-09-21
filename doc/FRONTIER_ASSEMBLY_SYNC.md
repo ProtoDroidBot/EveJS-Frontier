@@ -22,6 +22,13 @@ The mirror covers:
 - Removal of matching assemblies previously tracked by this runtime, after their chain
   inventories, links, fuel, and dependent assemblies have been cleared.
 
+Base Assembly, Gate, Storage Unit, and Network Node calls target the synchronized
+base-world package. Catapult and Smart Industry state are separate sidecars and
+target the package/origin/registry triples in the synchronized combined
+`npc-deployment.json` feature manifest. Assembly access and transponder objects
+use the same split identity model in their own runtimes. A shared Object Registry
+does not mean these modules share the base package address.
+
 Local game state remains authoritative. Gameplay updates locally, then the
 worker converges the blockchain asynchronously. A contract failure is logged
 and retried; it does not roll back the game action. Watch `[SuiAssemblySync]`

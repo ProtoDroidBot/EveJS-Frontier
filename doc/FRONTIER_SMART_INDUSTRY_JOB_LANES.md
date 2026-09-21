@@ -95,4 +95,10 @@ Construction templates may add an Industry child job after the facility is reali
 
 The child job is idempotent by construction-template job and node ID. Missing materials suspend the child and publish one `industry-material-request` rather than partially starting its lanes.
 
-These are server-side changes only. No Sui package was published, upgraded, or deployed for NPC Industry execution; contract deployment remains deferred until the Localnet environment is rebuilt.
+The multi-lane scheduler remains a server/client feature. The split
+`smart_industry` package and registry are live on the current Localnet, but its
+existing production sidecar is a single compatibility record and therefore
+mirrors only lane 1. No lane-aware Sui schema was published for this work.
+Representing lanes 2–N on chain requires an explicit compatible extension or a
+versioned Industry contract update; it must not be implied by the current
+deployment.

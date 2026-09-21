@@ -22,7 +22,7 @@ function fixture(initial: typeof alive | null = null) {
     EVEJS_SUI_NPC_TYPE_ORIGIN: `0x${"8".repeat(64)}`,
   };
   const npcWorld = readSuiNpcWorldConfig({ ...identity, chainId }, env);
-  const profileId = deriveSuiNpcProfileObjectId(identity.objectRegistryId, identity.characterObjectId, npcWorld.npcTypeOrigin);
+  const profileId = deriveSuiNpcProfileObjectId(npcWorld.npcRegistryId, identity.characterObjectId, npcWorld.npcTypeOrigin);
   const contexts: any[] = [];
   const submitted: any[] = [];
   const transactions = new Map<string, any>();
@@ -105,7 +105,7 @@ test("NPC profile derivation uses the NPC type origin while calls target the lat
   const register = createSuiNpcProfileTransaction({ operation: "register", identity, lifecycle: alive, npcProfileObjectId: f.profileId, npcWorld: f.options.npcWorld }).getData();
   assert.equal(register.commands[0].MoveCall.package, f.options.npcWorld.npcPackageId);
   assert.equal(register.commands[0].MoveCall.function, "register_profile");
-  assert.equal(register.commands[0].MoveCall.arguments.length, 8);
+  assert.equal(register.commands[0].MoveCall.arguments.length, 9);
   const sync = createSuiNpcProfileTransaction({ operation: "sync", identity, lifecycle: dead, npcProfileObjectId: f.profileId, expectedRevision: "4", npcWorld: f.options.npcWorld }).getData();
   assert.equal(sync.commands[0].MoveCall.function, "sync_lifecycle");
   assert.equal(sync.commands[0].MoveCall.arguments.length, 6);

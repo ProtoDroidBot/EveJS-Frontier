@@ -37,7 +37,10 @@ export type SuiAssemblyAccessWorld = {
   typeOrigin: string;
   /** Original world package defining TenantItemId and assembly types. */
   worldPackageId: string;
+  /** Core world registry used to validate assembly and Character identities. */
   objectRegistryId: string;
+  /** Extension registry that owns derived policy objects. */
+  accessRegistryId: string;
   tenant: string;
 };
 
@@ -216,7 +219,7 @@ export function deriveSuiAssemblyObjectId(world: SuiAssemblyAccessWorld, itemId:
 
 export function deriveSuiAssemblyAccessPolicyId(world: SuiAssemblyAccessWorld, itemId: unknown): string {
   return deriveObjectID(
-    address(world.objectRegistryId, "Assembly access object registry"),
+    address(world.accessRegistryId, "Assembly access registry"),
     `${address(world.typeOrigin, "Assembly access type origin")}::assembly_access::AssemblyAccessPolicyKey`,
     PolicyKey.serialize({ assembly_id: deriveSuiAssemblyObjectId(world, itemId) }).toBytes(),
   );
@@ -229,7 +232,7 @@ export function deriveSuiAssemblyAccessGrantId(
 ): string {
   const policyId = deriveSuiAssemblyAccessPolicyId(world, itemId);
   return deriveObjectID(
-    address(world.objectRegistryId, "Assembly access object registry"),
+    policyId,
     `${address(world.typeOrigin, "Assembly access type origin")}::assembly_access::AssemblyAccessGrantKey`,
     GrantKey.serialize({ policy_id: policyId, grant_id: Array.from(uuidBytes(grantId)) }).toBytes(),
   );
@@ -402,6 +405,7 @@ export function addSuiAssemblyAccessCreatePolicyCall(input: {
     typeArguments: [input.assemblyType],
     arguments: [
       input.tx.object(address(input.world.objectRegistryId, "Assembly access object registry")),
+      input.tx.object(address(input.world.accessRegistryId, "Assembly access registry")),
       input.tx.pure.address(address(input.assemblyObjectId, "Assembly object")),
       input.ownerCap,
     ],

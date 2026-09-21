@@ -28,6 +28,14 @@ const NPC_PACKAGE_ID = `0x${"4".repeat(64)}`;
 const NPC_TYPE_ORIGIN = `0x${"5".repeat(64)}`;
 const ACCESS_PACKAGE_ID = `0x${"6".repeat(64)}`;
 const ACCESS_TYPE_ORIGIN = `0x${"7".repeat(64)}`;
+const NPC_REGISTRY_ID = `0x${"8".repeat(64)}`;
+const ACCESS_REGISTRY_ID = `0x${"9".repeat(64)}`;
+const CATAPULT_PACKAGE_ID = `0x${"a".repeat(64)}`;
+const CATAPULT_REGISTRY_ID = `0x${"b".repeat(64)}`;
+const INDUSTRY_PACKAGE_ID = `0x${"c".repeat(64)}`;
+const INDUSTRY_REGISTRY_ID = `0x${"d".repeat(64)}`;
+const TRANSPONDER_PACKAGE_ID = `0x${"e".repeat(64)}`;
+const TRANSPONDER_REGISTRY_ID = `0x${"f".repeat(64)}`;
 const ENERGY_MANIFEST = {
   schemaVersion: 1,
   clientBuild: 3502403,
@@ -43,8 +51,19 @@ function npcManifest(overrides = {}) {
     adminAclId: ADMIN_ACL_ID,
     packageId: NPC_PACKAGE_ID,
     typeOrigin: NPC_TYPE_ORIGIN,
+    npcRegistryId: NPC_REGISTRY_ID,
     accessPackageId: ACCESS_PACKAGE_ID,
     accessTypeOrigin: ACCESS_TYPE_ORIGIN,
+    accessRegistryId: ACCESS_REGISTRY_ID,
+    catapultPackageId: CATAPULT_PACKAGE_ID,
+    catapultTypeOrigin: CATAPULT_PACKAGE_ID,
+    catapultRegistryId: CATAPULT_REGISTRY_ID,
+    industryPackageId: INDUSTRY_PACKAGE_ID,
+    industryTypeOrigin: INDUSTRY_PACKAGE_ID,
+    industryRegistryId: INDUSTRY_REGISTRY_ID,
+    transponderPackageId: TRANSPONDER_PACKAGE_ID,
+    transponderTypeOrigin: TRANSPONDER_PACKAGE_ID,
+    transponderRegistryId: TRANSPONDER_REGISTRY_ID,
     ...overrides,
   };
 }
@@ -493,19 +512,17 @@ test("NPC deployment sync rejects malformed schemas and noncanonical or zero add
     assert.doesNotMatch(malformed.stdout + malformed.stderr, /private-not-echoed/);
   });
 
-test("NPC deployment sync rejects incomplete assembly-access metadata",
+test("NPC deployment sync rejects incomplete feature registry metadata",
   { skip: !canRunPowerShell }, (t) => {
     const f = npcSyncFixture(t);
-    const { accessTypeOrigin: _origin, ...withoutOrigin } = npcManifest();
-    f.write(withoutOrigin);
-    const missingOrigin = f.run();
-    assert.notEqual(missingOrigin.status, 0);
-    assert.match(missingOrigin.stderr, /configured together/);
-    const { accessPackageId: _package, ...withoutPackage } = npcManifest();
-    f.write(withoutPackage);
-    const missingPackage = f.run();
-    assert.notEqual(missingPackage.status, 0);
-    assert.match(missingPackage.stderr, /configured together/);
+    for (const field of ["npcRegistryId", "accessRegistryId", "catapultRegistryId", "industryRegistryId", "transponderRegistryId"]) {
+      const manifest = npcManifest();
+      delete manifest[field];
+      f.write(manifest);
+      const result = f.run();
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, new RegExp(field));
+    }
   });
 
 test("Absent NPC source fails closed without deleting a previously synchronized destination",
@@ -534,7 +551,7 @@ test("NPC deployment dry-run validates upgrades without changing either destinat
     f.write(npcManifest({ packageId: `0x${"6".repeat(64)}` }));
     const dryRun = f.run(["-DryRun"]);
     assert.equal(dryRun.status, 0, dryRun.stderr || dryRun.stdout);
-    assert.match(dryRun.stdout, /Would sync public NPC deployment/);
+    assert.match(dryRun.stdout, /Would sync public feature deployment/);
     assert.equal(fs.readFileSync(f.manifestDestination, "utf8"), previousNpc);
     assert.equal(fs.readFileSync(f.configPath, "utf8"), previousWorld);
     f.write(npcManifest({ chainId: "deadbeef" }));

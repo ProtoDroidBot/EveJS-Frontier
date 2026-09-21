@@ -58,6 +58,12 @@ public classes and no owner, character, faction, NPC, or entity identity is
 serialized. The source resolver is deliberately generic so moving the Sui
 contract to the future scanning assembly does not change job or result schemas.
 
+No `world::network_node::NetworkNode` layout or deployed Move package is changed
+for this temporary interface. Ownership is still established by the existing
+signed-wallet Network Node flow, while reach, cost reservation, cooldown, job
+state, warm-up, and redacted results are server authorities. Run
+`npm run test:frontier-remote-scanning` for the focused server-package checks.
+
 Relevant checks: `frontierNetworkNodeEnergy.test`, `frontierNetworkNodeFuel.test`,
 `frontierSmartStorageUnit.test`, `frontierIndustryInventory.test`,
 `frontierSmartAssemblyRequests.test`, `frontierAssemblyEnergyConfig.test`,

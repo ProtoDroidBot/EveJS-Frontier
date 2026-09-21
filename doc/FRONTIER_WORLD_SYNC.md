@@ -5,6 +5,11 @@
 repository and publishes the current deployment identity into EveJS only after
 the local chain and generated artifacts agree.
 
+The deployment is split into the base world plus NPC, assembly-access,
+catapult, Smart Industry, and transponder feature packages. The public feature
+manifest keeps each package's current call target, stable type origin, and
+shared registry separate from the base-world identity.
+
 `efctl env up` regenerates this disposable local chain and redeploys the world,
 so package and shared-object IDs can change on every up/restart. Using this
 wrapper ensures EveJS receives the newly deployed values.
@@ -14,6 +19,7 @@ For the current checkout, the defaults resolve to:
 ```text
 efctl workspace: D:\carbonengine-stuff_EF\3502403
 EveJS config:    D:\carbonengine-stuff_EF\EveJS-Frontier\_local\frontier-world\3502403\world.private.json
+Feature config:  D:\carbonengine-stuff_EF\EveJS-Frontier\_local\frontier-world\3502403\npc-deployment.json
 ```
 
 The `_local` output is ignored by Git. Its ACL is restricted to the current
@@ -92,11 +98,45 @@ After `efctl env up` succeeds, the tool validates all of the following:
 - its chain ID matches `sui_getChainIdentifier` at `127.0.0.1:9000`;
 - `.env` contains exactly one checksum-valid, Ed25519
   `suiprivkey` `ADMIN_PRIVATE_KEY`.
+- when `deployments\localnet\npc-deployment.json` exists, its version-1 schema
+  contains canonical nonzero package/origin/registry addresses for all five
+  features and its chain/base-world IDs match the synchronized world.
 
-Only then does it atomically publish a `ready` private config. The native
+It copies only the approved public feature fields to the sibling
+`npc-deployment.json`; no private key is written to that file. Only then does it
+atomically publish a `ready` private config. The native
 Frontier launcher passes this stable config path to EveJS, which reads it when
 provisioning a character. Explicit `EVEJS_SUI_*` overrides still take
 precedence.
+
+The historical feature-manifest filename now covers all five split packages.
+It is not an NPC-only file. Current schema version 1 is atomic: partial feature
+manifests are rejected. If an authoritative source manifest disappears while a
+synchronized destination exists, sync preserves the destination for recovery
+but fails closed instead of silently reverting feature calls to the base world.
+
+After publishing the configuration, sync tops every configured NPC faction
+wallet up to the common `suiWalletFunding.budgetMist` minimum from the
+synchronized admin account. When enabled and necessary, the Localnet faucet
+funds the admin, never the faction wallets directly. A dry run reports the
+deficit without transferring; `-SkipNpcFactionFunding` is for isolated tests or
+explicit recovery only.
+
+## Package-split validation boundary
+
+Sync validates feature addresses and base-world bindings, but it does not yet
+query each live feature package for its expected module or include the public
+feature manifest and per-feature publish outputs in `world.private.json`'s
+artifact hashes. Before activating manually upgraded metadata, verify the live
+module set, exact shared-registry type, retained type origin, UpgradeCap
+owner/policy, and a feature-specific transaction dry run.
+
+The sibling `world-contracts/scripts/deploy-world.sh` cleans deployment outputs
+and performs a fresh publish of all six packages. It is not a per-feature
+upgrade command. Preserve the base package, Object Registry, Admin ACL, feature
+type origins, and registries when upgrading a call implementation. The full
+topology and current upgrade limitations are documented in the sibling
+`3502403/world-contracts/docs/package-topology.md`.
 
 `down` changes the synchronized state before tearing down the chain. A
 character-provisioning attempt while the state is `syncing`, `starting`,

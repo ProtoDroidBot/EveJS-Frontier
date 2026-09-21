@@ -16,8 +16,11 @@ const world = {
 const config = () => ({
   schemaVersion: 1, chainId: world.chainId, worldPackageId: world.packageId,
   objectRegistryId: world.objectRegistryId, adminAclId: world.adminAclId,
-  packageId: address(8), typeOrigin: address(7),
-  accessPackageId: address(10), accessTypeOrigin: address(9),
+  packageId: address(8), typeOrigin: address(7), npcRegistryId: address(6),
+  accessPackageId: address(10), accessTypeOrigin: address(9), accessRegistryId: address(11),
+  catapultPackageId: address(12), catapultTypeOrigin: address(12), catapultRegistryId: address(13),
+  industryPackageId: address(14), industryTypeOrigin: address(14), industryRegistryId: address(15),
+  transponderPackageId: address(16), transponderTypeOrigin: address(16), transponderRegistryId: address(17),
 });
 
 function fixture(t) {
@@ -37,8 +40,14 @@ test("fresh NPC deployments default to the original world while upgrades separat
   const initial = readSuiNpcWorldConfig(world, f.env);
   assert.equal(initial.npcPackageId, world.packageId);
   assert.equal(initial.npcTypeOrigin, world.packageId);
+  assert.equal(initial.npcRegistryId, world.objectRegistryId);
   assert.equal(initial.accessPackageId, world.packageId);
   assert.equal(initial.accessTypeOrigin, world.packageId);
+  assert.equal(initial.accessRegistryId, world.objectRegistryId);
+  assert.equal(initial.catapultPackageId, world.packageId);
+  assert.equal(initial.catapultRegistryId, world.objectRegistryId);
+  assert.equal(initial.transponderPackageId, world.packageId);
+  assert.equal(initial.transponderRegistryId, world.objectRegistryId);
   const firstUpgrade = readSuiNpcWorldConfig(world, { ...f.env, EVEJS_SUI_NPC_PACKAGE_ID: "0x7" });
   assert.equal(firstUpgrade.npcPackageId, address(7));
   assert.equal(firstUpgrade.npcTypeOrigin, address(7));
@@ -67,11 +76,20 @@ test("public NPC config normalizes addresses without mutating base world or pers
   const result = readSuiNpcWorldConfig(world, f.env);
   assert.equal(result.npcPackageId, address(8));
   assert.equal(result.npcTypeOrigin, address(7));
+  assert.equal(result.npcRegistryId, address(6));
   assert.equal(result.accessPackageId, address(10));
   assert.equal(result.accessTypeOrigin, address(9));
+  assert.equal(result.accessRegistryId, address(11));
+  assert.equal(result.catapultPackageId, address(12));
+  assert.equal(result.catapultRegistryId, address(13));
+  assert.equal(result.transponderPackageId, address(16));
+  assert.equal(result.transponderRegistryId, address(17));
   assert.deepEqual(world, captured);
   assert.deepEqual(Object.keys(result).sort(), [
-    "accessPackageId", "accessTypeOrigin", "fingerprint", "npcPackageId", "npcTypeOrigin",
+    "accessPackageId", "accessRegistryId", "accessTypeOrigin",
+    "catapultPackageId", "catapultRegistryId", "catapultTypeOrigin",
+    "fingerprint", "npcPackageId", "npcRegistryId", "npcTypeOrigin",
+    "transponderPackageId", "transponderRegistryId", "transponderTypeOrigin",
   ]);
   f.write(config());
   assert.equal(readSuiNpcWorldConfig(world, f.env).fingerprint, result.fingerprint);
@@ -84,13 +102,17 @@ test("per-field NPC environment overrides cannot mask an invalid deployment file
     ...f.env,
     EVEJS_SUI_NPC_PACKAGE_ID: "0x9",
     EVEJS_SUI_NPC_TYPE_ORIGIN: "0x6",
+    EVEJS_SUI_NPC_REGISTRY_ID: "0x5",
     EVEJS_SUI_ASSEMBLY_ACCESS_PACKAGE_ID: "0xc",
     EVEJS_SUI_ASSEMBLY_ACCESS_TYPE_ORIGIN: "0xb",
+    EVEJS_SUI_ASSEMBLY_ACCESS_REGISTRY_ID: "0xa",
   };
   assert.equal(readSuiNpcWorldConfig(world, env).npcPackageId, address(9));
   assert.equal(readSuiNpcWorldConfig(world, env).npcTypeOrigin, address(6));
+  assert.equal(readSuiNpcWorldConfig(world, env).npcRegistryId, address(5));
   assert.equal(readSuiNpcWorldConfig(world, env).accessPackageId, address(12));
   assert.equal(readSuiNpcWorldConfig(world, env).accessTypeOrigin, address(11));
+  assert.equal(readSuiNpcWorldConfig(world, env).accessRegistryId, address(10));
   assert.equal(readSuiNpcWorldConfig(world, { ...f.env, EVEJS_SUI_NPC_PACKAGE_ID: "0x9" }).npcTypeOrigin, address(7));
   for (const [key, value] of Object.entries({ packageId: "invalid", typeOrigin: "0x0" })) {
     f.write({ ...config(), [key]: value });
@@ -120,8 +142,16 @@ test("malformed NPC config and invalid address overrides reject rather than sele
   for (const key of [
     "EVEJS_SUI_NPC_PACKAGE_ID",
     "EVEJS_SUI_NPC_TYPE_ORIGIN",
+    "EVEJS_SUI_NPC_REGISTRY_ID",
     "EVEJS_SUI_ASSEMBLY_ACCESS_PACKAGE_ID",
     "EVEJS_SUI_ASSEMBLY_ACCESS_TYPE_ORIGIN",
+    "EVEJS_SUI_ASSEMBLY_ACCESS_REGISTRY_ID",
+    "EVEJS_SUI_CATAPULT_PACKAGE_ID",
+    "EVEJS_SUI_CATAPULT_TYPE_ORIGIN",
+    "EVEJS_SUI_CATAPULT_REGISTRY_ID",
+    "EVEJS_SUI_TRANSPONDER_PACKAGE_ID",
+    "EVEJS_SUI_TRANSPONDER_TYPE_ORIGIN",
+    "EVEJS_SUI_TRANSPONDER_REGISTRY_ID",
   ]) {
     for (const value of ["not-an-address", "0x0", `0x${"a".repeat(65)}`]) {
       assert.throws(() => readSuiNpcWorldConfig(world, { ...f.env, [key]: value }), /Sui address/);
@@ -129,14 +159,14 @@ test("malformed NPC config and invalid address overrides reject rather than sele
   }
 });
 
-test("assembly access deployment fields must be configured as a package/origin pair", t => {
+test("feature deployment registries are required with their packages", t => {
   const f = fixture(t);
-  const { accessTypeOrigin: _origin, ...withoutOrigin } = config();
-  f.write(withoutOrigin);
-  assert.throws(() => readSuiNpcWorldConfig(world, f.env), /configured together/);
-  const { accessPackageId: _package, ...withoutPackage } = config();
-  f.write(withoutPackage);
-  assert.throws(() => readSuiNpcWorldConfig(world, f.env), /configured together/);
+  for (const key of ["npcRegistryId", "accessRegistryId", "catapultRegistryId", "transponderRegistryId"]) {
+    const value = config();
+    delete value[key];
+    f.write(value);
+    assert.throws(() => readSuiNpcWorldConfig(world, f.env), /Sui address/);
+  }
 });
 
 test("an explicitly selected NPC config is required and replaces conventional sibling lookup", t => {

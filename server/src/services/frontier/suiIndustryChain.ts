@@ -7,8 +7,13 @@ import type { AssemblySnapshot } from "./suiAssemblySnapshot";
 import { industryU64, parseIndustryProduction, type IndustryFacilitySnapshot, type IndustrySnapshot, type IndustryProduction } from "./suiIndustrySnapshot";
 
 const IndustryKey = bcs.struct("IndustryKey", { assembly_id: bcs.Address });
-export function deriveSuiIndustryId(world: Pick<SuiAssemblyWorld, "packageId" | "objectRegistryId">, assemblyId: string, typeOrigin = world.packageId) {
-  return deriveObjectID(world.objectRegistryId, `${typeOrigin}::smart_industry::IndustryKey`,
+export function deriveSuiIndustryId(
+  world: Pick<SuiAssemblyWorld, "packageId" | "objectRegistryId">,
+  assemblyId: string,
+  typeOrigin = world.packageId,
+  industryRegistryId = world.objectRegistryId,
+) {
+  return deriveObjectID(industryRegistryId, `${typeOrigin}::smart_industry::IndustryKey`,
     IndustryKey.serialize({ assembly_id: assemblyId }).toBytes());
 }
 function sameID(a: any, b: string) { return typeof a === "string" && normalizeSuiAddress(a) === normalizeSuiAddress(b); }
@@ -106,13 +111,16 @@ export function createSuiIndustryChain(options: {
   execute(label: string, tx: Transaction, ownerId?: number, assertCurrent?: () => void): Promise<unknown>;
   assertSnapshotCurrent(facility: IndustryFacilitySnapshot): void;
   /** An upgrade can add this module while the underlying Assembly retains its original type. */
-  industryPackageId?: string; industryTypeOrigin?: string;
+  industryPackageId?: string; industryTypeOrigin?: string; industryRegistryId?: string;
   now?: () => number;
 }) {
   const { world, client, chain } = options;
   const packageId = normalizeSuiAddress(options.industryPackageId || world.packageId);
   const typeOrigin = normalizeSuiAddress(options.industryTypeOrigin || packageId);
-  if (!isValidSuiAddress(packageId) || !isValidSuiAddress(typeOrigin)) throw new Error("Invalid Smart Industry package or type origin");
+  const registryId = normalizeSuiAddress(options.industryRegistryId || world.objectRegistryId);
+  if (!isValidSuiAddress(packageId) || !isValidSuiAddress(typeOrigin) || !isValidSuiAddress(registryId)) {
+    throw new Error("Invalid Smart Industry package, type origin or registry");
+  }
   async function read(facility: IndustryFacilitySnapshot, assembly: AssemblySnapshot, repairProduction = false) {
     if (assembly.itemId !== facility.itemId || assembly.kind !== "assembly" || assembly.typeId !== facility.typeId ||
         String(assembly.ownerId) !== facility.snapshot.owner_id || String(assembly.solarSystemId) !== facility.snapshot.solar_system_id) {
@@ -122,7 +130,7 @@ export function createSuiIndustryChain(options: {
     if (!underlying) throw new Error("Industry Assembly has not synchronized yet");
     if (underlying.online !== (facility.status === 2)) throw new Error("Industry Assembly status changed; retry current snapshot");
     const assemblyId = chain.deriveId(facility.itemId);
-    const industryObjectID = deriveSuiIndustryId(world, assemblyId, typeOrigin);
+    const industryObjectID = deriveSuiIndustryId(world, assemblyId, typeOrigin, registryId);
     const response = await client.getObject({ id: industryObjectID, options: { showContent: true, showType: true } });
     if (response.error?.code === "notExists") return { industryObjectID, assemblyObjectID: assemblyId, state: null };
     if (response.error || !response.data || response.data.type !== `${typeOrigin}::smart_industry::SmartIndustry` ||
@@ -164,7 +172,7 @@ export function createSuiIndustryChain(options: {
     const snapshot = appendIndustrySnapshot(tx, packageId, facility.snapshot, typeOrigin);
     const production = appendIndustryProduction(tx, packageId, facility.production);
     tx.moveCall({ target: `${packageId}::smart_industry::${previous.state ? "sync_with_production" : "create_with_production"}`,
-      arguments: [tx.object(previous.state ? previous.industryObjectID : world.objectRegistryId),
+      arguments: [tx.object(previous.state ? previous.industryObjectID : registryId),
         tx.object(previous.assemblyObjectID), tx.object(world.adminAclId),
         ...(previous.state ? [tx.pure.u64(previous.state.revision)] : []),
         tx.pure.u64(observed), snapshot, production, tx.object(SUI_CLOCK_OBJECT_ID)] });

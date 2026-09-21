@@ -30,7 +30,7 @@ function npcProfileObject(identity: SuiNpcCharacterIdentity, env: NodeJS.Process
 }) {
   const npcWorld = readSuiNpcWorldConfig({ ...identity, chainId }, env);
   return {
-    objectId: deriveSuiNpcProfileObjectId(identity.objectRegistryId, identity.characterObjectId, npcWorld.npcTypeOrigin),
+    objectId: deriveSuiNpcProfileObjectId(npcWorld.npcRegistryId, identity.characterObjectId, npcWorld.npcTypeOrigin),
     type: `${npcWorld.npcTypeOrigin}::npc::NpcProfile`,
     owner: { $kind: "Shared" },
     previousTransaction: "npc-profile-transaction",
@@ -247,7 +247,7 @@ test("NPC upgrade calls the latest implementation while preserving original Char
       assert.equal(commands.length, 2);
       assert.equal(commands[0].MoveCall.package, npcWorld.npcPackageId);
       assert.equal(commands[0].MoveCall.function, "create_npc_character");
-      assert.equal(commands[1].MoveCall.package, npcWorld.npcPackageId);
+      assert.equal(commands[1].MoveCall.package, identity.packageId);
       assert.equal(commands[1].MoveCall.function, "share_character");
       return successfulResult(identity, "custom-package-create");
     },
@@ -261,7 +261,7 @@ test("NPC upgrade calls the latest implementation while preserving original Char
   assert.equal(result.characterObjectId, prepareSuiNpcCharacterIdentity(npcInput, options).characterObjectId);
   assert.equal(result.npcProfileObjectId, profile.objectId);
   assert.notEqual(result.npcProfileObjectId,
-    deriveSuiNpcProfileObjectId(identity.objectRegistryId, identity.characterObjectId, npcWorld.npcPackageId));
+    deriveSuiNpcProfileObjectId(npcWorld.npcRegistryId, identity.characterObjectId, npcWorld.npcPackageId));
   assert.deepEqual(callbacks, ["character-confirmed"]);
   assert.equal(submissions, 1);
 });

@@ -43,7 +43,10 @@ export type SuiTransponderWorld = {
   packageId: string;
   /** First package version that introduced transponder::TransponderScopeKey. */
   typeOrigin: string;
+  /** Core world registry bound into the commitment preimage and stored record. */
   objectRegistryId: string;
+  /** Extension registry that owns derived commitment objects. */
+  transponderRegistryId: string;
   tenant: string;
 };
 
@@ -211,12 +214,12 @@ export function verifySuiTransponderCommitment(
 }
 
 export function deriveSuiTransponderCommitmentObjectId(
-  world: Pick<SuiTransponderWorld, "typeOrigin" | "objectRegistryId" | "tenant">,
+  world: Pick<SuiTransponderWorld, "typeOrigin" | "transponderRegistryId" | "tenant">,
   scope: SuiTransponderScope,
 ): string {
   const normalizedScope = normalizeSuiTransponderScope(scope);
   return deriveObjectID(
-    address(world.objectRegistryId, "Transponder object registry"),
+    address(world.transponderRegistryId, "Transponder registry"),
     `${address(world.typeOrigin, "Transponder type origin")}::transponder::TransponderScopeKey`,
     TransponderScopeKey.serialize({
       tenant: tenant(world.tenant),
@@ -313,6 +316,7 @@ export function createSuiTribeTransponderAuthorTransaction(input: {
     target: target(input.world, "author_for_tribe"),
     arguments: [
       tx.object(address(input.world.objectRegistryId, "Transponder object registry")),
+      tx.object(address(input.world.transponderRegistryId, "Transponder registry")),
       tx.object(address(input.characterObjectId, "Transponder character")),
       tx.pure.vector("u8", commitment(input.commitment)),
     ],
@@ -322,6 +326,7 @@ export function createSuiTribeTransponderAuthorTransaction(input: {
 
 export function createSuiFactionTransponderAuthorTransaction(input: {
   world: SuiTransponderWorld;
+  characterObjectId: string;
   npcProfileObjectId: string;
   commitment: Uint8Array | string;
 }): Transaction {
@@ -330,6 +335,8 @@ export function createSuiFactionTransponderAuthorTransaction(input: {
     target: target(input.world, "author_for_faction"),
     arguments: [
       tx.object(address(input.world.objectRegistryId, "Transponder object registry")),
+      tx.object(address(input.world.transponderRegistryId, "Transponder registry")),
+      tx.object(address(input.characterObjectId, "Transponder character")),
       tx.object(address(input.npcProfileObjectId, "Transponder NPC profile")),
       tx.pure.vector("u8", commitment(input.commitment)),
     ],

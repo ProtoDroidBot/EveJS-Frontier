@@ -27,9 +27,9 @@ For inspection without transfers, run `npm run frontier:npc:fund -- --dry-run`. 
 
 Every NPC pilot receives its own Sui Character and wallet-owned PlayerProfile, even though its faction shares a wallet address. Provisioning does not create a local human character or player account. The ledger retains the object IDs, world/chain identity, and transaction state needed for reconciliation.
 
-The custom `world::npc` module also creates a shared `NpcProfile` for each NPC. This is the authoritative on-chain NPC classification and lifecycle record; the compatible Character and PlayerProfile remain available to existing readers. `NpcProfileKey { character_id: ID }` derives the profile under the world ObjectRegistry, while a dynamic marker on the Character links to the profile. The registry binds each tenant/faction pair to an immutable wallet address. The contract accepts only the reserved NPC game-character range, and human provisioning rejects that range.
+The custom `<npcPackageId>::npc` module, published from `contracts/world_npc`, also creates a shared `NpcProfile` for each NPC. This is the authoritative on-chain NPC classification and lifecycle record; the compatible Character and PlayerProfile remain available to existing readers. `NpcProfileKey { character_id: ID }` derives the profile under the world ObjectRegistry, while a dynamic marker on the Character links to the profile. The registry binds each tenant/faction pair to an immutable wallet address. The contract accepts only the reserved NPC game-character range, and human provisioning rejects that range.
 
-The NPC worker must verify this custom profile and its identity; an ordinary Character/PlayerProfile pair alone cannot count as a confirmed NPC. Deployments lacking `world::npc` fail provisioning rather than silently using unmarked player profiles. Legacy on-chain NPC Characters can be registered through the admin-authorized `register_profile` operation when their reserved ID, faction wallet, and current identity match.
+The NPC worker must verify this custom profile and its identity; an ordinary Character/PlayerProfile pair alone cannot count as a confirmed NPC. Deployments lacking the configured `npc` module fail provisioning rather than silently using unmarked player profiles. Legacy on-chain NPC Characters can be registered through the admin-authorized `register_profile` operation when their reserved ID, faction wallet, and current identity match.
 
 The string component comes from `factionStringOnlyID` when explicitly supplied, otherwise the existing `npcFactionKey`/`frontierFactionKey` profile metadata. The numeric component is the NPC profile's faction ID. This wallet grouping does not redefine the contracts' tribe IDs: NPC Characters use the current world provisioning tribe setting.
 
@@ -77,15 +77,22 @@ An explicit runtime-data reset clears the identity ledger along with runtime NPC
 
 After syncing a deployment, run `npm run frontier:npc:verify` from the EveJS repository to build the tools and perform a read-only Localnet smoke check. It uses the synchronized world and NPC metadata, simulates the server's NPC creation transaction with validation enabled, checks profile types, faction ownership and identity events, and confirms no simulated objects were committed. It never signs or submits a transaction. Optional arguments such as `--world-config PATH`, `--build 3502403`, or `--npc-id 1599999999` can be passed after `--`. Access to the protected local world configuration is required; private keys are never printed.
 
-Compiling these sources does not modify an already deployed world. A fresh world deployment containing `world::npc` uses the base world package for both NPC calls and NPC type identities. For a compatible upgrade, keep the original world package, ObjectRegistry, AdminACL, Character, and `TenantItemId` identities. Configure the NPC implementation separately:
+Compiling these sources does not modify an already deployed world. A fresh deployment publishes `npc` as the independent `world_npc` feature package, uses that feature package as both NPC call target and type origin, and creates a shared `NpcRegistry`. For a compatible upgrade, keep the original world package, ObjectRegistry, AdminACL, Character, and `TenantItemId` identities; preserve the NPC type origin and registry; and configure only the latest NPC implementation separately:
 
 | Setting | Purpose |
 | --- | --- |
 | `EVEJS_SUI_NPC_PACKAGE_ID` | Latest package containing the NPC call implementations |
 | `EVEJS_SUI_NPC_TYPE_ORIGIN` | First package that introduced `npc::NpcProfile` and `npc::NpcProfileKey` |
+| `EVEJS_SUI_NPC_REGISTRY_ID` | Shared registry that owns derived NPC profiles |
+| `EVEJS_SUI_ASSEMBLY_ACCESS_PACKAGE_ID` / `EVEJS_SUI_ASSEMBLY_ACCESS_TYPE_ORIGIN` / `EVEJS_SUI_ASSEMBLY_ACCESS_REGISTRY_ID` | Assembly-access implementation, stable type origin, and policy registry |
+| `EVEJS_SUI_CATAPULT_PACKAGE_ID` / `EVEJS_SUI_CATAPULT_TYPE_ORIGIN` / `EVEJS_SUI_CATAPULT_REGISTRY_ID` | Smart Catapult implementation, stable type origin, and sidecar registry |
+| `SMART_INDUSTRY_PACKAGE_ID` / `SMART_INDUSTRY_TYPE_ORIGIN` / `SMART_INDUSTRY_REGISTRY_ID` | Smart Industry implementation, stable type origin, and sidecar registry |
+| `EVEJS_SUI_TRANSPONDER_PACKAGE_ID` / `EVEJS_SUI_TRANSPONDER_TYPE_ORIGIN` / `EVEJS_SUI_TRANSPONDER_REGISTRY_ID` | Transponder implementation, stable type origin, and commitment registry |
 | `EVEJS_SUI_NPC_CONFIG_PATH` | Optional explicit deployment JSON path |
 
-With neither file nor overrides, both NPC IDs default to the base package. For the first upgrade introducing the module, a package override alone also supplies the type origin. For subsequent upgrades, retain that first origin explicitly. Calls use the latest implementation; derived profile IDs and type checks use the origin.
+With neither file nor overrides, the reader retains a legacy fallback to the base package and Object Registry. That fallback is not valid for the current split deployment because the base package does not contain `npc`; normal operation must use the synchronized combined manifest. For the first compatible package introducing the module, a package override alone also supplies the type origin. For subsequent upgrades, retain that first origin explicitly. Calls use the latest implementation; derived profile IDs and type checks use the origin.
+
+The access reader also currently falls back to the configured NPC package when access metadata is absent. That compatibility behavior is unsafe for independently split packages because `world_npc` contains no `assembly_access` module; use the complete manifest or all three explicit access overrides. Removing this cross-package fallback is tracked as deployment hardening work.
 
 Alternatively, place public `npc-deployment.json` next to the synchronized `world.private.json` selected by `EVEJS_SUI_WORLD_CONFIG_PATH`:
 
@@ -97,17 +104,30 @@ Alternatively, place public `npc-deployment.json` next to the synchronized `worl
   "objectRegistryId": "0xORIGINAL_REGISTRY",
   "adminAclId": "0xORIGINAL_ACL",
   "packageId": "0xLATEST_NPC_IMPLEMENTATION",
-  "typeOrigin": "0xFIRST_PACKAGE_CONTAINING_NPC"
+  "typeOrigin": "0xFIRST_PACKAGE_CONTAINING_NPC",
+  "npcRegistryId": "0xNPC_REGISTRY",
+  "accessPackageId": "0xASSEMBLY_ACCESS_IMPLEMENTATION",
+  "accessTypeOrigin": "0xFIRST_PACKAGE_CONTAINING_ASSEMBLY_ACCESS",
+  "accessRegistryId": "0xASSEMBLY_ACCESS_REGISTRY",
+  "catapultPackageId": "0xCATAPULT_IMPLEMENTATION",
+  "catapultTypeOrigin": "0xFIRST_PACKAGE_CONTAINING_CATAPULT",
+  "catapultRegistryId": "0xCATAPULT_REGISTRY",
+  "industryPackageId": "0xSMART_INDUSTRY_IMPLEMENTATION",
+  "industryTypeOrigin": "0xFIRST_PACKAGE_CONTAINING_SMART_INDUSTRY",
+  "industryRegistryId": "0xSMART_INDUSTRY_REGISTRY",
+  "transponderPackageId": "0xTRANSPONDER_IMPLEMENTATION",
+  "transponderTypeOrigin": "0xFIRST_PACKAGE_CONTAINING_TRANSPONDER",
+  "transponderRegistryId": "0xTRANSPONDER_REGISTRY"
 }
 ```
 
 Replace placeholders with verified deployed values. The chain and original world IDs must match the synchronized base world. Environment package/origin overrides take precedence per field, but an invalid file is always rejected. The conventional sibling is optional; an explicitly selected file must exist. The config snapshot is checked again before submission so a deployment change cannot redirect an already prepared operation.
 
-Store the authoritative public manifest at `world-contracts/deployments/localnet/npc-deployment.json` in the selected efctl workspace. `FrontierWorld.ps1 sync` snapshots it alongside the original deployment artifacts, validates its schema and chain/base-world bindings, and writes the sanitized runtime fields to the sibling file above before marking the world ready. The manifest addresses must be full nonzero 32-byte Sui addresses. Extra fields are not copied. `sync -DryRun` validates and reports without changing either destination.
+Store the authoritative public feature manifest at `world-contracts/deployments/localnet/npc-deployment.json` in the selected efctl workspace. The historical filename is retained for compatibility, but the manifest now binds all five extension packages and registries. `FrontierWorld.ps1 sync` snapshots it alongside the original deployment artifacts, validates its schema and chain/base-world bindings, and writes the sanitized runtime fields to the sibling file above before marking the world ready. The manifest addresses must be full nonzero 32-byte Sui addresses. Extra fields are not copied. `sync -DryRun` validates and reports without changing either destination.
 
 Malformed or mismatched NPC metadata makes synchronization fail closed. If the source manifest is absent and no destination manifest exists, synchronization retains its legacy base-package behavior. If a destination already exists, the missing source is an error: sync preserves the old NPC metadata for recovery but marks the base-world config unavailable. Restore the matching authoritative manifest, or explicitly reconcile the deployment before removing obsolete metadata; do not silently discard pending signed NPC journals.
 
-`FrontierWorld.ps1 sync` still validates the original deployment JSON, publication metadata, and their hashes. Retain those base artifacts when applying a manual upgrade and record upgrade publication metadata separately. Replacing the base `packageId` with a newer implementation breaks existing type/derived-ID checks. `deploy-world.sh` performs a fresh publish and cleans deployment artifacts; it is not an upgrade command. Synchronization copies verified deployment settings; it does not publish, upgrade, reset Localnet, or replace the world registry.
+`FrontierWorld.ps1 sync` still validates the original deployment JSON, publication metadata, and their hashes. The current private-config artifact hashes do not cover the combined feature manifest or the five per-feature publish outputs, so retain and verify those separately when applying a manual upgrade. Replacing the base `packageId` with a newer implementation breaks existing type/derived-ID checks. `deploy-world.sh` performs a fresh publish and cleans deployment artifacts; it is not an upgrade command. Synchronization copies address-validated deployment settings; it does not publish, upgrade, reset Localnet, replace the world registry, or prove that every live feature call package exposes the expected module.
 
 ## Verification
 

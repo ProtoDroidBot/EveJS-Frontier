@@ -24,6 +24,7 @@
     "test:frontier-static": "node scripts/Tests/run-frontier-static-tests.js",
     "test:isolated": "node scripts/Tests/run-isolated-tests.js",
     "test:frontier-server": "node scripts/Tests/run-frontier-server-tests.js",
+    "test:frontier-remote-scanning": "node scripts/Tests/run-isolated-tests.js --test-concurrency=1 server/tests/frontierRemoteSystemScanning.test.js server/tests/frontierSmartAssemblyEnergyApi.test.js server/tests/frontierNetworkNodeEnergy.test.js",
     "test:frontier-runners": "node --test scripts/Tests/frontier-test-files.test.js scripts/Tests/frontier-windows-runtime.test.js scripts/Tests/frontier-world-sync.test.js scripts/Tests/verify-npc-deployment.test.js",
     "test:frontier-windows": "node --test scripts/Tests/frontier-windows-client.test.js scripts/Tests/frontier-windows-runtime.test.js && _local\\frontier-python312\\Scripts\\python.exe -m unittest discover -s tools/frontier-client/test -p test_*.py",
     "test:isolated-helper": "node --test server/tests/isolatedGameStore.test.js",

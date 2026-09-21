@@ -26,6 +26,7 @@ const world: SuiAssemblyAccessWorld = {
   typeOrigin: addr(9),
   worldPackageId: addr(8),
   objectRegistryId: addr(2),
+  accessRegistryId: addr(3),
   tenant: "dev",
 };
 const itemId = 5_100_000_001;
@@ -70,11 +71,15 @@ function grantObject(overrides: Record<string, any> = {}) {
 }
 
 test("assembly access IDs use the policy type origin and bind grants to policy plus UUID", () => {
+  const assembly = deriveSuiAssemblyObjectId(world, itemId);
   const policy = deriveSuiAssemblyAccessPolicyId(world, itemId);
   const grant = deriveSuiAssemblyAccessGrantId(world, itemId, grantId);
   assert.notEqual(policy, grant);
+  assert.equal(deriveSuiAssemblyObjectId({ ...world, accessRegistryId: addr(4) }, itemId), assembly);
+  assert.notEqual(deriveSuiAssemblyObjectId({ ...world, objectRegistryId: addr(4) }, itemId), assembly);
   assert.equal(deriveSuiAssemblyAccessPolicyId({ ...world, packageId: addr(11) }, itemId), policy);
   assert.notEqual(deriveSuiAssemblyAccessPolicyId({ ...world, typeOrigin: addr(12) }, itemId), policy);
+  assert.notEqual(deriveSuiAssemblyAccessPolicyId({ ...world, accessRegistryId: addr(4) }, itemId), policy);
   assert.notEqual(deriveSuiAssemblyAccessGrantId(world, itemId,
     "33333333-3333-4333-8333-333333333333"), grant);
 });

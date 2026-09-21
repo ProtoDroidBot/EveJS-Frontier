@@ -15,10 +15,20 @@ export type SuiNpcWorldConfig = {
   npcPackageId: string;
   /** First package containing npc::NpcProfile and npc::NpcProfileKey. */
   npcTypeOrigin: string;
+  /** Shared registry that owns derived NPC profile IDs. */
+  npcRegistryId: string;
   /** Latest implementation package used for assembly-access Move calls. */
   accessPackageId: string;
   /** First package containing assembly_access policy/grant object types. */
   accessTypeOrigin: string;
+  /** Shared registry that owns derived assembly-access policy IDs. */
+  accessRegistryId: string;
+  catapultPackageId: string;
+  catapultTypeOrigin: string;
+  catapultRegistryId: string;
+  transponderPackageId: string;
+  transponderTypeOrigin: string;
+  transponderRegistryId: string;
   fingerprint: string;
 };
 
@@ -80,14 +90,17 @@ export function readSuiNpcWorldConfig(
         adminAclId: address(raw.adminAclId, "admin ACL"),
         packageId: address(raw.packageId, "package"),
         typeOrigin: address(raw.typeOrigin, "type origin"),
-        accessPackageId: raw.accessPackageId == null
-          ? null : address(raw.accessPackageId, "assembly access package"),
-        accessTypeOrigin: raw.accessTypeOrigin == null
-          ? null : address(raw.accessTypeOrigin, "assembly access type origin"),
+        npcRegistryId: address(raw.npcRegistryId, "NPC registry"),
+        accessPackageId: address(raw.accessPackageId, "assembly access package"),
+        accessTypeOrigin: address(raw.accessTypeOrigin, "assembly access type origin"),
+        accessRegistryId: address(raw.accessRegistryId, "assembly access registry"),
+        catapultPackageId: address(raw.catapultPackageId, "catapult package"),
+        catapultTypeOrigin: address(raw.catapultTypeOrigin, "catapult type origin"),
+        catapultRegistryId: address(raw.catapultRegistryId, "catapult registry"),
+        transponderPackageId: address(raw.transponderPackageId, "transponder package"),
+        transponderTypeOrigin: address(raw.transponderTypeOrigin, "transponder type origin"),
+        transponderRegistryId: address(raw.transponderRegistryId, "transponder registry"),
       };
-      if ((file.accessPackageId === null) !== (file.accessTypeOrigin === null)) {
-        throw new Error("NPC deployment assembly access package and type origin must be configured together");
-      }
       for (const key of ["chainId", "worldPackageId", "objectRegistryId", "adminAclId"] as const) {
         if (file[key] !== world[key]) {
           throw new Error(`NPC deployment ${key} does not match the synchronized world`);
@@ -97,21 +110,65 @@ export function readSuiNpcWorldConfig(
   }
   const packageOverride = override(env.EVEJS_SUI_NPC_PACKAGE_ID, "environment package");
   const originOverride = override(env.EVEJS_SUI_NPC_TYPE_ORIGIN, "environment type origin");
+  const npcRegistryOverride = override(
+    env.EVEJS_SUI_NPC_REGISTRY_ID, "NPC environment registry",
+  );
   const accessPackageOverride = override(
     env.EVEJS_SUI_ASSEMBLY_ACCESS_PACKAGE_ID, "assembly access environment package",
   );
   const accessOriginOverride = override(
     env.EVEJS_SUI_ASSEMBLY_ACCESS_TYPE_ORIGIN, "assembly access environment type origin",
   );
+  const accessRegistryOverride = override(
+    env.EVEJS_SUI_ASSEMBLY_ACCESS_REGISTRY_ID, "assembly access environment registry",
+  );
+  const catapultPackageOverride = override(
+    env.EVEJS_SUI_CATAPULT_PACKAGE_ID, "catapult environment package",
+  );
+  const catapultOriginOverride = override(
+    env.EVEJS_SUI_CATAPULT_TYPE_ORIGIN, "catapult environment type origin",
+  );
+  const catapultRegistryOverride = override(
+    env.EVEJS_SUI_CATAPULT_REGISTRY_ID, "catapult environment registry",
+  );
+  const transponderPackageOverride = override(
+    env.EVEJS_SUI_TRANSPONDER_PACKAGE_ID, "transponder environment package",
+  );
+  const transponderOriginOverride = override(
+    env.EVEJS_SUI_TRANSPONDER_TYPE_ORIGIN, "transponder environment type origin",
+  );
+  const transponderRegistryOverride = override(
+    env.EVEJS_SUI_TRANSPONDER_REGISTRY_ID, "transponder environment registry",
+  );
   const npcPackageId = packageOverride ?? file?.packageId ?? world.worldPackageId;
   const npcTypeOrigin = originOverride ?? file?.typeOrigin ?? npcPackageId;
+  const npcRegistryId = npcRegistryOverride ?? file?.npcRegistryId ?? world.objectRegistryId;
   const accessPackageId = accessPackageOverride ?? file?.accessPackageId ?? npcPackageId;
   const accessTypeOrigin = accessOriginOverride ?? file?.accessTypeOrigin ?? accessPackageId;
+  const accessRegistryId = accessRegistryOverride ?? file?.accessRegistryId ?? world.objectRegistryId;
+  const catapultPackageId = catapultPackageOverride ?? file?.catapultPackageId ?? world.worldPackageId;
+  const catapultTypeOrigin = catapultOriginOverride ?? file?.catapultTypeOrigin ?? catapultPackageId;
+  const catapultRegistryId = catapultRegistryOverride ?? file?.catapultRegistryId ?? world.objectRegistryId;
+  const transponderPackageId = transponderPackageOverride ?? file?.transponderPackageId ?? world.worldPackageId;
+  const transponderTypeOrigin = transponderOriginOverride ?? file?.transponderTypeOrigin ?? transponderPackageId;
+  const transponderRegistryId = transponderRegistryOverride ?? file?.transponderRegistryId ?? world.objectRegistryId;
   const fingerprint = createHash("sha256").update(JSON.stringify({
-    world, file, packageOverride, originOverride, accessPackageOverride, accessOriginOverride,
-    npcPackageId, npcTypeOrigin, accessPackageId, accessTypeOrigin,
+    world, file, packageOverride, originOverride, npcRegistryOverride,
+    accessPackageOverride, accessOriginOverride, accessRegistryOverride,
+    catapultPackageOverride, catapultOriginOverride, catapultRegistryOverride,
+    transponderPackageOverride, transponderOriginOverride, transponderRegistryOverride,
+    npcPackageId, npcTypeOrigin, npcRegistryId,
+    accessPackageId, accessTypeOrigin, accessRegistryId,
+    catapultPackageId, catapultTypeOrigin, catapultRegistryId,
+    transponderPackageId, transponderTypeOrigin, transponderRegistryId,
   })).digest("hex");
-  return { npcPackageId, npcTypeOrigin, accessPackageId, accessTypeOrigin, fingerprint };
+  return {
+    npcPackageId, npcTypeOrigin, npcRegistryId,
+    accessPackageId, accessTypeOrigin, accessRegistryId,
+    catapultPackageId, catapultTypeOrigin, catapultRegistryId,
+    transponderPackageId, transponderTypeOrigin, transponderRegistryId,
+    fingerprint,
+  };
 }
 
 /** Re-read immediately before persisting/submitting a signed transaction. */

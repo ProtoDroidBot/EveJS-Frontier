@@ -137,7 +137,8 @@ function createSuiNpcCharacterTransaction(identity: SuiNpcCharacterIdentity, npc
   const [character] = transaction.moveCall({
     target: `${npcWorld.npcPackageId}::npc::create_npc_character`,
     arguments: [
-      transaction.object(identity.objectRegistryId), transaction.object(identity.adminAclId),
+      transaction.object(identity.objectRegistryId), transaction.object(npcWorld.npcRegistryId),
+      transaction.object(identity.adminAclId),
       transaction.pure.u32(identity.gameCharacterId), transaction.pure.string(identity.tenant),
       transaction.pure.u32(identity.tribeId), transaction.pure.address(identity.walletAddress),
       transaction.pure.string(identity.characterName), transaction.pure.u32(factionID),
@@ -146,7 +147,7 @@ function createSuiNpcCharacterTransaction(identity: SuiNpcCharacterIdentity, npc
     ],
   });
   transaction.moveCall({
-    target: `${npcWorld.npcPackageId}::character::share_character`,
+    target: `${identity.packageId}::character::share_character`,
     arguments: [character, transaction.object(identity.adminAclId)],
   });
   return transaction;

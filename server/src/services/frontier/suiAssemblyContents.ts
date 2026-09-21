@@ -16,7 +16,16 @@ type ContentsOptions = {
     getObject(options: any): Promise<any>;
     getDynamicFieldObject(options: any): Promise<any>;
   };
-  world: { packageId: string; objectRegistryId?: string; adminAclId: string; gateConfigId: string; serverAddressRegistryId: string };
+  world: {
+    packageId: string;
+    objectRegistryId?: string;
+    adminAclId: string;
+    gateConfigId: string;
+    serverAddressRegistryId: string;
+    catapultPackageId: string;
+    catapultTypeOrigin: string;
+    catapultRegistryId: string;
+  };
   chain: SuiAssemblyChain;
   execute(label: string, transaction: Transaction, ownerId?: number, assertSnapshotCurrent?: () => void): Promise<unknown>;
   getCharacter(ownerId: number): Promise<SuiContentsCharacter>;
@@ -233,6 +242,7 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
   const { client, world, chain, execute, getCharacter, serverSigner } = options;
   const now = options.now || Date.now;
   const target = (module: string, name: string) => `${world.packageId}::${module}::${name}`;
+  const catapultTarget = (name: string) => `${world.catapultPackageId}::catapult::${name}`;
 
   async function readInventory(snapshot: AssemblySnapshot) {
     if (snapshot.kind !== "storage_unit") throw new Error(`Assembly ${snapshot.itemId} is not a storage unit`);
@@ -402,10 +412,9 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
   }
 
   function catapultObjectId(gateId: string): string {
-    if (!world.objectRegistryId) throw new Error("Catapult synchronization requires the ObjectRegistry ID");
     return deriveObjectID(
-      world.objectRegistryId,
-      `${world.packageId}::catapult::CatapultKey`,
+      world.catapultRegistryId,
+      `${world.catapultTypeOrigin}::catapult::CatapultKey`,
       CatapultKey.serialize({ gate_id: gateId }).toBytes(),
     );
   }
@@ -418,7 +427,7 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
       true,
     );
     if (!content) return null;
-    if (content.type !== target("catapult", "Catapult")) {
+    if (content.type !== `${world.catapultTypeOrigin}::catapult::Catapult`) {
       throw new Error(`Catapult ${snapshot.itemId} has incompatible type ${content.type}`);
     }
     const value = fields(content.fields);
@@ -465,13 +474,13 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
         uint(current.fields.distance, 64, "catapult distance") === BigInt(distance)) return;
     const tx = new Transaction();
     if (!current) {
-      tx.moveCall({ target: target("catapult", "create"), arguments: [
-        tx.object(world.objectRegistryId!), tx.object(gate.id), tx.object(world.gateConfigId),
+      tx.moveCall({ target: catapultTarget("create"), arguments: [
+        tx.object(world.catapultRegistryId), tx.object(gate.id), tx.object(world.gateConfigId),
         tx.object(world.adminAclId), tx.pure.u64(snapshot.solarSystemId),
         tx.pure.u64(destination), tx.pure.u64(distance), tx.object("0x6"),
       ] });
     } else {
-      tx.moveCall({ target: target("catapult", "sync_destination"), arguments: [
+      tx.moveCall({ target: catapultTarget("sync_destination"), arguments: [
         tx.object(current.id), tx.object(gate.id), tx.object(world.gateConfigId),
         tx.object(world.adminAclId), tx.pure.u64(current.fields.revision),
         tx.pure.u64(snapshot.solarSystemId), tx.pure.u64(destination),

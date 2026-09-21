@@ -186,6 +186,7 @@ test("NPC smart requests require a short-lived receipt bound to an on-chain fact
     packageId: `0x${"4".repeat(64)}`,
     typeOrigin: `0x${"5".repeat(64)}`,
     objectRegistryId: `0x${"6".repeat(64)}`,
+    transponderRegistryId: `0x${"7".repeat(64)}`,
     tenant: "evejs-localnet",
   };
   const code = "SERPENTIS-BUILD";

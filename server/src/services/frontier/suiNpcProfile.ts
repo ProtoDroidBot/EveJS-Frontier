@@ -132,7 +132,8 @@ export function createSuiNpcProfileTransaction(context: TransactionContext): Tra
     transaction.moveCall({
       target: `${npcWorld.npcPackageId}::npc::register_profile`,
       arguments: [
-        transaction.object(identity.objectRegistryId), transaction.object(identity.characterObjectId),
+        transaction.object(identity.objectRegistryId), transaction.object(npcWorld.npcRegistryId),
+        transaction.object(identity.characterObjectId),
         transaction.object(identity.adminAclId), transaction.pure.u32(Number(match[1])),
         transaction.pure.string(match[2] === "none" ? "" : match[2]),
         transaction.pure.u64(lifecycle.incarnation), transaction.pure.u64(lifecycle.activeEntityID), transaction.pure.u64(lifecycle.deaths),
@@ -162,7 +163,11 @@ export function reconcileSuiNpcProfile(input: {
     const lifecycle = normalizeNpcLifecycle(input.lifecycle);
     const client = options.client || suiGrpcClient as any;
     const npcWorld = { ...options.npcWorld };
-    const npcProfileObjectId = deriveSuiNpcProfileObjectId(identity.objectRegistryId, identity.characterObjectId, npcWorld.npcTypeOrigin);
+    const npcProfileObjectId = deriveSuiNpcProfileObjectId(
+      npcWorld.npcRegistryId,
+      identity.characterObjectId,
+      npcWorld.npcTypeOrigin,
+    );
     const delays = options.reconciliationDelaysMs || [0, 150, 500, 1000];
     const chainId = await readLiveSuiChainIdentifier(client);
     if (!chainId) fail("NPC_CHAIN_UNAVAILABLE", "The NPC profile's localnet chain could not be verified");

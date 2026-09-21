@@ -84,12 +84,17 @@ test("invalid recipes, quantities, conflicting identities and duplicate rows fai
   assert.throws(() => industryU64("18446744073709551616", "ID"));
 });
 
-function chainFixture(industryPackageId?: string, industryTypeOrigin?: string) {
+function chainFixture(industryPackageId?: string, industryTypeOrigin?: string, industryRegistryId?: string) {
   const world = { packageId: address(80), objectRegistryId: address(81), adminAclId: address(82), energyConfigId: address(83), fuelConfigId: address(84) };
   const current = { facility: facility(), fields: null as any, productionField: null as any, executions: [] as any[], apply: true, checks: 0, online: true };
   const assembly: any = { itemId: "5000000001", kind: "assembly", typeId: 87119, ownerId: 140001, solarSystemId: 30002479 };
   const assemblyID = address(100);
-  const industryId = deriveSuiIndustryId(world, assemblyID, industryTypeOrigin || industryPackageId || world.packageId);
+  const industryId = deriveSuiIndustryId(
+    world,
+    assemblyID,
+    industryTypeOrigin || industryPackageId || world.packageId,
+    industryRegistryId || world.objectRegistryId,
+  );
   const objects = { getObject: async ({ id }: any) => id === deriveSuiIndustryProductionId(industryId)
     ? current.productionField ? { data: { owner: { ObjectOwner: industryId }, content: { dataType: "moveObject",
       type: `0x2::dynamic_field::Field<u8, ${industryPackageId || world.packageId}::smart_industry::ProductionRecord>`, fields: current.productionField } } }
@@ -98,7 +103,7 @@ function chainFixture(industryPackageId?: string, industryTypeOrigin?: string) {
     type: `${industryTypeOrigin || industryPackageId || world.packageId}::smart_industry::SmartIndustry`, content: { dataType: "moveObject", fields: current.fields },
   } } : { error: { code: "notExists" } } };
   const chain = { deriveId: () => assemblyID, readAssembly: async () => ({ online: current.online }) };
-  const adapter = () => createSuiIndustryChain({ client: objects as any, world, chain, tenant: "dev", industryPackageId, industryTypeOrigin, now: () => 1700000000000,
+  const adapter = () => createSuiIndustryChain({ client: objects as any, world, chain, tenant: "dev", industryPackageId, industryTypeOrigin, industryRegistryId, now: () => 1700000000000,
     assertSnapshotCurrent(expected) { current.checks++; assert.deepEqual(expected, current.facility, "stale snapshot"); },
     async execute(label, tx, ownerId, assertCurrent) {
       assertCurrent?.();
@@ -157,7 +162,7 @@ test("inventory, blueprint clearing and status changes replace snapshots with re
 });
 
 test("upgraded Industry modules retain the original Assembly and sidecar type origin", async () => {
-  const f = chainFixture(address(90), address(89));
+  const f = chainFixture(address(90), address(89), address(88));
   await f.adapter().sync(f.current.facility, f.assembly);
   const calls = f.current.executions[0].data.commands.filter((c: any) => c.MoveCall).map((c: any) => c.MoveCall);
   assert.ok(calls.every((call: any) => call.package === address(90)));
@@ -165,7 +170,7 @@ test("upgraded Industry modules retain the original Assembly and sidecar type or
   assert.ok(vectors.every((vector: any) => vector.type.startsWith(`${address(89)}::smart_industry::`)));
   const status = await f.adapter().status(f.current.facility, f.assembly);
   assert.equal(status.assemblyObjectID, f.assemblyID);
-  assert.equal(status.industryObjectID, deriveSuiIndustryId(f.world, f.assemblyID, address(89)));
+  assert.equal(status.industryObjectID, deriveSuiIndustryId(f.world, f.assemblyID, address(89), address(88)));
   assert.equal(status.synchronized, true);
   assert.notEqual(status.industryObjectID, deriveSuiIndustryId(f.world, f.assemblyID));
 });

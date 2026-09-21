@@ -1,6 +1,6 @@
 # Sui transponder commitments
 
-The server-side protocol lives in `server/src/services/frontier/suiTransponderCommitment.ts` and matches `world::transponder` in the authoritative world-contracts checkout.
+The server-side protocol lives in `server/src/services/frontier/suiTransponderCommitment.ts` and matches `<transponderPackageId>::transponder`, published from `contracts/world_transponder` in the authoritative world-contracts checkout.
 
 It provides:
 
@@ -57,5 +57,4 @@ npm run build:tests
 node --test server/tests/frontierSuiTransponderCommitment.test.js
 ```
 
-Source changes do not upgrade an already-published world. Until a package containing `world::transponder` is published or upgraded, transaction submission will fail. Keep the latest call-target package separate from the first transponder type-origin package when configuring an upgraded world.
-
+Source changes do not upgrade an already-published package. The current Localnet has an independently published transponder call package and shared registry recorded in the combined `npc-deployment.json` manifest. Transaction submission fails closed when that package/origin/registry triple is absent or mismatched. For later compatible upgrades, change the latest call target while retaining the first transponder type origin and existing registry. The transponder package also depends on compatible base-world and NPC packages; package splitting does not remove those ABI requirements.
