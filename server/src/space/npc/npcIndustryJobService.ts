@@ -69,7 +69,6 @@ function normalizeLanes(value, fallback: Record<string, any> = {}) {
   const source = Array.isArray(value) && value.length > 0 ? value : [fallback];
   const lanes: any[] = [];
   const laneIDs = new Set<number>();
-  let blueprintID = 0;
   for (const raw of source) {
     const laneID = positiveInt(raw?.laneID ?? raw?.lane_id, 0);
     const currentBlueprintID = positiveInt(
@@ -78,11 +77,10 @@ function normalizeLanes(value, fallback: Record<string, any> = {}) {
     );
     const runs = positiveInt(raw?.runs ?? raw?.requestedRuns ?? fallback.runs, 0);
     if (!laneID || laneID > 16 || laneIDs.has(laneID) || !currentBlueprintID ||
-        !runs || runs > MAX_RUNS_PER_LANE || blueprintID && blueprintID !== currentBlueprintID) {
+        !runs || runs > MAX_RUNS_PER_LANE) {
       return null;
     }
     laneIDs.add(laneID);
-    blueprintID ||= currentBlueprintID;
     lanes.push({ laneID, blueprintID: currentBlueprintID, runs });
   }
   return lanes.sort((left, right) => left.laneID - right.laneID);
@@ -294,8 +292,8 @@ function validateOutputCargoCapacity(entityRecord, actor, outputPlan) {
         data: { capacity, used, incoming } };
 }
 
-function planInputTransfers(entityRecord, actor, facility, required, payload) {
-  const facilityItems = getIndustryRuntime().getFacilityItems(facility).inputs;
+function planInputTransfers(entityRecord, actor, facility, required, payload, laneID = 1) {
+  const facilityItems = getIndustryRuntime().getFacilityItems(facility, laneID).inputs;
   const allowedItemIDs = Array.isArray(payload.inputItemIDs)
     ? new Set(payload.inputItemIDs.map((value) => positiveInt(value, 0)).filter(Boolean))
     : null;
@@ -407,10 +405,9 @@ function tickNpcIndustryJob(context) {
   }
   const facilityID = positiveInt(payload.facilityID, 0);
   let facility = itemStore.findItemById(facilityID);
-  const blueprint = blueprints.getBlueprintForFacility(facility?.typeID, payload.blueprintID);
-  if (!facility || !blueprint) {
+  if (!facility) {
     return suspended("resolve-facility", checkpoint, nowMs,
-      facility ? "BLUEPRINT_NOT_FOUND" : "FACILITY_NOT_FOUND", 30_000);
+      "FACILITY_NOT_FOUND", 30_000);
   }
   const lanes = payload.lanes || [];
   if (!lanes.length || lanes.some((lane) => lane.laneID > production.getFacilityLaneCount(facility))) {
@@ -420,6 +417,11 @@ function tickNpcIndustryJob(context) {
       checkpoint,
       error: "INVALID_JOB_LANE",
     };
+  }
+  const laneBlueprints = new Map<number, any>(lanes.map(lane => [lane.laneID,
+    blueprints.getBlueprintForFacility(facility.typeID, lane.blueprintID)]));
+  if ([...laneBlueprints.values()].some(blueprint => !blueprint)) {
+    return suspended("resolve-blueprint", checkpoint, nowMs, "BLUEPRINT_NOT_FOUND", 30_000);
   }
   const reservation = reserveLanes(job, lanes, nowMs);
   if (!reservation.success) {
@@ -444,67 +446,79 @@ function tickNpcIndustryJob(context) {
     }
   }
 
-  const selected = blueprints.getSelectedBlueprint(facility);
-  if (!selected || selected.blueprint_id !== blueprint.blueprint_id) {
-    if (Number(facility.ownerID) !== actor.actorID) {
-      return suspended("awaiting-blueprint", checkpoint, nowMs, "BLUEPRINT_NOT_LOADED", 5_000);
+  for (const lane of lanes) {
+    const blueprint = laneBlueprints.get(lane.laneID);
+    const selected = blueprints.getSelectedBlueprint(facility, lane.laneID);
+    if (!selected || selected.blueprint_id !== blueprint.blueprint_id) {
+      if (Number(facility.ownerID) !== actor.actorID) {
+        return suspended("awaiting-blueprint", checkpoint, nowMs, "BLUEPRINT_NOT_LOADED", 5_000);
+      }
+      const loaded = industryRuntime.loadBlueprint(session, facilityID, blueprint.blueprint_id, {
+        laneID: lane.laneID,
+        npcActor: actor,
+        scene: context.scene,
+      });
+      if (!loaded.success) return suspended("load-blueprint", checkpoint, nowMs, loaded.errorMsg, 5_000);
+      checkpoint.laneStates[String(lane.laneID)].blueprintLoaded = true;
+      checkpoint.blueprintLoadedAtMs = Date.now();
+      return running("load-blueprints", checkpoint, nowMs, 50);
     }
-    const loaded = industryRuntime.loadBlueprint(session, facilityID, blueprint.blueprint_id, {
-      npcActor: actor,
-      scene: context.scene,
-    });
-    if (!loaded.success) return suspended("load-blueprint", checkpoint, nowMs, loaded.errorMsg, 5_000);
-    checkpoint.blueprintLoaded = true;
-    checkpoint.blueprintLoadedAtMs = Date.now();
-    return running("stage-inputs", checkpoint, nowMs, 50);
+    checkpoint.laneStates[String(lane.laneID)].blueprintLoaded = true;
   }
   checkpoint.blueprintLoaded = true;
 
   if (!checkpoint.inputsStaged) {
-    const required = requiredInputs(blueprint, lanes);
-    for (const [typeID, requiredQuantity] of Object.entries<any>(required)) {
-      if (requiredQuantity > blueprint.inputs[typeID].max_storable_quantity) {
-        return {
-          status: behaviorRuntime.STATUS.FAILURE,
-          step: "validate-input-capacity",
-          checkpoint,
-          error: "NPC_INDUSTRY_INPUT_CAPACITY_EXCEEDED",
-        };
+    for (const lane of lanes) {
+      const laneState = checkpoint.laneStates[String(lane.laneID)];
+      const blueprint = laneBlueprints.get(lane.laneID);
+      const required = requiredInputs(blueprint, [lane]);
+      for (const [typeID, requiredQuantity] of Object.entries<any>(required)) {
+        if (requiredQuantity > blueprint.inputs[typeID].max_storable_quantity) {
+          return {
+            status: behaviorRuntime.STATUS.FAILURE,
+            step: "validate-input-capacity",
+            checkpoint,
+            error: "NPC_INDUSTRY_INPUT_CAPACITY_EXCEEDED",
+          };
+        }
       }
-    }
-    checkpoint.outputBaseline ||= cloneValue(industryRuntime.getFacilityItems(facility).outputs);
-    const depositAccess = requireCrossOwnerCapability(actor, facility, "inventory.deposit");
-    if (!depositAccess.success) {
-      return suspended("awaiting-deposit-access", checkpoint, nowMs, depositAccess.errorMsg, 5_000);
-    }
-    const plan = planInputTransfers(entityRecord, actor, facility, required, payload);
-    if (!plan.success) {
-      publishMaterialRequest(context, checkpoint, plan.missing);
-      return suspended("awaiting-materials", checkpoint, nowMs,
-        "NPC_INDUSTRY_MATERIALS_REQUIRED", 5_000);
-    }
-    for (const entry of plan.transfers) {
-      const transfer = runNpcIndustryTransfer(
-        "npc-industry-input-transfer",
-        `npc-industry-input:${job.jobID}:${entry.item.itemID}:${entry.quantity}`,
-        {
-          jobID: job.jobID,
-          entityID: actor.shipID,
-          semanticRole: "industry-input",
-          sourceItemID: entry.item.itemID,
-          sourceOwnerID: entry.item.ownerID,
-          sourceLocationID: entry.item.locationID,
-          sourceFlagID: entry.item.flagID,
-          destinationOwnerID: facility.ownerID,
-          destinationLocationID: facility.itemID,
-          destinationFlagID: industryRuntime.INDUSTRY_INPUT_FLAG,
-          typeID: entry.item.typeID,
-          quantity: entry.quantity,
-        },
-      );
-      if (!transfer.success) {
-        return suspended("stage-inputs", checkpoint, nowMs, transfer.errorMsg, 5_000);
+      checkpoint.outputBaseline ||= {};
+      checkpoint.outputBaseline[String(lane.laneID)] ||= cloneValue(
+        industryRuntime.getFacilityItems(facility, lane.laneID).outputs);
+      const depositAccess = requireCrossOwnerCapability(actor, facility, "inventory.deposit");
+      if (!depositAccess.success) {
+        return suspended("awaiting-deposit-access", checkpoint, nowMs, depositAccess.errorMsg, 5_000);
       }
+      const plan = planInputTransfers(entityRecord, actor, facility, required, payload, lane.laneID);
+      if (!plan.success) {
+        publishMaterialRequest(context, checkpoint, plan.missing);
+        return suspended("awaiting-materials", checkpoint, nowMs,
+          "NPC_INDUSTRY_MATERIALS_REQUIRED", 5_000);
+      }
+      for (const entry of plan.transfers) {
+        const transfer = runNpcIndustryTransfer(
+          "npc-industry-input-transfer",
+          `npc-industry-input:${job.jobID}:${lane.laneID}:${entry.item.itemID}:${entry.quantity}`,
+          {
+            jobID: job.jobID,
+            entityID: actor.shipID,
+            semanticRole: "industry-input",
+            sourceItemID: entry.item.itemID,
+            sourceOwnerID: entry.item.ownerID,
+            sourceLocationID: entry.item.locationID,
+            sourceFlagID: entry.item.flagID,
+            destinationOwnerID: facility.ownerID,
+            destinationLocationID: facility.itemID,
+            destinationFlagID: industryRuntime.industryInputFlagForLane(lane.laneID),
+            typeID: entry.item.typeID,
+            quantity: entry.quantity,
+          },
+        );
+        if (!transfer.success) {
+          return suspended("stage-inputs", checkpoint, nowMs, transfer.errorMsg, 5_000);
+        }
+      }
+      laneState.inputsStaged = true;
     }
     database.flushTablesSync([itemStore.ITEMS_TABLE, nativeNpcStore.TABLE.CARGO]);
     checkpoint.inputsStaged = true;
@@ -537,8 +551,8 @@ function tickNpcIndustryJob(context) {
       const started = production.startProduction(
         session,
         facilityID,
-        blueprint.blueprint_id,
-        blueprint.content_hash,
+        laneBlueprints.get(lane.laneID).blueprint_id,
+        laneBlueprints.get(lane.laneID).content_hash,
         lane.runs,
         {
           nowMs,
@@ -597,16 +611,20 @@ function tickNpcIndustryJob(context) {
     if (!withdrawAccess.success) {
       return suspended("awaiting-withdraw-access", checkpoint, nowMs, withdrawAccess.errorMsg, 5_000);
     }
-    const expected = expectedOutputs(blueprint, lanes);
+    const expected: Record<string, number> = {};
+    for (const lane of lanes) {
+      for (const [typeID, count] of Object.entries<any>(
+        expectedOutputs(laneBlueprints.get(lane.laneID), [lane]))) {
+        expected[typeID] = (expected[typeID] || 0) + count;
+      }
+    }
     const collected = collectedOutputs(job.jobID);
     const remainingOutputs: Record<string, number> = {};
     for (const [rawTypeID, rawExpected] of Object.entries<any>(expected)) {
       const typeID = positiveInt(rawTypeID, 0);
-      const available = itemStore.listContainerItems(
-        facility.ownerID,
-        facilityID,
-        industryRuntime.INDUSTRY_OUTPUT_FLAG,
-      ).filter((item) => positiveInt(item.typeID, 0) === typeID)
+      const available = lanes.flatMap(lane => itemStore.listContainerItems(
+        facility.ownerID, facilityID, industryRuntime.industryOutputFlagForLane(lane.laneID),
+      )).filter((item) => positiveInt(item.typeID, 0) === typeID)
         .reduce((sum, item) => sum + quantity(item), 0);
       remainingOutputs[String(typeID)] = Math.min(
         Math.max(0, positiveInt(rawExpected, 0) - positiveInt(collected[String(typeID)], 0)),
@@ -619,8 +637,8 @@ function tickNpcIndustryJob(context) {
     }
     for (const [rawTypeID, rawExpected] of Object.entries<any>(expected)) {
       const typeID = positiveInt(rawTypeID, 0);
-      const rows = itemStore.listContainerItems(facility.ownerID, facilityID,
-        industryRuntime.INDUSTRY_OUTPUT_FLAG)
+      const rows = lanes.flatMap(lane => itemStore.listContainerItems(facility.ownerID, facilityID,
+        industryRuntime.industryOutputFlagForLane(lane.laneID)))
         .filter((item) => positiveInt(item.typeID, 0) === typeID)
         .sort((left, right) => positiveInt(left.itemID, 0) - positiveInt(right.itemID, 0));
       const required = Math.max(
@@ -641,7 +659,7 @@ function tickNpcIndustryJob(context) {
             sourceItemID: item.itemID,
             sourceOwnerID: facility.ownerID,
             sourceLocationID: facilityID,
-            sourceFlagID: industryRuntime.INDUSTRY_OUTPUT_FLAG,
+            sourceFlagID: item.flagID,
             destinationOwnerID: positiveInt(entityRecord.ownerID, actor.actorID),
             destinationLocationID: actor.shipID,
             destinationFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
@@ -689,7 +707,7 @@ function createNpcIndustryJob(input: Record<string, any>) {
     if (lanes.some((lane) => lane.laneID > production.getFacilityLaneCount(facility))) {
       return { success: false, errorMsg: "INVALID_JOB_LANE" };
     }
-    if (!blueprints.getBlueprintForFacility(facility.typeID, lanes[0].blueprintID)) {
+    if (lanes.some(lane => !blueprints.getBlueprintForFacility(facility.typeID, lane.blueprintID))) {
       return { success: false, errorMsg: "BLUEPRINT_NOT_FOUND" };
     }
     return persistence.createNpcJob({

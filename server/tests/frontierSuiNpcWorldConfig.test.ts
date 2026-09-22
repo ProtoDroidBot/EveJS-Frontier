@@ -7,6 +7,7 @@ import { normalizeSuiAddress } from "@mysten/sui/utils";
 import {
   readSuiNpcWorldConfig,
   assertSuiNpcWorldConfigCurrent,
+  isSuiWorldCapabilityEnabled,
 } from "../src/services/frontier/suiNpcWorldConfig";
 
 const address = (n: number) => normalizeSuiAddress(`0x${n.toString(16)}`);
@@ -37,6 +38,24 @@ const configV3 = () => ({
   infrastructurePackageId: address(24), infrastructureTypeOrigin: address(24), infrastructureRegistryId: address(25),
   automationPackageId: address(26), automationTypeOrigin: address(26), automationRegistryId: address(27),
 });
+const worldFeatures = (capabilities: Record<string, any>, factions?: Record<string, any>) => ({
+  format: "eve-frontier-world-features",
+  schemaVersion: 1,
+  chainId: world.chainId,
+  world: {
+    packageId: world.packageId,
+    objectRegistryId: world.objectRegistryId,
+    adminAclId: world.adminAclId,
+  },
+  capabilities,
+  ...(factions ? { factions } : {}),
+});
+const capability = (packageId: string, typeOrigin: string, registryId: string) => ({
+  status: "deployed",
+  packageId,
+  typeOrigin,
+  registryId,
+});
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "npc-deployment-test-"));
@@ -46,8 +65,16 @@ function fixture(t) {
     fs.rmSync(directory, { force: true, recursive: true });
   });
   const file = path.join(directory, "npc-deployment.json");
+  const featureFile = path.join(directory, "world-features.v1.json");
   const env: NodeJS.ProcessEnv = { EVEJS_SUI_WORLD_CONFIG_PATH: path.join(directory, "world.private.json") };
-  return { directory, file, env, write: value => fs.writeFileSync(file, JSON.stringify(value)) };
+  return {
+    directory,
+    file,
+    featureFile,
+    env,
+    write: value => fs.writeFileSync(file, JSON.stringify(value)),
+    writeFeatures: value => fs.writeFileSync(featureFile, JSON.stringify(value)),
+  };
 }
 
 test("fresh NPC deployments default to the original world while upgrades separate call target and type origin", t => {
@@ -71,11 +98,14 @@ test("fresh NPC deployments default to the original world while upgrades separat
   const firstUpgrade = readSuiNpcWorldConfig(world, { ...f.env, EVEJS_SUI_NPC_PACKAGE_ID: "0x7" });
   assert.equal(firstUpgrade.npcPackageId, address(7));
   assert.equal(firstUpgrade.npcTypeOrigin, address(7));
+  assert.equal(firstUpgrade.accessPackageId, world.packageId);
+  assert.equal(firstUpgrade.accessTypeOrigin, world.packageId);
   const laterUpgrade = readSuiNpcWorldConfig(world, {
     ...f.env, EVEJS_SUI_NPC_PACKAGE_ID: "0x8", EVEJS_SUI_NPC_TYPE_ORIGIN: "0x7",
   });
   assert.equal(laterUpgrade.npcPackageId, address(8));
   assert.equal(laterUpgrade.npcTypeOrigin, address(7));
+  assert.equal(laterUpgrade.accessPackageId, world.packageId);
   const accessUpgrade = readSuiNpcWorldConfig(world, {
     ...f.env,
     EVEJS_SUI_NPC_PACKAGE_ID: "0x8",
@@ -118,11 +148,17 @@ test("public NPC config normalizes addresses without mutating base world or pers
     "accessPackageId", "accessRegistryId", "accessTypeOrigin",
     "actionPackageId", "actionRegistryId", "actionTypeOrigin",
     "automationPackageId", "automationRegistryId", "automationTypeOrigin",
+    "capabilities",
     "catapultPackageId", "catapultRegistryId", "catapultTypeOrigin",
+    "defaultFactionCapabilities",
+    "factionCapabilities",
+    "factionConfigReferences",
     "fingerprint",
     "industryActionsPackageId", "industryActionsRegistryId", "industryActionsTypeOrigin",
+    "industryPackageId", "industryRegistryId", "industryTypeOrigin",
     "infrastructurePackageId", "infrastructureRegistryId", "infrastructureTypeOrigin",
     "logisticsPackageId", "logisticsRegistryId", "logisticsTypeOrigin",
+    "manifestFormat",
     "npcPackageId", "npcRegistryId", "npcTypeOrigin",
     "transponderPackageId", "transponderRegistryId", "transponderTypeOrigin",
   ]);
@@ -223,7 +259,7 @@ test("malformed NPC config and invalid address overrides reject rather than sele
   const f = fixture(t);
   for (const raw of [null, [], {}, { ...config(), schemaVersion: 4 }, { ...config(), chainId: "invalid" }]) {
     f.write(raw);
-    assert.throws(() => readSuiNpcWorldConfig(world, f.env), /NPC deployment/);
+    assert.throws(() => readSuiNpcWorldConfig(world, f.env), /deployment/);
   }
   fs.writeFileSync(f.file, "{");
   assert.throws(() => readSuiNpcWorldConfig(world, f.env), /could not be read as JSON/);
@@ -261,6 +297,103 @@ test("malformed NPC config and invalid address overrides reject rather than sele
       assert.throws(() => readSuiNpcWorldConfig(world, { ...f.env, [key]: value }), /Sui address/);
     }
   }
+});
+
+test("versioned world features allow partial deployments and faction capability splits", t => {
+  const f = fixture(t);
+  f.write({ ...config(), packageId: "invalid" });
+  f.writeFeatures(worldFeatures({
+    npc: capability(address(8), address(7), address(6)),
+    transponder: capability(address(16), address(16), address(17)),
+  }, {
+    "500001-caldari": { capabilities: ["npc", "transponder"] },
+    "500010-guristas": { capabilities: ["npc"] },
+  }));
+
+  const result = readSuiNpcWorldConfig(world, f.env);
+  assert.equal(result.manifestFormat, "world-features-v1");
+  assert.equal(result.npcPackageId, address(8));
+  assert.equal(result.capabilities.npc.status, "deployed");
+  assert.equal(result.capabilities.transponder.status, "deployed");
+  assert.equal(result.capabilities.assemblyAccess.status, "unavailable");
+  assert.equal(result.accessPackageId, world.packageId);
+  assert.equal(isSuiWorldCapabilityEnabled(result, "transponder", "500001-caldari"), true);
+  assert.equal(isSuiWorldCapabilityEnabled(result, "transponder", "500010-guristas"), false);
+  assert.equal(isSuiWorldCapabilityEnabled(result, "assemblyAccess"), false);
+});
+
+test("split faction files inherit an explicit default fallback", t => {
+  const f = fixture(t);
+  const factionDirectory = path.join(f.directory, "factions");
+  fs.mkdirSync(factionDirectory);
+  fs.writeFileSync(path.join(factionDirectory, "default.v1.json"), JSON.stringify({
+    format: "eve-frontier-faction-features", schemaVersion: 1,
+    configId: "default", capabilities: ["npc", "transponder"],
+  }));
+  fs.writeFileSync(path.join(factionDirectory, "500001-caldari.v1.json"), JSON.stringify({
+    format: "eve-frontier-faction-features", schemaVersion: 1,
+    factionKey: "500001-caldari", fallback: "default",
+  }));
+  fs.writeFileSync(path.join(factionDirectory, "500010-guristas.v1.json"), JSON.stringify({
+    format: "eve-frontier-faction-features", schemaVersion: 1,
+    factionKey: "500010-guristas", fallback: "default", capabilities: ["npc"],
+  }));
+  f.writeFeatures({
+    ...worldFeatures({
+      npc: capability(address(8), address(7), address(6)),
+      transponder: capability(address(16), address(16), address(17)),
+    }),
+    factionConfig: {
+      default: { id: "default", path: "factions/default.v1.json" },
+      factions: {
+        "500001-caldari": {
+          path: "factions/500001-caldari.v1.json", fallback: "default",
+        },
+        "500010-guristas": {
+          path: "factions/500010-guristas.v1.json", fallback: "default",
+        },
+      },
+    },
+  });
+  const result = readSuiNpcWorldConfig(world, f.env);
+  assert.deepEqual(result.defaultFactionCapabilities, ["npc", "transponder"]);
+  assert.deepEqual(result.factionCapabilities["500001-caldari"], ["npc", "transponder"]);
+  assert.deepEqual(result.factionCapabilities["500010-guristas"], ["npc"]);
+  assert.equal(isSuiWorldCapabilityEnabled(result, "transponder", "500001-caldari"), true);
+  assert.equal(isSuiWorldCapabilityEnabled(result, "transponder", "500010-guristas"), false);
+  assert.equal(isSuiWorldCapabilityEnabled(result, "transponder", "500099-unknown"), true);
+  assert.deepEqual(result.factionConfigReferences["500001-caldari"], {
+    path: "factions/500001-caldari.v1.json", fallback: "default",
+  });
+  fs.writeFileSync(path.join(factionDirectory, "default.v1.json"), JSON.stringify({
+    format: "eve-frontier-faction-features", schemaVersion: 1,
+    configId: "default", capabilities: ["npc"],
+  }));
+  assert.throws(
+    () => assertSuiNpcWorldConfigCurrent(result, world, f.env),
+    /deployment changed/,
+  );
+});
+
+test("versioned manifest rejects faction references to undeployed capabilities", t => {
+  const f = fixture(t);
+  f.writeFeatures(worldFeatures({
+    npc: capability(address(8), address(7), address(6)),
+  }, {
+    "500001-caldari": { capabilities: ["npc", "transponder"] },
+  }));
+  assert.throws(
+    () => readSuiNpcWorldConfig(world, f.env),
+    /enables unavailable capability transponder/,
+  );
+  f.writeFeatures(worldFeatures({
+    npc: capability(address(8), address(7), address(6)),
+    typoCapability: capability(address(9), address(9), address(9)),
+  }));
+  assert.throws(
+    () => readSuiNpcWorldConfig(world, f.env),
+    /unknown capability typoCapability/,
+  );
 });
 
 test("feature deployment registries are required with their packages", t => {

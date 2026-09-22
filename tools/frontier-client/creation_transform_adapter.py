@@ -69,10 +69,12 @@ def _evejs_install_creation_transforms(namespace):
 
     held_type = namespace["HeldModule"]
     held_part_source = namespace["HeldModulePartSource"]
+    held_inventory_source = namespace["HeldModuleInventorySource"]
     snapped_part_cell = namespace["SnappedPartCell"]
     module_controller = namespace["ModuleController"]
     cell_grid_data = namespace["CellGridData"]
     binding_hint = namespace["BindingHintData"]
+    diagnostic_code = namespace["DiagnosticCode"]
 
     def transform_for_placement(creation, item_id, placement):
         module = creation.modules.get(item_id)
@@ -126,6 +128,74 @@ def _evejs_install_creation_transforms(namespace):
         self._creation_manager._evejs_rotation_x = rotation_x
         self._creation_manager._evejs_rotation_y = rotation_y
         refresh_held(self)
+
+    def get_snap_location(self, held_module, part_cell_fraction):
+        part_id = self._part_id_by_controller.get(
+            part_cell_fraction.part_controller
+        )
+        if part_id is None:
+            return None
+
+        column_offset, row_offset = held_module.anchor_offset
+        fraction_column, fraction_row = part_cell_fraction.cell_fraction
+        snapped_column = int(round(fraction_column - column_offset))
+        snapped_row = int(round(fraction_row - row_offset))
+        rotation_x = _evejs_reflection(
+            getattr(held_module, "_evejs_rotation_x", 0)
+        )
+        rotation_y = _evejs_reflection(
+            getattr(held_module, "_evejs_rotation_y", 0)
+        )
+
+        source = held_module.source
+        if isinstance(source, held_part_source):
+            item_id = source.item_id
+            changes = [namespace["MoveChange"](
+                module_item_id=item_id,
+                part_id=part_id,
+                x=snapped_column,
+                y=snapped_row,
+                z=0,
+                rotation_x=rotation_x,
+                rotation_y=rotation_y,
+                rotation_z=held_module.rotation_z,
+            )]
+        elif isinstance(source, held_inventory_source):
+            item_id = source.item_id
+            changes = [namespace["AddChange"](
+                module_item_id=item_id,
+                type_id=source.type_id,
+                part_id=part_id,
+                x=snapped_column,
+                y=snapped_row,
+                z=0,
+                rotation_x=rotation_x,
+                rotation_y=rotation_y,
+                rotation_z=held_module.rotation_z,
+                source_location_id=source.location_id,
+                source_flag_id=source.flag_id,
+            )]
+        else:
+            raise TypeError("Unknown source {}".format(source))
+
+        validator = namespace["CreationLayoutValidator"]
+        baseline = self._creation_manager.creation
+        final_layout = validator.reconstruct_final_layout(
+            baseline=baseline, changes=changes
+        )
+        errors = validator.validate_layout(final_layout)
+        errors += validator.validate_changes(
+            baseline=baseline, changes=changes
+        )
+        for error in errors:
+            if error.code != diagnostic_code.INVALID_PLACEMENT:
+                continue
+            if (
+                error.module_item_id == item_id
+                or error.params.get("conflicting_item_id") == item_id
+            ):
+                return None
+        return snapped_column, snapped_row
 
     def mouse_wheel(self, event):
         if not isinstance(self._held_module, held_type):
@@ -256,6 +326,7 @@ def _evejs_install_creation_transforms(namespace):
         return cells
 
     integration._start_drag_interior_module = start_drag
+    integration._get_snap_location = get_snap_location
     integration._handle_global_mouse_wheel = mouse_wheel
     integration._compute_binding_hints = compute_hints
     integration._create_module_controller = create_controller
@@ -265,4 +336,3 @@ def _evejs_install_creation_transforms(namespace):
     manager.move = move
     manager.install_from_inventory = install_from_inventory
     manager.get_available_part_cells = available_part_cells
-

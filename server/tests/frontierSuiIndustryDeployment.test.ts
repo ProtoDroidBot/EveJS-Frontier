@@ -19,8 +19,11 @@ function fixture(t) {
     fs.rmSync(directory, { force: true, recursive: true });
   });
   const file = path.join(directory, "npc-deployment.json");
+  const featureFile = path.join(directory, "world-features.v1.json");
   const env: NodeJS.ProcessEnv = { EVEJS_SUI_WORLD_CONFIG_PATH: path.join(directory, "world.private.json") };
-  return { directory, file, env, write: value => fs.writeFileSync(file, JSON.stringify(value)) };
+  return { directory, file, featureFile, env,
+    write: value => fs.writeFileSync(file, JSON.stringify(value)),
+    writeFeatures: value => fs.writeFileSync(featureFile, JSON.stringify(value)) };
 }
 
 test("missing Industry deployment keeps the base world or existing environment overrides", t => {
@@ -92,6 +95,30 @@ test("schema-v3 deployment manifests remain valid Smart Industry sources", t => 
   const f = fixture(t);
   f.write({ ...config(), schemaVersion: 3 });
   assert.equal(readSuiIndustryDeployment(world, f.env).industryPackageId, address(8));
+});
+
+test("versioned world features resolve Industry independently of other capabilities", t => {
+  const f = fixture(t);
+  const manifest = {
+    format: "eve-frontier-world-features", schemaVersion: 1, chainId: world.chainId,
+    world: { packageId: world.packageId, objectRegistryId: world.objectRegistryId, adminAclId: world.adminAclId },
+    capabilities: {
+      npc: { status: "deployed", packageId: address(9), typeOrigin: address(9), registryId: address(10) },
+      smartIndustry: { status: "deployed", packageId: address(8), typeOrigin: address(7), registryId: address(6) },
+    },
+  };
+  f.writeFeatures(manifest);
+  assert.equal(readSuiIndustryDeployment(world, f.env).industryPackageId, address(8));
+  f.writeFeatures({ ...manifest, capabilities: { npc: manifest.capabilities.npc } });
+  assert.equal(readSuiIndustryDeployment(world, f.env).industryPackageId, world.packageId);
+
+  const explicit = path.join(f.directory, "explicit-world-features.json");
+  fs.writeFileSync(explicit, JSON.stringify({ ...manifest, capabilities: {
+    smartIndustry: { status: "deployed", packageId: address(8), typeOrigin: address(7), registryId: address(6) },
+  } }));
+  assert.equal(readSuiIndustryDeployment(world, {
+    ...f.env, EVEJS_SUI_WORLD_FEATURES_CONFIG_PATH: explicit,
+  }).industryPackageId, address(8));
 });
 
 test("explicit config path replaces sibling lookup and absent override files retain fallback", t => {

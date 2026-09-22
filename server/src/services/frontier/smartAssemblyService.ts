@@ -136,6 +136,8 @@ const ERROR_MESSAGES = Object.freeze({
   CONSTRUCTION_PLAN_WRONG_SYSTEM: "Return to the deployment plan's solar system before resuming it.",
   CONSTRUCTION_PLAN_AUTHORIZATION_INVALID: "That Construction Template authorization is stale or invalid.",
   CONSTRUCTION_PLAN_ALREADY_COMPLETE: "That Construction Template deployment is already complete.",
+  NPC_LOAD_SHEDDING_REQUEST_NOT_FOUND: "That NPC load-shedding request is no longer pending.",
+  NPC_LOAD_SHEDDING_APPROVAL_INVALID: "Choose one or more recommended assemblies and provide an approval reason.",
 });
 
 function throwAssemblyError(result) {
@@ -577,6 +579,49 @@ class SmartAssemblyService extends BaseService {
       })
       .filter(Boolean);
     return buildAccessValue(records);
+  }
+
+  Handle_get_npc_load_shedding_requests(args, session) {
+    const networkNodeID = Number(args && args[0]) || 0;
+    const access = getAccessRuntime().resolveAccess(
+      playerAccessActor(session),
+      networkNodeID,
+      [getAccessRuntime().ASSEMBLY_ACCESS_CAPABILITY.CONFIGURE],
+    );
+    if (!access || access.success !== true) throwAssemblyError(access);
+    const persistence = require("../../space/npc/npcRuntimePersistence");
+    const records = persistence.listNpcJobs({ statuses: ["suspended"] })
+      .filter((job) => job.jobType === "network-node.maintenance" &&
+        job.payload?.maintenanceKind === "load-shedding" &&
+        Number(job.payload?.networkNodeID) === networkNodeID &&
+        job.step === "awaiting-load-shedding-approval")
+      .map((job) => ({
+        job_id: job.jobID,
+        network_node_id: networkNodeID,
+        proposed_plan: job.payload.loadSheddingPlan,
+        observed_revision: job.payload.observedRevision,
+        created_at_ms: job.createdAtMs,
+      }));
+    return buildAccessValue(records);
+  }
+
+  Handle_approve_npc_load_shedding(args, session) {
+    const jobID = String(args && args[0] || "");
+    const persistence = require("../../space/npc/npcRuntimePersistence");
+    const job = persistence.getNpcJob(jobID);
+    const networkNodeID = Number(job?.payload?.networkNodeID) || 0;
+    const access = getAccessRuntime().resolveAccess(
+      playerAccessActor(session),
+      networkNodeID,
+      [getAccessRuntime().ASSEMBLY_ACCESS_CAPABILITY.CONFIGURE],
+    );
+    if (!access || access.success !== true) throwAssemblyError(access);
+    const result = require("../../space/npc/npcNetworkNodeCoordinator")
+      .approveNpcNetworkNodeLoadShedding(jobID, {
+        assemblyIDs: args && args[1],
+        reason: args && args[2],
+      });
+    return buildAccessValue(requireRequestResult(result).data);
   }
 
   _beginStateTransition(args, session, targetStatus) {

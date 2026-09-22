@@ -248,8 +248,11 @@ function createMovementWarpCommands(deps: Record<string, any> = {}) {
     buildSessionlessWarpIngressState,
     buildWarpPrepareDispatch,
     buildWarpStartUpdates,
+    checkWarpCapacitorAvailability = () => ({ success: true }),
+    checkWarpFuelAvailability = () => ({ success: true, skipped: true }),
     clearTrackingState,
     cloneVector,
+    consumeWarpCapacitor = () => ({ success: true }),
     deactivateWarpUnsafeActiveModulesForWarpStart,
     getClientParityWarpInPoint,
     getStargateWarpLandingPoint,
@@ -666,6 +669,16 @@ function createMovementWarpCommands(deps: Record<string, any> = {}) {
         };
       }
 
+      if (pendingWarp.nativeWarpCommand !== "GOTO") {
+        const capacitorCheck = checkWarpCapacitorAvailability(entity);
+        if (!capacitorCheck || capacitorCheck.success !== true) {
+          return capacitorCheck || {
+            success: false,
+            errorMsg: "NOT_ENOUGH_CAPACITOR",
+          };
+        }
+      }
+
       if (
         options.ignoreWarpDisruptionField !== true &&
         typeof findActiveWarpDisruptorForEntity === "function"
@@ -691,6 +704,19 @@ function createMovementWarpCommands(deps: Record<string, any> = {}) {
           success: false,
           errorMsg: "WARP_BLOCKED_BY_CLOAK",
         };
+      }
+
+      if (
+        pendingWarp.nativeWarpCommand !== "GOTO" &&
+        typeof checkWarpFuelAvailability === "function"
+      ) {
+        const fuelCheck = checkWarpFuelAvailability(entity);
+        if (!fuelCheck || fuelCheck.success !== true) {
+          return fuelCheck || {
+            success: false,
+            errorMsg: "NO_FUEL",
+          };
+        }
       }
 
       const now = runtime.getCurrentSimTimeMs();
@@ -963,6 +989,29 @@ function createMovementWarpCommands(deps: Record<string, any> = {}) {
         }
       }
 
+      if (pendingWarp.nativeWarpCommand !== "GOTO") {
+        const capacitorCheck = checkWarpCapacitorAvailability(entity);
+        if (!capacitorCheck || capacitorCheck.success !== true) {
+          return capacitorCheck || {
+            success: false,
+            errorMsg: "NOT_ENOUGH_CAPACITOR",
+          };
+        }
+      }
+
+      if (
+        pendingWarp.nativeWarpCommand !== "GOTO" &&
+        typeof checkWarpFuelAvailability === "function"
+      ) {
+        const fuelCheck = checkWarpFuelAvailability(entity);
+        if (!fuelCheck || fuelCheck.success !== true) {
+          return fuelCheck || {
+            success: false,
+            errorMsg: "NO_FUEL",
+          };
+        }
+      }
+
       if (
         !entity.session &&
         typeof initializeSessionlessWarpDestination === "function"
@@ -1136,6 +1185,38 @@ function createMovementWarpCommands(deps: Record<string, any> = {}) {
           errorMsg: "SHIP_NOT_FOUND",
         };
       }
+      const activationCapacitorCheck = checkWarpCapacitorAvailability(entity);
+      if (
+        !activationCapacitorCheck ||
+        activationCapacitorCheck.success !== true
+      ) {
+        if (typeof runtime.stopShipEntity === "function") {
+          runtime.stopShipEntity(entity, {
+            reason: "warpCapacitorUnavailableAtActivation",
+          });
+        }
+        return activationCapacitorCheck || {
+          success: false,
+          errorMsg: "NOT_ENOUGH_CAPACITOR",
+        };
+      }
+      const activationFuelCheck = checkWarpFuelAvailability(entity);
+      if (!activationFuelCheck || activationFuelCheck.success !== true) {
+        if (typeof runtime.stopShipEntity === "function") {
+          runtime.stopShipEntity(entity, {
+            reason: "warpFuelUnavailableAtActivation",
+          });
+        } else {
+          entity.pendingWarp = null;
+          entity.warpState = null;
+          entity.mode = "STOP";
+          entity.speedFraction = 0;
+        }
+        return activationFuelCheck || {
+          success: false,
+          errorMsg: "NO_FUEL",
+        };
+      }
       const currentStamp = runtime.getCurrentDestinyStamp(now);
       if (typeof deactivateWarpUnsafeActiveModulesForWarpStart === "function") {
         const deactivationResult = deactivateWarpUnsafeActiveModulesForWarpStart(
@@ -1164,6 +1245,16 @@ function createMovementWarpCommands(deps: Record<string, any> = {}) {
         return {
           success: false,
           errorMsg: "WARP_ACTIVATION_FAILED",
+        };
+      }
+      const capacitorDebit = consumeWarpCapacitor(entity, now);
+      if (!capacitorDebit || capacitorDebit.success !== true) {
+        clearTrackingState(entity);
+        entity.mode = "STOP";
+        entity.speedFraction = 0;
+        return capacitorDebit || {
+          success: false,
+          errorMsg: "NOT_ENOUGH_CAPACITOR",
         };
       }
       const warpStartStamp =

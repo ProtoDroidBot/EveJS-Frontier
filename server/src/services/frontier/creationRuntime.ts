@@ -770,16 +770,14 @@ function validateCreationModuleRemoval(item, change) {
   }
 
   const industryRuntime = require(path.join(__dirname, "./industryRuntime"));
-  const inputItems = listContainerItems(
-    null,
-    toInt(item && item.itemID, 0),
-    industryRuntime.INDUSTRY_INPUT_FLAG,
-  );
-  const outputItems = listContainerItems(
-    null,
-    toInt(item && item.itemID, 0),
-    industryRuntime.INDUSTRY_OUTPUT_FLAG,
-  );
+  const inputItems: any[] = [];
+  const outputItems: any[] = [];
+  for (let laneID = 1; laneID <= industryRuntime.MAX_INDUSTRY_JOB_LANES; laneID += 1) {
+    inputItems.push(...listContainerItems(null, toInt(item && item.itemID, 0),
+      industryRuntime.industryInputFlagForLane(laneID)));
+    outputItems.push(...listContainerItems(null, toInt(item && item.itemID, 0),
+      industryRuntime.industryOutputFlagForLane(laneID)));
+  }
   if (inputItems.length > 0 || outputItems.length > 0) {
     return buildDiagnostic("invalid_post_commit_state", change, {
       reason: "INDUSTRY_ESCROW_NOT_EMPTY",

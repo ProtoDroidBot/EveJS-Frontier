@@ -72,17 +72,18 @@ class AdapterTests(unittest.TestCase):
     def test_deposit_resolves_ssu_type_totals_instead_of_none_item_ids(self):
         controller, calls = self.controller()
         controller._deposit_input_items([row(amount=4), row(amount=8), row(35, 5)], None, False)
-        self.assertEqual(calls, [("deposit", (100, 200, {34: 7, 35: 5})), ("refresh", 100)])
+        self.assertEqual(calls, [("deposit", (100, 200, {34: 7, 35: 5}, 1)), ("refresh", 100)])
 
     def test_visitor_rows_do_not_treat_assembly_owner_as_partition_owner(self):
         controller, calls = self.controller()
+        controller._facility_instance._evejs_selected_lane_id = 2
         controller._deposit_input_items([row(owner=999)], 2, False)
-        self.assertEqual(calls[0], ("deposit", (100, 200, {34: 2})))
+        self.assertEqual(calls[0], ("deposit", (100, 200, {34: 2}, 2)))
 
     def test_quantity_prompt_and_cancel_are_honored(self):
         controller, calls = self.controller(lambda *_: 3)
         controller._deposit_input_items([row()], 8, True)
-        self.assertEqual(calls[0], ("deposit", (100, 200, {34: 3})))
+        self.assertEqual(calls[0], ("deposit", (100, 200, {34: 3}, 1)))
         controller, calls = self.controller(lambda *_: None)
         controller._deposit_input_items([row()], 8, True)
         self.assertEqual(calls, [])
@@ -104,7 +105,7 @@ class AdapterTests(unittest.TestCase):
             raise RuntimeError("notice unavailable")
         controller._service.refresh_facility_details = fail
         controller._deposit_input_items([row()], 1, False)
-        self.assertEqual(calls, [("deposit", (100, 200, {34: 1}))])
+        self.assertEqual(calls, [("deposit", (100, 200, {34: 1}, 1))])
 
     def test_closing_industry_page_disconnects_cached_storage_controllers(self):
         calls = []

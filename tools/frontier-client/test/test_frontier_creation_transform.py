@@ -41,6 +41,9 @@ class CreationTransformAdapterTests(unittest.TestCase):
         class HeldModulePartSource:
             pass
 
+        class HeldModuleInventorySource:
+            pass
+
         class SnappedPartCell:
             pass
 
@@ -65,10 +68,12 @@ class CreationTransformAdapterTests(unittest.TestCase):
             "CreationManager": CreationManager,
             "HeldModule": HeldModule,
             "HeldModulePartSource": HeldModulePartSource,
+            "HeldModuleInventorySource": HeldModuleInventorySource,
             "SnappedPartCell": SnappedPartCell,
             "ModuleController": lambda **kwargs: NS(**kwargs),
             "CellGridData": tuple,
             "BindingHintData": lambda key, label: (key, label),
+            "DiagnosticCode": NS(INVALID_PLACEMENT="invalid_placement"),
             "MoveChange": MoveChange,
             "AddChange": MoveChange,
             "get_module_cells": lambda type_id: frozenset({(0, 0)}),
@@ -93,6 +98,99 @@ class CreationTransformAdapterTests(unittest.TestCase):
         self.assertEqual(change.rotation_y, 0)
         self.assertEqual(change.rotation_z, 90)
 
+    def test_snap_validation_uses_held_reflection_axes(self):
+        class HeldModule:
+            pass
+
+        class HeldModulePartSource:
+            pass
+
+        class HeldModuleInventorySource:
+            pass
+
+        class SnappedPartCell:
+            pass
+
+        class ManagementViewIntegration:
+            _start_drag_interior_module = lambda self, source: None
+            _handle_global_mouse_wheel = lambda self, event: None
+            _compute_binding_hints = lambda self: ()
+            _create_module_controller = lambda self, creation, item_id: NS()
+            _update_part_controller = lambda self, creation, part_id, controller: None
+            _release_held_module = lambda self: None
+
+        class CreationManager:
+            pass
+
+        class Change:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        captured = []
+
+        class Validator:
+            @staticmethod
+            def reconstruct_final_layout(*, baseline, changes):
+                captured.extend(changes)
+                return baseline
+
+            @staticmethod
+            def validate_layout(final_layout):
+                return []
+
+            @staticmethod
+            def validate_changes(*, baseline, changes):
+                return []
+
+        namespace = {
+            "ManagementViewIntegration": ManagementViewIntegration,
+            "CreationManager": CreationManager,
+            "HeldModule": HeldModule,
+            "HeldModulePartSource": HeldModulePartSource,
+            "HeldModuleInventorySource": HeldModuleInventorySource,
+            "SnappedPartCell": SnappedPartCell,
+            "ModuleController": lambda **kwargs: NS(**kwargs),
+            "CellGridData": tuple,
+            "BindingHintData": lambda key, label: (key, label),
+            "DiagnosticCode": NS(INVALID_PLACEMENT="invalid_placement"),
+            "MoveChange": Change,
+            "AddChange": Change,
+            "get_module_cells": lambda type_id: frozenset({(0, 0)}),
+            "rotate_cell_grid": lambda cells, rotation_z: cells,
+            "find_cell_grid_center": lambda cells: (0, 0),
+            "default_hardpoint_placements": lambda **kwargs: [],
+            "get_part_cells": lambda graphic_id: set(),
+            "cell_add": lambda left, right: (
+                left[0] + right[0], left[1] + right[1]
+            ),
+            "CreationLayoutValidator": Validator,
+        }
+        adapter._evejs_install_creation_transforms(namespace)
+
+        part_controller = object()
+        integration = ManagementViewIntegration()
+        integration._part_id_by_controller = {part_controller: 3}
+        integration._creation_manager = NS(creation=object())
+        source = HeldModulePartSource()
+        source.item_id = 7
+        held = HeldModule()
+        held.source = source
+        held.anchor_offset = (1.0, 2.0)
+        held.rotation_z = 90
+        held._evejs_rotation_x = 180
+        held._evejs_rotation_y = 0
+
+        snapped = integration._get_snap_location(
+            held,
+            NS(part_controller=part_controller, cell_fraction=(5.0, 8.0)),
+        )
+
+        self.assertEqual(snapped, (4, 6))
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].rotation_x, 180)
+        self.assertEqual(captured[0].rotation_y, 0)
+        self.assertEqual(captured[0].rotation_z, 90)
+
     def test_local_validator_reflects_before_rotating(self):
         class Validator:
             @staticmethod
@@ -114,6 +212,35 @@ class CreationTransformAdapterTests(unittest.TestCase):
                 placement, [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
             ),
             [(10, 21, 0), (10, 20, 0), (9, 21, 0)],
+        )
+
+    def test_local_validator_accepts_native_cell_records(self):
+        class Validator:
+            @staticmethod
+            def _rotate_offset(dx, dy, dz, rotation_z):
+                return dx, dy, dz
+
+        class NativeCell:
+            def __init__(self, x, y):
+                self.x = x
+                self.y = y
+
+        validation_adapter._evejs_install_creation_transform_validation({
+            "CreationLayoutValidator": Validator,
+        })
+        placement = NS(
+            x=10,
+            y=20,
+            z=0,
+            rotation=NS(x=180, y=0, z=0),
+        )
+
+        self.assertEqual(
+            Validator._absolute_cells(
+                placement,
+                [NativeCell(0, 0), NativeCell(1, 0), NativeCell(0, 1)],
+            ),
+            [(11, 20, 0), (10, 20, 0), (11, 21, 0)],
         )
 
 

@@ -206,7 +206,7 @@ test("Construction Template loadouts author bounded Smart Industry lanes", (t) =
       loadout: {
         desiredStatus: "online",
         industryLanes: [
-          { laneID: 2, blueprintID: 1026, runs: 3 },
+          { laneID: 2, blueprintID: 1027, runs: 3 },
           { laneID: 1, blueprintID: 1026, runs: 2 },
         ],
         collectIndustryOutputs: true,
@@ -216,11 +216,11 @@ test("Construction Template loadouts author bounded Smart Industry lanes", (t) =
   assert.equal(normalized.success, true, JSON.stringify(normalized.diagnostics));
   assert.deepEqual(normalized.data.nodes[0].loadout.industryLanes, [
     { laneID: 1, blueprintID: 1026, runs: 2 },
-    { laneID: 2, blueprintID: 1026, runs: 3 },
+    { laneID: 2, blueprintID: 1027, runs: 3 },
   ]);
 
   const invalid = runtime.normalizeConstructionTemplate({
-    name: "Mixed facility recipe",
+    name: "Incompatible facility recipe",
     nodes: [{
       nodeID: "industry",
       assemblyTypeID: 87119,
@@ -228,7 +228,7 @@ test("Construction Template loadouts author bounded Smart Industry lanes", (t) =
       placementMode: "constructionSite",
       loadout: { industryLanes: [
         { laneID: 1, blueprintID: 1026, runs: 1 },
-        { laneID: 2, blueprintID: 1027, runs: 1 },
+        { laneID: 2, blueprintID: 1184, runs: 1 },
       ] },
     }],
   });

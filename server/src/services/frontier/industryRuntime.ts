@@ -13,6 +13,7 @@ const { runWithSuiAssemblyStates } = require("./suiAssemblyState");
 // partitions. The Industry client displays type totals, never these row flags.
 const INDUSTRY_INPUT_FLAG = 20000;
 const INDUSTRY_OUTPUT_FLAG = 20001;
+const MAX_INDUSTRY_JOB_LANES = 16;
 const MAX_INTERACTION_DISTANCE = 5000;
 
 function fail(errorMsg) { return { success: false as const, errorMsg }; }
@@ -23,6 +24,29 @@ function positiveInteger(value) {
 }
 function itemQuantity(item) {
   return item?.singleton ? 1 : positiveInteger(item?.stacksize ?? item?.quantity);
+}
+function industryLaneID(value = 1) {
+  const laneID = Number(value);
+  return Number.isSafeInteger(laneID) && laneID > 0 && laneID <= MAX_INDUSTRY_JOB_LANES
+    ? laneID : 0;
+}
+function industryInputFlagForLane(requestedLaneID = 1) {
+  const laneID = industryLaneID(requestedLaneID);
+  return laneID ? INDUSTRY_INPUT_FLAG + (laneID - 1) * 2 : 0;
+}
+function industryOutputFlagForLane(requestedLaneID = 1) {
+  const inputFlag = industryInputFlagForLane(requestedLaneID);
+  return inputFlag ? inputFlag + 1 : 0;
+}
+function industryEscrowFlag(requestedLaneID = 1, side = "inputs") {
+  return side === "inputs"
+    ? industryInputFlagForLane(requestedLaneID)
+    : side === "outputs" ? industryOutputFlagForLane(requestedLaneID) : 0;
+}
+function industryEscrowLaneForFlag(flagID) {
+  const offset = Number(flagID) - INDUSTRY_INPUT_FLAG;
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset >= MAX_INDUSTRY_JOB_LANES * 2) return null;
+  return { laneID: Math.floor(offset / 2) + 1, side: offset % 2 ? "outputs" : "inputs" };
 }
 function getItemSolarSystemID(item) {
   const explicit = positiveInteger(item?.spaceState?.solarSystemID || item?.spaceState?.solarsystemid);
@@ -220,10 +244,12 @@ function aggregate(rows) {
   }
   return totals;
 }
-function getFacilityItems(facility) {
+function getFacilityItems(facility, requestedLaneID = 1) {
+  const laneID = industryLaneID(requestedLaneID);
+  if (!laneID) return { inputs: {}, outputs: {} };
   return {
-    inputs: aggregate(storedRows(facility, INDUSTRY_INPUT_FLAG)),
-    outputs: aggregate(storedRows(facility, INDUSTRY_OUTPUT_FLAG)),
+    inputs: aggregate(storedRows(facility, industryInputFlagForLane(laneID))),
+    outputs: aggregate(storedRows(facility, industryOutputFlagForLane(laneID))),
   };
 }
 // Do not round, discard invalid entries, or let duplicate decoded dict keys
@@ -242,7 +268,7 @@ function parseQuantities(raw, allowAll = false) {
   }
   return result;
 }
-function commit(context, moves, items, side) {
+function commit(context, moves, items, side, requestedLaneID = 1) {
   const storageMoves = moves.flatMap((move, index) => {
     const source = itemStore.findItemById(move.itemID);
     const entry = { index, typeID: Number(source?.typeID), quantity: move.quantity,
@@ -269,6 +295,7 @@ function commit(context, moves, items, side) {
   }
   return { success: true as const, data: {
     facility: context.facility, characterID: context.characterID, side, items,
+    laneID: industryLaneID(requestedLaneID) || 1,
     changes: result.data.changes, storageTransfers: Array.from(storageTransfers.values()),
   } };
 }
@@ -278,9 +305,11 @@ function depositInputItems(session, facilityID, rawItems, options: Record<string
   const { facility, characterID } = access.data;
   const requested = parseQuantities(rawItems, true);
   if (!requested) return fail("INVALID_QUANTITY");
-  const blueprint = blueprints.getSelectedBlueprint(facility);
+  const laneID = industryLaneID(options?.laneID);
+  if (!laneID) return fail("INVALID_JOB_LANE");
+  const blueprint = blueprints.getSelectedBlueprint(facility, laneID);
   if (!blueprint) return fail("BLUEPRINT_NOT_LOADED");
-  const totals = getFacilityItems(facility).inputs;
+  const totals = getFacilityItems(facility, laneID).inputs;
   const moved: Record<string, number> = {};
   const moves = [];
   const sourceInventories = new Map();
@@ -292,7 +321,9 @@ function depositInputItems(session, facilityID, rawItems, options: Record<string
       sourceInventories.set(sourceKey,
         inventoryAccess.resolveIndustryInventory(session, item.locationID, item.flagID, options));
     }
-    if (!sourceInventories.get(sourceKey).success) return fail("INVALID_SOURCE");
+    if (!sourceInventories.get(sourceKey).success) {
+      return fail("INVALID_SOURCE");
+    }
     if (item.singleton) return fail("SINGLETON_NOT_ACCEPTED");
     const quantity = requestedQuantity === null ? itemQuantity(item) : requestedQuantity;
     if (!quantity || quantity > itemQuantity(item)) return fail("INSUFFICIENT_SOURCE_ITEMS");
@@ -302,9 +333,10 @@ function depositInputItems(session, facilityID, rawItems, options: Record<string
     if (!Number.isSafeInteger(total) || total > slot.max_storable_quantity) return fail("INPUT_CAPACITY_EXCEEDED");
     totals[item.typeID] = total;
     moved[item.typeID] = (moved[item.typeID] || 0) + quantity;
-    moves.push({ itemID, quantity, destinationLocationID: facility.itemID, destinationFlagID: INDUSTRY_INPUT_FLAG });
+    moves.push({ itemID, quantity, destinationLocationID: facility.itemID,
+      destinationFlagID: industryInputFlagForLane(laneID) });
   }
-  return commit(access.data, moves, moved, "inputs");
+  return commit(access.data, moves, moved, "inputs", laneID);
 }
 function withdrawItems(session, facilityID, rawItems, inventoryID, flagID, side = "inputs",
   options: Record<string, any> = {}) {
@@ -312,12 +344,15 @@ function withdrawItems(session, facilityID, rawItems, inventoryID, flagID, side 
   if (!access.success) return access;
   const { facility } = access.data;
   if (side !== "inputs" && side !== "outputs") return fail("INVALID_INVENTORY");
+  const laneID = industryLaneID(options?.laneID);
+  if (!laneID) return fail("INVALID_JOB_LANE");
   const destination = inventoryAccess.resolveIndustryInventory(session, inventoryID, flagID, options);
   if (!destination.success) return fail("INVALID_DESTINATION");
   const { item: destinationItem, flagID: destinationFlag } = destination.data;
   const requested = parseQuantities(rawItems);
   if (!requested) return fail("INVALID_QUANTITY");
-  const rows = storedRows(facility, side === "inputs" ? INDUSTRY_INPUT_FLAG : INDUSTRY_OUTPUT_FLAG)
+  const sourceEscrowFlag = industryEscrowFlag(laneID, side);
+  const rows = storedRows(facility, sourceEscrowFlag)
     .sort((left, right) => left.itemID - right.itemID);
   const moves = [];
   let volume = 0;
@@ -342,7 +377,7 @@ function withdrawItems(session, facilityID, rawItems, inventoryID, flagID, side 
       characterID: access.data.characterID,
       networkNodeID: destination.data.networkNodeID,
       sourceLocationID: facility.itemID,
-      sourceFlagID: side === "inputs" ? INDUSTRY_INPUT_FLAG : INDUSTRY_OUTPUT_FLAG,
+      sourceFlagID: sourceEscrowFlag,
       items: moves.map(move => ({ itemID: move.itemID, quantity: move.quantity })),
       publishNotice: true,
     });
@@ -351,6 +386,7 @@ function withdrawItems(session, facilityID, rawItems, inventoryID, flagID, side 
       facility,
       characterID: access.data.characterID,
       side,
+      laneID,
       items: Object.fromEntries(requested),
       changes: deposited.data.changes,
       storageTransfers: [],
@@ -362,7 +398,7 @@ function withdrawItems(session, facilityID, rawItems, inventoryID, flagID, side 
       },
     } };
   }
-  return commit(access.data, moves, Object.fromEntries(requested), side);
+  return commit(access.data, moves, Object.fromEntries(requested), side, laneID);
 }
 
 function prepareJettisonWithdrawal(
@@ -376,9 +412,11 @@ function prepareJettisonWithdrawal(
   if (!access.success) return access;
   const { facility } = access.data;
   if (side !== "inputs" && side !== "outputs") return fail("INVALID_INVENTORY");
+  const laneID = industryLaneID(options?.laneID);
+  if (!laneID) return fail("INVALID_JOB_LANE");
   const requested = parseQuantities(rawItems);
   if (!requested) return fail("INVALID_QUANTITY");
-  const sourceFlagID = side === "inputs" ? INDUSTRY_INPUT_FLAG : INDUSTRY_OUTPUT_FLAG;
+  const sourceFlagID = industryEscrowFlag(laneID, side);
   const rows = storedRows(facility, sourceFlagID)
     .sort((left, right) => left.itemID - right.itemID);
   const moves: any[] = [];
@@ -398,6 +436,7 @@ function prepareJettisonWithdrawal(
     data: {
       ...access.data,
       side,
+      laneID,
       sourceFlagID,
       items: Object.fromEntries(requested),
       moves,
@@ -444,10 +483,11 @@ function validateWithdrawalCapacity(destination, requested, volume) {
   return { success: true as const };
 }
 
-function validateStoppedProduction(facility) {
+function validateStoppedProduction(facility, requestedLaneID = 1) {
   const productionRuntime = require("./industryProduction");
   if (productionRuntime.invalidStoredProduction(facility)) return fail("INVALID_PRODUCTION_STATE");
-  if (productionRuntime.hasActiveProduction(facility)) return fail("PRODUCTION_ALREADY_RUNNING");
+  const production = productionRuntime.getProduction(facility, requestedLaneID);
+  if (production && production.state !== "STOPPED") return fail("PRODUCTION_ALREADY_RUNNING");
   return { success: true as const };
 }
 
@@ -455,7 +495,9 @@ function emptyActiveBlueprintItems(session, facilityID, storageUnitID, options: 
   const access = validateFacility(session, facilityID, options);
   if (!access.success) return access;
   const { facility, characterID } = access.data;
-  const stopped = validateStoppedProduction(facility);
+  const laneID = industryLaneID(options?.laneID);
+  if (!laneID) return fail("INVALID_JOB_LANE");
+  const stopped = validateStoppedProduction(facility, laneID);
   if (!stopped.success) return stopped;
   const destination = inventoryAccess.resolveTransferInventory(session, storageUnitID, options);
   if (!destination.success) return destination;
@@ -464,7 +506,8 @@ function emptyActiveBlueprintItems(session, facilityID, storageUnitID, options: 
   const itemsBySide = { inputs: {}, outputs: {} };
   const totals = new Map<number, number>();
   let volume = 0;
-  for (const [side, flag] of [["inputs", INDUSTRY_INPUT_FLAG], ["outputs", INDUSTRY_OUTPUT_FLAG]] as const) {
+  for (const [side, flag] of [["inputs", industryInputFlagForLane(laneID)],
+    ["outputs", industryOutputFlagForLane(laneID)]] as const) {
     // Read actual escrow rows, including types no longer in the current recipe.
     // Unexpected owners or malformed stacks must block an all-items operation.
     const rows = itemStore.listContainerItems(null, facility.itemID, flag)
@@ -495,7 +538,7 @@ function emptyActiveBlueprintItems(session, facilityID, storageUnitID, options: 
       networkNodeID: destination.data.networkNodeID,
       sourceLocationID: facility.itemID,
       sourceFlagID: -1,
-      sourceFlagIDs: [INDUSTRY_INPUT_FLAG, INDUSTRY_OUTPUT_FLAG],
+      sourceFlagIDs: [industryInputFlagForLane(laneID), industryOutputFlagForLane(laneID)],
       items: moves.map(move => ({ itemID: move.itemID, quantity: move.quantity })),
       publishNotice: true,
     });
@@ -504,6 +547,7 @@ function emptyActiveBlueprintItems(session, facilityID, storageUnitID, options: 
       facility,
       characterID,
       side: "all",
+      laneID,
       items: Object.fromEntries(totals),
       itemsBySide,
       changes: deposited.data.changes,
@@ -516,7 +560,7 @@ function emptyActiveBlueprintItems(session, facilityID, storageUnitID, options: 
       },
     } };
   }
-  const result = commit(access.data, moves, Object.fromEntries(totals), "all");
+  const result = commit(access.data, moves, Object.fromEntries(totals), "all", laneID);
   return result.success ? { ...result, data: { ...result.data, itemsBySide } } : result;
 }
 
@@ -643,6 +687,8 @@ function depositStorageInputItems(session, facilityID, storageUnitID, rawItems,
   if (!requested || Array.from(requested.values()).some(quantity => quantity > 0xffffffff)) {
     return fail("INVALID_QUANTITY");
   }
+  const laneID = industryLaneID(options?.laneID);
+  if (!laneID) return fail("INVALID_JOB_LANE");
   const source = inventoryAccess.resolveTransferInventory(session, storageUnitID, options);
   if (!source.success) return fail("INVALID_SOURCE");
   if (source.data.virtualInventory === "network_node_fuel") {
@@ -659,11 +705,11 @@ function depositStorageInputItems(session, facilityID, storageUnitID, rawItems,
       const entries = Array.from(requested);
       if (entries.length !== 1) return fail("INVALID_INPUT_TYPE");
       const [typeID, quantity] = entries[0];
-      const blueprint = blueprints.getSelectedBlueprint(currentAccess.data.facility);
+      const blueprint = blueprints.getSelectedBlueprint(currentAccess.data.facility, laneID);
       const slot = blueprint?.inputs?.[typeID];
       if (!blueprint) return fail("BLUEPRINT_NOT_LOADED");
       if (!slot || !networkNodeFuel.isAcceptedNetworkNodeFuelType(typeID)) return fail("INVALID_INPUT_TYPE");
-      const totals = getFacilityItems(currentAccess.data.facility).inputs;
+      const totals = getFacilityItems(currentAccess.data.facility, laneID).inputs;
       if ((totals[typeID] || 0) + quantity > slot.max_storable_quantity) {
         return fail("INPUT_CAPACITY_EXCEEDED");
       }
@@ -677,7 +723,7 @@ function depositStorageInputItems(session, facilityID, storageUnitID, rawItems,
         fuelTypeID: typeID,
         quantity,
         destinationLocationID: currentAccess.data.facility.itemID,
-        destinationFlagID: INDUSTRY_INPUT_FLAG,
+        destinationFlagID: industryInputFlagForLane(laneID),
         publishNotice: true,
       });
       if (!withdrawn.success) return withdrawn;
@@ -685,6 +731,7 @@ function depositStorageInputItems(session, facilityID, storageUnitID, rawItems,
         facility: currentAccess.data.facility,
         characterID: currentAccess.data.characterID,
         side: "inputs",
+        laneID,
         items: { [typeID]: quantity },
         changes: withdrawn.data.changes,
         storageTransfers: [],
@@ -742,21 +789,28 @@ function loadBlueprint(session, facilityID, blueprintID, options: Record<string,
   const access = validateFacility(session, facilityID, options);
   if (!access.success) return access;
   const { facility } = access.data;
-  const stopped = validateStoppedProduction(facility);
+  const laneID = industryLaneID(options?.laneID);
+  if (!laneID) return fail("INVALID_JOB_LANE");
+  if (laneID > require("./industryProduction").getFacilityLaneCount(facility)) {
+    return fail("INVALID_JOB_LANE");
+  }
+  const stopped = validateStoppedProduction(facility, laneID);
   if (!stopped.success) return stopped;
   const blueprint = blueprints.getBlueprintForFacility(facility.typeID, positiveInteger(blueprintID));
   if (!blueprint) return fail("BLUEPRINT_NOT_FOUND");
-  const current = blueprints.getSelectedBlueprint(facility);
+  const current = blueprints.getSelectedBlueprint(facility, laneID);
   if (current?.blueprint_id === blueprint.blueprint_id) return fail("BLUEPRINT_ALREADY_LOADED");
-  if ([INDUSTRY_INPUT_FLAG, INDUSTRY_OUTPUT_FLAG].some(flag =>
+  if ([industryInputFlagForLane(laneID), industryOutputFlagForLane(laneID)].some(flag =>
     itemStore.listContainerItems(null, facility.itemID, flag).length)) return fail("FACILITY_CONTAINS_ITEMS");
   const result = itemStore.updateInventoryItem(facility.itemID, item => ({
-    ...item, customInfo: blueprints.withSelectedBlueprint(item, blueprint.blueprint_id),
+    ...item, customInfo: blueprints.withSelectedBlueprint(item, blueprint.blueprint_id, laneID),
   }));
   return result.success ? { success: true as const, data: blueprint } : result;
 }
 module.exports = {
-  INDUSTRY_INPUT_FLAG, INDUSTRY_OUTPUT_FLAG, canReadFacility, getItemSolarSystemID,
+  INDUSTRY_INPUT_FLAG, INDUSTRY_OUTPUT_FLAG, MAX_INDUSTRY_JOB_LANES,
+  industryInputFlagForLane, industryOutputFlagForLane, industryEscrowFlag,
+  industryEscrowLaneForFlag, canReadFacility, getItemSolarSystemID,
   getFacilityItems, depositInputItems: depositInputItemsWithStorageState,
   depositStorageInputItems,
   prepareJettisonWithdrawal,

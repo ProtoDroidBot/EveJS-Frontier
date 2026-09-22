@@ -88,46 +88,74 @@ Compiling these sources does not modify an already deployed world. A fresh deplo
 | `EVEJS_SUI_CATAPULT_PACKAGE_ID` / `EVEJS_SUI_CATAPULT_TYPE_ORIGIN` / `EVEJS_SUI_CATAPULT_REGISTRY_ID` | Smart Catapult implementation, stable type origin, and sidecar registry |
 | `SMART_INDUSTRY_PACKAGE_ID` / `SMART_INDUSTRY_TYPE_ORIGIN` / `SMART_INDUSTRY_REGISTRY_ID` | Smart Industry implementation, stable type origin, and sidecar registry |
 | `EVEJS_SUI_TRANSPONDER_PACKAGE_ID` / `EVEJS_SUI_TRANSPONDER_TYPE_ORIGIN` / `EVEJS_SUI_TRANSPONDER_REGISTRY_ID` | Transponder implementation, stable type origin, and commitment registry |
-| `EVEJS_SUI_NPC_CONFIG_PATH` | Optional explicit deployment JSON path |
+| `EVEJS_SUI_WORLD_FEATURES_CONFIG_PATH` | Preferred explicit `world-features.v1.json` path |
+| `EVEJS_SUI_NPC_CONFIG_PATH` | Legacy explicit manifest-path alias |
 
-With neither file nor overrides, the reader retains a legacy fallback to the base package and Object Registry. That fallback is not valid for the current split deployment because the base package does not contain `npc`; normal operation must use the synchronized combined manifest. For the first compatible package introducing the module, a package override alone also supplies the type origin. For subsequent upgrades, retain that first origin explicitly. Calls use the latest implementation; derived profile IDs and type checks use the origin.
+With neither file nor overrides, the reader retains a legacy fallback to the base package and Object Registry. That fallback is not valid for the current split deployment because the base package does not contain `npc`; normal operation must use the synchronized world-feature manifest. For the first compatible package introducing the module, a package override alone also supplies the type origin. For subsequent upgrades, retain that first origin explicitly. Calls use the latest implementation; derived profile IDs and type checks use the origin.
 
-The access reader also currently falls back to the configured NPC package when access metadata is absent. That compatibility behavior is unsafe for independently split packages because `world_npc` contains no `assembly_access` module; use the complete manifest or all three explicit access overrides. Removing this cross-package fallback is tracked as deployment hardening work.
+Split capabilities resolve independently. An absent assembly-access record cannot redirect calls to the NPC-only package, and an absent NPC record does not prevent the server or dApp from loading another valid capability. Operations requiring an unavailable capability fail closed at their feature boundary.
 
-Alternatively, place public `npc-deployment.json` next to the synchronized `world.private.json` selected by `EVEJS_SUI_WORLD_CONFIG_PATH`:
+Alternatively, place public `world-features.v1.json` next to the synchronized `world.private.json` selected by `EVEJS_SUI_WORLD_CONFIG_PATH`:
 
 ```json
 {
+  "format": "eve-frontier-world-features",
   "schemaVersion": 1,
   "chainId": "CHAIN_IDENTIFIER",
-  "worldPackageId": "0xORIGINAL_WORLD_PACKAGE",
-  "objectRegistryId": "0xORIGINAL_REGISTRY",
-  "adminAclId": "0xORIGINAL_ACL",
-  "packageId": "0xLATEST_NPC_IMPLEMENTATION",
-  "typeOrigin": "0xFIRST_PACKAGE_CONTAINING_NPC",
-  "npcRegistryId": "0xNPC_REGISTRY",
-  "accessPackageId": "0xASSEMBLY_ACCESS_IMPLEMENTATION",
-  "accessTypeOrigin": "0xFIRST_PACKAGE_CONTAINING_ASSEMBLY_ACCESS",
-  "accessRegistryId": "0xASSEMBLY_ACCESS_REGISTRY",
-  "catapultPackageId": "0xCATAPULT_IMPLEMENTATION",
-  "catapultTypeOrigin": "0xFIRST_PACKAGE_CONTAINING_CATAPULT",
-  "catapultRegistryId": "0xCATAPULT_REGISTRY",
-  "industryPackageId": "0xSMART_INDUSTRY_IMPLEMENTATION",
-  "industryTypeOrigin": "0xFIRST_PACKAGE_CONTAINING_SMART_INDUSTRY",
-  "industryRegistryId": "0xSMART_INDUSTRY_REGISTRY",
-  "transponderPackageId": "0xTRANSPONDER_IMPLEMENTATION",
-  "transponderTypeOrigin": "0xFIRST_PACKAGE_CONTAINING_TRANSPONDER",
-  "transponderRegistryId": "0xTRANSPONDER_REGISTRY"
+  "world": {
+    "packageId": "0xORIGINAL_WORLD_PACKAGE",
+    "objectRegistryId": "0xORIGINAL_REGISTRY",
+    "adminAclId": "0xORIGINAL_ACL"
+  },
+  "capabilities": {
+    "npc": {
+      "status": "deployed",
+      "packageId": "0xLATEST_NPC_IMPLEMENTATION",
+      "typeOrigin": "0xFIRST_PACKAGE_CONTAINING_NPC",
+      "registryId": "0xNPC_REGISTRY"
+    }
+  },
+  "factionConfig": {
+    "default": { "id": "default", "path": "factions/default.v1.json" },
+    "factions": {
+      "500001-caldari": {
+        "path": "factions/500001-caldari.v1.json",
+        "fallback": "default"
+      }
+    }
+  }
 }
 ```
 
-Replace placeholders with verified deployed values. The chain and original world IDs must match the synchronized base world. Environment package/origin overrides take precedence per field, but an invalid file is always rejected. The conventional sibling is optional; an explicitly selected file must exist. The config snapshot is checked again before submission so a deployment change cannot redirect an already prepared operation.
+The referenced `factions/default.v1.json` is:
 
-Store the authoritative public feature manifest at `world-contracts/deployments/localnet/npc-deployment.json` in the selected efctl workspace. The historical filename is retained for compatibility, but the manifest now binds all five extension packages and registries. `FrontierWorld.ps1 sync` snapshots it alongside the original deployment artifacts, validates its schema and chain/base-world bindings, and writes the sanitized runtime fields to the sibling file above before marking the world ready. The manifest addresses must be full nonzero 32-byte Sui addresses. Extra fields are not copied. `sync -DryRun` validates and reports without changing either destination.
+```json
+{
+  "format": "eve-frontier-faction-features",
+  "schemaVersion": 1,
+  "configId": "default",
+  "capabilities": ["npc"]
+}
+```
 
-Malformed or mismatched NPC metadata makes synchronization fail closed. If the source manifest is absent and no destination manifest exists, synchronization retains its legacy base-package behavior. If a destination already exists, the missing source is an error: sync preserves the old NPC metadata for recovery but marks the base-world config unavailable. Restore the matching authoritative manifest, or explicitly reconcile the deployment before removing obsolete metadata; do not silently discard pending signed NPC journals.
+Each faction owns a separate file such as `factions/500001-caldari.v1.json`:
 
-`FrontierWorld.ps1 sync` still validates the original deployment JSON, publication metadata, and their hashes. The current private-config artifact hashes do not cover the combined feature manifest or the five per-feature publish outputs, so retain and verify those separately when applying a manual upgrade. Replacing the base `packageId` with a newer implementation breaks existing type/derived-ID checks. `deploy-world.sh` performs a fresh publish and cleans deployment artifacts; it is not an upgrade command. Synchronization copies address-validated deployment settings; it does not publish, upgrade, reset Localnet, replace the world registry, or prove that every live feature call package exposes the expected module.
+```json
+{
+  "format": "eve-frontier-faction-features",
+  "schemaVersion": 1,
+  "factionKey": "500001-caldari",
+  "fallback": "default"
+}
+```
+
+Omitting `capabilities` inherits the default; providing an array replaces it. Replace placeholders with verified deployed values. The chain and original world IDs must match the synchronized base world. Each deployed capability has its own complete package/origin/registry triple; an omitted record affects no other capability. Faction keys use `factionID-factionStringOnlyID`, every faction entry explicitly references `default`, and canonical filenames prevent path aliases or traversal. Environment package/origin overrides take precedence per field, but an invalid file is always rejected. The conventional sibling is optional; an explicitly selected file must exist. The config and referenced faction files are fingerprinted before submission so a change cannot redirect an already prepared operation.
+
+Store the authoritative public feature manifest at `world-contracts/deployments/localnet/world-features.v1.json` in the selected efctl workspace. `FrontierWorld.ps1 sync` snapshots it alongside the original deployment artifacts, validates its schema and chain/base-world bindings, and writes sanitized public records to the sibling file above before marking the world ready. The manifest addresses must be full nonzero 32-byte Sui addresses. Unknown capabilities and extra fields are rejected or omitted at the synchronization boundary. `sync -DryRun` validates and reports without changing either destination.
+
+Historical `npc-deployment.json` schemas 1–3 are migration inputs. Sync converts the flat fields into independent records, omits incomplete triples while listing them in `migration.incompleteCapabilities`, and archives a historical synchronized destination as `npc-deployment.legacy.json`. Malformed data or mismatched world identity still fails closed. If the source manifest is absent while synchronized feature metadata exists, sync preserves it for recovery and marks the base-world config unavailable.
+
+`FrontierWorld.ps1 sync` still validates the original deployment JSON, publication metadata, and their hashes. The current private-config artifact hashes do not cover the world-feature manifest, faction-policy files, or per-feature publish outputs, so retain and verify those separately when applying a manual upgrade. Replacing the base `packageId` with a newer implementation breaks existing type/derived-ID checks. `deploy-world.sh` performs a fresh publish and cleans deployment artifacts; it is not an upgrade command. Synchronization copies address-validated deployment settings; it does not publish, upgrade, reset Localnet, replace the world registry, or prove that every live feature call package exposes the expected module.
 
 ## Verification
 

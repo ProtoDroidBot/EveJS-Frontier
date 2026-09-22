@@ -31,6 +31,8 @@ require(path.join(__dirname, "./npcIndustryJobService"))
     .registerNpcIndustryJobHandler();
 require(path.join(__dirname, "./npcStargateMaintenanceService"))
     .registerNpcStargateMaintenanceJobHandlers();
+const npcNetworkNodeCoordinator = require(path.join(__dirname, "./npcNetworkNodeCoordinator"));
+npcNetworkNodeCoordinator.registerNpcNetworkNodeMaintenanceJobHandler();
 const { requestNpcSupport, registerNpcSupportJobHandlers, } = require(path.join(__dirname, "./npcSupportCoordinator"));
 registerNpcSupportJobHandlers();
 const CAPSULE_GROUP_ID = 29;
@@ -3826,6 +3828,7 @@ function tickScene(scene, now) {
     if (!scene) {
         return;
     }
+    npcNetworkNodeCoordinator.scheduleNpcNetworkNodeReconciliation(scene.systemID, now);
     const controllers = listControllersBySystem(scene.systemID);
     if (controllers.length <= 0) {
         scene._npcBehaviorTickCursor = 0;

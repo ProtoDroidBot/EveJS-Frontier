@@ -24,8 +24,8 @@ The mirror covers:
 
 Base Assembly, Gate, Storage Unit, and Network Node calls target the synchronized
 base-world package. Catapult and Smart Industry state are separate sidecars and
-target the package/origin/registry triples in the synchronized combined
-`npc-deployment.json` feature manifest. Assembly access and transponder objects
+target the package/origin/registry triples in the synchronized
+`world-features.v1.json` capability records. Assembly access and transponder objects
 use the same split identity model in their own runtimes. A shared Object Registry
 does not mean these modules share the base package address.
 

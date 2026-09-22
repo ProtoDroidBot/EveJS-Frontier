@@ -3312,6 +3312,39 @@ function validateNpcConstructionItem(actor, itemID, jobID = null): any {
   return { success: true as const, actor: actorResult.data, item, state, metadata };
 }
 
+/**
+ * Resolve an NPC's right to control a completed faction assembly. The NPC
+ * which built the item retains its job-scoped authority; every other NPC,
+ * including members of the same faction, must hold an active `configure`
+ * grant in the shared assembly access runtime.
+ */
+function validateNpcAssemblyControl(actor, itemID, jobID = null): any {
+  const actorResult = validateNpcAssemblyActor(actor);
+  if (!actorResult.success) return actorResult;
+  const item = itemStore.findItemById(toInt(itemID, 0));
+  const state = readConstructionState(item);
+  const metadata = readNpcConstructionMetadata(item);
+  if (!item || !state || !metadata) {
+    return { success: false as const, errorMsg: "CONSTRUCTION_SITE_NOT_FOUND" };
+  }
+  const originalOperator = toInt(item.ownerID, 0) === actorResult.data.ownerPrincipalID &&
+    metadata.operator?.actorID === actorResult.data.actorID &&
+    metadata.factionKey === actorResult.data.factionKey &&
+    (!jobID || metadata.jobID === jobID);
+  if (!originalOperator) {
+    if (jobID || metadata.registeredForFaction !== true ||
+        metadata.factionKey !== actorResult.data.factionKey) {
+      return { success: false as const, errorMsg: "CONSTRUCTION_SITE_ACCESS_DENIED" };
+    }
+    const access = require("./assemblyAccessRuntime")
+      .resolveAccess(actorResult.data, item.itemID, ["configure"]);
+    if (!access.success) {
+      return { success: false as const, errorMsg: access.errorMsg || "ASSEMBLY_ACCESS_DENIED" };
+    }
+  }
+  return { success: true as const, actor: actorResult.data, item, state, metadata };
+}
+
 /** Move exact reserved stacks to the construction root in one item-table write. */
 function depositNpcConstructionMaterials(actor, itemID, materialPlan, jobID = null) {
   const validation = validateNpcConstructionItem(actor, itemID, jobID);
@@ -3422,9 +3455,26 @@ function getNpcAssemblyLifecycle(actor, itemID, jobID = null) {
   };
 }
 
+function getNpcAssemblyControlLifecycle(actor, itemID) {
+  const validation = validateNpcAssemblyControl(actor, itemID, null);
+  if (!validation.success) return validation;
+  const definition = getBuildDefinition(validation.state.assemblyTypeID);
+  return {
+    success: true as const,
+    data: {
+      item: validation.item,
+      state: validation.state,
+      metadata: validation.metadata,
+      createOnChain: Boolean(definition && definition.createOnChain),
+      activationPending: isAssemblyActivationPending(validation.item),
+      suiStatusIntent: require("./suiAssemblyState").readSuiAssemblyStatusIntent(validation.item),
+    },
+  };
+}
+
 /** Records a scoped NPC lifecycle intent; the supervised Sui worker signs it. */
 function requestNpcAssemblyState(actor, itemID, targetStatus, jobID = null) {
-  const validation = validateNpcConstructionItem(actor, itemID, jobID);
+  const validation = validateNpcAssemblyControl(actor, itemID, jobID);
   if (!validation.success) return validation;
   const requested = toInt(targetStatus, 0);
   if (![ASSEMBLY_STATUS_OFFLINE, ASSEMBLY_STATUS_ONLINE].includes(requested)) {
@@ -3499,6 +3549,14 @@ function registerNpcAssemblyForFaction(actor, itemID, input: Record<string, any>
   }
   const update = itemStore.updateInventoryItem(itemID, (currentItem) => {
     const metadata = readNpcConstructionMetadata(currentItem);
+    const supportedPriorityFlags = new Set([
+      "maintenance", "defense", "navigation", "logistics", "production",
+    ]);
+    const servicePriorityFlags = [...new Set(
+      (Array.isArray(input.servicePriorityFlags) ? input.servicePriorityFlags : [])
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter((value) => supportedPriorityFlags.has(value)),
+    )].sort();
     return {
       ...currentItem,
       customInfo: writeNpcConstructionMetadata(currentItem, {
@@ -3507,6 +3565,9 @@ function registerNpcAssemblyForFaction(actor, itemID, input: Record<string, any>
         registeredForFaction: true,
         registeredAtMs: metadata.registeredAtMs || Date.now(),
         commandNodeID: commandNodeID || null,
+        servicePriorityFlags,
+        essentialService: input.essentialService === true,
+        loadSheddingEligible: input.loadSheddingEligible !== false,
       }),
     };
   });
@@ -4841,6 +4902,7 @@ module.exports = {
   depositNpcConstructionMaterials,
   completeNpcConstruction,
   getNpcAssemblyLifecycle,
+  getNpcAssemblyControlLifecycle,
   requestNpcAssemblyState,
   registerNpcAssemblyForFaction,
   findNpcAssemblyByJobID,

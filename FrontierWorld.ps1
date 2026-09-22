@@ -13,8 +13,9 @@ installs, copies, pins, or updates efctl.
 The synchronized EveJS file contains the current localnet world IDs and only
 the admin signer needed for character provisioning. It is stored under the
 gitignored _local directory with an ACL restricted to the current Windows user.
-When deployments/localnet/npc-deployment.json exists, its public NPC upgrade
-settings are validated and synchronized separately without changing base IDs.
+The versioned deployments/localnet/world-features.v1.json manifest is validated
+and synchronized separately without changing base IDs. Historical
+npc-deployment.json files are migrated deliberately during sync.
 
 .EXAMPLE
 .\FrontierWorld.ps1 sync
@@ -82,7 +83,9 @@ if ([string]::IsNullOrWhiteSpace($DestinationRoot)) {
 }
 $DestinationRoot = [IO.Path]::GetFullPath($DestinationRoot)
 $WorldConfigPath = Join-Path $DestinationRoot 'world.private.json'
-$NpcConfigPath = Join-Path $DestinationRoot 'npc-deployment.json'
+$WorldFeaturesConfigPath = Join-Path $DestinationRoot 'world-features.v1.json'
+$LegacyNpcConfigPath = Join-Path $DestinationRoot 'npc-deployment.json'
+$ArchivedLegacyNpcConfigPath = Join-Path $DestinationRoot 'npc-deployment.legacy.json'
 $EfctlConfigPath = Join-Path $SourceRoot 'efctl.yaml'
 $WorldContractsRoot = Join-Path $SourceRoot 'world-contracts'
 $AssemblyEnergyConfigPath = Join-Path $WorldContractsRoot 'config\assembly-energy.json'
@@ -403,7 +406,7 @@ function Read-StableSourceSnapshots {
         [Parameter(Mandatory)] [string]$PublicationPath,
         [Parameter(Mandatory)] [string]$EnvironmentPath,
         [Parameter(Mandatory)] [string]$AssemblyEnergyPath,
-        [Parameter(Mandatory)] [string]$NpcDeploymentPath
+        [Parameter(Mandatory)] [string]$FeatureDeploymentPath
     )
 
     $paths = [ordered]@{
@@ -411,19 +414,19 @@ function Read-StableSourceSnapshots {
         Publication = $PublicationPath
         Environment = $EnvironmentPath
         AssemblyEnergy = $AssemblyEnergyPath
-        NpcDeployment = $NpcDeploymentPath
+        FeatureDeployment = $FeatureDeploymentPath
     }
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         $first = @{}
         $second = @{}
         foreach ($entry in $paths.GetEnumerator()) {
-            $first[$entry.Key] = if ($entry.Key -eq 'NpcDeployment' -and
+            $first[$entry.Key] = if ($entry.Key -eq 'FeatureDeployment' -and
                 -not (Test-Path -LiteralPath $entry.Value)) { $null }
                 else { Read-TextFileSnapshot -Path $entry.Value }
         }
         Start-Sleep -Milliseconds 20
         foreach ($entry in $paths.GetEnumerator()) {
-            $second[$entry.Key] = if ($entry.Key -eq 'NpcDeployment' -and
+            $second[$entry.Key] = if ($entry.Key -eq 'FeatureDeployment' -and
                 -not (Test-Path -LiteralPath $entry.Value)) { $null }
                 else { Read-TextFileSnapshot -Path $entry.Value }
         }
@@ -607,7 +610,8 @@ function Assert-SuiAddress {
         [Parameter(Mandatory)] [AllowEmptyString()] [string]$Value,
         [Parameter(Mandatory)] [string]$Label
     )
-    if ($Value -notmatch '^0x[0-9a-fA-F]{64}$') {
+    if ($Value -notmatch '^0x[0-9a-fA-F]{64}$' -or
+        $Value -ceq ('0x' + ('0' * 64))) {
         throw "$Label is not a canonical 32-byte Sui address."
     }
     return $Value.ToLowerInvariant()
@@ -637,7 +641,13 @@ function Read-SourceWorld {
     $deploymentPath = Join-Path $WorldContractsRoot 'deployments\localnet\extracted-object-ids.json'
     $publicationPath = Join-Path $WorldContractsRoot 'contracts\world\Pub.localnet.toml'
     $environmentPath = Join-Path $WorldContractsRoot '.env'
-    $npcDeploymentPath = Join-Path $WorldContractsRoot 'deployments\localnet\npc-deployment.json'
+    $worldFeaturesPath = Join-Path $WorldContractsRoot 'deployments\localnet\world-features.v1.json'
+    $legacyNpcDeploymentPath = Join-Path $WorldContractsRoot 'deployments\localnet\npc-deployment.json'
+    $featureDeploymentPath = if (Test-Path -LiteralPath $worldFeaturesPath -PathType Leaf) {
+        $worldFeaturesPath
+    } else {
+        $legacyNpcDeploymentPath
+    }
     foreach ($required in @($deploymentPath, $publicationPath, $environmentPath, $AssemblyEnergyConfigPath)) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "Required deployed-world artifact is missing: $required"
@@ -649,7 +659,7 @@ function Read-SourceWorld {
         -PublicationPath $publicationPath `
         -EnvironmentPath $environmentPath `
         -AssemblyEnergyPath $AssemblyEnergyConfigPath `
-        -NpcDeploymentPath $npcDeploymentPath
+        -FeatureDeploymentPath $featureDeploymentPath
     try {
         $deployment = $snapshots.Deployment.Text | ConvertFrom-Json
     }
@@ -684,7 +694,7 @@ function Read-SourceWorld {
         }
     }
 
-    $npcDeployment = Read-NpcDeployment -Snapshot $snapshots.NpcDeployment `
+    $worldFeatures = Read-WorldFeatureDeployment -Snapshot $snapshots.FeatureDeployment `
         -ChainId $chainId -PackageId $packageId `
         -ObjectRegistryId $objectRegistryId -AdminAclId $adminAclId
     $assemblyEnergy = Read-AssemblyEnergyManifest -Snapshot $snapshots.AssemblyEnergy
@@ -705,11 +715,72 @@ function Read-SourceWorld {
         DeploymentSha256 = $snapshots.Deployment.Sha256
         PublicationSha256 = $snapshots.Publication.Sha256
         AssemblyEnergy = $assemblyEnergy
-        NpcDeployment = $npcDeployment
+        WorldFeatures = $worldFeatures
     }
 }
 
-function Read-NpcDeployment {
+function Read-StableFactionFeatureFile {
+    param(
+        [Parameter(Mandatory)] [string]$ManifestDirectory,
+        [Parameter(Mandatory)] [object]$RelativePath,
+        [Parameter(Mandatory)] [string]$ExpectedPath,
+        [Parameter(Mandatory)] [string]$Label
+    )
+
+    if ($RelativePath -isnot [string] -or $RelativePath -cne $ExpectedPath) {
+        throw "$Label must use canonical path $ExpectedPath."
+    }
+    $resolved = [IO.Path]::GetFullPath((Join-Path $ManifestDirectory ($ExpectedPath.Replace('/', '\'))))
+    $factionRoot = [IO.Path]::GetFullPath((Join-Path $ManifestDirectory 'factions')) + [IO.Path]::DirectorySeparatorChar
+    if (-not $resolved.StartsWith($factionRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label escapes the faction config directory."
+    }
+    $item = Get-Item -LiteralPath $resolved -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item -or $item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "$Label is missing or is not a regular file."
+    }
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $first = Read-TextFileSnapshot -Path $resolved
+        Start-Sleep -Milliseconds 20
+        $second = Read-TextFileSnapshot -Path $resolved
+        if ($first.Sha256 -ceq $second.Sha256) {
+            try { $raw = ConvertFrom-Json -InputObject $second.Text -AsHashtable }
+            catch { throw "$Label is malformed JSON." }
+            if ($raw -isnot [Collections.IDictionary] -or
+                $raw['format'] -cne 'eve-frontier-faction-features' -or
+                $raw['schemaVersion'] -isnot [long] -or $raw['schemaVersion'] -ne 1) {
+                throw "$Label has an unsupported schema."
+            }
+            return $raw
+        }
+    }
+    throw "$Label is changing; wait for the writer to finish and retry."
+}
+
+function Get-WorldFeatureCapabilityNames {
+    param(
+        [Parameter(Mandatory)] [object]$Value,
+        [Parameter(Mandatory)] [Collections.IDictionary]$FeatureSpecs,
+        [Parameter(Mandatory)] [Collections.IDictionary]$Capabilities,
+        [Parameter(Mandatory)] [string]$Label
+    )
+    if ($Value -isnot [object[]]) {
+        throw "$Label must be an array of capability names."
+    }
+    $names = [Collections.Generic.List[string]]::new()
+    foreach ($name in $Value) {
+        if ($name -isnot [string] -or -not $FeatureSpecs.Contains($name) -or
+            -not $Capabilities.Contains($name) -or
+            $Capabilities[$name]['status'] -cne 'deployed') {
+            throw "$Label contains an unavailable capability."
+        }
+        if (-not $names.Contains($name)) { $names.Add($name) }
+    }
+    return ,@($names | Sort-Object)
+}
+
+function Read-WorldFeatureDeployment {
     param(
         [AllowNull()] [object]$Snapshot,
         [Parameter(Mandatory)] [string]$ChainId,
@@ -723,88 +794,294 @@ function Read-NpcDeployment {
         $manifest = ConvertFrom-Json -InputObject $Snapshot.Text -AsHashtable
     }
     catch {
-        throw 'NPC deployment metadata is malformed JSON.'
+        throw 'World feature deployment metadata is malformed JSON.'
     }
-    if ($manifest -isnot [Collections.IDictionary] -or
-        $manifest.schemaVersion -isnot [long] -or
-        $manifest.schemaVersion -notin @(1, 2, 3)) {
-        throw 'NPC deployment metadata has an unsupported schema.'
+    if ($manifest -isnot [Collections.IDictionary]) {
+        throw 'World feature deployment metadata has an unsupported schema.'
     }
-    if ($manifest.chainId -isnot [string] -or
-        $manifest.chainId -cnotmatch '^[0-9a-fA-F]+$' -or
-        $manifest.chainId.ToLowerInvariant() -cne $ChainId) {
-        throw 'NPC deployment chainId does not match the synchronized world.'
+    $manifestChainId = $manifest['chainId']
+    if ($manifestChainId -isnot [string] -or
+        $manifestChainId -cnotmatch '^[0-9a-fA-F]+$' -or
+        $manifestChainId.ToLowerInvariant() -cne $ChainId) {
+        throw 'World feature deployment chainId does not match the synchronized world.'
     }
-    # Copy only the public runtime schema; never propagate extra source fields.
-    $validated = [ordered]@{ schemaVersion = [long]$manifest.schemaVersion; chainId = $ChainId }
-    $runtimeFields = @(
-        'worldPackageId', 'objectRegistryId', 'adminAclId',
-        'packageId', 'typeOrigin', 'npcRegistryId',
-        'accessPackageId', 'accessTypeOrigin', 'accessRegistryId',
-        'catapultPackageId', 'catapultTypeOrigin', 'catapultRegistryId',
-        'industryPackageId', 'industryTypeOrigin', 'industryRegistryId',
-        'transponderPackageId', 'transponderTypeOrigin', 'transponderRegistryId'
-    )
-    if ($manifest.schemaVersion -eq 2) {
-        $runtimeFields += @(
-            'actionPackageId', 'actionTypeOrigin', 'actionRegistryId',
-            'industryActionsPackageId', 'industryActionsTypeOrigin', 'industryActionsRegistryId'
-        )
+
+    $featureSpecs = [ordered]@{
+        npc = @('packageId', 'typeOrigin', 'npcRegistryId')
+        assemblyAccess = @('accessPackageId', 'accessTypeOrigin', 'accessRegistryId')
+        catapult = @('catapultPackageId', 'catapultTypeOrigin', 'catapultRegistryId')
+        smartIndustry = @('industryPackageId', 'industryTypeOrigin', 'industryRegistryId')
+        transponder = @('transponderPackageId', 'transponderTypeOrigin', 'transponderRegistryId')
+        actionQueue = @('actionPackageId', 'actionTypeOrigin', 'actionRegistryId')
+        industryActions = @('industryActionsPackageId', 'industryActionsTypeOrigin', 'industryActionsRegistryId')
+        logisticsActions = @('logisticsPackageId', 'logisticsTypeOrigin', 'logisticsRegistryId')
+        infrastructureActions = @('infrastructurePackageId', 'infrastructureTypeOrigin', 'infrastructureRegistryId')
+        automation = @('automationPackageId', 'automationTypeOrigin', 'automationRegistryId')
     }
-    if ($manifest.schemaVersion -eq 3) {
-        $runtimeFields += @(
-            'actionPackageId', 'actionTypeOrigin', 'actionRegistryId',
-            'industryActionsPackageId', 'industryActionsTypeOrigin', 'industryActionsRegistryId',
-            'logisticsPackageId', 'logisticsTypeOrigin', 'logisticsRegistryId',
-            'infrastructurePackageId', 'infrastructureTypeOrigin', 'infrastructureRegistryId',
-            'automationPackageId', 'automationTypeOrigin', 'automationRegistryId'
-        )
-    }
-    foreach ($field in $runtimeFields) {
-        if ($manifest[$field] -isnot [string]) {
-            throw "NPC deployment $field must be a canonical nonzero Sui address."
+    $capabilities = [ordered]@{}
+    $migration = $null
+    $manifestFormat = $manifest['format']
+    $manifestSchemaVersion = $manifest['schemaVersion']
+    if ($manifestFormat -ceq 'eve-frontier-world-features' -and
+        $manifestSchemaVersion -is [long] -and
+        $manifestSchemaVersion -eq 1) {
+        if ($manifest['world'] -isnot [Collections.IDictionary] -or
+            $manifest['capabilities'] -isnot [Collections.IDictionary]) {
+            throw 'World feature manifest world/capabilities records are invalid.'
         }
-        $address = Assert-SuiAddress -Value $manifest[$field] -Label "NPC deployment $field"
-        if ($address -eq ('0x' + ('0' * 64))) {
-            throw "NPC deployment $field must be a canonical nonzero Sui address."
+        $worldRecord = $manifest['world']
+        foreach ($name in $manifest['capabilities'].Keys) {
+            if (-not $featureSpecs.Contains($name)) {
+                throw "World feature manifest contains unknown capability '$name'."
+            }
+            $record = $manifest['capabilities'][$name]
+            if ($record -isnot [Collections.IDictionary] -or
+                $record['status'] -cnotin @('deployed', 'unavailable')) {
+                throw "World feature capability '$name' has an invalid status."
+            }
+            if ($record['status'] -ceq 'unavailable') {
+                $capabilities[$name] = [ordered]@{ status = 'unavailable' }
+                continue
+            }
+            $capabilities[$name] = [ordered]@{
+                status = 'deployed'
+                packageId = Assert-SuiAddress -Value ([string]$record['packageId']) -Label "$name package"
+                typeOrigin = Assert-SuiAddress -Value ([string]$record['typeOrigin']) -Label "$name type origin"
+                registryId = Assert-SuiAddress -Value ([string]$record['registryId']) -Label "$name registry"
+            }
         }
-        $validated[$field] = $address
     }
-    $expected = @{ worldPackageId = $PackageId; objectRegistryId = $ObjectRegistryId; adminAclId = $AdminAclId }
+    elseif ($manifestSchemaVersion -is [long] -and
+        $manifestSchemaVersion -in @(1, 2, 3)) {
+        $worldRecord = [ordered]@{
+            packageId = $manifest['worldPackageId']
+            objectRegistryId = $manifest['objectRegistryId']
+            adminAclId = $manifest['adminAclId']
+        }
+        $legacy = @{} + $manifest
+        if ($manifestSchemaVersion -lt 2) {
+            $legacy.actionPackageId = $legacy.accessPackageId
+            $legacy.actionTypeOrigin = $legacy.accessTypeOrigin
+            $legacy.actionRegistryId = $legacy.accessRegistryId
+            $legacy.industryActionsPackageId = $legacy.industryPackageId
+            $legacy.industryActionsTypeOrigin = $legacy.industryTypeOrigin
+            $legacy.industryActionsRegistryId = $legacy.industryRegistryId
+        }
+        if ($manifestSchemaVersion -lt 3) {
+            foreach ($prefix in @('logistics', 'infrastructure', 'automation')) {
+                $legacy["${prefix}PackageId"] = $legacy.actionPackageId
+                $legacy["${prefix}TypeOrigin"] = $legacy.actionTypeOrigin
+                $legacy["${prefix}RegistryId"] = $legacy.actionRegistryId
+            }
+        }
+        $incomplete = [Collections.Generic.List[string]]::new()
+        foreach ($entry in $featureSpecs.GetEnumerator()) {
+            $values = @($entry.Value | ForEach-Object { $legacy[$_] })
+            if (@($values | Where-Object { $null -ne $_ -and $_ -isnot [string] }).Count -gt 0) {
+                throw "Legacy feature capability '$($entry.Key)' contains non-string address metadata."
+            }
+            $present = @($values | Where-Object { $_ -is [string] -and $_.Length -gt 0 }).Count
+            if ($present -eq 0) { continue }
+            if ($present -ne 3) {
+                $incomplete.Add([string]$entry.Key)
+                continue
+            }
+            $capabilities[$entry.Key] = [ordered]@{
+                status = 'deployed'
+                packageId = Assert-SuiAddress -Value ([string]$values[0]) -Label "$($entry.Key) package"
+                typeOrigin = Assert-SuiAddress -Value ([string]$values[1]) -Label "$($entry.Key) type origin"
+                registryId = Assert-SuiAddress -Value ([string]$values[2]) -Label "$($entry.Key) registry"
+            }
+        }
+        $migration = [ordered]@{
+            source = 'npc-deployment.json'
+            sourceSchemaVersion = [long]$manifestSchemaVersion
+            incompleteCapabilities = @($incomplete | Sort-Object)
+        }
+    }
+    else {
+        throw 'World feature deployment metadata has an unsupported schema.'
+    }
+
+    $world = [ordered]@{
+        packageId = Assert-SuiAddress -Value ([string]$worldRecord['packageId']) -Label 'Feature manifest world package'
+        objectRegistryId = Assert-SuiAddress -Value ([string]$worldRecord['objectRegistryId']) -Label 'Feature manifest ObjectRegistry'
+        adminAclId = Assert-SuiAddress -Value ([string]$worldRecord['adminAclId']) -Label 'Feature manifest AdminACL'
+    }
+    $expected = @{ packageId = $PackageId; objectRegistryId = $ObjectRegistryId; adminAclId = $AdminAclId }
     foreach ($field in $expected.Keys) {
-        if ($validated[$field] -cne $expected[$field]) {
-            throw "NPC deployment $field does not match the synchronized world."
+        if ($world[$field] -cne $expected[$field]) {
+            throw "World feature deployment $field does not match the synchronized world."
         }
     }
-    return $validated
+    $validated = [ordered]@{
+        format = 'eve-frontier-world-features'
+        schemaVersion = 1
+        chainId = $ChainId
+        world = $world
+        capabilities = $capabilities
+    }
+    $factionFiles = [ordered]@{}
+    $splitFactionConfig = $manifest['factionConfig']
+    $factionRecords = $manifest['factions']
+    if ($null -ne $splitFactionConfig) {
+        if ($null -ne $factionRecords) {
+            throw 'World feature manifest cannot combine factionConfig with inline factions.'
+        }
+        if ($splitFactionConfig -isnot [Collections.IDictionary] -or
+            $splitFactionConfig['default'] -isnot [Collections.IDictionary] -or
+            $splitFactionConfig['factions'] -isnot [Collections.IDictionary] -or
+            $splitFactionConfig['default']['id'] -cne 'default') {
+            throw 'World feature factionConfig requires default and factions records.'
+        }
+        $manifestDirectory = Split-Path -Parent ([string]$Snapshot.Path)
+        $defaultPath = 'factions/default.v1.json'
+        $defaultFile = Read-StableFactionFeatureFile `
+            -ManifestDirectory $manifestDirectory `
+            -RelativePath $splitFactionConfig['default']['path'] `
+            -ExpectedPath $defaultPath `
+            -Label 'Default faction feature config'
+        if ($defaultFile['configId'] -cne 'default') {
+            throw 'Default faction feature config must use configId default.'
+        }
+        $defaultCapabilities = Get-WorldFeatureCapabilityNames `
+            -Value $defaultFile['capabilities'] `
+            -FeatureSpecs $featureSpecs -Capabilities $capabilities `
+            -Label 'Default faction feature config capabilities'
+        $factionFiles[$defaultPath] = [ordered]@{
+            format = 'eve-frontier-faction-features'
+            schemaVersion = 1
+            configId = 'default'
+            capabilities = $defaultCapabilities
+        }
+        $validatedReferences = [ordered]@{}
+        foreach ($factionKey in @($splitFactionConfig['factions'].Keys | Sort-Object)) {
+            $reference = $splitFactionConfig['factions'][$factionKey]
+            $factionKeyMatch = [regex]::Match($factionKey, '^(\d{1,10})-[a-z0-9][a-z0-9_-]{0,95}$')
+            if (-not $factionKeyMatch.Success -or
+                [uint64]$factionKeyMatch.Groups[1].Value -gt [uint32]::MaxValue -or
+                $reference -isnot [Collections.IDictionary] -or
+                $reference['fallback'] -cne 'default') {
+                throw 'World feature faction references must use factionID-factionStringOnlyID and fallback default.'
+            }
+            $relativePath = "factions/$factionKey.v1.json"
+            $factionFile = Read-StableFactionFeatureFile `
+                -ManifestDirectory $manifestDirectory `
+                -RelativePath $reference['path'] `
+                -ExpectedPath $relativePath `
+                -Label "Faction feature config $factionKey"
+            if ($factionFile['factionKey'] -cne $factionKey -or
+                $factionFile['fallback'] -cne 'default') {
+                throw "Faction feature config $factionKey has mismatched identity or fallback."
+            }
+            $validatedFactionFile = [ordered]@{
+                format = 'eve-frontier-faction-features'
+                schemaVersion = 1
+                factionKey = $factionKey
+                fallback = 'default'
+            }
+            if ($factionFile.Contains('capabilities')) {
+                $validatedFactionFile.capabilities = Get-WorldFeatureCapabilityNames `
+                    -Value $factionFile['capabilities'] `
+                    -FeatureSpecs $featureSpecs -Capabilities $capabilities `
+                    -Label "Faction feature config $factionKey capabilities"
+            }
+            $factionFiles[$relativePath] = $validatedFactionFile
+            $validatedReferences[$factionKey] = [ordered]@{
+                path = $relativePath
+                fallback = 'default'
+            }
+        }
+        $validated.factionConfig = [ordered]@{
+            default = [ordered]@{ id = 'default'; path = $defaultPath }
+            factions = $validatedReferences
+        }
+    }
+    elseif ($null -ne $factionRecords) {
+        if ($factionRecords -isnot [Collections.IDictionary]) {
+            throw 'World feature manifest factions must be an object.'
+        }
+        $validatedFactions = [ordered]@{}
+        foreach ($factionKey in @($factionRecords.Keys | Sort-Object)) {
+            $record = $factionRecords[$factionKey]
+            $factionKeyMatch = [regex]::Match($factionKey, '^(\d{1,10})-[a-z0-9][a-z0-9_-]{0,95}$')
+            if (-not $factionKeyMatch.Success -or
+                [uint64]$factionKeyMatch.Groups[1].Value -gt [uint32]::MaxValue -or
+                $record -isnot [Collections.IDictionary] -or
+                $record['capabilities'] -isnot [object[]]) {
+                throw 'World feature faction records must use factionID-factionStringOnlyID and a capabilities array.'
+            }
+            $enabled = [Collections.Generic.List[string]]::new()
+            foreach ($capabilityName in $record['capabilities']) {
+                if ($capabilityName -isnot [string] -or
+                    -not $featureSpecs.Contains($capabilityName) -or
+                    -not $capabilities.Contains($capabilityName) -or
+                    $capabilities[$capabilityName]['status'] -cne 'deployed') {
+                    throw "World feature faction '$factionKey' enables an unavailable capability."
+                }
+                if (-not $enabled.Contains($capabilityName)) { $enabled.Add($capabilityName) }
+            }
+            $validatedFactions[$factionKey] = [ordered]@{
+                capabilities = @($enabled | Sort-Object)
+            }
+        }
+        $validated.factions = $validatedFactions
+    }
+    if ($null -ne $migration) { $validated.migration = $migration }
+    return [pscustomobject]@{
+        Manifest = $validated
+        FactionFiles = $factionFiles
+    }
 }
 
-function Publish-NpcDeployment {
-    param([AllowNull()] [object]$Manifest)
+function Publish-WorldFeatureDeployment {
+    param([AllowNull()] [object]$Deployment)
 
-    $exists = Test-Path -LiteralPath $NpcConfigPath
-    if ($null -eq $Manifest) {
-        if ($exists) {
+    $exists = Test-Path -LiteralPath $WorldFeaturesConfigPath
+    $legacyExists = Test-Path -LiteralPath $LegacyNpcConfigPath
+    if ($null -eq $Deployment) {
+        if ($exists -or $legacyExists) {
             # This may be operator-managed metadata or an older upgrade. Keep it
             # recoverable, but never mark a base world ready with stale settings.
-            throw 'NPC deployment source is absent but destination npc-deployment.json exists; reconcile the deployment metadata before syncing.'
+            throw 'World feature source is absent but synchronized feature metadata exists; reconcile it before syncing.'
         }
         return
     }
+    $Manifest = $Deployment.Manifest
+    $FactionFiles = $Deployment.FactionFiles
     if ($exists) {
-        $existing = Get-Item -LiteralPath $NpcConfigPath -Force
+        $existing = Get-Item -LiteralPath $WorldFeaturesConfigPath -Force
         if ($existing.PSIsContainer -or
             ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw 'Refusing to replace a non-file or reparse-point NPC deployment destination.'
+            throw 'Refusing to replace a non-file or reparse-point world-feature destination.'
         }
     }
+    if ($legacyExists -and (Test-Path -LiteralPath $ArchivedLegacyNpcConfigPath)) {
+        throw 'Both npc-deployment.json and npc-deployment.legacy.json exist; reconcile the legacy migration before syncing.'
+    }
     if ($DryRun) {
-        Write-Output "[evejs-frontier-world] Would sync public feature deployment: $NpcConfigPath"
+        Write-Output "[evejs-frontier-world] Would sync public feature deployment: $WorldFeaturesConfigPath"
+        if ($legacyExists) {
+            Write-Output "[evejs-frontier-world] Would archive legacy feature deployment: $ArchivedLegacyNpcConfigPath"
+        }
+        if ($FactionFiles.Count -gt 0) {
+            Write-Output "[evejs-frontier-world] Would sync $($FactionFiles.Count) faction feature configuration files."
+        }
         return
     }
     New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
-    Write-FrontierJsonAtomic -Path $NpcConfigPath -Value $Manifest
-    Write-Output "[evejs-frontier-world] Synced feature implementations: NPC $($Manifest.packageId)"
+    foreach ($relativePath in @($FactionFiles.Keys | Sort-Object)) {
+        $destinationPath = Join-Path $DestinationRoot ($relativePath.Replace('/', '\'))
+        New-Item -ItemType Directory -Path (Split-Path -Parent $destinationPath) -Force | Out-Null
+        Write-FrontierJsonAtomic -Path $destinationPath -Value $FactionFiles[$relativePath]
+    }
+    Write-FrontierJsonAtomic -Path $WorldFeaturesConfigPath -Value $Manifest
+    if ($legacyExists) {
+        Move-Item -LiteralPath $LegacyNpcConfigPath -Destination $ArchivedLegacyNpcConfigPath
+        Write-Output "[evejs-frontier-world] Archived historical feature manifest: $ArchivedLegacyNpcConfigPath"
+    }
+    $capabilityNames = @($Manifest.capabilities.Keys | Sort-Object) -join ', '
+    Write-Output "[evejs-frontier-world] Synced world feature capabilities: $capabilityNames"
 }
 
 function Write-WorldConfig {
@@ -872,7 +1149,7 @@ function Publish-WorldSync {
 
     Assert-DockerWorkspaceOwnership
     $world = Read-SourceWorld
-    Publish-NpcDeployment -Manifest $world.NpcDeployment
+    Publish-WorldFeatureDeployment -Deployment $world.WorldFeatures
     Write-Output "[evejs-frontier-world] Source: $WorldContractsRoot"
     Write-Output "[evejs-frontier-world] Chain: $($world.ChainId)"
     Write-Output "[evejs-frontier-world] World package: $($world.PackageId)"

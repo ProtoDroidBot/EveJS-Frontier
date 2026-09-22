@@ -1330,6 +1330,21 @@ class BeyonceService extends BaseService {
                     notify: SHIP_IMMOBILE_WARP_BLOCKED_MESSAGE,
                 });
                 break;
+            case "NOT_ENOUGH_CAPACITOR":
+                throwWrappedUserError("CustomNotify", {
+                    notify: "You need at least 15% capacitor charge to initiate warp.",
+                });
+                break;
+            case "NO_FUEL":
+                throwWrappedUserError("CustomNotify", {
+                    notify: "Your ship does not have usable fuel for warp.",
+                });
+                break;
+            case "PROPULSION_REQUIRED":
+                throwWrappedUserError("CustomNotify", {
+                    notify: "An online compatible propulsion engine is required to warp.",
+                });
+                break;
             default:
                 break;
         }

@@ -865,7 +865,10 @@ function depositNpcNetworkNodeFuel(actor, networkNodeID, rawItems, options = {})
     if (!operationKey || operationKey.length > 256) {
         return { success: false, errorMsg: "NPC_FUEL_OPERATION_REQUIRED" };
     }
-    const lifecycle = require("./deploymentRuntime").getNpcAssemblyLifecycle(actor, networkNodeID, options.jobID || null);
+    const deploymentRuntime = require("./deploymentRuntime");
+    const lifecycle = options.jobID
+        ? deploymentRuntime.getNpcAssemblyLifecycle(actor, networkNodeID, options.jobID)
+        : deploymentRuntime.getNpcAssemblyControlLifecycle(actor, networkNodeID);
     if (!lifecycle.success)
         return lifecycle;
     const node = lifecycle.data.item;

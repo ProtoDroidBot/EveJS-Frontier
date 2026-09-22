@@ -18,6 +18,11 @@ MODULE_NAME = "eve/client/script/ui/eveCommands.pyc"
 SOURCE_MEMBER_SHA256 = "533a19a7e8e995f415bd9f2649b52d64372538de240791d8b5c227ef76c24f4d"
 MENU_MODULE_NAME = "eve/client/script/ui/services/menusvc.pyc"
 MENU_SOURCE_MEMBER_SHA256 = "014f7513310f4027e6617befa0200d1dd1f0ab8a24c7e42529fb9d138961689f"
+MENU_PREVIOUS_WRAPPER_SHA256 = {
+    "ebf9e0ecb83c9cdbb52e03071f84042e10757c50c6fa5ee327eb2c2ce989c66d",
+    "7258d52810747642dc9ae7d7ec2f7dee997922f9ccc18772f5c67263bde212c5",
+    "f42c7ff948948131f9f214c406389d273ee7000b55f088f2d1635d1e839f2183",
+}
 CREATION_SERVICE_MODULE_NAME = "frontier/creation/client/service.pyc"
 CREATION_SERVICE_SOURCE_MEMBER_SHA256 = "55d9b955b0ab99fed39032db1580076946fb2e554c0ac8691eb7747d792f367c"
 CREATION_SERVICE_PREVIOUS_WRAPPER_SHA256 = {
@@ -356,7 +361,7 @@ def inspect_archive(archive, build=BUILD):
             source.read(entries_by_name[MENU_MODULE_NAME]),
             MENU_SOURCE_MEMBER_SHA256,
             patched_menu_member,
-            set(),
+            MENU_PREVIOUS_WRAPPER_SHA256,
         )
         service_state, service_original = inspect_member(
             source.read(entries_by_name[CREATION_SERVICE_MODULE_NAME]),

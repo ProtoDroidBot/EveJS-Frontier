@@ -32,7 +32,7 @@ The authoritative `<accessPackageId>::assembly_access` module derives one shared
 
 Smart grants remain unusable until this verification promotes the local projection to `sui_confirmed`. Portable and field assemblies continue to use the equivalent durable local policy. The fresh-deployment writer verifies that the independently published `world_npc` and `world_assembly_access` outputs contain `npc` and `assembly_access` before emitting the combined runtime manifest.
 
-`npc-deployment.json` carries independent `accessPackageId`, `accessTypeOrigin`, and `accessRegistryId` fields. A fresh split deployment sets the package and origin to the new `world_assembly_access` package and records its shared registry. An upgrade must set the call package to the latest implementation while preserving the first access package as its type origin and retaining the registry. NPC and access origins are deliberately not assumed to match. The current Localnet has this split package and registry active.
+The `assemblyAccess` capability in `world-features.v1.json` carries an independent package, type origin, and registry ID. A fresh split deployment sets the package and origin to the new `world_assembly_access` package and records its shared registry. An upgrade must set the call package to the latest implementation while preserving the first access package as its type origin and retaining the registry. NPC and access origins are deliberately not assumed to match. The current Localnet has this split package and registry active.
 
 ## Cross-owner custody
 

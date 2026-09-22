@@ -8,13 +8,24 @@ def _evejs_reflection(value):
         return False
 
 
+def _evejs_cell_coordinates(cell):
+    """Normalize native FSD cell records and test-friendly sequences."""
+    try:
+        return cell.x, cell.y, 0
+    except AttributeError:
+        values = tuple(cell)
+        if len(values) == 2:
+            return values[0], values[1], 0
+        return values[0], values[1], values[2]
+
+
 def _evejs_install_creation_transform_validation(namespace):
     validator = namespace.get("CreationLayoutValidator")
     if validator is None or getattr(validator, "_evejs_reflections", False):
         return
 
     def absolute_cells(placement, cells):
-        cells = [tuple(cell) for cell in cells or ()]
+        cells = [_evejs_cell_coordinates(cell) for cell in cells or ()]
         if not cells:
             return []
         min_x = min(cell[0] for cell in cells)
@@ -41,4 +52,3 @@ def _evejs_install_creation_transform_validation(namespace):
 
     validator._absolute_cells = staticmethod(absolute_cells)
     validator._evejs_reflections = True
-

@@ -44,11 +44,166 @@ export type SuiNpcWorldConfig = {
   catapultPackageId: string;
   catapultTypeOrigin: string;
   catapultRegistryId: string;
+  industryPackageId: string;
+  industryTypeOrigin: string;
+  industryRegistryId: string;
   transponderPackageId: string;
   transponderTypeOrigin: string;
   transponderRegistryId: string;
+  /** Manifest capability records keyed independently for partial deployments. */
+  capabilities: Record<string, {
+    status: "deployed" | "legacy-fallback" | "unavailable";
+    packageId: string;
+    typeOrigin: string;
+    registryId: string;
+  }>;
+  /** Optional canonical faction-key allowlists from world-features.v1.json. */
+  factionCapabilities: Record<string, string[]>;
+  /** Capability policy inherited by factions without an explicit override. */
+  defaultFactionCapabilities: string[] | null;
+  /** Public file references retained for later on-chain faction migration. */
+  factionConfigReferences: Record<string, { path: string; fallback: "default" | null }>;
+  manifestFormat: "world-features-v1" | "legacy-npc-deployment" | "implicit-legacy";
   fingerprint: string;
 };
+
+export const WORLD_FEATURE_MANIFEST_FILENAME = "world-features.v1.json";
+export const LEGACY_NPC_DEPLOYMENT_FILENAME = "npc-deployment.json";
+const WORLD_FEATURE_MANIFEST_FORMAT = "eve-frontier-world-features";
+
+const FEATURE_BINDINGS = Object.freeze({
+  npc: ["packageId", "typeOrigin", "npcRegistryId"],
+  assemblyAccess: ["accessPackageId", "accessTypeOrigin", "accessRegistryId"],
+  catapult: ["catapultPackageId", "catapultTypeOrigin", "catapultRegistryId"],
+  smartIndustry: ["industryPackageId", "industryTypeOrigin", "industryRegistryId"],
+  transponder: ["transponderPackageId", "transponderTypeOrigin", "transponderRegistryId"],
+  actionQueue: ["actionPackageId", "actionTypeOrigin", "actionRegistryId"],
+  industryActions: ["industryActionsPackageId", "industryActionsTypeOrigin", "industryActionsRegistryId"],
+  logisticsActions: ["logisticsPackageId", "logisticsTypeOrigin", "logisticsRegistryId"],
+  infrastructureActions: ["infrastructurePackageId", "infrastructureTypeOrigin", "infrastructureRegistryId"],
+  automation: ["automationPackageId", "automationTypeOrigin", "automationRegistryId"],
+} as const);
+
+function isCanonicalFactionKey(value: string): boolean {
+  const match = /^(\d{1,10})-[a-z0-9][a-z0-9_-]{0,95}$/.exec(value);
+  return Boolean(match) && Number(match![1]) <= 0xffffffff;
+}
+
+function normalizeFactionCapabilityMap(raw: unknown): Record<string, string[]> {
+  if (raw === undefined) return {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("World feature manifest factions must be an object");
+  }
+  const result: Record<string, string[]> = {};
+  for (const [factionKey, record] of Object.entries<any>(raw)) {
+    if (!isCanonicalFactionKey(factionKey)) {
+      throw new Error("World feature faction keys must use factionID-factionStringOnlyID");
+    }
+    const enabled: string[] | null = record && Array.isArray(record.capabilities)
+      ? record.capabilities
+      : null;
+    if (!enabled || enabled.some(value =>
+      typeof value !== "string" || !Object.hasOwn(FEATURE_BINDINGS, value)
+    )) {
+      throw new Error(`World feature faction ${factionKey} has invalid capabilities`);
+    }
+    result[factionKey] = [...new Set(enabled)].sort();
+  }
+  return result;
+}
+
+function normalizeCapabilityNames(raw: unknown, label: string): string[] {
+  if (!Array.isArray(raw) || raw.some(value =>
+    typeof value !== "string" || !Object.hasOwn(FEATURE_BINDINGS, value)
+  )) {
+    throw new Error(`${label} must be an array of known capability names`);
+  }
+  return [...new Set(raw)].sort();
+}
+
+function readFactionFeatureFile(
+  manifestPath: string,
+  relativePath: unknown,
+  expectedPath: string,
+  label: string,
+): any {
+  if (relativePath !== expectedPath) {
+    throw new Error(`${label} must use canonical path ${expectedPath}`);
+  }
+  const resolved = path.resolve(path.dirname(manifestPath), expectedPath);
+  const expectedRoot = `${path.resolve(path.dirname(manifestPath), "factions")}${path.sep}`;
+  if (!resolved.startsWith(expectedRoot)) throw new Error(`${label} escapes the faction config directory`);
+  let stat: fs.Stats;
+  let raw: any;
+  try {
+    stat = fs.lstatSync(resolved);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("not a regular file");
+    raw = JSON.parse(fs.readFileSync(resolved, "utf8"));
+  } catch (error: any) {
+    throw new Error(`${label} could not be read as JSON`, { cause: error });
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
+      raw.format !== "eve-frontier-faction-features" || raw.schemaVersion !== 1) {
+    throw new Error(`${label} has an unsupported schema`);
+  }
+  return raw;
+}
+
+function readSplitFactionCapabilityMap(
+  raw: unknown,
+  manifestPath: string,
+): {
+  capabilities: Record<string, string[]>;
+  defaultCapabilities: string[];
+  references: Record<string, { path: string; fallback: "default" | null }>;
+} {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("World feature factionConfig must be an object");
+  }
+  const source: any = raw;
+  if (!source.default || source.default.id !== "default" ||
+      !source.factions || typeof source.factions !== "object" || Array.isArray(source.factions)) {
+    throw new Error("World feature factionConfig requires default and factions records");
+  }
+  const defaultPath = "factions/default.v1.json";
+  const defaultFile = readFactionFeatureFile(
+    manifestPath, source.default.path, defaultPath, "Default faction feature config",
+  );
+  if (defaultFile.configId !== "default") {
+    throw new Error("Default faction feature config must use configId default");
+  }
+  const defaultCapabilities = normalizeCapabilityNames(
+    defaultFile.capabilities,
+    "Default faction feature config capabilities",
+  );
+  const capabilities: Record<string, string[]> = {};
+  const references: Record<string, { path: string; fallback: "default" | null }> = {
+    default: { path: defaultPath, fallback: null },
+  };
+  for (const [factionKey, reference] of Object.entries<any>(source.factions)) {
+    if (!isCanonicalFactionKey(factionKey)) {
+      throw new Error("World feature faction keys must use factionID-factionStringOnlyID");
+    }
+    const expectedPath = `factions/${factionKey}.v1.json`;
+    if (!reference || typeof reference !== "object" || reference.fallback !== "default") {
+      throw new Error(`World feature faction ${factionKey} must reference fallback default`);
+    }
+    const factionFile = readFactionFeatureFile(
+      manifestPath, reference.path, expectedPath, `Faction feature config ${factionKey}`,
+    );
+    if (factionFile.factionKey !== factionKey || factionFile.fallback !== "default") {
+      throw new Error(`Faction feature config ${factionKey} has mismatched identity or fallback`);
+    }
+    capabilities[factionKey] = factionFile.capabilities === undefined
+      ? [...defaultCapabilities]
+      : normalizeCapabilityNames(
+          factionFile.capabilities,
+          `Faction feature config ${factionKey} capabilities`,
+        );
+    references[factionKey] = { path: expectedPath, fallback: "default" };
+  }
+  return { capabilities, defaultCapabilities, references };
+}
 
 function address(value: unknown, label: string): string {
   if (typeof value !== "string" || !/^0x[0-9a-fA-F]{1,64}$/.test(value.trim()) || BigInt(value.trim()) === 0n) {
@@ -79,11 +234,34 @@ export function readSuiNpcWorldConfig(
     objectRegistryId: address(synced.objectRegistryId, "object registry"),
     adminAclId: address(synced.adminAclId, "admin ACL"),
   };
-  const explicit = String(env.EVEJS_SUI_NPC_CONFIG_PATH || "").trim();
+  const featureExplicit = String(
+    env.EVEJS_SUI_WORLD_FEATURES_CONFIG_PATH || "",
+  ).trim();
+  const legacyExplicit = String(env.EVEJS_SUI_NPC_CONFIG_PATH || "").trim();
   const worldPath = String(env.EVEJS_SUI_WORLD_CONFIG_PATH || "").trim();
-  const configPath = explicit ? path.resolve(explicit)
-    : worldPath ? path.join(path.dirname(path.resolve(worldPath)), "npc-deployment.json") : null;
+  const siblingDirectory = worldPath
+    ? path.dirname(path.resolve(worldPath))
+    : null;
+  const conventionalFeaturePath = siblingDirectory
+    ? path.join(siblingDirectory, WORLD_FEATURE_MANIFEST_FILENAME)
+    : null;
+  const conventionalLegacyPath = siblingDirectory
+    ? path.join(siblingDirectory, LEGACY_NPC_DEPLOYMENT_FILENAME)
+    : null;
+  const explicit = featureExplicit || legacyExplicit;
+  const configPath = featureExplicit
+    ? path.resolve(featureExplicit)
+    : legacyExplicit
+      ? path.resolve(legacyExplicit)
+      : conventionalFeaturePath && fs.existsSync(conventionalFeaturePath)
+        ? conventionalFeaturePath
+        : conventionalLegacyPath;
   let file: Record<string, any> | null = null;
+  let manifestFormat: SuiNpcWorldConfig["manifestFormat"] = "implicit-legacy";
+  let factionCapabilities: Record<string, string[]> = {};
+  let defaultFactionCapabilities: string[] | null = null;
+  let factionConfigReferences: SuiNpcWorldConfig["factionConfigReferences"] = {};
+  const deployedCapabilityNames = new Set<string>();
   if (configPath) {
     let raw: any;
     try {
@@ -92,16 +270,81 @@ export function readSuiNpcWorldConfig(
       // The conventional sibling is optional. An explicitly selected file is
       // required: a typo must not silently send writes to the base package.
       if (error.code !== "ENOENT" || explicit) {
-        throw new Error("NPC deployment config could not be read as JSON", { cause: error });
+        throw new Error("World feature deployment config could not be read as JSON", { cause: error });
       }
     }
     if (raw !== undefined) {
-      if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
-          (raw.schemaVersion !== 1 && raw.schemaVersion !== 2 && raw.schemaVersion !== 3)) {
-        throw new Error("NPC deployment config has an unsupported schema");
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        throw new Error("World feature deployment config has an unsupported schema");
       }
-      // Validate the whole file even when environment overrides take priority.
-      file = {
+      if (
+        raw.format === WORLD_FEATURE_MANIFEST_FORMAT &&
+        raw.schemaVersion === 1
+      ) {
+        if (!raw.world || typeof raw.world !== "object" ||
+            !raw.capabilities || typeof raw.capabilities !== "object" ||
+            Array.isArray(raw.capabilities)) {
+          throw new Error("World feature deployment config has an unsupported schema");
+        }
+        manifestFormat = "world-features-v1";
+        for (const capabilityName of Object.keys(raw.capabilities)) {
+          if (!Object.hasOwn(FEATURE_BINDINGS, capabilityName)) {
+            throw new Error(`World feature manifest contains unknown capability ${capabilityName}`);
+          }
+        }
+        file = {
+          schemaVersion: raw.schemaVersion,
+          chainId: chain(raw.chainId),
+          worldPackageId: address(raw.world.packageId, "world package"),
+          objectRegistryId: address(raw.world.objectRegistryId, "object registry"),
+          adminAclId: address(raw.world.adminAclId, "admin ACL"),
+        };
+        for (const [capabilityName, fields] of Object.entries(FEATURE_BINDINGS)) {
+          const capability = raw.capabilities[capabilityName];
+          if (capability === undefined || capability?.status === "unavailable") {
+            continue;
+          }
+          if (!capability || capability.status !== "deployed") {
+            throw new Error(
+              `World feature capability ${capabilityName} has an invalid status`,
+            );
+          }
+          file[fields[0]] = address(
+            capability.packageId,
+            `${capabilityName} package`,
+          );
+          file[fields[1]] = address(
+            capability.typeOrigin,
+            `${capabilityName} type origin`,
+          );
+          file[fields[2]] = address(
+            capability.registryId,
+            `${capabilityName} registry`,
+          );
+          deployedCapabilityNames.add(capabilityName);
+        }
+        if (raw.factionConfig !== undefined) {
+          if (raw.factions !== undefined) {
+            throw new Error("World feature manifest cannot combine factionConfig with inline factions");
+          }
+          const splitFactions = readSplitFactionCapabilityMap(
+            raw.factionConfig,
+            configPath,
+          );
+          factionCapabilities = splitFactions.capabilities;
+          defaultFactionCapabilities = splitFactions.defaultCapabilities;
+          factionConfigReferences = splitFactions.references;
+        } else {
+          factionCapabilities = normalizeFactionCapabilityMap(raw.factions);
+        }
+      } else if (
+        raw.schemaVersion === 1 ||
+        raw.schemaVersion === 2 ||
+        raw.schemaVersion === 3
+      ) {
+        manifestFormat = "legacy-npc-deployment";
+        // Validate the whole legacy file even when environment overrides take priority.
+        file = {
         schemaVersion: raw.schemaVersion,
         chainId: chain(raw.chainId),
         worldPackageId: address(raw.worldPackageId, "world package"),
@@ -167,7 +410,13 @@ export function readSuiNpcWorldConfig(
         automationRegistryId: raw.schemaVersion === 3
           ? address(raw.automationRegistryId, "Automation registry")
           : address(raw.actionRegistryId ?? raw.accessRegistryId, "action queue registry"),
-      };
+        };
+        for (const capabilityName of Object.keys(FEATURE_BINDINGS)) {
+          deployedCapabilityNames.add(capabilityName);
+        }
+      } else {
+        throw new Error("World feature deployment config has an unsupported schema");
+      }
       for (const key of ["chainId", "worldPackageId", "objectRegistryId", "adminAclId"] as const) {
         if (file[key] !== world[key]) {
           throw new Error(`NPC deployment ${key} does not match the synchronized world`);
@@ -197,6 +446,15 @@ export function readSuiNpcWorldConfig(
   );
   const catapultRegistryOverride = override(
     env.EVEJS_SUI_CATAPULT_REGISTRY_ID, "catapult environment registry",
+  );
+  const industryPackageOverride = override(
+    env.SMART_INDUSTRY_PACKAGE_ID, "Smart Industry environment package",
+  );
+  const industryOriginOverride = override(
+    env.SMART_INDUSTRY_TYPE_ORIGIN, "Smart Industry environment type origin",
+  );
+  const industryRegistryOverride = override(
+    env.SMART_INDUSTRY_REGISTRY_ID, "Smart Industry environment registry",
   );
   const transponderPackageOverride = override(
     env.EVEJS_SUI_TRANSPONDER_PACKAGE_ID, "transponder environment package",
@@ -255,12 +513,19 @@ export function readSuiNpcWorldConfig(
   const npcPackageId = packageOverride ?? file?.packageId ?? world.worldPackageId;
   const npcTypeOrigin = originOverride ?? file?.typeOrigin ?? npcPackageId;
   const npcRegistryId = npcRegistryOverride ?? file?.npcRegistryId ?? world.objectRegistryId;
-  const accessPackageId = accessPackageOverride ?? file?.accessPackageId ?? npcPackageId;
+  // Resolve split features independently. An NPC-only override may point at a
+  // package containing only `npc`; inheriting it here would silently direct
+  // `assembly_access` calls to a package that cannot implement them. The
+  // synchronized base-world package remains the legacy monolithic fallback.
+  const accessPackageId = accessPackageOverride ?? file?.accessPackageId ?? world.worldPackageId;
   const accessTypeOrigin = accessOriginOverride ?? file?.accessTypeOrigin ?? accessPackageId;
   const accessRegistryId = accessRegistryOverride ?? file?.accessRegistryId ?? world.objectRegistryId;
   const catapultPackageId = catapultPackageOverride ?? file?.catapultPackageId ?? world.worldPackageId;
   const catapultTypeOrigin = catapultOriginOverride ?? file?.catapultTypeOrigin ?? catapultPackageId;
   const catapultRegistryId = catapultRegistryOverride ?? file?.catapultRegistryId ?? world.objectRegistryId;
+  const industryPackageId = industryPackageOverride ?? file?.industryPackageId ?? world.worldPackageId;
+  const industryTypeOrigin = industryOriginOverride ?? file?.industryTypeOrigin ?? industryPackageId;
+  const industryRegistryId = industryRegistryOverride ?? file?.industryRegistryId ?? world.objectRegistryId;
   const transponderPackageId = transponderPackageOverride ?? file?.transponderPackageId ?? world.worldPackageId;
   const transponderTypeOrigin = transponderOriginOverride ?? file?.transponderTypeOrigin ?? transponderPackageId;
   const transponderRegistryId = transponderRegistryOverride ?? file?.transponderRegistryId ?? world.objectRegistryId;
@@ -287,10 +552,64 @@ export function readSuiNpcWorldConfig(
   const automationPackageId = automationPackageOverride ?? file?.automationPackageId ?? actionPackageId;
   const automationTypeOrigin = automationOriginOverride ?? file?.automationTypeOrigin ?? automationPackageId;
   const automationRegistryId = automationRegistryOverride ?? file?.automationRegistryId ?? actionRegistryId;
+  const resolvedCapabilityBindings: Record<string, [string, string, string]> = {
+    npc: [npcPackageId, npcTypeOrigin, npcRegistryId],
+    assemblyAccess: [accessPackageId, accessTypeOrigin, accessRegistryId],
+    catapult: [catapultPackageId, catapultTypeOrigin, catapultRegistryId],
+    smartIndustry: [industryPackageId, industryTypeOrigin, industryRegistryId],
+    transponder: [transponderPackageId, transponderTypeOrigin, transponderRegistryId],
+    actionQueue: [actionPackageId, actionTypeOrigin, actionRegistryId],
+    industryActions: [industryActionsPackageId, industryActionsTypeOrigin, industryActionsRegistryId],
+    logisticsActions: [logisticsPackageId, logisticsTypeOrigin, logisticsRegistryId],
+    infrastructureActions: [infrastructurePackageId, infrastructureTypeOrigin, infrastructureRegistryId],
+    automation: [automationPackageId, automationTypeOrigin, automationRegistryId],
+  };
+  const overriddenCapabilities = new Set<string>([
+    ...(packageOverride || originOverride || npcRegistryOverride ? ["npc"] : []),
+    ...(accessPackageOverride || accessOriginOverride || accessRegistryOverride ? ["assemblyAccess"] : []),
+    ...(catapultPackageOverride || catapultOriginOverride || catapultRegistryOverride ? ["catapult"] : []),
+    ...(industryPackageOverride || industryOriginOverride || industryRegistryOverride ? ["smartIndustry"] : []),
+    ...(transponderPackageOverride || transponderOriginOverride || transponderRegistryOverride ? ["transponder"] : []),
+    ...(actionPackageOverride || actionOriginOverride || actionRegistryOverride ? ["actionQueue"] : []),
+    ...(industryActionsPackageOverride || industryActionsOriginOverride || industryActionsRegistryOverride ? ["industryActions"] : []),
+    ...(logisticsPackageOverride || logisticsOriginOverride || logisticsRegistryOverride ? ["logisticsActions"] : []),
+    ...(infrastructurePackageOverride || infrastructureOriginOverride || infrastructureRegistryOverride ? ["infrastructureActions"] : []),
+    ...(automationPackageOverride || automationOriginOverride || automationRegistryOverride ? ["automation"] : []),
+  ]);
+  const capabilities: SuiNpcWorldConfig["capabilities"] = {};
+  for (const [name, binding] of Object.entries(resolvedCapabilityBindings)) {
+    const explicitlyAvailable = deployedCapabilityNames.has(name) ||
+      overriddenCapabilities.has(name);
+    capabilities[name] = {
+      status: manifestFormat === "world-features-v1" && !explicitlyAvailable
+        ? "unavailable"
+        : manifestFormat === "implicit-legacy"
+          ? "legacy-fallback"
+          : "deployed",
+      packageId: binding[0],
+      typeOrigin: binding[1],
+      registryId: binding[2],
+    };
+  }
+  for (const [factionKey, enabled] of Object.entries({
+    ...(defaultFactionCapabilities ? { default: defaultFactionCapabilities } : {}),
+    ...factionCapabilities,
+  })) {
+    for (const capabilityName of enabled) {
+      if (capabilities[capabilityName]?.status === "unavailable") {
+        throw new Error(
+          `World feature faction ${factionKey} enables unavailable capability ${capabilityName}`,
+        );
+      }
+    }
+  }
   const fingerprint = createHash("sha256").update(JSON.stringify({
-    world, file, packageOverride, originOverride, npcRegistryOverride,
+    world, file, manifestFormat, capabilities, factionCapabilities,
+    defaultFactionCapabilities, factionConfigReferences,
+    packageOverride, originOverride, npcRegistryOverride,
     accessPackageOverride, accessOriginOverride, accessRegistryOverride,
     catapultPackageOverride, catapultOriginOverride, catapultRegistryOverride,
+    industryPackageOverride, industryOriginOverride, industryRegistryOverride,
     transponderPackageOverride, transponderOriginOverride, transponderRegistryOverride,
     actionPackageOverride, actionOriginOverride, actionRegistryOverride,
     industryActionsPackageOverride, industryActionsOriginOverride, industryActionsRegistryOverride,
@@ -300,6 +619,7 @@ export function readSuiNpcWorldConfig(
     npcPackageId, npcTypeOrigin, npcRegistryId,
     accessPackageId, accessTypeOrigin, accessRegistryId,
     catapultPackageId, catapultTypeOrigin, catapultRegistryId,
+    industryPackageId, industryTypeOrigin, industryRegistryId,
     transponderPackageId, transponderTypeOrigin, transponderRegistryId,
     actionPackageId, actionTypeOrigin, actionRegistryId,
     industryActionsPackageId, industryActionsTypeOrigin, industryActionsRegistryId,
@@ -311,14 +631,48 @@ export function readSuiNpcWorldConfig(
     npcPackageId, npcTypeOrigin, npcRegistryId,
     accessPackageId, accessTypeOrigin, accessRegistryId,
     catapultPackageId, catapultTypeOrigin, catapultRegistryId,
+    industryPackageId, industryTypeOrigin, industryRegistryId,
     transponderPackageId, transponderTypeOrigin, transponderRegistryId,
     actionPackageId, actionTypeOrigin, actionRegistryId,
     industryActionsPackageId, industryActionsTypeOrigin, industryActionsRegistryId,
     logisticsPackageId, logisticsTypeOrigin, logisticsRegistryId,
     infrastructurePackageId, infrastructureTypeOrigin, infrastructureRegistryId,
     automationPackageId, automationTypeOrigin, automationRegistryId,
+    capabilities, factionCapabilities, defaultFactionCapabilities,
+    factionConfigReferences, manifestFormat,
     fingerprint,
   };
+}
+
+export function isSuiWorldCapabilityEnabled(
+  config: SuiNpcWorldConfig,
+  capabilityName: string,
+  factionKey?: string | null,
+): boolean {
+  if (!config.capabilities[capabilityName] ||
+      config.capabilities[capabilityName].status === "unavailable") {
+    return false;
+  }
+  const normalizedFactionKey = String(factionKey || "").trim().toLowerCase();
+  const factionAllowlist = normalizedFactionKey
+    ? config.factionCapabilities[normalizedFactionKey]
+    : undefined;
+  const effectiveAllowlist = factionAllowlist ?? config.defaultFactionCapabilities;
+  return !effectiveAllowlist || effectiveAllowlist.includes(capabilityName);
+}
+
+export function requireSuiWorldCapability(
+  config: SuiNpcWorldConfig,
+  capabilityName: string,
+  factionKey?: string | null,
+) {
+  if (!isSuiWorldCapabilityEnabled(config, capabilityName, factionKey)) {
+    throw new Error(
+      `Sui world capability ${capabilityName} is not deployed` +
+      (factionKey ? ` for NPC faction ${factionKey}` : ""),
+    );
+  }
+  return config.capabilities[capabilityName];
 }
 
 /** Re-read immediately before persisting/submitting a signed transaction. */

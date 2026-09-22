@@ -50,6 +50,14 @@ function laneID(value, fallback = 1) {
     ? numeric
     : 0;
 }
+function inputFlag(requestedLaneID = 1) {
+  const numericLaneID = laneID(requestedLaneID);
+  return numericLaneID ? INPUT_FLAG + (numericLaneID - 1) * 2 : 0;
+}
+function outputFlag(requestedLaneID = 1) {
+  const flag = inputFlag(requestedLaneID);
+  return flag ? flag + 1 : 0;
+}
 function rawLane(info, numericLaneID) {
   const entry = info?.lanes?.[String(numericLaneID)];
   return entry && typeof entry === "object" && !Array.isArray(entry) ? entry : null;
@@ -211,6 +219,11 @@ function getJobLanes(facility, session = null) {
       accessPolicy: getLaneAccessPolicy(facility, currentLaneID),
       canManage: enabled && characterID > 0 && characterID === Number(facility?.ownerID),
       canUse: enabled && canUseLane(facility, session, currentLaneID),
+      blueprint: blueprints.getSelectedBlueprint(facility, currentLaneID),
+      items: {
+        inputs: totalByType(rows(facility, inputFlag(currentLaneID))) || {},
+        outputs: totalByType(rows(facility, outputFlag(currentLaneID))) || {},
+      },
       production,
     }];
   });
@@ -300,8 +313,8 @@ function totalByType(items) {
   }
   return totals;
 }
-function planInputs(facility, blueprint) {
-  const inputs = rows(facility, INPUT_FLAG);
+function planInputs(facility, blueprint, requestedLaneID = 1) {
+  const inputs = rows(facility, inputFlag(requestedLaneID));
   const consumptions: any[] = [];
   for (const [typeID, slot] of Object.entries<any>(blueprint.inputs)) {
     let remaining = slot.quantity_per_run;
@@ -316,8 +329,8 @@ function planInputs(facility, blueprint) {
   }
   return consumptions;
 }
-function outputCapacity(facility, blueprint, runs = 1) {
-  const totals = totalByType(rows(facility, OUTPUT_FLAG));
+function outputCapacity(facility, blueprint, runs = 1, requestedLaneID = 1) {
+  const totals = totalByType(rows(facility, outputFlag(requestedLaneID)));
   if (!totals) return false;
   return Object.entries<any>(blueprint.outputs).every(([typeID, slot]) => {
     const total = (totals[typeID] || 0) + slot.quantity_per_run * runs;
@@ -339,7 +352,8 @@ function commit(facility, production, consumptions = [], outputs = [], recipe = 
   const result = itemStore.commitInventoryProduction({ facilityID: facility.itemID,
     expectedCustomInfo: facility.customInfo,
     customInfo: withProduction(facility, production, recipe, requestedLaneID),
-    inputFlag: INPUT_FLAG, outputFlag: OUTPUT_FLAG, consumptions, outputs });
+    inputFlag: inputFlag(requestedLaneID), outputFlag: outputFlag(requestedLaneID),
+    consumptions, outputs });
   return result.success ? { success: true as const,
     data: productionData(result.data.facility, result.data.changes, [], requestedLaneID) } : result;
 }
@@ -364,7 +378,7 @@ function startProduction(session, facilityID, blueprintID, hash, runs = null,
   const previous = getProduction(facility, requestedLaneID);
   if (previous && previous.state !== "STOPPED") return fail("PRODUCTION_ALREADY_RUNNING");
   if (!online(facility)) return fail("FACILITY_OFFLINE");
-  const blueprint = blueprints.getSelectedBlueprint(facility);
+  const blueprint = blueprints.getSelectedBlueprint(facility, requestedLaneID);
   if (!blueprint || Number(blueprintID) !== blueprint.blueprint_id) return fail("BLUEPRINT_NOT_LOADED");
   if (typeof hash !== "string" || !blueprint.content_hash || hash !== blueprint.content_hash) return fail("INVALID_BLUEPRINT_HASH");
   if (!validateBlueprint(blueprint) || blueprints.getBlueprintContentHash(blueprint) !== blueprint.content_hash) return fail("BLUEPRINT_NOT_FOUND");
@@ -375,8 +389,8 @@ function startProduction(session, facilityID, blueprintID, hash, runs = null,
   const jobID = Math.max(0, ...getProductions(facility)
     .map(({ production }) => Number(production?.jobID) || 0)) + 1;
   if (nowMs === null || !integer(nowMs + blueprint.run_time * 1000) || !integer(jobID, 1)) return fail("INVALID_PRODUCTION_TIME");
-  if (!outputCapacity(facility, blueprint)) return fail("OUTPUT_CAPACITY_EXCEEDED");
-  const consumptions = planInputs(facility, blueprint);
+  if (!outputCapacity(facility, blueprint, 1, requestedLaneID)) return fail("OUTPUT_CAPACITY_EXCEEDED");
+  const consumptions = planInputs(facility, blueprint, requestedLaneID);
   if (!consumptions) return fail("INSUFFICIENT_INPUTS");
   const executorKey = options.executorKey == null
     ? null : String(options.executorKey).trim();
@@ -414,10 +428,10 @@ function advanceProduction(facilityID, options: Record<string, any> = {}) {
       // belong to this run even if the newly authored recipe has changed.
       const blueprint = getProductionRecipe(facility, current, currentLaneID);
       if (!blueprint) return failed("INVALID_PRODUCTION_STATE");
-      const selected = blueprints.getSelectedBlueprint(facility);
+      const selected = blueprints.getSelectedBlueprint(facility, currentLaneID);
       // Each running record has already paid for exactly one run. Keep it pending
       // if external changes occupied its reserved output space; never lose it.
-      if (!outputCapacity(facility, blueprint)) return failed("OUTPUT_CAPACITY_EXCEEDED");
+      if (!outputCapacity(facility, blueprint, 1, currentLaneID)) return failed("OUTPUT_CAPACITY_EXCEEDED");
       const outputs = Object.entries<any>(blueprint.outputs).map(([typeID, slot]) =>
         ({ typeID: Number(typeID), quantity: slot.quantity_per_run }));
       const production = { ...current, completedRuns: current.completedRuns + 1 };
@@ -428,9 +442,9 @@ function advanceProduction(facilityID, options: Record<string, any> = {}) {
           !online(facility) ? "FACILITY_OFFLINE" : null;
       let consumptions = [];
       if (!stopReason) {
-        if (!outputCapacity(facility, blueprint, 2)) stopReason = "OUTPUT_CAPACITY_EXCEEDED";
+        if (!outputCapacity(facility, blueprint, 2, currentLaneID)) stopReason = "OUTPUT_CAPACITY_EXCEEDED";
         else {
-          consumptions = planInputs(facility, blueprint);
+          consumptions = planInputs(facility, blueprint, currentLaneID);
           if (!consumptions) { stopReason = "INSUFFICIENT_INPUTS"; consumptions = []; }
         }
       }

@@ -307,10 +307,13 @@ tenant to `dev`, and MachoNet advertises `localnet` so the in-game signer uses
 the Docker-published Sui endpoint at `127.0.0.1:9000`.
 
 The current world deployment is split into the base package plus NPC,
-assembly-access, catapult, Smart Industry, and transponder packages.
+assembly-access, catapult, Smart Industry, transponder, action-queue, Industry
+Actions, Logistics Actions, Infrastructure Actions, and Automation packages.
 `FrontierWorld.ps1` also synchronizes their public call-package, stable
-type-origin, and registry IDs into `_local/frontier-world/3502403/npc-deployment.json`.
-That filename is historical and now represents all five features. Do not assume
+type-origin, and registry IDs into `_local/frontier-world/3502403/world-features.v1.json`.
+The versioned manifest carries independent capability records and references a
+default plus one split config file per `factionID-factionStringOnlyID`; historical
+`npc-deployment.json` files are migration inputs. Do not assume
 that a feature module lives at the base-world package address; see
 [Frontier world sync](doc/FRONTIER_WORLD_SYNC.md) and the authoritative
 `world-contracts/docs/package-topology.md` submodule.

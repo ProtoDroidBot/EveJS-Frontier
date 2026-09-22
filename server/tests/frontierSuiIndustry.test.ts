@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { buildSuiIndustrySnapshot, industryU64, industryFingerprint, parseIndustryProduction, type IndustryFacilitySnapshot } from "../src/services/frontier/suiIndustrySnapshot";
-import { createSuiIndustryChain, deriveSuiIndustryId, deriveSuiIndustryProductionId } from "../src/services/frontier/suiIndustryChain";
+import { createSuiIndustryChain, deriveSuiIndustryId, deriveSuiIndustryProductionId, deriveSuiIndustryLaneProductionId, deriveSuiIndustryLaneStateId } from "../src/services/frontier/suiIndustryChain";
 import { createSuiIndustrySyncWorkerBridge, reconcileSuiIndustryFacilities, registerSuiIndustrySyncBridge, readSuiIndustrySyncStatus } from "../src/services/frontier/suiIndustrySync";
 import { createSmartIndustryApi, mountSmartIndustryEndpoints } from "../src/_secondary/express/smartIndustryEndpoints";
 
@@ -38,17 +38,51 @@ test("production captures exact run progress and changes the synchronization fin
   assert.equal(parseIndustryProduction({ ...running(), requested_runs: null })?.requested_runs, null);
 });
 
+test("Industry snapshot and chain status preserve every authored production lane", async () => {
+  const rows = source();
+  const custom = JSON.parse(rows[0].customInfo);
+  custom.evejsFrontierIndustry.lanes = {
+    "1": { production: { version: 1, jobID: 1, state: "RUNNING", requestedRuns: 3, completedRuns: 0,
+      runStartedAtMs: 1700000000000, runEndAtMs: 1700000012000, stopReason: null } },
+    "2": { blueprintID: 1026, production: { version: 1, jobID: 2, state: "RUNNING", requestedRuns: null, completedRuns: 4,
+      runStartedAtMs: 1700000020000, runEndAtMs: 1700000032000, stopReason: null } },
+  };
+  custom.evejsFrontierIndustry.production = custom.evejsFrontierIndustry.lanes["1"].production;
+  rows[0].customInfo = custom;
+  rows.push(
+    { itemID: 506, ownerID: 140001, locationID: 5000000001, flagID: 20002, typeID: 78423, stacksize: 9, singleton: 0 },
+    { itemID: 507, ownerID: 140001, locationID: 5000000001, flagID: 20003, typeID: 77818, stacksize: 4, singleton: 0 },
+  );
+  const snapshot = buildSuiIndustrySnapshot(rows);
+  assert.deepEqual(snapshot.errors, []);
+  assert.equal(snapshot.facilities[0].productions.length, 4);
+  assert.equal(snapshot.facilities[0].productions[1].production?.job_id, "2");
+  assert.equal(snapshot.facilities[0].lanes[1].snapshot.blueprint_id, "1026");
+  assert.deepEqual(snapshot.facilities[0].lanes[1].snapshot.inputs,
+    [{ type_id: "78423", quantity: "9" }]);
+  assert.deepEqual(snapshot.facilities[0].lanes[1].snapshot.outputs,
+    [{ type_id: "77818", quantity: "4" }]);
+  assert.notDeepEqual(snapshot.facilities[0].lanes[0].snapshot.blueprint_inputs,
+    snapshot.facilities[0].lanes[1].snapshot.blueprint_inputs);
+});
+
 test("Industry snapshot reads selected authored recipe and owned escrow totals only", () => {
   const rows = source(); const original = structuredClone(rows);
   const result = buildSuiIndustrySnapshot(rows);
   assert.deepEqual(rows, original);
   assert.deepEqual(result.errors, []);
-  assert.deepEqual(result.facilities[0], { itemId: "5000000001", typeId: 87119, status: 2, production: null, snapshot: {
+  const current = result.facilities[0];
+  assert.deepEqual({ ...current, lanes: undefined }, { itemId: "5000000001", typeId: 87119, status: 2, production: null,
+    productions: [1, 2, 3, 4].map(laneID => ({ lane_id: String(laneID), production: null })), snapshot: {
     owner_id: "140001", solar_system_id: "30002479", blueprint_id: "1007", run_time: "12",
     inputs: [{ type_id: "95345", quantity: "5" }], outputs: [{ type_id: "83463", quantity: "7" }],
     blueprint_inputs: [{ type_id: "95345", quantity: "1", max_quantity: "400" }],
     blueprint_outputs: [{ type_id: "83463", quantity: "1", max_quantity: "500" }],
-  } });
+  }, lanes: undefined });
+  assert.equal(current.lanes.length, 4);
+  assert.deepEqual(current.lanes[0], { lane_id: "1", production: null, snapshot: current.snapshot });
+  assert.equal(current.lanes[1].snapshot.blueprint_id, "0");
+  assert.deepEqual(current.lanes[1].snapshot.inputs, []);
   assert.deepEqual(buildSuiIndustrySnapshot([...rows].reverse()), result);
 });
 
@@ -86,7 +120,9 @@ test("invalid recipes, quantities, conflicting identities and duplicate rows fai
 
 function chainFixture(industryPackageId?: string, industryTypeOrigin?: string, industryRegistryId?: string) {
   const world = { packageId: address(80), objectRegistryId: address(81), adminAclId: address(82), energyConfigId: address(83), fuelConfigId: address(84) };
-  const current = { facility: facility(), fields: null as any, productionField: null as any, executions: [] as any[], apply: true, checks: 0, online: true };
+  const current = { facility: facility(), fields: null as any, productionField: null as any,
+    laneProductionField: null as any, laneStateField: null as any,
+    executions: [] as any[], apply: true, checks: 0, online: true };
   const assembly: any = { itemId: "5000000001", kind: "assembly", typeId: 87119, ownerId: 140001, solarSystemId: 30002479 };
   const assemblyID = address(100);
   const industryId = deriveSuiIndustryId(
@@ -95,7 +131,15 @@ function chainFixture(industryPackageId?: string, industryTypeOrigin?: string, i
     industryTypeOrigin || industryPackageId || world.packageId,
     industryRegistryId || world.objectRegistryId,
   );
-  const objects = { getObject: async ({ id }: any) => id === deriveSuiIndustryProductionId(industryId)
+  const objects = { getObject: async ({ id }: any) => id === deriveSuiIndustryLaneStateId(industryId)
+    ? current.laneStateField ? { data: { owner: { ObjectOwner: industryId }, content: { dataType: "moveObject",
+      type: `0x2::dynamic_field::Field<u8, ${industryPackageId || world.packageId}::smart_industry::LaneStateRecord>`, fields: current.laneStateField } } }
+      : { error: { code: "notExists" } }
+    : id === deriveSuiIndustryLaneProductionId(industryId)
+    ? current.laneProductionField ? { data: { owner: { ObjectOwner: industryId }, content: { dataType: "moveObject",
+      type: `0x2::dynamic_field::Field<u8, ${industryPackageId || world.packageId}::smart_industry::LaneProductionRecord>`, fields: current.laneProductionField } } }
+      : { error: { code: "notExists" } }
+    : id === deriveSuiIndustryProductionId(industryId)
     ? current.productionField ? { data: { owner: { ObjectOwner: industryId }, content: { dataType: "moveObject",
       type: `0x2::dynamic_field::Field<u8, ${industryPackageId || world.packageId}::smart_industry::ProductionRecord>`, fields: current.productionField } } }
       : { error: { code: "notExists" } }
@@ -111,7 +155,7 @@ function chainFixture(industryPackageId?: string, industryTypeOrigin?: string, i
       const call = data.commands.at(-1).MoveCall;
       const integer = (argument: any) => Buffer.from((data.inputs[argument.Input] as any).Pure.bytes, "base64").readBigUInt64LE().toString();
       assert.equal(ownerId, undefined, "Only the existing server executor signs mirrors");
-      const isSync = call.function === "sync_with_production";
+      const isSync = call.function === "sync_with_lane_states";
       if (isSync) assert.equal(integer(call.arguments[3]), current.fields.revision);
       const observed = integer(call.arguments[isSync ? 4 : 3]);
       if (current.apply) current.fields = {
@@ -122,9 +166,22 @@ function chainFixture(industryPackageId?: string, industryTypeOrigin?: string, i
       };
       if (current.apply) {
         const p = current.facility.production;
+        const rawProduction = (value: any) => value ? {
+          ...value, state: { RUNNING: 1, DISCONTINUING: 2, STOPPED: 3 }[value.state],
+          requested_runs: value.requested_runs ?? "0", stop_reason: value.stop_reason ?? "",
+        } : { job_id: "0", state: 0, requested_runs: "0", completed_runs: "0", run_started_at_ms: "0", run_end_at_ms: "0", stop_reason: "" };
         current.productionField = { name: 0, value: { fields: { revision: current.fields.revision, production: { fields: p ? {
           ...p, state: { RUNNING: 1, DISCONTINUING: 2, STOPPED: 3 }[p.state], requested_runs: p.requested_runs ?? "0", stop_reason: p.stop_reason ?? "",
         } : { job_id: "0", state: 0, requested_runs: "0", completed_runs: "0", run_started_at_ms: "0", run_end_at_ms: "0", stop_reason: "" } } } } };
+        current.laneProductionField = { name: 1, value: { fields: { revision: current.fields.revision,
+          lanes: current.facility.productions.map((lane: any) => ({ fields: { lane_id: lane.lane_id,
+            production: { fields: rawProduction(lane.lane_id === "1" ? p : lane.production) } } })) } } };
+        current.laneStateField = { name: 2, value: { fields: { revision: current.fields.revision,
+          lanes: current.facility.lanes.map((lane: any) => ({ fields: {
+            lane_id: lane.lane_id,
+            snapshot: { fields: structuredClone(lane.lane_id === "1" ? current.facility.snapshot : lane.snapshot) },
+            production: { fields: rawProduction(lane.lane_id === "1" ? p : lane.production) },
+          } })) } } };
       }
     },
   });
@@ -136,7 +193,7 @@ test("Smart Industry creates a sidecar, verifies it and deduplicates across adap
   await f.adapter().sync(f.current.facility, f.assembly);
   assert.equal(f.current.executions.length, 1);
   assert.equal(f.current.fields.revision, "1");
-  assert.equal(f.current.executions[0].data.commands.at(-1).MoveCall.function, "create_with_production");
+  assert.equal(f.current.executions[0].data.commands.at(-1).MoveCall.function, "create_with_lane_states");
   assert.ok(f.current.checks >= 3);
   const result = await f.adapter().status(f.current.facility, f.assembly);
   assert.equal(result.synchronized, true);
@@ -158,7 +215,7 @@ test("inventory, blueprint clearing and status changes replace snapshots with re
   await adapter.sync(f.current.facility, f.assembly);
   assert.equal(f.current.fields.revision, "3");
   assert.equal(f.current.fields.assembly_status, 1);
-  assert.equal(f.current.executions.at(-1).data.commands.at(-1).MoveCall.function, "sync_with_production");
+  assert.equal(f.current.executions.at(-1).data.commands.at(-1).MoveCall.function, "sync_with_lane_states");
 });
 
 test("upgraded Industry modules retain the original Assembly and sidecar type origin", async () => {
@@ -167,7 +224,10 @@ test("upgraded Industry modules retain the original Assembly and sidecar type or
   const calls = f.current.executions[0].data.commands.filter((c: any) => c.MoveCall).map((c: any) => c.MoveCall);
   assert.ok(calls.every((call: any) => call.package === address(90)));
   const vectors = f.current.executions[0].data.commands.filter((c: any) => c.MakeMoveVec).map((c: any) => c.MakeMoveVec);
-  assert.ok(vectors.every((vector: any) => vector.type.startsWith(`${address(89)}::smart_industry::`)));
+  const typedVectors = vectors.filter((vector: any) => vector.type !== null);
+  assert.ok(typedVectors.length > 0);
+  assert.ok(typedVectors.every((vector: any) => vector.type.startsWith(`${address(89)}::smart_industry::`)));
+  assert.equal(vectors.filter((vector: any) => vector.type === null).length, 1);
   const status = await f.adapter().status(f.current.facility, f.assembly);
   assert.equal(status.assemblyObjectID, f.assemblyID);
   assert.equal(status.industryObjectID, deriveSuiIndustryId(f.world, f.assemblyID, address(89), address(88)));
@@ -224,6 +284,8 @@ test("legacy missing production and mixed revisions cannot claim synchronized pr
   f.current.facility.production = running();
   await adapter.sync(f.current.facility, f.assembly);
   f.current.productionField = null;
+  f.current.laneProductionField = null;
+  f.current.laneStateField = null;
   const old = await adapter.status(f.current.facility, f.assembly);
   assert.equal(old.synchronized, false);
   assert.equal(old.productionMirrored, false);
@@ -232,9 +294,9 @@ test("legacy missing production and mixed revisions cannot claim synchronized pr
   await assert.rejects(adapter.sync(f.current.facility, f.assembly), /not confirmed/);
   f.current.apply = true;
   await adapter.sync(f.current.facility, f.assembly);
-  f.current.productionField.value.fields.revision = "999";
+  f.current.laneStateField.value.fields.revision = "999";
   await assert.rejects(adapter.status(f.current.facility, f.assembly), /revision changed/);
-  f.current.productionField.value.fields.revision = f.current.fields.revision;
+  f.current.laneStateField.value.fields.revision = f.current.fields.revision;
   f.current.fields.revision = String(BigInt(f.current.fields.revision) + 1n);
   await assert.rejects(adapter.status(f.current.facility, f.assembly), /revision changed/);
   await adapter.sync(f.current.facility, f.assembly);
@@ -260,7 +322,8 @@ test("serialized Industry read/flush rejects foreign owners and invalidates stal
   const bridge = createSuiIndustrySyncWorkerBridge({ runExclusive: operation => operation(), runOnce: async () => { runs++; },
     getContext: () => ({ assertCurrent: async () => {}, executor: { hasPending: () => false }, industry: { status: async () => {
       if (mutate) current.snapshot.outputs = [];
-      return { synchronized: true, productionMirrored: true, chainProduction: null, industryObjectID: address(111), assemblyObjectID: address(112) };
+      return { synchronized: true, productionMirrored: true, laneStatesMirrored: true,
+        chainProduction: null, industryObjectID: address(111), assemblyObjectID: address(112) };
     } } }),
     getSnapshot: () => ({ facilities: [structuredClone(current)], assemblies: [{ itemId: current.itemId, kind: "assembly" } as any] }),
     getLastError: () => "", hasPrepared: () => false,
@@ -279,7 +342,8 @@ test("explicit Industry flush can create an initially missing chain Assembly bef
   const bridge = createSuiIndustrySyncWorkerBridge({ runExclusive: operation => operation(), runOnce: async () => { ready = true; },
     getContext: () => ({ assertCurrent: async () => {}, executor: { hasPending: () => false }, industry: { status: async () => {
       if (!ready) throw new Error("Industry Assembly has not synchronized yet");
-      return { synchronized: true, productionMirrored: true, chainProduction: null, industryObjectID: address(111), assemblyObjectID: address(112) };
+      return { synchronized: true, productionMirrored: true, laneStatesMirrored: true,
+        chainProduction: null, industryObjectID: address(111), assemblyObjectID: address(112) };
     } } }),
     getSnapshot: () => ({ facilities: [current], assemblies: [{ itemId: current.itemId, kind: "assembly" } as any] }),
     getLastError: () => "", hasPrepared: () => false,
@@ -331,6 +395,7 @@ test("Industry API exposes local and confirmed production and refuses old mirror
     readFacility: () => current,
     readChain: async (request: any) => ({ ...request, status: "synced", synchronized: true,
       industryObjectID: address(111), assemblyObjectID: address(112), productionMirrored: mirrored,
+      laneStatesMirrored: mirrored,
       chainProduction: mirrored ? running() : null,
     }),
   });

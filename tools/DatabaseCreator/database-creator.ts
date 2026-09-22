@@ -1940,6 +1940,15 @@ function dogmaEffectsFromEntry(entry) {
     .filter((effectID) => effectID > 0);
 }
 
+function dogmaEffectEntriesFromEntry(entry) {
+  return (Array.isArray(entry.dogmaEffects) ? entry.dogmaEffects : [])
+    .map((effect) => ({
+      effectID: toInt(effect && effect.effectID, 0),
+      isDefault: toInt(effect && effect.isDefault, 0),
+    }))
+    .filter((effect) => effect.effectID > 0);
+}
+
 function dogmaEffectsForType(typeID, dogmaByTypeID) {
   return dogmaEffectsFromEntry(dogmaByTypeID.get(String(typeID)) || {});
 }
@@ -2033,6 +2042,7 @@ function typeDogmaRecord(typeID, row, typeByID) {
   const type = typeByID.get(numericTypeID) || {};
   const attributes = dogmaAttributesFromEntry(row || {});
   const effects = dogmaEffectsFromEntry(row || {});
+  const effectEntries = dogmaEffectEntriesFromEntry(row || {});
   return {
     typeID: numericTypeID,
     typeName: type.name || row.typeName || row.name || "",
@@ -2040,6 +2050,7 @@ function typeDogmaRecord(typeID, row, typeByID) {
     effectCount: effects.length,
     attributes,
     effects,
+    effectEntries,
   };
 }
 

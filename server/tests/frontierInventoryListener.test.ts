@@ -19,6 +19,7 @@ function fixture() {
   const rows = new Map([
     [`${STORAGE_ID}:66`, [{ typeID: 34, stacksize: 3 }, { typeID: 34, stacksize: 4 }]],
     [`${INDUSTRY_ID}:20001`, [{ typeID: 35, stacksize: 2 }]],
+    [`${INDUSTRY_ID}:20003`, [{ typeID: 38, stacksize: 6 }]],
     [`${SHIP_ID}:5`, [{ typeID: 36, stacksize: 8 }]],
     [`${FIELD_STORAGE_ID}:0`, [{ typeID: 37, stacksize: 9 }]],
   ]);
@@ -68,6 +69,12 @@ test("listener supports Industry output escrow, the active ship, and nearby Fiel
     assert.equal(result.data.satisfied, true);
   }
   assert.deepEqual(f.calls.map(call => [call.targetID, call.flagID]), [[SHIP_ID, 5], [FIELD_STORAGE_ID, 0]]);
+
+  const laneTwo: any = f.read(f.session, { targetKind: "smart-assembly", targetID: INDUSTRY_ID,
+    inventory: "outputs", laneID: 2, requested: [{ typeID: 38, quantity: 6 }] });
+  assert.equal(laneTwo.success, true);
+  assert.equal(laneTwo.data.laneID, 2);
+  assert.equal(laneTwo.data.satisfied, true);
 });
 
 test("listener rejects malformed conditions and propagates access failures", () => {

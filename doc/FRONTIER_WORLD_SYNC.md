@@ -23,7 +23,7 @@ world contracts: D:\carbonengine-stuff_EF\EveJS-Frontier\world-contracts
 builder scaffold: D:\carbonengine-stuff_EF\EveJS-Frontier\builder-scaffold
 assembly dApp:    D:\carbonengine-stuff_EF\EveJS-Frontier\smart-assembly-control
 EveJS config:    D:\carbonengine-stuff_EF\EveJS-Frontier\_local\frontier-world\3502403\world.private.json
-Feature config:  D:\carbonengine-stuff_EF\EveJS-Frontier\_local\frontier-world\3502403\npc-deployment.json
+Feature config:  D:\carbonengine-stuff_EF\EveJS-Frontier\_local\frontier-world\3502403\world-features.v1.json
 ```
 
 The `_local` output is ignored by Git. Its ACL is restricted to the current
@@ -108,22 +108,30 @@ After `efctl env up` succeeds, the tool validates all of the following:
 - its chain ID matches `sui_getChainIdentifier` at `127.0.0.1:9000`;
 - `.env` contains exactly one checksum-valid, Ed25519
   `suiprivkey` `ADMIN_PRIVATE_KEY`.
-- when `deployments\localnet\npc-deployment.json` exists, its version-1 schema
-  contains canonical nonzero package/origin/registry addresses for all five
-  features and its chain/base-world IDs match the synchronized world.
+- when `deployments\localnet\world-features.v1.json` exists, its versioned
+  capability records contain canonical nonzero package/origin/registry addresses
+  and its chain/base-world IDs match the synchronized world;
+- otherwise, a historical `npc-deployment.json` schema 1–3 is migrated without
+  allowing an incomplete capability to block unrelated valid capabilities.
 
 It copies only the approved public feature fields to the sibling
-`npc-deployment.json`; no private key is written to that file. Only then does it
+`world-features.v1.json`; no private key is written to that file. Only then does it
 atomically publish a `ready` private config. The native
 Frontier launcher passes this stable config path to EveJS, which reads it when
 provisioning a character. Explicit `EVEJS_SUI_*` overrides still take
 precedence.
 
-The historical feature-manifest filename now covers all five split packages.
-It is not an NPC-only file. Current schema version 1 is atomic: partial feature
-manifests are rejected. If an authoritative source manifest disappears while a
-synchronized destination exists, sync preserves the destination for recovery
-but fails closed instead of silently reverting feature calls to the base world.
+Each capability is independent. A missing or explicitly unavailable capability
+does not block other valid feature records. The package/origin/registry remains
+global rather than being duplicated per faction. Faction policy is stored in
+`factions/default.v1.json` plus one canonical
+`factions/<factionID-factionStringOnlyID>.v1.json` per configured faction. Each
+faction reference names fallback `default`; omission of a faction capability
+array inherits that default. During legacy migration, incomplete triples
+are omitted and named in `migration.incompleteCapabilities`. A synchronized
+historical destination is archived as `npc-deployment.legacy.json`. If an
+authoritative source disappears while synchronized metadata exists, sync
+preserves the destination for recovery but fails closed.
 
 After publishing the configuration, sync tops every configured NPC faction
 wallet up to the common `suiWalletFunding.budgetMist` minimum from the

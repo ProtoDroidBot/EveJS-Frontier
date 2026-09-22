@@ -37,6 +37,14 @@ MODULES = {
         b"EVEJS_CREATION_PRESET_VIEW_ADAPTER_V1",
     ),
 }
+PREVIOUS_WRAPPER_SHA256 = {
+    "creation_transform_adapter.py": {
+        "21f0847e98fec8942dc02726a570fcb501bfbb3288bd80874d232b9cbf17d496",
+    },
+    "creation_transform_validation_adapter.py": {
+        "cf01cd48c5a144710e77f0ee6f86125f95481e05d774c9212289e36904baad2a",
+    },
+}
 
 
 class CreationTransformPatchError(RuntimeError):
@@ -75,6 +83,7 @@ def inspect_member(member, module_config):
         raise CreationTransformPatchError("Unexpected Python bytecode header")
     if hashlib.sha256(member).hexdigest() == expected:
         return "source", member
+    digest = hashlib.sha256(member).hexdigest()
     try:
         wrapper = marshal.loads(member[16:])
         if not isinstance(wrapper, types.CodeType):
@@ -84,10 +93,14 @@ def inspect_member(member, module_config):
             if isinstance(value, bytes)
             and hashlib.sha256(value).hexdigest() == expected
         ]
-        if len(originals) == 1 and patched_member(
-            originals[0], adapter_path, installer, source_sentinel, adapter_sentinel
-        ) == member:
-            return "patched", originals[0]
+        if len(originals) == 1:
+            if patched_member(
+                originals[0], adapter_path, installer,
+                source_sentinel, adapter_sentinel,
+            ) == member:
+                return "patched", originals[0]
+            if digest in PREVIOUS_WRAPPER_SHA256.get(adapter_path.name, ()):
+                return "outdated", originals[0]
     except (EOFError, TypeError, ValueError):
         pass
     raise CreationTransformPatchError(

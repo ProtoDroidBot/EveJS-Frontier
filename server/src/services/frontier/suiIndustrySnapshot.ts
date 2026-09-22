@@ -1,5 +1,6 @@
 /** Pure snapshot of Frontier's selected blueprint and server escrow inventories. */
 const blueprints = require("./industryBlueprints");
+const industryProduction = require("./industryProduction");
 
 export type IndustryItemStack = { type_id: string; quantity: string };
 export type IndustryRecipeSlot = IndustryItemStack & { max_quantity: string };
@@ -8,13 +9,24 @@ export type IndustryProduction = {
   requested_runs: string | null; completed_runs: string;
   run_started_at_ms: string; run_end_at_ms: string; stop_reason: string | null;
 };
+export type IndustryLaneProduction = { lane_id: string; production: IndustryProduction | null };
+export type IndustryLaneState = {
+  lane_id: string;
+  snapshot: IndustrySnapshot;
+  production: IndustryProduction | null;
+};
 export type IndustrySnapshot = {
   owner_id: string; solar_system_id: string; blueprint_id: string; run_time: string;
   inputs: IndustryItemStack[]; outputs: IndustryItemStack[];
   blueprint_inputs: IndustryRecipeSlot[]; blueprint_outputs: IndustryRecipeSlot[];
 };
 export type IndustryFacilitySnapshot = {
-  itemId: string; typeId: number; status: 1 | 2; snapshot: IndustrySnapshot; production: IndustryProduction | null;
+  itemId: string; typeId: number; status: 1 | 2; snapshot: IndustrySnapshot;
+  /** Lane one compatibility projection retained for older status consumers. */
+  production: IndustryProduction | null;
+  productions: IndustryLaneProduction[];
+  /** Complete revision-bound lane state used by current chain mirrors. */
+  lanes: IndustryLaneState[];
 };
 const U64_MAX = (1n << 64n) - 1n;
 
@@ -99,21 +111,19 @@ export function buildSuiIndustrySnapshot(items: Record<string, any> | any[]): {
       if (status !== 1 && status !== 2) throw new Error("Completed facility must be offline or online");
       const selected = custom.evejsFrontierIndustry;
       if (selected !== undefined && (!selected || typeof selected !== "object" || Array.isArray(selected))) throw new Error("Industry selection metadata is invalid");
-      const blueprint = selected?.blueprintID === undefined ? null : blueprints.getBlueprintForFacility(typeId,
-        industryU64(selected.blueprintID, "Blueprint ID"));
-      if (selected?.blueprintID !== undefined && !blueprint) throw new Error("Selected blueprint is not supported by this facility");
-      const job = selected?.production;
-      if (job != null && job.version !== 1) throw new Error("Unsupported Industry production version");
-      const production = job == null ? null : parseIndustryProduction({
-        job_id: job.jobID, state: job.state, requested_runs: job.requestedRuns, completed_runs: job.completedRuns,
-        run_started_at_ms: job.runStartedAtMs, run_end_at_ms: job.runEndAtMs, stop_reason: job.stopReason,
-      });
-      if (production && !blueprint) throw new Error("Industry production requires a blueprint");
-      const recipe = (side: string): IndustryRecipeSlot[] => sort(Object.values<any>(blueprint?.[side] || {}).map(slot => ({
-        type_id: industryU64(slot.type_id, "Recipe type ID"),
-        quantity: industryU64(slot.quantity_per_run, "Recipe quantity"),
-        max_quantity: industryU64(slot.max_storable_quantity, "Recipe capacity"),
-      })));
+      if (industryProduction.invalidStoredProduction(item)) {
+        throw new Error("Unsupported Industry production version");
+      }
+      const productions: IndustryLaneProduction[] = industryProduction.getProductions(item)
+        .map(({ laneID, production: job }) => ({
+          lane_id: industryU64(laneID, "Industry lane ID"),
+          production: job == null ? null : parseIndustryProduction({
+            job_id: job.jobID, state: job.state, requested_runs: job.requestedRuns,
+            completed_runs: job.completedRuns, run_started_at_ms: job.runStartedAtMs,
+            run_end_at_ms: job.runEndAtMs, stop_reason: job.stopReason,
+          }),
+        }));
+      const production = productions.find((lane) => lane.lane_id === "1")?.production ?? null;
       const totals = (flag: number): IndustryItemStack[] => {
         const totals = new Map<string, bigint>();
         const rowIDs = new Set<string>();
@@ -130,13 +140,52 @@ export function buildSuiIndustrySnapshot(items: Record<string, any> | any[]): {
         }
         return sort([...totals].map(([type_id, quantity]) => ({ type_id, quantity: quantity.toString() })));
       };
-      facilities.push({ itemId, typeId, status, production, snapshot: {
-        owner_id: owner, solar_system_id: system,
-        blueprint_id: blueprint ? industryU64(blueprint.blueprint_id, "Blueprint ID") : "0",
-        run_time: blueprint ? industryU64(blueprint.run_time, "Blueprint run time") : "0",
-        inputs: totals(20000), outputs: totals(20001),
-        blueprint_inputs: recipe("inputs"), blueprint_outputs: recipe("outputs"),
-      } });
+      const lanes: IndustryLaneState[] = productions.map((lane) => {
+        const laneID = Number(industryU64(lane.lane_id, "Industry lane ID"));
+        const blueprint = blueprints.getSelectedBlueprint(item, laneID);
+        const storedBlueprintID = selected?.lanes?.[String(laneID)]?.blueprintID ??
+          (laneID === 1 ? selected?.blueprintID : undefined);
+        if (storedBlueprintID !== undefined && !blueprint) {
+          throw new Error(`Industry lane ${laneID} selected blueprint is not supported by this facility`);
+        }
+        if (lane.production && !blueprint) {
+          throw new Error(`Industry lane ${laneID} production requires a blueprint`);
+        }
+        const recipe = (side: string): IndustryRecipeSlot[] => sort(
+          Object.values<any>(blueprint?.[side] || {}).map(slot => ({
+            type_id: industryU64(slot.type_id, "Recipe type ID"),
+            quantity: industryU64(slot.quantity_per_run, "Recipe quantity"),
+            max_quantity: industryU64(slot.max_storable_quantity, "Recipe capacity"),
+          })),
+        );
+        const inputFlag = 20000 + (laneID - 1) * 2;
+        return {
+          lane_id: String(laneID),
+          production: lane.production,
+          snapshot: {
+            owner_id: owner,
+            solar_system_id: system,
+            blueprint_id: blueprint ? industryU64(blueprint.blueprint_id, "Blueprint ID") : "0",
+            run_time: blueprint ? industryU64(blueprint.run_time, "Blueprint run time") : "0",
+            inputs: totals(inputFlag),
+            outputs: totals(inputFlag + 1),
+            blueprint_inputs: recipe("inputs"),
+            blueprint_outputs: recipe("outputs"),
+          },
+        };
+      });
+      if (!lanes.length || lanes[0].lane_id !== "1") {
+        throw new Error("Industry lane one is required");
+      }
+      facilities.push({
+        itemId,
+        typeId,
+        status,
+        production,
+        productions,
+        lanes,
+        snapshot: lanes[0].snapshot,
+      });
     } catch (error) { errors.push({ itemId, message: error instanceof Error ? error.message : String(error) }); }
   }
   return { facilities: facilities.filter(f => !duplicates.has(f.itemId)).sort((a, b) => BigInt(a.itemId) < BigInt(b.itemId) ? -1 : 1), errors };

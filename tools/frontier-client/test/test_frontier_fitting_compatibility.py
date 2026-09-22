@@ -313,6 +313,173 @@ class NpcFittingMenuTests(unittest.TestCase):
             1,
         )
 
+    def test_assembly_access_action_requires_a_valid_assembly_probe(self):
+        opened = []
+
+        class Remote:
+            def CanOpenNpcFitting(self, entity_id):
+                return {"trusted": False, "entityID": entity_id}
+
+            def get_assembly_access(self, item_id, capabilities):
+                if item_id != 7001:
+                    raise RuntimeError("not an assembly")
+                return {
+                    "assemblyID": item_id,
+                    "capabilities": capabilities,
+                }
+
+        class MenuSvc:
+            def CelestialMenu(
+                self, itemID, mapItem=None, crData=None, typeID=None,
+                parentID=None, hint=None
+            ):
+                return [["Show Info", lambda: None, ()]]
+
+        namespace = {
+            "MenuSvc": MenuSvc,
+            "sm": NS(RemoteSvc=lambda name: Remote()),
+            "uicore": NS(cmd=NS()),
+        }
+        with mock.patch.object(
+            npc_menu_adapter,
+            "_evejs_open_assembly_access",
+            side_effect=lambda ns, item_id: opened.append(item_id),
+        ):
+            npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
+            self.assertEqual(len(MenuSvc().CelestialMenu(8001)), 1)
+            menu = MenuSvc().CelestialMenu(7001)
+            self.assertEqual(menu[-1][0], "Manage Assembly Access")
+            menu[-1][1](*menu[-1][2])
+        self.assertEqual(opened, [7001])
+
+
+class AssemblyAccessPresenterTests(unittest.TestCase):
+    def test_full_player_access_workflow_stays_server_authoritative(self):
+        calls = []
+
+        class Remote:
+            def get_assembly_access(self, item_id, capabilities):
+                calls.append(("resolve", item_id, capabilities))
+                return {
+                    "assemblyID": item_id,
+                    "principal": "entity:player:42",
+                    "isOwner": True,
+                    "capabilities": ["gui.view", "manage_access"],
+                    "policyRevision": 7,
+                }
+
+            def get_assembly_access_requests(self, item_id, options):
+                return [{
+                    "requestID": "request-one",
+                    "requesterPrincipal": "entity:player:43",
+                    "status": "requested",
+                    "capabilities": ["gui.view"],
+                }]
+
+            def get_assembly_access_grants(self, item_id, options):
+                return [{
+                    "grantID": "grant-one",
+                    "recipientPrincipal": "tribe:99",
+                    "capabilities": ["gui.view"],
+                    "authority": "sui_confirmed",
+                }]
+
+            def get_assembly_access_events(self, item_id, options):
+                return {"events": [{"sequence": 1}]}
+
+            def get_npc_load_shedding_requests(self, item_id):
+                return [{
+                    "job_id": "shed-one",
+                    "proposed_plan": {
+                        "selected": [{"assemblyID": 8001}],
+                    },
+                }]
+
+            def request_assembly_access(self, *args):
+                calls.append(("request",) + args)
+                return {"requestID": args[2]["requestID"]}
+
+            def cancel_assembly_access_request(self, *args):
+                calls.append(("cancel",) + args)
+                return {"status": "cancelled"}
+
+            def approve_assembly_access(self, *args):
+                calls.append(("approve",) + args)
+                return {"status": "approved"}
+
+            def deny_assembly_access(self, *args):
+                calls.append(("deny",) + args)
+                return {"status": "denied"}
+
+            def share_assembly_access(self, *args):
+                calls.append(("share",) + args)
+                return {"grantID": "grant-two"}
+
+            def revoke_assembly_access(self, *args):
+                calls.append(("revoke",) + args)
+                return {"status": "revoked"}
+
+            def open_shared_assembly_gui(self, *args):
+                calls.append(("open",) + args)
+                return {"token": "opaque-token"}
+
+            def validate_shared_assembly_gui(self, *args):
+                calls.append(("validate",) + args)
+                return {"valid": True}
+
+            def approve_npc_load_shedding(self, *args):
+                calls.append(("shed",) + args)
+                return {"jobID": args[0], "approved": True}
+
+        interactions = []
+        namespace = {
+            "sm": NS(GetService=lambda name: NS(
+                on_interaction=lambda item_id: interactions.append(item_id)
+            )),
+        }
+        presenter = npc_menu_adapter._EvejsAssemblyAccessPresenter(
+            namespace, 7001, Remote()
+        )
+        presenter.refresh()
+        self.assertTrue(presenter.is_owner)
+        self.assertTrue(presenter.can_manage)
+        self.assertEqual(len(presenter.requests), 1)
+        self.assertEqual(len(presenter.grants), 1)
+        self.assertEqual(len(presenter.load_shedding), 1)
+
+        with mock.patch.object(
+            npc_menu_adapter.uuid,
+            "uuid4",
+            side_effect=["request-id", "share-id"],
+        ):
+            presenter.request_access("gui.view, operate", 3600000)
+            presenter.share_access("tribe:99", ["gui.view"], 7200000)
+        presenter.approve_request("request-one")
+        presenter.deny_request("request-one")
+        presenter.cancel_request("request-one")
+        presenter.revoke_grant("grant-one")
+        presenter.approve_load_shedding(
+            "shed-one", [8001], "Preserve navigation headroom"
+        )
+        self.assertEqual(
+            presenter.open_shared_gui(), {"token": "opaque-token"}
+        )
+
+        operations = [entry[0] for entry in calls]
+        for operation in (
+            "request", "share", "approve", "deny", "cancel", "revoke", "shed", "open",
+            "validate",
+        ):
+            self.assertIn(operation, operations)
+        request = next(entry for entry in calls if entry[0] == "request")
+        self.assertEqual(request[3]["idempotencyKey"], "request-id")
+        share = next(entry for entry in calls if entry[0] == "share")
+        self.assertEqual(share[2], "tribe:99")
+        self.assertEqual(share[4]["idempotencyKey"], "share-id")
+        validation = next(entry for entry in calls if entry[0] == "validate")
+        self.assertEqual(validation[1:], (7001, "opaque-token", "gui.view"))
+        self.assertEqual(interactions, [7001])
+
 
 class CreationServiceAdapterTests(unittest.TestCase):
     def setUp(self):

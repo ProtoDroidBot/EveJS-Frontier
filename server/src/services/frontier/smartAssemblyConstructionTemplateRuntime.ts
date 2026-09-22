@@ -117,7 +117,6 @@ function normalizeIndustryLanes(value, assemblyTypeID) {
   const source = value == null ? [] : value;
   if (!Array.isArray(source)) return null;
   const laneIDs = new Set<number>();
-  let sharedBlueprintID = 0;
   const laneCount = industryProduction.getFacilityLaneCount({ typeID: assemblyTypeID });
   const lanes: any[] = [];
   for (const entry of source) {
@@ -125,10 +124,9 @@ function normalizeIndustryLanes(value, assemblyTypeID) {
     const blueprintID = toInt(entry && (entry.blueprintID ?? entry.blueprint_id), 0);
     const runs = toInt(entry && (entry.runs ?? entry.requestedRuns ?? entry.requested_runs), 0);
     if (laneID <= 0 || laneID > laneCount || laneIDs.has(laneID) || blueprintID <= 0 ||
-        runs <= 0 || runs > 1_000_000 || sharedBlueprintID && sharedBlueprintID !== blueprintID ||
+        runs <= 0 || runs > 1_000_000 ||
         !industryBlueprints.getBlueprintForFacility(assemblyTypeID, blueprintID)) return null;
     laneIDs.add(laneID);
-    sharedBlueprintID ||= blueprintID;
     lanes.push({ laneID, blueprintID, runs });
   }
   return lanes.sort((left, right) => left.laneID - right.laneID);

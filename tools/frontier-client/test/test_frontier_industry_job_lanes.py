@@ -18,6 +18,8 @@ class Facility:
         self.details_fetched = True
         self.production = None
         self.blueprint = None
+        self.inputs = None
+        self.outputs = None
 
     def set_details_state(self, loading, error=False):
         self.loading_details = loading
@@ -25,10 +27,15 @@ class Facility:
     def update_production(self, production):
         self.production = production
 
-    def update_item_stacks(self, **_kwargs):
-        pass
+    def update_item_stacks(self, input_items, output_items):
+        self.inputs = input_items
+        self.outputs = output_items
 
-    def update_blueprint(self, _blueprint):
+    def update_blueprint(self, blueprint):
+        self.blueprint = (types.SimpleNamespace(**blueprint)
+                          if isinstance(blueprint, dict) else blueprint)
+
+    def on_blueprint_changed(self):
         pass
 
 
@@ -44,8 +51,16 @@ class ClientLaneTests(unittest.TestCase):
         deployed.facility_id = 88
         deployed._remote_service = remote
         deployed._evejs_selected_lane_id = 3
+        deployed.load_blueprint(101)
+        deployed.deposit_input_items({44: 2})
+        deployed.withdraw_input_items({44: 1}, 99, 5)
+        deployed.withdraw_output_items({55: 1}, 99, 5)
         deployed.start_production(101, "hash")
         deployed.discontinue_production()
+        remote.load_blueprint.assert_called_once_with(88, 101, 3)
+        remote.deposit_input_items.assert_called_once_with(88, {44: 2}, 3)
+        remote.withdraw_input_items.assert_called_once_with(88, {44: 1}, 99, 5, 3)
+        remote.withdraw_output_items.assert_called_once_with(88, {55: 1}, 99, 5, 3)
         remote.start_production.assert_called_once_with(88, 101, "hash", None, 3)
         remote.discontinue_production.assert_called_once_with(88, 3)
 
@@ -101,9 +116,13 @@ class ClientLaneTests(unittest.TestCase):
             "job_lane_count": 3,
             "job_lanes": [
                 {"lane_id": 1, "enabled": True, "can_use": True,
-                 "production": {"state": "RUNNING", "lane": 1}},
+                 "production": {"state": "RUNNING", "lane": 1},
+                 "items": {"inputs": {11: 2}, "outputs": {12: 1}},
+                 "blueprint": {"blueprint_id": 101}},
                 {"lane_id": 2, "enabled": True, "can_use": True,
-                 "production": {"state": "STOPPED", "lane": 2}},
+                 "production": {"state": "STOPPED", "lane": 2},
+                 "items": {"inputs": {}, "outputs": {}},
+                 "blueprint": {"blueprint_id": 202}},
                 {"lane_id": 3, "enabled": True, "can_use": False,
                  "production": None},
             ],
@@ -128,9 +147,15 @@ class ClientLaneTests(unittest.TestCase):
         service._remote_service = remote
         service._request_facility_details(88, facility)
         self.assertEqual(facility.production, {"state": "RUNNING", "lane": 1})
+        self.assertEqual(facility.inputs, {11: 2})
+        self.assertEqual(facility.outputs, {12: 1})
+        self.assertEqual(facility.blueprint.blueprint_id, 101)
         self.assertEqual(facility._evejs_job_lane_count, 3)
         self.assertTrue(service.select_job_lane(88, 2))
         self.assertEqual(facility.production, {"state": "STOPPED", "lane": 2})
+        self.assertEqual(facility.inputs, {})
+        self.assertEqual(facility.outputs, {})
+        self.assertEqual(facility.blueprint.blueprint_id, 202)
         self.assertFalse(service.select_job_lane(88, 3), "a lane without use access is not selectable")
         self.assertEqual(service.start_production(88), ("start", 88, 2))
         self.assertEqual(service.discontinue_production(88), ("stop", 88, 2))

@@ -59,6 +59,7 @@ const ATTRIBUTE_FUEL_CAPACITY_ADD = 5679;
 const ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY = 6123;
 const ATTRIBUTE_FUEL_CONTAINMENT_BURDEN = 6124;
 const ATTRIBUTE_FUEL_VOLATILITY = 6311;
+const ATTRIBUTE_WARP_FUEL_RATE = 5640;
 const FUEL_PROPERTY_ATTRIBUTE_IDS = Object.freeze({
   fuelEfficiency: ATTRIBUTE_FUEL_EFFICIENCY,
   fuelThermalInefficiency: ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY,
@@ -73,6 +74,11 @@ const INITIAL_FULL_FUEL_SHIP_TYPE_IDS = new Set([
 ]);
 const SHIP_CATEGORY_ID = 6;
 const FUEL_EPSILON = 1e-9;
+// EngineDogmaItem.add_warp_modifiers in Frontier build 3502403 applies this
+// multiplier to ship mass before dividing the authored engine warp-fuel rate
+// by the active fuel impulse. CreationDogmaItem receives its propulsion
+// module's warp-fuel rate directly and therefore does not use this factor.
+const REGULAR_ENGINE_WARP_MASS_MULTIPLIER = 1e-6;
 const TYPE_FUEL_BLISTER = 96013;
 
 // inventorycommon.const.fuelGroups in the staged client.
@@ -452,6 +458,103 @@ function getFuelEfficiency(fuelTypeID, deps: Record<string, any> = {}) {
   return getFuelProperties(fuelTypeID, deps).fuelEfficiency;
 }
 
+/**
+ * Resolve the amount of continuous generator work supplied by one unit of
+ * the active fuel.  The client uses distinct power profiles:
+ *
+ * - regular engines: clamp(2 * impulse / containment, 1, 100)
+ * - Creation: clamp(impulse / max(1, containment / reduction), 1, 100)
+ *
+ * `legacy` preserves the original direct-impulse helper contract for callers
+ * which do not represent either Frontier runtime.
+ */
+function calculateContinuousFuelPowerFactor(
+  {
+    fuelProperties,
+    profile = "legacy",
+    containmentReduction = 1,
+  }: Record<string, any> = {},
+) {
+  const impulse = Math.max(
+    0,
+    toFiniteNumber(fuelProperties && fuelProperties.fuelEfficiency, 0),
+  );
+  if (impulse <= FUEL_EPSILON) {
+    return 0;
+  }
+  if (profile === "regular-engine") {
+    const containment = Math.max(
+      0,
+      toFiniteNumber(
+        fuelProperties && fuelProperties.fuelContainmentBurden,
+        0,
+      ),
+    );
+    if (containment <= FUEL_EPSILON) {
+      return 0;
+    }
+    return Math.min(100, Math.max(1, (2 * impulse) / containment));
+  }
+  if (profile === "creation") {
+    const containmentFactor = Math.max(
+      1,
+      Math.max(
+        0,
+        toFiniteNumber(
+          fuelProperties && fuelProperties.fuelContainmentBurden,
+          0,
+        ),
+      ) / Math.max(1, toFiniteNumber(containmentReduction, 1)),
+    );
+    return Math.min(100, Math.max(1, impulse / containmentFactor));
+  }
+  return impulse;
+}
+
+/**
+ * Return the positive units/second charged by the continuous fuel process
+ * while a ship is actually in warp.
+ *
+ * Regular Frontier engines author a negative base rate and the client turns
+ * it into:
+ *
+ *   abs(rate) * shipMass * 1e-6 / activeFuelImpulse
+ *
+ * Creation propulsion modules add their negative rate directly to the
+ * Creation ship's resource process. Keeping the two profiles explicit avoids
+ * accidentally applying jump-drive (instantaneous) containment/heat rules to
+ * in-system warp.
+ */
+function calculateWarpFuelConsumptionRate(
+  {
+    warpFuelRate,
+    shipMass,
+    fuelProperties,
+    profile = "regular-engine",
+  }: Record<string, any> = {},
+) {
+  const authoredRate = Math.max(0, -toFiniteNumber(warpFuelRate, 0));
+  if (authoredRate <= FUEL_EPSILON) {
+    return 0;
+  }
+  if (profile === "creation") {
+    return authoredRate;
+  }
+  const fuelImpulse = Math.max(
+    0,
+    toFiniteNumber(fuelProperties && fuelProperties.fuelEfficiency, 0),
+  );
+  if (fuelImpulse <= FUEL_EPSILON) {
+    return 0;
+  }
+  return (
+    authoredRate *
+    Math.max(0, toFiniteNumber(shipMass, 0)) *
+    REGULAR_ENGINE_WARP_MASS_MULTIPLIER /
+    fuelImpulse
+  );
+}
+
 /** Return the properties of the FIFO head (the fuel currently being burned). */
 function calculateFuelQueueProperties(
   fuelQueue,
@@ -669,11 +772,11 @@ function resolveCreationReserveFuelCapacity(
  *
  * Online consumers are supplied first by the generator. Remaining generator
  * headroom may recharge the capacitor, capped by the authored recharge rate.
- * One MW sustained for one second consumes one GJ of fuel energy and each
- * unit of loaded fuel supplies `fuelEfficiency` GJ. This mirrors the Frontier
- * client's `generator_load`: online load plus admitted capacitor recharge.
- * The returned state is deliberately pure so Creation and regular fuel-tank
- * ships use the same accounting.
+ * One MW sustained for one second consumes one GJ of generator work. Fuel
+ * impulse and containment determine how much work each unit supplies, using
+ * the distinct regular-engine and Creation formulas authored by the client.
+ * The returned state is deliberately pure so both profiles share FIFO and
+ * time accounting without conflating their power equations.
  */
 function calculateFueledCapacitorRecharge(
   {
@@ -687,6 +790,12 @@ function calculateFueledCapacitorRecharge(
     fuelQueue,
     fuelComposition,
     deltaSeconds,
+    isWarping = false,
+    warpFuelRate = 0,
+    warpFuelProfile = "regular-engine",
+    shipMass = 0,
+    powerFuelProfile = "legacy",
+    fuelContainmentReduction = 1,
   }: Record<string, any>,
   deps: Record<string, any> = {},
 ) {
@@ -716,22 +825,29 @@ function calculateFueledCapacitorRecharge(
   const fuelEfficiency = fuelProperties.fuelEfficiency;
   const normalizedPowerOutput = Math.max(0, toFiniteNumber(powerOutput, 0));
   const normalizedPowerLoad = Math.max(0, toFiniteNumber(powerLoad, 0));
-  const consumerGeneratorLoad = Math.min(
-    normalizedPowerOutput,
-    normalizedPowerLoad,
-  );
-  const powerHeadroom = Math.max(
-    0,
-    normalizedPowerOutput - normalizedPowerLoad,
-  );
   const authoredRechargeRate = Math.max(
     0,
     toFiniteNumber(capacitorRechargeRate, 0),
   );
-  const effectiveRechargeRate = Math.min(
-    powerHeadroom,
-    authoredRechargeRate,
+  const isRegularEngineProfile = powerFuelProfile === "regular-engine";
+  const availablePowerOutput = isRegularEngineProfile
+    ? authoredRechargeRate
+    : normalizedPowerOutput;
+  const consumerGeneratorLoad = Math.min(
+    availablePowerOutput,
+    normalizedPowerLoad,
   );
+  const powerHeadroom = Math.max(
+    0,
+    availablePowerOutput - normalizedPowerLoad,
+  );
+  // EngineDogmaItem recharges at its authored engine power even while online
+  // consumers are drawing power; that load instead raises fuel use through
+  // the squared utilization penalty below. Creation admits recharge only
+  // from unused generator headroom.
+  const effectiveRechargeRate = isRegularEngineProfile
+    ? authoredRechargeRate
+    : Math.min(powerHeadroom, authoredRechargeRate);
   const missingEnergy = Math.max(0, capacity - currentAmount);
   const normalizedDeltaSeconds = Math.max(0, toFiniteNumber(deltaSeconds, 0));
   const requestedRechargeEnergy = Math.min(
@@ -741,26 +857,71 @@ function calculateFueledCapacitorRecharge(
   const requestedConsumerEnergy = consumerGeneratorLoad * normalizedDeltaSeconds;
   const requestedEnergy = requestedConsumerEnergy + requestedRechargeEnergy;
   const nextFuelQueue = normalizedFuelQueue.map((entry) => ({ ...entry }));
-  let remainingEnergy = requestedEnergy;
+  const requestedPowerRate = normalizedDeltaSeconds > 0
+    ? requestedEnergy / normalizedDeltaSeconds
+    : 0;
+  const powerLoadPenalty =
+    isRegularEngineProfile && authoredRechargeRate > FUEL_EPSILON
+      ? 1 + ((consumerGeneratorLoad / authoredRechargeRate) ** 2)
+      : 1;
+  let remainingSeconds = normalizedDeltaSeconds;
+  let suppliedEnergy = 0;
   let consumedFuel = 0;
-  while (remainingEnergy > FUEL_EPSILON && nextFuelQueue.length > 0) {
+  let consumedWarpFuel = 0;
+  let warpFuelSecondsSupplied = 0;
+  const initialWarpFuelRate = isWarping
+    ? calculateWarpFuelConsumptionRate({
+        warpFuelRate,
+        shipMass,
+        fuelProperties,
+        profile: warpFuelProfile,
+      })
+    : 0;
+  while (remainingSeconds > FUEL_EPSILON && nextFuelQueue.length > 0) {
     const activeBatch = nextFuelQueue[0];
-    const activeEfficiency = getFuelEfficiency(activeBatch.fuelTypeID, deps);
-    // A zero-efficiency head must block later batches to preserve strict FIFO.
-    if (activeEfficiency <= 0) {
+    const activeProperties = getFuelProperties(activeBatch.fuelTypeID, deps);
+    const activePowerFactor = calculateContinuousFuelPowerFactor({
+      fuelProperties: activeProperties,
+      profile: powerFuelProfile,
+      containmentReduction: fuelContainmentReduction,
+    });
+    const powerFuelRate = activePowerFactor > FUEL_EPSILON
+      ? (requestedPowerRate * powerLoadPenalty) / activePowerFactor
+      : 0;
+    const activeWarpFuelRate = isWarping
+      ? calculateWarpFuelConsumptionRate({
+          warpFuelRate,
+          shipMass,
+          fuelProperties: activeProperties,
+          profile: warpFuelProfile,
+        })
+      : 0;
+    const totalFuelRate = powerFuelRate + activeWarpFuelRate;
+    // A head which cannot serve either continuous load blocks later batches,
+    // preserving the client-visible FIFO fuel character.
+    if (totalFuelRate <= FUEL_EPSILON) {
       break;
     }
-    const availableEnergy = activeBatch.quantity * activeEfficiency;
-    const batchEnergy = Math.min(remainingEnergy, availableEnergy);
-    const batchFuel = batchEnergy / activeEfficiency;
+    const suppliedSeconds = Math.min(
+      remainingSeconds,
+      activeBatch.quantity / totalFuelRate,
+    );
+    const powerFuel = powerFuelRate * suppliedSeconds;
+    const warpFuel = activeWarpFuelRate * suppliedSeconds;
+    const batchFuel = powerFuel + warpFuel;
     consumedFuel += batchFuel;
-    remainingEnergy -= batchEnergy;
+    consumedWarpFuel += warpFuel;
+    if (activeWarpFuelRate > FUEL_EPSILON) {
+      warpFuelSecondsSupplied += suppliedSeconds;
+    }
+    suppliedEnergy += powerFuel * activePowerFactor / powerLoadPenalty;
+    remainingSeconds -= suppliedSeconds;
     activeBatch.quantity -= batchFuel;
     if (activeBatch.quantity <= FUEL_EPSILON) {
       nextFuelQueue.shift();
     }
   }
-  const suppliedEnergy = requestedEnergy - remainingEnergy;
+  suppliedEnergy = Math.min(requestedEnergy, suppliedEnergy);
   const suppliedConsumerEnergy = Math.min(
     requestedConsumerEnergy,
     suppliedEnergy,
@@ -800,16 +961,28 @@ function calculateFueledCapacitorRecharge(
     nextCapacitorAmount,
     missingEnergy,
     normalizedPowerOutput,
+    availablePowerOutput,
     normalizedPowerLoad,
     consumerGeneratorLoad,
     powerHeadroom,
     authoredRechargeRate,
     effectiveRechargeRate,
+    powerFuelProfile,
+    powerFuelFactor: calculateContinuousFuelPowerFactor({
+      fuelProperties,
+      profile: powerFuelProfile,
+      containmentReduction: fuelContainmentReduction,
+    }),
+    powerLoadPenalty,
     generatorLoad: consumerGeneratorLoad + admittedRechargeRate,
     fuelEfficiency,
     fuelProperties,
     nextFuelProperties,
     consumedFuel,
+    consumedWarpFuel,
+    warpFuelRate: initialWarpFuelRate,
+    warpFuelSecondsSupplied,
+    isWarping: Boolean(isWarping),
     requestedConsumerEnergy,
     suppliedConsumerEnergy,
     requestedRechargeEnergy,
@@ -1182,15 +1355,19 @@ module.exports = {
   ATTRIBUTE_FUEL_RATE,
   ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY,
   ATTRIBUTE_FUEL_VOLATILITY,
+  ATTRIBUTE_WARP_FUEL_RATE,
   FUEL_PROPERTY_ATTRIBUTE_IDS,
   FUEL_GROUP_IDS,
   INITIAL_FULL_FUEL_SHIP_TYPE_IDS,
   TYPE_FUEL_BLISTER,
   UNSTABLE_FUEL_TYPE_ID,
+  REGULAR_ENGINE_WARP_MASS_MULTIPLIER,
   appendFuelQueueBatch,
   appendFuelQueueBatchByReserveCapacity,
+  calculateContinuousFuelPowerFactor,
   calculateFuelQueueProperties,
   calculateFueledCapacitorRecharge,
+  calculateWarpFuelConsumptionRate,
   collectFuelSourceStacks,
   getFuelEfficiency,
   getFuelProperties,

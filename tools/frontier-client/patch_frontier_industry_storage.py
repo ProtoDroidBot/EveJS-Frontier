@@ -68,6 +68,16 @@ PREVIOUS_JOB_LANE_WRAPPER_SHA256 = {
     "service": "9f9fb81bb261a3f59d45da9c45212fe741a466d3fd15d7e92a457397f338439f",
     "assembly_window": "b640b0466a0ce2f6b06128afab13af23c9efc3be282b59e493bf4ca3d99ecfde",
 }
+# Exact job-lane release before blueprint and escrow state became lane-scoped.
+PREVIOUS_SHARED_LANE_STATE_WRAPPER_SHA256 = {
+    "controller": "e81fc9310dadde3e9c3c5330e9f1e1f70f30e3d1519d9aea6e5bdff5d59b7176",
+    "facility": "e4cca5173f7c2bfd68a3c4d2f4a231e5fc8e7440f0043e99d004beb8f519a7f8",
+    "modular_facility": "39c542ed546904caee8320435dffe34ae01342f2e1cf4d7aae90471148bd9523",
+    "storage": "82ded21b5b79df742e50188721bf94a8494ce7130f4f7ce59caa932ed69c22cb",
+    "panel": "b38aac5916fa289824afc1dd46105ed0821181e53f1d78967dced6ae2583ed52",
+    "service": "aa30bb0bb26f7637586d71ab3d5f295efa0c693a27a803f7799619457fbf34d4",
+    "assembly_window": "cc9a415372ac1ae96152451a6ee4fb9fb40a701d040b9139d1eff263655ccd92",
+}
 SOURCE_SENTINEL = b"EVEJS_INDUSTRY_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_INDUSTRY_ADAPTER_CODE_V1"
 
@@ -100,7 +110,8 @@ def inspect_member(member, kind, expected):
     previous = digest in (PREVIOUS_WRAPPER_SHA256.get(kind), PREVIOUS_PANEL_WRAPPER_SHA256.get(kind),
                           PREVIOUS_BLUEPRINT_WRAPPER_SHA256.get(kind),
                           PREVIOUS_WINDOW_WRAPPER_SHA256.get(kind),
-                          PREVIOUS_JOB_LANE_WRAPPER_SHA256.get(kind))
+                          PREVIOUS_JOB_LANE_WRAPPER_SHA256.get(kind),
+                          PREVIOUS_SHARED_LANE_STATE_WRAPPER_SHA256.get(kind))
     try:
         wrapper = marshal.loads(member[16:])
         if not isinstance(wrapper, types.CodeType):
@@ -134,7 +145,8 @@ def inspect_archive(archive, build=BUILD):
     unique = set(states.values())
     for generation in (PREVIOUS_WRAPPER_SHA256, PREVIOUS_PANEL_WRAPPER_SHA256,
                        PREVIOUS_BLUEPRINT_WRAPPER_SHA256, PREVIOUS_WINDOW_WRAPPER_SHA256,
-                       PREVIOUS_JOB_LANE_WRAPPER_SHA256):
+                       PREVIOUS_JOB_LANE_WRAPPER_SHA256,
+                       PREVIOUS_SHARED_LANE_STATE_WRAPPER_SHA256):
         if digests == {name: generation.get(kind, expected) for name, (kind, expected) in PROFILES.items()}:
             return "outdated", states, originals
     if "outdated" in unique:

@@ -24,7 +24,7 @@ revision checks, and enforce the shared `GateConfig` range. A zero destination
 clears the route. Online use can emit `CatapultJumpEvent` without referencing a
 far-side gate.
 
-The catapult is a split feature package. `npc-deployment.json` supplies its
+The catapult is a split feature package. The `catapult` record in `world-features.v1.json` supplies its
 current call package, stable type origin, and shared `CatapultRegistry`; the
 base-world package continues to own the parent Gate and `GateConfig`. A fresh
 deployment publishes `contracts/world_catapult` separately. A compatible

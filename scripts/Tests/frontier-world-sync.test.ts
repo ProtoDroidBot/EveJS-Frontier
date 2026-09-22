@@ -93,18 +93,92 @@ function npcManifest(overrides = {}) {
   };
 }
 
+function migratedWorldFeatureManifest(legacy) {
+  const migrated = { ...legacy };
+  if (migrated.schemaVersion < 2) {
+    migrated.actionPackageId = migrated.accessPackageId;
+    migrated.actionTypeOrigin = migrated.accessTypeOrigin;
+    migrated.actionRegistryId = migrated.accessRegistryId;
+    migrated.industryActionsPackageId = migrated.industryPackageId;
+    migrated.industryActionsTypeOrigin = migrated.industryTypeOrigin;
+    migrated.industryActionsRegistryId = migrated.industryRegistryId;
+  }
+  if (migrated.schemaVersion < 3) {
+    for (const prefix of ["logistics", "infrastructure", "automation"]) {
+      migrated[`${prefix}PackageId`] = migrated.actionPackageId;
+      migrated[`${prefix}TypeOrigin`] = migrated.actionTypeOrigin;
+      migrated[`${prefix}RegistryId`] = migrated.actionRegistryId;
+    }
+  }
+  const specs = {
+    npc: ["packageId", "typeOrigin", "npcRegistryId"],
+    assemblyAccess: ["accessPackageId", "accessTypeOrigin", "accessRegistryId"],
+    catapult: ["catapultPackageId", "catapultTypeOrigin", "catapultRegistryId"],
+    smartIndustry: ["industryPackageId", "industryTypeOrigin", "industryRegistryId"],
+    transponder: ["transponderPackageId", "transponderTypeOrigin", "transponderRegistryId"],
+    actionQueue: ["actionPackageId", "actionTypeOrigin", "actionRegistryId"],
+    industryActions: ["industryActionsPackageId", "industryActionsTypeOrigin", "industryActionsRegistryId"],
+    logisticsActions: ["logisticsPackageId", "logisticsTypeOrigin", "logisticsRegistryId"],
+    infrastructureActions: ["infrastructurePackageId", "infrastructureTypeOrigin", "infrastructureRegistryId"],
+    automation: ["automationPackageId", "automationTypeOrigin", "automationRegistryId"],
+  };
+  const capabilities = {};
+  const incompleteCapabilities = [];
+  for (const [name, fields] of Object.entries(specs)) {
+    const values = fields.map((field) => migrated[field]);
+    const present = values.filter((value) => typeof value === "string" && value.length > 0).length;
+    if (present === 0) continue;
+    if (present !== 3) {
+      incompleteCapabilities.push(name);
+      continue;
+    }
+    capabilities[name] = {
+      status: "deployed",
+      packageId: values[0].toLowerCase(),
+      typeOrigin: values[1].toLowerCase(),
+      registryId: values[2].toLowerCase(),
+    };
+  }
+  return {
+    format: "eve-frontier-world-features",
+    schemaVersion: 1,
+    chainId: migrated.chainId.toLowerCase(),
+    world: {
+      packageId: migrated.worldPackageId.toLowerCase(),
+      objectRegistryId: migrated.objectRegistryId.toLowerCase(),
+      adminAclId: migrated.adminAclId.toLowerCase(),
+    },
+    capabilities,
+    migration: {
+      source: "npc-deployment.json",
+      sourceSchemaVersion: migrated.schemaVersion,
+      incompleteCapabilities: incompleteCapabilities.sort(),
+    },
+  };
+}
+
 function npcSyncFixture(t) {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "evejs npc world sync "));
   t.after(() => fs.rmSync(fixture, { force: true, recursive: true }));
   const source = writeFixture(fixture);
   const destination = path.join(fixture, "evejs", "world");
   const manifestSource = path.join(source, "world-contracts", "deployments", "localnet", "npc-deployment.json");
-  const manifestDestination = path.join(destination, "npc-deployment.json");
+  const versionedManifestSource = path.join(source, "world-contracts", "deployments", "localnet", "world-features.v1.json");
+  const manifestDestination = path.join(destination, "world-features.v1.json");
+  const legacyManifestDestination = path.join(destination, "npc-deployment.json");
+  const archivedLegacyManifestDestination = path.join(destination, "npc-deployment.legacy.json");
   const configPath = path.join(destination, "world.private.json");
   const common = ["sync", "-SourceRoot", source, "-DestinationRoot", destination,
     "-EfctlPath", writeFakeEfctl(fixture), "-SkipRpcValidation", "-SkipDockerOwnershipCheck"];
-  return { manifestSource, manifestDestination, configPath, destination,
+  return { manifestSource, versionedManifestSource, manifestDestination,
+    legacyManifestDestination, archivedLegacyManifestDestination, configPath, destination,
     write: (value) => fs.writeFileSync(manifestSource, JSON.stringify(value)),
+    writeVersioned: (value) => fs.writeFileSync(versionedManifestSource, JSON.stringify(value)),
+    writeFactionConfig: (relativePath, value) => {
+      const target = path.join(path.dirname(versionedManifestSource), relativePath);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, JSON.stringify(value));
+    },
     run: (extra = []) => runWorld([...common, ...extra], {}),
   };
 }
@@ -300,8 +374,8 @@ test(
       }, null, 2)}\n`,
     );
     fs.writeFileSync(
-      path.join(deployment, "npc-deployment.json"),
-      `${JSON.stringify(npcManifest(), null, 2)}\n`,
+      path.join(deployment, "world-features.v1.json"),
+      `${JSON.stringify(migratedWorldFeatureManifest(npcManifest()), null, 2)}\n`,
     );
 
     const dappRoot = path.join(fixture, "smart-assembly-control");
@@ -576,13 +650,19 @@ test(
   },
 );
 
-test("NPC deployment sync keeps original world identities and copies only public metadata",
+test("Legacy NPC deployment migrates to the versioned world-feature manifest",
   { skip: !canRunPowerShell }, (t) => {
     const f = npcSyncFixture(t);
-    f.write(npcManifest({ extraSecret: "must-not-copy", chainId: "A1B2C3D4" }));
+    const legacy = npcManifest({ extraSecret: "must-not-copy", chainId: "A1B2C3D4" });
+    f.write(legacy);
+    fs.mkdirSync(f.destination, { recursive: true });
+    fs.writeFileSync(f.legacyManifestDestination, "historical synchronized manifest\n");
     const result = f.run();
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.deepEqual(JSON.parse(fs.readFileSync(f.manifestDestination, "utf8")), npcManifest());
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(f.manifestDestination, "utf8")),
+      migratedWorldFeatureManifest(legacy),
+    );
     const base = JSON.parse(fs.readFileSync(f.configPath, "utf8"));
     assert.equal(base.state, "ready");
     assert.equal(base.world.packageId, PACKAGE_ID);
@@ -590,10 +670,15 @@ test("NPC deployment sync keeps original world identities and copies only public
     assert.equal(base.world.adminAclId, ADMIN_ACL_ID);
     assert.notEqual(base.world.packageId, NPC_PACKAGE_ID);
     assert.doesNotMatch(fs.readFileSync(f.manifestDestination, "utf8"), /must-not-copy|adminPrivateKey/);
+    assert.equal(fs.existsSync(f.legacyManifestDestination), false);
+    assert.equal(
+      fs.readFileSync(f.archivedLegacyManifestDestination, "utf8"),
+      "historical synchronized manifest\n",
+    );
     assert.doesNotMatch(result.stdout + result.stderr, /must-not-copy/);
   });
 
-test("NPC deployment sync preserves schema 1 compatibility",
+test("World-feature migration preserves legacy schema 1 compatibility",
   { skip: !canRunPowerShell }, (t) => {
     const f = npcSyncFixture(t);
     const legacy = npcManifest({ schemaVersion: 1 });
@@ -607,10 +692,13 @@ test("NPC deployment sync preserves schema 1 compatibility",
     f.write(legacy);
     const result = f.run();
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.deepEqual(JSON.parse(fs.readFileSync(f.manifestDestination, "utf8")), legacy);
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(f.manifestDestination, "utf8")),
+      migratedWorldFeatureManifest(legacy),
+    );
   });
 
-test("NPC deployment sync preserves schema 2 action-package compatibility",
+test("World-feature migration preserves legacy schema 2 action-package compatibility",
   { skip: !canRunPowerShell }, (t) => {
     const f = npcSyncFixture(t);
     const schema2 = npcManifest({ schemaVersion: 2 });
@@ -622,23 +710,78 @@ test("NPC deployment sync preserves schema 2 action-package compatibility",
     f.write(schema2);
     const result = f.run();
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.deepEqual(JSON.parse(fs.readFileSync(f.manifestDestination, "utf8")), schema2);
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(f.manifestDestination, "utf8")),
+      migratedWorldFeatureManifest(schema2),
+    );
   });
 
-test("NPC deployment sync rejects mismatched chain and base-world bindings",
+test("Versioned world features preserve partial capabilities and faction allowlists",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = npcSyncFixture(t);
+    const manifest: any = migratedWorldFeatureManifest(npcManifest());
+    delete manifest.migration;
+    manifest.capabilities.catapult = { status: "unavailable" };
+    manifest.factionConfig = {
+      default: { id: "default", path: "factions/default.v1.json" },
+      factions: {
+        "500001-caldari": {
+          path: "factions/500001-caldari.v1.json", fallback: "default",
+        },
+        "500010-guristas": {
+          path: "factions/500010-guristas.v1.json", fallback: "default",
+        },
+      },
+    };
+    f.writeFactionConfig("factions/default.v1.json", {
+      format: "eve-frontier-faction-features", schemaVersion: 1,
+      configId: "default", capabilities: ["transponder", "npc"],
+    });
+    f.writeFactionConfig("factions/500001-caldari.v1.json", {
+      format: "eve-frontier-faction-features", schemaVersion: 1,
+      factionKey: "500001-caldari", fallback: "default",
+    });
+    f.writeFactionConfig("factions/500010-guristas.v1.json", {
+      format: "eve-frontier-faction-features", schemaVersion: 1,
+      factionKey: "500010-guristas", fallback: "default", capabilities: ["npc"],
+    });
+    f.write({ schemaVersion: 999, secret: "ignored legacy sibling" });
+    f.writeVersioned(manifest);
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const synchronized = JSON.parse(fs.readFileSync(f.manifestDestination, "utf8"));
+    assert.deepEqual(synchronized.capabilities.catapult, { status: "unavailable" });
+    assert.deepEqual(
+      synchronized.factionConfig.factions["500001-caldari"],
+      { path: "factions/500001-caldari.v1.json", fallback: "default" },
+    );
+    assert.deepEqual(JSON.parse(fs.readFileSync(
+      path.join(f.destination, "factions", "default.v1.json"), "utf8",
+    )).capabilities, ["npc", "transponder"]);
+    assert.equal("capabilities" in JSON.parse(fs.readFileSync(
+      path.join(f.destination, "factions", "500001-caldari.v1.json"), "utf8",
+    )), false);
+    assert.deepEqual(JSON.parse(fs.readFileSync(
+      path.join(f.destination, "factions", "500010-guristas.v1.json"), "utf8",
+    )).capabilities, ["npc"]);
+    assert.equal("migration" in synchronized, false);
+  });
+
+test("World-feature sync rejects mismatched chain and base-world bindings",
   { skip: !canRunPowerShell }, (t) => {
     const f = npcSyncFixture(t);
     for (const field of ["chainId", "worldPackageId", "objectRegistryId", "adminAclId"]) {
       f.write(npcManifest({ [field]: field === "chainId" ? "deadbeef" : NPC_PACKAGE_ID }));
       const result = f.run();
       assert.notEqual(result.status, 0, field);
-      assert.match(result.stderr, new RegExp(`NPC deployment ${field} does not match`));
+      const migratedField = field === "worldPackageId" ? "packageId" : field;
+      assert.match(result.stderr, new RegExp(`World feature deployment ${migratedField} does not match`));
       assert.equal(JSON.parse(fs.readFileSync(f.configPath, "utf8")).state, "error");
       assert.equal(fs.existsSync(f.manifestDestination), false);
     }
   });
 
-test("NPC deployment sync rejects malformed schemas and noncanonical or zero addresses",
+test("World-feature sync rejects malformed schemas and noncanonical or zero addresses",
   { skip: !canRunPowerShell }, (t) => {
     const f = npcSyncFixture(t);
     for (const invalid of [null, [], npcManifest({ schemaVersion: "3" }), npcManifest({ schemaVersion: 4 }),
@@ -648,33 +791,32 @@ test("NPC deployment sync rejects malformed schemas and noncanonical or zero add
       f.write(invalid);
       const result = f.run();
       assert.notEqual(result.status, 0, JSON.stringify(invalid));
-      assert.match(result.stderr, /NPC deployment/);
+      assert.match(result.stderr, /World feature|Legacy feature|Sui address/);
       assert.equal(JSON.parse(fs.readFileSync(f.configPath, "utf8")).state, "error");
       assert.equal(fs.existsSync(f.manifestDestination), false);
     }
     fs.writeFileSync(f.manifestSource, "{private-not-echoed");
     const malformed = f.run();
     assert.notEqual(malformed.status, 0);
-    assert.match(malformed.stderr, /NPC deployment metadata is malformed JSON/);
+    assert.match(malformed.stderr, /World feature deployment metadata is malformed JSON/);
     assert.doesNotMatch(malformed.stdout + malformed.stderr, /private-not-echoed/);
   });
 
-test("NPC deployment sync rejects incomplete feature registry metadata",
+test("Legacy migration isolates incomplete capabilities without blocking valid capabilities",
   { skip: !canRunPowerShell }, (t) => {
     const f = npcSyncFixture(t);
-    for (const field of ["npcRegistryId", "accessRegistryId", "catapultRegistryId", "industryRegistryId",
-      "transponderRegistryId", "actionRegistryId", "industryActionsRegistryId", "logisticsRegistryId",
-      "infrastructureRegistryId", "automationRegistryId"]) {
-      const manifest = npcManifest();
-      delete manifest[field];
-      f.write(manifest);
-      const result = f.run();
-      assert.notEqual(result.status, 0);
-      assert.match(result.stderr, new RegExp(field));
-    }
+    const manifest = npcManifest();
+    delete manifest.catapultRegistryId;
+    f.write(manifest);
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const migrated = JSON.parse(fs.readFileSync(f.manifestDestination, "utf8"));
+    assert.equal("catapult" in migrated.capabilities, false);
+    assert.equal(migrated.capabilities.npc.registryId, NPC_REGISTRY_ID);
+    assert.deepEqual(migrated.migration.incompleteCapabilities, ["catapult"]);
   });
 
-test("Absent NPC source fails closed without deleting a previously synchronized destination",
+test("Absent world-feature source fails closed without deleting a synchronized destination",
   { skip: !canRunPowerShell }, (t) => {
     const f = npcSyncFixture(t);
     f.write(npcManifest());
@@ -684,12 +826,12 @@ test("Absent NPC source fails closed without deleting a previously synchronized 
     fs.unlinkSync(f.manifestSource);
     const result = f.run();
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /NPC deployment source is absent/);
+    assert.match(result.stderr, /World feature source is absent/);
     assert.equal(JSON.parse(fs.readFileSync(f.configPath, "utf8")).state, "error");
     assert.equal(fs.readFileSync(f.manifestDestination, "utf8"), previous);
   });
 
-test("NPC deployment dry-run validates upgrades without changing either destination",
+test("World-feature dry-run validates upgrades without changing either destination",
   { skip: !canRunPowerShell }, (t) => {
     const f = npcSyncFixture(t);
     f.write(npcManifest());
@@ -710,7 +852,7 @@ test("NPC deployment dry-run validates upgrades without changing either destinat
     assert.equal(fs.readFileSync(f.configPath, "utf8"), previousWorld);
   });
 
-test("Invalid NPC metadata preserves previous metadata but invalidates the synchronized world",
+test("Invalid world-feature metadata preserves previous metadata but invalidates the synchronized world",
   { skip: !canRunPowerShell }, (t) => {
     const f = npcSyncFixture(t);
     f.write(npcManifest());
@@ -724,14 +866,14 @@ test("Invalid NPC metadata preserves previous metadata but invalidates the synch
     assert.equal(fs.readFileSync(f.manifestDestination, "utf8"), previous);
   });
 
-test("NPC deployment sync refuses to replace a destination directory",
+test("World-feature sync refuses to replace a destination directory",
   { skip: !canRunPowerShell }, (t) => {
     const f = npcSyncFixture(t);
     f.write(npcManifest());
     fs.mkdirSync(f.manifestDestination, { recursive: true });
     const result = f.run();
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /non-file or reparse-point NPC deployment destination/);
+    assert.match(result.stderr, /non-file or reparse-point world-feature destination/);
     assert.equal(fs.statSync(f.manifestDestination).isDirectory(), true);
     assert.equal(JSON.parse(fs.readFileSync(f.configPath, "utf8")).state, "error");
   });

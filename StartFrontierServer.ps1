@@ -595,14 +595,20 @@ function Assert-DappDependencies {
         [string]$deploymentSource.worldDir
     }
     else { '' }
+    $featureDeploymentExists = -not [string]::IsNullOrWhiteSpace($worldDir) -and (
+        (Test-Path -LiteralPath (
+            Join-Path $worldDir 'deployments\localnet\world-features.v1.json'
+        ) -PathType Leaf) -or
+        (Test-Path -LiteralPath (
+            Join-Path $worldDir 'deployments\localnet\npc-deployment.json'
+        ) -PathType Leaf)
+    )
     if ([string]$deploymentSource.network -ne 'localnet' -or
         [string]::IsNullOrWhiteSpace($worldDir) -or
         -not (Test-Path -LiteralPath (
             Join-Path $worldDir 'deployments\localnet\extracted-object-ids.json'
         ) -PathType Leaf) -or
-        -not (Test-Path -LiteralPath (
-            Join-Path $worldDir 'deployments\localnet\npc-deployment.json'
-        ) -PathType Leaf)) {
+        -not $featureDeploymentExists) {
         throw (
             'Smart Assembly dApp deployment configuration is not a current localnet source. ' +
             "Run: .\FrontierWorld.ps1 sync -Build $Build"

@@ -20,6 +20,7 @@ const GUEST = 140000004;
 const GUEST_SHIP = 5000000003;
 const START = 1700000000000;
 const RECIPE = blueprints.getBlueprintForFacility(87119, 1026);
+const ALTERNATE_RECIPE = blueprints.getBlueprintForFacility(87119, 1027);
 
 function row(itemID, typeID, locationID, flagID, quantity, extra = {}) {
   return { itemID, typeID, locationID, flagID, quantity, stacksize: quantity,
@@ -54,7 +55,18 @@ function fixture(t, runs = 3, outputQuantity = 0) {
     tick: (nowMs: number) => production.advanceProduction(FACILITY, { nowMs }),
     stop: (nowMs = START + 1000) => production.discontinueProduction(session, FACILITY, { nowMs }),
     state: () => production.getProduction(itemStore.findItemById(FACILITY)),
-    items: () => inventory.getFacilityItems(itemStore.findItemById(FACILITY)),
+    items: (laneID = 1) => inventory.getFacilityItems(itemStore.findItemById(FACILITY), laneID),
+    prepareLane(laneID, count = 1, recipe = RECIPE) {
+      ok(inventory.loadBlueprint(session, FACILITY, recipe.blueprint_id, { laneID }));
+      const current = itemStore.getAllItems();
+      let index = 0;
+      for (const slot of Object.values<any>(recipe.inputs)) {
+        const itemID = 5000000100 + laneID * 10 + index++;
+        current[itemID] = row(itemID, slot.type_id, FACILITY,
+          inventory.industryInputFlagForLane(laneID), slot.quantity_per_run * count);
+      }
+      assert.equal(itemStore._writeItemsForTest(current), true);
+    },
     snapshot: () => itemStore.getAllItems(),
   };
 }
@@ -85,26 +97,31 @@ test("starting consumes exactly one run; outputs appear only at each deadline an
   assert.deepEqual(f.snapshot(), completed, "repeated completion never duplicates products");
 });
 
-test("configured job lanes run independently while committing shared escrow atomically", t => {
+test("configured job lanes remember independent blueprints and escrow", t => {
   const f = fixture(t, 4);
+  f.prepareLane(2, 1, ALTERNATE_RECIPE);
   ok(production.startProduction(f.session, FACILITY, 1026, RECIPE.content_hash, 1,
     { nowMs: START, laneID: 1 }));
-  ok(production.startProduction(f.session, FACILITY, 1026, RECIPE.content_hash, 1,
+  ok(production.startProduction(f.session, FACILITY, 1027, ALTERNATE_RECIPE.content_hash, 1,
     { nowMs: START, laneID: 2 }));
   const facility = itemStore.findItemById(FACILITY);
   const lanes = production.getProductions(facility);
   assert.equal(lanes.find(lane => lane.laneID === 1).production.jobID, 1);
   assert.equal(lanes.find(lane => lane.laneID === 2).production.jobID, 2);
-  assert.equal(production.startProduction(f.session, FACILITY, 1026, RECIPE.content_hash, 1,
+  assert.equal(production.startProduction(f.session, FACILITY, 1027, ALTERNATE_RECIPE.content_hash, 1,
     { nowMs: START, laneID: 2 }).errorMsg, "PRODUCTION_ALREADY_RUNNING");
-  assert.deepEqual(f.items(), { inputs: { 77803: 90, 83894: 2 }, outputs: {} });
+  assert.deepEqual(f.items(), { inputs: { 77803: 135, 83894: 3 }, outputs: {} });
+  assert.deepEqual(f.items(2), { inputs: {}, outputs: {} });
+  assert.equal(blueprints.getSelectedBlueprint(facility, 1).blueprint_id, 1026);
+  assert.equal(blueprints.getSelectedBlueprint(facility, 2).blueprint_id, 1027);
   const stored = JSON.parse(facility.customInfo).evejsFrontierIndustry;
   assert.deepEqual(stored.production, stored.lanes["1"].production,
     "lane 1 stays mirrored for retail clients and chain snapshots");
 
   const advanced = ok(production.advanceProduction(FACILITY, { nowMs: START + 3000 }));
   assert.deepEqual(advanced.events.map(event => event.laneID), [1, 2]);
-  assert.deepEqual(f.items(), { inputs: { 77803: 90, 83894: 2 }, outputs: { 83895: 2 } });
+  assert.deepEqual(f.items(), { inputs: { 77803: 135, 83894: 3 }, outputs: { 83895: 1 } });
+  assert.deepEqual(f.items(2), { inputs: {}, outputs: { 83897: 1 } });
   assert.equal(production.getProduction(itemStore.findItemById(FACILITY), 1).state, "STOPPED");
   assert.equal(production.getProduction(itemStore.findItemById(FACILITY), 2).state, "STOPPED");
 });
@@ -162,6 +179,7 @@ test("per-type lane config validates compatible type IDs and bounded integer cou
 
 test("owners configure each lane access independently and authorized characters can use only that lane", t => {
   const f = fixture(t, 3);
+  f.prepareLane(2, 1);
   ok(production.setLaneAccessPolicy(f.session, FACILITY, 2, new Map<string, any>([
     ["mode", "allowlist"],
     ["character_ids", { type: "list", items: [GUEST] }],
@@ -182,8 +200,9 @@ test("owners configure each lane access independently and authorized characters 
   ok(production.startProduction(guestSession, FACILITY, 1026, RECIPE.content_hash, 1,
     { nowMs: START, laneID: 2 }));
   assert.equal(production.getProduction(itemStore.findItemById(FACILITY), 2).state, "RUNNING");
-  assert.equal(inventory.loadBlueprint(f.session, FACILITY, 1027).errorMsg,
-    "PRODUCTION_ALREADY_RUNNING", "a non-legacy lane blocks recipe replacement");
+  ok(inventory.loadBlueprint(f.session, FACILITY, 1027, { laneID: 3 }));
+  assert.equal(blueprints.getSelectedBlueprint(itemStore.findItemById(FACILITY), 3).blueprint_id,
+    1027, "another lane may select its own recipe while lane 2 is running");
 
   const unavailableLane = production.configuredLaneCount() + 1;
   assert.equal(production.startProduction(f.session, FACILITY, 1026, RECIPE.content_hash, 1,
@@ -191,7 +210,8 @@ test("owners configure each lane access independently and authorized characters 
 });
 
 test("a paid run on a non-legacy lane blocks Smart Assembly removal with empty escrow", t => {
-  const f = fixture(t, 1);
+  const f = fixture(t, 0);
+  f.prepareLane(2, 1);
   ok(production.startProduction(f.session, FACILITY, 1026, RECIPE.content_hash, 1,
     { nowMs: START, laneID: 2 }));
   assert.deepEqual(f.items(), { inputs: {}, outputs: {} });
@@ -370,11 +390,11 @@ test("one run consumes split input stacks exactly and stops despite surplus mate
   const f = fixture(t, 3);
   const items = f.snapshot();
   items[5000000011].quantity = items[5000000011].stacksize = 20;
-  items[5000000021] = row(5000000021, 77803, FACILITY, 20000, 115);
+  items[5990000021] = row(5990000021, 77803, FACILITY, 20000, 115);
   assert.equal(itemStore._writeItemsForTest(items), true);
   ok(f.start(1));
   assert.equal(itemStore.findItemById(5000000011), null);
-  assert.equal(itemStore.findItemById(5000000021).stacksize, 90);
+  assert.equal(itemStore.findItemById(5990000021).stacksize, 90);
   ok(f.tick(START + 3000));
   assert.equal(f.state().completedRuns, 1);
   assert.equal(f.state().state, "STOPPED");

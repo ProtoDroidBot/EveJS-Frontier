@@ -25,6 +25,7 @@ const SYSTEM_ID = 30000004;
 const FACILITY_ID = 9900001301;
 const INPUT_ONE_ID = 9900001302;
 const INPUT_TWO_ID = 9900001303;
+const INPUT_THREE_ID = 9900001304;
 
 function row(itemID, typeID, ownerID, locationID, flagID, stacksize, extra = {}) {
   return {
@@ -94,7 +95,9 @@ function fixture(t) {
     { typeID: 87119, categoryID: 65, groupID: 0, name: "Smart Industry Facility", volume: 1 },
     { typeID: 77803, categoryID: 4, groupID: 0, name: "Industry Input One", volume: 1 },
     { typeID: 83894, categoryID: 4, groupID: 0, name: "Industry Input Two", volume: 1 },
+    { typeID: 83892, categoryID: 4, groupID: 0, name: "Alternate Industry Input", volume: 1 },
     { typeID: 83895, categoryID: 4, groupID: 0, name: "Industry Output", volume: 1 },
+    { typeID: 83897, categoryID: 4, groupID: 0, name: "Alternate Industry Output", volume: 1 },
   ]);
 
   const construction = {
@@ -117,6 +120,7 @@ function fixture(t) {
     }),
     row(INPUT_ONE_ID, 77803, FACTION_OWNER_ID, ENTITY_ID, itemStore.ITEM_FLAGS.CARGO_HOLD, 90),
     row(INPUT_TWO_ID, 83894, FACTION_OWNER_ID, ENTITY_ID, itemStore.ITEM_FLAGS.CARGO_HOLD, 2),
+    row(INPUT_THREE_ID, 83892, FACTION_OWNER_ID, ENTITY_ID, itemStore.ITEM_FLAGS.CARGO_HOLD, 1),
   ];
   assert.equal(itemStore._writeItemsForTest(
     Object.fromEntries(rows.map((item) => [item.itemID, item])),
@@ -141,7 +145,8 @@ function fixture(t) {
     npcIncarnation: 1,
     transient: false,
   }, { durable: true }).success, true);
-  for (const item of rows.filter((entry) => [INPUT_ONE_ID, INPUT_TWO_ID].includes(entry.itemID))) {
+  for (const item of rows.filter((entry) =>
+    [INPUT_ONE_ID, INPUT_TWO_ID, INPUT_THREE_ID].includes(entry.itemID))) {
     assert.equal(nativeStore.upsertNativeCargo({
       cargoID: item.itemID,
       entityID: ENTITY_ID,
@@ -219,14 +224,14 @@ test("durable NPC industry jobs run several lanes and return faction-owned outpu
     facilityID: FACILITY_ID,
     lanes: [
       { laneID: 1, blueprintID: 1026, runs: 1 },
-      { laneID: 2, blueprintID: 1026, runs: 1 },
+      { laneID: 2, blueprintID: 1027, runs: 1 },
     ],
     idempotencyKey: "phase3:industry:two-lanes",
   });
   assert.equal(created.success, true, created.errorMsg);
   const world = scene();
   const controller = { entityID: ENTITY_ID, npcCharacterID: NPC_ID, npcIncarnation: 1 };
-  for (const nowMs of [1_000, 1_100, 1_200, 1_300, 5_000, 5_100]) {
+  for (const nowMs of [1_000, 1_100, 1_200, 1_300, 1_400, 5_000, 5_100]) {
     behaviorRuntime.tickDurableNpcJob(world, runtimeEntity(), controller, nowMs);
   }
   const job = persistence.getNpcJob(created.data.jobID);
@@ -247,9 +252,13 @@ test("durable NPC industry jobs run several lanes and return faction-owned outpu
     ENTITY_ID,
     itemStore.ITEM_FLAGS.CARGO_HOLD,
   ).filter((item) => item.typeID === 83895);
-  assert.equal(outputs.reduce((sum, item) => sum + item.stacksize, 0), 2);
+  assert.equal(outputs.reduce((sum, item) => sum + item.stacksize, 0), 1);
+  const alternateOutputs = itemStore.listContainerItems(
+    FACTION_OWNER_ID, ENTITY_ID, itemStore.ITEM_FLAGS.CARGO_HOLD,
+  ).filter((item) => item.typeID === 83897);
+  assert.equal(alternateOutputs.reduce((sum, item) => sum + item.stacksize, 0), 1);
   assert.equal(nativeStore.listNativeCargoForEntity(ENTITY_ID)
-    .filter((item) => item.typeID === 83895)
+    .filter((item) => [83895, 83897].includes(item.typeID))
     .reduce((sum, item) => sum + item.quantity, 0), 2);
   assert.equal(production.getProduction(itemStore.findItemById(FACILITY_ID), 1).stopReason,
     "COMPLETED");
@@ -283,6 +292,7 @@ test("an NPC industry lane recovers a crash after its paid run commits", (t) => 
   const controller = { entityID: ENTITY_ID, npcCharacterID: NPC_ID, npcIncarnation: 1 };
   behaviorRuntime.tickDurableNpcJob(world, runtimeEntity(), controller, 1_000);
   behaviorRuntime.tickDurableNpcJob(world, runtimeEntity(), controller, 1_100);
+  behaviorRuntime.tickDurableNpcJob(world, runtimeEntity(), controller, 1_150);
 
   // Commit lane 1, but deliberately discard the returned behavior checkpoint
   // to model a process death between the facility and job-state writes.
@@ -322,7 +332,7 @@ test("output collection recovers after custody commits but its behavior checkpoi
   assert.equal(created.success, true, created.errorMsg);
   const world = scene();
   const controller = { entityID: ENTITY_ID, npcCharacterID: NPC_ID, npcIncarnation: 1 };
-  for (const nowMs of [1_000, 1_100, 1_200, 1_300]) {
+  for (const nowMs of [1_000, 1_100, 1_200, 1_300, 1_400]) {
     behaviorRuntime.tickDurableNpcJob(world, runtimeEntity(), controller, nowMs);
   }
 

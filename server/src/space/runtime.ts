@@ -88,9 +88,12 @@ const {
   ATTRIBUTE_FUEL_EFFICIENCY,
   ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY,
   ATTRIBUTE_FUEL_VOLATILITY,
+  ATTRIBUTE_WARP_FUEL_RATE,
   calculateFueledCapacitorRecharge,
+  calculateWarpFuelConsumptionRate,
   getShipFuelCharge,
   getShipFuelQueue,
+  getShipFuelProperties,
   getShipFuelTypeID,
   normalizeFuelQueue,
   resolveShipFuelTank,
@@ -3854,6 +3857,8 @@ const CREATION_ATTRIBUTE_POWER = 30;
 const CREATION_ATTRIBUTE_RECHARGE_RATE = 55;
 const CREATION_ATTRIBUTE_CAPACITOR_CAPACITY = 482;
 const CREATION_ATTRIBUTE_SOLAR_CHARGE_RATE = 6355;
+const CREATION_ATTRIBUTE_CONTAINMENT_REDUCTION = 6341;
+const WARP_CAPACITOR_COST_RATIO = 0.15;
 const CREATION_TYPE_BLACKSTART_CELL = 96055;
 const CREATION_EFFECT_ONLINE = 16;
 const CREATION_EFFECT_POWER_OUTPUT_ADD_ONLINE = 3782;
@@ -3861,12 +3866,16 @@ const CREATION_EFFECT_PROCESS_POWER_ADD_ONLINE = 12326;
 const CREATION_EFFECT_CAPACITOR_CAPACITY_ADD_ONLINE = 3811;
 const CREATION_EFFECT_CAPACITOR_CAPACITY_ADD_PASSIVE = 12921;
 const CREATION_EFFECT_CAPACITOR_BATTERY_ONLINE = 12922;
+const CREATION_EFFECT_WARP_FUEL_RATE = 12917;
 
 /** Reproduce the Frontier client's Creation power-grid inputs from the set of
  * modules which are actually online. Creation modules live on the hidden
  * fitting flag, so the ordinary EVE fitting resource calculator cannot see
  * their generator output or power demand. */
-function calculateCreationPowerState(creationDogmaContext) {
+function calculateCreationPowerState(
+  creationDogmaContext,
+  deps: Record<string, any> = {},
+) {
   if (
     !creationDogmaContext ||
     !Array.isArray(creationDogmaContext.moduleItems)
@@ -3881,7 +3890,15 @@ function calculateCreationPowerState(creationDogmaContext) {
   let capacitorDischargeRate = 0;
   let blackstartCapacity = 0;
   let blackstartSolarChargeRate = 0;
+  let warpFuelRate = 0;
   const onlineModuleIDs: any[] = [];
+  const propulsionModuleIDs: any[] = [];
+  const resolveAttributes = typeof deps.buildEffectiveItemAttributeMap === "function"
+    ? deps.buildEffectiveItemAttributeMap
+    : buildEffectiveItemAttributeMap;
+  const resolveEffects = typeof deps.getTypeDogmaEffects === "function"
+    ? deps.getTypeDogmaEffects
+    : getTypeDogmaEffects;
 
   for (const moduleItem of creationDogmaContext.moduleItems) {
     if (!moduleItem || moduleItem.moduleState?.online !== true) {
@@ -3893,8 +3910,8 @@ function calculateCreationPowerState(creationDogmaContext) {
       continue;
     }
     onlineModuleIDs.push(moduleID);
-    const attributes = buildEffectiveItemAttributeMap(moduleItem) || {};
-    const effects = getTypeDogmaEffects(typeID);
+    const attributes = resolveAttributes(moduleItem) || {};
+    const effects = resolveEffects(typeID);
     if (effects.has(CREATION_EFFECT_POWER_OUTPUT_ADD_ONLINE)) {
       powerOutput += Math.max(
         0,
@@ -3909,6 +3926,12 @@ function calculateCreationPowerState(creationDogmaContext) {
         0,
         toFiniteNumber(attributes[CREATION_ATTRIBUTE_POWER], 0),
       );
+    }
+    if (effects.has(CREATION_EFFECT_WARP_FUEL_RATE)) {
+      warpFuelRate += toFiniteNumber(attributes[ATTRIBUTE_WARP_FUEL_RATE], 0);
+      if (moduleID > 0) {
+        propulsionModuleIDs.push(moduleID);
+      }
     }
 
     const hasCapacitorCapacity =
@@ -3957,7 +3980,9 @@ function calculateCreationPowerState(creationDogmaContext) {
     capacitorDischargeRate: roundNumber(capacitorDischargeRate, 6),
     blackstartCapacity: roundNumber(blackstartCapacity, 6),
     blackstartSolarChargeRate: roundNumber(blackstartSolarChargeRate, 6),
+    warpFuelRate: roundNumber(warpFuelRate, 6),
     onlineModuleIDs,
+    propulsionModuleIDs,
   };
 }
 
@@ -3997,7 +4022,11 @@ const REGULAR_SHIP_ENGINE_FLAG_ID = 37;
  * here. Creation-family hulls do not use this path because their hidden
  * modular capacitor modules are handled by calculateCreationPowerState.
  */
-function calculateRegularShipFuelPowerState(resourceState, fittedItems = null) {
+function calculateRegularShipFuelPowerState(
+  resourceState,
+  fittedItems = null,
+  deps: Record<string, any> = {},
+) {
   if (!resourceState || typeof resourceState !== "object") {
     return null;
   }
@@ -4010,6 +4039,10 @@ function calculateRegularShipFuelPowerState(resourceState, fittedItems = null) {
   const engineModuleIDs: any[] = [];
   const onlineEngineModuleIDs: any[] = [];
   let capacitorRechargeRate = 0;
+  let warpFuelRate = 0;
+  const resolveAttributes = typeof deps.buildEffectiveItemAttributeMap === "function"
+    ? deps.buildEffectiveItemAttributeMap
+    : buildEffectiveItemAttributeMap;
 
   for (const moduleItem of items) {
     if (toInt(moduleItem && moduleItem.flagID, 0) !== REGULAR_SHIP_ENGINE_FLAG_ID) {
@@ -4025,11 +4058,18 @@ function calculateRegularShipFuelPowerState(resourceState, fittedItems = null) {
     if (moduleID > 0) {
       onlineEngineModuleIDs.push(moduleID);
     }
-    const attributes = buildEffectiveItemAttributeMap(moduleItem) || {};
+    const attributes = resolveAttributes(moduleItem) || {};
     capacitorRechargeRate += Math.max(
       0,
       toFiniteNumber(attributes[CREATION_ATTRIBUTE_RECHARGE_RATE], 0),
     );
+    const authoredWarpFuelRate = toFiniteNumber(
+      attributes[ATTRIBUTE_WARP_FUEL_RATE],
+      0,
+    );
+    // EngineDogmaItem.add_warp_modifiers authors -0.5 when an engine leaves
+    // warpFuelRate at zero.
+    warpFuelRate += authoredWarpFuelRate === 0 ? -0.5 : authoredWarpFuelRate;
   }
 
   if (engineModuleIDs.length === 0) {
@@ -4040,6 +4080,7 @@ function calculateRegularShipFuelPowerState(resourceState, fittedItems = null) {
     powerOutput: roundNumber(toFiniteNumber(resourceState.powerOutput, 0), 6),
     powerLoad: roundNumber(toFiniteNumber(resourceState.powerLoad, 0), 6),
     capacitorRechargeRate: roundNumber(capacitorRechargeRate, 6),
+    warpFuelRate: roundNumber(warpFuelRate, 6),
     engineModuleIDs,
     onlineEngineModuleIDs,
   };
@@ -4063,6 +4104,211 @@ function applyRegularShipFuelPowerStateToResourceState(
       regularFuelPowerState.capacitorRechargeRate;
   }
   return regularFuelPowerState;
+}
+
+/**
+ * Validate only the resources required to begin an in-system warp.  Fuel is
+ * not reserved here: the active warp process consumes it continuously, so a
+ * ship which cancels during alignment pays no warp-fuel charge.
+ *
+ * Tankless legacy hulls retain their existing behavior. Native NPCs also stay
+ * on that compatibility path until their persistent profile explicitly opts
+ * into fuel requirements; this prevents existing fleets from being stranded
+ * before NPC refuelling behavior is available.
+ */
+function checkEntityWarpFuelAvailability(
+  entity,
+  deps: Record<string, any> = {},
+) {
+  if (!entity || entity.kind !== "ship") {
+    return { success: false, errorMsg: "SHIP_NOT_FOUND" };
+  }
+
+  if (
+    isNativeNpcEntity(entity) &&
+    entity.npcFuelRequirementsEnabled !== true
+  ) {
+    return {
+      success: true,
+      skipped: true,
+      reason: "NPC_FUEL_NOT_PROVISIONED",
+    };
+  }
+
+  const runtimeShipItem = buildRuntimeShipItemFromEntity(entity);
+  const derivedFuelCapacity = Math.max(
+    0,
+    getEntityPassiveAttribute(entity, ATTRIBUTE_FUEL_CAPACITY, 0),
+  );
+  let fuelTank = resolveShipFuelTank(runtimeShipItem, derivedFuelCapacity, deps);
+  if (
+    !fuelTank.creationType &&
+    fuelTank.baseCapacity > 0 &&
+    fuelTank.capacity <= 0
+  ) {
+    fuelTank = resolveShipFuelTank(runtimeShipItem, fuelTank.baseCapacity, deps);
+  }
+
+  if (!fuelTank.creationType && fuelTank.baseCapacity <= 0) {
+    return {
+      success: true,
+      skipped: true,
+      reason: "TANKLESS_LEGACY_SHIP",
+      fuelTank,
+    };
+  }
+
+  const creationPowerState = entity.creationPowerState || null;
+  const regularFuelPowerState = creationPowerState
+    ? null
+    : entity.regularFuelPowerState ||
+      calculateRegularShipFuelPowerState(
+        entity.passiveDerivedState || {},
+        null,
+        deps,
+      );
+  const fuelPowerState = creationPowerState || regularFuelPowerState;
+  const warpFuelProfile = fuelTank.creationType ? "creation" : "regular-engine";
+  const onlinePropulsionModuleIDs = creationPowerState
+    ? creationPowerState.propulsionModuleIDs
+    : regularFuelPowerState && regularFuelPowerState.onlineEngineModuleIDs;
+  const warpFuelRate = toFiniteNumber(
+    fuelPowerState && fuelPowerState.warpFuelRate,
+    0,
+  );
+
+  if (
+    !Array.isArray(onlinePropulsionModuleIDs) ||
+    onlinePropulsionModuleIDs.length === 0 ||
+    warpFuelRate >= 0
+  ) {
+    return {
+      success: false,
+      errorMsg: "PROPULSION_REQUIRED",
+      data: { fuelTank, warpFuelProfile, warpFuelRate },
+    };
+  }
+
+  const fuelProperties = getShipFuelProperties(entity, deps);
+  const fuelCharge = getShipFuelCharge(entity);
+  const consumptionRate = calculateWarpFuelConsumptionRate({
+    warpFuelRate,
+    shipMass: entity.mass,
+    fuelProperties,
+    profile: warpFuelProfile,
+  });
+  if (
+    !fuelTank.supported ||
+    fuelCharge <= 0 ||
+    toInt(fuelProperties.activeFuelTypeID, 0) <= 0 ||
+    consumptionRate <= 0
+  ) {
+    return {
+      success: false,
+      errorMsg: "NO_FUEL",
+      data: {
+        fuelTank,
+        fuelCharge,
+        fuelProperties,
+        warpFuelProfile,
+        warpFuelRate,
+      },
+    };
+  }
+
+  return {
+    success: true,
+    data: {
+      fuelTank,
+      fuelCharge,
+      fuelProperties,
+      warpFuelProfile,
+      warpFuelRate,
+      consumptionRate,
+      onlinePropulsionModuleIDs: [...onlinePropulsionModuleIDs],
+    },
+  };
+}
+
+/**
+ * Every in-system warp requires and consumes fifteen percent of the ship's
+ * total capacitor capacity. The command path uses this read-only check before
+ * creating destination/departure side effects, then repeats it at activation
+ * because alignment-time module use may have changed the available charge.
+ */
+function checkEntityWarpCapacitorAvailability(entity) {
+  if (!entity || entity.kind !== "ship") {
+    return { success: false, errorMsg: "SHIP_NOT_FOUND" };
+  }
+
+  const capacitorCapacity = Math.max(
+    0,
+    toFiniteNumber(entity.capacitorCapacity, 0),
+  );
+  const currentCapacitorAmount = getEntityCapacitorAmount(entity);
+  const requiredCapacitorAmount = capacitorCapacity * WARP_CAPACITOR_COST_RATIO;
+  if (
+    capacitorCapacity <= 0 ||
+    currentCapacitorAmount + 1e-6 < requiredCapacitorAmount
+  ) {
+    return {
+      success: false,
+      errorMsg: "NOT_ENOUGH_CAPACITOR",
+      data: {
+        capacitorCapacity,
+        currentCapacitorAmount,
+        requiredCapacitorAmount,
+        requiredCapacitorRatio: WARP_CAPACITOR_COST_RATIO,
+      },
+    };
+  }
+
+  return {
+    success: true,
+    data: {
+      capacitorCapacity,
+      currentCapacitorAmount,
+      requiredCapacitorAmount,
+      requiredCapacitorRatio: WARP_CAPACITOR_COST_RATIO,
+    },
+  };
+}
+
+function consumeEntityWarpCapacitor(entity, nowMs = Date.now()) {
+  const availability = checkEntityWarpCapacitorAvailability(entity);
+  if (!availability.success) {
+    return availability;
+  }
+
+  const previousCapacitorAmount = availability.data.currentCapacitorAmount;
+  if (!consumeEntityCapacitor(
+    entity,
+    availability.data.requiredCapacitorAmount,
+  )) {
+    return {
+      success: false,
+      errorMsg: "NOT_ENOUGH_CAPACITOR",
+      data: availability.data,
+    };
+  }
+
+  if (entity.session && isReadyForDestiny(entity.session)) {
+    notifyCapacitorChangeToSession(
+      entity.session,
+      entity,
+      nowMs,
+      previousCapacitorAmount,
+    );
+  }
+  return {
+    success: true,
+    data: {
+      ...availability.data,
+      consumedCapacitorAmount: availability.data.requiredCapacitorAmount,
+      nextCapacitorAmount: getEntityCapacitorAmount(entity),
+      nextCapacitorRatio: getEntityCapacitorRatio(entity),
+    },
+  };
 }
 
 function getEntityRuntimeFittedItems(entity) {
@@ -15630,8 +15876,11 @@ function advanceEntityCapacitorRecharge(
     fuelTank = resolveShipFuelTank(runtimeShipItem, fuelTank.baseCapacity, deps);
   }
 
-  const usesFrontierFuelRecharge =
-    fuelTank.creationType || fuelTank.baseCapacity > 0;
+  const npcFuelRequirementsEnabled =
+    !isNativeNpcEntity(entity) || entity.npcFuelRequirementsEnabled === true;
+  const usesFrontierFuelRecharge = npcFuelRequirementsEnabled && (
+    fuelTank.creationType || fuelTank.baseCapacity > 0
+  );
   if (usesFrontierFuelRecharge) {
     if (!fuelTank.supported) {
       return {
@@ -15651,8 +15900,9 @@ function advanceEntityCapacitorRecharge(
     const regularFuelPowerState = creationPowerState
       ? null
       : entity.regularFuelPowerState ||
-        calculateRegularShipFuelPowerState(passiveState);
+        calculateRegularShipFuelPowerState(passiveState, null, deps);
     const fuelPowerState = creationPowerState || regularFuelPowerState;
+    const usesCreationFuelProfile = fuelTank.creationType === true;
     const recharge = calculateFueledCapacitorRecharge({
       currentCapacitorAmount: previousChargeAmount,
       capacitorCapacity,
@@ -15678,6 +15928,25 @@ function advanceEntityCapacitorRecharge(
       fuelTypeID,
       fuelQueue,
       deltaSeconds,
+      isWarping: Boolean(
+        entity.mode === "WARP" && entity.warpState && !entity.pendingWarp
+      ),
+      warpFuelRate: fuelPowerState
+        ? toFiniteNumber(fuelPowerState.warpFuelRate, 0)
+        : 0,
+      warpFuelProfile: usesCreationFuelProfile ? "creation" : "regular-engine",
+      shipMass: toFiniteNumber(entity.mass, 0),
+      powerFuelProfile: usesCreationFuelProfile ? "creation" : "regular-engine",
+      fuelContainmentReduction: usesCreationFuelProfile
+        ? Math.max(
+            1,
+            getEntityPassiveAttribute(
+              entity,
+              CREATION_ATTRIBUTE_CONTAINMENT_REDUCTION,
+              1,
+            ),
+          )
+        : 1,
     }, deps);
     if (recharge.rechargedEnergy <= 0 && recharge.consumedFuel <= 0) {
       return {
@@ -20754,6 +21023,8 @@ function buildShipEntityCore(source, systemID, options: Record<string, any> = {}
     warFactionID: toInt(source.warFactionID, 0),
     nativeNpc: source && source.nativeNpc === true,
     nativeNpcOccupied: source && source.nativeNpcOccupied === true,
+    npcFuelRequirementsEnabled:
+      source && source.npcFuelRequirementsEnabled === true,
     frontierBerthingHostAssemblyID:
       berthingRuntime.readBerthHostIDFromCustomInfo(source && source.customInfo) ||
       undefined,
@@ -22801,8 +23072,11 @@ const movementWarpCommands = createMovementWarpCommands({
   buildSessionlessWarpIngressState,
   buildWarpPrepareDispatch,
   buildWarpStartUpdates,
+  checkWarpCapacitorAvailability: checkEntityWarpCapacitorAvailability,
+  checkWarpFuelAvailability: checkEntityWarpFuelAvailability,
   clearTrackingState,
   cloneVector,
+  consumeWarpCapacitor: consumeEntityWarpCapacitor,
   deactivateWarpUnsafeActiveModulesForWarpStart,
   getClientParityWarpInPoint,
   getStargateWarpLandingPoint,
@@ -43865,6 +44139,34 @@ class SolarSystemScene {
             pendingWarpState,
             preWarpSyncStamp: toInt(pendingWarp.preWarpSyncStamp, 0),
           });
+          const activationCapacitorCheck =
+            checkEntityWarpCapacitorAvailability(entity);
+          if (
+            !activationCapacitorCheck ||
+            activationCapacitorCheck.success !== true
+          ) {
+            this.stopShipEntity(entity, {
+              reason: "warpCapacitorUnavailableAtActivation",
+            });
+            logMovementDebug("warp.aborted", entity, {
+              reason: "NOT_ENOUGH_CAPACITOR",
+              pendingWarpState,
+            });
+            continue;
+          }
+          const activationFuelCheck = checkEntityWarpFuelAvailability(entity);
+          if (!activationFuelCheck || activationFuelCheck.success !== true) {
+            this.stopShipEntity(entity, {
+              reason: "warpFuelUnavailableAtActivation",
+            });
+            logMovementDebug("warp.aborted", entity, {
+              reason:
+                activationFuelCheck && activationFuelCheck.errorMsg ||
+                "NO_FUEL",
+              pendingWarpState,
+            });
+            continue;
+          }
           const warpStartDeactivationResult =
             deactivateWarpUnsafeActiveModulesForWarpStart(
               this,
@@ -43938,6 +44240,20 @@ class SolarSystemScene {
             defaultEffectStamp: currentStamp,
           });
           if (warpState) {
+            const capacitorDebit = consumeEntityWarpCapacitor(entity, now);
+            if (!capacitorDebit || capacitorDebit.success !== true) {
+              clearTrackingState(entity);
+              entity.mode = "STOP";
+              entity.speedFraction = 0;
+              entity.velocity = { x: 0, y: 0, z: 0 };
+              entity.targetPoint = cloneVector(entity.position);
+              persistShipEntity(entity);
+              logMovementDebug("warp.aborted", entity, {
+                reason: "NOT_ENOUGH_CAPACITOR",
+                pendingWarpState,
+              });
+              continue;
+            }
             visibilityControlState.consumeWarpAcquireUntilNextTickSuppression({
               entity,
               nowMs: now,
@@ -48451,6 +48767,12 @@ runtimeExports._testing = {
   calculateCreationPowerStateForTesting: calculateCreationPowerState,
   applyCreationPowerStateToResourceStateForTesting:
     applyCreationPowerStateToResourceState,
+  checkEntityWarpFuelAvailabilityForTesting:
+    checkEntityWarpFuelAvailability,
+  checkEntityWarpCapacitorAvailabilityForTesting:
+    checkEntityWarpCapacitorAvailability,
+  consumeEntityWarpCapacitorForTesting: consumeEntityWarpCapacitor,
+  WARP_CAPACITOR_COST_RATIO,
   isSceneVisibilityRemovalPresentationAuthorized,
   MODULE_CONSEQUENCE_DELIVERY,
   normalizeModuleConsequenceDelivery,

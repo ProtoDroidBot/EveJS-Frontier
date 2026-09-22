@@ -24,6 +24,10 @@ function createWarpFixture(options: Record<string, any> = {}) {
   const materializeCalls: any[] = [];
   const prewarmCalls: any[] = [];
   const gotoCalls: any[] = [];
+  const fuelCheckCalls: any[] = [];
+  const capacitorCheckCalls: any[] = [];
+  const capacitorDebitCalls: any[] = [];
+  const stopCalls: any[] = [];
   let jumpCloakCancelCount = 0;
   const session = { characterID: 140_000_001 };
   const ship: Record<string, any> = {
@@ -34,6 +38,8 @@ function createWarpFixture(options: Record<string, any> = {}) {
     velocity: { x: 0, y: 0, z: 0 },
     speedFraction: 0,
     maxVelocity: 250,
+    capacitorCapacity: 100,
+    capacitorChargeRatio: 1,
     radius: 50,
     warpSpeedAU: 3,
     pendingWarp: null,
@@ -59,14 +65,35 @@ function createWarpFixture(options: Record<string, any> = {}) {
     }),
     getCurrentSimTimeMs: () => 50_000,
     getMovementStamp: () => 100,
+    getCurrentDestinyStamp: () => 100,
     cancelStargateJumpCloakBeforePilotCommand: () => {
       jumpCloakCancelCount += 1;
     },
     clearPendingSubwarpMovementContract: () => undefined,
     broadcastMovementUpdates: () => undefined,
     scheduleWatcherMovementAnchor: () => undefined,
+    beginWarpDepartureOwnership: () => undefined,
+    beginPilotWarpVisibilityHandoff: () => undefined,
+    stopShipEntity: (entity, stopOptions) => {
+      stopCalls.push({ entity, options: stopOptions });
+      entity.pendingWarp = null;
+      entity.warpState = null;
+      entity.mode = "STOP";
+      entity.speedFraction = 0;
+      return true;
+    },
   };
   const commands = createMovementWarpCommands({
+    activatePendingWarp: (entity, pendingWarp) => {
+      const warpState = {
+        phase: "active",
+        targetPoint: cloneVector(pendingWarp.rawDestination),
+      };
+      entity.pendingWarp = null;
+      entity.warpState = warpState;
+      entity.mode = "WARP";
+      return warpState;
+    },
     armMovementTrace: () => undefined,
     buildDirectedMovementUpdates: () => [],
     buildOfficialWarpReferenceProfile: () => ({}),
@@ -100,8 +127,26 @@ function createWarpFixture(options: Record<string, any> = {}) {
     },
     buildPreparingWarpState: () => ({ phase: "preparing" }),
     buildWarpPrepareDispatch: () => ({ sharedUpdates: [] }),
+    buildWarpStartUpdates: () => [],
+    checkWarpCapacitorAvailability: (entity) => {
+      capacitorCheckCalls.push(entity);
+      return options.capacitorCheckResult || { success: true };
+    },
+    checkWarpFuelAvailability: (entity) => {
+      fuelCheckCalls.push(entity);
+      return options.fuelCheckResult || { success: true };
+    },
     clearTrackingState: () => undefined,
     cloneVector,
+    consumeWarpCapacitor: (entity, nowMs) => {
+      capacitorDebitCalls.push({ entity, nowMs });
+      if (options.capacitorDebitResult) {
+        return options.capacitorDebitResult;
+      }
+      entity.capacitorChargeRatio -= 0.15;
+      return { success: true };
+    },
+    deactivateWarpUnsafeActiveModulesForWarpStart: () => ({ success: true }),
     findActiveWarpDisruptorForEntity: () => null,
     getClientParityWarpInPoint: () => null,
     getStationWarpTargetPosition: (target) => cloneVector(target.position),
@@ -165,6 +210,7 @@ function createWarpFixture(options: Record<string, any> = {}) {
       });
       return { success: true };
     },
+    primePilotWarpActivationState: () => undefined,
     subtractVectors: (left, right) => ({
       x: left.x - right.x,
       y: left.y - right.y,
@@ -188,16 +234,136 @@ function createWarpFixture(options: Record<string, any> = {}) {
   );
   return {
     commands,
+    capacitorCheckCalls,
+    capacitorDebitCalls,
+    fuelCheckCalls,
     gotoCalls,
     initializeSessionlessCalls,
     materializeCalls,
     prewarmCalls,
+    stopCalls,
     runtime,
     session,
     ship,
     getJumpCloakCancelCount: () => jumpCloakCancelCount,
   };
 }
+
+test("warp fuel preflight fails before player or sessionless departure side effects", () => {
+  for (const sessionless of [false, true]) {
+    const fixture = createWarpFixture({
+      fuelCheckResult: { success: false, errorMsg: "NO_FUEL" },
+    });
+    const result = sessionless
+      ? fixture.commands.warpDynamicEntityToPoint(
+          fixture.runtime,
+          fixture.ship,
+          { x: 2_000_000, y: 0, z: 0 },
+          { ignoreWarpDisruptionField: true },
+        )
+      : fixture.commands.warpToPoint(
+          fixture.runtime,
+          fixture.session,
+          { x: 2_000_000, y: 0, z: 0 },
+          {
+            ignoreCrimewatchCheck: true,
+            ignoreDeadspaceWarpRestriction: true,
+            ignoreWarpDisruptionField: true,
+          },
+        );
+    assert.equal(result.success, false);
+    assert.equal(result.errorMsg, "NO_FUEL");
+    assert.equal(fixture.fuelCheckCalls.length, 1);
+    assert.equal(fixture.ship.pendingWarp, null);
+    assert.equal(fixture.initializeSessionlessCalls.length, 0);
+    assert.equal(fixture.materializeCalls.length, 0);
+    assert.equal(fixture.prewarmCalls.length, 0);
+  }
+});
+
+test("warp capacitor preflight denies departure without consuming charge", () => {
+  for (const sessionless of [false, true]) {
+    const fixture = createWarpFixture({
+      capacitorCheckResult: {
+        success: false,
+        errorMsg: "NOT_ENOUGH_CAPACITOR",
+      },
+    });
+    const result = sessionless
+      ? fixture.commands.warpDynamicEntityToPoint(
+          fixture.runtime,
+          fixture.ship,
+          { x: 2_000_000, y: 0, z: 0 },
+          { ignoreWarpDisruptionField: true },
+        )
+      : fixture.commands.warpToPoint(
+          fixture.runtime,
+          fixture.session,
+          { x: 2_000_000, y: 0, z: 0 },
+          {
+            ignoreCrimewatchCheck: true,
+            ignoreDeadspaceWarpRestriction: true,
+            ignoreWarpDisruptionField: true,
+          },
+        );
+    assert.equal(result.success, false);
+    assert.equal(result.errorMsg, "NOT_ENOUGH_CAPACITOR");
+    assert.equal(fixture.capacitorCheckCalls.length, 1);
+    assert.equal(fixture.capacitorDebitCalls.length, 0);
+    assert.equal(fixture.ship.capacitorChargeRatio, 1);
+    assert.equal(fixture.initializeSessionlessCalls.length, 0);
+    assert.equal(fixture.materializeCalls.length, 0);
+    assert.equal(fixture.prewarmCalls.length, 0);
+  }
+});
+
+test("warp activation rechecks fuel after alignment and cancels safely", () => {
+  const fixture = createWarpFixture({
+    fuelCheckResult: { success: false, errorMsg: "NO_FUEL" },
+  });
+  fixture.ship.mode = "WARP";
+  fixture.ship.warpState = { phase: "preparing" };
+  fixture.ship.pendingWarp = {
+    nativeWarpCommand: "WARP",
+    rawDestination: { x: 2_000_000, y: 0, z: 0 },
+  };
+
+  const result = fixture.commands.forceStartPendingWarp(
+    fixture.runtime,
+    fixture.ship,
+    { nowMs: 50_000 },
+  );
+
+  assert.equal(result.success, false);
+  assert.equal(result.errorMsg, "NO_FUEL");
+  assert.equal(fixture.fuelCheckCalls.length, 1);
+  assert.equal(fixture.stopCalls.length, 1);
+  assert.equal(fixture.stopCalls[0].options.reason, "warpFuelUnavailableAtActivation");
+  assert.equal(fixture.ship.pendingWarp, null);
+  assert.equal(fixture.ship.warpState, null);
+  assert.equal(fixture.ship.mode, "STOP");
+});
+
+test("successful warp activation debits capacitor exactly once", () => {
+  const fixture = createWarpFixture();
+  fixture.ship.mode = "WARP";
+  fixture.ship.warpState = { phase: "preparing" };
+  fixture.ship.pendingWarp = {
+    nativeWarpCommand: "WARP",
+    rawDestination: { x: 2_000_000, y: 0, z: 0 },
+  };
+
+  const result = fixture.commands.forceStartPendingWarp(
+    fixture.runtime,
+    fixture.ship,
+    { nowMs: 50_000 },
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(fixture.capacitorCheckCalls.length, 1);
+  assert.equal(fixture.capacitorDebitCalls.length, 1);
+  assert.equal(fixture.ship.capacitorChargeRatio, 0.85);
+});
 
 test("a sessionless NPC warp initializes and prewarms its destination before departure", () => {
   const fixture = createWarpFixture();

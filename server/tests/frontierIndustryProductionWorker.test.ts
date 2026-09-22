@@ -144,6 +144,25 @@ function serviceFixture() {
         canUse: true, canManage: true,
         accessPolicy: { mode: "public", characterIDs: [], tribeIDs: [] }, production: null } };
     },
+    loadBlueprint: (...args) => {
+      order.push(["load", ...args]);
+      return { success: true, data: { blueprint_id: 1, run_time: 1, inputs: {}, outputs: {} } };
+    },
+    depositInputItems: (...args) => {
+      order.push(["deposit", ...args]);
+      return { success: true, data: { facility, characterID: 7, side: "inputs",
+        laneID: args[3]?.laneID || 1, items: {}, changes: [], storageTransfers: [] } };
+    },
+    depositStorageInputItems: (...args) => {
+      order.push(["storage-deposit", ...args]);
+      return { success: true, data: { facility, characterID: 7, side: "inputs",
+        laneID: args[4]?.laneID || 1, items: {}, changes: [], storageTransfers: [] } };
+    },
+    withdrawItems: (...args) => {
+      order.push(["withdraw", ...args]);
+      return { success: true, data: { facility, characterID: 7, side: args[5],
+        laneID: args[6]?.laneID || 1, items: {}, changes: [], storageTransfers: [] } };
+    },
     startProduction: (...args) => {
       order.push(["start", ...args]);
       return { success: false, errorMsg: "INVALID_BLUEPRINT_HASH" };
@@ -161,6 +180,7 @@ function serviceFixture() {
     "./industryRuntime": runtime,
     "./industryBlueprints": { isIndustryFacilityType: () => true, getSelectedBlueprint: () => null },
     "./industryNotifications": { publishIndustryItemsChanged() {}, publishIndustryProductionResult() {},
+      publishIndustryBlueprintChanged: (...args) => order.push(["blueprint-notice", ...args]),
       publishIndustryJobLaneChanged: (...args) => order.push(["lane-notice", ...args]) },
     "./industryProductionWorker": {
       settleIndustryProduction: () => { order.push(["settle"]); return { success: true, data: {} }; },
@@ -223,4 +243,17 @@ test("job lane RPCs forward lane identity and expose per-lane access metadata", 
   assert.equal(fields.lane_id, 2);
   assert.equal(Object.fromEntries(fields.access.entries).mode, "public");
   assert.equal(f.order.some(entry => entry[0] === "lane-notice"), true);
+
+  f.order.length = 0;
+  f.service.Handle_load_blueprint([123, 1, 2], f.session);
+  assert.equal(f.order.find(entry => entry[0] === "load")[4].laneID, 2);
+  f.order.length = 0;
+  f.service.Handle_deposit_input_items([123, new Map([[77, 1]]), 2], f.session);
+  assert.equal(f.order.find(entry => entry[0] === "deposit")[4].laneID, 2);
+  f.order.length = 0;
+  f.service.Handle_deposit_storage_input_items([123, 456, new Map([[77, 1]]), 2], f.session);
+  assert.equal(f.order.find(entry => entry[0] === "storage-deposit")[5].laneID, 2);
+  f.order.length = 0;
+  f.service.Handle_withdraw_output_items([123, new Map([[77, 1]]), 456, 66, 2], f.session);
+  assert.equal(f.order.find(entry => entry[0] === "withdraw")[7].laneID, 2);
 });

@@ -91,7 +91,7 @@ function activeIndustry(item) {
     .find(({ production }) => production && ["RUNNING", "DISCONTINUING"].includes(production.state));
   if (!active) return null;
   const { laneID, production } = active;
-  const blueprint = blueprints.getSelectedBlueprint(item);
+  const blueprint = blueprints.getSelectedBlueprint(item, laneID);
   const products = Object.values<any>(blueprint?.outputs || {}).map(slot => {
     const name = itemStore.getItemMetadata(slot.type_id)?.name;
     return {

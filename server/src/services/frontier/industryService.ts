@@ -53,12 +53,18 @@ function accessPolicyDict(policy) {
 }
 
 function laneDict(lane) {
+  const items = lane.items || { inputs: {}, outputs: {} };
   return buildDict([
     ["lane_id", lane.laneID],
     ["enabled", Boolean(lane.enabled)],
     ["can_use", Boolean(lane.canUse)],
     ["can_manage", Boolean(lane.canManage)],
     ["access", accessPolicyDict(lane.accessPolicy)],
+    ["items", buildDict([
+      ["inputs", quantityDict(items.inputs)],
+      ["outputs", quantityDict(items.outputs)],
+    ])],
+    ["blueprint", blueprintDict(lane.blueprint)],
     ["production", productionDict(lane.production)],
   ]);
 }
@@ -161,10 +167,19 @@ function publishTransferNotifications(session, result) {
       log.warn(`[industry] Inventory notification failed: ${error.message}`);
     }
   }
-  const totals = runtime.getFacilityItems(data.facility);
+  const laneID = Number(data.laneID) || 1;
+  const totals = runtime.getFacilityItems(data.facility, laneID);
   for (const side of data.side === "all" ? ["inputs", "outputs"] : [data.side]) {
-    publishIndustryItemsChanged(session, data.facility.itemID, side, totals[side]);
+    // The retail gateway notice has no lane field. Keep it as lane one's
+    // compatibility stream; lane-aware clients refresh from the event below.
+    if (laneID === 1) {
+      publishIndustryItemsChanged(session, data.facility.itemID, side, totals[side]);
+    }
   }
+  publishIndustryJobLaneChanged(session, data.facility, {
+    laneID,
+    type: "items_changed",
+  });
   for (const transfer of data.storageTransfers || []) {
     try {
       const { getStorageUnitProtoTypes } = require("../../_secondary/express/gatewayServices/assemblyStorageUnitProto");
@@ -229,29 +244,42 @@ class IndustryService extends BaseService {
 
   Handle_load_blueprint(args, session) {
     settleOwnedFacility(session, args?.[0]);
-    const blueprint = requireSuccess(runtime.loadBlueprint(session, args?.[0], args?.[1]));
-    publishIndustryBlueprintChanged(session, args?.[0]);
+    const laneID = args?.[2] == null ? 1 : Number(args[2]);
+    const blueprint = requireSuccess(runtime.loadBlueprint(session, args?.[0], args?.[1], { laneID }));
+    publishIndustryBlueprintChanged(session, args?.[0], laneID);
     return blueprintDict(blueprint);
   }
 
   Handle_deposit_input_items(args, session) {
     settleOwnedFacility(session, args?.[0]);
-    return finishTransfer(session, runtime.depositInputItems(session, args?.[0], args?.[1]));
+    const options = args?.[2] == null ? undefined : { laneID: args[2] };
+    return finishTransfer(session, options
+      ? runtime.depositInputItems(session, args?.[0], args?.[1], options)
+      : runtime.depositInputItems(session, args?.[0], args?.[1]));
   }
 
   Handle_deposit_storage_input_items(args, session) {
     settleOwnedFacility(session, args?.[0]);
-    return finishTransfer(session, runtime.depositStorageInputItems(session, args?.[0], args?.[1], args?.[2]));
+    const options = args?.[3] == null ? undefined : { laneID: args[3] };
+    return finishTransfer(session, options
+      ? runtime.depositStorageInputItems(session, args?.[0], args?.[1], args?.[2], options)
+      : runtime.depositStorageInputItems(session, args?.[0], args?.[1], args?.[2]));
   }
 
   Handle_withdraw_input_items(args, session) {
     settleOwnedFacility(session, args?.[0]);
-    return finishTransfer(session, runtime.withdrawItems(session, args?.[0], args?.[1], args?.[2], args?.[3], "inputs"));
+    const options = args?.[4] == null ? undefined : { laneID: args[4] };
+    return finishTransfer(session, options
+      ? runtime.withdrawItems(session, args?.[0], args?.[1], args?.[2], args?.[3], "inputs", options)
+      : runtime.withdrawItems(session, args?.[0], args?.[1], args?.[2], args?.[3], "inputs"));
   }
 
   Handle_withdraw_output_items(args, session) {
     settleOwnedFacility(session, args?.[0]);
-    return finishTransfer(session, runtime.withdrawItems(session, args?.[0], args?.[1], args?.[2], args?.[3], "outputs"));
+    const options = args?.[4] == null ? undefined : { laneID: args[4] };
+    return finishTransfer(session, options
+      ? runtime.withdrawItems(session, args?.[0], args?.[1], args?.[2], args?.[3], "outputs", options)
+      : runtime.withdrawItems(session, args?.[0], args?.[1], args?.[2], args?.[3], "outputs"));
   }
 
   Handle_start_production(args, session) {

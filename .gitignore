@@ -68,9 +68,12 @@ server/tidi_probe.log
 
 # Ignore ElysianFSD / SerenityImporter tools until further notice
 /tools/Elysian*
+!/tools/ElysianNpcDogma/
+!/tools/ElysianNpcDogma/**
 /tools/.elysian*
 /tools/Serenity*
 /tools/Launch-*
+!/tools/Launch-Elysian-NPC-Dogma.bat
 /tools/EveOnlineImporter*
 tools/FRONTIER-COMPATIBILITY.md
 decompiled___init__.py

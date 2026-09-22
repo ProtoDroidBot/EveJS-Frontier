@@ -149,7 +149,7 @@ function isWarpBlockedByCloak(runtime, entity) {
     return runtime.isEntityWarpBlockedByCloak(entity);
 }
 function createMovementWarpCommands(deps = {}) {
-    const { activatePendingWarp, armMovementTrace, buildDirectedMovementUpdates, buildOfficialWarpReferenceProfile, buildPendingWarpRequest, buildPreparingWarpState, buildSessionlessWarpIngressState, buildWarpPrepareDispatch, buildWarpStartUpdates, clearTrackingState, cloneVector, deactivateWarpUnsafeActiveModulesForWarpStart, getClientParityWarpInPoint, getStargateWarpLandingPoint, getStationWarpTargetPosition, getTargetMotionPosition, getWatcherWarpStartStamp, getWarpStopDistanceForTarget, gotoPointEntity, findActiveWarpDisruptorForEntity, hasPendingPilotWarpLanding = () => false, initializeSessionlessWarpDestination, isReadyForDestiny, logMovementDebug, logWarpDebug, materializeDungeonWarpDestination, normalizeVector, prewarmStartupControllersForWarpDestination, primePilotWarpActivationState, persistShipEntity, resolveStargateWarpTarget, subtractVectors, summarizePendingWarp, tagUpdatesRequireExistingVisibility, toFiniteNumber = (value, fallback = 0) => {
+    const { activatePendingWarp, armMovementTrace, buildDirectedMovementUpdates, buildOfficialWarpReferenceProfile, buildPendingWarpRequest, buildPreparingWarpState, buildSessionlessWarpIngressState, buildWarpPrepareDispatch, buildWarpStartUpdates, checkWarpCapacitorAvailability = () => ({ success: true }), checkWarpFuelAvailability = () => ({ success: true, skipped: true }), clearTrackingState, cloneVector, consumeWarpCapacitor = () => ({ success: true }), deactivateWarpUnsafeActiveModulesForWarpStart, getClientParityWarpInPoint, getStargateWarpLandingPoint, getStationWarpTargetPosition, getTargetMotionPosition, getWatcherWarpStartStamp, getWarpStopDistanceForTarget, gotoPointEntity, findActiveWarpDisruptorForEntity, hasPendingPilotWarpLanding = () => false, initializeSessionlessWarpDestination, isReadyForDestiny, logMovementDebug, logWarpDebug, materializeDungeonWarpDestination, normalizeVector, prewarmStartupControllersForWarpDestination, primePilotWarpActivationState, persistShipEntity, resolveStargateWarpTarget, subtractVectors, summarizePendingWarp, tagUpdatesRequireExistingVisibility, toFiniteNumber = (value, fallback = 0) => {
         const numeric = Number(value);
         return Number.isFinite(numeric) ? numeric : fallback;
     }, toInt, DESTINY_STAMP_INTERVAL_MS, MIN_WARP_DISTANCE_METERS, PILOT_WARP_ACTIVATION_DELAY_DESTINY_TICKS, MICHELLE_POST_HELD_FUTURE_DESTINY_LEAD, } = deps;
@@ -405,6 +405,15 @@ function createMovementWarpCommands(deps = {}) {
                     errorMsg: "WARP_DISTANCE_TOO_CLOSE",
                 };
             }
+            if (pendingWarp.nativeWarpCommand !== "GOTO") {
+                const capacitorCheck = checkWarpCapacitorAvailability(entity);
+                if (!capacitorCheck || capacitorCheck.success !== true) {
+                    return capacitorCheck || {
+                        success: false,
+                        errorMsg: "NOT_ENOUGH_CAPACITOR",
+                    };
+                }
+            }
             if (options.ignoreWarpDisruptionField !== true &&
                 typeof findActiveWarpDisruptorForEntity === "function") {
                 const disruptor = findActiveWarpDisruptorForEntity(runtime, entity, {
@@ -427,6 +436,16 @@ function createMovementWarpCommands(deps = {}) {
                     success: false,
                     errorMsg: "WARP_BLOCKED_BY_CLOAK",
                 };
+            }
+            if (pendingWarp.nativeWarpCommand !== "GOTO" &&
+                typeof checkWarpFuelAvailability === "function") {
+                const fuelCheck = checkWarpFuelAvailability(entity);
+                if (!fuelCheck || fuelCheck.success !== true) {
+                    return fuelCheck || {
+                        success: false,
+                        errorMsg: "NO_FUEL",
+                    };
+                }
             }
             const now = runtime.getCurrentSimTimeMs();
             if (pendingWarp.nativeWarpCommand !== "GOTO" &&
@@ -611,6 +630,25 @@ function createMovementWarpCommands(deps = {}) {
                     };
                 }
             }
+            if (pendingWarp.nativeWarpCommand !== "GOTO") {
+                const capacitorCheck = checkWarpCapacitorAvailability(entity);
+                if (!capacitorCheck || capacitorCheck.success !== true) {
+                    return capacitorCheck || {
+                        success: false,
+                        errorMsg: "NOT_ENOUGH_CAPACITOR",
+                    };
+                }
+            }
+            if (pendingWarp.nativeWarpCommand !== "GOTO" &&
+                typeof checkWarpFuelAvailability === "function") {
+                const fuelCheck = checkWarpFuelAvailability(entity);
+                if (!fuelCheck || fuelCheck.success !== true) {
+                    return fuelCheck || {
+                        success: false,
+                        errorMsg: "NO_FUEL",
+                    };
+                }
+            }
             if (!entity.session &&
                 typeof initializeSessionlessWarpDestination === "function") {
                 const initializationResult = initializeSessionlessWarpDestination(runtime, entity, pendingWarp.rawDestination, {
@@ -731,6 +769,37 @@ function createMovementWarpCommands(deps = {}) {
                     errorMsg: "SHIP_NOT_FOUND",
                 };
             }
+            const activationCapacitorCheck = checkWarpCapacitorAvailability(entity);
+            if (!activationCapacitorCheck ||
+                activationCapacitorCheck.success !== true) {
+                if (typeof runtime.stopShipEntity === "function") {
+                    runtime.stopShipEntity(entity, {
+                        reason: "warpCapacitorUnavailableAtActivation",
+                    });
+                }
+                return activationCapacitorCheck || {
+                    success: false,
+                    errorMsg: "NOT_ENOUGH_CAPACITOR",
+                };
+            }
+            const activationFuelCheck = checkWarpFuelAvailability(entity);
+            if (!activationFuelCheck || activationFuelCheck.success !== true) {
+                if (typeof runtime.stopShipEntity === "function") {
+                    runtime.stopShipEntity(entity, {
+                        reason: "warpFuelUnavailableAtActivation",
+                    });
+                }
+                else {
+                    entity.pendingWarp = null;
+                    entity.warpState = null;
+                    entity.mode = "STOP";
+                    entity.speedFraction = 0;
+                }
+                return activationFuelCheck || {
+                    success: false,
+                    errorMsg: "NO_FUEL",
+                };
+            }
             const currentStamp = runtime.getCurrentDestinyStamp(now);
             if (typeof deactivateWarpUnsafeActiveModulesForWarpStart === "function") {
                 const deactivationResult = deactivateWarpUnsafeActiveModulesForWarpStart(runtime, entity, now, {
@@ -753,6 +822,16 @@ function createMovementWarpCommands(deps = {}) {
                 return {
                     success: false,
                     errorMsg: "WARP_ACTIVATION_FAILED",
+                };
+            }
+            const capacitorDebit = consumeWarpCapacitor(entity, now);
+            if (!capacitorDebit || capacitorDebit.success !== true) {
+                clearTrackingState(entity);
+                entity.mode = "STOP";
+                entity.speedFraction = 0;
+                return capacitorDebit || {
+                    success: false,
+                    errorMsg: "NOT_ENOUGH_CAPACITOR",
                 };
             }
             const warpStartStamp = entity.session && isReadyForDestiny(entity.session)

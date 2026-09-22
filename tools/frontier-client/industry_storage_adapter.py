@@ -131,6 +131,26 @@ def _evejs_patch_industry_service(namespace):
     service_type.__notifyevents__ = list(dict.fromkeys(list(service_type.__notifyevents__) + events))
     threads = namespace["uthread2"]
 
+    def apply_lane_state(facility, lane, info):
+        lane_id = int((lane or {}).get("lane_id") or 1)
+        lane_items = (lane or {}).get("items")
+        lane_blueprint = (lane or {}).get("blueprint")
+        # Older servers only expose the lane-one projection at the top level.
+        if lane_id == 1 and lane_items is None:
+            lane_items = info.get("items", {})
+        if lane_id == 1 and "blueprint" not in (lane or {}):
+            lane_blueprint = info.get("blueprint")
+        lane_items = lane_items or {}
+        facility.update_production((lane or {}).get("production", info.get("production")))
+        facility.update_item_stacks(input_items=lane_items.get("inputs", {}),
+                                    output_items=lane_items.get("outputs", {}))
+        old_blueprint = facility.blueprint
+        facility.update_blueprint(lane_blueprint)
+        if (old_blueprint is not None and facility.blueprint is not None and
+                old_blueprint.blueprint_id == facility.blueprint.blueprint_id and
+                old_blueprint != facility.blueprint):
+            facility.on_blueprint_changed()
+
     def apply_lanes(self, facility, info):
         lanes = list(info.get("job_lanes") or [])
         facility._evejs_job_lane_count = int(info.get("job_lane_count") or len(lanes) or 1)
@@ -144,10 +164,10 @@ def _evejs_patch_industry_service(namespace):
                              if lane.get("enabled", True) and lane.get("can_use", False)), None)
         if selected is not None:
             facility._evejs_selected_lane_id = int(selected.get("lane_id") or 1)
-            facility.update_production(selected.get("production"))
+            apply_lane_state(facility, selected, info)
         else:
             facility._evejs_selected_lane_id = 1
-            facility.update_production(info.get("production"))
+            apply_lane_state(facility, {}, info)
 
     def get_lanes(self, facility_id):
         facility = self._facilities.get(facility_id)
@@ -169,7 +189,7 @@ def _evejs_patch_industry_service(namespace):
         facility._evejs_selected_lane_id = lane_id
         strategy = self.get_facility_strategy(facility_id)
         strategy._evejs_selected_lane_id = lane_id
-        facility.update_production(lane.get("production"))
+        apply_lane_state(facility, lane, {})
         return True
 
     def configure_lane(self, facility_id, lane_id, mode="owner", character_ids=None, tribe_ids=None):
@@ -244,13 +264,6 @@ def _evejs_patch_industry_service(namespace):
             facility.set_details_state(loading=False, error=False)
             if info is not None:
                 apply_lanes(self, facility, info)
-                items = info.get("items", {})
-                facility.update_item_stacks(input_items=items.get("inputs", {}), output_items=items.get("outputs", {}))
-                old_blueprint = facility.blueprint
-                facility.update_blueprint(info.get("blueprint"))
-                if old_blueprint is not None and facility.blueprint is not None and \
-                        old_blueprint.blueprint_id == facility.blueprint.blueprint_id and old_blueprint != facility.blueprint:
-                    facility.on_blueprint_changed()
         finally:
             facility._evejs_details_running = False
             if self._facilities.get(facility_id) is facility and getattr(facility, "_evejs_refresh_pending", False):
@@ -269,6 +282,10 @@ def _evejs_patch_industry_service(namespace):
     original_discontinue = service_type.discontinue_production
 
     def load(self, facility_id, blueprint_id):
+        facility = self._facilities.get(facility_id)
+        if facility is not None:
+            self.get_facility_strategy(facility_id)._evejs_selected_lane_id = int(
+                getattr(facility, "_evejs_selected_lane_id", 1) or 1)
         try:
             return original_load(self, facility_id, blueprint_id)
         finally:
@@ -306,15 +323,37 @@ def _evejs_patch_industry_service(namespace):
 def _evejs_patch_industry_lane_strategy(namespace):
     facility_type = namespace["AssemblyClientFacility"]
 
+    def lane_id(self):
+        return int(getattr(self, "_evejs_selected_lane_id", 1) or 1)
+
+    def load(self, blueprint_id):
+        return self._remote_service.load_blueprint(self.facility_id, blueprint_id,
+                                                   lane_id(self))
+
+    def deposit(self, items):
+        return self._remote_service.deposit_input_items(self.facility_id, items,
+                                                        lane_id(self))
+
+    def withdraw_inputs(self, items, inventory_id, inventory_flag):
+        return self._remote_service.withdraw_input_items(
+            self.facility_id, items, inventory_id, inventory_flag, lane_id(self))
+
+    def withdraw_outputs(self, items, inventory_id, inventory_flag):
+        return self._remote_service.withdraw_output_items(
+            self.facility_id, items, inventory_id, inventory_flag, lane_id(self))
+
     def start(self, blueprint_id, blueprint_hash):
-        lane_id = int(getattr(self, "_evejs_selected_lane_id", 1) or 1)
+        selected_lane_id = lane_id(self)
         return self._remote_service.start_production(
-            self.facility_id, blueprint_id, blueprint_hash, None, lane_id)
+            self.facility_id, blueprint_id, blueprint_hash, None, selected_lane_id)
 
     def discontinue(self):
-        lane_id = int(getattr(self, "_evejs_selected_lane_id", 1) or 1)
-        return self._remote_service.discontinue_production(self.facility_id, lane_id)
+        return self._remote_service.discontinue_production(self.facility_id, lane_id(self))
 
+    facility_type.load_blueprint = load
+    facility_type.deposit_input_items = deposit
+    facility_type.withdraw_input_items = withdraw_inputs
+    facility_type.withdraw_output_items = withdraw_outputs
     facility_type.start_production = start
     facility_type.discontinue_production = discontinue
 
@@ -322,16 +361,18 @@ def _evejs_patch_industry_lane_strategy(namespace):
 def _evejs_patch_industry_modular_lane_strategy(namespace):
     facility_type = namespace["CreationModuleClientFacility"]
 
+    def lane_id(self):
+        return int(getattr(self, "_evejs_selected_lane_id", 1) or 1)
+
     def start(self, blueprint_id, blueprint_hash):
-        lane_id = int(getattr(self, "_evejs_selected_lane_id", 1) or 1)
+        selected_lane_id = lane_id(self)
         return self._activate(namespace["AbilityId"].INDUSTRY_START_PRODUCTION,
                               blueprint_id=blueprint_id, blueprint_hash=blueprint_hash,
-                              lane_id=lane_id)
+                              lane_id=selected_lane_id)
 
     def discontinue(self):
-        lane_id = int(getattr(self, "_evejs_selected_lane_id", 1) or 1)
         return self._activate(namespace["AbilityId"].INDUSTRY_DISCONTINUE_PRODUCTION,
-                              lane_id=lane_id)
+                              lane_id=lane_id(self))
 
     facility_type.start_production = start
     facility_type.discontinue_production = discontinue
@@ -504,7 +545,9 @@ def _evejs_patch_industry_inputs(namespace):
         try:
             # Quantities are by type, scoped to one SSU and the authenticated
             # character's partition. The server resolves actual source rows.
-            remote.deposit_storage_input_items(self._facility_id, items[0].locationID, requested)
+            lane_id = int(getattr(self._facility_instance, "_evejs_selected_lane_id", 1) or 1)
+            remote.deposit_storage_input_items(
+                self._facility_id, items[0].locationID, requested, lane_id)
         except IndustryError as error:
             namespace["prompt_error_message"](error.msg, namespace["ErrorHeaders"].DEPOSIT)
             return

@@ -4,7 +4,12 @@ import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { Transaction } from "@mysten/sui/transactions";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { suiGrpcClient } from "./suiGrpcClient";
-import { readSuiNpcWorldConfig, assertSuiNpcWorldConfigCurrent, type SuiNpcWorldConfig } from "./suiNpcWorldConfig";
+import {
+  readSuiNpcWorldConfig,
+  assertSuiNpcWorldConfigCurrent,
+  requireSuiWorldCapability,
+  type SuiNpcWorldConfig,
+} from "./suiNpcWorldConfig";
 import { normalizeNpcLifecycle, reconcileSuiNpcProfile, type SuiNpcProfileJournal, type SuiNpcProfileResult } from "./suiNpcProfile";
 const { isNpcCharacterID } = require("../_shared/npcIdentityConstants");
 
@@ -176,6 +181,7 @@ async function provisionSuiNpcCharacter(
   if (!chainId) throw new SuiCharacterProvisioningError("NPC_CHAIN_UNAVAILABLE", "A live Localnet chain identity is required for NPC provisioning");
   const baseWorld = { ...identity, chainId };
   const npcWorld = readSuiNpcWorldConfig(baseWorld, options.env);
+  requireSuiWorldCapability(npcWorld, "npc", identity.factionKey);
   if (input.transactionDigest && input.npcWorld && input.npcWorld.fingerprint !== npcWorld.fingerprint) {
     throw new SuiCharacterProvisioningError("NPC_WORLD_CHANGED", "The NPC deployment changed while a Character transaction was pending", { ambiguous: true });
   }

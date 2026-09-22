@@ -28,9 +28,17 @@ function override(value: string | undefined, label: string) {
 export function readSuiIndustryDeployment(synced: WorldIdentity, env: NodeJS.ProcessEnv = process.env): SuiIndustryDeployment {
   const world = { chainId: chain(synced.chainId), worldPackageId: address(synced.packageId, "world package"),
     objectRegistryId: address(synced.objectRegistryId, "object registry"), adminAclId: address(synced.adminAclId, "admin ACL") };
-  const explicit = String(env.EVEJS_SUI_INDUSTRY_CONFIG_PATH || "").trim();
+  const explicit = String(
+    env.EVEJS_SUI_WORLD_FEATURES_CONFIG_PATH ||
+    env.EVEJS_SUI_INDUSTRY_CONFIG_PATH ||
+    "",
+  ).trim();
   const worldPath = String(env.EVEJS_SUI_WORLD_CONFIG_PATH || "").trim();
-  const configPath = explicit ? path.resolve(explicit) : worldPath ? path.join(path.dirname(path.resolve(worldPath)), "npc-deployment.json") : null;
+  const worldDirectory = worldPath ? path.dirname(path.resolve(worldPath)) : null;
+  const featurePath = worldDirectory ? path.join(worldDirectory, "world-features.v1.json") : null;
+  const configPath = explicit ? path.resolve(explicit)
+    : featurePath && fs.existsSync(featurePath) ? featurePath
+      : worldDirectory ? path.join(worldDirectory, "npc-deployment.json") : null;
   let file: Record<string, any> | null = null;
   if (configPath) {
     let raw: any;
@@ -39,10 +47,30 @@ export function readSuiIndustryDeployment(synced: WorldIdentity, env: NodeJS.Pro
       if (error.code !== "ENOENT") throw new Error("Industry deployment config could not be read as JSON", { cause: error });
     }
     if (raw !== undefined) {
-      if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
-          (raw.schemaVersion !== 1 && raw.schemaVersion !== 2 && raw.schemaVersion !== 3)) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
         throw new Error("Industry deployment config has an unsupported schema");
       }
+      if (raw.format === "eve-frontier-world-features" && raw.schemaVersion === 1) {
+        const capability = raw.capabilities && raw.capabilities.smartIndustry;
+        file = capability && capability.status === "deployed"
+          ? {
+              schemaVersion: 1,
+              chainId: chain(raw.chainId),
+              worldPackageId: address(raw.world?.packageId, "world package"),
+              objectRegistryId: address(raw.world?.objectRegistryId, "object registry"),
+              adminAclId: address(raw.world?.adminAclId, "admin ACL"),
+              packageId: address(capability.packageId, "package"),
+              typeOrigin: address(capability.typeOrigin, "type origin"),
+              registryId: address(capability.registryId, "registry"),
+            }
+          : {
+              schemaVersion: 1,
+              chainId: chain(raw.chainId),
+              worldPackageId: address(raw.world?.packageId, "world package"),
+              objectRegistryId: address(raw.world?.objectRegistryId, "object registry"),
+              adminAclId: address(raw.world?.adminAclId, "admin ACL"),
+            };
+      } else if (raw.schemaVersion === 1 || raw.schemaVersion === 2 || raw.schemaVersion === 3) {
       // Validate file identities even when environment overrides take precedence.
       const featureManifest = raw.industryPackageId != null || raw.industryTypeOrigin != null || raw.industryRegistryId != null;
       file = { schemaVersion: raw.schemaVersion, chainId: chain(raw.chainId), worldPackageId: address(raw.worldPackageId, "world package"),
@@ -50,6 +78,9 @@ export function readSuiIndustryDeployment(synced: WorldIdentity, env: NodeJS.Pro
         packageId: address(featureManifest ? raw.industryPackageId : raw.packageId, "package"),
         typeOrigin: address(featureManifest ? raw.industryTypeOrigin : raw.typeOrigin, "type origin"),
         registryId: address(featureManifest ? raw.industryRegistryId : raw.registryId, "registry") };
+      } else {
+        throw new Error("Industry deployment config has an unsupported schema");
+      }
       for (const key of ["chainId", "worldPackageId", "objectRegistryId", "adminAclId"] as const) {
         if (file[key] !== world[key]) throw new Error(`Industry deployment ${key} does not match the synchronized world`);
       }

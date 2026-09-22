@@ -236,10 +236,21 @@ function normalizeTypeDogmaRecord(rawRecord, fallbackTypeID) {
             }
         }
     }
+    const effectEntries = Array.isArray(rawRecord.effectEntries)
+        ? rawRecord.effectEntries
+        : Array.isArray(rawRecord.dogmaEffects)
+            ? rawRecord.dogmaEffects
+            : [];
+    const normalizedEffectEntries = effectEntries
+        .map((entry) => ({
+        effectID: toInt(entry && entry.effectID, 0),
+        isDefault: toInt(entry && entry.isDefault, 0) ? 1 : 0,
+    }))
+        .filter((entry) => entry.effectID > 0);
     const effects = Array.isArray(rawRecord.effects)
         ? rawRecord.effects
-        : Array.isArray(rawRecord.dogmaEffects)
-            ? rawRecord.dogmaEffects.map((entry) => entry && entry.effectID)
+        : normalizedEffectEntries.length
+            ? normalizedEffectEntries.map((entry) => entry.effectID)
             : [];
     const normalizedEffects = effects
         .map((effectID) => toInt(effectID, 0))
@@ -252,6 +263,9 @@ function normalizeTypeDogmaRecord(rawRecord, fallbackTypeID) {
         effectCount: normalizedEffects.length,
         attributes,
         effects: normalizedEffects,
+        effectEntries: normalizedEffectEntries.length
+            ? normalizedEffectEntries
+            : normalizedEffects.map((effectID) => ({ effectID, isDefault: 0 })),
     };
 }
 function normalizeTypeDogmaPayload(payload) {

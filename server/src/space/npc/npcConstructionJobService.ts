@@ -719,6 +719,28 @@ function tickNpcConstructionJob(context) {
     }
   }
 
+  if (definition.assemblyTypeID !== NETWORK_NODE_TYPE_ID && payload.activate !== false &&
+      positiveInt(payload.networkNodeID, 0) > 0) {
+    const nodeItem = itemStore.findItemById(positiveInt(payload.networkNodeID, 0));
+    const nodeStatus = nodeItem && require(path.join(
+      __dirname, "../../services/frontier/networkNodeEnergyRuntime",
+    )).getNetworkNodeEnergyStatus(nodeItem.ownerID, nodeItem.itemID);
+    if (!nodeStatus || !nodeStatus.success) {
+      return suspended("awaiting-network-node", checkpoint, nowMs,
+        nodeStatus?.errorMsg || "NPC_NETWORK_NODE_UNAVAILABLE", 5_000);
+    }
+    const flags = new Set(nodeStatus.data.resourceSignals?.activeFlags || []);
+    if (flags.has("FUEL_EMPTY") || flags.has("POWER_USAGE_OFFLINE")) {
+      return suspended("awaiting-network-node", checkpoint, nowMs,
+        "NPC_NETWORK_NODE_UNAVAILABLE", 5_000);
+    }
+    if (flags.has("POWER_LIMIT_EXCEEDED") ||
+        flags.has("POWER_USAGE_HIGH") && payload.essentialService !== true) {
+      return suspended("awaiting-energy-capacity", checkpoint, nowMs,
+        "NPC_NETWORK_NODE_CAPACITY_RESERVED", 5_000);
+    }
+  }
+
   if (payload.activate !== false && lifecycle.data.state.assemblyStatus !== deploymentRuntime.ASSEMBLY_STATUS_ONLINE) {
     const activation = adapters.requestState(
       actor,
@@ -742,6 +764,9 @@ function tickNpcConstructionJob(context) {
     const registered = adapters.register(actor, checkpoint.assemblyItemID, {
       jobID: job.jobID,
       commandNodeID: payload.commandNodeID,
+      servicePriorityFlags: payload.servicePriorityFlags,
+      essentialService: payload.essentialService,
+      loadSheddingEligible: payload.loadSheddingEligible,
     });
     if (!registered.success) return suspended("register-faction-use", checkpoint, nowMs, registered.errorMsg, 5_000);
     checkpoint.registered = true;
@@ -807,6 +832,12 @@ function createNpcConstructionJob(input: Record<string, any>) {
         materialItemIDs: cloneValue(input.materialItemIDs || input.payload?.materialItemIDs || null),
         fuel: cloneValue(input.fuel || input.payload?.fuel || null),
         commandNodeID: positiveInt(input.commandNodeID || input.payload?.commandNodeID, 0) || null,
+        servicePriorityFlags: cloneValue(
+          input.servicePriorityFlags || input.payload?.servicePriorityFlags || [],
+        ),
+        essentialService: input.essentialService === true || input.payload?.essentialService === true,
+        loadSheddingEligible:
+          input.loadSheddingEligible ?? input.payload?.loadSheddingEligible ?? true,
         activate: input.activate ?? input.payload?.activate ?? true,
         placementMode,
       },

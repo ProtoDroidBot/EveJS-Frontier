@@ -93,6 +93,8 @@ require(path.join(__dirname, "./npcIndustryJobService"))
   .registerNpcIndustryJobHandler();
 require(path.join(__dirname, "./npcStargateMaintenanceService"))
   .registerNpcStargateMaintenanceJobHandlers();
+const npcNetworkNodeCoordinator = require(path.join(__dirname, "./npcNetworkNodeCoordinator"));
+npcNetworkNodeCoordinator.registerNpcNetworkNodeMaintenanceJobHandler();
 const {
   requestNpcSupport,
   registerNpcSupportJobHandlers,
@@ -5495,6 +5497,8 @@ function tickScene(scene, now) {
   if (!scene) {
     return;
   }
+
+  npcNetworkNodeCoordinator.scheduleNpcNetworkNodeReconciliation(scene.systemID, now);
 
   const controllers = listControllersBySystem(scene.systemID);
   if (controllers.length <= 0) {

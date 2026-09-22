@@ -116,10 +116,12 @@ export function createSmartIndustryApi(overrides: Record<string, any> = {}) {
         for (const key of ["assemblyObjectID", "industryObjectID"]) if (/^0x[0-9a-f]{1,64}$/i.test(result[key] || "")) chain[key] = result[key];
         for (const key of ["revision", "observedAtMs", "syncedAtMs"]) if (typeof result[key] === "string" && /^\d+$/.test(result[key])) chain[key] = result[key];
         if (typeof result.productionMirrored === "boolean") chain.productionMirrored = result.productionMirrored;
+        if (typeof result.laneStatesMirrored === "boolean") chain.laneStatesMirrored = result.laneStatesMirrored;
         if (Object.hasOwn(result, "chainProduction")) chain.production = parseIndustryProduction(result.chainProduction);
       }
       if (chain.status === "synced" && (result.synchronized !== true || !chain.industryObjectID || !chain.assemblyObjectID ||
-          chain.productionMirrored !== true || JSON.stringify(chain.production) !== JSON.stringify(latest.data.facility.production) ||
+          chain.productionMirrored !== true || chain.laneStatesMirrored !== true ||
+          JSON.stringify(chain.production) !== JSON.stringify(latest.data.facility.production) ||
           industryFingerprint(latest.data.facility) !== industryFingerprint(context.data.facility))) chain.status = "pending";
       return { success: true as const, data: { ...snapshotData(latest.data.facility), chain } };
     } catch { return failed("INDUSTRY_REQUEST_FAILED"); }

@@ -818,6 +818,8 @@ function buildNativeRuntimeShipSpec(entityRecord, definition = null) {
     playerFittingHullTypeID: toPositiveInt(entityRecord.playerFittingHullTypeID, 0) || null,
     npcFittingProfileID: entityRecord.npcFittingProfileID || null,
     npcFittingRestrictions: cloneValue(entityRecord.npcFittingRestrictions || null),
+    npcFuelRequirementsEnabled:
+      entityRecord.npcFuelRequirementsEnabled === true,
     securityStatus: entityRecord.securityStatus,
     bounty: entityRecord.bounty,
     npcEntityType: entityRecord.npcEntityType,
@@ -873,6 +875,8 @@ function applyNativeRuntimeNpcPresentation(entity, entityRecord, definition = nu
   }
   entity.nativeNpc = true;
   entity.nativeNpcOccupied = true;
+  entity.npcFuelRequirementsEnabled =
+    entityRecord.npcFuelRequirementsEnabled === true;
   for (const key of ["npcCharacterID", "npcIdentitySlot", "npcFactionIdentityKey", "npcIncarnation",
     "npcSuiWalletAddress", "npcSuiCharacterObjectID", "npcSuiPlayerProfileObjectID", "npcSuiNpcProfileObjectID", "npcSuiStatus"]) {
     entity[key] = entityRecord[key] ?? null;
@@ -1307,6 +1311,8 @@ function buildStoredEntityRecordFromRuntimeEntity(entityRecord, runtimeEntity) {
         (entityRecord && entityRecord.conditionState) ||
         {},
     ),
+    npcFuelRequirementsEnabled:
+      runtimeEntity && runtimeEntity.npcFuelRequirementsEnabled === true,
   };
 }
 
@@ -1611,6 +1617,9 @@ function spawnNativeNpcEntityInContext(context, definition, options: Record<stri
           options.npcEquipmentLossPolicy ?? definition.profile.npcEquipmentLossPolicy,
         ).trim().toLowerCase()
       : null,
+    npcFuelRequirementsEnabled:
+      options.npcFuelRequirementsEnabled === true ||
+      definition.profile.npcFuelRequirementsEnabled === true,
     securityStatus: identity.securityStatus,
     bounty: identity.bounty,
     npcEntityType: identity.npcEntityType,
