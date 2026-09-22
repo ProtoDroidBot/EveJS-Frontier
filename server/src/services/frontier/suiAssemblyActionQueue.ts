@@ -7,8 +7,25 @@ import {
   SUI_CLOCK_OBJECT_ID,
 } from "@mysten/sui/utils";
 
-const ACTION_TYPE = "assembly_access::AssemblyAction";
-const ACTION_KEY_TYPE = "assembly_access::AssemblyActionKey";
+type ActionBinding = Readonly<{
+  module: string;
+  objectType: string;
+  keyType: string;
+  queueKeyType: string | null;
+}>;
+
+const CANONICAL_ACTION_BINDING: ActionBinding = Object.freeze({
+  module: "action_queue",
+  objectType: "Action",
+  keyType: "ActionKey",
+  queueKeyType: "AssemblyQueueKey",
+});
+const LEGACY_ACTION_BINDING: ActionBinding = Object.freeze({
+  module: "assembly_access",
+  objectType: "AssemblyAction",
+  keyType: "AssemblyActionKey",
+  queueKeyType: null,
+});
 const MAX_ACTION_BYTES = 16 * 1024;
 const MAX_ACTION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_CLAIM_TTL_MS = 60_000;
@@ -42,6 +59,8 @@ export type SuiAssemblyAction = {
   claimedBy: string | null;
   claimExpiresAtMs: number;
   outcome: any;
+  outcomeBytes: Uint8Array;
+  receiptCommitment: string | null;
   serverAction: boolean;
 };
 
@@ -112,20 +131,104 @@ function addressField(value: any, label: string): string {
   return normalizeSuiAddress(candidate);
 }
 
-function decodeJson(raw: Uint8Array, label: string): any {
+function decodeJsonOrBytes(raw: Uint8Array): any {
   if (!raw.byteLength) return null;
   try { return JSON.parse(Buffer.from(raw).toString("utf8")); }
-  catch { throw new Error(`${label} is not valid JSON`); }
+  catch { return Uint8Array.from(raw); }
 }
 
-function actionObjectID(registryID: string, typeOrigin: string, actionID: string): string {
+function actionBinding(context: any) {
+  const deployment = context.accessDeployment;
+  const legacy = deployment.actionPackageId === deployment.accessPackageId &&
+    deployment.actionTypeOrigin === deployment.accessTypeOrigin &&
+    deployment.actionRegistryId === deployment.accessRegistryId;
+  return legacy ? LEGACY_ACTION_BINDING : CANONICAL_ACTION_BINDING;
+}
+
+function actionObjectID(
+  queueID: string,
+  typeOrigin: string,
+  actionID: string,
+  binding: ActionBinding = CANONICAL_ACTION_BINDING,
+): string {
   return deriveObjectID(
-    normalizeSuiAddress(registryID),
-    `${normalizeSuiAddress(typeOrigin)}::${ACTION_KEY_TYPE}`,
-    bcs.struct("AssemblyActionKey", {
+    normalizeSuiAddress(queueID),
+    `${normalizeSuiAddress(typeOrigin)}::${binding.module}::${binding.keyType}`,
+    bcs.struct(binding.keyType, {
       action_id: bcs.vector(bcs.u8()),
     }).serialize({ action_id: [...uuidBytes(actionID)] }).toBytes(),
   );
+}
+
+function queueObjectID(
+  registryID: string,
+  typeOrigin: string,
+  sourceAssemblyID: string,
+  binding: ActionBinding,
+): string {
+  if (!binding.queueKeyType) return normalizeSuiAddress(registryID);
+  return deriveObjectID(
+    normalizeSuiAddress(registryID),
+    `${normalizeSuiAddress(typeOrigin)}::${binding.module}::${binding.queueKeyType}`,
+    bcs.struct(binding.queueKeyType, { assembly_id: bcs.Address })
+      .serialize({ assembly_id: normalizeSuiAddress(sourceAssemblyID) }).toBytes(),
+  );
+}
+
+/**
+ * Materialize deterministic queue roots during assembly reconciliation. The
+ * registry is touched only for this one-time initialization; normal enqueue,
+ * claim, and completion traffic stays on each assembly's queue root.
+ */
+export async function ensureSuiAssemblyActionQueues(
+  context: any,
+  assemblyObjectIDs: string[],
+): Promise<void> {
+  const binding = actionBinding(context);
+  if (!binding.queueKeyType || !assemblyObjectIDs.length) return;
+  const registryID = normalizeSuiAddress(context.accessDeployment.actionRegistryId);
+  const typeOrigin = normalizeSuiAddress(context.accessDeployment.actionTypeOrigin);
+  const expectedType = `${typeOrigin}::${binding.module}::AssemblyActionQueue`;
+  const entries = [...new Set(assemblyObjectIDs.map(value => normalizeSuiAddress(value)))].map(assemblyID => ({
+    assemblyID,
+    queueID: queueObjectID(registryID, typeOrigin, assemblyID, binding),
+  }));
+  for (let offset = 0; offset < entries.length; offset += 50) {
+    const batch = entries.slice(offset, offset + 50);
+    await context.assertCurrent();
+    const responses = await context.client.multiGetObjects({
+      ids: batch.map(entry => entry.queueID),
+      options: { showContent: true, showType: true },
+    });
+    const missing: typeof batch = [];
+    for (let index = 0; index < batch.length; index++) {
+      const response = responses[index];
+      const content = response?.data?.content;
+      if (response?.error?.code === "notExists") {
+        missing.push(batch[index]);
+      } else if (response?.error || content?.dataType !== "moveObject" || content.type !== expectedType) {
+        throw new Error(`Action queue root ${batch[index].queueID} conflicts with this deployment`);
+      }
+    }
+    if (!missing.length) continue;
+    const transaction = new Transaction();
+    for (const entry of missing) {
+      transaction.moveCall({
+        target: `${normalizeSuiAddress(context.accessDeployment.actionPackageId)}::${binding.module}::create_server_queue`,
+        arguments: [
+          transaction.object(registryID),
+          transaction.object(context.world.serverAddressRegistryId),
+          transaction.pure.address(entry.assemblyID),
+        ],
+      });
+    }
+    await context.assertCurrent();
+    await context.executor.execute(
+      `initialize ${missing.length} assembly action queue${missing.length === 1 ? "" : "s"}`,
+      transaction,
+    );
+    await context.assertCurrent();
+  }
 }
 
 export function createSuiAssemblyActionQueueBridge(options: {
@@ -147,8 +250,8 @@ export function createSuiAssemblyActionQueueBridge(options: {
         code: "ASSEMBLY_ACTION_CHAIN_UNAVAILABLE",
       });
       await context.assertCurrent();
-      if (!context.accessDeployment?.accessRegistryId ||
-          !context.accessDeployment?.accessPackageId ||
+      if (!context.accessDeployment?.actionRegistryId ||
+          !context.accessDeployment?.actionPackageId ||
           !context.world?.serverAddressRegistryId) {
         throw Object.assign(new Error("Assembly action deployment is unavailable"), {
           code: "ASSEMBLY_ACTION_CHAIN_UNAVAILABLE",
@@ -175,7 +278,8 @@ export function createSuiAssemblyActionQueueBridge(options: {
   }
 
   function target(context: any, fn: string): `${string}::${string}::${string}` {
-    return `${normalizeSuiAddress(context.accessDeployment.accessPackageId)}::assembly_access::${fn}`;
+    const binding = actionBinding(context);
+    return `${normalizeSuiAddress(context.accessDeployment.actionPackageId)}::${binding.module}::${fn}`;
   }
 
   async function execute(context: any, label: string, transaction: Transaction) {
@@ -192,7 +296,8 @@ export function createSuiAssemblyActionQueueBridge(options: {
       options: { showContent: true, showOwner: true, showType: true },
     });
     const content = response.data?.content;
-    const expectedType = `${normalizeSuiAddress(context.accessDeployment.accessTypeOrigin)}::${ACTION_TYPE}`;
+    const binding = actionBinding(context);
+    const expectedType = `${normalizeSuiAddress(context.accessDeployment.actionTypeOrigin)}::${binding.module}::${binding.objectType}`;
     if (response.error || content?.dataType !== "moveObject" || content.type !== expectedType) {
       throw Object.assign(new Error("Assembly action is not present in this Sui deployment"), {
         code: "ASSEMBLY_ACTION_NOT_FOUND",
@@ -212,6 +317,20 @@ export function createSuiAssemblyActionQueueBridge(options: {
     const targetAssemblyObjectID = addressField(fields.target_assembly_id, "Action target");
     const claimedBy = normalizeSuiAddress(String(fields.claimed_by || "0x0"));
     const outcomeBytes = Uint8Array.from(Array.isArray(fields.outcome) ? fields.outcome : []);
+    const receiptCommitment = Uint8Array.from(
+      Array.isArray(fields.receipt_commitment) ? fields.receipt_commitment : [],
+    );
+    if (receiptCommitment.length !== 0 && receiptCommitment.length !== 32) {
+      throw Object.assign(new Error("Assembly action receipt commitment is invalid"), {
+        code: "ASSEMBLY_ACTION_COMMITMENT_INVALID",
+      });
+    }
+    if (receiptCommitment.length === 32 &&
+        !Buffer.from(receiptCommitment).equals(Buffer.from(hash(outcomeBytes)))) {
+      throw Object.assign(new Error("Assembly action receipt commitment does not match"), {
+        code: "ASSEMBLY_ACTION_COMMITMENT_INVALID",
+      });
+    }
     return {
       actionObjectID: id,
       actionID: bytesUuid(fields.action_id),
@@ -221,7 +340,7 @@ export function createSuiAssemblyActionQueueBridge(options: {
       targetAssemblyID: localID(context, targetAssemblyObjectID),
       creator: normalizeSuiAddress(String(fields.creator)),
       actionType: Buffer.from(Array.isArray(fields.action_type) ? fields.action_type : []).toString("utf8"),
-      payload: decodeJson(payloadBytes, "Assembly action payload"),
+      payload: decodeJsonOrBytes(payloadBytes),
       payloadBytes,
       payloadCommitment: Buffer.from(commitment).toString("hex"),
       priority: safeInteger(fields.priority, "Assembly action priority"),
@@ -232,7 +351,10 @@ export function createSuiAssemblyActionQueueBridge(options: {
       revision: safeInteger(fields.revision, "Assembly action revision"),
       claimedBy: claimedBy === normalizeSuiAddress("0x0") ? null : claimedBy,
       claimExpiresAtMs: safeInteger(fields.claim_expires_at_ms, "Assembly action claim expiry"),
-      outcome: decodeJson(outcomeBytes, "Assembly action outcome"),
+      outcome: decodeJsonOrBytes(outcomeBytes),
+      outcomeBytes,
+      receiptCommitment: receiptCommitment.length
+        ? Buffer.from(receiptCommitment).toString("hex") : null,
       serverAction: fields.server_action === true,
     };
   }
@@ -252,10 +374,18 @@ export function createSuiAssemblyActionQueueBridge(options: {
         }
         const sourceAssemblyObjectID = localObject(context, request.sourceAssemblyID);
         const targetAssemblyObjectID = localObject(context, request.targetAssemblyID);
+        const binding = actionBinding(context);
+        const queueID = queueObjectID(
+          context.accessDeployment.actionRegistryId,
+          context.accessDeployment.actionTypeOrigin,
+          sourceAssemblyObjectID,
+          binding,
+        );
         const expectedObjectID = actionObjectID(
-          context.accessDeployment.accessRegistryId,
-          context.accessDeployment.accessTypeOrigin,
+          queueID,
+          context.accessDeployment.actionTypeOrigin,
           actionID,
+          binding,
         );
         try {
           const existing = await read(context, expectedObjectID);
@@ -278,9 +408,9 @@ export function createSuiAssemblyActionQueueBridge(options: {
         transaction.moveCall({
           target: target(context, "queue_server_action"),
           arguments: [
-            transaction.object(context.accessDeployment.accessRegistryId),
+            transaction.object(queueID),
             transaction.object(context.world.serverAddressRegistryId),
-            transaction.pure.address(sourceAssemblyObjectID),
+            ...(binding.queueKeyType ? [] : [transaction.pure.address(sourceAssemblyObjectID)]),
             transaction.pure.address(targetAssemblyObjectID),
             pureBytes(transaction, uuidBytes(actionID)),
             pureBytes(transaction, actionType),

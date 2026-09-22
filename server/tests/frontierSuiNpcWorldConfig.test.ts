@@ -22,6 +22,21 @@ const config = () => ({
   industryPackageId: address(14), industryTypeOrigin: address(14), industryRegistryId: address(15),
   transponderPackageId: address(16), transponderTypeOrigin: address(16), transponderRegistryId: address(17),
 });
+const configV2 = () => ({
+  ...config(),
+  schemaVersion: 2,
+  actionPackageId: address(18), actionTypeOrigin: address(18), actionRegistryId: address(19),
+  industryActionsPackageId: address(20),
+  industryActionsTypeOrigin: address(20),
+  industryActionsRegistryId: address(21),
+});
+const configV3 = () => ({
+  ...configV2(),
+  schemaVersion: 3,
+  logisticsPackageId: address(22), logisticsTypeOrigin: address(22), logisticsRegistryId: address(23),
+  infrastructurePackageId: address(24), infrastructureTypeOrigin: address(24), infrastructureRegistryId: address(25),
+  automationPackageId: address(26), automationTypeOrigin: address(26), automationRegistryId: address(27),
+});
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "npc-deployment-test-"));
@@ -44,6 +59,11 @@ test("fresh NPC deployments default to the original world while upgrades separat
   assert.equal(initial.accessPackageId, world.packageId);
   assert.equal(initial.accessTypeOrigin, world.packageId);
   assert.equal(initial.accessRegistryId, world.objectRegistryId);
+  assert.equal(initial.actionPackageId, world.packageId);
+  assert.equal(initial.actionRegistryId, world.objectRegistryId);
+  assert.equal(initial.logisticsPackageId, world.packageId);
+  assert.equal(initial.infrastructurePackageId, world.packageId);
+  assert.equal(initial.automationPackageId, world.packageId);
   assert.equal(initial.catapultPackageId, world.packageId);
   assert.equal(initial.catapultRegistryId, world.objectRegistryId);
   assert.equal(initial.transponderPackageId, world.packageId);
@@ -80,6 +100,15 @@ test("public NPC config normalizes addresses without mutating base world or pers
   assert.equal(result.accessPackageId, address(10));
   assert.equal(result.accessTypeOrigin, address(9));
   assert.equal(result.accessRegistryId, address(11));
+  assert.equal(result.actionPackageId, address(10));
+  assert.equal(result.actionTypeOrigin, address(9));
+  assert.equal(result.actionRegistryId, address(11));
+  assert.equal(result.industryActionsPackageId, address(14));
+  assert.equal(result.industryActionsTypeOrigin, address(14));
+  assert.equal(result.industryActionsRegistryId, address(15));
+  assert.equal(result.logisticsPackageId, address(10));
+  assert.equal(result.infrastructurePackageId, address(10));
+  assert.equal(result.automationPackageId, address(10));
   assert.equal(result.catapultPackageId, address(12));
   assert.equal(result.catapultRegistryId, address(13));
   assert.equal(result.transponderPackageId, address(16));
@@ -87,12 +116,72 @@ test("public NPC config normalizes addresses without mutating base world or pers
   assert.deepEqual(world, captured);
   assert.deepEqual(Object.keys(result).sort(), [
     "accessPackageId", "accessRegistryId", "accessTypeOrigin",
+    "actionPackageId", "actionRegistryId", "actionTypeOrigin",
+    "automationPackageId", "automationRegistryId", "automationTypeOrigin",
     "catapultPackageId", "catapultRegistryId", "catapultTypeOrigin",
-    "fingerprint", "npcPackageId", "npcRegistryId", "npcTypeOrigin",
+    "fingerprint",
+    "industryActionsPackageId", "industryActionsRegistryId", "industryActionsTypeOrigin",
+    "infrastructurePackageId", "infrastructureRegistryId", "infrastructureTypeOrigin",
+    "logisticsPackageId", "logisticsRegistryId", "logisticsTypeOrigin",
+    "npcPackageId", "npcRegistryId", "npcTypeOrigin",
     "transponderPackageId", "transponderRegistryId", "transponderTypeOrigin",
   ]);
   f.write(config());
   assert.equal(readSuiNpcWorldConfig(world, f.env).fingerprint, result.fingerprint);
+});
+
+test("schema-v3 feature bindings and overrides select all action contract groups", t => {
+  const f = fixture(t);
+  f.write(configV3());
+  const deployed = readSuiNpcWorldConfig(world, f.env);
+  assert.equal(deployed.logisticsPackageId, address(22));
+  assert.equal(deployed.logisticsRegistryId, address(23));
+  assert.equal(deployed.infrastructurePackageId, address(24));
+  assert.equal(deployed.infrastructureRegistryId, address(25));
+  assert.equal(deployed.automationPackageId, address(26));
+  assert.equal(deployed.automationRegistryId, address(27));
+  const overridden = readSuiNpcWorldConfig(world, {
+    ...f.env,
+    EVEJS_SUI_LOGISTICS_ACTIONS_PACKAGE_ID: "0x1c",
+    EVEJS_SUI_LOGISTICS_ACTIONS_TYPE_ORIGIN: "0x16",
+    EVEJS_SUI_LOGISTICS_ACTIONS_REGISTRY_ID: "0x1d",
+    EVEJS_SUI_INFRASTRUCTURE_ACTIONS_PACKAGE_ID: "0x1e",
+    EVEJS_SUI_INFRASTRUCTURE_ACTIONS_TYPE_ORIGIN: "0x18",
+    EVEJS_SUI_INFRASTRUCTURE_ACTIONS_REGISTRY_ID: "0x1f",
+    EVEJS_SUI_AUTOMATION_PACKAGE_ID: "0x20",
+    EVEJS_SUI_AUTOMATION_TYPE_ORIGIN: "0x1a",
+    EVEJS_SUI_AUTOMATION_REGISTRY_ID: "0x21",
+  });
+  assert.equal(overridden.logisticsPackageId, address(28));
+  assert.equal(overridden.logisticsRegistryId, address(29));
+  assert.equal(overridden.infrastructurePackageId, address(30));
+  assert.equal(overridden.infrastructureRegistryId, address(31));
+  assert.equal(overridden.automationPackageId, address(32));
+  assert.equal(overridden.automationRegistryId, address(33));
+});
+
+test("schema-v2 feature bindings and per-field overrides select the canonical action packages", t => {
+  const f = fixture(t);
+  f.write(configV2());
+  const deployed = readSuiNpcWorldConfig(world, f.env);
+  assert.equal(deployed.actionPackageId, address(18));
+  assert.equal(deployed.actionTypeOrigin, address(18));
+  assert.equal(deployed.actionRegistryId, address(19));
+  assert.equal(deployed.industryActionsPackageId, address(20));
+  assert.equal(deployed.industryActionsRegistryId, address(21));
+  const overridden = readSuiNpcWorldConfig(world, {
+    ...f.env,
+    EVEJS_SUI_ACTION_QUEUE_PACKAGE_ID: "0x16",
+    EVEJS_SUI_ACTION_QUEUE_TYPE_ORIGIN: "0x12",
+    EVEJS_SUI_ACTION_QUEUE_REGISTRY_ID: "0x17",
+    EVEJS_SUI_INDUSTRY_ACTIONS_PACKAGE_ID: "0x18",
+    EVEJS_SUI_INDUSTRY_ACTIONS_TYPE_ORIGIN: "0x14",
+    EVEJS_SUI_INDUSTRY_ACTIONS_REGISTRY_ID: "0x19",
+  });
+  assert.equal(overridden.actionPackageId, address(22));
+  assert.equal(overridden.actionRegistryId, address(23));
+  assert.equal(overridden.industryActionsPackageId, address(24));
+  assert.equal(overridden.industryActionsRegistryId, address(25));
 });
 
 test("per-field NPC environment overrides cannot mask an invalid deployment file", t => {
@@ -132,7 +221,7 @@ test("NPC config is bound to the exact base chain, world, registry and ACL", t =
 
 test("malformed NPC config and invalid address overrides reject rather than selecting defaults", t => {
   const f = fixture(t);
-  for (const raw of [null, [], {}, { ...config(), schemaVersion: 2 }, { ...config(), chainId: "invalid" }]) {
+  for (const raw of [null, [], {}, { ...config(), schemaVersion: 4 }, { ...config(), chainId: "invalid" }]) {
     f.write(raw);
     assert.throws(() => readSuiNpcWorldConfig(world, f.env), /NPC deployment/);
   }
@@ -152,6 +241,21 @@ test("malformed NPC config and invalid address overrides reject rather than sele
     "EVEJS_SUI_TRANSPONDER_PACKAGE_ID",
     "EVEJS_SUI_TRANSPONDER_TYPE_ORIGIN",
     "EVEJS_SUI_TRANSPONDER_REGISTRY_ID",
+    "EVEJS_SUI_ACTION_QUEUE_PACKAGE_ID",
+    "EVEJS_SUI_ACTION_QUEUE_TYPE_ORIGIN",
+    "EVEJS_SUI_ACTION_QUEUE_REGISTRY_ID",
+    "EVEJS_SUI_INDUSTRY_ACTIONS_PACKAGE_ID",
+    "EVEJS_SUI_INDUSTRY_ACTIONS_TYPE_ORIGIN",
+    "EVEJS_SUI_INDUSTRY_ACTIONS_REGISTRY_ID",
+    "EVEJS_SUI_LOGISTICS_ACTIONS_PACKAGE_ID",
+    "EVEJS_SUI_LOGISTICS_ACTIONS_TYPE_ORIGIN",
+    "EVEJS_SUI_LOGISTICS_ACTIONS_REGISTRY_ID",
+    "EVEJS_SUI_INFRASTRUCTURE_ACTIONS_PACKAGE_ID",
+    "EVEJS_SUI_INFRASTRUCTURE_ACTIONS_TYPE_ORIGIN",
+    "EVEJS_SUI_INFRASTRUCTURE_ACTIONS_REGISTRY_ID",
+    "EVEJS_SUI_AUTOMATION_PACKAGE_ID",
+    "EVEJS_SUI_AUTOMATION_TYPE_ORIGIN",
+    "EVEJS_SUI_AUTOMATION_REGISTRY_ID",
   ]) {
     for (const value of ["not-an-address", "0x0", `0x${"a".repeat(65)}`]) {
       assert.throws(() => readSuiNpcWorldConfig(world, { ...f.env, [key]: value }), /Sui address/);
@@ -163,6 +267,26 @@ test("feature deployment registries are required with their packages", t => {
   const f = fixture(t);
   for (const key of ["npcRegistryId", "accessRegistryId", "catapultRegistryId", "transponderRegistryId"]) {
     const value = config();
+    delete value[key];
+    f.write(value);
+    assert.throws(() => readSuiNpcWorldConfig(world, f.env), /Sui address/);
+  }
+});
+
+test("schema-v2 action registries are required with their packages", t => {
+  const f = fixture(t);
+  for (const key of ["actionRegistryId", "industryActionsRegistryId"]) {
+    const value = configV2();
+    delete value[key];
+    f.write(value);
+    assert.throws(() => readSuiNpcWorldConfig(world, f.env), /Sui address/);
+  }
+});
+
+test("schema-v3 action registries are required with their packages", t => {
+  const f = fixture(t);
+  for (const key of ["logisticsRegistryId", "infrastructureRegistryId", "automationRegistryId"]) {
+    const value = configV3();
     delete value[key];
     f.write(value);
     assert.throws(() => readSuiNpcWorldConfig(world, f.env), /Sui address/);

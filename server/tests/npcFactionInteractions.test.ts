@@ -19,7 +19,6 @@ function buildNpc(itemID, factionID, options: Record<string, any> = {}) {
     npcFactionKey: options.npcFactionKey || null,
     npcProfileID: options.npcProfileID || null,
     spawnGroupID: options.spawnGroupID || null,
-    npcTransponderCode: options.npcTransponderCode || null,
     warFactionID: factionID,
     corporationID: options.corporationID || (1_000_000 + factionID),
     ownerID: options.corporationID || (1_000_000 + factionID),
@@ -58,6 +57,7 @@ test("NPC faction config loads the shipped faction and relation matrix", () => {
   assert.equal(summary.transponderEnabled, true);
   assert.equal(summary.transponderChannel, "code");
   assert.equal(summary.transponderSignalCount, 20);
+  assert.equal(summary.transponderSuffixCount, 0);
   assert.equal(summary.suiWalletFundingEnabled, true);
   assert.equal(summary.suiWalletBudgetMist, "10000000000");
   assert.equal(summary.relationRuleCount, 4);
@@ -74,7 +74,7 @@ test("NPC faction config loads the shipped faction and relation matrix", () => {
   assert.equal(config.defaults.hardwarePolicy.equipmentLossPolicy, "return");
 });
 
-test("NPC spawn groups receive stable, distinct configured transponder codes", () => {
+test("NPCs in one faction share a stable code across spawn groups", () => {
   const firstGroupMember = buildNpc(91_600_001, 500010, {
     spawnGroupID: "guristas_gate_patrol",
   });
@@ -97,35 +97,65 @@ test("NPC spawn groups receive stable, distinct configured transponder codes", (
   assert.equal(first.channel, "code");
   assert.equal(first.signal, "GURISTAS");
   assert.equal(first.code, second.code);
-  assert.notEqual(first.code, other.code);
+  assert.equal(first.code, other.code);
+  assert.equal(first.factionIdentity, "faction:id:500010");
+  assert.equal(first.code, "GURISTAS");
   assert.equal(frontier.signal, "OKRYDA");
+  assert.notEqual(first.code, frontier.code);
   assert.ok(frontier.code.length <= iffRuntime.IFF_CODE_MAX_LENGTH);
   assert.equal(
     frontier.code,
     iffRuntime.resolveNpcTransponder(frontierGroupMember).code,
-    "long group identities must hash to a deterministic client-sized code",
+    "the faction code must remain deterministic regardless of spawn metadata",
   );
 });
 
-test("NPC transponder grouping falls back from spawn group to profile then faction", () => {
+test("NPC transponders require a configured faction and ignore profile metadata", () => {
   const profiled = buildNpc(91_700_001, 500024, {
     npcProfileID: "drifter_lancer",
   });
   const factionOnly = buildNpc(91_700_002, 500024);
+  const legacyProfile = buildNpc(91_700_004, 0, {
+    npcProfileID: "legacy_lancer",
+  });
 
   assert.equal(
     npcFactionConfig.resolveNpcTransponderGroupIdentity(profiled),
-    "profile:drifter_lancer",
+    "faction:id:500024",
   );
   assert.equal(
     npcFactionConfig.resolveNpcTransponderGroupIdentity(factionOnly),
     "faction:id:500024",
   );
-  assert.notEqual(
+  assert.equal(
     iffRuntime.resolveNpcTransponder(profiled).code,
     iffRuntime.resolveNpcTransponder(factionOnly).code,
   );
+  assert.equal(
+    npcFactionConfig.resolveNpcTransponderGroupIdentity(legacyProfile),
+    null,
+  );
+  assert.equal(iffRuntime.resolveNpcTransponder(legacyProfile), null);
   assert.equal(iffRuntime.resolveNpcTransponder(buildPlayer(91_700_003, 12345)), null);
+});
+
+test("faction transponder codes support one validated shared suffix", () => {
+  const code = iffRuntime.buildNpcTransponderCode(
+    "GURISTAS",
+    "scout",
+  );
+  assert.equal(code, "GURISTAS:SCOUT");
+  assert.ok(code.length <= iffRuntime.IFF_CODE_MAX_LENGTH);
+  assert.equal(
+    iffRuntime.buildNpcTransponderCode(
+      "TRIGLAVIAN",
+      "expeditionary-wing",
+    ),
+    iffRuntime.buildNpcTransponderCode(
+      "TRIGLAVIAN",
+      "expeditionary-wing",
+    ),
+  );
 });
 
 test("Frontier faction keys separate NPC groups that share legacy IDs and corporations", () => {
@@ -178,6 +208,65 @@ test("NPC faction config validates relation identities and disposition values", 
   const normalized = npcFactionConfig.validateConfig(base);
   assert.equal(normalized.defaults.hardwarePolicy.allowPlayerOwned, true);
   assert.ok(normalized.defaults.hardwarePolicy.allowedRoles.includes("mining"));
+  const suffixed = npcFactionConfig.validateConfig({
+    ...base,
+    transponder: { enabled: true, channel: "code" },
+    factions: [{
+      factionID: 500010,
+      name: "Guristas Pirates",
+      transponderSignal: "guristas",
+      transponderSuffix: "shared_wing",
+    }],
+  });
+  assert.equal(suffixed.factions[0].transponderSuffix, "SHARED_WING");
+  assert.throws(
+    () => npcFactionConfig.validateConfig({
+      ...base,
+      transponder: { enabled: true, channel: "code" },
+      factions: [{
+        factionID: 500010,
+        name: "Missing Signal",
+      }],
+    }),
+    /transponderSignal is required/,
+  );
+  assert.throws(
+    () => npcFactionConfig.validateConfig({
+      ...base,
+      transponder: { enabled: true, channel: "code" },
+      factions: [
+        { factionID: 500010, name: "First", transponderSignal: "SHARED" },
+        { factionID: 500011, name: "Second", transponderSignal: "shared" },
+      ],
+    }),
+    /duplicate faction transponderSignal/,
+  );
+  assert.throws(
+    () => npcFactionConfig.validateConfig({
+      ...base,
+      transponder: { enabled: true, channel: "code" },
+      factions: [{
+        factionID: 500010,
+        name: "Oversized Code",
+        transponderSignal: "12345678901234567890",
+        transponderSuffix: "TWELVE-CHARS",
+      }],
+    }),
+    /32-character client code limit/,
+  );
+  assert.throws(
+    () => npcFactionConfig.validateConfig({
+      ...base,
+      transponder: { enabled: true, channel: "code" },
+      factions: [{
+        factionID: 500010,
+        name: "Guristas Pirates",
+        transponderSignal: "GURISTAS",
+        transponderSuffix: "not shared!",
+      }],
+    }),
+    /transponderSuffix/,
+  );
   assert.throws(
     () => npcFactionConfig.validateConfig({
       ...base,
@@ -294,9 +383,8 @@ test("matching transponder codes identify players and NPCs as allies", () => {
   const unidentifiedPlayer = buildPlayer(92_500_003, 12_346, {
     iffTransponder: { channel: "code", code: "WRONG-CODE" },
   });
-  const identifiedRivalNpc = buildNpc(92_500_004, 500001, {
-    spawnGroupID: "caldari_patrol",
-    npcTransponderCode: expectedCode,
+  const identifiedFactionNpc = buildNpc(92_500_004, 500010, {
+    spawnGroupID: "guristas_belt_patrol",
   });
 
   assert.equal(
@@ -310,11 +398,11 @@ test("matching transponder codes identify players and NPCs as allies", () => {
   assert.equal(npcBehaviorLoop.__testing.isFriendlyCombatTarget(source, identifiedPlayer), true);
   assert.equal(npcBehaviorLoop.__testing.isFriendlyCombatTarget(source, unidentifiedPlayer), false);
   assert.equal(
-    npcFactionConfig.resolveNpcFactionDisposition(source, identifiedRivalNpc),
+    npcFactionConfig.resolveNpcFactionDisposition(source, identifiedFactionNpc),
     "friendly",
-    "matching codes take precedence over hostile faction relations",
+    "all spawn groups in one faction use the same code",
   );
-  assert.equal(npcBehaviorLoop.__testing.isFriendlyCombatTarget(source, identifiedRivalNpc), true);
+  assert.equal(npcBehaviorLoop.__testing.isFriendlyCombatTarget(source, identifiedFactionNpc), true);
 });
 
 test("an attack attempt against a transponder ally escalates suspicious contacts", () => {

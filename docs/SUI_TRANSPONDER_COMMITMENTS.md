@@ -37,6 +37,8 @@ const transaction = createSuiTribeTransponderAuthorTransaction({
 
 Sign the transaction with the Character wallet. For an NPC faction, use the faction wallet, its `NpcProfile`, and `createSuiFactionTransponderAuthorTransaction`.
 
+The runtime derives one plaintext code per canonical NPC faction using the current testing format `FACTION` or `FACTION:SHARED_SUFFIX`. An optional `transponderSuffix` in `npc-factions.config.json` is faction-wide rather than per spawn group; when present it is part of the plaintext code before commitment hashing. The on-chain scope remains the canonical faction, so spawn groups and behavior profiles neither create separate commitments nor reveal the code or suffix on chain. External code discovery/interrogation is intentionally deferred.
+
 For a rotation, read and validate the current record, compute a commitment with `revision = current revision + 1`, and submit `createSuiTransponderRotateTransaction` with `expectedRevision = current revision`. Never reuse a salt.
 
 After fetching a chain object, call `parseSuiTransponderCommitmentObject`. It verifies the derived ID, original Move type, shared ownership, registry, tenant, scope, hash scheme, and state shape. Then call `verifySuiTransponderCommitment` with the private bundle. A revoked record has an empty commitment and cannot verify until its authority rotates it.

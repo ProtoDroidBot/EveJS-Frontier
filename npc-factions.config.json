@@ -10,13 +10,7 @@
   },
   "transponder": {
     "enabled": true,
-    "channel": "code",
-    "defaultSignal": "NPC",
-    "groupIdentityFields": [
-      "spawnGroupID",
-      "profileID",
-      "faction"
-    ]
+    "channel": "code"
   },
   "defaults": {
     "sameFactionDisposition": "friendly",

@@ -1762,7 +1762,7 @@ test("IFF verdicts distinguish friendly, unfriendly, and unknown broadcasts", ()
         [3, false],
     ]);
 });
-test("IFF verdict population includes native NPC group broadcasts", () => {
+test("IFF verdict population unifies native NPC faction broadcasts", () => {
     const matchingNpc = {
         itemID: 5,
         kind: "ship",
@@ -1797,7 +1797,7 @@ test("IFF verdict population includes native NPC group broadcasts", () => {
     };
     assert.deepEqual(buildVerdictsForViewer(viewer, [viewer, ...npcShips]), [
         [matchingNpc.itemID, true],
-        [otherNpc.itemID, false],
+        [otherNpc.itemID, true],
     ]);
 });
 // ── Phase 3: directional scanner ─────────────────────────────────────────

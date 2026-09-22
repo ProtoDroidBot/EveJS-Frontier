@@ -74,7 +74,7 @@ test("chain, world package, registry, and ACL mismatches fail closed", t => {
 
 test("malformed schemas and all supplied environment identities reject instead of falling back", t => {
   const f = fixture(t);
-  for (const value of [null, [], {}, { ...config(), schemaVersion: 2 }, { ...config(), chainId: "not-a-chain" }]) {
+  for (const value of [null, [], {}, { ...config(), schemaVersion: 4 }, { ...config(), chainId: "not-a-chain" }]) {
     f.write(value);
     assert.throws(() => readSuiIndustryDeployment(world, f.env), /Industry deployment/);
   }
@@ -86,6 +86,12 @@ test("malformed schemas and all supplied environment identities reject instead o
       assert.throws(() => readSuiIndustryDeployment(world, { ...f.env, [key]: value }), /Sui address/);
     }
   }
+});
+
+test("schema-v3 deployment manifests remain valid Smart Industry sources", t => {
+  const f = fixture(t);
+  f.write({ ...config(), schemaVersion: 3 });
+  assert.equal(readSuiIndustryDeployment(world, f.env).industryPackageId, address(8));
 });
 
 test("explicit config path replaces sibling lookup and absent override files retain fallback", t => {

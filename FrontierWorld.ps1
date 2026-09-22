@@ -726,7 +726,8 @@ function Read-NpcDeployment {
         throw 'NPC deployment metadata is malformed JSON.'
     }
     if ($manifest -isnot [Collections.IDictionary] -or
-        $manifest.schemaVersion -isnot [long] -or $manifest.schemaVersion -ne 1) {
+        $manifest.schemaVersion -isnot [long] -or
+        $manifest.schemaVersion -notin @(1, 2, 3)) {
         throw 'NPC deployment metadata has an unsupported schema.'
     }
     if ($manifest.chainId -isnot [string] -or
@@ -735,7 +736,7 @@ function Read-NpcDeployment {
         throw 'NPC deployment chainId does not match the synchronized world.'
     }
     # Copy only the public runtime schema; never propagate extra source fields.
-    $validated = [ordered]@{ schemaVersion = 1; chainId = $ChainId }
+    $validated = [ordered]@{ schemaVersion = [long]$manifest.schemaVersion; chainId = $ChainId }
     $runtimeFields = @(
         'worldPackageId', 'objectRegistryId', 'adminAclId',
         'packageId', 'typeOrigin', 'npcRegistryId',
@@ -744,6 +745,21 @@ function Read-NpcDeployment {
         'industryPackageId', 'industryTypeOrigin', 'industryRegistryId',
         'transponderPackageId', 'transponderTypeOrigin', 'transponderRegistryId'
     )
+    if ($manifest.schemaVersion -eq 2) {
+        $runtimeFields += @(
+            'actionPackageId', 'actionTypeOrigin', 'actionRegistryId',
+            'industryActionsPackageId', 'industryActionsTypeOrigin', 'industryActionsRegistryId'
+        )
+    }
+    if ($manifest.schemaVersion -eq 3) {
+        $runtimeFields += @(
+            'actionPackageId', 'actionTypeOrigin', 'actionRegistryId',
+            'industryActionsPackageId', 'industryActionsTypeOrigin', 'industryActionsRegistryId',
+            'logisticsPackageId', 'logisticsTypeOrigin', 'logisticsRegistryId',
+            'infrastructurePackageId', 'infrastructureTypeOrigin', 'infrastructureRegistryId',
+            'automationPackageId', 'automationTypeOrigin', 'automationRegistryId'
+        )
+    }
     foreach ($field in $runtimeFields) {
         if ($manifest[$field] -isnot [string]) {
             throw "NPC deployment $field must be a canonical nonzero Sui address."

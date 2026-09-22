@@ -15,12 +15,9 @@ const UNIDENTIFIED_DISPOSITIONS = new Set([
   "suspicious",
 ]);
 const NPC_TRANSPONDER_CHANNELS = new Set(["code"]);
-const NPC_TRANSPONDER_GROUP_FIELDS = new Set([
-  "spawnGroupID",
-  "profileID",
-  "faction",
-]);
 const NPC_TRANSPONDER_SIGNAL_MAX_LENGTH = 20;
+const NPC_TRANSPONDER_SUFFIX_MAX_LENGTH = 20;
+const NPC_TRANSPONDER_CODE_MAX_LENGTH = 32;
 const NPC_EQUIPMENT_ROLES = new Set([
   "weapon",
   "ammunition",
@@ -151,13 +148,26 @@ function normalizeTransponderSignal(value, fieldName) {
   return normalized;
 }
 
+function normalizeTransponderSuffix(value, fieldName) {
+  const normalized = nonEmptyText(value, fieldName).toUpperCase();
+  if (normalized.length > NPC_TRANSPONDER_SUFFIX_MAX_LENGTH) {
+    throw new TypeError(
+      `${fieldName} must be at most ${NPC_TRANSPONDER_SUFFIX_MAX_LENGTH} characters`,
+    );
+  }
+  if (!/^[A-Z0-9][A-Z0-9_-]*$/.test(normalized)) {
+    throw new TypeError(
+      `${fieldName} must contain only letters, numbers, underscores, or hyphens`,
+    );
+  }
+  return normalized;
+}
+
 function normalizeNpcTransponderConfig(value) {
   if (value == null) {
     return {
       enabled: false,
       channel: "code",
-      defaultSignal: "NPC",
-      groupIdentityFields: ["spawnGroupID", "profileID", "faction"],
     };
   }
   const source = assertRecord(value, "transponder");
@@ -171,37 +181,9 @@ function normalizeNpcTransponderConfig(value) {
   if (!NPC_TRANSPONDER_CHANNELS.has(channel)) {
     throw new TypeError("transponder.channel must be code");
   }
-  const rawGroupIdentityFields = source.groupIdentityFields == null
-    ? ["spawnGroupID", "profileID", "faction"]
-    : source.groupIdentityFields;
-  if (!Array.isArray(rawGroupIdentityFields) || rawGroupIdentityFields.length === 0) {
-    throw new TypeError("transponder.groupIdentityFields must be a non-empty array");
-  }
-  const seenFields = new Set();
-  const groupIdentityFields = rawGroupIdentityFields.map((entry, index) => {
-    const field = nonEmptyText(
-      entry,
-      `transponder.groupIdentityFields[${index}]`,
-    );
-    if (!NPC_TRANSPONDER_GROUP_FIELDS.has(field)) {
-      throw new TypeError(
-        `transponder.groupIdentityFields[${index}] must be spawnGroupID, profileID, or faction`,
-      );
-    }
-    if (seenFields.has(field)) {
-      throw new TypeError(`transponder.groupIdentityFields contains duplicate field ${field}`);
-    }
-    seenFields.add(field);
-    return field;
-  });
   return {
     enabled: source.enabled,
     channel,
-    defaultSignal: normalizeTransponderSignal(
-      source.defaultSignal == null ? "NPC" : source.defaultSignal,
-      "transponder.defaultSignal",
-    ),
-    groupIdentityFields,
   };
 }
 
@@ -400,6 +382,12 @@ function validateConfig(rawConfig) {
             faction.transponderSignal,
             `${fieldName}.transponderSignal`,
           ),
+      transponderSuffix: faction.transponderSuffix == null
+        ? null
+        : normalizeTransponderSuffix(
+            faction.transponderSuffix,
+            `${fieldName}.transponderSuffix`,
+          ),
       unidentifiedDisposition: faction.unidentifiedDisposition === undefined
         ? defaults.unidentifiedDisposition
         : normalizeUnidentifiedDisposition(
@@ -416,6 +404,32 @@ function validateConfig(rawConfig) {
       ),
     };
   });
+
+  if (transponder.enabled) {
+    const transponderSignals = new Set();
+    for (let index = 0; index < factions.length; index += 1) {
+      const faction = factions[index];
+      if (!faction.transponderSignal) {
+        throw new TypeError(
+          `factions[${index}].transponderSignal is required when transponders are enabled`,
+        );
+      }
+      if (transponderSignals.has(faction.transponderSignal)) {
+        throw new TypeError(
+          `duplicate faction transponderSignal: ${faction.transponderSignal}`,
+        );
+      }
+      transponderSignals.add(faction.transponderSignal);
+      const code = faction.transponderSignal +
+        (faction.transponderSuffix ? `:${faction.transponderSuffix}` : "");
+      if (code.length > NPC_TRANSPONDER_CODE_MAX_LENGTH) {
+        throw new TypeError(
+          `factions[${index}] transponderSignal and transponderSuffix must fit ` +
+          `the ${NPC_TRANSPONDER_CODE_MAX_LENGTH}-character client code limit`,
+        );
+      }
+    }
+  }
 
   if (!Array.isArray(source.relations)) {
     throw new TypeError("relations must be an array");
@@ -655,42 +669,8 @@ function resolveNpcTransponderGroupIdentity(entity) {
   if (!isNpcTransponderEntity(entity)) {
     return null;
   }
-  const explicit = String(entity.npcTransponderGroupID || "").trim();
-  if (explicit) {
-    return `group:${explicit}`;
-  }
-  for (const field of CONFIG.transponder.groupIdentityFields) {
-    if (field === "spawnGroupID") {
-      const spawnGroupID = String(
-        entity.spawnGroupID ||
-          (String(entity.selectionKind || "").trim() === "group"
-            ? entity.selectionID
-            : "") ||
-          "",
-      ).trim();
-      if (spawnGroupID) {
-        return `spawn:${spawnGroupID}`;
-      }
-    } else if (field === "profileID") {
-      const profileID = String(
-        entity.npcProfileID || entity.profileID || "",
-      ).trim();
-      if (profileID) {
-        return `profile:${profileID}`;
-      }
-    } else if (field === "faction") {
-      const factionIdentity = resolveNpcFactionIdentity(entity);
-      if (factionIdentity) {
-        return `faction:${factionIdentity}`;
-      }
-    }
-  }
-  const typeID = toPositiveInt(entity.typeID, 0);
-  if (typeID > 0) {
-    return `type:${typeID}`;
-  }
-  const groupID = toPositiveInt(entity.groupID, 0);
-  return groupID > 0 ? `inventory-group:${groupID}` : null;
+  const factionIdentity = resolveNpcFactionIdentity(entity);
+  return factionIdentity ? `faction:${factionIdentity}` : null;
 }
 
 function resolveNpcTransponderConfiguration(entity) {
@@ -698,29 +678,18 @@ function resolveNpcTransponderConfiguration(entity) {
     return null;
   }
   const configuredFaction = resolveConfiguredFaction(entity);
-  const explicitSignal = entity && entity.npcTransponderSignal;
-  let signal = configuredFaction && configuredFaction.transponderSignal ||
-    CONFIG.transponder.defaultSignal;
-  if (explicitSignal != null && String(explicitSignal).trim() !== "") {
-    try {
-      signal = normalizeTransponderSignal(
-        explicitSignal,
-        "entity.npcTransponderSignal",
-      );
-    } catch (_) {
-      // Runtime metadata can be supplied by authored spawn options. An
-      // invalid override must not break verdict delivery for the scene; use
-      // the validated faction/default signal instead.
-    }
+  if (!configuredFaction || !configuredFaction.transponderSignal) {
+    return null;
   }
-  const groupIdentity = resolveNpcTransponderGroupIdentity(entity);
-  if (!groupIdentity) {
+  const factionIdentity = resolveNpcTransponderGroupIdentity(entity);
+  if (!factionIdentity) {
     return null;
   }
   return {
     channel: CONFIG.transponder.channel,
-    signal,
-    groupIdentity,
+    signal: configuredFaction.transponderSignal,
+    factionIdentity,
+    sharedSuffix: configuredFaction.transponderSuffix || null,
   };
 }
 
@@ -841,6 +810,9 @@ function getConfigSummary() {
     transponderChannel: CONFIG.transponder.channel,
     transponderSignalCount: CONFIG.factions.filter(
       (faction) => Boolean(faction.transponderSignal),
+    ).length,
+    transponderSuffixCount: CONFIG.factions.filter(
+      (faction) => Boolean(faction.transponderSuffix),
     ).length,
     suiWalletFundingEnabled: CONFIG.suiWalletFunding.enabled,
     suiWalletBudgetMist: CONFIG.suiWalletFunding.budgetMist,

@@ -147,12 +147,15 @@ or Creation module is invented by this release.
 
 ### Package and World-Contract Boundary
 
-The `world_assembly_access` package now owns a generic deterministic
-`AssemblyAction` object and lifecycle. Owner-authored actions require the
-source assembly's `OwnerCap`; server-authored alerts and server transitions
-require an address in the world's `ServerAddressRegistry`. Payload bytes are
-bound to a SHA-256 commitment, action IDs are deterministic 16-byte UUID keys,
-and claim, release, completion, failure, cancellation, expiry, revision, and
+The `world_action_queue` package now owns the canonical deterministic `Action`
+object and lifecycle. Each source assembly has a deterministic queue root, so
+normal enqueue/claim traffic does not contend on one global registry. The
+server creates missing roots during assembly reconciliation. Owner-authored
+actions require the source assembly's `OwnerCap`; server-authored alerts and
+server transitions require an address in the world's `ServerAddressRegistry`.
+Generic JSON payload bytes are bound to a SHA-256 commitment, action IDs are
+deterministic 16-byte UUID keys, and claim, release, completion, failure,
+cancellation, expiry, revision, and
 priority flags are represented on-chain.
 
 The server remains authoritative for gameplay validation and results: route
@@ -706,7 +709,7 @@ server/tests/frontierSystemScanIndex.test.ts
 server/tests/frontierRemoteScanWarmup.test.ts
 smart-assembly-control/src/actions/chain.ts
 smart-assembly-control/src/tasks/scanning.ts
-world-contracts/contracts/world_assembly_access/sources/assembly_access.move
+world-contracts/contracts/world_action_queue/sources/action_queue.move
 ```
 
 The existing jump-drive implementation should only need to call

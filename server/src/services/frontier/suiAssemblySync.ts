@@ -29,6 +29,7 @@ import {
 } from "./suiAssemblyRequestLink";
 import {
   createSuiAssemblyActionQueueBridge,
+  ensureSuiAssemblyActionQueues,
   registerSuiAssemblyActionQueueBridge,
 } from "./suiAssemblyActionQueue";
 import {
@@ -965,6 +966,10 @@ export function startSuiAssemblySync() {
       const localItemIds = new Set<string>(Object.values<any>(rawItems).map(item => String(item.itemID)));
       context.setSnapshotItemIds(localItemIds, snapshot.assemblies);
       await reconcileSuiAssemblies(snapshot, context, localItemIds);
+      await ensureSuiAssemblyActionQueues(
+        context,
+        snapshot.assemblies.map(assembly => context.chain.deriveId(assembly.itemId)),
+      );
       // Online/offline, fuel exhaustion and temporary storage operations can all
       // change reservations during this pass. Publish the resulting chain totals.
       await refreshChainStates();

@@ -39,12 +39,13 @@ export function readSuiIndustryDeployment(synced: WorldIdentity, env: NodeJS.Pro
       if (error.code !== "ENOENT") throw new Error("Industry deployment config could not be read as JSON", { cause: error });
     }
     if (raw !== undefined) {
-      if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.schemaVersion !== 1) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
+          (raw.schemaVersion !== 1 && raw.schemaVersion !== 2 && raw.schemaVersion !== 3)) {
         throw new Error("Industry deployment config has an unsupported schema");
       }
       // Validate file identities even when environment overrides take precedence.
       const featureManifest = raw.industryPackageId != null || raw.industryTypeOrigin != null || raw.industryRegistryId != null;
-      file = { schemaVersion: 1, chainId: chain(raw.chainId), worldPackageId: address(raw.worldPackageId, "world package"),
+      file = { schemaVersion: raw.schemaVersion, chainId: chain(raw.chainId), worldPackageId: address(raw.worldPackageId, "world package"),
         objectRegistryId: address(raw.objectRegistryId, "object registry"), adminAclId: address(raw.adminAclId, "admin ACL"),
         packageId: address(featureManifest ? raw.industryPackageId : raw.packageId, "package"),
         typeOrigin: address(featureManifest ? raw.industryTypeOrigin : raw.typeOrigin, "type origin"),

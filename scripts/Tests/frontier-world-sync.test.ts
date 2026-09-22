@@ -36,6 +36,16 @@ const INDUSTRY_PACKAGE_ID = `0x${"c".repeat(64)}`;
 const INDUSTRY_REGISTRY_ID = `0x${"d".repeat(64)}`;
 const TRANSPONDER_PACKAGE_ID = `0x${"e".repeat(64)}`;
 const TRANSPONDER_REGISTRY_ID = `0x${"f".repeat(64)}`;
+const ACTION_PACKAGE_ID = `0x${"01".repeat(32)}`;
+const ACTION_REGISTRY_ID = `0x${"02".repeat(32)}`;
+const INDUSTRY_ACTIONS_PACKAGE_ID = `0x${"03".repeat(32)}`;
+const INDUSTRY_ACTIONS_REGISTRY_ID = `0x${"04".repeat(32)}`;
+const LOGISTICS_PACKAGE_ID = `0x${"05".repeat(32)}`;
+const LOGISTICS_REGISTRY_ID = `0x${"06".repeat(32)}`;
+const INFRASTRUCTURE_PACKAGE_ID = `0x${"07".repeat(32)}`;
+const INFRASTRUCTURE_REGISTRY_ID = `0x${"08".repeat(32)}`;
+const AUTOMATION_PACKAGE_ID = `0x${"09".repeat(32)}`;
+const AUTOMATION_REGISTRY_ID = `0x${"0a".repeat(32)}`;
 const ENERGY_MANIFEST = {
   schemaVersion: 1,
   clientBuild: 3502403,
@@ -44,7 +54,7 @@ const ENERGY_MANIFEST = {
 
 function npcManifest(overrides = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 3,
     chainId: "a1b2c3d4",
     worldPackageId: PACKAGE_ID,
     objectRegistryId: OBJECT_REGISTRY_ID,
@@ -64,6 +74,21 @@ function npcManifest(overrides = {}) {
     transponderPackageId: TRANSPONDER_PACKAGE_ID,
     transponderTypeOrigin: TRANSPONDER_PACKAGE_ID,
     transponderRegistryId: TRANSPONDER_REGISTRY_ID,
+    actionPackageId: ACTION_PACKAGE_ID,
+    actionTypeOrigin: ACTION_PACKAGE_ID,
+    actionRegistryId: ACTION_REGISTRY_ID,
+    industryActionsPackageId: INDUSTRY_ACTIONS_PACKAGE_ID,
+    industryActionsTypeOrigin: INDUSTRY_ACTIONS_PACKAGE_ID,
+    industryActionsRegistryId: INDUSTRY_ACTIONS_REGISTRY_ID,
+    logisticsPackageId: LOGISTICS_PACKAGE_ID,
+    logisticsTypeOrigin: LOGISTICS_PACKAGE_ID,
+    logisticsRegistryId: LOGISTICS_REGISTRY_ID,
+    infrastructurePackageId: INFRASTRUCTURE_PACKAGE_ID,
+    infrastructureTypeOrigin: INFRASTRUCTURE_PACKAGE_ID,
+    infrastructureRegistryId: INFRASTRUCTURE_REGISTRY_ID,
+    automationPackageId: AUTOMATION_PACKAGE_ID,
+    automationTypeOrigin: AUTOMATION_PACKAGE_ID,
+    automationRegistryId: AUTOMATION_REGISTRY_ID,
     ...overrides,
   };
 }
@@ -254,6 +279,23 @@ test(
           catapult: { packageId: CATAPULT_PACKAGE_ID, registryId: CATAPULT_REGISTRY_ID },
           smartIndustry: { packageId: INDUSTRY_PACKAGE_ID, registryId: INDUSTRY_REGISTRY_ID },
           transponder: { packageId: TRANSPONDER_PACKAGE_ID, registryId: TRANSPONDER_REGISTRY_ID },
+          actionQueue: { packageId: ACTION_PACKAGE_ID, registryId: ACTION_REGISTRY_ID },
+          industryActions: {
+            packageId: INDUSTRY_ACTIONS_PACKAGE_ID,
+            registryId: INDUSTRY_ACTIONS_REGISTRY_ID,
+          },
+          logisticsActions: {
+            packageId: LOGISTICS_PACKAGE_ID,
+            registryId: LOGISTICS_REGISTRY_ID,
+          },
+          infrastructureActions: {
+            packageId: INFRASTRUCTURE_PACKAGE_ID,
+            registryId: INFRASTRUCTURE_REGISTRY_ID,
+          },
+          automation: {
+            packageId: AUTOMATION_PACKAGE_ID,
+            registryId: AUTOMATION_REGISTRY_ID,
+          },
         },
       }, null, 2)}\n`,
     );
@@ -551,6 +593,38 @@ test("NPC deployment sync keeps original world identities and copies only public
     assert.doesNotMatch(result.stdout + result.stderr, /must-not-copy/);
   });
 
+test("NPC deployment sync preserves schema 1 compatibility",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = npcSyncFixture(t);
+    const legacy = npcManifest({ schemaVersion: 1 });
+    for (const field of ["actionPackageId", "actionTypeOrigin", "actionRegistryId",
+        "industryActionsPackageId", "industryActionsTypeOrigin", "industryActionsRegistryId",
+        "logisticsPackageId", "logisticsTypeOrigin", "logisticsRegistryId",
+        "infrastructurePackageId", "infrastructureTypeOrigin", "infrastructureRegistryId",
+        "automationPackageId", "automationTypeOrigin", "automationRegistryId"]) {
+      delete legacy[field];
+    }
+    f.write(legacy);
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(fs.readFileSync(f.manifestDestination, "utf8")), legacy);
+  });
+
+test("NPC deployment sync preserves schema 2 action-package compatibility",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = npcSyncFixture(t);
+    const schema2 = npcManifest({ schemaVersion: 2 });
+    for (const field of ["logisticsPackageId", "logisticsTypeOrigin", "logisticsRegistryId",
+      "infrastructurePackageId", "infrastructureTypeOrigin", "infrastructureRegistryId",
+      "automationPackageId", "automationTypeOrigin", "automationRegistryId"]) {
+      delete schema2[field];
+    }
+    f.write(schema2);
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(fs.readFileSync(f.manifestDestination, "utf8")), schema2);
+  });
+
 test("NPC deployment sync rejects mismatched chain and base-world bindings",
   { skip: !canRunPowerShell }, (t) => {
     const f = npcSyncFixture(t);
@@ -567,7 +641,7 @@ test("NPC deployment sync rejects mismatched chain and base-world bindings",
 test("NPC deployment sync rejects malformed schemas and noncanonical or zero addresses",
   { skip: !canRunPowerShell }, (t) => {
     const f = npcSyncFixture(t);
-    for (const invalid of [null, [], npcManifest({ schemaVersion: "1" }), npcManifest({ schemaVersion: 2 }),
+    for (const invalid of [null, [], npcManifest({ schemaVersion: "3" }), npcManifest({ schemaVersion: 4 }),
       npcManifest({ packageId: "0x4" }), npcManifest({ typeOrigin: `0x${"0".repeat(64)}` }),
       npcManifest({ accessPackageId: "0x6" }), npcManifest({ accessTypeOrigin: `0x${"0".repeat(64)}` }),
       npcManifest({ adminAclId: undefined }), npcManifest({ typeOrigin: 123 })]) {
@@ -588,7 +662,9 @@ test("NPC deployment sync rejects malformed schemas and noncanonical or zero add
 test("NPC deployment sync rejects incomplete feature registry metadata",
   { skip: !canRunPowerShell }, (t) => {
     const f = npcSyncFixture(t);
-    for (const field of ["npcRegistryId", "accessRegistryId", "catapultRegistryId", "industryRegistryId", "transponderRegistryId"]) {
+    for (const field of ["npcRegistryId", "accessRegistryId", "catapultRegistryId", "industryRegistryId",
+      "transponderRegistryId", "actionRegistryId", "industryActionsRegistryId", "logisticsRegistryId",
+      "infrastructureRegistryId", "automationRegistryId"]) {
       const manifest = npcManifest();
       delete manifest[field];
       f.write(manifest);

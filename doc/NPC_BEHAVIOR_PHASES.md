@@ -74,6 +74,8 @@ NPC autonomy uses a hybrid model:
 - Assembly GUI visibility and assembly-operation authority are separate, explicitly granted capabilities. An open GUI or a received signal never proves access.
 - Sui stores identity, authorization, ownership, transponder commitments, assembly state, and strategic route configuration. Per-tick movement and targeting stay off-chain.
 
+For the current IFF test phase, an NPC transponder code is faction-only: `FACTION` or `FACTION:SHARED_SUFFIX`. Every NPC in the same configured canonical faction uses that exact value regardless of profile or spawn group. Factionless NPCs do not synthesize IFF codes, and external code discovery/interrogation remains planned rather than being exposed through profile or spawn metadata.
+
 The intended root tree is:
 
 ```text

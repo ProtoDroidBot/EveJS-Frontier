@@ -42,7 +42,6 @@
  * to every pilot in the system.
  */
 
-const crypto = require("crypto");
 const path = require("path");
 
 const log = require(path.join(__dirname, "../../utils/logger"));
@@ -138,37 +137,27 @@ function normalizeNpcCodePart(value) {
 }
 
 /**
- * Build the client-sized code broadcast by an NPC group. Short authored
- * group identities stay human-readable; long catalog IDs receive a stable
- * digest suffix so codes remain deterministic and never exceed the client's
- * 32-character limit.
+ * Build the client-sized code broadcast by an NPC faction. For the current
+ * test protocol its complete wire format is FACTION or FACTION:SHARED_SUFFIX;
+ * no profile, spawn-group, or other entity metadata is encoded.
  */
-function buildNpcTransponderCode(signal, groupIdentity) {
-  const normalizedSignal = normalizeNpcCodePart(signal) || "NPC";
-  const normalizedGroup = normalizeNpcCodePart(groupIdentity) || "UNKNOWN";
-  const readable = `${normalizedSignal}:${normalizedGroup}`;
-  if (readable.length <= IFF_CODE_MAX_LENGTH) {
-    return readable;
+function buildNpcTransponderCode(signal, sharedSuffix = null) {
+  const normalizedSignal = normalizeNpcCodePart(signal);
+  if (!normalizedSignal) {
+    throw new TypeError("NPC faction transponder signal is required");
   }
-  const digest = crypto
-    .createHash("sha256")
-    .update(String(groupIdentity || "unknown"))
-    .digest("hex")
-    .slice(0, 8)
-    .toUpperCase();
-  const groupBudget = Math.max(
-    1,
-    IFF_CODE_MAX_LENGTH - normalizedSignal.length - digest.length - 2,
-  );
-  const signalBudget = IFF_CODE_MAX_LENGTH - groupBudget - digest.length - 2;
-  return `${normalizedSignal.slice(0, signalBudget)}:` +
-    `${normalizedGroup.slice(0, groupBudget)}-${digest}`;
+  const normalizedSuffix = normalizeNpcCodePart(sharedSuffix);
+  const code = normalizedSignal + (normalizedSuffix ? `:${normalizedSuffix}` : "");
+  if (code.length > IFF_CODE_MAX_LENGTH) {
+    throw new RangeError(`NPC faction transponder code exceeds ${IFF_CODE_MAX_LENGTH} characters`);
+  }
+  return code;
 }
 
 /**
- * Native NPC ships always broadcast a code-channel transponder. The faction
- * config supplies the signal namespace while the ordered group policy picks
- * the stable spawn-group/profile/faction identity used for the code.
+ * Configured native NPC factions broadcast their faction signal plus one
+ * optional shared suffix. Factionless NPCs do not synthesize a code from
+ * profile or spawn metadata.
  */
 function resolveNpcTransponder(entity) {
   const configuration = npcFactionConfig.resolveNpcTransponderConfiguration(entity);
@@ -178,8 +167,8 @@ function resolveNpcTransponder(entity) {
   const fingerprint = [
     configuration.channel,
     configuration.signal,
-    configuration.groupIdentity,
-    String(entity && entity.npcTransponderCode || ""),
+    configuration.factionIdentity,
+    configuration.sharedSuffix,
   ].join("\u0000");
   if (entity && typeof entity === "object") {
     const cached = npcTransponderCache.get(entity);
@@ -187,17 +176,16 @@ function resolveNpcTransponder(entity) {
       return cached.transponder;
     }
   }
-  const explicitCode = normalizeIffCode(entity && entity.npcTransponderCode);
-  const code = explicitCode || buildNpcTransponderCode(
+  const code = buildNpcTransponderCode(
     configuration.signal,
-    configuration.groupIdentity,
+    configuration.sharedSuffix,
   );
   const transponder = {
     channel: configuration.channel,
     code,
     signal: configuration.signal,
-    groupIdentity: configuration.groupIdentity,
-    source: "npc-group",
+    factionIdentity: configuration.factionIdentity,
+    source: "npc-faction",
   };
   if (entity && typeof entity === "object") {
     npcTransponderCache.set(entity, { fingerprint, transponder });
