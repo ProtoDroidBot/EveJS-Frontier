@@ -364,7 +364,7 @@ function tickNpcResourceJob(context) {
     };
   }
   if (payload.systemID && toPositiveInt(payload.systemID, 0) !== toPositiveInt(entity.systemID, 0)) {
-    return suspended("awaiting-system", checkpoint, nowMs, "NPC_RESOURCE_WRONG_SYSTEM", 5_000);
+    return require("./npcTravelService").advanceNpcTravel(context, payload.systemID);
   }
   if (isRecentThreat(context, payload)) {
     if (typeof definition.deactivate === "function") definition.deactivate(context, checkpoint);

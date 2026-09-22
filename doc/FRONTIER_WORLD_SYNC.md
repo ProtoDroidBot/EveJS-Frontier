@@ -125,15 +125,31 @@ Each capability is independent. A missing or explicitly unavailable capability
 does not block other valid feature records. The package/origin/registry remains
 global rather than being duplicated per faction. Faction policy is stored in
 `factions/default.v1.json` plus one canonical
-`factions/<factionID-factionStringOnlyID>.v1.json` per configured faction. Each
+`factions/<factionID-factionStringOnlyID>.v1.json` per configured faction. When
+`_local/frontier-sde/<build>/factions.jsonl` is present, sync detects every
+numeric SDE faction, appends missing entries to `npc-factions.config.json`, and
+creates missing synchronized faction files/references. Existing authored entries
+and source deployment files are not overwritten. Generated entries use
+`FACTION<factionID>` as their faction-wide test transponder and the SDE home
+solar system only as a fallback (`regionID: null`); an SDE row alone does not
+make that faction spawn-ready. Existing string-only factions remain included.
+`-DryRun` validates and reports these additions without writing files. Each
 faction reference names fallback `default`; omission of a faction capability
-array inherits that default. During legacy migration, incomplete triples
+array inherits that default. Faction-policy schema 2 additionally carries the
+resolved transponder code, dynamic type-membership selectors and overrides,
+expanded ally/enemy contacts, one combined `leadership` character list, and a
+separate `commanders` list, and `startingRegion` with region-first precedence.
+Character lists are empty by default and may contain
+NPC or player character IDs later. Contact codes are cross-checked against the
+referenced faction file, and type-list selectors are limited to the live
+`npcProfiles`/faction-identity mapping. During legacy migration, incomplete triples
 are omitted and named in `migration.incompleteCapabilities`. A synchronized
 historical destination is archived as `npc-deployment.legacy.json`. If an
 authoritative source disappears while synchronized metadata exists, sync
 preserves the destination for recovery but fails closed.
 
-After publishing the configuration, sync tops every configured NPC faction
+After publishing the configuration, sync tops every configured NPC faction,
+including newly detected SDE factions,
 wallet up to the common `suiWalletFunding.budgetMist` minimum from the
 synchronized admin account. When enabled and necessary, the Localnet faucet
 funds the admin, never the faction wallets directly. A dry run reports the

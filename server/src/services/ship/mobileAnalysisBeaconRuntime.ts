@@ -32,7 +32,7 @@ const {
   isWormholeSolarSystemID,
 } = require(path.join(__dirname, "../chat/channelRules"));
 const {
-  matchesTypeList,
+  matchesTypeListWithMissingFallback,
 } = require(path.join(__dirname, "../inventory/typeListAuthority"));
 const frontierDungeonSpawns = require(path.join(
   __dirname,
@@ -1141,14 +1141,15 @@ function getFallbackLinkableShipIDsForBeaconType(typeID) {
 
 function isShipTypeLinkableForBeaconType(beaconTypeID, shipType) {
   const typeListID = getLinkableShipTypeListIDForBeaconType(beaconTypeID);
-  if (matchesTypeList(shipType, typeListID)) {
-    return true;
-  }
-
   const fallback = getFallbackLinkableShipIDsForBeaconType(beaconTypeID);
-  return (
-    fallback.groupIDs.has(toInt(shipType && shipType.groupID, 0)) ||
-    fallback.typeIDs.has(toInt(shipType && shipType.typeID, 0))
+  return matchesTypeListWithMissingFallback(
+    shipType,
+    typeListID,
+    () => (
+      fallback.groupIDs.has(toInt(shipType && shipType.groupID, 0)) ||
+      fallback.typeIDs.has(toInt(shipType && shipType.typeID, 0))
+    ),
+    "mobile-analysis-beacon-link",
   );
 }
 

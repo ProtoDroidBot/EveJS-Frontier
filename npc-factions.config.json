@@ -1,6 +1,10 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "enabled": true,
+  "worldCapabilities": [
+    "npc",
+    "transponder"
+  ],
   "suiWalletFunding": {
     "enabled": true,
     "budgetMist": "10000000000",
@@ -41,91 +45,129 @@
       "allowedTypeIDs": [],
       "deniedTypeIDs": [],
       "equipmentLossPolicy": "return"
-    }
+    },
+    "typeMembership": {
+      "includedTypeIDs": [],
+      "excludedTypeIDs": [],
+      "sdeTypeListIDs": {
+        "hull": [],
+        "reinforcement": [],
+        "targetInterest": [],
+        "loot": [],
+        "market": []
+      },
+      "typeListProfiles": [
+        {
+          "profileID": "npc-profiles-by-faction",
+          "source": "npcProfiles",
+          "match": "factionIdentity"
+        }
+      ]
+    },
+    "startingRegion": {
+      "regionID": null,
+      "solarSystemIDs": []
+    },
+    "leadership": [],
+    "commanders": []
   },
   "factions": [
     {
       "factionID": 500001,
       "name": "Caldari State",
       "transponderSignal": "CALDARI",
+      "startingRegion": { "regionID": 10000005, "solarSystemIDs": [30000052] },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500002,
       "name": "Minmatar Republic",
       "transponderSignal": "MINMATAR",
+      "startingRegion": { "regionID": 10000005, "solarSystemIDs": [30000052] },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500003,
       "name": "Amarr Empire",
       "transponderSignal": "AMARR",
+      "startingRegion": { "regionID": 10000022, "solarSystemIDs": [30002187] },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500004,
       "name": "Gallente Federation",
       "transponderSignal": "GALLENTE",
+      "startingRegion": { "regionID": 10000005, "solarSystemIDs": [30000052] },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500006,
       "name": "CONCORD Assembly",
       "transponderSignal": "CONCORD",
+      "startingRegion": { "regionID": 10000043, "solarSystemIDs": [30005204] },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500010,
       "name": "Guristas Pirates",
       "transponderSignal": "GURISTAS",
+      "startingRegion": { "regionID": 10000015, "solarSystemIDs": [30001290] },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500011,
       "name": "Angel Cartel",
       "transponderSignal": "ANGEL",
+      "startingRegion": { "regionID": 10000013, "solarSystemIDs": [30001045] },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500012,
       "name": "Blood Raider Covenant",
       "transponderSignal": "BLOOD",
+      "startingRegion": { "regionID": 10000029, "solarSystemIDs": [30003088] },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500014,
       "name": "Outer Ring Excavations",
       "transponderSignal": "ORE",
+      "startingRegion": { "regionID": 10000038, "solarSystemIDs": [30004504] },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500019,
       "name": "Sansha's Nation",
       "transponderSignal": "SANSHA",
+      "startingRegion": { "regionID": 10000020, "solarSystemIDs": [30001868] },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500020,
       "name": "Serpentis",
       "transponderSignal": "SERPENTIS",
+      "startingRegion": { "regionID": 10000039, "solarSystemIDs": [30004623] },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500024,
       "name": "Drifters",
       "transponderSignal": "DRIFTER",
+      "startingRegion": { "regionID": 10000043, "solarSystemIDs": [30005286] },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500025,
       "name": "Rogue Drones",
       "transponderSignal": "ROGUE",
+      "startingRegion": { "regionID": 10000043, "solarSystemIDs": [30005286] },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500026,
       "name": "Triglavian Collective",
       "transponderSignal": "TRIGLAVIAN",
+      "startingRegion": { "regionID": 10000043, "solarSystemIDs": [30005286] },
       "unidentifiedDisposition": "suspicious"
     },
     {

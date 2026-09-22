@@ -286,6 +286,37 @@ test("construction-site assemblies retain their deposit-then-construct workflow 
   assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), { [MATERIAL_A]: 3, [MATERIAL_B]: 3 });
 });
 
+test("construction realization rechecks clearance without consuming deposited materials", t => {
+  const f = fixture(t);
+  const first = f.place(ASSEMBLY_TYPE_ID, [100, 0, 0]);
+  const second = f.place(ASSEMBLY_TYPE_ID, [1500, 0, 0]);
+  assert.equal(first.success, true, first.errorMsg);
+  assert.equal(second.success, true, second.errorMsg);
+  const originalSecondPosition = second.data.item.spaceState.position;
+  assert.equal(itemStore.updateInventoryItem(second.data.item.itemID, item => ({
+    ...item, spaceState: { ...item.spaceState, position: first.data.item.spaceState.position },
+  })).success, true);
+
+  const deposit = deployment.depositItems(
+    f.session, first.data.item.itemID, f.ship.itemID, COST,
+  );
+  assert.equal(deposit.success, false);
+  assert.equal(deposit.errorMsg, "ASSEMBLY_PLACEMENT_OCCUPIED");
+  assert.deepEqual(quantities(first.data.item.itemID), COST);
+  assert.equal(deployment.readConstructionState(
+    itemStore.findItemById(first.data.item.itemID),
+  ).assemblyStatus, deployment.ASSEMBLY_STATUS_UNDER_CONSTRUCTION);
+
+  assert.equal(itemStore.updateInventoryItem(second.data.item.itemID, item => ({
+    ...item, spaceState: { ...item.spaceState, position: originalSecondPosition },
+  })).success, true);
+  const complete = deployment.completeConstruction(first.data.item.itemID, {
+    force: true, session: f.session,
+  });
+  assert.equal(complete.success, true, complete.errorMsg);
+  assert.deepEqual(quantities(first.data.item.itemID), {});
+});
+
 test("failed deployment refunds character inventory to its original location and flag", t => {
   const f = fixture(t, { [MATERIAL_A]: 0, [MATERIAL_B]: 0 });
   grant(OWNER_ID, MATERIAL_A, 9, {}, 4);

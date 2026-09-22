@@ -365,21 +365,45 @@ test("Frontier Creation refreshes derived attributes after Godma hydration", () 
             notifications.push({ name, idType, payload });
         },
     };
-    assert.equal(service._queuePostGetAllInfoCreationAttributeRefresh(session, 140000005, 9988400001895, { 18: 200, 482: 200, 5633: 2250 }, {
+    assert.equal(service._queuePostGetAllInfoCreationAttributeRefresh(session, 140000005, 9988400001895, { 18: 200, 482: 200, 5633: 2250, 5635: 2250 }, {
         shipAttributeModifierEntries: [
             { modifiedAttributeID: 482 },
             { modifiedAttributeID: 5633 },
         ],
-    }), 3);
-    assert.equal(service._flushPostGetAllInfoCreationAttributeRefresh(session), 3);
+    }), 4);
+    assert.equal(service._flushPostGetAllInfoCreationAttributeRefresh(session), 4);
     assert.equal(notifications.length, 1);
     assert.equal(notifications[0].name, "OnModuleAttributeChanges");
     assert.equal(notifications[0].idType, "clientID");
     const changes = notifications[0].payload[0].items;
-    assert.deepEqual(changes.map((change) => change[3]), [18, 482, 5633]);
+    assert.deepEqual(changes.map((change) => change[3]), [18, 482, 5633, 5635]);
     assert.equal(changes[0][5], 200);
     assert.deepEqual(changes[1][5], { type: "real", value: 200 });
     assert.equal(changes[2][5], 2250);
+    assert.equal(changes[3][5], 2250);
+});
+test("Frontier Creation replays fuel charge after docked Godma hydration settles", () => {
+    const service = new DogmaService();
+    const dispatches = [];
+    const session = {
+        stationid: 64000001,
+        _space: {},
+    };
+    service._dispatchPostResponseAttributeChanges = (receivedSession, changes, options = {}) => {
+        dispatches.push({ receivedSession, changes, options });
+        return true;
+    };
+    assert.equal(service._queuePostGetAllInfoCreationAttributeRefresh(session, 140000005, 9988400001895, { 5633: 2250, 5635: 2250 }, {
+        shipAttributeModifierEntries: [
+            { modifiedAttributeID: 5633 },
+        ],
+    }), 2);
+    assert.equal(service._flushPostGetAllInfoCreationAttributeRefresh(session), 2);
+    assert.equal(dispatches.length, 2);
+    assert.deepEqual(dispatches[0].changes.map((change) => change[3]), [5633, 5635]);
+    assert.deepEqual(dispatches[1].changes.map((change) => change[3]), [5635]);
+    assert.equal(dispatches[1].changes[0][5], 2250);
+    assert.equal(dispatches[1].options.delayMs, 1000);
 });
 test("Frontier creation diagnostics preserve the client field contract", () => {
     const diagnostic = buildCreationDiagnostic({

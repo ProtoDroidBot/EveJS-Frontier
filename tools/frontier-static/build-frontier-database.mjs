@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { findLatestSnapshot, validateSnapshot, } from "./validate-frontier-static.mjs";
+import { auditTypeListSnapshot, compareTypeListSnapshotToGenerated, } from "./type-list-audit.mjs";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "../..");
 const RIFT_AUTHORITY_BUILDS = new Set([
@@ -113,7 +114,8 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
     const landscapeDungeonTemplates = readTable(dataDir, "landscapeDungeonTemplates", "dungeons");
     const landscapeEcosystems = readTable(dataDir, "landscapeEcosystems", "ecosystems");
     const landscapeSites = readTable(dataDir, "landscapeSites", "sites");
-    const clientTypeLists = readTable(dataDir, "clientTypeLists", "typeLists");
+    const clientTypeListTable = readTable(dataDir, "clientTypeLists");
+    const clientTypeLists = clientTypeListTable.typeLists;
     const spaceComponentsByType = readTable(dataDir, "spaceComponentsByType", "types");
     const characters = readTable(dataDir, "characters");
     const componentTypesByID = new Map(spaceComponentsByType.map((row) => [Number(row.typeID ?? row._key), row]));
@@ -167,6 +169,15 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
         if (actual[key] !== expected[key]) {
             throw new Error(`Generated ${key} count mismatch: expected ${expected[key]}, found ${actual[key]}`);
         }
+    }
+    if (clientTypeListTable.schemaVersion !== 2 ||
+        clientTypeListTable.source?.typeListsSha256 !== snapshotManifest.outputs["typeLists.jsonl"].sha256 ||
+        clientTypeListTable.source?.typesSha256 !== snapshotManifest.outputs["types.jsonl"].sha256 ||
+        clientTypeLists.some((entry) => [
+            "includedTypeListIDs", "excludedTypeListIDs", "includedTags", "excludedTags", "filterByTags",
+        ].some((field) => !Array.isArray(entry[field]))) ||
+        itemTypes.some((entry) => !Array.isArray(entry.tags))) {
+        throw new Error("Generated client type-list or item-tag data is not schema-v2 complete");
     }
     const clientTypeListIDs = new Set(clientTypeLists.map((entry) => Number(entry.listID)));
     for (const requiredListID of [861, 923, 985]) {
@@ -233,6 +244,11 @@ async function main() {
     const build = snapshotManifest.source.client.build;
     const dataDir = options.outDir ||
         path.join(REPO_ROOT, "_local", "frontier-gameStore", String(build), "data");
+    const typeListAudit = auditTypeListSnapshot(snapshot, snapshotManifest);
+    const previousStoreDelta = compareTypeListSnapshotToGenerated(snapshot, dataDir);
+    if (typeListAudit.errors.length > 0) {
+        throw new Error(`Type-list integrity audit failed: ${JSON.stringify(typeListAudit.errors.slice(0, 8))}`);
+    }
     const args = [
         path.join(REPO_ROOT, "tools", "DatabaseCreator", "database-creator.js"),
         "--sde-dir",
@@ -270,12 +286,24 @@ async function main() {
     };
     fs.writeFileSync(databaseManifestPath, `${JSON.stringify(databaseManifest, null, 2)}\n`, "utf8");
     const report = validateDatabase(dataDir, snapshotManifest, databaseManifest);
+    const typeListAuditPath = path.resolve(dataDir, "../type-list-audit.json");
+    fs.writeFileSync(typeListAuditPath, `${JSON.stringify({
+        ...typeListAudit,
+        previousStoreDelta,
+    }, null, 2)}\n`, "utf8");
     const reportPath = path.resolve(dataDir, "../frontier-database-validation.json");
     fs.writeFileSync(reportPath, `${JSON.stringify({
         build: checked.build,
         databaseManifest: databaseManifestPath,
         dataDir,
         collisionBundle,
+        typeListAudit: {
+            path: typeListAuditPath,
+            ...typeListAudit.counts,
+            missingRuntimeBindings: typeListAudit.missingRuntimeBindings,
+            emptyRuntimeBindings: typeListAudit.emptyRuntimeBindings,
+            previousStoreDelta,
+        },
         ...report,
     }, null, 2)}\n`, "utf8");
     console.log(`[frontier-static] Database build ${build}: ` +
@@ -286,6 +314,11 @@ async function main() {
     console.log(`[frontier-static] Bootstrap: station ${report.bootstrap.stationID}, ` +
         `system ${report.bootstrap.solarSystemID}.`);
     console.log(`[frontier-static] Data: ${dataDir}`);
+    if (typeListAudit.warnings.length > 0) {
+        console.warn(`[frontier-static] Type-list audit: ${typeListAudit.warnings.length} warning(s); ` +
+            `missing runtime IDs: ${typeListAudit.missingRuntimeBindings.map((entry) => entry.listID).join(", ") || "none"}. ` +
+            `See ${typeListAuditPath}`);
+    }
 }
 if (process.argv[1] &&
     path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

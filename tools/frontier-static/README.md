@@ -175,6 +175,21 @@ manifest. The server reads primitive collision components lazily by graphic ID;
 mesh-only entries retain the existing sphere fallback until convex narrow-phase
 support is enabled.
 
+The same build preserves the complete Frontier typelist records (including
+nested lists and tag rules) and per-type `tags` in `clientTypeLists` and
+`itemTypes`. `clientTypeLists` schema version 2 records the source file hashes.
+Before generation, the typelist audit rejects duplicate IDs, dangling
+category/group/type/list references, nested cycles, and missing or empty
+authoritative runtime lists. It reports other empty lists, duplicate rule
+members, and optional runtime IDs missing from this build without inventing
+replacement membership. The resulting `<gameStore>/type-list-audit.json`
+and `frontier-database-validation.json` contain the diagnostics. A rebuild of
+an existing generated store also records added, removed, and changed list IDs
+before replacing it. Existing six-field readers can continue to read schema
+version 2. The server's canonical typelist evaluator now expands nested and
+tag rules with Frontier-client parity. Rebuild the generated game store to
+activate those rules; a schema-v1 store remains readable but lacks that data.
+
 For diagnostics, `EVEJS_COLLISION_BUNDLE_PATH` can point the server at an
 explicit bundle and `EVEJS_COLLISION_BUNDLE_SHA256` can pin its expected hash.
 Set `EVEJS_COLLISION_BUNDLE_REQUIRED=1` to reject a missing bundle when

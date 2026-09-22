@@ -247,7 +247,9 @@ function finishStargateMaintenanceOperation(operation, options: Record<string, a
 }
 
 function runStargateMaintenanceOperation(job, actor, plan) {
-  const operationKey = `npc-stargate-deposit:${job.jobID}`;
+  const operationKey = `npc-stargate-deposit:${job.jobID}` +
+    (job.payload?.npcTravelChild === true
+      ? `:${positiveInt(job.target?.stargateID ?? job.payload?.stargateID, 0)}` : "");
   const operation = persistence.beginNpcOperation(
     "npc-stargate-maintenance-deposit",
     operationKey,
@@ -306,7 +308,7 @@ function tickNpcStargateMaintenanceJob(context) {
   }
   const gate = gateResult.data;
   if (gate.solarSystemID !== actor.solarSystemID) {
-    return suspended("awaiting-system", checkpoint, nowMs, "NPC_STARGATE_WRONG_SYSTEM", 5_000);
+    return require("./npcTravelService").advanceNpcTravel(context, gate.solarSystemID);
   }
   const gateEntity = context.scene && typeof context.scene.getEntityByID === "function"
     ? context.scene.getEntityByID(gateID)
@@ -433,9 +435,6 @@ function createNpcStargateMaintenanceJob(input: Record<string, any>) {
     const stargateID = positiveInt(input && (input.stargateID ?? input.target?.stargateID), 0);
     const state = adapters.getState(stargateID);
     if (!state?.success) return state || { success: false, errorMsg: "STARGATE_NOT_MANAGED" };
-    if (state.data.solarSystemID !== actor.solarSystemID) {
-      return { success: false, errorMsg: "NPC_STARGATE_WRONG_SYSTEM" };
-    }
     return persistence.createNpcJob({
       npcCharacterID: actor.actorID,
       incarnation: positiveInt(entity.npcIncarnation, 0),

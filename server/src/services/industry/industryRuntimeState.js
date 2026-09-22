@@ -13,7 +13,7 @@ const { getCharacterWallet, adjustCharacterBalance, } = require(path.join(__dirn
 const { adjustCorporationWalletDivisionBalance, getCorporationWalletBalance, normalizeCorporationWalletKey, } = require(path.join(__dirname, "../corporation/corpWalletState"));
 const { findItemById, ITEM_FLAGS, listContainerItems, listOwnedItems, grantItemsToCharacterLocation, grantItemsToOwnerLocation, removeInventoryItem, takeItemTypeFromCharacterLocation, takeItemTypeFromOwnerLocation, updateInventoryItem, } = require(path.join(__dirname, "../inventory/itemStore"));
 const { resolveItemByTypeID, } = require(path.join(__dirname, "../inventory/itemTypeRegistry"));
-const { matchesTypeList, } = require(path.join(__dirname, "../inventory/typeListAuthority"));
+const { matchesTypeListWithMissingFallback, } = require(path.join(__dirname, "../inventory/typeListAuthority"));
 const { buildIndustryValidationErrors, parseIndustryRequest, } = require(path.join(__dirname, "./industryPayloads"));
 const { notifyBlueprintsUpdated, notifyIndustryJob, } = require(path.join(__dirname, "./industryNotifications"));
 const { getBlueprintDefinitionByTypeID, getFacilityPayloadByID, listFacilitiesForSession, } = require(path.join(__dirname, "./industryStaticData"));
@@ -143,13 +143,16 @@ function computeInventionProbability(definition, characterID, decryptorTypeID = 
         : []).reduce((sum, skill) => {
         const typeID = toInt(skill && skill.typeID, 0);
         const level = Math.max(0, toInt(skillLevels.get(typeID), 0));
-        const perLevel = (matchesTypeList({ typeID }, LOWER_INVENTION_SKILL_PROBABILITY_TYPE_LIST_ID) || LOWER_INVENTION_SKILL_PROBABILITY_TYPE_IDS.has(typeID))
+        const perLevel = isLowerInventionSkillProbability(typeID)
             ? INVENTION_SKILL_PROBABILITY_LOWER
             : INVENTION_SKILL_PROBABILITY;
         return sum + level * perLevel;
     }, 0);
     const decryptor = resolveDecryptorModifiers(decryptorTypeID);
     return clamp(baseProbability * skillMultiplier * decryptor.probabilityMultiplier, 0, 1);
+}
+function isLowerInventionSkillProbability(typeID) {
+    return matchesTypeListWithMissingFallback({ typeID }, LOWER_INVENTION_SKILL_PROBABILITY_TYPE_LIST_ID, () => LOWER_INVENTION_SKILL_PROBABILITY_TYPE_IDS.has(typeID), "invention-skill-probability");
 }
 function rollInventionSuccessfulRuns(runs, probability, random = Math.random) {
     const normalizedRuns = Math.max(0, toInt(runs, 0));
@@ -2294,5 +2297,8 @@ module.exports = {
     resolveFacilityLocations,
     seedBlueprintForOwner,
     updateBlueprintState,
+    _testing: {
+        isLowerInventionSkillProbability,
+    },
 };
 //# sourceMappingURL=industryRuntimeState.js.map

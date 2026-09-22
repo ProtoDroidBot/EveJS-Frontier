@@ -263,7 +263,9 @@ test("cross-system responders are accepted only when their fitting can travel", 
     nowMs: 30_100,
   });
   assert.equal(tickResult.status, "suspended");
-  assert.equal(tickResult.step, "awaiting-system");
+  // The dispatch is valid, but a synthetic runtime ship without the durable
+  // pilot/incarnation pair cannot cross the source dematerialization boundary.
+  assert.equal(tickResult.step, "awaiting-identity");
 });
 
 test("reserve spawning is explicit and bounded by the incident responder limit", (t) => {

@@ -43,7 +43,7 @@ const {
   resolveItemByTypeID,
 } = require(path.join(__dirname, "../inventory/itemTypeRegistry"));
 const {
-  matchesTypeList,
+  matchesTypeListWithMissingFallback,
 } = require(path.join(__dirname, "../inventory/typeListAuthority"));
 const {
   buildIndustryValidationErrors,
@@ -301,12 +301,7 @@ function computeInventionProbability(
     : []).reduce((sum, skill) => {
       const typeID = toInt(skill && skill.typeID, 0);
       const level = Math.max(0, toInt(skillLevels.get(typeID), 0));
-      const perLevel = (
-        matchesTypeList(
-          { typeID },
-          LOWER_INVENTION_SKILL_PROBABILITY_TYPE_LIST_ID,
-        ) || LOWER_INVENTION_SKILL_PROBABILITY_TYPE_IDS.has(typeID)
-      )
+      const perLevel = isLowerInventionSkillProbability(typeID)
         ? INVENTION_SKILL_PROBABILITY_LOWER
         : INVENTION_SKILL_PROBABILITY;
       return sum + level * perLevel;
@@ -316,6 +311,15 @@ function computeInventionProbability(
     baseProbability * skillMultiplier * decryptor.probabilityMultiplier,
     0,
     1,
+  );
+}
+
+function isLowerInventionSkillProbability(typeID) {
+  return matchesTypeListWithMissingFallback(
+    { typeID },
+    LOWER_INVENTION_SKILL_PROBABILITY_TYPE_LIST_ID,
+    () => LOWER_INVENTION_SKILL_PROBABILITY_TYPE_IDS.has(typeID),
+    "invention-skill-probability",
   );
 }
 
@@ -3093,4 +3097,7 @@ module.exports = {
   resolveFacilityLocations,
   seedBlueprintForOwner,
   updateBlueprintState,
+  _testing: {
+    isLowerInventionSkillProbability,
+  },
 };

@@ -170,7 +170,7 @@ function npcSyncFixture(t) {
   const configPath = path.join(destination, "world.private.json");
   const common = ["sync", "-SourceRoot", source, "-DestinationRoot", destination,
     "-EfctlPath", writeFakeEfctl(fixture), "-SkipRpcValidation", "-SkipDockerOwnershipCheck"];
-  return { manifestSource, versionedManifestSource, manifestDestination,
+  return { source, manifestSource, versionedManifestSource, manifestDestination,
     legacyManifestDestination, archivedLegacyManifestDestination, configPath, destination,
     write: (value) => fs.writeFileSync(manifestSource, JSON.stringify(value)),
     writeVersioned: (value) => fs.writeFileSync(versionedManifestSource, JSON.stringify(value)),
@@ -182,6 +182,103 @@ function npcSyncFixture(t) {
     run: (extra = []) => runWorld([...common, ...extra], {}),
   };
 }
+
+test("World sync creates missing unified and split configs for every detected SDE faction",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = npcSyncFixture(t);
+    const unifiedPath = path.join(path.dirname(f.source), "npc-factions.config.json");
+    const unified = JSON.parse(fs.readFileSync(
+      path.join(REPO_ROOT, "npc-factions.config.json"), "utf8",
+    ));
+    unified.factions = [unified.factions.find((entry) => entry.factionID === 500001)];
+    unified.relations = [];
+    fs.writeFileSync(unifiedPath, JSON.stringify(unified));
+    const sdePath = path.join(f.source, "_local", "frontier-sde", "3502403", "factions.jsonl");
+    fs.mkdirSync(path.dirname(sdePath), { recursive: true });
+    fs.writeFileSync(sdePath, [
+      JSON.stringify({ _key: 500001, name: { en: "SDE name must not replace authoring" },
+        solarSystemID: 30000052 }),
+      JSON.stringify({ _key: 500005, name: { en: "Jove Empire" },
+        solarSystemID: 30001642 }),
+      JSON.stringify({ _key: 500007, name: { en: "Ammatar Mandate" },
+        solarSystemID: 30000001 }),
+      "",
+    ].join("\n"));
+    const manifest: any = migratedWorldFeatureManifest(npcManifest());
+    delete manifest.migration;
+    f.writeVersioned(manifest);
+    const args = ["-NpcFactionConfigPath", unifiedPath];
+    const preview = f.run([...args, "-DryRun"]);
+    assert.equal(preview.status, 0, preview.stderr || preview.stdout);
+    assert.equal(fs.existsSync(f.manifestDestination), false);
+    assert.equal(JSON.parse(fs.readFileSync(unifiedPath, "utf8")).factions.length, 1);
+    const result = f.run(args);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const updated = JSON.parse(fs.readFileSync(unifiedPath, "utf8"));
+    assert.equal(updated.factions.length, 3);
+    assert.equal(updated.factions[0].name, unified.factions[0].name);
+    assert.equal(updated.factions[1].transponderSignal, "FACTION500005");
+    assert.deepEqual(updated.factions[1].startingRegion,
+      { regionID: null, solarSystemIDs: [30001642] });
+    const synchronized = JSON.parse(fs.readFileSync(f.manifestDestination, "utf8"));
+    assert.deepEqual(Object.keys(synchronized.factionConfig.factions).sort(),
+      ["500001-none", "500005-none", "500007-none"]);
+    const generated = JSON.parse(fs.readFileSync(path.join(
+      f.destination, "factions", "500005-none.v1.json"), "utf8"));
+    assert.equal(generated.fallback, "default");
+    assert.equal(generated.transponderCode, "FACTION500005");
+    assert.deepEqual(generated.startingRegion,
+      { regionID: null, solarSystemIDs: [30001642] });
+    assert.deepEqual(generated.membership.typeListProfiles,
+      unified.defaults.typeMembership.typeListProfiles);
+    const again = f.run(args);
+    assert.equal(again.status, 0, again.stderr || again.stdout);
+    assert.deepEqual(JSON.parse(fs.readFileSync(unifiedPath, "utf8")), updated);
+  });
+
+test("World sync keeps authored split faction policy while adding newly detected peers",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = npcSyncFixture(t);
+    const unifiedPath = path.join(path.dirname(f.source), "npc-factions.config.json");
+    const unified = JSON.parse(fs.readFileSync(
+      path.join(REPO_ROOT, "npc-factions.config.json"), "utf8",
+    ));
+    unified.factions = [unified.factions.find((entry) => entry.factionID === 500001)];
+    unified.relations = [];
+    fs.writeFileSync(unifiedPath, JSON.stringify(unified));
+    const sdePath = path.join(f.source, "_local", "frontier-sde", "3502403", "factions.jsonl");
+    fs.mkdirSync(path.dirname(sdePath), { recursive: true });
+    fs.writeFileSync(sdePath, `${JSON.stringify({ _key: 500005,
+      name: { en: "Jove Empire" }, solarSystemID: 30001642 })}\n`);
+    const manifest: any = migratedWorldFeatureManifest(npcManifest());
+    delete manifest.migration;
+    manifest.factionConfig = {
+      default: { id: "default", path: "factions/default.v1.json" },
+      factions: { "500001-none": {
+        path: "factions/500001-none.v1.json", fallback: "default",
+      } },
+    };
+    f.writeVersioned(manifest);
+    f.writeFactionConfig("factions/default.v1.json", {
+      format: "eve-frontier-faction-features", schemaVersion: 2,
+      configId: "default", capabilities: ["npc", "transponder"],
+    });
+    f.writeFactionConfig("factions/500001-none.v1.json", {
+      format: "eve-frontier-faction-features", schemaVersion: 2,
+      factionKey: "500001-none", fallback: "default", capabilities: ["npc"],
+      transponderCode: "CALDARI", diplomacy: { allies: [], enemies: [] },
+    });
+    const result = f.run(["-NpcFactionConfigPath", unifiedPath]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const authored = JSON.parse(fs.readFileSync(path.join(
+      f.destination, "factions", "500001-none.v1.json"), "utf8"));
+    assert.deepEqual(authored.capabilities, ["npc"]);
+    assert.equal(authored.transponderCode, "CALDARI");
+    const added = JSON.parse(fs.readFileSync(path.join(
+      f.destination, "factions", "500005-none.v1.json"), "utf8"));
+    assert.equal("capabilities" in added, false);
+    assert.equal(added.transponderCode, "FACTION500005");
+  });
 
 function writeFixture(root) {
   const source = path.join(root, "3502403");
@@ -734,16 +831,32 @@ test("Versioned world features preserve partial capabilities and faction allowli
       },
     };
     f.writeFactionConfig("factions/default.v1.json", {
-      format: "eve-frontier-faction-features", schemaVersion: 1,
+      format: "eve-frontier-faction-features", schemaVersion: 2,
       configId: "default", capabilities: ["transponder", "npc"],
     });
     f.writeFactionConfig("factions/500001-caldari.v1.json", {
-      format: "eve-frontier-faction-features", schemaVersion: 1,
+      format: "eve-frontier-faction-features", schemaVersion: 2,
       factionKey: "500001-caldari", fallback: "default",
+      transponderCode: "CALDARI",
+      membership: {
+        includedTypeIDs: [101], excludedTypeIDs: [],
+        typeListProfiles: [{
+          profileID: "npc-profiles-by-faction", source: "npcProfiles", match: "factionIdentity",
+        }],
+      },
+      diplomacy: {
+        allies: [], enemies: [{ factionKey: "500010-guristas", transponderCode: "GURISTAS" }],
+      },
+      leadership: [], commanders: [],
     });
     f.writeFactionConfig("factions/500010-guristas.v1.json", {
-      format: "eve-frontier-faction-features", schemaVersion: 1,
+      format: "eve-frontier-faction-features", schemaVersion: 2,
       factionKey: "500010-guristas", fallback: "default", capabilities: ["npc"],
+      transponderCode: "GURISTAS",
+      diplomacy: {
+        allies: [], enemies: [{ factionKey: "500001-caldari", transponderCode: "CALDARI" }],
+      },
+      leadership: [], commanders: [],
     });
     f.write({ schemaVersion: 999, secret: "ignored legacy sibling" });
     f.writeVersioned(manifest);
@@ -758,9 +871,13 @@ test("Versioned world features preserve partial capabilities and faction allowli
     assert.deepEqual(JSON.parse(fs.readFileSync(
       path.join(f.destination, "factions", "default.v1.json"), "utf8",
     )).capabilities, ["npc", "transponder"]);
-    assert.equal("capabilities" in JSON.parse(fs.readFileSync(
+    const caldari = JSON.parse(fs.readFileSync(
       path.join(f.destination, "factions", "500001-caldari.v1.json"), "utf8",
-    )), false);
+    ));
+    assert.equal("capabilities" in caldari, false);
+    assert.deepEqual(caldari.membership.includedTypeIDs, [101]);
+    assert.equal(caldari.diplomacy.enemies[0].transponderCode, "GURISTAS");
+    assert.deepEqual(caldari.leadership, []);
     assert.deepEqual(JSON.parse(fs.readFileSync(
       path.join(f.destination, "factions", "500010-guristas.v1.json"), "utf8",
     )).capabilities, ["npc"]);

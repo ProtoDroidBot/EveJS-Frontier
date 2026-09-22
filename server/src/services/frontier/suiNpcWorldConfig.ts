@@ -10,6 +10,29 @@ export type SuiNpcBaseWorld = {
   adminAclId: string;
 };
 
+export type SuiFactionPolicy = {
+  transponderCode: string | null;
+  startingRegion: {
+    regionID: number | null;
+    solarSystemIDs: number[];
+  };
+  membership: {
+    includedTypeIDs: number[];
+    excludedTypeIDs: number[];
+    typeListProfiles: Array<{
+      profileID: string;
+      source: "npcProfiles";
+      match: "factionIdentity";
+    }>;
+  };
+  diplomacy: {
+    allies: Array<{ factionKey: string; transponderCode: string | null }>;
+    enemies: Array<{ factionKey: string; transponderCode: string | null }>;
+  };
+  leadership: Array<{ characterID: string; characterType: "npc" | "player" }>;
+  commanders: Array<{ characterID: string; characterType: "npc" | "player" }>;
+};
+
 export type SuiNpcWorldConfig = {
   /** Latest implementation package used as the Move-call target. */
   npcPackageId: string;
@@ -63,6 +86,8 @@ export type SuiNpcWorldConfig = {
   defaultFactionCapabilities: string[] | null;
   /** Public file references retained for later on-chain faction migration. */
   factionConfigReferences: Record<string, { path: string; fallback: "default" | null }>;
+  /** Runtime-ready faction membership, diplomacy, transponder, and leadership metadata. */
+  factionPolicies: Record<string, SuiFactionPolicy>;
   manifestFormat: "world-features-v1" | "legacy-npc-deployment" | "implicit-legacy";
   fingerprint: string;
 };
@@ -121,6 +146,128 @@ function normalizeCapabilityNames(raw: unknown, label: string): string[] {
   return [...new Set(raw)].sort();
 }
 
+function normalizePositiveTypeIDs(raw: unknown, label: string): number[] {
+  if (!Array.isArray(raw)) throw new Error(`${label} must be an array`);
+  const result: number[] = [];
+  for (const value of raw) {
+    const typeID = Number(value);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0 || typeID > 0xffffffff) {
+      throw new Error(`${label} must contain positive u32 type IDs`);
+    }
+    if (result.includes(typeID)) throw new Error(`${label} contains duplicate type ID ${typeID}`);
+    result.push(typeID);
+  }
+  return result.sort((left, right) => left - right);
+}
+
+function normalizeFactionPolicy(raw: any, factionKey: string, label: string): SuiFactionPolicy {
+  const codeValue = raw?.transponderCode;
+  const transponderCode = codeValue == null ? null : String(codeValue).trim().toUpperCase();
+  if (transponderCode !== null && (
+    !/^[A-Z0-9][A-Z0-9_:-]*$/.test(transponderCode) || transponderCode.length > 32
+  )) {
+    throw new Error(`${label} transponderCode is invalid`);
+  }
+  const rawStartingRegion = raw?.startingRegion ?? {};
+  if (!rawStartingRegion || typeof rawStartingRegion !== "object" || Array.isArray(rawStartingRegion)) {
+    throw new Error(`${label} startingRegion must be an object`);
+  }
+  for (const key of Object.keys(rawStartingRegion)) {
+    if (key !== "regionID" && key !== "solarSystemIDs") {
+      throw new Error(`${label} startingRegion has an unsupported field ${key}`);
+    }
+  }
+  const regionID = rawStartingRegion.regionID ?? null;
+  if (regionID !== null && (
+    !Number.isSafeInteger(regionID) || regionID <= 0 || regionID > 0xffffffff
+  )) {
+    throw new Error(`${label} regionID must be null or a positive u32 ID`);
+  }
+  const solarSystemIDs = normalizePositiveTypeIDs(
+    rawStartingRegion.solarSystemIDs ?? [], `${label} starting solarSystemIDs`,
+  );
+  const membership = raw?.membership === undefined ? {} : raw.membership;
+  if (!membership || typeof membership !== "object" || Array.isArray(membership)) {
+    throw new Error(`${label} membership must be an object`);
+  }
+  const includedTypeIDs = normalizePositiveTypeIDs(
+    membership.includedTypeIDs ?? [], `${label} includedTypeIDs`,
+  );
+  const excludedTypeIDs = normalizePositiveTypeIDs(
+    membership.excludedTypeIDs ?? [], `${label} excludedTypeIDs`,
+  );
+  if (includedTypeIDs.some(typeID => excludedTypeIDs.includes(typeID))) {
+    throw new Error(`${label} cannot include and exclude the same type ID`);
+  }
+  const rawProfiles = membership.typeListProfiles ?? [];
+  if (!Array.isArray(rawProfiles)) throw new Error(`${label} typeListProfiles must be an array`);
+  const profileIDs = new Set<string>();
+  const typeListProfiles = rawProfiles.map((profile: any) => {
+    const profileID = String(profile?.profileID || "").trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9:_-]{0,127}$/.test(profileID) || profileIDs.has(profileID) ||
+        profile?.source !== "npcProfiles" || profile?.match !== "factionIdentity") {
+      throw new Error(`${label} has an invalid or duplicate type-list profile`);
+    }
+    profileIDs.add(profileID);
+    return { profileID, source: "npcProfiles" as const, match: "factionIdentity" as const };
+  });
+  const diplomacy = raw?.diplomacy === undefined ? {} : raw.diplomacy;
+  if (!diplomacy || typeof diplomacy !== "object" || Array.isArray(diplomacy)) {
+    throw new Error(`${label} diplomacy must be an object`);
+  }
+  const normalizeContacts = (values: unknown, contactLabel: string) => {
+    if (values === undefined) return [];
+    if (!Array.isArray(values)) throw new Error(`${contactLabel} must be an array`);
+    const seen = new Set<string>();
+    return values.map((entry: any) => {
+      const targetKey = String(entry?.factionKey || "").trim().toLowerCase();
+      if (!isCanonicalFactionKey(targetKey) || targetKey === factionKey || seen.has(targetKey)) {
+        throw new Error(`${contactLabel} contains an invalid, self, or duplicate faction`);
+      }
+      seen.add(targetKey);
+      const targetCodeValue = entry?.transponderCode;
+      const targetCode = targetCodeValue == null
+        ? null
+        : String(targetCodeValue).trim().toUpperCase();
+      if (targetCode !== null && (
+        !/^[A-Z0-9][A-Z0-9_:-]*$/.test(targetCode) || targetCode.length > 32
+      )) {
+        throw new Error(`${contactLabel} contains an invalid transponder code`);
+      }
+      return { factionKey: targetKey, transponderCode: targetCode };
+    }).sort((left, right) => left.factionKey.localeCompare(right.factionKey));
+  };
+  const allies = normalizeContacts(diplomacy.allies, `${label} allies`);
+  const enemies = normalizeContacts(diplomacy.enemies, `${label} enemies`);
+  if (allies.some(ally => enemies.some(enemy => enemy.factionKey === ally.factionKey))) {
+    throw new Error(`${label} cannot list one faction as both ally and enemy`);
+  }
+  const normalizeCharacters = (values: unknown, roleLabel: string) => {
+    if (values === undefined) return [];
+    if (!Array.isArray(values)) throw new Error(`${roleLabel} must be an array`);
+    const seen = new Set<string>();
+    return values.map((entry: any) => {
+      const characterID = String(entry?.characterID || "").trim();
+      const characterType = String(entry?.characterType || "").trim().toLowerCase();
+      if (!/^[1-9][0-9]*$/.test(characterID) || BigInt(characterID) > ((1n << 64n) - 1n) ||
+          (characterType !== "npc" && characterType !== "player") ||
+          seen.has(`${characterType}:${characterID}`)) {
+        throw new Error(`${roleLabel} contains an invalid or duplicate character`);
+      }
+      seen.add(`${characterType}:${characterID}`);
+      return { characterID, characterType: characterType as "npc" | "player" };
+    });
+  };
+  return {
+    transponderCode,
+    startingRegion: { regionID, solarSystemIDs },
+    membership: { includedTypeIDs, excludedTypeIDs, typeListProfiles },
+    diplomacy: { allies, enemies },
+    leadership: normalizeCharacters(raw?.leadership, `${label} leadership`),
+    commanders: normalizeCharacters(raw?.commanders, `${label} commanders`),
+  };
+}
+
 function readFactionFeatureFile(
   manifestPath: string,
   relativePath: unknown,
@@ -143,7 +290,7 @@ function readFactionFeatureFile(
     throw new Error(`${label} could not be read as JSON`, { cause: error });
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
-      raw.format !== "eve-frontier-faction-features" || raw.schemaVersion !== 1) {
+      raw.format !== "eve-frontier-faction-features" || ![1, 2].includes(raw.schemaVersion)) {
     throw new Error(`${label} has an unsupported schema`);
   }
   return raw;
@@ -156,6 +303,7 @@ function readSplitFactionCapabilityMap(
   capabilities: Record<string, string[]>;
   defaultCapabilities: string[];
   references: Record<string, { path: string; fallback: "default" | null }>;
+  policies: Record<string, SuiFactionPolicy>;
 } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("World feature factionConfig must be an object");
@@ -180,6 +328,7 @@ function readSplitFactionCapabilityMap(
   const references: Record<string, { path: string; fallback: "default" | null }> = {
     default: { path: defaultPath, fallback: null },
   };
+  const policies: Record<string, SuiFactionPolicy> = {};
   for (const [factionKey, reference] of Object.entries<any>(source.factions)) {
     if (!isCanonicalFactionKey(factionKey)) {
       throw new Error("World feature faction keys must use factionID-factionStringOnlyID");
@@ -201,8 +350,22 @@ function readSplitFactionCapabilityMap(
           `Faction feature config ${factionKey} capabilities`,
         );
     references[factionKey] = { path: expectedPath, fallback: "default" };
+    policies[factionKey] = normalizeFactionPolicy(
+      factionFile,
+      factionKey,
+      `Faction feature config ${factionKey}`,
+    );
   }
-  return { capabilities, defaultCapabilities, references };
+  for (const [factionKey, policy] of Object.entries(policies)) {
+    for (const contact of [...policy.diplomacy.allies, ...policy.diplomacy.enemies]) {
+      const target = policies[contact.factionKey];
+      if (!target) throw new Error(`Faction ${factionKey} references unknown faction ${contact.factionKey}`);
+      if (contact.transponderCode !== target.transponderCode) {
+        throw new Error(`Faction ${factionKey} has stale transponder code for ${contact.factionKey}`);
+      }
+    }
+  }
+  return { capabilities, defaultCapabilities, references, policies };
 }
 
 function address(value: unknown, label: string): string {
@@ -261,6 +424,7 @@ export function readSuiNpcWorldConfig(
   let factionCapabilities: Record<string, string[]> = {};
   let defaultFactionCapabilities: string[] | null = null;
   let factionConfigReferences: SuiNpcWorldConfig["factionConfigReferences"] = {};
+  let factionPolicies: SuiNpcWorldConfig["factionPolicies"] = {};
   const deployedCapabilityNames = new Set<string>();
   if (configPath) {
     let raw: any;
@@ -334,6 +498,7 @@ export function readSuiNpcWorldConfig(
           factionCapabilities = splitFactions.capabilities;
           defaultFactionCapabilities = splitFactions.defaultCapabilities;
           factionConfigReferences = splitFactions.references;
+          factionPolicies = splitFactions.policies;
         } else {
           factionCapabilities = normalizeFactionCapabilityMap(raw.factions);
         }
@@ -606,6 +771,7 @@ export function readSuiNpcWorldConfig(
   const fingerprint = createHash("sha256").update(JSON.stringify({
     world, file, manifestFormat, capabilities, factionCapabilities,
     defaultFactionCapabilities, factionConfigReferences,
+    factionPolicies,
     packageOverride, originOverride, npcRegistryOverride,
     accessPackageOverride, accessOriginOverride, accessRegistryOverride,
     catapultPackageOverride, catapultOriginOverride, catapultRegistryOverride,
@@ -640,6 +806,7 @@ export function readSuiNpcWorldConfig(
     automationPackageId, automationTypeOrigin, automationRegistryId,
     capabilities, factionCapabilities, defaultFactionCapabilities,
     factionConfigReferences, manifestFormat,
+    factionPolicies,
     fingerprint,
   };
 }

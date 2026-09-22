@@ -8,6 +8,11 @@ const iffRuntime = require("../src/services/frontier/iffRuntime");
 const npcBehaviorLoop = require("../src/space/npc/npcBehaviorLoop");
 const npcRegistry = require("../src/space/npc/npcRegistry");
 const npcService = require("../src/space/npc/npcService");
+const npcScanning = require("../src/space/npc/npcScanning");
+const npcWrecks = require("../src/space/npc/nativeNpcWreckService");
+const {
+  createTypeListAuthority, matchesTypeListInAuthority,
+} = require("../src/services/inventory/typeListAuthority");
 
 function buildNpc(itemID, factionID, options: Record<string, any> = {}) {
   return {
@@ -51,7 +56,7 @@ test.afterEach(() => {
 
 test("NPC faction config loads the shipped faction and relation matrix", () => {
   const summary = npcFactionConfig.getConfigSummary();
-  assert.equal(summary.schemaVersion, 1);
+  assert.equal(summary.schemaVersion, 2);
   assert.equal(summary.enabled, true);
   assert.equal(summary.factionCount, 20);
   assert.equal(summary.transponderEnabled, true);
@@ -60,9 +65,12 @@ test("NPC faction config loads the shipped faction and relation matrix", () => {
   assert.equal(summary.transponderSuffixCount, 0);
   assert.equal(summary.suiWalletFundingEnabled, true);
   assert.equal(summary.suiWalletBudgetMist, "10000000000");
+  assert.equal(summary.startingRegionFactionCount, 14);
+  assert.equal(summary.fallbackSolarSystemFactionCount, 14);
   assert.equal(summary.relationRuleCount, 4);
   assert.ok(summary.resolvedRelationCount > 50);
   const config = npcFactionConfig.getConfig();
+  assert.deepEqual(config.worldCapabilities, ["npc", "transponder"]);
   assert.equal(config.defaults.unidentifiedDisposition, "suspicious");
   assert.equal("playerDisposition" in config.defaults, false);
   assert.equal(config.defaults.hardwarePolicy.allowPlayerOwned, true);
@@ -72,6 +80,187 @@ test("NPC faction config loads the shipped faction and relation matrix", () => {
   assert.ok(config.defaults.hardwarePolicy.allowedRoles.includes("ammunition"));
   assert.ok(config.defaults.hardwarePolicy.allowedRoles.includes("jump_drive"));
   assert.equal(config.defaults.hardwarePolicy.equipmentLossPolicy, "return");
+  assert.equal(config.defaults.typeMembership.typeListProfiles[0].profileID, "npc-profiles-by-faction");
+  assert.deepEqual(config.defaults.leadership, []);
+  assert.deepEqual(config.defaults.commanders, []);
+  assert.deepEqual(config.defaults.startingRegion, {
+    regionID: null, solarSystemIDs: [],
+  });
+  const guristas = config.factions.find((faction) => faction.factionID === 500010);
+  assert.equal(guristas.canonicalKey, "500010-none");
+  assert.equal(guristas.transponderCode, "GURISTAS");
+  assert.deepEqual(guristas.startingRegion, {
+    regionID: 10000015, solarSystemIDs: [30001290],
+  });
+  assert.ok(guristas.diplomacy.enemies.some(
+    (contact) => contact.factionKey === "500001-none" && contact.transponderCode === "CALDARI",
+  ));
+  assert.ok(summary.factionTypeListProfileCount >= summary.factionCount);
+  assert.ok(summary.enemyContactCount > 50);
+});
+
+test("starting region selects a random system and retains the SDE home as last resort", () => {
+  const faction = { factionID: 500010 };
+  const systems = [
+    { solarSystemID: 30001292, regionID: 10000015 },
+    { solarSystemID: 30001291, regionID: 10000015 },
+    { solarSystemID: 30001045, regionID: 10000013 },
+  ];
+  assert.deepEqual(
+    npcFactionConfig.resolveNpcFactionRespawnSeedSolarSystemIDs(faction, systems),
+    [30001291, 30001292],
+  );
+  assert.equal(npcFactionConfig.selectNpcFactionStartingSolarSystemID(faction, {
+    solarSystems: systems, random: () => 0,
+  }), 30001291);
+  assert.equal(npcFactionConfig.selectNpcFactionStartingSolarSystemID(faction, {
+    solarSystems: systems, random: () => 0.99,
+  }), 30001292);
+  assert.deepEqual(
+    npcFactionConfig.resolveNpcFactionRespawnSeedSolarSystemIDs(faction, []),
+    [30001290],
+  );
+  assert.equal(npcFactionConfig.selectNpcFactionStartingSolarSystemID(
+    { factionKey: "osa" }, { solarSystems: systems },
+  ), null);
+  const copy = npcFactionConfig.resolveNpcFactionStartingRegion(faction);
+  copy.solarSystemIDs.push(1);
+  assert.deepEqual(npcFactionConfig.resolveNpcFactionStartingRegion(faction).solarSystemIDs, [30001290]);
+});
+
+test("starting region validation enforces region IDs and unique solar-system IDs", () => {
+  const raw = require("../../npc-factions.config.json");
+  const withRegion = (startingRegion) => ({
+    ...raw,
+    factions: [{ ...raw.factions[0], startingRegion }, ...raw.factions.slice(1)],
+  });
+  assert.throws(() => npcFactionConfig.validateConfig(withRegion({
+    regionID: 10000001, solarSystemIDs: [30000001, 30000001],
+  })), /duplicate solar system ID/);
+  assert.throws(() => npcFactionConfig.validateConfig(withRegion({
+    regionID: 10000001, solarSystemIDs: ["30000001"],
+  })), /positive u32 solar system ID/);
+  assert.throws(() => npcFactionConfig.validateConfig(withRegion({
+    regionID: -1, solarSystemIDs: [],
+  })), /positive u32 region ID/);
+  assert.throws(() => npcFactionConfig.validateConfig(withRegion({
+    regionID: 10000001, solarSystemIDs: [], sdeHomeSolarSystemID: 30000001,
+  })), /unsupported/);
+  const configured = npcFactionConfig.validateConfig(withRegion({
+    regionID: 10000001, solarSystemIDs: [30000001, 30000002],
+  }));
+  assert.deepEqual(configured.factions[0].startingRegion.solarSystemIDs, [30000001, 30000002]);
+  const fallbackOnly = npcFactionConfig.validateConfig(withRegion({
+    regionID: null, solarSystemIDs: [30000001],
+  }));
+  assert.deepEqual(fallbackOnly.factions[0].startingRegion, {
+    regionID: null, solarSystemIDs: [30000001],
+  });
+});
+
+test("faction type-list profiles annotate each matching NPC type", () => {
+  const profiles = [
+    { profileID: "guristas-frigate", shipTypeID: 101, factionID: 500010 },
+    { profileID: "guristas-cruiser", shipTypeID: 102, factionID: 500010 },
+    { profileID: "caldari-frigate", shipTypeID: 201, factionID: 500001 },
+  ];
+  const applied = npcFactionConfig.applyNpcFactionTypeListProfile(profiles[0]);
+  assert.equal(applied.npcFactionConfigKey, "500010-none");
+  assert.equal(applied.npcFactionMembershipEligible, true);
+  assert.deepEqual(applied.npcFactionTypeListProfileIDs, ["npc-profiles-by-faction"]);
+  assert.deepEqual(
+    npcFactionConfig.resolveNpcFactionTypeProfiles({ factionID: 500010 }, profiles),
+    [
+      {
+        typeID: 101,
+        profileIDs: ["guristas-frigate"],
+        typeListProfileIDs: ["npc-profiles-by-faction"],
+      },
+      {
+        typeID: 102,
+        profileIDs: ["guristas-cruiser"],
+        typeListProfileIDs: ["npc-profiles-by-faction"],
+      },
+    ],
+  );
+});
+
+test("P4 faction SDE lists are lane-specific and deny missing, empty, and excluded members", () => {
+  const raw = require("../../npc-factions.config.json");
+  const configured = npcFactionConfig.validateConfig({
+    ...raw,
+    defaults: {
+      ...raw.defaults,
+      typeMembership: {
+        ...raw.defaults.typeMembership,
+        sdeTypeListIDs: { hull: [52], reinforcement: [51], targetInterest: [50], loot: [50], market: [] },
+      },
+    },
+  });
+  const membership = configured.factions[0].typeMembership;
+  assert.deepEqual(membership.sdeTypeListIDs.hull, [52], "factions inherit the fallback SDE policy");
+  const authority = createTypeListAuthority({
+    source: { buildNumber: 3502403, typeListsSha256: "test" },
+    typeLists: [
+      { listID: 50, includedTags: [7], excludedGroupIDs: [2] },
+      { listID: 51 },
+      { listID: 52, includedTypeListIDs: [50] },
+    ],
+  }, [
+    { typeID: 100, groupID: 1, tags: [7] },
+    { typeID: 101, groupID: 2, tags: [7] },
+  ]);
+  const matcher = (typeID, listID) => matchesTypeListInAuthority(authority, typeID, listID);
+  const allowed = (lane, typeID) => npcFactionConfig.matchesNpcFactionSdeTypeListPolicy(
+    membership, lane, typeID, matcher,
+  );
+  assert.equal(allowed("hull", 100), true);
+  assert.equal(allowed("hull", 101), false);
+  assert.equal(allowed("reinforcement", 100), false, "empty list does not admit a hull");
+  assert.equal(allowed("targetInterest", 101), false);
+  assert.equal(allowed("loot", 100), true);
+  assert.equal(allowed("market", 101), true, "an unconfigured lane does not change behavior");
+  assert.equal(matcher(100, 999), false, "missing SDE list fails closed");
+  assert.throws(() => npcFactionConfig.validateConfig({
+    ...raw,
+    defaults: { ...raw.defaults, typeMembership: {
+      ...raw.defaults.typeMembership, sdeTypeListIDs: { hull: [50, 50] },
+    } },
+  }), /unique positive SDE list IDs/);
+  assert.throws(() => npcFactionConfig.validateConfig({
+    ...raw,
+    defaults: { ...raw.defaults, typeMembership: {
+      ...raw.defaults.typeMembership, sdeTypeListIDs: { market: [50] },
+    } },
+  }), /reserved until NPC market transactions exist/);
+});
+
+test("P4 reinforcement and inventory interest filter candidates before action", () => {
+  const source = { itemID: 1, bubbleID: 1, position: { x: 0, y: 0, z: 0 } };
+  const definitions = [
+    { profile: { shipTypeID: 100 }, behaviorProfile: {} },
+    { profile: { shipTypeID: 101 }, behaviorProfile: {} },
+  ];
+  assert.deepEqual(npcBehaviorLoop.__testing.filterNpcReinforcementDefinitions(
+    source, definitions, (_entity, lane, typeID) => lane === "reinforcement" && typeID === 100,
+  ), [definitions[0]]);
+  const target = { itemID: 2, position: { x: 10, y: 0, z: 0 } };
+  const scene = { getDynamicEntitiesInBubble: () => [target] };
+  const capability = { kind: "inventory", targetTypeListID: 861, itemTypeListID: 923, rangeMeters: 100 };
+  const deps = {
+    canEntitiesInteractLocally: () => true,
+    matchesTypeList: () => true,
+    listContainerItems: () => [{ itemID: 3, typeID: 101 }],
+    isNpcFactionSdeTypeAllowed: (_source, lane, item) =>
+      lane === "targetInterest" && item.typeID === 100,
+  };
+  assert.equal(npcScanning._testing.findNpcScanTarget(scene, source, capability, deps), null);
+  deps.listContainerItems = () => [{ itemID: 4, typeID: 100 }];
+  assert.equal(npcScanning._testing.findNpcScanTarget(scene, source, capability, deps), target);
+  const loot = [{ typeID: 100 }, { typeID: 101 }];
+  assert.deepEqual(npcWrecks._testing.filterNpcGeneratedLoot(
+    source, loot, (_source, lane, typeID) => lane === "loot" && typeID === 100,
+  ), [loot[0]]);
 });
 
 test("NPCs in one faction share a stable code across spawn groups", () => {
@@ -208,6 +397,7 @@ test("NPC faction config validates relation identities and disposition values", 
   const normalized = npcFactionConfig.validateConfig(base);
   assert.equal(normalized.defaults.hardwarePolicy.allowPlayerOwned, true);
   assert.ok(normalized.defaults.hardwarePolicy.allowedRoles.includes("mining"));
+  assert.equal(normalized.defaults.typeMembership.typeListProfiles[0].source, "npcProfiles");
   const suffixed = npcFactionConfig.validateConfig({
     ...base,
     transponder: { enabled: true, channel: "code" },
@@ -310,6 +500,51 @@ test("NPC faction config validates relation identities and disposition values", 
       },
     }),
     /return or destroy/,
+  );
+  const v2 = npcFactionConfig.validateConfig({
+    ...base,
+    schemaVersion: 2,
+    defaults: {
+      ...base.defaults,
+      typeMembership: {
+        includedTypeIDs: [9001],
+        excludedTypeIDs: [],
+        typeListProfiles: [{
+          profileID: "npc-profiles-by-faction",
+          source: "npcProfiles",
+          match: "factionIdentity",
+        }],
+      },
+      leadership: [],
+      commanders: [],
+    },
+    factions: [{
+      factionID: 500010,
+      name: "Guristas Pirates",
+      leadership: [
+        { characterID: "9223372036854775808", characterType: "npc" },
+        { characterID: "42", characterType: "player" },
+      ],
+      commanders: [],
+    }],
+  });
+  assert.equal(v2.factions[0].canonicalKey, "500010-none");
+  assert.deepEqual(v2.factions[0].typeMembership.includedTypeIDs, [9001]);
+  assert.equal(v2.factions[0].leadership[0].characterType, "npc");
+  assert.throws(
+    () => npcFactionConfig.validateConfig({
+      ...base,
+      schemaVersion: 2,
+      defaults: {
+        ...base.defaults,
+        typeMembership: {
+          includedTypeIDs: [9001],
+          excludedTypeIDs: [9001],
+          typeListProfiles: [],
+        },
+      },
+    }),
+    /both include and exclude/,
   );
 });
 

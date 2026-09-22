@@ -28,6 +28,9 @@ const {
   buildOnSpecialFXPayload,
 } = require(path.join(__dirname, "../destiny/stream/actions"));
 const nativeNpcStore = require(path.join(__dirname, "./nativeNpcStore"));
+const { isNpcFactionSdeTypeAllowed } = require(path.join(
+  __dirname, "../../config/npcFactionConfig",
+));
 const {
   generateNpcMetamorphosisItems,
   resolveNpcMetamorphosisCapability,
@@ -54,6 +57,7 @@ const DEFAULT_DEPS = Object.freeze({
   grantItemToOwnerLocation,
   listContainerItems,
   matchesTypeList,
+  isNpcFactionSdeTypeAllowed,
   nativeNpcStore,
   removeInventoryItem,
   resolveItemByTypeID,
@@ -247,12 +251,13 @@ function isCandidateInScanScope(source, candidate, capability, deps) {
   );
 }
 
-function targetHasInterestingInventory(target, capability, deps) {
+function targetHasInterestingInventory(source, target, capability, deps) {
   if (capability.kind !== "inventory") {
     return true;
   }
   return listScanTargetItems(target, deps).some((item) => (
-    deps.matchesTypeList(item, capability.itemTypeListID)
+    deps.matchesTypeList(item, capability.itemTypeListID) &&
+    deps.isNpcFactionSdeTypeAllowed(source, "targetInterest", item)
   ));
 }
 
@@ -263,7 +268,7 @@ function findNpcScanTarget(scene, source, capability, deps) {
   return (scene.getDynamicEntitiesInBubble(source.bubbleID) || [])
     .filter((candidate) => (
       isCandidateInScanScope(source, candidate, capability, deps) &&
-      targetHasInterestingInventory(candidate, capability, deps)
+      targetHasInterestingInventory(source, candidate, capability, deps)
     ))
     .sort((left, right) => (
       surfaceDistance(source, left) - surfaceDistance(source, right) ||
@@ -477,7 +482,8 @@ function refreshScannedTarget(scene, target, deps) {
 
 function completeInventoryScan(scene, source, target, capability, deps) {
   const interestingItems = listScanTargetItems(target, deps).filter((item) => (
-    deps.matchesTypeList(item, capability.itemTypeListID)
+    deps.matchesTypeList(item, capability.itemTypeListID) &&
+    deps.isNpcFactionSdeTypeAllowed(source, "targetInterest", item)
   ));
   const stolenTypeIDs = new Set<number>();
   let stolenItemCount = 0;
@@ -568,7 +574,8 @@ function syncNpcScanning(
     const stillValid = Boolean(
       target &&
       currentState.capability.kind === capability.kind &&
-      isCandidateInScanScope(source, target, capability, deps)
+      isCandidateInScanScope(source, target, capability, deps) &&
+      targetHasInterestingInventory(source, target, capability, deps)
     );
     if (!stillValid) {
       cancelNpcScanning(scene, source, controller, nowMs, { dependencies: deps });

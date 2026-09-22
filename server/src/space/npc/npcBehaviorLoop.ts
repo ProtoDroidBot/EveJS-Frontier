@@ -79,6 +79,7 @@ const {
   resolveNpcUnidentifiedDisposition,
   shouldNpcRetaliateAgainstAggressors,
   getAdditionalAutoAggroTargetClasses,
+  isNpcFactionSdeTypeAllowed,
 } = require(path.join(__dirname, "../../config/npcFactionConfig"));
 const {
   tickDurableNpcJob,
@@ -669,6 +670,14 @@ function propagateDrifterReinforcementRequestState(scene, controller, entity, no
   }
 }
 
+function filterNpcReinforcementDefinitions(entity, definitions, matcher = isNpcFactionSdeTypeAllowed) {
+  return Array.isArray(definitions) ? definitions.filter(definition => (
+    definition && definition.profile && definition.behaviorProfile &&
+    matcher(entity, "reinforcement",
+      toPositiveInt(definition.profile.shipTypeID ?? definition.profile.typeID, 0))
+  )) : [];
+}
+
 function maybeRequestDrifterReinforcements(scene, entity, controller, behaviorProfile, targetEntity, nowMs) {
   if (
     !scene ||
@@ -683,15 +692,9 @@ function maybeRequestDrifterReinforcements(scene, entity, controller, behaviorPr
     };
   }
 
-  const reinforcementDefinitions = Array.isArray(
-    behaviorProfile && behaviorProfile.reinforcementDefinitions,
-  )
-    ? behaviorProfile.reinforcementDefinitions.filter((definition) => (
-      definition &&
-      definition.profile &&
-      definition.behaviorProfile
-    ))
-    : [];
+  const reinforcementDefinitions = filterNpcReinforcementDefinitions(
+    entity, behaviorProfile && behaviorProfile.reinforcementDefinitions,
+  );
   if (reinforcementDefinitions.length <= 0) {
     return {
       requested: false,
@@ -5684,6 +5687,7 @@ module.exports = {
   resolveNpcDungeonArrivalDisposition,
   __testing: {
     maybeRequestDrifterReinforcements,
+    filterNpcReinforcementDefinitions,
     isFriendlyCombatTarget,
     isRecordedNpcAggressor,
     resolveNpcTransponderTargetDisposition,

@@ -2165,6 +2165,35 @@ function validateNpcAssemblyActor(actor, options = {}) {
         };
     }
 }
+function validateNpcConstructionMaterialPlan(actor, materialPlan) {
+    const ship = require("../../space/npc/nativeNpcStore").getNativeEntity(actor.shipID);
+    if (!ship || ship.transient === true ||
+        toInt(ship.npcCharacterID, 0) !== actor.actorID ||
+        toInt(ship.systemID, 0) !== actor.solarSystemID) {
+        return { success: false, errorMsg: "NPC_CONSTRUCTION_ASSIGNMENT_INVALID" };
+    }
+    const allowedOwners = new Set([actor.ownerPrincipalID, toInt(ship.ownerID, 0)].filter(ownerID => ownerID > 0));
+    const seen = new Set();
+    for (const entry of materialPlan) {
+        const itemID = toInt(entry?.itemID, 0);
+        const item = itemStore.findItemById(itemID);
+        if (!itemID || seen.has(itemID) || !item ||
+            !Number.isSafeInteger(Number(entry?.quantity)) ||
+            Number(entry.quantity) <= 0 ||
+            Number(entry.quantity) > getItemQuantity(item) ||
+            toInt(entry?.typeID, 0) !== toInt(item.typeID, 0) ||
+            toInt(entry?.ownerID, 0) !== toInt(item.ownerID, 0) ||
+            toInt(entry?.locationID, 0) !== toInt(item.locationID, 0) ||
+            toInt(entry?.flagID, -1) !== toInt(item.flagID, -1)) {
+            return { success: false, errorMsg: "NPC_CONSTRUCTION_MATERIAL_MOVED" };
+        }
+        if (!allowedOwners.has(toInt(item.ownerID, 0))) {
+            return { success: false, errorMsg: "NPC_CONSTRUCTION_MATERIAL_ACCESS_DENIED" };
+        }
+        seen.add(itemID);
+    }
+    return { success: true };
+}
 function listNpcNetworkNodeBuildAnchors(ownerPrincipalID, solarSystemID) {
     return itemStore.listSystemSpaceItems(solarSystemID).flatMap((item) => {
         if (toInt(item.typeID, 0) !== NETWORK_NODE_ASSEMBLY_TYPE_ID ||
@@ -2494,6 +2523,9 @@ function placeNpcDirectAssembly(actorInput, input) {
     if (!clearance.success)
         return clearance;
     const materialPlan = Array.isArray(input.materialPlan) ? input.materialPlan : [];
+    const sourceValidation = validateNpcConstructionMaterialPlan(actor, materialPlan);
+    if (!sourceValidation.success)
+        return sourceValidation;
     const consumption = [];
     for (const [rawTypeID, rawQuantity] of Object.entries(definition.constructionCost)) {
         const typeID = toInt(rawTypeID, 0);
@@ -2825,6 +2857,9 @@ function depositNpcConstructionMaterials(actor, itemID, materialPlan, jobID = nu
         return { success: true, data: { deposited, idempotent: true } };
     }
     const entries = Array.isArray(materialPlan) ? materialPlan : [];
+    const sourceValidation = validateNpcConstructionMaterialPlan(validation.actor, entries);
+    if (!sourceValidation.success)
+        return sourceValidation;
     const requested = [];
     for (const [rawTypeID, rawQuantity] of Object.entries(validation.state.constructionCost)) {
         const typeID = toInt(rawTypeID, 0);
@@ -3130,6 +3165,16 @@ function completeConstruction(itemID, options = {}) {
     if (!assemblyMetadata || !definition) {
         return { success: false, errorMsg: "ASSEMBLY_TYPE_NOT_FOUND" };
     }
+    // A site reserves its future assembly footprint, but recheck at realization
+    // in case another assembly was inserted or moved into that space meanwhile.
+    // Never consume the deposited materials when the footprint is occupied.
+    const position = normalizeWorldVector(item.spaceState && item.spaceState.position);
+    if (!position || toInt(item.locationID, 0) !== state.solarSystemID) {
+        return { success: false, errorMsg: "INVALID_DEPLOYMENT_PLACEMENT" };
+    }
+    const clearance = validateFrontierAssemblyClearance(state.solarSystemID, definition, position, { ignoredItemID: item.itemID });
+    if (!clearance.success)
+        return clearance;
     const durationSeconds = definition.durationSeconds;
     const completedAtMs = Date.now();
     const activationCompleteAtMs = state.completeAtMs > 0

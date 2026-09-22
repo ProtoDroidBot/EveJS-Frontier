@@ -10,6 +10,10 @@ import {
   findLatestSnapshot,
   validateSnapshot,
 } from "./validate-frontier-static.mjs";
+import {
+  auditTypeListSnapshot,
+  compareTypeListSnapshotToGenerated,
+} from "./type-list-audit.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "../..");
@@ -138,7 +142,8 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
     "ecosystems",
   );
   const landscapeSites = readTable(dataDir, "landscapeSites", "sites");
-  const clientTypeLists = readTable(dataDir, "clientTypeLists", "typeLists");
+  const clientTypeListTable = readTable(dataDir, "clientTypeLists");
+  const clientTypeLists = clientTypeListTable.typeLists;
   const spaceComponentsByType = readTable(
     dataDir,
     "spaceComponentsByType",
@@ -209,6 +214,18 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
         `Generated ${key} count mismatch: expected ${expected[key]}, found ${actual[key]}`,
       );
     }
+  }
+
+  if (
+    clientTypeListTable.schemaVersion !== 2 ||
+    clientTypeListTable.source?.typeListsSha256 !== snapshotManifest.outputs["typeLists.jsonl"].sha256 ||
+    clientTypeListTable.source?.typesSha256 !== snapshotManifest.outputs["types.jsonl"].sha256 ||
+    clientTypeLists.some((entry) => [
+      "includedTypeListIDs", "excludedTypeListIDs", "includedTags", "excludedTags", "filterByTags",
+    ].some((field) => !Array.isArray(entry[field]))) ||
+    itemTypes.some((entry) => !Array.isArray(entry.tags))
+  ) {
+    throw new Error("Generated client type-list or item-tag data is not schema-v2 complete");
   }
 
   const clientTypeListIDs = new Set(
@@ -302,6 +319,11 @@ async function main() {
   const build = snapshotManifest.source.client.build;
   const dataDir = options.outDir ||
     path.join(REPO_ROOT, "_local", "frontier-gameStore", String(build), "data");
+  const typeListAudit = auditTypeListSnapshot(snapshot, snapshotManifest);
+  const previousStoreDelta = compareTypeListSnapshotToGenerated(snapshot, dataDir);
+  if (typeListAudit.errors.length > 0) {
+    throw new Error(`Type-list integrity audit failed: ${JSON.stringify(typeListAudit.errors.slice(0, 8))}`);
+  }
 
   const args = [
     path.join(REPO_ROOT, "tools", "DatabaseCreator", "database-creator.js"),
@@ -349,6 +371,11 @@ async function main() {
     "utf8",
   );
   const report = validateDatabase(dataDir, snapshotManifest, databaseManifest);
+  const typeListAuditPath = path.resolve(dataDir, "../type-list-audit.json");
+  fs.writeFileSync(typeListAuditPath, `${JSON.stringify({
+    ...typeListAudit,
+    previousStoreDelta,
+  }, null, 2)}\n`, "utf8");
   const reportPath = path.resolve(dataDir, "../frontier-database-validation.json");
   fs.writeFileSync(
     reportPath,
@@ -356,7 +383,14 @@ async function main() {
       build: checked.build,
       databaseManifest: databaseManifestPath,
       dataDir,
-      collisionBundle,
+    collisionBundle,
+    typeListAudit: {
+      path: typeListAuditPath,
+      ...typeListAudit.counts,
+      missingRuntimeBindings: typeListAudit.missingRuntimeBindings,
+      emptyRuntimeBindings: typeListAudit.emptyRuntimeBindings,
+      previousStoreDelta,
+    },
       ...report,
     }, null, 2)}\n`,
     "utf8",
@@ -374,6 +408,11 @@ async function main() {
     `system ${report.bootstrap.solarSystemID}.`,
   );
   console.log(`[frontier-static] Data: ${dataDir}`);
+  if (typeListAudit.warnings.length > 0) {
+    console.warn(`[frontier-static] Type-list audit: ${typeListAudit.warnings.length} warning(s); ` +
+      `missing runtime IDs: ${typeListAudit.missingRuntimeBindings.map((entry) => entry.listID).join(", ") || "none"}. ` +
+      `See ${typeListAuditPath}`);
+  }
 }
 
 if (process.argv[1] &&

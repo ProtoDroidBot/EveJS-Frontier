@@ -496,7 +496,7 @@ function tickNpcConstructionJob(context) {
     walletAddress: actor.suiWalletAddress,
   } : null;
   if (positiveInt(payload.systemID, actor.solarSystemID) !== actor.solarSystemID) {
-    return suspended("awaiting-system", checkpoint, nowMs, "NPC_CONSTRUCTION_WRONG_SYSTEM", 5_000);
+    return require("./npcTravelService").advanceNpcTravel(context, payload.systemID);
   }
 
   const reservationTtlMs = Math.max(10_000, finiteNumber(payload.reservationTtlMs, DEFAULT_RESERVATION_TTL_MS));

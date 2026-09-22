@@ -114,6 +114,7 @@ const CRUDE_MATTER_GROUP_ID = 4593;
 const FRONTIER_SALVAGEABLE_WRECKAGE_GROUP_ID = 5133;
 const CRUDE_LENS_TYPE_LIST_ID = 601;
 const ASTEROID_LENS_TYPE_LIST_ID = 612;
+const ASTEROID_LENS_TYPE_LIST_IDS = new Set([599, ASTEROID_LENS_TYPE_LIST_ID, 613]);
 const FRONTIER_HELD_BEAM_MINING_TYPE_IDS = new Set([
   TYPE_CUTTING_LASER,
   TYPE_CRUDE_EXTRACTOR,
@@ -715,12 +716,14 @@ function isChargeValidForYield(chargeItem, mineableState, snapshot = null, optio
   );
   if (targetTypeListID > 0) {
     // Frontier lenses author their supported resources through attribute 3148:
-    // Cutting/Needle lenses use list 612 (asteroids + salvageable wreckage),
-    // while Crude Extractor lenses use list 601 (Crude Rift materials).  Use
-    // that source of truth instead of broad name heuristics when it exists.
+    // The list authorizes the mined asteroid/wreckage type, which may differ
+    // from its output material (notably group-5133 salvageable wreckage).
+    const sourceTypeID = toInt(mineableState.visualTypeID, 0) ||
+      toInt(options.targetEntity && options.targetEntity.typeID, 0) ||
+      toInt(mineableState.yieldTypeID, 0);
     const matchTypeList = options.matchesTypeList || matchesTypeList;
     return matchTypeList(
-      { typeID: toInt(mineableState.yieldTypeID, 0) },
+      { typeID: sourceTypeID },
       targetTypeListID,
     );
   }
@@ -760,8 +763,7 @@ function isCrudeRiftMineableState(
 }
 
 /**
- * NPC mining compatibility is intentionally stricter than the generic player
- * mining-family check. Phase 2 resource jobs must fail closed when a
+ * Shared player/NPC mining compatibility. Mining must fail closed when a
  * lens/crystal-capable ore tool has no charge, when a charge does not
  * authorize the target, or when a Crude Rift is approached with anything
  * other than a Crude Extractor. Basic legacy miners which have no authored
@@ -812,7 +814,7 @@ function isMiningSnapshotCompatibleWithState(
     }
     if (
       isFrontierHeldBeamMiningModuleType(moduleTypeID) &&
-      targetTypeListID !== ASTEROID_LENS_TYPE_LIST_ID
+      !ASTEROID_LENS_TYPE_LIST_IDS.has(targetTypeListID)
     ) {
       return false;
     }
@@ -836,7 +838,10 @@ function isMiningSnapshotCompatibleWithState(
     options.chargeItem ||
     resolveItemByTypeID(chargeTypeID) ||
     { typeID: chargeTypeID, itemName: String(snapshot.chargeName || "") };
-  return isChargeValidForYield(resolvedCharge, mineableState, snapshot, options);
+  return isChargeValidForYield(resolvedCharge, mineableState, snapshot, {
+    ...options,
+    targetEntity,
+  });
 }
 
 function resolveMiningActivation(scene, entity, moduleItem, effectRecord, options: Record<string, any> = {}) {
@@ -873,11 +878,7 @@ function resolveMiningActivation(scene, entity, moduleItem, effectRecord, option
     return { matched: true, success: false as const, errorMsg: "UNSUPPORTED_MODULE" };
   }
   const chargeItem = resolveEntityLoadedCharge(entity, moduleItem);
-  if (
-    isNativeNpcEntity(entity)
-      ? !isMiningSnapshotCompatibleWithState(snapshot, mineableState, targetEntity, { chargeItem })
-      : !isFamilyCompatibleWithYield(snapshot, mineableState)
-  ) {
+  if (!isMiningSnapshotCompatibleWithState(snapshot, mineableState, targetEntity, { chargeItem })) {
     return { matched: true, success: false as const, errorMsg: "TARGET_INVALID_FOR_MODULE" };
   }
 
@@ -885,7 +886,7 @@ function resolveMiningActivation(scene, entity, moduleItem, effectRecord, option
     chargeItem &&
     !(
       isChargeCompatibleWithModule(moduleItem.typeID, chargeItem.typeID) &&
-      isChargeValidForYield(chargeItem, mineableState, snapshot)
+      isChargeValidForYield(chargeItem, mineableState, snapshot, { targetEntity })
     )
   ) {
     return { matched: true, success: false as const, errorMsg: "CHARGE_NOT_COMPATIBLE" };
@@ -1100,11 +1101,7 @@ function executeMiningCycle(
     : resolveEntityLoadedCharge(entity, moduleItem);
   if (
     !snapshot ||
-    (
-      isNativeNpcEntity(entity)
-        ? !isMiningSnapshotCompatibleWithState(snapshot, mineableState, targetEntity, { chargeItem })
-        : !isFamilyCompatibleWithYield(snapshot, mineableState)
-    )
+    !isMiningSnapshotCompatibleWithState(snapshot, mineableState, targetEntity, { chargeItem })
   ) {
     return { success: false as const, stopReason: "module" };
   }
@@ -1121,7 +1118,7 @@ function executeMiningCycle(
     chargeItem &&
     !(
       isChargeCompatibleWithModule(moduleItem.typeID, chargeItem.typeID) &&
-      validateChargeYield(chargeItem, mineableState, snapshot)
+      validateChargeYield(chargeItem, mineableState, snapshot, { targetEntity })
     )
   ) {
     return { success: false as const, stopReason: "charge" };
@@ -1378,13 +1375,24 @@ function executeSkillShotMiningCycle(
     chargeItem &&
     !(
       validateModuleCharge(moduleItem.typeID, chargeItem.typeID) &&
-      validateChargeYield(chargeItem, mineableState, snapshot)
+      validateChargeYield(chargeItem, mineableState, snapshot, { targetEntity })
     )
   ) {
     return {
       matched: true,
       success: false,
       stopReason: "charge",
+    };
+  }
+  if (!isMiningSnapshotCompatibleWithState(snapshot, mineableState, targetEntity, {
+    chargeItem,
+    isChargeCompatibleWithModule: validateModuleCharge,
+    matchesTypeList: options.matchesTypeList,
+  })) {
+    return {
+      matched: true,
+      success: false,
+      stopReason: "module",
     };
   }
 

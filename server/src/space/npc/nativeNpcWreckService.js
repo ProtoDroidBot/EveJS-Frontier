@@ -10,9 +10,13 @@ const { getNpcLootTable, } = require(path.join(__dirname, "./npcData"));
 const { rollNpcLootEntries, } = require(path.join(__dirname, "./npcLoot"));
 const { getControllerByEntityID, unregisterController, } = require(path.join(__dirname, "./npcRegistry"));
 const nativeNpcStore = require(path.join(__dirname, "./nativeNpcStore"));
+const { isNpcFactionSdeTypeAllowed } = require(path.join(__dirname, "../../config/npcFactionConfig"));
 const frontierDungeonLoot = require(path.join(__dirname, "../../config/frontierDungeonLoot"));
 const { buildDunRotationFromDirection, resolveEntityWreckType, } = require(path.join(__dirname, "../wreckUtils"));
 const DESTRUCTION_EFFECT_EXPLOSION = 3;
+function filterNpcGeneratedLoot(source, entries, matcher = isNpcFactionSdeTypeAllowed) {
+    return (Array.isArray(entries) ? entries : []).filter(entry => matcher(source, "loot", entry.typeID));
+}
 function toPositiveInt(value, fallback = 0) {
     const numeric = Math.trunc(Number(value) || 0);
     return numeric > 0 ? numeric : fallback;
@@ -511,7 +515,9 @@ function destroyNativeNpcEntityWithWreck(systemID, shipEntity, options = {}) {
     const lootTable = wreckRecord.lootTableID
         ? getNpcLootTable(wreckRecord.lootTableID)
         : null;
-    const rolledLootEntries = rollNpcLootEntries(lootTable);
+    // Restrict generated drops only. Existing fitted modules and cargo retain
+    // their normal wreck semantics regardless of a faction's loot policy.
+    const rolledLootEntries = filterNpcGeneratedLoot(nativeEntityRecord || shipEntity, rollNpcLootEntries(lootTable));
     for (const lootEntry of rolledLootEntries) {
         const wreckItemResult = buildNativeWreckItemRecord(wreckRecord, lootEntry.itemType, {
             quantity: lootEntry.quantity,
@@ -582,6 +588,7 @@ module.exports = {
     destroyNativeNpcEntityWithWreck,
     _testing: {
         resolveNativeWreckLootTableID,
+        filterNpcGeneratedLoot,
     },
 };
 //# sourceMappingURL=nativeNpcWreckService.js.map

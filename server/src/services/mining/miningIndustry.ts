@@ -30,6 +30,9 @@ const {
   resolveItemByTypeID,
 } = require(path.join(__dirname, "../inventory/itemTypeRegistry"));
 const {
+  matchesTypeList,
+} = require(path.join(__dirname, "../inventory/typeListAuthority"));
+const {
   getTypeAttributeValue,
 } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const {
@@ -643,12 +646,27 @@ function rebuildItemAsType(item, typeID, quantity) {
   });
 }
 
-function compressInventoryItem(itemID) {
+function isCompressionSourceAllowed(item, options: Record<string, any> = {}) {
+  const requiredTypeListID = toInt(options.requiredTypeListID, 0);
+  return requiredTypeListID <= 0 || matchesTypeList(item, requiredTypeListID);
+}
+
+function compressInventoryItem(itemID, options: Record<string, any> = {}) {
   const item = findItemById(itemID);
   if (!item) {
     return {
       success: false as const,
       errorMsg: "ITEM_NOT_FOUND",
+    };
+  }
+
+  // List 336 is specifically "Compression Structure Allowed". Structure
+  // callers require it here; in-space compression retains its own authored
+  // type-to-compressed-type mapping instead of inheriting structure rules.
+  if (!isCompressionSourceAllowed(item, options)) {
+    return {
+      success: false as const,
+      errorMsg: "ITEM_NOT_COMPRESSIBLE",
     };
   }
 
@@ -918,6 +936,7 @@ module.exports = {
   buildReprocessingQuotesForItems: reprocessingRuntime.buildReprocessingQuotesForItems,
   reprocessItems: reprocessingRuntime.reprocessItems,
   compressInventoryItem,
+  isCompressionSourceAllowed,
   decompressGasInStructure,
   itemIsInStructureCompressionSource,
   itemIsInStructureGasDecompressionSource,

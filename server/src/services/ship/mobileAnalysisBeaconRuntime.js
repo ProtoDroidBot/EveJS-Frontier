@@ -8,7 +8,7 @@ const characterEnergyMgrService = require(path.join(__dirname, "../character/cha
 const worldData = require(path.join(__dirname, "../../space/worldData"));
 const { getCachedCharacterSkillMap, } = require(path.join(__dirname, "../skills/skillState"));
 const { isTriglavianSolarSystemID, isWormholeSolarSystemID, } = require(path.join(__dirname, "../chat/channelRules"));
-const { matchesTypeList, } = require(path.join(__dirname, "../inventory/typeListAuthority"));
+const { matchesTypeListWithMissingFallback, } = require(path.join(__dirname, "../inventory/typeListAuthority"));
 const frontierDungeonSpawns = require(path.join(__dirname, "../../config/frontierDungeonSpawns"));
 const { DEFAULT_DUNGEON_SPAWN_SEPARATION_METERS, buildSeparatedSpawnPosition, } = require(path.join(__dirname, "../../utils/dungeonSpawnPlacement"));
 const CATEGORY_DEPLOYABLE = 22;
@@ -913,12 +913,9 @@ function getFallbackLinkableShipIDsForBeaconType(typeID) {
 }
 function isShipTypeLinkableForBeaconType(beaconTypeID, shipType) {
     const typeListID = getLinkableShipTypeListIDForBeaconType(beaconTypeID);
-    if (matchesTypeList(shipType, typeListID)) {
-        return true;
-    }
     const fallback = getFallbackLinkableShipIDsForBeaconType(beaconTypeID);
-    return (fallback.groupIDs.has(toInt(shipType && shipType.groupID, 0)) ||
-        fallback.typeIDs.has(toInt(shipType && shipType.typeID, 0)));
+    return matchesTypeListWithMissingFallback(shipType, typeListID, () => (fallback.groupIDs.has(toInt(shipType && shipType.groupID, 0)) ||
+        fallback.typeIDs.has(toInt(shipType && shipType.typeID, 0))), "mobile-analysis-beacon-link");
 }
 function resolveShipTypeContext(shipEntity, shipItem) {
     const typeID = toInt(shipEntity && shipEntity.typeID, toInt(shipItem && shipItem.typeID, 0));

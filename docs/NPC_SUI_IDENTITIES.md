@@ -19,7 +19,7 @@ Numeric IDs must fit unsigned 32-bit integers. String IDs are trimmed and lowerc
 
 One deterministic Localnet wallet is derived for each canonical faction key using the hash namespace `<tenant>:npc-faction:<key>`. This namespace separates faction wallets from player account wallets. These predictable development keys are intended for Localnet, not funded public-network wallets.
 
-World synchronization gives every faction listed in `npc-factions.config.json` the same configured SUI operating budget. The shipped `suiWalletFunding.budgetMist` is `10000000000` MIST (10 SUI) per wallet. This is an idempotent minimum balance: sync transfers only each wallet's deficit in one admin-signed transaction and never removes externally received SUI from a wallet that is already above the target. Numeric factions use `<factionID>-none`, string-only factions use `0-<factionKey>`, and a faction with both components uses `<factionID>-<factionKey>`.
+World synchronization gives every faction listed in `npc-factions.config.json` the same configured SUI operating budget. When the regenerated SDE faction table is available, sync first adds any missing numeric factions to that unified config and creates their synchronized split policy files; authored factions remain untouched. The shipped `suiWalletFunding.budgetMist` is `10000000000` MIST (10 SUI) per wallet. This is an idempotent minimum balance: sync transfers only each wallet's deficit in one admin-signed transaction and never removes externally received SUI from a wallet that is already above the target. Numeric factions use `<factionID>-none`, string-only factions use `0-<factionKey>`, and a faction with both components uses `<factionID>-<factionKey>`.
 
 Funding always flows from the synchronized world admin account. If the admin cannot cover all deficits plus the configured gas reserve, sync can request SUI from the Localnet faucet for the admin and then retry the admin-funded transaction. The faucet never funds faction wallets directly. `faucetEnabled`, `gasReserveMist`, and `maxFaucetRequests` are explicit settings in the same config. If funding fails or any wallet remains below budget, `FrontierWorld.ps1 sync` fails and marks the synchronized world unavailable instead of advertising an incomplete setup. A repeat sync safely reconciles a transaction whose result was previously uncertain.
 
@@ -132,7 +132,7 @@ The referenced `factions/default.v1.json` is:
 ```json
 {
   "format": "eve-frontier-faction-features",
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "configId": "default",
   "capabilities": ["npc"]
 }
@@ -143,13 +143,26 @@ Each faction owns a separate file such as `factions/500001-caldari.v1.json`:
 ```json
 {
   "format": "eve-frontier-faction-features",
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "factionKey": "500001-caldari",
-  "fallback": "default"
+  "fallback": "default",
+  "transponderCode": "CALDARI",
+  "membership": {
+    "includedTypeIDs": [],
+    "excludedTypeIDs": [],
+    "typeListProfiles": [{
+      "profileID": "npc-profiles-by-faction",
+      "source": "npcProfiles",
+      "match": "factionIdentity"
+    }]
+  },
+  "diplomacy": { "allies": [], "enemies": [] },
+  "leadership": [],
+  "commanders": []
 }
 ```
 
-Omitting `capabilities` inherits the default; providing an array replaces it. Replace placeholders with verified deployed values. The chain and original world IDs must match the synchronized base world. Each deployed capability has its own complete package/origin/registry triple; an omitted record affects no other capability. Faction keys use `factionID-factionStringOnlyID`, every faction entry explicitly references `default`, and canonical filenames prevent path aliases or traversal. Environment package/origin overrides take precedence per field, but an invalid file is always rejected. The conventional sibling is optional; an explicitly selected file must exist. The config and referenced faction files are fingerprinted before submission so a change cannot redirect an already prepared operation.
+Omitting `capabilities` inherits the default; providing an array replaces it. Membership is dynamic: `npc-profiles-by-faction` maps live NPC profile rows to their matching faction and type ID, while include/exclude lists provide narrow overrides. Diplomacy contacts carry canonical faction keys and the referenced faction's current code; sync rejects stale codes. `leadership` combines leader/controller assignments, `commanders` remains separate, and both accept NPC or player character IDs. The shipped unified configuration leaves these lists empty for dynamic future assignment. Replace placeholders with verified deployed values. The chain and original world IDs must match the synchronized base world. Each deployed capability has its own complete package/origin/registry triple; an omitted record affects no other capability. Faction keys use `factionID-factionStringOnlyID`, every faction entry explicitly references `default`, and canonical filenames prevent path aliases or traversal. Environment package/origin overrides take precedence per field, but an invalid file is always rejected. The conventional sibling is optional; an explicitly selected file must exist. The config and referenced faction files are fingerprinted before submission so a change cannot redirect an already prepared operation.
 
 Store the authoritative public feature manifest at `world-contracts/deployments/localnet/world-features.v1.json` in the selected efctl workspace. `FrontierWorld.ps1 sync` snapshots it alongside the original deployment artifacts, validates its schema and chain/base-world bindings, and writes sanitized public records to the sibling file above before marking the world ready. The manifest addresses must be full nonzero 32-byte Sui addresses. Unknown capabilities and extra fields are rejected or omitted at the synchronization boundary. `sync -DryRun` validates and reports without changing either destination.
 

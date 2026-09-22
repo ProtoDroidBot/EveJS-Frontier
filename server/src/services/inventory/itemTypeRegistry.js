@@ -20,6 +20,7 @@ const FALLBACK_ITEMS = [
 ];
 let cachedRegistry = null;
 function _setEntriesForTests(entries = null) {
+    cachedShipTypeIDs = null;
     if (entries == null) {
         cachedRegistry = null;
         return;

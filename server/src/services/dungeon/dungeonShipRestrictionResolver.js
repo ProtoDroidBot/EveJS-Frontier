@@ -19,7 +19,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 //   - restrictedShipTypes = all ship types minus the whitelist.
 const path = require("path");
 const dungeonAuthority = require(path.join(__dirname, "./dungeonAuthority"));
-const { getTypeList } = require(path.join(__dirname, "../inventory/typeListAuthority"));
+const { matchesTypeList } = require(path.join(__dirname, "../inventory/typeListAuthority"));
 const { listShipTypeIDs } = require(path.join(__dirname, "../inventory/itemTypeRegistry"));
 // Mirrors evedungeons/common/constants.py ACCELERATION_GATE_BLACKLISTED_GROUPS (kept in sync with the
 // enforcement copy in keeperService ACCELERATION_GATE_BLACKLISTED_GROUP_IDS).
@@ -48,8 +48,7 @@ function normalizeRaceSet(values) {
 // Does one ship type satisfy a single connection's restriction? Matches util.py IsTypeValid.
 function shipTypeAllowedByConnection(shipType, allowedRaces, allowedShipsList) {
     if (allowedShipsList > 0) {
-        const typeList = getTypeList(allowedShipsList);
-        if (!typeList || !typeListIncludesShip(typeList, shipType)) {
+        if (!matchesTypeList(shipType, allowedShipsList)) {
             return false;
         }
     }
@@ -57,20 +56,6 @@ function shipTypeAllowedByConnection(shipType, allowedRaces, allowedShipsList) {
         return false;
     }
     return true;
-}
-// Type-list membership by type/group (races handled separately). Mirrors typeListAuthority's
-// include/exclude semantics without needing a full item lookup (we already carry group IDs).
-function typeListIncludesShip(typeList, shipType) {
-    const included = typeList.includedTypeIDs.has(shipType.typeID) ||
-        typeList.includedGroupIDs.has(shipType.groupID) ||
-        typeList.includedCategoryIDs.has(6);
-    if (!included) {
-        return false;
-    }
-    const excluded = typeList.excludedTypeIDs.has(shipType.typeID) ||
-        typeList.excludedGroupIDs.has(shipType.groupID) ||
-        typeList.excludedCategoryIDs.has(6);
-    return !excluded;
 }
 // Resolve the ship restrictions for a dungeon (optionally scoped to one gate's fromObjectID).
 // Returns { allowedShipTypes, restrictedShipTypes, nonDefaultShipRestrictions } or null.

@@ -43,6 +43,9 @@ param(
     [string]$DestinationRoot,
     [string]$DappRoot,
     [string]$EfctlPath,
+    # Optional overrides support isolated sync tests and nonstandard SDE layouts.
+    [string]$NpcFactionConfigPath,
+    [string]$NpcFactionSdePath,
     [switch]$DryRun,
 
     # Intended for tests or an intentionally remote/nonstandard localnet only.
@@ -90,6 +93,14 @@ $EfctlConfigPath = Join-Path $SourceRoot 'efctl.yaml'
 $WorldContractsRoot = Join-Path $SourceRoot 'world-contracts'
 $AssemblyEnergyConfigPath = Join-Path $WorldContractsRoot 'config\assembly-energy.json'
 $CommonModule = Join-Path $RepoRoot 'tools\frontier-client\FrontierWindows.Common.psm1'
+if ([string]::IsNullOrWhiteSpace($NpcFactionConfigPath)) {
+    $NpcFactionConfigPath = Join-Path $RepoRoot 'npc-factions.config.json'
+}
+$NpcFactionConfigPath = [IO.Path]::GetFullPath($NpcFactionConfigPath)
+if ([string]::IsNullOrWhiteSpace($NpcFactionSdePath)) {
+    $NpcFactionSdePath = Join-Path $SourceRoot (Join-Path '_local\frontier-sde' (Join-Path $Build 'factions.jsonl'))
+}
+$NpcFactionSdePath = [IO.Path]::GetFullPath($NpcFactionSdePath)
 
 if (-not (Test-Path -LiteralPath $CommonModule -PathType Leaf)) {
     throw "Frontier Windows helper module is missing: $CommonModule"
@@ -749,13 +760,175 @@ function Read-StableFactionFeatureFile {
             catch { throw "$Label is malformed JSON." }
             if ($raw -isnot [Collections.IDictionary] -or
                 $raw['format'] -cne 'eve-frontier-faction-features' -or
-                $raw['schemaVersion'] -isnot [long] -or $raw['schemaVersion'] -ne 1) {
+                $raw['schemaVersion'] -isnot [long] -or
+                $raw['schemaVersion'] -notin @(1, 2)) {
                 throw "$Label has an unsupported schema."
             }
             return $raw
         }
     }
     throw "$Label is changing; wait for the writer to finish and retry."
+}
+
+function Get-ValidatedFactionPolicyFields {
+    param(
+        [Parameter(Mandatory)] [Collections.IDictionary]$FactionFile,
+        [Parameter(Mandatory)] [string]$FactionKey
+    )
+    $result = [ordered]@{}
+    $code = $FactionFile['transponderCode']
+    if ($null -ne $code) {
+        if ($code -isnot [string]) { throw "Faction $FactionKey transponderCode must be text or null." }
+        $code = $code.Trim().ToUpperInvariant()
+        if ($code.Length -gt 32 -or $code -cnotmatch '^[A-Z0-9][A-Z0-9_:-]*$') {
+            throw "Faction $FactionKey has an invalid transponderCode."
+        }
+    }
+    $result.transponderCode = $code
+
+    $startingRegion = $FactionFile['startingRegion']
+    if ($null -eq $startingRegion) { $startingRegion = @{} }
+    if ($startingRegion -isnot [Collections.IDictionary] -or
+        @($startingRegion.Keys | Where-Object { $_ -cnotin @('regionID', 'solarSystemIDs') }).Count -gt 0) {
+        throw "Faction $FactionKey startingRegion must be an object with regionID and solarSystemIDs."
+    }
+    $regionID = $startingRegion['regionID']
+    if ($null -ne $regionID -and (($regionID -isnot [long] -and
+        $regionID -isnot [int] -and $regionID -isnot [uint32]) -or
+        $regionID -le 0 -or $regionID -gt [uint32]::MaxValue)) {
+        throw "Faction $FactionKey has an invalid starting region ID."
+    }
+    $solarSystemIDs = $startingRegion['solarSystemIDs']
+    if ($null -eq $solarSystemIDs) { $solarSystemIDs = @() }
+    if ($solarSystemIDs -isnot [object[]]) {
+        throw "Faction $FactionKey starting solar systems must be an array."
+    }
+    $seenSystems = [Collections.Generic.HashSet[uint32]]::new()
+    $normalizedSystems = [Collections.Generic.List[uint32]]::new()
+    foreach ($systemID in $solarSystemIDs) {
+        if (($systemID -isnot [long] -and $systemID -isnot [int] -and
+            $systemID -isnot [uint32]) -or $systemID -le 0 -or
+            $systemID -gt [uint32]::MaxValue -or -not $seenSystems.Add([uint32]$systemID)) {
+            throw "Faction $FactionKey has an invalid or duplicate starting solar system."
+        }
+        $normalizedSystems.Add([uint32]$systemID)
+    }
+    $result.startingRegion = [ordered]@{
+        regionID = $regionID
+        solarSystemIDs = @($normalizedSystems | Sort-Object)
+    }
+
+    $membership = $FactionFile['membership']
+    if ($null -eq $membership) { $membership = @{} }
+    if ($membership -isnot [Collections.IDictionary]) {
+        throw "Faction $FactionKey membership must be an object."
+    }
+    $normalizedLists = [ordered]@{}
+    foreach ($field in @('includedTypeIDs', 'excludedTypeIDs')) {
+        $values = $membership[$field]
+        if ($null -eq $values) { $values = @() }
+        if ($values -isnot [object[]]) { throw "Faction $FactionKey $field must be an array." }
+        $seen = [Collections.Generic.HashSet[uint32]]::new()
+        $normalized = [Collections.Generic.List[uint32]]::new()
+        foreach ($value in $values) {
+            if ($value -isnot [long] -or $value -le 0 -or $value -gt [uint32]::MaxValue -or
+                -not $seen.Add([uint32]$value)) {
+                throw "Faction $FactionKey $field contains an invalid or duplicate type ID."
+            }
+            $normalized.Add([uint32]$value)
+        }
+        $normalizedLists[$field] = @($normalized | Sort-Object)
+    }
+    foreach ($typeID in $normalizedLists.includedTypeIDs) {
+        if ($normalizedLists.excludedTypeIDs -contains $typeID) {
+            throw "Faction $FactionKey cannot include and exclude the same type ID."
+        }
+    }
+    $profiles = $membership['typeListProfiles']
+    if ($null -eq $profiles) { $profiles = @() }
+    if ($profiles -isnot [object[]]) { throw "Faction $FactionKey typeListProfiles must be an array." }
+    $normalizedProfiles = [Collections.Generic.List[object]]::new()
+    $profileIDs = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($profile in $profiles) {
+        if ($profile -isnot [Collections.IDictionary] -or
+            $profile['profileID'] -isnot [string] -or
+            $profile['profileID'] -cnotmatch '^[a-z0-9][a-z0-9:_-]{0,127}$' -or
+            -not $profileIDs.Add($profile['profileID']) -or
+            $profile['source'] -cne 'npcProfiles' -or
+            $profile['match'] -cne 'factionIdentity') {
+            throw "Faction $FactionKey has an invalid type-list profile."
+        }
+        $normalizedProfiles.Add([ordered]@{
+            profileID = $profile['profileID']; source = 'npcProfiles'; match = 'factionIdentity'
+        })
+    }
+    $result.membership = [ordered]@{
+        includedTypeIDs = $normalizedLists.includedTypeIDs
+        excludedTypeIDs = $normalizedLists.excludedTypeIDs
+        typeListProfiles = @($normalizedProfiles)
+    }
+
+    $diplomacy = $FactionFile['diplomacy']
+    if ($null -eq $diplomacy) { $diplomacy = @{} }
+    if ($diplomacy -isnot [Collections.IDictionary]) {
+        throw "Faction $FactionKey diplomacy must be an object."
+    }
+    $normalizedContacts = [ordered]@{}
+    foreach ($field in @('allies', 'enemies')) {
+        $contacts = $diplomacy[$field]
+        if ($null -eq $contacts) { $contacts = @() }
+        if ($contacts -isnot [object[]]) { throw "Faction $FactionKey $field must be an array." }
+        $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        $normalized = [Collections.Generic.List[object]]::new()
+        foreach ($contact in $contacts) {
+            $target = if ($contact -is [Collections.IDictionary]) { $contact['factionKey'] } else { $null }
+            $targetMatch = if ($target -is [string]) {
+                [regex]::Match($target, '^(\d{1,10})-[a-z0-9][a-z0-9_-]{0,95}$')
+            } else { $null }
+            if ($null -eq $targetMatch -or -not $targetMatch.Success -or
+                [uint64]$targetMatch.Groups[1].Value -gt [uint32]::MaxValue -or
+                $target -ceq $FactionKey -or -not $seen.Add($target)) {
+                throw "Faction $FactionKey $field contains an invalid, self, or duplicate faction."
+            }
+            $targetCode = $contact['transponderCode']
+            if ($null -ne $targetCode -and ($targetCode -isnot [string] -or
+                $targetCode.Length -gt 32 -or $targetCode -cnotmatch '^[A-Z0-9][A-Z0-9_:-]*$')) {
+                throw "Faction $FactionKey $field contains an invalid transponder code."
+            }
+            $normalized.Add([ordered]@{ factionKey = $target; transponderCode = $targetCode })
+        }
+        $normalizedContacts[$field] = @($normalized | Sort-Object { $_.factionKey })
+    }
+    foreach ($ally in $normalizedContacts.allies) {
+        if (@($normalizedContacts.enemies | Where-Object { $_.factionKey -ceq $ally.factionKey }).Count -gt 0) {
+            throw "Faction $FactionKey cannot list one faction as both ally and enemy."
+        }
+    }
+    $result.diplomacy = [ordered]@{
+        allies = $normalizedContacts.allies
+        enemies = $normalizedContacts.enemies
+    }
+
+    foreach ($field in @('leadership', 'commanders')) {
+        $characters = $FactionFile[$field]
+        if ($null -eq $characters) { $characters = @() }
+        if ($characters -isnot [object[]]) { throw "Faction $FactionKey $field must be an array." }
+        $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        $normalized = [Collections.Generic.List[object]]::new()
+        foreach ($character in $characters) {
+            $characterID = if ($character -is [Collections.IDictionary]) { $character['characterID'] } else { $null }
+            $characterType = if ($character -is [Collections.IDictionary]) { $character['characterType'] } else { $null }
+            if ($characterID -isnot [string] -or $characterID -cnotmatch '^[1-9][0-9]*$' -or
+                [bigint]$characterID -gt [bigint]::Parse('18446744073709551615') -or
+                $characterType -notin @('npc', 'player') -or
+                -not $seen.Add("${characterType}:$characterID")) {
+                throw "Faction $FactionKey $field contains an invalid or duplicate character."
+            }
+            $normalized.Add([ordered]@{ characterID = $characterID; characterType = $characterType })
+        }
+        $result[$field] = @($normalized)
+    }
+    return $result
 }
 
 function Get-WorldFeatureCapabilityNames {
@@ -950,7 +1123,7 @@ function Read-WorldFeatureDeployment {
             -Label 'Default faction feature config capabilities'
         $factionFiles[$defaultPath] = [ordered]@{
             format = 'eve-frontier-faction-features'
-            schemaVersion = 1
+            schemaVersion = [long]$defaultFile['schemaVersion']
             configId = 'default'
             capabilities = $defaultCapabilities
         }
@@ -976,7 +1149,7 @@ function Read-WorldFeatureDeployment {
             }
             $validatedFactionFile = [ordered]@{
                 format = 'eve-frontier-faction-features'
-                schemaVersion = 1
+                schemaVersion = [long]$factionFile['schemaVersion']
                 factionKey = $factionKey
                 fallback = 'default'
             }
@@ -986,10 +1159,32 @@ function Read-WorldFeatureDeployment {
                     -FeatureSpecs $featureSpecs -Capabilities $capabilities `
                     -Label "Faction feature config $factionKey capabilities"
             }
+            if ([long]$factionFile['schemaVersion'] -eq 2) {
+                $policy = Get-ValidatedFactionPolicyFields `
+                    -FactionFile $factionFile -FactionKey $factionKey
+                foreach ($field in @('transponderCode', 'startingRegion', 'membership', 'diplomacy', 'leadership', 'commanders')) {
+                    $validatedFactionFile[$field] = $policy[$field]
+                }
+            }
             $factionFiles[$relativePath] = $validatedFactionFile
             $validatedReferences[$factionKey] = [ordered]@{
                 path = $relativePath
                 fallback = 'default'
+            }
+        }
+        foreach ($factionKey in @($validatedReferences.Keys)) {
+            $policyFile = $factionFiles["factions/$factionKey.v1.json"]
+            if ([long]$policyFile.schemaVersion -ne 2) { continue }
+            foreach ($contact in @($policyFile.diplomacy.allies) + @($policyFile.diplomacy.enemies)) {
+                $targetPath = "factions/$($contact.factionKey).v1.json"
+                if (-not $factionFiles.Contains($targetPath)) {
+                    throw "Faction $factionKey references unknown faction $($contact.factionKey)."
+                }
+                $targetFile = $factionFiles[$targetPath]
+                if ([long]$targetFile.schemaVersion -ne 2 -or
+                    $contact.transponderCode -cne $targetFile.transponderCode) {
+                    throw "Faction $factionKey has a stale transponder code for $($contact.factionKey)."
+                }
             }
         }
         $validated.factionConfig = [ordered]@{
@@ -1032,6 +1227,282 @@ function Read-WorldFeatureDeployment {
         Manifest = $validated
         FactionFiles = $factionFiles
     }
+}
+
+function Get-CanonicalNpcFactionKey {
+    param([Parameter(Mandatory)] [Collections.IDictionary]$Faction)
+    $numericID = if ($null -eq $Faction['factionID']) { 0 } else { [long]$Faction['factionID'] }
+    $stringID = if ($Faction['factionKey'] -is [string]) {
+        $Faction['factionKey'].Trim().ToLowerInvariant()
+    } else { '' }
+    if ($numericID -lt 0 -or $numericID -gt [uint32]::MaxValue -or
+        ($numericID -eq 0 -and $stringID.Length -eq 0)) {
+        throw 'NPC faction configuration contains an invalid faction identity.'
+    }
+    $key = "$numericID-$(if ($stringID) { $stringID } else { 'none' })"
+    if ($key -cnotmatch '^\d{1,10}-[a-z0-9][a-z0-9_-]{0,95}$') {
+        throw "NPC faction configuration has a noncanonical key: $key"
+    }
+    return $key
+}
+
+function Get-DetectedNpcFactionPlan {
+    if (-not (Test-Path -LiteralPath $NpcFactionSdePath -PathType Leaf)) { return $null }
+    foreach ($filePath in @($NpcFactionSdePath, $NpcFactionConfigPath)) {
+        $item = Get-Item -LiteralPath $filePath -Force -ErrorAction SilentlyContinue
+        if ($null -eq $item -or $item.PSIsContainer -or
+            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "NPC faction sync requires a regular file: $filePath"
+        }
+    }
+    $sdeFirst = Read-TextFileSnapshot -Path $NpcFactionSdePath
+    $configFirst = Read-TextFileSnapshot -Path $NpcFactionConfigPath
+    Start-Sleep -Milliseconds 20
+    $sde = Read-TextFileSnapshot -Path $NpcFactionSdePath
+    $configSnapshot = Read-TextFileSnapshot -Path $NpcFactionConfigPath
+    if ($sde.Sha256 -cne $sdeFirst.Sha256 -or
+        $configSnapshot.Sha256 -cne $configFirst.Sha256) {
+        throw 'NPC faction SDE or configuration changed during sync; retry after regeneration finishes.'
+    }
+    try { $config = ConvertFrom-Json -InputObject $configSnapshot.Text -AsHashtable }
+    catch { throw 'NPC faction configuration is malformed JSON.' }
+    if ($config -isnot [Collections.IDictionary] -or
+        $config['schemaVersion'] -ne 2 -or
+        $config['factions'] -isnot [object[]]) {
+        throw 'NPC faction sync requires the schema-2 unified configuration.'
+    }
+    $factions = [Collections.Generic.List[object]]::new()
+    $knownIDs = [Collections.Generic.HashSet[uint32]]::new()
+    $knownSignals = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($faction in $config['factions']) {
+        if ($faction -isnot [Collections.IDictionary]) {
+            throw 'NPC faction configuration contains a non-object faction.'
+        }
+        $null = Get-CanonicalNpcFactionKey -Faction $faction
+        $numericID = if ($null -eq $faction['factionID']) { 0 } else { [long]$faction['factionID'] }
+        if ($numericID -gt 0 -and -not $knownIDs.Add([uint32]$numericID)) {
+            throw "NPC faction configuration contains duplicate ID $numericID."
+        }
+        if ($faction['transponderSignal'] -is [string] -and
+            -not $knownSignals.Add($faction['transponderSignal'])) {
+            throw 'NPC faction configuration contains duplicate transponder signals.'
+        }
+        $factions.Add($faction)
+    }
+    $detected = [Collections.Generic.List[object]]::new()
+    $seenSdeIDs = [Collections.Generic.HashSet[uint32]]::new()
+    foreach ($line in ($sde.Text -split '\r?\n')) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try { $record = ConvertFrom-Json -InputObject $line -AsHashtable }
+        catch { throw 'SDE factions.jsonl contains malformed JSON.' }
+        if ($record -isnot [Collections.IDictionary] -or
+            $record['_key'] -isnot [long] -or
+            $record['_key'] -le 0 -or
+            $record['_key'] -gt [uint32]::MaxValue -or
+            -not $seenSdeIDs.Add([uint32]$record['_key'])) {
+            throw 'SDE factions.jsonl contains an invalid or duplicate faction ID.'
+        }
+        $detected.Add($record)
+    }
+    $added = [Collections.Generic.List[string]]::new()
+    foreach ($record in @($detected | Sort-Object { [long]$_['_key'] })) {
+        $factionID = [uint32]$record['_key']
+        if ($knownIDs.Contains($factionID)) { continue }
+        $signal = "FACTION$factionID"
+        if (-not $knownSignals.Add($signal)) {
+            throw "Generated transponder signal $signal conflicts with an authored faction."
+        }
+        $displayName = if ($record['name'] -is [Collections.IDictionary] -and
+            $record['name']['en'] -is [string] -and
+            -not [string]::IsNullOrWhiteSpace($record['name']['en'])) {
+            $record['name']['en'].Trim()
+        } else { "Faction $factionID" }
+        $homeSystemID = $record['solarSystemID']
+        $solarSystemIDs = if ($homeSystemID -is [long] -and
+            $homeSystemID -gt 0 -and $homeSystemID -le [uint32]::MaxValue) {
+            @([uint32]$homeSystemID)
+        } else { @() }
+        $factions.Add([ordered]@{
+            factionID = $factionID
+            name = $displayName
+            transponderSignal = $signal
+            startingRegion = [ordered]@{
+                regionID = $null
+                solarSystemIDs = @($solarSystemIDs)
+            }
+        })
+        $null = $knownIDs.Add($factionID)
+        $added.Add("$factionID-none")
+    }
+    $config['factions'] = @($factions)
+    return [pscustomobject]@{
+        Config = $config
+        ConfigSha256 = $configSnapshot.Sha256
+        DetectedCount = $detected.Count
+        AddedKeys = @($added)
+    }
+}
+
+function Add-DetectedNpcFactionFeatureFiles {
+    param(
+        [AllowNull()] [object]$Deployment,
+        [AllowNull()] [object]$FactionPlan
+    )
+    if ($null -eq $Deployment -or $null -eq $FactionPlan) { return $Deployment }
+    $manifest = $Deployment.Manifest
+    $files = $Deployment.FactionFiles
+    $config = $FactionPlan.Config
+    $entries = [ordered]@{}
+    $identityKeys = [ordered]@{}
+    $codes = [ordered]@{}
+    foreach ($entry in $config['factions']) {
+        $key = Get-CanonicalNpcFactionKey -Faction $entry
+        if ($entries.Contains($key)) { throw "Duplicate canonical NPC faction key $key." }
+        $entries[$key] = $entry
+        if ($null -ne $entry['factionID'] -and [long]$entry['factionID'] -gt 0) {
+            $identityKeys["id:$($entry['factionID'])"] = $key
+        }
+        if ($entry['factionKey'] -is [string] -and $entry['factionKey'].Length -gt 0) {
+            $identityKeys["key:$($entry['factionKey'].Trim().ToLowerInvariant())"] = $key
+        }
+        $signal = if ($entry['transponderSignal'] -is [string]) {
+            $entry['transponderSignal'].Trim().ToUpperInvariant()
+        } else { '' }
+        $suffix = if ($entry['transponderSuffix'] -is [string]) {
+            $entry['transponderSuffix'].Trim().ToUpperInvariant()
+        } else { '' }
+        $codes[$key] = if ($signal) {
+            $signal + $(if ($suffix) { ":$suffix" } else { '' })
+        } else { $null }
+    }
+    $dispositions = [ordered]@{}
+    foreach ($relation in @($config['relations'])) {
+        if ($relation -isnot [Collections.IDictionary] -or
+            $relation['disposition'] -cnotin @('friendly', 'hostile', 'neutral')) {
+            throw 'NPC faction configuration contains an invalid relation.'
+        }
+        if ($relation['disposition'] -ceq 'neutral') { continue }
+        $sourceKeys = [Collections.Generic.List[string]]::new()
+        $targetKeys = [Collections.Generic.List[string]]::new()
+        foreach ($id in @($relation['sourceFactionIDs'] | Where-Object { $null -ne $_ })) {
+            $key = $identityKeys["id:$id"]
+            if (-not $key) { throw "NPC relation references unknown source faction ID $id." }
+            $sourceKeys.Add($key)
+        }
+        foreach ($name in @($relation['sourceFactionKeys'] | Where-Object { $null -ne $_ })) {
+            $key = $identityKeys["key:$([string]$name)".ToLowerInvariant()]
+            if (-not $key) { throw "NPC relation references unknown source faction key $name." }
+            $sourceKeys.Add($key)
+        }
+        foreach ($id in @($relation['targetFactionIDs'] | Where-Object { $null -ne $_ })) {
+            $key = $identityKeys["id:$id"]
+            if (-not $key) { throw "NPC relation references unknown target faction ID $id." }
+            $targetKeys.Add($key)
+        }
+        foreach ($name in @($relation['targetFactionKeys'] | Where-Object { $null -ne $_ })) {
+            $key = $identityKeys["key:$([string]$name)".ToLowerInvariant()]
+            if (-not $key) { throw "NPC relation references unknown target faction key $name." }
+            $targetKeys.Add($key)
+        }
+        foreach ($sourceKey in $sourceKeys) {
+            foreach ($targetKey in $targetKeys) {
+                if ($sourceKey -ceq $targetKey) { continue }
+                $dispositions["$sourceKey|$targetKey"] = $relation['disposition']
+                if ($relation['reciprocal'] -eq $true) {
+                    $dispositions["$targetKey|$sourceKey"] = $relation['disposition']
+                }
+            }
+        }
+    }
+
+    $inlineFactions = $manifest['factions']
+    if ($null -eq $manifest['factionConfig']) {
+        $defaultCapabilities = [Collections.Generic.List[string]]::new()
+        foreach ($name in @($config['worldCapabilities'])) {
+            if ($manifest.capabilities.Contains($name) -and
+                $manifest.capabilities[$name]['status'] -ceq 'deployed' -and
+                -not $defaultCapabilities.Contains($name)) {
+                $defaultCapabilities.Add($name)
+            }
+        }
+        $files['factions/default.v1.json'] = [ordered]@{
+            format = 'eve-frontier-faction-features'
+            schemaVersion = 2
+            configId = 'default'
+            capabilities = @($defaultCapabilities | Sort-Object)
+        }
+        $manifest['factionConfig'] = [ordered]@{
+            default = [ordered]@{ id = 'default'; path = 'factions/default.v1.json' }
+            factions = [ordered]@{}
+        }
+        if ($null -ne $inlineFactions) { $manifest.Remove('factions') }
+    }
+    $references = $manifest['factionConfig']['factions']
+    $defaults = $config['defaults']
+    foreach ($key in @($entries.Keys | Sort-Object)) {
+        if ($references.Contains($key)) { continue }
+        $entry = $entries[$key]
+        $membership = if ($entry['typeMembership'] -is [Collections.IDictionary]) {
+            $entry['typeMembership']
+        } else { $defaults['typeMembership'] }
+        $startingRegion = if ($entry['startingRegion'] -is [Collections.IDictionary]) {
+            $entry['startingRegion']
+        } else { $defaults['startingRegion'] }
+        $diplomacy = if ($entry['diplomacy'] -is [Collections.IDictionary]) {
+            $entry['diplomacy']
+        } else {
+            $allies = [Collections.Generic.List[object]]::new()
+            $enemies = [Collections.Generic.List[object]]::new()
+            foreach ($targetKey in @($entries.Keys | Sort-Object)) {
+                $disposition = $dispositions["$key|$targetKey"]
+                if (-not $disposition) { continue }
+                $contact = [ordered]@{
+                    factionKey = $targetKey
+                    transponderCode = $codes[$targetKey]
+                }
+                if ($disposition -ceq 'friendly') { $allies.Add($contact) }
+                else { $enemies.Add($contact) }
+            }
+            [ordered]@{ allies = @($allies); enemies = @($enemies) }
+        }
+        $file = [ordered]@{
+            format = 'eve-frontier-faction-features'
+            schemaVersion = 2
+            factionKey = $key
+            fallback = 'default'
+            transponderCode = $codes[$key]
+            startingRegion = $startingRegion
+            membership = [ordered]@{
+                includedTypeIDs = @($membership['includedTypeIDs'])
+                excludedTypeIDs = @($membership['excludedTypeIDs'])
+                typeListProfiles = @($membership['typeListProfiles'])
+            }
+            diplomacy = $diplomacy
+            leadership = if ($null -ne $entry['leadership']) { @($entry['leadership']) } else { @($defaults['leadership']) }
+            commanders = if ($null -ne $entry['commanders']) { @($entry['commanders']) } else { @($defaults['commanders']) }
+        }
+        $policy = Get-ValidatedFactionPolicyFields -FactionFile $file -FactionKey $key
+        foreach ($field in @('transponderCode', 'startingRegion', 'membership', 'diplomacy', 'leadership', 'commanders')) {
+            $file[$field] = $policy[$field]
+        }
+        if ($null -ne $inlineFactions -and $inlineFactions.Contains($key)) {
+            $file['capabilities'] = @($inlineFactions[$key]['capabilities'])
+        }
+        $relativePath = "factions/$key.v1.json"
+        $files[$relativePath] = $file
+        $references[$key] = [ordered]@{ path = $relativePath; fallback = 'default' }
+    }
+    foreach ($key in @($references.Keys)) {
+        $file = $files["factions/$key.v1.json"]
+        if ($null -eq $file -or [long]$file.schemaVersion -ne 2) { continue }
+        foreach ($contact in @($file.diplomacy.allies) + @($file.diplomacy.enemies)) {
+            $target = $files["factions/$($contact.factionKey).v1.json"]
+            if ($null -eq $target -or $contact.transponderCode -cne $target.transponderCode) {
+                throw "Faction $key has an unknown or stale contact $($contact.factionKey)."
+            }
+        }
+    }
+    return $Deployment
 }
 
 function Publish-WorldFeatureDeployment {
@@ -1149,6 +1620,28 @@ function Publish-WorldSync {
 
     Assert-DockerWorkspaceOwnership
     $world = Read-SourceWorld
+    $factionPlan = Get-DetectedNpcFactionPlan
+    if ($null -ne $factionPlan) {
+        $world.WorldFeatures = Add-DetectedNpcFactionFeatureFiles `
+            -Deployment $world.WorldFeatures -FactionPlan $factionPlan
+        if ($DryRun) {
+            Write-Output (
+                "[evejs-frontier-world] Would reconcile $($factionPlan.DetectedCount) SDE factions " +
+                "and add $($factionPlan.AddedKeys.Count) unified faction records."
+            )
+        }
+        elseif ($factionPlan.AddedKeys.Count -gt 0) {
+            $currentConfig = Read-TextFileSnapshot -Path $NpcFactionConfigPath
+            if ($currentConfig.Sha256 -cne $factionPlan.ConfigSha256) {
+                throw 'NPC faction configuration changed after detection; retry world sync.'
+            }
+            Write-FrontierJsonAtomic -Path $NpcFactionConfigPath -Value $factionPlan.Config
+            Write-Output (
+                "[evejs-frontier-world] Added $($factionPlan.AddedKeys.Count) detected factions " +
+                "to $NpcFactionConfigPath"
+            )
+        }
+    }
     Publish-WorldFeatureDeployment -Deployment $world.WorldFeatures
     Write-Output "[evejs-frontier-world] Source: $WorldContractsRoot"
     Write-Output "[evejs-frontier-world] Chain: $($world.ChainId)"
@@ -1218,7 +1711,7 @@ function Invoke-NpcFactionFunding {
     }
     $fundingSource = Join-Path $RepoRoot 'scripts\FrontierWorld\fund-npc-factions.ts'
     $fundingScript = Join-Path $RepoRoot 'scripts\FrontierWorld\fund-npc-factions.js'
-    $factionsConfig = Join-Path $RepoRoot 'npc-factions.config.json'
+    $factionsConfig = $NpcFactionConfigPath
     if (-not (Test-Path -LiteralPath $fundingSource -PathType Leaf) -or
         -not (Test-Path -LiteralPath $factionsConfig -PathType Leaf)) {
         throw 'NPC faction funding source or faction configuration is missing.'

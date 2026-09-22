@@ -1535,6 +1535,25 @@ function spawnNativeNpcEntityInContext(context, definition, options: Record<stri
   const identity = buildNpcEntityIdentity(definition, {
     itemName: String(definition.profile.shipNameTemplate || definition.profile.name || "NPC"),
   });
+  // Recheck at the spawn mutation boundary: cached/generated selections may
+  // bypass the profile index, but cannot bypass a faction's SDE hull policy.
+  const factionSource = {
+    ...definition.profile,
+    npcFactionID: definition.profile.npcFactionID ?? definition.profile.factionID ?? identity.warFactionID,
+    npcFactionKey: options.factionStringOnlyID ?? options.npcFactionKey ??
+      definition.profile.factionStringOnlyID ?? definition.profile.npcFactionKey ??
+      definition.profile.frontierFactionKey,
+  };
+  const factionSdePolicy = require("../../config/npcFactionConfig");
+  if (!factionSdePolicy.isNpcFactionSdeTypeAllowed(factionSource, "hull", identity.typeID)) {
+    return { success: false, errorMsg: "NPC_FACTION_HULL_TYPELIST_DENIED" };
+  }
+  if (["support-reserve", "reinforcement"].includes(String(options.selectionKind || "")) &&
+      !factionSdePolicy.isNpcFactionSdeTypeAllowed(
+        factionSource, "reinforcement", identity.typeID,
+      )) {
+    return { success: false, errorMsg: "NPC_FACTION_REINFORCEMENT_TYPELIST_DENIED" };
+  }
   const ownerIDOverride = toPositiveInt(options.ownerIDOverride, 0);
   const suppressSlimName = options.suppressSlimName === true;
   const hasSlimNameOverride = Object.prototype.hasOwnProperty.call(options, "slimNameOverride");

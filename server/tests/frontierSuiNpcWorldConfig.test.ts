@@ -153,6 +153,7 @@ test("public NPC config normalizes addresses without mutating base world or pers
     "defaultFactionCapabilities",
     "factionCapabilities",
     "factionConfigReferences",
+    "factionPolicies",
     "fingerprint",
     "industryActionsPackageId", "industryActionsRegistryId", "industryActionsTypeOrigin",
     "industryPackageId", "industryRegistryId", "industryTypeOrigin",
@@ -331,12 +332,32 @@ test("split faction files inherit an explicit default fallback", t => {
     configId: "default", capabilities: ["npc", "transponder"],
   }));
   fs.writeFileSync(path.join(factionDirectory, "500001-caldari.v1.json"), JSON.stringify({
-    format: "eve-frontier-faction-features", schemaVersion: 1,
+    format: "eve-frontier-faction-features", schemaVersion: 2,
     factionKey: "500001-caldari", fallback: "default",
+    transponderCode: "CALDARI",
+    startingRegion: { regionID: 10000005, solarSystemIDs: [30000052] },
+    membership: {
+      includedTypeIDs: [101], excludedTypeIDs: [],
+      typeListProfiles: [{
+        profileID: "npc-profiles-by-faction", source: "npcProfiles", match: "factionIdentity",
+      }],
+    },
+    diplomacy: {
+      allies: [], enemies: [{ factionKey: "500010-guristas", transponderCode: "GURISTAS" }],
+    },
+    leadership: [
+      { characterID: "90000001", characterType: "npc" },
+      { characterID: "42", characterType: "player" },
+    ],
+    commanders: [],
   }));
   fs.writeFileSync(path.join(factionDirectory, "500010-guristas.v1.json"), JSON.stringify({
-    format: "eve-frontier-faction-features", schemaVersion: 1,
+    format: "eve-frontier-faction-features", schemaVersion: 2,
     factionKey: "500010-guristas", fallback: "default", capabilities: ["npc"],
+    transponderCode: "GURISTAS",
+    diplomacy: {
+      allies: [], enemies: [{ factionKey: "500001-caldari", transponderCode: "CALDARI" }],
+    },
   }));
   f.writeFeatures({
     ...worldFeatures({
@@ -365,6 +386,38 @@ test("split faction files inherit an explicit default fallback", t => {
   assert.deepEqual(result.factionConfigReferences["500001-caldari"], {
     path: "factions/500001-caldari.v1.json", fallback: "default",
   });
+  assert.deepEqual(result.factionPolicies["500001-caldari"].membership.includedTypeIDs, [101]);
+  assert.deepEqual(result.factionPolicies["500001-caldari"].startingRegion, {
+    regionID: 10000005, solarSystemIDs: [30000052],
+  });
+  assert.deepEqual(result.factionPolicies["500010-guristas"].startingRegion, {
+    regionID: null, solarSystemIDs: [],
+  });
+  assert.deepEqual(result.factionPolicies["500001-caldari"].leadership, [
+    { characterID: "90000001", characterType: "npc" },
+    { characterID: "42", characterType: "player" },
+  ]);
+  assert.equal(
+    result.factionPolicies["500001-caldari"].diplomacy.enemies[0].transponderCode,
+    "GURISTAS",
+  );
+  fs.writeFileSync(path.join(factionDirectory, "500010-guristas.v1.json"), JSON.stringify({
+    format: "eve-frontier-faction-features", schemaVersion: 2,
+    factionKey: "500010-guristas", fallback: "default", capabilities: ["npc"],
+    transponderCode: "ROTATED-GURISTAS",
+    diplomacy: {
+      allies: [], enemies: [{ factionKey: "500001-caldari", transponderCode: "CALDARI" }],
+    },
+  }));
+  assert.throws(() => readSuiNpcWorldConfig(world, f.env), /stale transponder code/);
+  fs.writeFileSync(path.join(factionDirectory, "500010-guristas.v1.json"), JSON.stringify({
+    format: "eve-frontier-faction-features", schemaVersion: 2,
+    factionKey: "500010-guristas", fallback: "default", capabilities: ["npc"],
+    transponderCode: "GURISTAS",
+    diplomacy: {
+      allies: [], enemies: [{ factionKey: "500001-caldari", transponderCode: "CALDARI" }],
+    },
+  }));
   fs.writeFileSync(path.join(factionDirectory, "default.v1.json"), JSON.stringify({
     format: "eve-frontier-faction-features", schemaVersion: 1,
     configId: "default", capabilities: ["npc"],

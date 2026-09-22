@@ -401,7 +401,7 @@ function tickNpcIndustryJob(context) {
       error.code || error.message || "NPC_INDUSTRY_IDENTITY_INVALID");
   }
   if (positiveInt(payload.systemID, actor.solarSystemID) !== actor.solarSystemID) {
-    return suspended("awaiting-system", checkpoint, nowMs, "NPC_INDUSTRY_WRONG_SYSTEM");
+    return require("./npcTravelService").advanceNpcTravel(context, payload.systemID);
   }
   const facilityID = positiveInt(payload.facilityID, 0);
   let facility = itemStore.findItemById(facilityID);

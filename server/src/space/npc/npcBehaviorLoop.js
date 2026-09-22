@@ -19,7 +19,7 @@ const { findWeaponLineOccluder, } = require(path.join(__dirname, "../destiny/sim
 const { applyNpcChaseMaxVelocityCommand, } = require(path.join(__dirname, "../destiny/commands/npc.js"));
 const { cancelNpcScanning, syncNpcScanning, } = require(path.join(__dirname, "./npcScanning"));
 const { ENTITY_TYPE, } = require(path.join(__dirname, "../entityConstants"));
-const { resolveNpcFactionDisposition, resolveNpcTargetIdentification, resolveNpcUnidentifiedDisposition, shouldNpcRetaliateAgainstAggressors, getAdditionalAutoAggroTargetClasses, } = require(path.join(__dirname, "../../config/npcFactionConfig"));
+const { resolveNpcFactionDisposition, resolveNpcTargetIdentification, resolveNpcUnidentifiedDisposition, shouldNpcRetaliateAgainstAggressors, getAdditionalAutoAggroTargetClasses, isNpcFactionSdeTypeAllowed, } = require(path.join(__dirname, "../../config/npcFactionConfig"));
 const { tickDurableNpcJob, } = require(path.join(__dirname, "./npcBehaviorTreeRuntime"));
 require(path.join(__dirname, "./npcResourceJobService"))
     .registerNpcResourceJobHandlers();
@@ -461,6 +461,10 @@ function propagateDrifterReinforcementRequestState(scene, controller, entity, no
         memberState.lastReinforcementRequestAtMs = nowMs;
     }
 }
+function filterNpcReinforcementDefinitions(entity, definitions, matcher = isNpcFactionSdeTypeAllowed) {
+    return Array.isArray(definitions) ? definitions.filter(definition => (definition && definition.profile && definition.behaviorProfile &&
+        matcher(entity, "reinforcement", toPositiveInt(definition.profile.shipTypeID ?? definition.profile.typeID, 0)))) : [];
+}
 function maybeRequestDrifterReinforcements(scene, entity, controller, behaviorProfile, targetEntity, nowMs) {
     if (!scene ||
         !entity ||
@@ -472,11 +476,7 @@ function maybeRequestDrifterReinforcements(scene, entity, controller, behaviorPr
             requested: false,
         };
     }
-    const reinforcementDefinitions = Array.isArray(behaviorProfile && behaviorProfile.reinforcementDefinitions)
-        ? behaviorProfile.reinforcementDefinitions.filter((definition) => (definition &&
-            definition.profile &&
-            definition.behaviorProfile))
-        : [];
+    const reinforcementDefinitions = filterNpcReinforcementDefinitions(entity, behaviorProfile && behaviorProfile.reinforcementDefinitions);
     if (reinforcementDefinitions.length <= 0) {
         return {
             requested: false,
@@ -3978,6 +3978,7 @@ module.exports = {
     resolveNpcDungeonArrivalDisposition,
     __testing: {
         maybeRequestDrifterReinforcements,
+        filterNpcReinforcementDefinitions,
         isFriendlyCombatTarget,
         isRecordedNpcAggressor,
         resolveNpcTransponderTargetDisposition,

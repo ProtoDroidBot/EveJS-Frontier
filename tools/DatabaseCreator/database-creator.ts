@@ -785,6 +785,7 @@ function typeRecord(raw, groups, categories) {
     radius: toNumber(raw.radius, 0),
     published: raw.published === true,
     metaGroupID: toInt(raw.metaGroupID, 0) || null,
+    tags: intArray(raw.tags),
   };
 }
 
@@ -795,6 +796,7 @@ function publicTypeRecord(type, shape = "full") {
     categoryID: type.groupID === 0 ? null : type.categoryID,
     groupName: type.groupID === 0 ? null : type.groupName,
     name: type.name,
+    tags: intArray(type.tags),
   };
 
   if (shape === "skill") {
@@ -1130,6 +1132,9 @@ function intArray(value) {
 
 function clientTypeListRecord(row) {
   return {
+    name: typeof row.name === "string" ? row.name : "",
+    description: typeof row.description === "string" ? row.description : "",
+    displayNameID: toInt(row.displayNameID, 0) || null,
     excludedTypeIDs: intArray(row.excludedTypeIDs),
     listID: toInt(row._key),
     includedCategoryIDs: intArray(row.includedCategoryIDs),
@@ -1137,6 +1142,12 @@ function clientTypeListRecord(row) {
     excludedGroupIDs: intArray(row.excludedGroupIDs),
     includedGroupIDs: intArray(row.includedGroupIDs),
     excludedCategoryIDs: intArray(row.excludedCategoryIDs),
+    includedTypeListIDs: intArray(row.includedTypeListIDs),
+    excludedTypeListIDs: intArray(row.excludedTypeListIDs),
+    includedTags: intArray(row.includedTags),
+    excludedTags: intArray(row.excludedTags),
+    filterByTags: intArray(row.filterByTags),
+    requireAllFilteredTags: toInt(row.requireAllFilteredTags, 0),
   };
 }
 
@@ -1149,6 +1160,11 @@ function clientTypeListCounts(rows) {
     excludedCategoryReferenceCount: rows.reduce((sum, row) => sum + row.excludedCategoryIDs.length, 0),
     includedTypeReferenceCount: rows.reduce((sum, row) => sum + row.includedTypeIDs.length, 0),
     excludedGroupReferenceCount: rows.reduce((sum, row) => sum + row.excludedGroupIDs.length, 0),
+    includedTypeListReferenceCount: rows.reduce((sum, row) => sum + row.includedTypeListIDs.length, 0),
+    excludedTypeListReferenceCount: rows.reduce((sum, row) => sum + row.excludedTypeListIDs.length, 0),
+    includedTagReferenceCount: rows.reduce((sum, row) => sum + row.includedTags.length, 0),
+    excludedTagReferenceCount: rows.reduce((sum, row) => sum + row.excludedTags.length, 0),
+    filterTagReferenceCount: rows.reduce((sum, row) => sum + row.filterByTags.length, 0),
   };
 }
 
@@ -3378,7 +3394,12 @@ function buildTables(authority, options): Record<string, any> {
     characterCreationSchools: buildCharacterCreationSchools(),
     corporations: buildCorporations(authority),
     clientTypeLists: {
-      source,
+      schemaVersion: 2,
+      source: {
+        ...source,
+        typeListsSha256: sha256File(path.join(options.sdeDir, "typeLists.jsonl")),
+        typesSha256: sha256File(path.join(options.sdeDir, "types.jsonl")),
+      },
       count: clientTypeLists.length,
       typeLists: clientTypeLists,
       counts: clientTypeListCounts(clientTypeLists),
@@ -3697,6 +3718,8 @@ async function createDatabase(options) {
     sdeUrl: options.sdeUrl,
     sdeMeta: authority.sdeMeta,
     sdeSha256: sha256File(sdeMetaPath),
+    typeListsSha256: sha256File(path.join(options.sdeDir, "typeLists.jsonl")),
+    typesSha256: sha256File(path.join(options.sdeDir, "types.jsonl")),
     outputDataDir: options.outDir,
     bootstrap,
     generatedTables,
@@ -3761,6 +3784,10 @@ module.exports = {
   buildCorporations,
   buildLocalAccountsAndCharacters,
   skillLevelRecords,
+  typeRecord,
+  publicTypeRecord,
+  clientTypeListRecord,
+  clientTypeListCounts,
   resolveBootstrapProfile,
   sanitizeAndValidateProductionMissionPolicy,
 };

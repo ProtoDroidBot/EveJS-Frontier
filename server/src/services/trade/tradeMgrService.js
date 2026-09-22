@@ -689,6 +689,29 @@ class TradeMgrService extends BaseService {
         }
         return collected;
     }
+    _isTradeTreeEligible(rootItem) {
+        const ownerID = Number(rootItem && rootItem.ownerID || 0) || 0;
+        if (ownerID <= 0)
+            return false;
+        for (const item of [rootItem, ...this._collectContainedItems(rootItem.itemID)]) {
+            if (!item ||
+                Number(item.ownerID || 0) !== ownerID ||
+                Number(item.typeID || 0) === ASSET_SAFETY_WRAP_TYPE_ID ||
+                !isTradableInventoryItem(item)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    _areStagedTradeTreesEligible(trade) {
+        return this._listTradeItems(trade).every((rootItem) => {
+            const ownerID = Number(rootItem && rootItem.ownerID || 0) || 0;
+            const origin = trade.stagedItemOrigins.get(Number(rootItem && rootItem.itemID || 0));
+            return (trade.traders.includes(ownerID) &&
+                origin && Number(origin.ownerID || 0) === ownerID &&
+                this._isTradeTreeEligible(rootItem));
+        });
+    }
     _transferContainedItemsToOwner(trade, rootItemID, destinationOwnerID) {
         const changes = [];
         const descendants = this._collectContainedItems(rootItemID);
@@ -890,7 +913,7 @@ class TradeMgrService extends BaseService {
         if (Number(item.typeID || 0) === ASSET_SAFETY_WRAP_TYPE_ID) {
             throwWrappedUserError("CannotTradeAssetSafety", {});
         }
-        if (!isTradableInventoryItem(item)) {
+        if (!this._isTradeTreeEligible(item)) {
             throwWrappedUserError("ItemCannotBeTraded", {
                 type_ids: [Number(item.typeID || 0) || 0],
             });
@@ -1201,6 +1224,10 @@ class TradeMgrService extends BaseService {
                 buildList(trade.offerManifests.slice()),
             ]);
             return true;
+        }
+        if (!this._areStagedTradeTreesEligible(trade)) {
+            this._resetOfferState(trade);
+            this._throwTradeError("One or more staged items can no longer be traded.");
         }
         const completionItemsPayload = this._buildTradeItemsSetPayload(trade);
         const moneyTransferResult = this._completeMoneyTransfer(trade);

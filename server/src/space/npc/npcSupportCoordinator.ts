@@ -443,7 +443,14 @@ class NpcSupportCoordinator {
     const dispatched = this.dispatchIncident(persisted.data.incident, {
       scene,
       nowMs,
-      reserveDefinitions: cloneValue(input.reserveDefinitions || []),
+      reserveDefinitions: cloneValue(
+        (Array.isArray(input.reserveDefinitions) ? input.reserveDefinitions : [])
+          .filter(definition => definition?.profile &&
+            require("../../config/npcFactionConfig").isNpcFactionSdeTypeAllowed(
+              requester, "reinforcement",
+              positiveInt(definition.profile.shipTypeID ?? definition.profile.typeID, 0),
+            )),
+      ),
       canTravel: input.canTravel,
     });
     return {
@@ -496,15 +503,7 @@ function tickNpcSupportJob(context: Record<string, any>) {
   }
   const currentSystemID = positiveInt(context.entity && context.entity.systemID, 0);
   if (currentSystemID !== positiveInt(incident.systemID, 0)) {
-    return {
-      status: STATUS.SUSPENDED,
-      step: "awaiting-system",
-      checkpoint: {
-        ...(job.checkpoint || {}),
-        destinationSystemID: incident.systemID,
-      },
-      nextWakeAtMs: context.nowMs + 5_000,
-    };
+    return require("./npcTravelService").advanceNpcTravel(context, incident.systemID);
   }
   const threat = context.scene && typeof context.scene.getEntityByID === "function"
     ? context.scene.getEntityByID(positiveInt(incident.threatTargetID, 0))

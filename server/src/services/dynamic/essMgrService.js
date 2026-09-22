@@ -98,7 +98,7 @@ function validateEssLinkEligibility(session, state, bankName) {
         return existingLinkError;
     }
     if (!hasSpaceValidationContext(session)) {
-        return null;
+        return "LINK_ERROR_NO_BALLPARK";
     }
     const scene = spaceRuntime.getSceneForSession(session);
     if (!scene || typeof scene.getEntityByID !== "function") {

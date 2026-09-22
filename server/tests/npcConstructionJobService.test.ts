@@ -10,6 +10,7 @@ const persistence = require("../src/space/npc/npcRuntimePersistence");
 const behaviorRuntime = require("../src/space/npc/npcBehaviorTreeRuntime");
 const actorContext = require("../src/space/npc/npcAssemblyActorContext");
 const construction = require("../src/space/npc/npcConstructionJobService");
+const deployment = require("../src/services/frontier/deploymentRuntime");
 const membershipReceipts = require("../src/space/npc/npcTransponderMembership");
 const suiTransponders = require("../src/services/frontier/suiTransponderCommitment");
 
@@ -302,6 +303,59 @@ test("atomic item consumption and target update cannot persist a partial constru
   assert.equal(committed.success, true, committed.errorMsg);
   assert.equal(itemStore.findItemById(material.itemID).stacksize, 2);
   assert.equal(itemStore.findItemById(target.itemID).itemName, "constructed");
+});
+
+test("NPC construction rejects unowned and duplicate material plans before moving cargo", (t) => {
+  const material = fixture(t);
+  const actor = actorContext.createNpcAssemblyActorContext(nativeStore.getNativeEntity(ENTITY_ID));
+  const site = itemStore.grantItemToOwnerLocation(
+    NPC_ID, SYSTEM_ID, 0, MATERIAL_TYPE_ID, 1, { singleton: 1 },
+  ).data.items[0];
+  const operator = actorContext.publicNpcAssemblyOperator(actor);
+  const customInfo = {
+    evejsFrontierConstruction: {
+      assemblyStatus: deployment.ASSEMBLY_STATUS_UNDER_CONSTRUCTION,
+      assemblyTypeID: ASSEMBLY_TYPE_ID,
+      constructionCost: { [MATERIAL_TYPE_ID]: 3 },
+      ownerID: NPC_ID,
+      solarSystemID: SYSTEM_ID,
+    },
+    evejsNpcConstruction: {
+      version: 2, jobID: "source-guard", phase: "site", operator,
+      factionKey: actor.factionKey,
+    },
+  };
+  assert.equal(itemStore.updateInventoryItem(site.itemID, item => ({
+    ...item, customInfo: JSON.stringify(customInfo),
+  })).success, true);
+  const ownEntry = {
+    itemID: material.itemID, typeID: MATERIAL_TYPE_ID, quantity: 3,
+    ownerID: OWNER_ID, locationID: ENTITY_ID, flagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
+  };
+  const foreign = itemStore.grantItemToOwnerLocation(
+    OWNER_ID + 1, ENTITY_ID + 1, itemStore.ITEM_FLAGS.CARGO_HOLD,
+    MATERIAL_TYPE_ID, 3, { singleton: 0 },
+  ).data.items[0];
+  const foreignEntry = {
+    itemID: foreign.itemID, typeID: MATERIAL_TYPE_ID, quantity: 3,
+    ownerID: foreign.ownerID, locationID: foreign.locationID, flagID: foreign.flagID,
+  };
+  const denied = deployment.depositNpcConstructionMaterials(
+    actor, site.itemID, [foreignEntry], "source-guard",
+  );
+  assert.equal(denied.success, false);
+  assert.equal(denied.errorMsg, "NPC_CONSTRUCTION_MATERIAL_ACCESS_DENIED");
+  assert.equal(itemStore.findItemById(foreign.itemID).locationID, foreign.locationID);
+  const duplicate = deployment.depositNpcConstructionMaterials(
+    actor, site.itemID, [ownEntry, ownEntry], "source-guard",
+  );
+  assert.equal(duplicate.success, false);
+  assert.equal(duplicate.errorMsg, "NPC_CONSTRUCTION_MATERIAL_MOVED");
+  const valid = deployment.depositNpcConstructionMaterials(
+    actor, site.itemID, [ownEntry], "source-guard",
+  );
+  assert.equal(valid.success, true, valid.errorMsg);
+  assert.equal(itemStore.findItemById(foreign.itemID).locationID, foreign.locationID);
 });
 
 test("a prepared Phase 3 deployment operation recovers and commits exactly once", (t) => {

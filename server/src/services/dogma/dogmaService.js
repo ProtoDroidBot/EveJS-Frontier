@@ -123,6 +123,10 @@ const ATTRIBUTE_FUEL_CHARGE = getAttributeIDByNames("fuelCharge") || 5635;
 // response has been sent.  CreationDogmaItem initializes deferred dynamic
 // attributes during that pass and will otherwise overwrite fuelCharge with 0.
 const DOCKED_DOGMA_ATTRIBUTE_REFRESH_DELAY_MS = 250;
+// A busy docked client can still be hydrating the Creation item when the first
+// derived-attribute batch lands. Replay only fuelCharge after that lifecycle
+// has settled so the type default cannot remain visible in the management UI.
+const DOCKED_CREATION_FUEL_REFRESH_REPLAY_DELAY_MS = 1000;
 const ATTRIBUTE_MAX_LOCKED_TARGETS = getAttributeIDByNames("maxLockedTargets") || 192;
 const ATTRIBUTE_QUANTITY = getAttributeIDByNames("quantity") || 805;
 const LIVE_SPACE_TUPLE_CHARGE_PROFILES = new Set([
@@ -2748,16 +2752,19 @@ class DogmaService extends BaseService {
         log.debug(`[DogmaIM] OnModuleAttributeChanges count=${normalizedChanges.length} ` +
             `changes=${JSON.stringify(normalizedChanges.map((change) => summarizeModuleAttributeChangeLog(change)))}`);
     }
-    _dispatchPostResponseAttributeChanges(session, changes = []) {
+    _dispatchPostResponseAttributeChanges(session, changes = [], options = {}) {
         if (!Array.isArray(changes) || changes.length === 0) {
             return false;
         }
+        const requestedDelay = Number(options && options.delayMs);
         const configuredDelay = Number(session && session._postDogmaAttributeRefreshDelayMs);
-        const delayMs = Number.isFinite(configuredDelay) && configuredDelay >= 0
-            ? configuredDelay
-            : isDockedSession(session)
-                ? DOCKED_DOGMA_ATTRIBUTE_REFRESH_DELAY_MS
-                : 0;
+        const delayMs = Number.isFinite(requestedDelay) && requestedDelay >= 0
+            ? requestedDelay
+            : Number.isFinite(configuredDelay) && configuredDelay >= 0
+                ? configuredDelay
+                : isDockedSession(session)
+                    ? DOCKED_DOGMA_ATTRIBUTE_REFRESH_DELAY_MS
+                    : 0;
         if (delayMs <= 0) {
             this._notifyModuleAttributeChanges(session, changes);
             return true;
@@ -4212,6 +4219,15 @@ class DogmaService extends BaseService {
             return 0;
         }
         this._dispatchPostResponseAttributeChanges(session, changes);
+        const fuelChargeChanges = changes.filter((change) => Number(change && change[3]) === ATTRIBUTE_FUEL_CHARGE);
+        if (isDockedSession(session) && fuelChargeChanges.length > 0) {
+            const configuredReplayDelay = Number(session && session._postCreationFuelRefreshReplayDelayMs);
+            this._dispatchPostResponseAttributeChanges(session, fuelChargeChanges, {
+                delayMs: Number.isFinite(configuredReplayDelay) && configuredReplayDelay >= 0
+                    ? configuredReplayDelay
+                    : DOCKED_CREATION_FUEL_REFRESH_REPLAY_DELAY_MS,
+            });
+        }
         return changes.length;
     }
     _shouldIncludeLoginShipInfoLoadedCharges(session) {

@@ -347,15 +347,17 @@ test("NPC mining compatibility enforces crude, asteroid-lens, and group-5133 bou
     miningModuleUsesCrystals: (typeID) => Number(typeID) === 990812,
     matchesTypeList(typeContext, listID) {
       const members = {
+        599: new Set([91374, 95349]),
         601: new Set([92394]),
         612: new Set([91374, 95349]),
+        613: new Set([91374, 95349]),
       };
       return members[listID] && members[listID].has(Number(typeContext && typeContext.typeID));
     },
   };
-  const asteroid = { yieldTypeID: 91374, yieldKind: "ore" };
-  const crude = { yieldTypeID: 92394, yieldKind: "ore" };
-  const salvageableWreckage = { yieldTypeID: 95349, yieldKind: "salvage" };
+  const asteroid = { visualTypeID: 91374, yieldTypeID: 77800, yieldKind: "ore" };
+  const crude = { visualTypeID: 92394, yieldTypeID: 92394, yieldKind: "ore" };
+  const salvageableWreckage = { visualTypeID: 95349, yieldTypeID: 88764, yieldKind: "salvage" };
   const asteroidEntity = { itemID: 201, kind: "asteroid", groupID: 450 };
   const crudeEntity = { itemID: 202, kind: "riftEnvironmentProp", groupID: 4593, frontierRiftResource: true };
   const salvageableEntity = { itemID: 203, kind: "landscapeProp", groupID: 5133 };
@@ -395,6 +397,9 @@ test("NPC mining compatibility enforces crude, asteroid-lens, and group-5133 bou
   assert.equal(compatible(crudeExtractor, crude, crudeEntity, options), true);
   assert.equal(compatible(crudeExtractor, asteroid, asteroidEntity, options), false);
   assert.equal(compatible(cuttingLaser, salvageableWreckage, salvageableEntity, options), true);
+  assert.equal(compatible({ ...cuttingLaser, crystalTargetTypeListID: 599 }, asteroid, asteroidEntity, options), true);
+  assert.equal(compatible({ ...cuttingLaser, crystalTargetTypeListID: 613 }, salvageableWreckage, salvageableEntity, options), true);
+  assert.equal(compatible({ ...cuttingLaser, crystalTargetTypeListID: 0 }, asteroid, asteroidEntity, options), false);
   assert.equal(compatible(cuttingLaser, salvageableWreckage, ordinaryWreck, options), false);
   assert.ok(resourceJobs.getNpcResourceDefinition("crude"));
   assert.equal(resourceJobs.getNpcResourceDefinition("salvage"), null);

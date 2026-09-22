@@ -31,6 +31,9 @@ const frontierLandscapeSpawns = require(path.join(
 const {
   applyNpcBehaviorConfig,
 } = require(path.join(__dirname, "../../config/npcBehaviorConfig"));
+const {
+  applyNpcFactionTypeListProfile,
+} = require(path.join(__dirname, "../../config/npcFactionConfig"));
 
 const NPC_TABLE = Object.freeze({
   PROFILES: "npcProfiles",
@@ -234,7 +237,7 @@ function buildNpcRows(tableName, authoredRows) {
   const derivedRows = tableName === NPC_TABLE.SPAWN_POOLS
     ? buildDerivedSpawnPoolRows(normalizedAuthoredRows)
     : [];
-  return [
+  const rows = [
     ...normalizedAuthoredRows,
     ...derivedRows,
     ...(Array.isArray(empireSecurityGeneratedRows) ? empireSecurityGeneratedRows : []),
@@ -244,6 +247,10 @@ function buildNpcRows(tableName, authoredRows) {
     ...(Array.isArray(frontierDungeonLootRows) ? frontierDungeonLootRows : []),
     ...(Array.isArray(frontierLandscapeGeneratedRows) ? frontierLandscapeGeneratedRows : []),
   ];
+  if (tableName !== NPC_TABLE.PROFILES) return rows;
+  return rows
+    .map((profile) => applyNpcFactionTypeListProfile(profile))
+    .filter((profile) => profile && profile.npcFactionMembershipEligible !== false);
 }
 
 function getNpcTableIndex(tableName, dependencies: Record<string, any> = {}) {

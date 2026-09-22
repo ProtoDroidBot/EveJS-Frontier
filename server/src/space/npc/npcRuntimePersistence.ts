@@ -1655,6 +1655,24 @@ function reconcilePendingOperations(summary: Record<string, any>) {
         else if (result.recovered === true) summary.recoveredOperations += 1;
         continue;
       }
+      if (operation.operationType === "npc-travel-transition") {
+        const result = require("./npcTravelTransition")
+          .recoverNpcTravelOperation(operation);
+        if (!result || result.success !== true) {
+          throw new Error(result && result.errorMsg || "NPC travel recovery failed");
+        }
+        summary.recoveredOperations += 1;
+        continue;
+      }
+      if (operation.operationType === "npc-fuel-cargo-load") {
+        const result = require("./npcFuelLogistics")
+          .recoverNpcFuelLoadOperation(operation);
+        if (!result || result.success !== true) {
+          throw new Error(result && result.errorMsg || "NPC fuel-load recovery failed");
+        }
+        summary.recoveredOperations += 1;
+        continue;
+      }
       summary.unhandledOperations += 1;
     } catch (error) {
       summary.errors.push(`operation ${operation.operationID}: ${error.message}`);
