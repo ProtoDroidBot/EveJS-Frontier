@@ -3,6 +3,9 @@
 const path = require("path");
 
 const config = require(path.join(__dirname, "../../config"));
+const { isNpcCharacterID } = require(path.join(
+  __dirname, "../../services/_shared/npcIdentityConstants",
+));
 const {
   buildDict,
   buildFiletimeLong,
@@ -454,12 +457,23 @@ function buildSlimItemDict(entity) {
     entries.push(["corpID", entity.corporationID || 0]);
     entries.push(["allianceID", entity.allianceID || 0]);
     entries.push(["warFactionID", entity.warFactionID || 0]);
-    entries.push(["charID", entity.characterID || 0]);
+    // A category-6 NPC uses CRShip and can expose its durable pilot without
+    // adopting a player session or inventory owner in the runtime entity.
+    const npcPilotID = entity.nativeNpc === true && isNpcCharacterID(entity.npcCharacterID)
+      ? entity.npcCharacterID
+      : 0;
+    entries.push(["charID", npcPilotID || entity.characterID || 0]);
     const dirtState = resolveShipSlimDirtTime(entity);
     if (dirtState.explicit || dirtState.dirtTime > 0n) {
       entries.push(["dirtTime", buildFiletimeLong(dirtState.dirtTime)]);
     }
     entries.push(["kills", getItemKillCountPlayer(entity.itemID)]);
+    if (Object.prototype.hasOwnProperty.call(entity, "selfDestructAtMs")) {
+      entries.push([
+        "selfDestructTime",
+        buildWallclockFiletimeFromMs(entity.selfDestructAtMs),
+      ]);
+    }
     if (Array.isArray(entity.cosmeticsItems) && entity.cosmeticsItems.length > 0) {
       entries.push(["cosmeticsItems", buildList(entity.cosmeticsItems)]);
     }

@@ -28,6 +28,124 @@ def _evejs_get_npc_fitting_state(namespace, entity_id):
     return _evejs_npc_fitting_remote(namespace).GetNpcFittingState(entity_id)
 
 
+_evejs_npc_creation_target = None
+
+
+class _EvejsNpcCreationServiceProxy:
+    """Creation management service scoped to one server-authorized NPC ship."""
+
+    def __init__(self, original, remote, entity_id, initial_snapshot):
+        self._original = original
+        self._remote = remote
+        self._entity_id = int(entity_id)
+        self._snapshot = initial_snapshot
+        self.on_active_creation_changed = type(
+            original.on_active_creation_changed
+        )()
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+    def _get_target_creation(self):
+        from frontier.creation.common.model import Creation
+
+        snapshot = self._remote.GetNpcCreationSnapshot(self._entity_id)
+        if int(_evejs_value(snapshot, "item_id", 0) or 0) != self._entity_id:
+            raise RuntimeError("NPC Creation target changed")
+        self._snapshot = snapshot
+        return Creation.from_dict(snapshot)
+
+    def get_active_creation(self):
+        return self._get_target_creation()
+
+    def get_creation(self, creation_id):
+        if int(creation_id or 0) == self._entity_id:
+            return self._get_target_creation()
+        return self._original.get_creation(creation_id)
+
+    def commit_management_draft(self, creation_id, changes):
+        from frontier.creation.common.diagnostics import Diagnostic
+
+        # The retail manager passes session.shipid here. The proxy pins the
+        # commit to the target selected when the view was opened.
+        payload = [change.to_dict() for change in changes]
+        results = self._remote.CommitNpcCreationDraft(
+            self._entity_id, payload
+        )
+        diagnostics = [Diagnostic.from_dict(result) for result in results]
+        if not any(entry.is_blocker for entry in diagnostics):
+            self._get_target_creation()
+            self.on_active_creation_changed(self._entity_id)
+        return diagnostics
+
+
+def _evejs_install_npc_creation_view_bridge(namespace):
+    try:
+        from frontier.creation.client.management import view_state
+    except Exception:
+        return False
+
+    integration = view_state.ManagementViewIntegration
+    if getattr(integration, "_evejs_npc_creation_bridge", False):
+        return True
+    original_unload = view_state.ManagementViewState.UnloadView
+
+    @wraps(integration)
+    def target_integration(*args, **kwargs):
+        target = _evejs_npc_creation_target
+        if target is None:
+            return integration(*args, **kwargs)
+        if args:
+            args = list(args)
+            args[0] = _EvejsNpcCreationServiceProxy(
+                args[0], target["remote"], target["entity_id"],
+                target["snapshot"],
+            )
+            return integration(*args, **kwargs)
+        kwargs["creation_service"] = _EvejsNpcCreationServiceProxy(
+            kwargs["creation_service"], target["remote"],
+            target["entity_id"], target["snapshot"],
+        )
+        return integration(**kwargs)
+
+    @wraps(original_unload)
+    def unload_view(self, *args, **kwargs):
+        global _evejs_npc_creation_target
+        try:
+            return original_unload(self, *args, **kwargs)
+        finally:
+            _evejs_npc_creation_target = None
+
+    target_integration._evejs_npc_creation_bridge = True
+    view_state.ManagementViewIntegration = target_integration
+    view_state.ManagementViewState.UnloadView = unload_view
+    return True
+
+
+def _evejs_open_npc_creation_view(namespace, entity_id, state, original_open,
+                                  fitting_window):
+    global _evejs_npc_creation_target
+    remote = _evejs_npc_fitting_remote(namespace)
+    snapshot = remote.GetNpcCreationSnapshot(entity_id)
+    if int(_evejs_value(snapshot, "item_id", 0) or 0) != int(entity_id):
+        raise RuntimeError("NPC Creation snapshot target changed")
+    if not _evejs_install_npc_creation_view_bridge(namespace):
+        raise RuntimeError("Creation management view is unavailable")
+    target = {
+        "remote": remote,
+        "entity_id": int(entity_id),
+        "snapshot": snapshot,
+        "state": state,
+    }
+    previous = _evejs_npc_creation_target
+    _evejs_npc_creation_target = target
+    try:
+        return original_open(fitting_window)
+    except Exception:
+        _evejs_npc_creation_target = previous
+        raise
+
+
 def _evejs_is_trusted_npc_fitting_state(state):
     return _evejs_value(state, "trusted", False) is True
 
@@ -118,6 +236,177 @@ class _EvejsNpcFittingPresenter:
         return self.accept(self.remote.UnloadCharge(self.entity_id, cargo_id))
 
 
+class _EvejsNpcTargetController(_EvejsNpcFittingPresenter):
+    """An NPC fitting draft bound to one server-authorized ship entity."""
+
+    def __init__(self, remote, entity_id, initial_state):
+        super().__init__(remote, entity_id, initial_state)
+        self.accept(initial_state)
+
+    def accept(self, state):
+        if not _evejs_is_trusted_npc_fitting_state(state):
+            raise RuntimeError("NPC fitting access is no longer trusted")
+        if int(_evejs_value(state, "entityID", 0) or 0) != int(self.entity_id):
+            raise RuntimeError("NPC fitting target changed")
+        return super().accept(state)
+
+    @property
+    def fitting_path(self):
+        return _evejs_value(
+            self.state, "fittingPath",
+            _evejs_value(_evejs_value(self.state, "hull", {}),
+                         "fittingPath", None),
+        )
+
+    @property
+    def hull_type_id(self):
+        return int(_evejs_value(_evejs_value(self.state, "hull", {}),
+                                "typeID", 0) or 0)
+
+    def _fitted_signature(self):
+        entries = []
+        for module in self.modules:
+            charges = tuple(sorted(
+                (int(_evejs_value(charge, "cargoID", 0) or 0),
+                 int(_evejs_value(charge, "typeID", 0) or 0),
+                 int(_evejs_value(charge, "quantity", 0) or 0))
+                for charge in _evejs_list(_evejs_value(module, "charges", []))
+            ))
+            entries.append((
+                int(_evejs_value(module, "moduleID", 0) or 0),
+                int(_evejs_value(module, "typeID", 0) or 0),
+                int(_evejs_value(module, "flagID", 0) or 0),
+                charges,
+            ))
+        return tuple(sorted(entries))
+
+    def _cargo_item_for_type(self, items, type_id):
+        for item in items:
+            if int(_evejs_value(item, "typeID", 0) or 0) == type_id:
+                item_id = int(_evejs_value(item, "itemID", 0) or 0)
+                if item_id > 0:
+                    return item_id
+        raise RuntimeError(
+            "Type {} is unavailable in your active ship cargo".format(type_id)
+        )
+
+    def apply_legacy_draft(self, module_rows, charge_rows=()):
+        """Commit a native fitting simulation without ever targeting session.shipid."""
+        if self.fitting_path != "legacy" or self.hull_type_id <= 0:
+            raise RuntimeError("The NPC hull does not use legacy fitting")
+        if len(module_rows) > 64 or len(charge_rows) > 64:
+            raise RuntimeError("NPC fitting draft is too large")
+        desired = {}
+        for type_id, flag_id in module_rows:
+            type_id, flag_id = int(type_id), int(flag_id)
+            if type_id <= 0 or flag_id <= 0 or flag_id in desired:
+                raise RuntimeError("NPC fitting draft has an invalid module slot")
+            desired[flag_id] = type_id
+        desired_charges = {}
+        for type_id, flag_id in charge_rows:
+            type_id, flag_id = int(type_id), int(flag_id)
+            if type_id <= 0 or flag_id not in desired or flag_id in desired_charges:
+                raise RuntimeError("NPC fitting draft has an invalid charge slot")
+            desired_charges[flag_id] = type_id
+
+        initial_signature = self._fitted_signature()
+        self.refresh()
+        if self._fitted_signature() != initial_signature:
+            raise RuntimeError("NPC fitting changed; refresh the draft")
+
+        current_by_flag = {
+            int(_evejs_value(module, "flagID", 0) or 0):
+            int(_evejs_value(module, "typeID", 0) or 0)
+            for module in self.modules
+        }
+        required_by_type = {}
+        for flag_id, type_id in desired.items():
+            if current_by_flag.get(flag_id) != type_id:
+                required_by_type[type_id] = required_by_type.get(type_id, 0) + 1
+        for type_id, required in required_by_type.items():
+            available = sum(
+                max(0, int(_evejs_value(item, "quantity", 0) or 0))
+                for item in self.available_modules
+                if int(_evejs_value(item, "typeID", 0) or 0) == type_id
+            )
+            if available < required:
+                raise RuntimeError(
+                    "Type {} needs {} items in your active ship cargo".format(
+                        type_id, required
+                    )
+                )
+        required_charges = {}
+        for flag_id, type_id in desired_charges.items():
+            current = next((module for module in self.modules if int(
+                _evejs_value(module, "flagID", 0) or 0
+            ) == flag_id), None)
+            loaded = _evejs_list(_evejs_value(current, "charges", []))
+            if len(loaded) == 1 and int(
+                _evejs_value(loaded[0], "typeID", 0) or 0
+            ) == type_id and current_by_flag.get(flag_id) == desired[flag_id]:
+                continue
+            required_charges[type_id] = required_charges.get(type_id, 0) + 1
+        for type_id, required in required_charges.items():
+            available = sum(
+                max(0, int(_evejs_value(item, "quantity", 0) or 0))
+                for item in self.available_charges
+                if int(_evejs_value(item, "typeID", 0) or 0) == type_id
+            )
+            if available < required:
+                raise RuntimeError(
+                    "Charge type {} is unavailable in your active ship cargo".format(
+                        type_id
+                    )
+                )
+
+        # Remove conflicts first. Each RPC returns a fresh server-authorized
+        # target state; a denied or failed operation aborts the remaining draft.
+        for module in list(self.modules):
+            flag_id = int(_evejs_value(module, "flagID", 0) or 0)
+            type_id = int(_evejs_value(module, "typeID", 0) or 0)
+            if desired.get(flag_id) != type_id:
+                for charge in _evejs_list(_evejs_value(module, "charges", [])):
+                    self.unload(int(_evejs_value(charge, "cargoID", 0) or 0))
+                self.unfit(int(_evejs_value(module, "moduleID", 0) or 0))
+
+        for flag_id, type_id in sorted(desired.items()):
+            if any(
+                int(_evejs_value(module, "flagID", 0) or 0) == flag_id
+                and int(_evejs_value(module, "typeID", 0) or 0) == type_id
+                for module in self.modules
+            ):
+                continue
+            item_id = self._cargo_item_for_type(self.available_modules, type_id)
+            self.accept(self.remote.FitItem(self.entity_id, item_id, flag_id))
+
+        for module in list(self.modules):
+            flag_id = int(_evejs_value(module, "flagID", 0) or 0)
+            wanted_type = desired_charges.get(flag_id)
+            charges = _evejs_list(_evejs_value(module, "charges", []))
+            if len(charges) == 1 and int(
+                _evejs_value(charges[0], "typeID", 0) or 0
+            ) == (wanted_type or 0):
+                continue
+            for charge in charges:
+                self.unload(int(_evejs_value(charge, "cargoID", 0) or 0))
+            if wanted_type:
+                current = next((entry for entry in self.modules if int(
+                    _evejs_value(entry, "flagID", 0) or 0
+                ) == flag_id), None)
+                if current is None:
+                    raise RuntimeError("NPC module disappeared during fitting")
+                item_id = self._cargo_item_for_type(
+                    self.available_charges, wanted_type
+                )
+                self.accept(self.remote.LoadCharge(
+                    self.entity_id,
+                    int(_evejs_value(current, "moduleID", 0) or 0),
+                    item_id,
+                    0,
+                ))
+        return self.state
+
+
 def _evejs_attribute(attributes, name, default=None):
     if isinstance(attributes, dict):
         return attributes.get(name, default)
@@ -125,7 +414,7 @@ def _evejs_attribute(attributes, name, default=None):
 
 
 def _evejs_npc_fitting_window_type(namespace):
-    cached = namespace.get("_evejs_npc_fitting_window_type")
+    cached = namespace.get("_evejs_npc_fitting_window_class")
     if cached is not None:
         return cached
 
@@ -382,7 +671,7 @@ def _evejs_npc_fitting_window_type(namespace):
             self._presenter.accept(state)
             self._render(eveui)
 
-    namespace["_evejs_npc_fitting_window_type"] = NpcFittingWindow
+    namespace["_evejs_npc_fitting_window_class"] = NpcFittingWindow
     return NpcFittingWindow
 
 
@@ -398,6 +687,212 @@ def _evejs_open_npc_fitting_window(namespace, entity_id, state):
         npc_entity_id=entity_id,
         initial_state=state,
     )
+
+
+def _evejs_legacy_slot_flags():
+    from inventorycommon import const as inv_const
+    groups = (
+        "hiSlotFlags", "medSlotFlags", "loSlotFlags",
+        "rigSlotFlags", "subSystemSlotFlags",
+    )
+    flags = set()
+    for name in groups:
+        try:
+            flags.update(int(value) for value in getattr(inv_const, name, ()))
+        except Exception:
+            continue
+    return flags
+
+
+def _evejs_legacy_draft_from_snapshot(snapshot, hull_type_id):
+    if int(_evejs_value(snapshot, "shipTypeID", 0) or 0) != hull_type_id:
+        raise RuntimeError("The native fitting draft is for another hull")
+    flags = _evejs_legacy_slot_flags()
+    if not flags:
+        raise RuntimeError("Native fitting slot definitions are unavailable")
+    modules = []
+    for row in _evejs_list(_evejs_value(snapshot, "fitData", [])):
+        try:
+            if len(row) >= 2 and int(row[1]) in flags:
+                modules.append((int(row[0]), int(row[1])))
+        except Exception as error:
+            raise RuntimeError("Native fitting snapshot has an invalid module") from error
+    charges = []
+    for row in _evejs_list(_evejs_value(snapshot, "chargeInfoToLoad", [])):
+        try:
+            if len(row) >= 2 and int(row[1]) in flags:
+                charges.append((int(row[0]), int(row[1])))
+        except Exception as error:
+            raise RuntimeError("Native fitting snapshot has an invalid charge") from error
+    return modules, charges
+
+
+def _evejs_npc_legacy_window_type(namespace):
+    cached = namespace.get("_evejs_npc_legacy_window_class")
+    if cached is not None:
+        return cached
+    fitting_window = namespace["FittingWindow"]
+    import eveui
+
+    class NpcLegacyFittingWindow(fitting_window):
+        default_windowID = "evejs_npc_legacy_fitting"
+        default_caption = "NPC Legacy Fitting"
+
+        @classmethod
+        def Open(cls, *args, **kwargs):
+            # Skip Frontier's Creation-only override and use the retail
+            # FittingWindow implementation for this dedicated NPC instance.
+            return super(fitting_window, cls).Open(*args, **kwargs)
+
+        def ApplyAttributes(self, attributes):
+            self._evejs_target = _evejs_attribute(attributes, "npc_target")
+            self._evejs_sim_ship_id = _evejs_attribute(
+                attributes, "npc_sim_ship_id"
+            )
+            if self._evejs_target is None or not self._evejs_sim_ship_id:
+                raise RuntimeError("Native NPC fitting target is unavailable")
+            super().ApplyAttributes(attributes)
+
+        def ConstructLayout(self):
+            super().ConstructLayout()
+            target = getattr(self, "_evejs_target", None)
+            if target is None:
+                return
+            footer = eveui.Container(
+                parent=self.overlayCont,
+                align=eveui.Align.to_bottom,
+                height=36,
+            )
+            self._evejs_status = eveui.EveLabelMedium(
+                parent=footer,
+                align=eveui.Align.to_left,
+                text="Edit the draft, then apply it to the NPC",
+            )
+            eveui.Button(
+                parent=footer,
+                align=eveui.Align.to_right,
+                label="Apply to NPC",
+                func=self._evejs_apply,
+            )
+
+        def ConstructCurrentGhostIcon(self, parent):
+            result = super().ConstructCurrentGhostIcon(parent)
+            try:
+                self.currentShipGhost.SetShipTypeID(
+                    self._evejs_target.hull_type_id
+                )
+            except Exception:
+                pass
+            return result
+
+        def _evejs_apply(self, *args):
+            target = getattr(self, "_evejs_target", None)
+            if target is None:
+                return
+            try:
+                service_manager = namespace["sm"]
+                if service_manager.GetService(
+                    "fittingSvc"
+                ).IsShipSimulated() is not True:
+                    raise RuntimeError("Native fitting simulation is no longer active")
+                ghost = service_manager.GetService("ghostFittingSvc")
+                if ghost.fittingDogmaLocation.GetCurrentShipID() != (
+                    self._evejs_sim_ship_id
+                ):
+                    raise RuntimeError("Native fitting target changed")
+                snapshot = ghost.TakeSnapshot()
+                modules, charges = _evejs_legacy_draft_from_snapshot(
+                    snapshot, target.hull_type_id
+                )
+                target.apply_legacy_draft(modules, charges)
+                self._evejs_status.text = "NPC fitting applied"
+            except Exception as error:
+                try:
+                    target.refresh()
+                except Exception:
+                    self.Close()
+                    return
+                self._evejs_status.text = "NPC fitting failed: {}".format(error)
+
+    namespace["_evejs_npc_legacy_window_class"] = NpcLegacyFittingWindow
+    return NpcLegacyFittingWindow
+
+
+def _evejs_open_npc_legacy_window(namespace, entity_id, state):
+    target = _EvejsNpcTargetController(
+        _evejs_npc_fitting_remote(namespace), entity_id, state
+    )
+    if target.fitting_path != "legacy" or target.hull_type_id <= 0:
+        raise RuntimeError("NPC hull is not eligible for legacy fitting")
+    service_manager = namespace["sm"]
+    fitting_service = service_manager.GetService("fittingSvc")
+    if fitting_service.IsShipSimulated():
+        raise RuntimeError("Close the current fitting simulation first")
+    if namespace["FittingWindow"].GetIfOpen() is not None:
+        raise RuntimeError("Close the current ship fitting window first")
+    legacy_window_type = _evejs_npc_legacy_window_type(namespace)
+    existing = legacy_window_type.GetIfOpen()
+    if existing is not None:
+        existing.Close()
+    ghost = service_manager.GetService("ghostFittingSvc")
+    fit_data = []
+    expected_modules = set()
+    expected_charges = set()
+    for module in target.modules:
+        type_id = int(_evejs_value(module, "typeID", 0) or 0)
+        flag_id = int(_evejs_value(module, "flagID", 0) or 0)
+        module_id = int(_evejs_value(module, "moduleID", 0) or 0)
+        if type_id <= 0 or flag_id <= 0 or module_id <= 0:
+            raise RuntimeError("NPC has an invalid fitted module")
+        fit_data.append((type_id, flag_id, 1))
+        expected_modules.add((type_id, flag_id))
+        for charge in _evejs_list(_evejs_value(module, "charges", [])):
+            charge_type = int(_evejs_value(charge, "typeID", 0) or 0)
+            if charge_type <= 0:
+                raise RuntimeError("NPC has an invalid fitted charge")
+            expected_charges.add((charge_type, flag_id))
+    ghost.fittingName = "NPC: {}".format(
+        _evejs_value(state, "displayName", "Ship")
+    )
+    try:
+        ghost.LoadSimulatedFitting(
+            target.hull_type_id,
+            entity_id,
+            int(_evejs_value(state, "npcCharacterID", 0) or 0),
+            fit_data,
+            {},
+        )
+        for module in target.modules:
+            flag_id = int(_evejs_value(module, "flagID", 0) or 0)
+            for charge in _evejs_list(_evejs_value(module, "charges", [])):
+                ghost.FitAmmoToLocation(
+                    flag_id, int(_evejs_value(charge, "typeID", 0) or 0)
+                )
+        sim_ship_id = ghost.fittingDogmaLocation.GetCurrentShipID()
+        if not sim_ship_id:
+            raise RuntimeError("Native fitting simulation did not load the NPC hull")
+        loaded_modules, loaded_charges = _evejs_legacy_draft_from_snapshot(
+            ghost.TakeSnapshot(), target.hull_type_id
+        )
+        if set(loaded_modules) != expected_modules or (
+            set(loaded_charges) != expected_charges
+        ):
+            raise RuntimeError("Native simulation could not represent the NPC fit")
+        return legacy_window_type.Open(
+            shipID=sim_ship_id,
+            npc_target=target,
+            npc_sim_ship_id=sim_ship_id,
+        )
+    except Exception:
+        try:
+            fitting_service.SetSimulationState(False)
+        except Exception:
+            pass
+        try:
+            ghost.ResetFittingDomaLocation(force=True)
+        except Exception:
+            pass
+        raise
 
 
 def _evejs_get_active_ship(namespace, ship_id):
@@ -491,6 +986,49 @@ def _evejs_install_fitting_compatibility(namespace):
                 return None
             if not _evejs_is_trusted_npc_fitting_state(state):
                 return None
+            if _evejs_value(state, "fittingPath") == "legacy":
+                try:
+                    return _evejs_open_npc_legacy_window(
+                        namespace, entity_id, state
+                    )
+                except Exception as error:
+                    # Keep the trusted NPC RPC editor available when a
+                    # client-specific native controller operation fails.
+                    fallback = _evejs_open_npc_fitting_window(
+                        namespace, entity_id, state
+                    )
+                    if fallback is not None:
+                        try:
+                            fallback._presenter.status = (
+                                "Native fitting unavailable: {}".format(error)
+                            )
+                            fallback._status_label.text = (
+                                fallback._presenter.status
+                            )
+                        except Exception:
+                            pass
+                    return fallback
+            if _evejs_value(state, "fittingPath") == "creation":
+                try:
+                    return _evejs_open_npc_creation_view(
+                        namespace, entity_id, state, original_open,
+                        fitting_window,
+                    )
+                except Exception as error:
+                    fallback = _evejs_open_npc_fitting_window(
+                        namespace, entity_id, state
+                    )
+                    if fallback is not None:
+                        try:
+                            fallback._presenter.status = (
+                                "Creation view unavailable: {}".format(error)
+                            )
+                            fallback._status_label.text = (
+                                fallback._presenter.status
+                            )
+                        except Exception:
+                            pass
+                    return fallback
             return _evejs_open_npc_fitting_window(
                 namespace, entity_id, state
             )

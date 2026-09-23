@@ -396,6 +396,7 @@ const HARDWARE_FAMILY_MINING_OPS = normalizeHardwareFamilyName("miningOps");
 const HARDWARE_FAMILY_ENTITY_MISSILE_NPC = normalizeHardwareFamilyName("entityMissileNpc");
 const HARDWARE_FAMILY_SDE_ENTITY_NPC = normalizeHardwareFamilyName("sdeEntityNpc");
 const HARDWARE_FAMILY_DRIFTER_HARNESS = normalizeHardwareFamilyName("drifterHarness");
+const HARDWARE_FAMILY_PILOTED_SHIP = normalizeHardwareFamilyName("pilotedShip");
 const GROUP_WARP_SCRAMBLER = 52;
 const GROUP_STASIS_WEB = 65;
 const GROUP_ENERGY_NOSFERATU = 68;
@@ -590,6 +591,19 @@ function validateNpcHardwareDefinition(definition) {
       success: false,
       errorMsg: "NPC_NATIVE_HARDWARE_FAMILY_UNSUPPORTED",
     };
+  }
+  if (family === HARDWARE_FAMILY_PILOTED_SHIP) {
+    const profile = definition && definition.profile || {};
+    const shipType = resolveItemByTypeID(toPositiveInt(profile.shipTypeID, 0));
+    if (!shipType || toPositiveInt(shipType.categoryID, 0) !== 6) {
+      return { success: false, errorMsg: "NPC_PILOT_SHIP_CATEGORY_REQUIRED" };
+    }
+    const loadout = definition && definition.loadout || {};
+    if ((Array.isArray(loadout.modules) && loadout.modules.length > 0) ||
+        (Array.isArray(loadout.charges) && loadout.charges.length > 0)) {
+      return { success: false, errorMsg: "NPC_PILOT_SHIP_LOADOUT_REQUIRES_FITTING" };
+    }
+    return { success: true, data: { family } };
   }
   if (family === HARDWARE_FAMILY_MINING_OPS) {
     // Mining fleets are driven by the mining runtime rather than the combat AI.

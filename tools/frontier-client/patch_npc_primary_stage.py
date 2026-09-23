@@ -1,13 +1,7 @@
-"""Update only the NPC interaction menu in a verified build-3502403 stage.
-
-The broader fitting patch may contain independent pending client changes. This
-transaction deliberately replaces only menusvc.pyc and verifies every other
-archive member before accepting the new stage metadata.
-"""
+"""Refresh only the NPC HUD adapter in a verified build-3502403 stage."""
 
 import argparse
 import hashlib
-import marshal
 from pathlib import Path
 import re
 import sys
@@ -18,46 +12,29 @@ import patch_frontier_features as features
 import patch_frontier_fitting as fitting
 
 
-BASELINE_MENU_MEMBER_SHA256 = (
-    "aba3efbe9d2168c4971fec5db1b98842a9334c83c5c328c922de625309235a6c"
-)
-BASELINE_MENU_ADAPTER_SHA256 = (
-    "6055bf6b0187f0c838316de65ae89e726dbe9b5e5556428e386c52313148d8eb"
+BASELINE_PRIMARY_MEMBER_SHA256 = (
+    "5bccc0d07b755bc8296a5a1001d91ca520a433d5521177b780c20e4a730ba743"
 )
 
 
-def inspect_menu_member(archive_path):
+def inspect_primary_member(archive_path):
     with zipfile.ZipFile(archive_path) as archive:
         entries = [entry for entry in archive.infolist()
-                   if entry.filename == fitting.MENU_MODULE_NAME]
+                   if entry.filename == fitting.PRIMARY_ACTION_MODULE_NAME]
         if len(entries) != 1:
-            raise stage.FrontierWindowsError("Expected exactly one NPC menu member")
+            raise stage.FrontierWindowsError("Expected one NPC HUD member")
         member = archive.read(entries[0])
-    if hashlib.sha256(member).hexdigest() != BASELINE_MENU_MEMBER_SHA256:
-        raise stage.FrontierWindowsError("NPC menu changed since known preflight")
+    if hashlib.sha256(member).hexdigest() != BASELINE_PRIMARY_MEMBER_SHA256:
+        raise stage.FrontierWindowsError("NPC HUD member changed since preflight")
     state, original = fitting.inspect_member(
         member,
-        fitting.MENU_SOURCE_MEMBER_SHA256,
-        fitting.patched_menu_member,
-        {BASELINE_MENU_MEMBER_SHA256},
+        fitting.PRIMARY_ACTION_SOURCE_MEMBER_SHA256,
+        fitting.patched_primary_action_member,
+        {BASELINE_PRIMARY_MEMBER_SHA256},
     )
     if state != "outdated":
-        raise stage.FrontierWindowsError("NPC menu is not the expected prior adapter")
-    wrapper = marshal.loads(member[16:])
-    adapters = [value for value in wrapper.co_consts
-                if isinstance(value, bytes) and value != original]
-    if len(adapters) != 1 or hashlib.sha256(adapters[0]).hexdigest() != (
-        BASELINE_MENU_ADAPTER_SHA256
-    ):
-        raise stage.FrontierWindowsError("NPC menu adapter does not match preflight")
+        raise stage.FrontierWindowsError("NPC HUD is not the expected prior adapter")
     return original
-
-
-def verify_patched_menu_member(archive_path, original):
-    with zipfile.ZipFile(archive_path) as archive:
-        member = archive.read(fitting.MENU_MODULE_NAME)
-    if member != fitting.patched_menu_member(original):
-        raise stage.FrontierWindowsError("NPC menu patch failed verification")
 
 
 def verify_archive_delta(before_path, after_path):
@@ -65,18 +42,15 @@ def verify_archive_delta(before_path, after_path):
     with zipfile.ZipFile(before_path) as before, zipfile.ZipFile(after_path) as after:
         old_entries = before.infolist()
         new_entries = after.infolist()
-        if [entry.filename for entry in old_entries] != [
-            entry.filename for entry in new_entries
-        ]:
+        if [entry.filename for entry in old_entries] != [entry.filename for entry in new_entries]:
             raise stage.FrontierWindowsError("Archive member order or names changed")
         for old_entry, new_entry in zip(old_entries, new_entries):
             if hashlib.sha256(before.read(old_entry)).digest() != hashlib.sha256(
-                after.read(new_entry)
-            ).digest():
+                    after.read(new_entry)).digest():
                 changed.append(old_entry.filename)
-    if changed != [fitting.MENU_MODULE_NAME]:
+    if changed != [fitting.PRIMARY_ACTION_MODULE_NAME]:
         raise stage.FrontierWindowsError(
-            f"Expected only the NPC menu member to change, got {changed!r}"
+            f"Expected only the NPC HUD member to change, got {changed!r}"
         )
     return changed
 
@@ -94,41 +68,40 @@ def patch(stage_root, expected_code_sha256):
     stage.assert_protected_stage_paths(stage_root, paths)
     if stage.sha256_file(paths["code"]) != expected_code_sha256:
         raise stage.FrontierWindowsError("code.ccp changed since preflight inspection")
-
-    _, profile = stage.resolve_profile(3502403, str(marker["nativeBlue"]))
     if marker.get("currentHashes", {}).get("code.ccp") != expected_code_sha256:
         raise stage.FrontierWindowsError("Stage marker disagrees with code.ccp")
+    _, profile = stage.resolve_profile(3502403, str(marker["nativeBlue"]))
     if not stage.manifest_hashes_match(paths["manifest"], stage_root, profile):
         raise stage.FrontierWindowsError("Stage manifest does not verify")
-    original_menu = inspect_menu_member(paths["code"])
+    original = inspect_primary_member(paths["code"])
     touched = [paths["code"], paths["manifest"], marker_path]
     backup_root, original_hashes = stage.backup_transaction_files(stage_root, touched)
-    if any(
-        stage.sha256_file(path) != original_hashes[path.relative_to(stage_root).as_posix()]
-        for path in touched
-    ):
-        raise stage.FrontierWindowsError("Stage changed before NPC menu write")
+    if any(stage.sha256_file(path) != original_hashes[path.relative_to(stage_root).as_posix()]
+           for path in touched):
+        raise stage.FrontierWindowsError("Stage changed before NPC HUD write")
     try:
+        replacement = fitting.patched_primary_action_member(original)
         features.rewrite_archive(
-            paths["code"],
-            {fitting.MENU_MODULE_NAME: fitting.patched_menu_member(original_menu)},
+            paths["code"], {fitting.PRIMARY_ACTION_MODULE_NAME: replacement}
         )
         changed = verify_archive_delta(
             backup_root / paths["code"].relative_to(stage_root), paths["code"]
         )
+        with zipfile.ZipFile(paths["code"]) as archive:
+            if archive.read(fitting.PRIMARY_ACTION_MODULE_NAME) != replacement:
+                raise stage.FrontierWindowsError("NPC HUD patch failed verification")
         stage.refresh_manifest_atomic(paths["manifest"], stage_root, profile)
         for path in (paths["code"], paths["manifest"]):
             marker["currentHashes"][path.relative_to(stage_root).as_posix()] = (
                 stage.sha256_file(path)
             )
-        marker["npcInteractionPatchBackup"] = str(backup_root)
-        marker["preNpcInteractionHashes"] = original_hashes
+        marker["npcPrimaryActionPatchBackup"] = str(backup_root)
+        marker["preNpcPrimaryActionHashes"] = original_hashes
         stage.write_json_atomic(marker_path, marker)
-        verify_patched_menu_member(paths["code"], original_menu)
         if not stage.manifest_hashes_match(paths["manifest"], stage_root, profile):
             raise stage.FrontierWindowsError("Updated stage manifest does not verify")
-        if stage.sha256_file(paths["code"]) != marker["currentHashes"]["code.ccp"]:
-            raise stage.FrontierWindowsError("Updated stage marker does not verify")
+        if fitting.inspect_archive(paths["code"], 3502403)[0] != "patched":
+            raise stage.FrontierWindowsError("Updated fitting patch did not verify")
         return {
             "backup": str(backup_root),
             "changedMembers": changed,

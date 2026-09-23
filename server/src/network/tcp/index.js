@@ -200,6 +200,7 @@ module.exports = function (serviceManager) {
         const handshake = new EVEHandshake(socket);
         let handshakeComplete = false;
         let clientSession = null;
+        let disconnectHandled = false;
         let inboundCodecTail = Promise.resolve();
         let queuedCodecPackets = 0;
         let queuedCodecBytes = 0;
@@ -350,26 +351,23 @@ module.exports = function (serviceManager) {
                 }
             }
         });
-        socket.on("close", () => {
+        const cleanupDisconnectedSession = () => {
             finishTrackedLogin();
-            if (clientSession) {
+            if (!disconnectHandled && clientSession) {
+                disconnectHandled = true;
                 disconnectCharacterSession(clientSession, {
                     broadcast: true,
                     clearSession: true,
                 });
                 sessionRegistry.unregister(clientSession);
             }
+        };
+        socket.on("close", () => {
+            cleanupDisconnectedSession();
             logInfo(`connection closed: ${socket.remoteAddress}:${socket.remotePort}`);
         });
         socket.on("error", (err) => {
-            finishTrackedLogin();
-            if (clientSession) {
-                disconnectCharacterSession(clientSession, {
-                    broadcast: true,
-                    clearSession: true,
-                });
-                sessionRegistry.unregister(clientSession);
-            }
+            cleanupDisconnectedSession();
             log.err(`[TCP] socket error: ${err.message}`);
         });
     })

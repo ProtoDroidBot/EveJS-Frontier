@@ -2,7 +2,7 @@
 
 This document preserves the implementation plan for durable autonomous NPCs. The phases are deliberately ordered so that equipment custody, resource production, construction, signal-driven infrastructure recovery, reinforcement dispatch, and inter-system movement cannot duplicate identities, items, resources, or blockchain transactions after a server restart or crash.
 
-Status snapshot: 2026-09-22.
+Status snapshot: 2026-09-23.
 
 ## Implementation status
 
@@ -14,13 +14,13 @@ Status terms in this document mean:
 
 | Phase | Status | Implemented now | Remaining work |
 | --- | --- | --- | --- |
-| 0 — crash-safe persistence | **Complete** | Behavior-tree primitives, durable jobs and reservations, incarnation-bound spawn leases, operation journals, reconciliation/quarantine, checkpoints, verified snapshots, durable assembly-signal cursors, atomic signal-to-job checkpointing, truncated-journal resnapshot recovery, and recovery tests. | No remaining Phase 0 foundation work. Domain policy that converts network-node states into specific logistics/capacity jobs belongs to Phases 3 and 6. |
+| 0 — crash-safe persistence | **In progress** | Behavior-tree primitives, durable jobs and reservations, incarnation-bound spawn leases, operation journals, reconciliation/quarantine, checkpoints, verified snapshots, durable assembly-signal cursors, atomic signal-to-job checkpointing, truncated-journal resnapshot recovery, and recovery tests. | Split piloted category-6 NPC ships from unpiloted category-11 faction entities without losing the latter's durable world state. Domain policy that converts network-node states into specific logistics/capacity jobs belongs to Phases 3 and 6. |
 | 1 — fitting and equipment custody | **Complete** | Atomic player/faction item custody, player-compatible hull fitting, NPC-specific restrictions, semantic module roles, charge handling, destruction policy, restart recovery, server-authoritative trust/locality RPCs, trusted-only context action, and a player-facing NPC fitting window. | Expand authored NPC fitting profiles and replace/augment the narrow same-faction or explicitly authored trust rule when the broader NPC trust behavior is implemented. |
 | 2 — resource work | **Complete** | Durable resource jobs, target reservations, lens-authoritative asteroid/Crude-Rift work, mining/crude/gas/ice tool selection, group-5133 salvageable-wreckage mining, canonical cargo, delivery/crash recovery, threat suspension, Phase 1 tool provisioning, and correct durable-NPC identity propagation into legacy module activation. | Register authoritative Salvager, recovery, and other resource adapters; extend Phase 3's signal-created fuel maintenance job into full acquisition/hauling when the authorized NPC has no compatible fuel in cargo. |
 | 3 — assemblies and access | **Complete** | NPC construction sites, placement clearance, material fulfilment, atomic realization, durable network-node journal consumption and fuel jobs, approval-gated load shedding, player/NPC assembly access and client controls, verified cross-owner custody, crash-safe multi-lane Industry execution, lane-aware Sui storage, and upgrade-safe split-package tooling. The contracts are active and synchronized on Localnet chain `01e3bf5c`. | No remaining Phase 3 implementation work. Repeat synchronization and live verification after every Localnet reset or package change; a dedicated submitted feature-transaction smoke remains deployment hardening rather than an implementation dependency. |
 | 4 — faction backup | **Complete** | Durable incidents, deduplication/cooldowns, fitting-aware responder selection, interruption/resume, same-system dispatch, cross-system job handoff, and restart recovery. | Optional player incident/dispatch UI remains planned. |
 | 5 — cross-system travel | **In progress** | Shared route graph/executor for active or repairable static gates, reciprocal Smart Gates, one-way catapults, and fitted jump drives; network-node and live gate revalidation; cross-system support/resource/construction/industry/maintenance jobs; shared warp fuel/capacitor preflight; physical cargo-to-tank loading; jump fuel/heat/fatigue debit; durable transfer and recovery journal retaining NPC identity and cargo. | Faction fuel acquisition/hauling and initial provisioning, proactive route margin, explicit respawn fuel policy, signal-revision checkpoint/scored routing, and live-world end-to-end travel verification. |
-| 6 — integrated faction autonomy | **Planning** | Its persistence, fitting, resource, construction, access, support, signal, and travel prerequisites are defined or partially implemented in Phases 0–5. | Implement the faction planner, strategic job arbitration, faction-level signal cursors, budget reservation, infrastructure/resource goals, route replanning, and the end-to-end autonomy scenario. |
+| 6 — integrated faction autonomy | **Planning** | Its persistence, fitting, resource, construction, access, support, signal, and travel prerequisites are defined or partially implemented in Phases 0–5. Opt-in decision-tree shapes cover pilot work, scouting, transit, and support without live registration. | Implement the faction planner, strategic job arbitration, faction site-spawn response, pilot ship spawning/boarding/swapping, guarded fuel-stranding and self-destruct policy, mining/crude/construction/industry/hauling/refit/refuel/scouting/transit action adapters, future on-chain commands and receipts, faction-level signal cursors, budget reservation, infrastructure/resource goals, route replanning, and the end-to-end autonomy scenario. |
 
 The status above describes repository implementation. Optional client UI exists where a phase explicitly says so; Phase 1 includes NPC fitting and Phase 3 includes assembly-access management. Contract source completion is distinct from chain activation. A Localnet reset, package upgrade, or new base-world deployment requires the generated manifest to be synchronized and verified again before its package IDs are treated as live.
 
@@ -117,7 +117,7 @@ Signals translate into behavior events and durable jobs rather than executing in
 
 ## Phase 0 — crash-safe behavior and persistence foundation
 
-> **Status: Complete.** Phase 3 and Phase 6 can consume assembly journals through the durable Phase 0 cursor/reconciliation API without adding another persistence model.
+> **Status: In progress for NPC classification.** The crash-safe foundation is implemented, and Phase 3 and Phase 6 can consume assembly journals through its durable cursor/reconciliation API. The piloted-ship versus unpiloted-faction-entity boundary below remains to be implemented.
 
 Phase 0 is the mandatory dependency for every later phase. Its implementation lives primarily in:
 
@@ -143,12 +143,18 @@ Manual orders, active threats, assistance, and special Drifter behavior remain h
 
 NPC data is divided into four classes:
 
-1. Durable identity: NPC character ID, identity slot, faction key, faction wallet, Sui profile objects, incarnation, and respawn policy.
+1. Durable identity: for a piloted ship, NPC character ID, identity slot, faction key, faction wallet, Sui profile objects, incarnation, and respawn policy; for an unpiloted faction entity, a durable world-entity identity and faction association without a pilot record.
 2. Durable simulation state: system, position checkpoint, damage, fitting, cargo, ammunition, fuel, job, and reservations.
 3. Recoverable operations: spawn, destruction, construction, cargo custody, fitting, travel, and pending Sui transactions.
 4. Ephemeral runtime state: target locks, active effects, steering velocity, scans, event inboxes, and blackboard caches.
 
-Jobs and leases bind to `npcCharacterID` and `incarnation`. `entityID` remains the current physical ship identity. A delayed action from an earlier incarnation cannot control a respawned NPC.
+Current pilot jobs and leases bind to `npcCharacterID` and `incarnation`. `entityID` remains the current physical object identity. A delayed action from an earlier incarnation cannot control a respawned pilot ship. Entity-only work will need an equivalent generation/revision guard tied to its durable world identity, not a fabricated pilot character.
+
+### 0B.1. Piloted ships versus unpiloted faction entities — pending runtime split
+
+An in-game NPC pilot belongs to an SDE **Ship** (`categoryID = 6`) and may have a pilot identity/character, profile, incarnation, and ship fitting. A faction object whose SDE category is **Entity** (`categoryID = 11`) is not a pilot merely because its model or name resembles a ship. It must not acquire an NPC pilot ledger entry, NPC character ID, or pilot Sui Character/PlayerProfile/NpcProfile by default. It must still retain its own persistent world state: stable entity identity, faction, system and position, condition, modules/fittings and cargo where applicable, controller/behavior state, and restart/crash recovery. Classification should use the authoritative physical type's SDE category, not its display or slim category, and should fail safely if that type cannot be resolved.
+
+This is a requirement, **not current behavior**. `nativeNpcService.ts` calls `ensureNpcPilotIdentity` during spawn and materialization without a category guard; existing category-11 NPCs can therefore already have pilot records. The implementation must separate pilot-bound leases, jobs, access principals, and on-chain provisioning from durable entity persistence, then migrate or quarantine pre-existing category-11 pilot bindings without dropping their entity, equipment, or world-state records. Entity-only faction actors should retain faction IFF and whichever non-pilot interactions their capability policy permits. Do not delete an existing pilot record merely because a category-11 type is seen at startup.
 
 Faction start geography is now configured as `startingRegion: { regionID, solarSystemIDs }` in `npc-factions.config.json` and copied into split faction policy files. When a faction has a `regionID`, the respawn-seed selector chooses randomly among all known solar systems in that region. Only if the region has no known systems does it use `solarSystemIDs` as a fallback; the shipped numeric factions seed that fallback from their SDE home-system fields. Factions without reliable geography have neither value. These are starting seeds, not durable active territory: restart recovery still restores the persisted NPC system/character state, and later migration/respawn work must record moved territory separately rather than rewriting the original start region. Some EO-era faction IDs have incomplete Frontier NPC data, so an SDE home-system fallback does not imply spawn-ready profiles.
 
@@ -212,7 +218,7 @@ npcCharacterID + incarnation + entityID + server generation
 
 Repeated materialization of the same entity reuses its lease. A competing entity is rejected. Leases never survive a server generation boundary; startup recovery clears the old generation and reconciles identity records before issuing new leases.
 
-Exactly one active physical ship may represent a persistent NPC identity. Duplicate identity records are quarantined, with the pilot identity ledger's `activeEntityID` preferred as the canonical record.
+Exactly one active physical ship may represent a persistent NPC pilot identity. Duplicate pilot identity records are quarantined, with the pilot identity ledger's `activeEntityID` preferred as the canonical record. Unpiloted faction entities need equivalent duplicate detection by durable world-entity identity without consulting or creating a pilot ledger entry.
 
 ### 0F. Operation journal and write ordering
 
@@ -252,7 +258,7 @@ Before durable NPCs resume, recovery:
 
 Invalid records are retained as evidence and excluded from materialization. Recovery does not silently discard an ambiguous identity or invent replacement inventory.
 
-Native NPC spawn sources now share one durable lifecycle, including belt, dungeon, command, generated, and authored startup spawns. Entity IDs, fittings/cargo, condition, movement, behavior overrides, and manual orders are checkpointed and restored. A disabled startup rule leaves its durable NPC dormant in storage; re-enabling it can restore that same member. Legacy runtime-only NPCs from before this change cannot be recovered retroactively if they were never written to disk.
+Native NPC spawn sources now share one durable lifecycle, including belt, dungeon, command, generated, and authored startup spawns. Entity IDs, fittings/cargo, condition, movement, behavior overrides, and manual orders are checkpointed and restored. A disabled startup rule leaves its durable NPC dormant in storage; re-enabling it can restore that same member. Legacy runtime-only NPCs from before this change cannot be recovered retroactively if they were never written to disk. The persistence mechanism exists for category-11 faction entities, but its current pilot allocation must be removed through the pending classification/migration work above.
 
 ### 0H. Checkpoints, shutdown, and snapshots
 
@@ -288,6 +294,7 @@ Tests must cover:
 - Signal replay deduplication, monotonic cursor advancement, and `truncated` journal resnapshot recovery.
 - A crash between signal observation and job creation must produce exactly one durable maintenance/logistics job after recovery.
 - Existing NPC identity, combat, mining, and startup-rule regressions.
+- Category-6 NPC ships acquire pilot identities and retain their ship state after restart; category-11 faction entities never acquire new pilot entries yet retain the same entity ID, faction, equipment, condition, and controller state after restart. Existing category-11 pilot bindings are handled by an explicit migration or quarantine test.
 
 Crash injection should terminate the process after every durable operation checkpoint. After restart there must be one active NPC per identity, stable Sui profile IDs, conserved inventory, no duplicated transaction, and a resumable or safely compensated job.
 
@@ -307,7 +314,7 @@ Every custody change uses a Phase 0 operation journal so a crash cannot place on
 
 ### 1A. Player-compatible and NPC-specific hulls
 
-NPC ships use ordinary player fitting rules wherever the physical or presentation hull resolves to a player ship type. A spawn may set `playerFittingHullTypeID` explicitly when its NPC inventory type is only a presentation shell for a player-compatible hull. Durable native NPC ships with a category-11 SDE entity hull (such as the Osa Frigate) can also expose their physical type as the fitting host when no player-hull mapping or authored slot profile exists; the same live fitting validator still decides which modules, slots, and resources are actually valid. Standard fitting validation enforces slot family, hull type/group restrictions, hardpoints, calibration, CPU, and power. NPC fitting intentionally skips player-character skill prerequisites because capability and faction policy are the NPC authorization boundary.
+Piloted NPC ships use ordinary player fitting rules wherever their category-6 physical hull resolves to a player ship type. A spawn may set `playerFittingHullTypeID` explicitly when its NPC inventory type is only a presentation shell for a player-compatible hull. A category-11 SDE entity hull (such as the Osa Frigate) may still expose its physical type as a fitting host when no player-hull mapping or authored slot profile exists; that fitting capability does **not** make it a piloted ship or authorize creation of a pilot entry. The same live fitting validator decides which modules, slots, and resources are valid. Standard fitting validation enforces slot family, hull type/group restrictions, hardpoints, calibration, CPU, and power. NPC fitting intentionally skips player-character skill prerequisites because capability and faction policy are the NPC authorization boundary.
 
 NPC ships may also have their own fitting profiles and restrictions. A durable entity stores `npcFittingProfileID` and `npcFittingRestrictions`. The current profile fields are:
 
@@ -345,11 +352,19 @@ NPC removal settles externally owned equipment before deleting the entity. The d
 
 ### 1C. Client boundary
 
-Server jobs, admin tooling, and NPC AI still use the custody service directly. The build-3502403 right-click celestial menu adds ordinary, non-GM `Interact` and, when fitting trust is granted, `Modify Fittings` entries beside the native actions. The Interact keyboard action routes through the HUD primary-action resolver into the same small NPC interaction window. The server's `CanInteractNpc` probe requires a live NPC within 5 km and a positive authenticated faction relationship, fitting trust, or matching IFF; the window only shows `Modify Fittings` when fitting trust is separately granted. `OpenNpcFitting` performs a second state read before constructing the fitting window. Refresh, fit, unfit, charge-load, and charge-unload each re-evaluate identity, locality, 5 km range, and trust. If trust is revoked or cannot be revalidated, the open fitting window fails closed on its next refresh or action.
+Server jobs, admin tooling, and NPC AI still use the custody service directly. The build-3502403 right-click celestial menu adds ordinary, non-GM `Interact` and, when fitting trust is granted, `Modify Fittings` entries beside the native actions for category-6 NPC ships with a pilot. The Interact keyboard action routes through the HUD primary-action resolver into the same small NPC interaction window. The server's player RPCs require a category-6 physical ship with an NPC character whose pilot ledger entry is actively bound to that entity; they fail closed if the ledger is missing, stale, or unavailable. Category-11 faction entities retain their equipment, behavior, and persistence, but expose neither the player NPC fitting window nor the player NPC Orders panel. For eligible ships, `CanInteractNpc` also requires 5 km locality and a positive authenticated faction relationship, fitting trust, or matching IFF; the window only shows `Modify Fittings` when fitting trust is separately granted. `OpenNpcFitting` performs a second state read before constructing the fitting window. Refresh, fit, unfit, charge-load, and charge-unload each re-evaluate pilot binding, locality, 5 km range, and trust. If the pilot binding or trust is revoked or cannot be revalidated, the open fitting window fails closed on its next refresh or action.
+
+The trusted fitting probe and state identify the hull's `creation` or `legacy` fitting path from its Creation template. A legacy NPC uses a target-bound controller to seed the built-in fitting window's simulation with that NPC's exact fit. Its Apply to NPC action checks the live target and commits module and charge changes through `npcFittingMgr`, where pilot binding, trust, range, and item ownership are checked again. If the native simulation cannot represent the initial fit, the existing NPC RPC window remains available and reports the native failure. Creation management still loads and commits the session's active ship; a separate NPC Creation draft and layout bridge is required before a modular NPC can use that built-in view.
 
 The interaction window now has a preliminary NPC Orders panel. The primary Interact key opens that panel; a player can use an active target or enter a target entity ID, then request Approach, Keep at Range, Orbit, or Lock Target, with Resume Autonomy to clear the manual order. `npcFittingMgr.IssueNpcOrder` accepts only these command types, rechecks the authenticated commander's trust and 5 km proximity to the durable NPC, and validates that the target is live in the same local scene. It constructs a sanitized order with weapons disabled and a server-authored `commandSource` identifying the player; the existing `npcService.issueManualOrder` / behavior loop performs movement and lock acquisition. Navigation orders can follow a friendly ship without making it a combat target. These orders are WIP and not a combat-command UI. Future faction-directed and blockchain-originated orders should enter through the same server-side order executor after their own source-specific authentication, replay protection, priority, and revocation rules; the client RPC does not grant those authorities.
 
+### 1D. Planned NPC pilot fitting and ordering authority
+
+NPC pilots fitting or ordering other NPC pilots, and NPC pilots fitting or ordering unpiloted faction entities, need a separate server-side actor path. The acting pilot must be resolved from its active category-6 ship and ledger lease, with faction authority, local presence, equipment custody, and target relationship checked at execution time. A piloted target can use its pilot identity and faction policy; an unpiloted category-11 target needs entity-specific capability and authorization rules without inventing a pilot identity. The player `npcFittingMgr` RPC must not accept a client-supplied NPC actor or reuse player trust as NPC authority. The eventual executor should distinguish player, pilot, and faction command sources, define order priority and revocation against autonomous behavior, and journal custody and order changes across restarts and pilot ship swaps. Tests should cover pilot-to-pilot and pilot-to-entity actions, enemy and stale leases, missing target capability, cargo ownership, duplicate commands, and recovery after each durable step. These NPC-initiated flows are planned; the current change gates only player access.
+
 Client staging note (2026-09-23): the live staged build-3502403 archive, manifest, and stage marker were reconciled with a verified backup. Only the NPC menu and primary-action bytecode members changed; unrelated Creation members retained their exact pre-reconciliation payloads. The normal stage verifier reports all code adapters patched and the stage valid. Restart the client to load the new order UI.
+
+The later NPC legacy target-controller upgrade changed only `eve/client/script/ui/eveCommands.pyc` inside the staged archive. The stage transaction refreshed the manifest and marker, and the verifier reports a valid build. A client restart is needed to load this fitting controller.
 
 The primary-action click callback accepts HUD-supplied event arguments. The dedicated NPC Orders window opens even if its server probe is denied or unavailable, showing the reason and a Retry Interaction button while hiding privileged controls. A regular right-click Interact entry for native NPC IDs opens the same window; fitting and order actions remain gated by their respective live server permissions. This prevents a visible Interact key from failing silently during server/client version mismatches.
 
@@ -714,6 +729,103 @@ Faction planners issue strategic jobs rather than directly manipulating ships. E
 9. Select a jump drive when it is faster or no usable gate route exists.
 10. Request the minimum assembly capabilities required by a blocked job, and share bounded access with assigned players, NPCs, tribes, or factions when policy permits.
 11. Replan when fuel, power, access, grant expiry/revocation, threat, or assembly state changes.
+12. React to a new site belonging to the faction: validate the site's current faction and lifecycle state, deduplicate its spawn event, choose eligible NPC pilots and roles, and dispatch them to defend, exploit, build, or maintain the site according to faction policy.
+
+### Pilot and ship lifecycle — planned
+
+A category-6 NPC pilot is a persistent character distinct from the ship it currently occupies. Phase 6 should let a faction assign that pilot to a newly spawned faction site, spawn the pilot in an authorized category-6 ship when needed, board another eligible ship, or swap ships as a player can. Ship changes must use the authoritative player-compatible boarding, ownership, inventory, fitting, and space-transition rules rather than rewriting the pilot's `entityID` or copying modules/cargo. Persist pilot-to-ship occupancy, abandoned or replacement hulls, jobs, orders, and custody across restart/crash boundaries; prevent one pilot occupying two ships or two pilots boarding the same seat. The pilot keeps its character/profile identity through ship changes, while each ship keeps its own physical entity and item identity.
+
+For GM testing, `/spawnpilot <Ship typeID> [count]` creates an unaffiliated NPC pilot in a new physical category-6 ship; `/spawnosapilot <Ship typeID> [count]` uses the Osa faction key, corporation, and legacy faction ID from the Frontier dungeon configuration. Both commands generate a passive, empty fitting profile and grant the invoking character fitting trust when their character ID is available. Command-spawned pilots stay at their spawn position instead of using the global passive roaming and warp policy. Session command spawns discard a dungeon instance inherited from the invoking ship when that instance no longer resolves, so their balls remain visible beside the ship. The default faction hull membership includes category 6 for every faction. In build 3502403 this covers 583 ship types, including all three Creation template hulls; the existing Entity hull policy remains available for dungeon NPCs. `/spawn <NPC typeID> [count]` creates no pilot, and that decision survives reload. Autonomous faction ship assignment and boarding/swapping existing ship items remain Phase 6 work.
+
+A stranded pilot should first request faction assistance or refueling, with a durable deadline and reassessment of reachable help, recoverable fuel, and available escape/boarding options. Self-destruct is a last-resort, explicitly authorized faction-policy action only after help cannot arrive in time; it must use the ordinary ship-destruction and equipment-loss path, journal the decision and result once, and leave the pilot's identity available for the configured respawn policy. No current low-fuel condition alone authorizes self-destruction. Category-11 faction entities remain durable unpiloted world objects and do not gain a pilot or player-style boarding lifecycle through site response.
+
+Acceptance tests should cover duplicate/replayed site-spawn events, site ownership changes before dispatch, no eligible pilot or hull, boarding/swap custody and occupancy conflicts, restart during a ship transition, assistance arriving before the stranding deadline, and a policy-authorized self-destruct/recovery without duplicate hulls, inventory, or pilot profiles.
+
+### Candidate decision-tree scaffolds — not live behavior
+
+`server/src/space/npc/npcDecisionTreeScaffolds.ts` defines ten opt-in tree shapes using the Phase 0 selector/sequence/status primitives. It does not register or tick them in `npcBehaviorLoop.ts`. Compilation requires an explicit binding for every guard and action; a missing binding throws, a guard passes only on an explicit `true`, and every action returns the same Phase 0 behavior result (`success`, `failure`, `running`, or `suspended`, with a checkpoint/wake when needed). The behavior primitives may be injected by another host, and the catalog has no live-runtime import until compilation. These names are extension points, not claims that site dispatch, boarding, self-destruct, scouting, or specialist work branches are live. Live adapters must obtain authoritative state and use the existing durable job, custody, travel, and destruction services rather than mutating the blackboard as source of truth.
+
+```text
+pilotPriority (category-6 pilot only)
+  emergency → authorized manual order → confirmed combat threat
+  → fuel stranding → assigned faction site → pilotWork
+  → unexpected warp-arrival discovery → patrol/idle
+
+pilotWork (category-6 pilot with a ready durable job)
+  resource gathering → pilotResourceGathering
+  structure deployment → player placement rules + construction tool/access
+    → journal site placement → fulfil materials → realize structure
+  manufacturing → authorized Industry lane + inputs/access → journal production
+  resource hauling → valid cargo custody + route → journal load/travel/delivery
+  ship refit → fitting trust + compatible items → journal fitting custody
+  ship swap → approved transition → pilotShipLifecycle
+  refuel friendly ship → compatible locked/ranged Creation Transfuser
+    | authorized drop of physical fuel items for recipient pickup
+  scout system → pilotScouting
+  cross-system travel → pilotSystemTransit
+  other registered durable job | suspend unclassified job
+
+pilotResourceGathering (due resource job; small checkpointed steps)
+  reserve source → choose one extraction adapter:
+    asteroid or group-5133 compatible wreckage + matching mining tool/charge
+    | Crude Rift + Crude Extractor/Crude Lens
+  → checkpoint canonical yield/cargo → deliver to authorized storage
+  → release stored resources for a later faction/player-like use
+  missing source/tool → suspend without creating yield or storage
+
+factionSiteResponse (faction planner, not a ship tick)
+  verify new site + current faction ownership + open durable response
+  → reserve durable response
+  → threatened: defenders | infrastructure: builders | resources: workers | no work
+
+pilotShipLifecycle (category-6 pilot only)
+  approved ship swap → continue valid occupied ship
+  → board eligible existing ship → spawn and board authorized ship → wait
+
+pilotStranding (category-6 pilot only)
+  recover/load fuel → request or await timely assistance → safe escape boarding
+  → deadline expired AND aid unavailable AND faction policy authorizes:
+     revalidate and journal self-destruct
+  → otherwise hold and reassess
+
+pilotScouting (category-6 pilot, due scouting job)
+  at authorized destination → select the authenticated scouting intent:
+    resources + resource sensors → journal resource survey
+    | targets + target sensors → journal target survey
+    | general + suitable sensors → journal general observations
+  → stage bounded faction intel (not public location publication)
+  different system → pilotSystemTransit
+  missing intent, sensors, destination, or route → suspend until relevant wake
+
+pilotDiscovery (category-6 pilot, queued warp-arrival event)
+  safe to observe → checkpoint unexpected discovery → stage faction intel
+    → acknowledge event once
+  unsafe → defer without losing the event
+
+pilotSystemTransit (category-6 pilot, due transit job)
+  validate authorized destination; if already there, complete
+  otherwise select/revalidate next edge from the shared route graph:
+    jump drive + fitted/fuel/cooldown/range preflight
+    | active or maintainable static stargate
+    | reciprocal powered Smart Gate with current access
+    | powered one-way catapult with valid destination
+  traverse with Phase 5's durable transition journal; invalid edge → replan
+
+factionEntity (durable category-11 entity with no pilot)
+  protect entity → authorized entity order → entity-specific durable job → idle
+```
+
+The pilot and faction-entity roots are mutually exclusive by authoritative SDE category and pilot binding. A site response remains open across retries and `reserveSiteResponse` must be idempotent; a replayed event cannot create a second response. The site planner may assign several roles over successive durable planning passes; the scaffold selects one priority branch per tick, so the eventual adapter must record completed role assignments and re-evaluate the site. `RUNNING`/`SUSPENDED` leaf results stop lower-priority branches; durable wakeups belong in jobs and event journals, not a busy per-tick poll. Before wiring any tree live, implement the Phase 0 category split, define guard sources and action authorization, add telemetry for selected/blocked branches, and test interruption/recovery at every state-changing action.
+
+The resource tree is a short composition of source-specific extraction and shared custody/storage steps, not a separate monolithic decision tree for each material. The mining readiness guard must use the resource executor's target/module/charge compatibility rules: basic legacy miners may not need a lens, crystal-capable miners need a target-valid crystal, and Cutting Laser/Needle need a loaded list-612 lens. Group-5133 salvageable wreckage that is compatible with the asteroid/mining loop follows that same guarded adapter, with its own authored yield. Crude Rifts use a different outcome and require a Crude Extractor with a loaded list-601 Crude Lens; ordinary mining equipment must not pass that guard. Both sources produce canonical cargo, which is then gathered, hauled/stored, and consumed through the same ownership and inventory rules players use. An extraction step that is still `RUNNING` cannot advance to yield, storage, or use.
+
+The faction planner chains these bounded steps into a goal instead of hiding an entire campaign inside one behavior leaf. Example chains are `gather → store → haul → fulfil construction site → realize structure`, `gather → store → haul → manufacture → collect output`, and `gather fuel → store → haul → transfuse or drop for pickup → recipient loads tank`. Each leaf performs one authoritative step and returns `RUNNING`/`SUSPENDED` with a durable checkpoint until that step is complete; retrying it must be idempotent. The scaffold checks completed reservation, extraction, cargo, delivery, and release checkpoints before repeating each step, because the basic sequence primitive restarts at its first child on every wake. Those guards must read job/incarnation/source-bound durable records, never transient blackboard flags; a crash during storage cannot trigger a second extraction. A structure job places a construction site under player placement and clearance rules and may realize it only after material fulfilment. Manufacturing must recheck lane access and inputs. Hauling and refitting must retain canonical item custody. The refuel branch targets a friendly ship that needs fuel; a Creation Transfuser (type 95754) must pass its existing fitted/online, lock, range, source-fuel, and target-tank preflight. Dropping fuel items is an alternate physical delivery for authorized pickup/loading by the recipient, **not** a direct tank refill. Missing tools, permissions, targets, fuel, or materials suspend/replan the specific job; an unknown job does not bypass these guards through a generic executor.
+
+Deliberate scouting is a durable assignment with an authorized system/site objective and an explicit intent: find resources, find targets, or perform a general survey. Each intent uses a compatible bounded sensor action and records a typed observation before staging faction-scoped intel. An NPC can also discover something unexpectedly when a warp completes; that path starts from a deduplicated warp-arrival event rather than manufacturing a scouting job or scanning every location continuously. It defers observation while unsafe and acknowledges the event only after a durable observation and faction staging checkpoint. Neither path publishes a location publicly, reveals private transponder preimages, or claims a stale observation as current. The discovery record can later feed a faction goal or site-response job after authorization and freshness checks. Transit does not hard-code a preferred method: the Phase 5 route planner chooses among currently usable typed edges (including one-way catapults), and the scaffold dispatches the selected edge back through `npcTravelService` rather than implementing another movement or fuel system. The adapter must revalidate gate/link/node power, access, warp capacitor and fuel, jump drive fitting/fatigue, and destination immediately before the journaled crossing. Failed edges suspend/replan; a signal after source dematerialization is handled by the transition journal, never by cancelling the NPC mid-transfer.
+
+Performance and portability are constraints on every future adapter. Compile each tree once per behavior profile or adapter set, not once per NPC tick. Evaluate resource, assigned scouting, discovery, and transit chains only when a durable job's `nextWakeAtMs` is due, a deduplicated warp-arrival event is queued, or a relevant source, site, route, fuel, threat, or network-node revision wakes it; the scaffold has explicit wake guards. Keep the faction site-spawn cursor and route/assembly snapshot shared at faction or system scope, with bounded invalidation rather than one full galaxy scan per pilot. Bound sensor results and route-planning work per scheduler slice, checkpoint meaningful transitions instead of each simulation tick, and reuse the existing NPC behavior tick budget and action locks. A suspended tree must yield to the scheduler without polling. All local and future chain-backed leaves use the same injected behavior primitive/context/result contract; a chain receipt simply keeps its leaf `SUSPENDED` until the durable outcome is verified, rather than adding a second behavior engine. Injected primitives keep the catalog reusable in tests or another host without importing the live persistence stack merely to inspect tree definitions.
+
+These work actions are intended to become on-chain-addressable faction/NPC actions later. A future adapter should accept a signed or otherwise authorized faction/player command, bind it to the durable NPC identity or unpiloted entity principal as appropriate, validate current world state and capability, and journal a unique intent/transaction/receipt with replay protection and revocation checks. Mining yields, item custody, ship changes, construction, manufacturing, hauling, fuel transfer, scouting intel, and cross-system arrival should each have an explicit settlement boundary before claiming chain completion; a chain event alone cannot fabricate physical cargo, fuel, intel, travel, or a completed structure. The current server remains authoritative for movement and per-tick targeting, while chain commands and receipts can authorize and attest durable actions. No new contract or chain write is part of this scaffold.
 
 The faction planner consumes signals once per faction/command-node cursor rather than once per NPC. It converts a transition into a bounded durable job and lets normal NPC candidate selection assign the worker. Suggested urgency and lanes are:
 
@@ -742,5 +854,5 @@ The combined system is complete when a persistent faction NPC can:
 9. Travel through a linked smart gate or one-way catapult, or use a compatible jump drive.
 10. Restart or crash at every durable boundary without duplicating identities, equipment, cargo, signal-derived jobs, assemblies, travel operations, or Sui transactions.
 11. Recover from a truncated signal journal by resnapshotting current status rather than replaying an incomplete history.
-12. Respawn with the same persistent NPC and Sui profile identities while advancing its incarnation and applying the configured equipment-loss policy.
+12. Respawn a category-6 NPC pilot with the same persistent character and Sui profile identities while advancing its incarnation and applying the configured equipment-loss policy; separately restore a category-11 faction entity's world identity and state without creating a pilot profile.
 13. Request an assembly's minimum required access, receive a bounded direct or group grant, expose only the permitted GUI/actions, and stop or replan safely when that grant is revoked or expires.

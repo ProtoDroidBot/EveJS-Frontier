@@ -52,6 +52,7 @@ const DEFAULT_NPC_HARDWARE_POLICY = Object.freeze({
 });
 const DEFAULT_NPC_TYPE_MEMBERSHIP = Object.freeze({
   includedTypeIDs: Object.freeze([]),
+  includedCategoryIDs: Object.freeze([]),
   excludedTypeIDs: Object.freeze([]),
   sdeTypeListIDs: Object.freeze({
     hull: Object.freeze([]),
@@ -295,6 +296,12 @@ function normalizeTypeMembership(value, fieldName, fallback = DEFAULT_NPC_TYPE_M
   const includedTypeIDs = source.includedTypeIDs === undefined
     ? [...fallback.includedTypeIDs]
     : normalizeFactionIDList(source.includedTypeIDs, `${fieldName}.includedTypeIDs`);
+  const includedCategoryIDs = source.includedCategoryIDs === undefined
+    ? [...fallback.includedCategoryIDs]
+    : normalizeFactionIDList(source.includedCategoryIDs, `${fieldName}.includedCategoryIDs`);
+  if (includedCategoryIDs.some((categoryID) => categoryID !== 6)) {
+    throw new TypeError(`${fieldName}.includedCategoryIDs currently supports only Ship category 6`);
+  }
   const excludedTypeIDs = source.excludedTypeIDs === undefined
     ? [...fallback.excludedTypeIDs]
     : normalizeFactionIDList(source.excludedTypeIDs, `${fieldName}.excludedTypeIDs`);
@@ -349,7 +356,7 @@ function normalizeTypeMembership(value, fieldName, fallback = DEFAULT_NPC_TYPE_M
     }
     return { profileID, source: profileSource, match };
   });
-  return { includedTypeIDs, excludedTypeIDs, sdeTypeListIDs, typeListProfiles };
+  return { includedTypeIDs, includedCategoryIDs, excludedTypeIDs, sdeTypeListIDs, typeListProfiles };
 }
 
 function normalizeCharacterID(value, fieldName) {
@@ -1016,6 +1023,18 @@ function selectNpcFactionStartingSolarSystemID(sourceEntity, options: Record<str
   return systemIDs[Math.floor(sample * systemIDs.length)];
 }
 
+function isIncludedShipHull(membership, itemOrType) {
+  if (!membership?.includedCategoryIDs?.includes(6)) return false;
+  const typeID = toPositiveInt(
+    typeof itemOrType === "number" ? itemOrType : itemOrType?.typeID,
+    0,
+  );
+  if (!typeID) return false;
+  const { resolveItemByTypeID } = require("../services/inventory/itemTypeRegistry");
+  const itemType = resolveItemByTypeID(typeID);
+  return toPositiveInt(itemType && itemType.categoryID, 0) === 6;
+}
+
 function applyNpcFactionTypeListProfile(profile) {
   if (!profile || typeof profile !== "object") return profile;
   const configuredFaction = resolveConfiguredFaction(profile);
@@ -1035,14 +1054,16 @@ function applyNpcFactionTypeListProfile(profile) {
     ? membership.typeListProfiles.map((entry) => entry.profileID)
     : [];
   const included = typeID > 0 && (
-    membership.includedTypeIDs.includes(typeID) || appliedProfiles.length > 0
+    membership.includedTypeIDs.includes(typeID) ||
+    isIncludedShipHull(membership, typeID) ||
+    appliedProfiles.length > 0
   );
   return {
     ...cloneValue(profile),
     npcFactionConfigKey: configuredFaction.canonicalKey,
     npcFactionTypeListProfileIDs: appliedProfiles,
     npcFactionMembershipEligible: included && !excluded &&
-      matchesNpcFactionSdeTypeListPolicy(membership, "hull", typeID),
+      isNpcFactionSdeTypeAllowed(profile, "hull", typeID),
   };
 }
 
@@ -1055,9 +1076,16 @@ function matchesNpcFactionSdeTypeListPolicy(membership, lane, itemOrType, matche
 
 function isNpcFactionSdeTypeAllowed(sourceEntity, lane, itemOrType) {
   const faction = resolveConfiguredFaction(sourceEntity);
-  return !faction || matchesNpcFactionSdeTypeListPolicy(
-    faction.typeMembership, lane, itemOrType,
-  );
+  if (!faction) return true;
+  if (lane === "hull") {
+    const typeID = toPositiveInt(
+      typeof itemOrType === "number" ? itemOrType : itemOrType?.typeID,
+      0,
+    );
+    if (faction.typeMembership.excludedTypeIDs.includes(typeID)) return false;
+    if (isIncludedShipHull(faction.typeMembership, typeID)) return true;
+  }
+  return matchesNpcFactionSdeTypeListPolicy(faction.typeMembership, lane, itemOrType);
 }
 
 function resolveNpcFactionTypeProfiles(sourceEntity, npcProfiles: any[] = []) {
@@ -1083,10 +1111,13 @@ function resolveNpcFactionTypeProfiles(sourceEntity, npcProfiles: any[] = []) {
     }
     byTypeID.set(typeID, existing);
   }
-  for (const typeID of configuredFaction.typeMembership.includedTypeIDs) {
+  const categoryShipTypes = configuredFaction.typeMembership.includedCategoryIDs.includes(6)
+    ? require("../services/inventory/itemTypeRegistry").listShipTypeIDs()
+      .map((ship) => ship.typeID)
+    : [];
+  for (const typeID of [...configuredFaction.typeMembership.includedTypeIDs, ...categoryShipTypes]) {
     if (!byTypeID.has(typeID) &&
-        !configuredFaction.typeMembership.excludedTypeIDs.includes(typeID) &&
-        matchesNpcFactionSdeTypeListPolicy(configuredFaction.typeMembership, "hull", typeID)) {
+        isNpcFactionSdeTypeAllowed(sourceEntity, "hull", typeID)) {
       byTypeID.set(typeID, {
         typeID,
         profileIDs: [],

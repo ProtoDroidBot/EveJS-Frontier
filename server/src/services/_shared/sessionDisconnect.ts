@@ -345,7 +345,9 @@ function disconnectCharacterSession(session, options: Record<string, any> = {}) 
       // for logoff persistence to consume it against this character and ship.
       cancelSafeLogoff(session, { clearCompletion: false });
     });
-    attemptCleanup("logoff persistence", () => persistCharacterLogoffState(session));
+    if (characterID > 0) {
+      attemptCleanup("logoff persistence", () => persistCharacterLogoffState(session));
+    }
     // Checkpoint the daily login campaign so time played this session counts
     // toward the login milestone even when the client disconnects abruptly.
     attemptCleanup("login milestone checkpoint", () => {
@@ -380,7 +382,9 @@ function disconnectCharacterSession(session, options: Record<string, any> = {}) 
       attemptDroneBayRecovery: true,
       attemptFighterTubeRecovery: true,
     }));
-    attemptCleanup("trade cleanup", () => abortTradesForSession(session));
+    if (characterID > 0) {
+      attemptCleanup("trade cleanup", () => abortTradesForSession(session));
+    }
     attemptCleanup("chat cleanup", () => chatHub.unregisterSession(session));
     attemptCleanup("XMPP cleanup", () => unregisterCharacterSession(session));
   } finally {

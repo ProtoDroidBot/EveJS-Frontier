@@ -10,12 +10,25 @@ const {
   buildList,
   unwrapMarshalValue,
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
+const { isNpcCharacterID } = require(path.join(
+  __dirname, "../_shared/npcIdentityConstants",
+));
 const npcFitting = require(path.join(__dirname, "../../space/npc/npcFittingService"));
+const { getCreationTemplate } = require(path.join(
+  __dirname, "../frontier/creationStaticData",
+));
 const fittingTrust = require(path.join(__dirname, "../../space/npc/npcFittingTrust"));
 const npcFactionConfig = require(path.join(__dirname, "../../config/npcFactionConfig"));
 const nativeNpcStore = require(path.join(__dirname, "../../space/npc/nativeNpcStore"));
+const { getNpcPilotIdentityStore } = require(path.join(
+  __dirname, "../../space/npc/npcPilotIdentityStore",
+));
 const npcPersistence = require(path.join(__dirname, "../../space/npc/npcRuntimePersistence"));
 const npcService = require(path.join(__dirname, "../../space/npc/npcService"));
+const npcCreationDraft = require(path.join(__dirname, "./npcCreationDraft"));
+const { buildCreationSnapshot, buildCreationDiagnostic } = require(path.join(
+  __dirname, "../frontier/creationCompatibility",
+));
 const itemStore = require(path.join(__dirname, "../inventory/itemStore"));
 const characterState = require(path.join(__dirname, "../character/characterState"));
 const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
@@ -27,6 +40,8 @@ const NPC_FITTING_INTERACTION_RANGE_METERS = 5_000;
 const MAX_AVAILABLE_ITEMS = 200;
 const MODULE_CATEGORY_ID = 7;
 const CHARGE_CATEGORY_ID = 8;
+const SHIP_CATEGORY_ID = 6;
+const CREATION_HULL_TYPE_IDS = new Set([95276, 95735, 95968]);
 const NPC_ORDER_MAX_RANGE_METERS = 250_000;
 const NPC_PLAYER_ORDERS = Object.freeze({
   approach: { needsTarget: true, defaultRangeMeters: 0 },
@@ -47,7 +62,12 @@ const ERROR_MESSAGES = Object.freeze({
   NPC_ORDER_TARGET_INVALID: "Select a valid target in the NPC's current space scene.",
   NPC_ORDER_RANGE_INVALID: "Order range must be between 0 and 250,000 meters.",
   NPC_NOT_FOUND: "That NPC's behavior controller is unavailable.",
+  NPC_PILOT_REQUIRED: "Only an NPC ship with an active pilot accepts player fitting and orders.",
   NPC_CHARGE_ITEM_REQUIRED: "Select ammunition or fuel from your active ship's cargo hold.",
+  NPC_CREATION_TEMPLATE_MISSING: "That NPC ship has no Creation layout template.",
+  NPC_CREATION_STATE_STALE: "The NPC Creation layout needs to be reconciled with its equipment.",
+  NPC_CREATION_SEED_INVALID: "The NPC Creation layout template is invalid.",
+  NPC_CREATION_DRAFT_REQUIRED: "Use the Creation layout to change this NPC ship's modules.",
 });
 
 function toPositiveInt(value) {
@@ -216,6 +236,12 @@ function sanitizeAvailableItem(item, equipmentProfile = null) {
   return sanitized;
 }
 
+function resolveNpcFittingPath(fittingHull) {
+  const typeID = toPositiveInt(fittingHull && fittingHull.typeID);
+  return CREATION_HULL_TYPE_IDS.has(typeID) ||
+    (typeID > 0 && getCreationTemplate(typeID)) ? "creation" : "legacy";
+}
+
 function throwFittingError(result) {
   const reason = String(result && result.errorMsg || "NPC_FITTING_FAILED");
   throwWrappedUserError("CustomNotify", {
@@ -265,6 +291,7 @@ class NpcFittingMgrService extends BaseService {
   declare _itemStore: any;
   declare _authorizeInteraction: any;
   declare _orders: any;
+  declare _npcPilots: any;
 
   constructor(dependencies: Record<string, any> = {}) {
     super("npcFittingMgr");
@@ -273,11 +300,35 @@ class NpcFittingMgrService extends BaseService {
     this._itemStore = dependencies.itemStore || itemStore;
     this._authorizeInteraction = dependencies.authorizeInteraction || defaultAuthorizeInteraction;
     this._orders = dependencies.orders || npcService;
+    this._npcPilots = dependencies.npcPilots || getNpcPilotIdentityStore();
+  }
+
+  _publicPilot(entityRecord) {
+    if (toPositiveInt(entityRecord?.categoryID) !== SHIP_CATEGORY_ID) return null;
+    const characterID = toPositiveInt(entityRecord?.npcCharacterID);
+    if (!isNpcCharacterID(characterID)) return null;
+    try {
+      const pilot = this._npcPilots.get(characterID);
+      if (!pilot || toPositiveInt(pilot.characterID) !== characterID ||
+          toPositiveInt(pilot.activeEntityID) !==
+          toPositiveInt(entityRecord.entityID)) return null;
+      return {
+        characterID,
+        characterName: String(pilot.characterName || `NPC ${characterID}`),
+        factionID: toPositiveInt(pilot.factionID),
+      };
+    } catch (_) {
+      // Missing or unavailable pilot identity must fail closed for player RPCs.
+      return null;
+    }
   }
 
   _resolveContext(session, entityID) {
     const resolved = this._npcFitting.resolveNpcFittingEntity(entityID);
     if (!resolved || resolved.success !== true) return resolved;
+    if (!this._publicPilot(resolved.data.entityRecord)) {
+      return { success: false, errorMsg: "NPC_PILOT_REQUIRED" };
+    }
     const actor = buildActor(session);
     if (!actor.characterID) return { success: false, errorMsg: "NPC_FITTING_TRUST_REQUIRED" };
     const interaction = this._authorizeInteraction(session, resolved.data.entityRecord);
@@ -347,6 +398,8 @@ class NpcFittingMgrService extends BaseService {
       trustReason: trust.reason,
       entityID: toPositiveInt(entityRecord.entityID),
       npcCharacterID: toPositiveInt(entityRecord.npcCharacterID),
+      fittingPath: resolveNpcFittingPath(fittingHull),
+      pilot: this._publicPilot(entityRecord),
       displayName: String(
         entityRecord.itemName || entityRecord.name || fittingHull.itemName || "NPC ship",
       ),
@@ -354,6 +407,7 @@ class NpcFittingMgrService extends BaseService {
         typeID: toPositiveInt(fittingHull.typeID),
         physicalTypeID: toPositiveInt(fittingHull.npcPhysicalHullTypeID),
         fittingProfileID: fittingHull.npcFittingProfileID || null,
+        fittingPath: resolveNpcFittingPath(fittingHull),
         cpuOutput: Math.max(0, Number(restrictions.cpuOutput) || 0),
         powerOutput: Math.max(0, Number(restrictions.powerOutput) || 0),
         roleSlots: restrictions.roleSlots || {},
@@ -387,6 +441,9 @@ class NpcFittingMgrService extends BaseService {
           npcPersistence.isNpcEntityQuarantined(entityRecord.entityID))) {
       return { success: false, errorMsg: "NPC_DURABLE_ENTITY_NOT_FOUND" };
     }
+    if (!this._publicPilot(entityRecord)) {
+      return { success: false, errorMsg: "NPC_PILOT_REQUIRED" };
+    }
     const actor = buildActor(session);
     if (!actor.characterID) return { success: false, errorMsg: "NPC_FITTING_TRUST_REQUIRED" };
     const interaction = this._authorizeInteraction(session, entityRecord);
@@ -419,12 +476,15 @@ class NpcFittingMgrService extends BaseService {
       canModifyFittings: false,
       entityID: toPositiveInt(entityID),
       reason,
+      pilot: entityRecord ? this._publicPilot(entityRecord) : null,
     });
     if (!entityRecord ||
         (entityRecord.transient !== true &&
           npcPersistence.isNpcEntityQuarantined(entityRecord.entityID))) {
       return deny("NPC_DURABLE_ENTITY_NOT_FOUND");
     }
+    const pilot = this._publicPilot(entityRecord);
+    if (!pilot) return deny("NPC_PILOT_REQUIRED");
     const actor = buildActor(session);
     if (!actor.characterID) return deny("NPC_FITTING_TRUST_REQUIRED");
     const interaction = this._authorizeInteraction(session, entityRecord);
@@ -448,6 +508,7 @@ class NpcFittingMgrService extends BaseService {
       entityID: toPositiveInt(entityRecord.entityID),
       actorShipEntityID: toPositiveInt(scope.shipID),
       displayName: String(entityRecord.itemName || entityRecord.name || "NPC ship"),
+      pilot,
     });
   }
 
@@ -498,6 +559,7 @@ class NpcFittingMgrService extends BaseService {
     return toMarshalValue({
       trusted: true,
       entityID: context.data.entityRecord.entityID,
+      fittingPath: resolveNpcFittingPath(context.data.fittingHull),
       displayName: String(
         context.data.entityRecord.itemName || context.data.fittingHull.itemName || "NPC ship",
       ),
@@ -514,6 +576,33 @@ class NpcFittingMgrService extends BaseService {
     );
   }
 
+  Handle_GetNpcCreationSnapshot(args, session) {
+    const [entityID] = positionalArgs(args);
+    const context = this._resolveContext(session, entityID);
+    if (!context || context.success !== true) throwFittingError(context);
+    const ensured = npcCreationDraft.ensureNpcCreationState(
+      context.data.entityRecord, context.data.fittingHull,
+    );
+    if (!ensured.success) throwFittingError(ensured);
+    const { state, template } = ensured.data;
+    return buildCreationSnapshot({
+      itemID: toPositiveInt(entityID),
+      typeID: toPositiveInt(context.data.fittingHull.typeID),
+      ownerID: toPositiveInt(context.data.entityRecord.npcCharacterID),
+    }, context.data.entityRecord.npcCharacterID, state, template);
+  }
+
+  Handle_CommitNpcCreationDraft(args, session) {
+    const [entityID, changes] = positionalArgs(args);
+    const context = this._resolveContext(session, entityID);
+    if (!context || context.success !== true) throwFittingError(context);
+    const result = npcCreationDraft.commitNpcCreationDraft(context.data, changes, {
+      npcFitting: this._npcFitting,
+      itemStore: this._itemStore,
+    });
+    return buildList((result.diagnostics || []).map(buildCreationDiagnostic));
+  }
+
   _mutate(session, entityID, operation) {
     const context = this._resolveContext(session, entityID);
     if (!context || context.success !== true) throwFittingError(context);
@@ -527,6 +616,9 @@ class NpcFittingMgrService extends BaseService {
   Handle_FitItem(args, session) {
     const [entityID, itemID, targetFlagID] = positionalArgs(args);
     return this._mutate(session, entityID, (context) => {
+      if (resolveNpcFittingPath(context.fittingHull) === "creation") {
+        return { success: false, errorMsg: "NPC_CREATION_DRAFT_REQUIRED" };
+      }
       const item = this._requireCargoItem(context, itemID, MODULE_CATEGORY_ID);
       if (!item.success) return item;
       return this._npcFitting.fitItemToNpc({
@@ -542,7 +634,9 @@ class NpcFittingMgrService extends BaseService {
   Handle_UnfitItem(args, session) {
     const [entityID, moduleID] = positionalArgs(args);
     return this._mutate(session, entityID, (context) => (
-      this._npcFitting.unfitItemFromNpc({
+      resolveNpcFittingPath(context.fittingHull) === "creation"
+        ? { success: false, errorMsg: "NPC_CREATION_DRAFT_REQUIRED" }
+        : this._npcFitting.unfitItemFromNpc({
         entityID,
         moduleID,
         actor: context.actor,

@@ -448,7 +448,9 @@ function applyYieldPresentationToEntity(entity, state, summary = null) {
         const computedRadius = computeAsteroidRadiusFromQuantity(state.yieldTypeID, state.remainingQuantity, {
             unitVolume: state.unitVolume,
             fallbackScale: Math.max(0.000001, toFiniteNumber(config.miningBeltQuantityScale, 0.08)),
-            fallbackMinRadius: Math.max(250, state.originalRadius * 0.2),
+            fallbackMinRadius: entity.generatedAsteroid === true
+                ? Math.max(1, state.originalRadius * 0.2)
+                : Math.max(250, state.originalRadius * 0.2),
             fallbackMaxRadius: Math.max(state.originalRadius, entity.radius),
         });
         applyMiningYieldRadiusCommand(entity, clamp(computedRadius, minimumRuntimeRadius, Math.max(minimumRuntimeRadius, state.originalRadius)));
@@ -644,9 +646,14 @@ function buildMineableState(scene, entity, persistedState = null) {
     const normalizedPersistedState = isPersistedStateStillValid(scene, entity, rawPersistedState, estimatedOriginalQuantity)
         ? rawPersistedState
         : null;
-    const originalRadius = Math.max(1, toFiniteNumber(normalizedPersistedState
-        ? normalizedPersistedState.originalRadius
-        : undefined, entity && entity.radius));
+    const generatedBaseRadius = entity && entity.generatedAsteroid === true
+        ? toFiniteNumber(entity.miningBaseRadius, 0)
+        : 0;
+    const originalRadius = generatedBaseRadius > 0
+        ? generatedBaseRadius
+        : Math.max(1, toFiniteNumber(normalizedPersistedState
+            ? normalizedPersistedState.originalRadius
+            : undefined, entity && entity.radius));
     const originalQuantity = Math.max(1, toInt(normalizedPersistedState
         ? normalizedPersistedState.originalQuantity
         : undefined, estimatedOriginalQuantity));
@@ -1578,6 +1585,7 @@ module.exports = {
     _testing: {
         getTemplateEntriesForFieldStyle,
         buildTemplateEntriesForOreDefinition,
+        buildMineableState,
         applyYieldPresentationToEntity,
         getDepletedMineableRespawnAtMs,
         isDepletedMineableRespawnDue,

@@ -16,6 +16,8 @@ const BaseService = require(path.join(__dirname, "../baseService"));
 
 const log = require(path.join(__dirname, "../../utils/logger"));
 const database = require("../../gameStore")
+const { isNpcCharacterID } = require("../_shared/npcIdentityConstants");
+const { getNpcPilotIdentityStore } = require("../../space/npc/npcPilotIdentityStore");
 const { toClientSafeDisplayName } = require(path.join(
   __dirname,
   "../_shared/clientNameUtils",
@@ -303,6 +305,20 @@ class ConfigService extends BaseService {
           null, // ownerNameID
         ]);
         continue;
+      }
+
+      if (isNpcCharacterID(normalizedId)) {
+        const pilot = getNpcPilotIdentityStore().get(normalizedId);
+        if (pilot) {
+          rows.push([
+            normalizedId,
+            toClientSafeDisplayName(pilot.characterName, `NPC ${normalizedId}`),
+            1373,
+            0,
+            null,
+          ]);
+          continue;
+        }
       }
 
       const agentOwnerRow = normalizedId > 0

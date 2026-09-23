@@ -25,6 +25,7 @@ function entity(overrides: Record<string, any> = {}) {
     npcFactionID: FACTION_ID,
     npcFactionKey: `${FACTION_ID}-test`,
     npcCharacterID: 1500004201,
+    categoryID: 6,
     itemName: "Trusted Test NPC",
     npcFittingRestrictions: {
       allowedRoles: ["weapon", "ammunition"],
@@ -83,7 +84,7 @@ function createService(options: Record<string, any> = {}) {
               entityRecord: npc,
               fittingHull: {
                 itemID: ENTITY_ID,
-                typeID: 587,
+                typeID: options.fittingHullTypeID || 587,
                 itemName: npc.itemName,
                 npcPhysicalHullTypeID: 990420,
                 npcFittingProfileID: "test-hull",
@@ -146,6 +147,12 @@ function createService(options: Record<string, any> = {}) {
     npcFitting,
     itemStore,
     orders: options.orders,
+    npcPilots: options.npcPilots || { get: (id) => ({
+      characterID: id,
+      activeEntityID: ENTITY_ID,
+      characterName: "Trusted Test Pilot",
+      factionID: FACTION_ID,
+    }) },
     trust: options.trust || fittingTrust,
     authorizeInteraction: options.authorizeInteraction || (() => ({
       success: true,
@@ -280,6 +287,31 @@ test("fitting action and window state are hidden when the NPC does not trust the
   assert.equal(state.availableModules, undefined);
 });
 
+test("trusted NPC fitting advertises the physical hull's native fitting path", () => {
+  const legacy = createService();
+  const legacyProbe = unwrapMarshalValue(
+    legacy.service.Handle_CanOpenNpcFitting([ENTITY_ID], session()),
+  );
+  const legacyState = unwrapMarshalValue(
+    legacy.service.Handle_GetNpcFittingState([ENTITY_ID], session()),
+  );
+  assert.equal(legacyProbe.fittingPath, "legacy");
+  assert.equal(legacyState.fittingPath, "legacy");
+  assert.equal(legacyState.hull.fittingPath, "legacy");
+
+  const creation = createService({ fittingHullTypeID: 95276 });
+  const creationProbe = unwrapMarshalValue(
+    creation.service.Handle_CanOpenNpcFitting([ENTITY_ID], session()),
+  );
+  const creationState = unwrapMarshalValue(
+    creation.service.Handle_GetNpcFittingState([ENTITY_ID], session()),
+  );
+  assert.equal(creationProbe.fittingPath, "creation");
+  assert.equal(creationState.fittingPath, "creation");
+  assert.equal(creationState.hull.typeID, 95276);
+  assert.equal(creationState.hull.fittingPath, "creation");
+});
+
 test("friendly interaction probe keeps fitting authorization separate", (t) => {
   const { service } = createService({
     trust: { evaluateNpcFittingTrust: () => ({ trusted: false, reason: "not-authorized" }) },
@@ -299,6 +331,100 @@ test("friendly interaction probe keeps fitting authorization separate", (t) => {
     service.Handle_CanOpenNpcFitting([ENTITY_ID], session(FACTION_ID + 1)),
   );
   assert.equal(fitting.trusted, false);
+});
+
+test("interaction and fitting feeds expose the active NPC pilot only", () => {
+  const { service } = createService({
+    npcPilots: { get: (id) => ({
+      characterID: id,
+      activeEntityID: ENTITY_ID,
+      characterName: "Osa Pilot",
+      factionID: FACTION_ID,
+      sui: { walletAddress: "private" },
+    }) },
+  });
+  const interaction = unwrapMarshalValue(service.Handle_CanInteractNpc(
+    [ENTITY_ID], session(),
+  ));
+  assert.deepEqual(interaction.pilot, {
+    characterID: 1500004201,
+    characterName: "Osa Pilot",
+    factionID: FACTION_ID,
+  });
+  const state = unwrapMarshalValue(service.Handle_GetNpcFittingState(
+    [ENTITY_ID], session(),
+  ));
+  assert.deepEqual(state.pilot, interaction.pilot);
+
+  const stale = createService({
+    npcPilots: { get: (id) => ({ characterID: id, activeEntityID: ENTITY_ID + 1 }) },
+  }).service;
+  const staleProbe = unwrapMarshalValue(stale.Handle_CanInteractNpc(
+    [ENTITY_ID], session(),
+  ));
+  assert.equal(staleProbe.pilot, null);
+  assert.equal(staleProbe.canInteract, false);
+  assert.equal(staleProbe.reason, "NPC_PILOT_REQUIRED");
+});
+
+test("player fitting and orders require an active pilot on a category-6 NPC ship", (t) => {
+  let currentNpc: Record<string, any> | null = null;
+  t.mock.method(nativeNpcStore, "getNativeEntity", (id) =>
+    Number(id) === ENTITY_ID ? currentNpc : null);
+  const pilot = { get: (id: number) => ({
+    characterID: id, activeEntityID: ENTITY_ID,
+  }) };
+  const cases = [
+    { npc: entity({ categoryID: 11 }), npcPilots: pilot },
+    { npc: entity({ npcCharacterID: null }), npcPilots: pilot },
+    { npc: entity({ npcCharacterID: PLAYER_ID }), npcPilots: pilot },
+    { npc: entity(), npcPilots: { get: () => null } },
+    { npc: entity(), npcPilots: { get: (id: number) => ({
+      characterID: id, activeEntityID: ENTITY_ID + 1,
+    }) } },
+    { npc: entity(), npcPilots: { get: () => {
+      throw new Error("pilot ledger unavailable");
+    } } },
+  ];
+  for (const { npc, npcPilots } of cases) {
+    currentNpc = npc;
+    const issued: any[] = [];
+    const { service, calls } = createService({
+      entity: npc,
+      npcPilots,
+      orders: { issueManualOrder: (...args: any[]) => {
+        issued.push(args);
+        return { success: true };
+      } },
+    });
+    const probe = unwrapMarshalValue(service.Handle_CanInteractNpc(
+      [ENTITY_ID], session(),
+    ));
+    assert.equal(probe.canInteract, false);
+    assert.equal(probe.canModifyFittings, false);
+    assert.equal(probe.reason, "NPC_PILOT_REQUIRED");
+    assert.equal(probe.pilot, null);
+    assert.equal(unwrapMarshalValue(service.Handle_CanOpenNpcFitting(
+      [ENTITY_ID], session(),
+    )).trusted, false);
+    assert.equal(unwrapMarshalValue(service.Handle_GetNpcFittingState(
+      [ENTITY_ID], session(),
+    )).reason, "NPC_PILOT_REQUIRED");
+    const deniedForPilot = (error: any) =>
+      error?.name === "MachoWrappedException" &&
+      JSON.stringify(error.machoErrorResponse).includes("active pilot");
+    for (const action of [
+      () => service.Handle_FitItem([ENTITY_ID, MODULE_ID], session()),
+      () => service.Handle_UnfitItem([ENTITY_ID, MODULE_ID], session()),
+      () => service.Handle_LoadCharge([ENTITY_ID, MODULE_ID, CHARGE_ID, 1], session()),
+      () => service.Handle_UnloadCharge([ENTITY_ID, CHARGE_ID], session()),
+    ]) assert.throws(action, deniedForPilot);
+    assert.throws(() => service.Handle_IssueNpcOrder(
+      [ENTITY_ID, { type: "resume" }], session(),
+    ), deniedForPilot);
+    assert.deepEqual(calls, []);
+    assert.deepEqual(issued, []);
+  }
 });
 
 test("live transient NPCs use the trusted interaction and fitting flow", (t) => {

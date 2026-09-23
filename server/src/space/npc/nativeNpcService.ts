@@ -1092,8 +1092,9 @@ function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, d
   }
   const entityScopeMetadata = scopeResolution.data.metadata;
   try {
-    // Existing durable NPCs acquire a pilot on first materialization after upgrade.
-    if (ensureNpcPilotIdentity(entityRecord, entityRecord.npcIdentitySlot || `legacy:${entityRecord.entityID}`)) {
+    // Command-spawned unpiloted entities remain unpiloted after rehydration.
+    if (entityRecord.npcPilotRequested !== false &&
+        ensureNpcPilotIdentity(entityRecord, entityRecord.npcIdentitySlot || `legacy:${entityRecord.entityID}`)) {
       const saved = nativeNpcStore.upsertNativeEntity(entityRecord, { transient: entityRecord.transient === true });
       if (!saved.success) throw new Error(saved.errorMsg || "NPC identity migration failed");
     }
@@ -1558,6 +1559,9 @@ function spawnNativeNpcEntityInContext(context, definition, options: Record<stri
   const identity = buildNpcEntityIdentity(definition, {
     itemName: String(definition.profile.shipNameTemplate || definition.profile.name || "NPC"),
   });
+  if (options.createNpcPilot === true && identity.categoryID !== 6) {
+    return { success: false, errorMsg: "NPC_PILOT_SHIP_CATEGORY_REQUIRED" };
+  }
   // Recheck at the spawn mutation boundary: cached/generated selections may
   // bypass the profile index, but cannot bypass a faction's SDE hull policy.
   const factionSource = {
@@ -1681,6 +1685,7 @@ function spawnNativeNpcEntityInContext(context, definition, options: Record<stri
     spawnGroupID: String(options.spawnGroupID || "").trim() || null,
     spawnSiteID: String(options.spawnSiteID || "").trim() || null,
     npcIdentitySlot: String(options.npcIdentitySlot || "").trim() || null,
+    npcPilotRequested: options.createNpcPilot !== false,
     startupRuleID: String(options.startupRuleID || "").trim() || null,
     operatorKind: String(options.operatorKind || "").trim() || null,
     anchorKind: String(options.anchorKind || context.anchorKind || "anchor"),
@@ -1718,7 +1723,10 @@ function spawnNativeNpcEntityInContext(context, definition, options: Record<stri
     ...scopeResolution.data.metadata,
   };
   try {
-    ensureNpcPilotIdentity(entityRecord);
+    if (entityRecord.npcPilotRequested) ensureNpcPilotIdentity(entityRecord);
+    if (options.createNpcPilot === true && !entityRecord.npcCharacterID) {
+      return { success: false, errorMsg: "NPC_PILOT_IDENTITY_FAILED" };
+    }
   } catch (error) {
     log.warn(`[NativeNpc] Pilot identity allocation failed: ${error.message}`);
     return { success: false, errorMsg: "NPC_PILOT_IDENTITY_FAILED" };

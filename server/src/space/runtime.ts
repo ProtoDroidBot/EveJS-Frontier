@@ -33216,8 +33216,10 @@ class SolarSystemScene {
       .flatMap((entity) => buildSlimItemPresentationUpdates({
         stamp,
         entityID: entity.itemID,
-        crData: entity.kind === "deployable" &&
-            Object.prototype.hasOwnProperty.call(entity, "assembly_status")
+        crData: (entity.kind === "ship" &&
+            Object.prototype.hasOwnProperty.call(entity, "selfDestructAtMs")) ||
+            (entity.kind === "deployable" &&
+            Object.prototype.hasOwnProperty.call(entity, "assembly_status"))
           ? destiny.buildCrDataUpdate(entity)
           : null,
         slimItem: destiny.buildSlimItemObject(entity),

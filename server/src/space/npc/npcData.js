@@ -101,12 +101,30 @@ const STANDARD_SPAWN_POOL_SPECS = Object.freeze({
     },
 });
 const RETAIL_EMPTY_NPC_ENTITY_LOADOUT_ID = "retail_empty_npc_entity_loadout";
+const NPC_PILOT_SHIP_PROFILE_PREFIX = "npc_pilot_ship_";
+const NPC_OSA_PILOT_SHIP_PROFILE_PREFIX = "npc_osa_pilot_ship_";
 const RETAIL_EMPTY_NPC_ENTITY_LOADOUT = Object.freeze({
     loadoutID: RETAIL_EMPTY_NPC_ENTITY_LOADOUT_ID,
     name: "Retail NPC Entity Native Dogma",
     description: "Empty loadout for retail NPC entity types whose combat stats and effects live on the NPC type dogma record.",
     modules: [],
     charges: [],
+});
+const NPC_PILOT_SHIP_PASSIVE_BEHAVIOR = Object.freeze({
+    behaviorProfileID: "npc_pilot_ship_passive",
+    name: "NPC Pilot Ship Passive",
+    thinkIntervalMs: 500,
+    autoAggroTargetClasses: [],
+    targetPreference: "none",
+    autoAggro: false,
+    movementMode: "orbit",
+    orbitDistanceMeters: 4000,
+    followRangeMeters: 2500,
+    aggressionRangeMeters: 0,
+    leashRangeMeters: 150000,
+    returnToHomeWhenIdle: true,
+    homeArrivalMeters: 1500,
+    autoActivateWeapons: false,
 });
 function cloneValue(value) {
     return JSON.parse(JSON.stringify(value));
@@ -417,6 +435,48 @@ function resolveNpcStartupRule(query, fallbackStartupRuleID = "") {
     };
 }
 function buildNpcDefinition(profileID) {
+    const pilotShipMatch = /^npc_(osa_)?pilot_ship_(\d+)$/.exec(String(profileID || ""));
+    if (pilotShipMatch) {
+        const { resolveItemByTypeID } = require(path.join(__dirname, "../../services/inventory/itemTypeRegistry"));
+        const shipType = resolveItemByTypeID(Number(pilotShipMatch[2]));
+        if (!shipType || Number(shipType.categoryID) !== 6)
+            return null;
+        const osaFaction = pilotShipMatch[1] === "osa_"
+            ? frontierDungeonSpawns.getConfig()
+            : null;
+        const osaProfile = osaFaction ? {
+            factionID: osaFaction.defaults.npcFactionID,
+            corporationID: osaFaction.defaults.npcCorporationID,
+            frontierFactionKey: "osa",
+            npcFactionKey: "osa",
+            factionStringOnlyID: "osa",
+            frontierFactionTag: osaFaction.factions.osa.tag,
+        } : {};
+        const shipName = `${osaFaction ? "Osa " : ""}${String(shipType.name || `Ship ${shipType.typeID}`)}`;
+        const profile = {
+            profileID: `${osaFaction ? NPC_OSA_PILOT_SHIP_PROFILE_PREFIX : NPC_PILOT_SHIP_PROFILE_PREFIX}${shipType.typeID}`,
+            name: shipName,
+            shipNameTemplate: shipName,
+            entityType: "npc",
+            shipTypeID: shipType.typeID,
+            presentationTypeID: shipType.typeID,
+            hardwareFamily: "pilotedShip",
+            loadoutID: RETAIL_EMPTY_NPC_ENTITY_LOADOUT_ID,
+            behaviorProfileID: NPC_PILOT_SHIP_PASSIVE_BEHAVIOR.behaviorProfileID,
+            ...osaProfile,
+        };
+        const factionProfile = osaFaction ? applyNpcFactionTypeListProfile(profile) : profile;
+        if (osaFaction && factionProfile.npcFactionMembershipEligible !== true)
+            return null;
+        const loadout = cloneValue(RETAIL_EMPTY_NPC_ENTITY_LOADOUT);
+        const behaviorProfile = cloneValue(NPC_PILOT_SHIP_PASSIVE_BEHAVIOR);
+        return applyNpcBehaviorConfig({
+            profile: factionProfile,
+            loadout,
+            behaviorProfile,
+            lootTable: null,
+        });
+    }
     const profileRow = findRawByID(NPC_TABLE.PROFILES, profileID);
     if (!profileRow) {
         return null;

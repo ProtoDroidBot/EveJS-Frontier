@@ -66,6 +66,9 @@ const {
   resolveAnchors,
   resolveAnchor,
 } = require(path.join(__dirname, "./npcAnchors"));
+const { resolveSessionCharacterID } = require(path.join(
+  __dirname, "../../services/_shared/sessionIdentity",
+));
 const nativeNpcService = require(path.join(__dirname, "./nativeNpcService"));
 const {
   parseNpcCustomInfo,
@@ -147,6 +150,25 @@ function resolveSpawnContextForSession(session) {
       contextKind: "sessionShip",
     },
   };
+}
+
+function resolveSessionSpawnScopeMetadata(session, context) {
+  const metadata = buildChildEntityScopeMetadata(context.anchorEntity);
+  const instanceID = toPositiveInt(metadata.dungeonSiteInstanceID, 0);
+  const scene = context.scene;
+  if (
+    !instanceID ||
+    !scene ||
+    typeof scene.resolveDungeonInstanceVisibilityForSession !== "function" ||
+    scene.resolveDungeonInstanceVisibilityForSession(session, instanceID)
+  ) {
+    return metadata;
+  }
+
+  // The ship can retain a dungeon marker after that site has been replaced.
+  // A command spawn beside it must not inherit an instance nobody can see.
+  const { dungeonSiteID, dungeonSiteInstanceID, ...remainingScope } = metadata;
+  return remainingScope;
 }
 
 function resolveSpawnContextForSystem(systemID, options: Record<string, any> = {}) {
@@ -265,7 +287,7 @@ function spawnNpcBatchForSession(session, options: Record<string, any> = {}) {
     "entityScopeMetadata",
   )
     ? spawnOptions.entityScopeMetadata
-    : buildChildEntityScopeMetadata(contextResult.data.anchorEntity);
+    : resolveSessionSpawnScopeMetadata(session, contextResult.data);
   const batchResult = nativeNpcService.spawnNativeDefinitionsInContext(contextResult.data, selectionResult, {
     ...spawnOptions,
     entityScopeMetadata,
@@ -343,12 +365,84 @@ function spawnNpcTypeBatchForSession(session, typeID, amount = 1) {
   return spawnNpcBatchForSession(session, {
     profileQuery: profile.profileID,
     amount: requestedAmount,
+    createNpcPilot: false,
     preferPools: false,
     spawnDistanceMeters: 25_000,
     spreadMeters: 0,
     formationSpacingMeters: 0,
     formationStyle: "fibonacci",
   });
+}
+
+function spawnNpcPilotShipBatchForSession(session, typeID, amount = 1, options: Record<string, any> = {}) {
+  const factionKey = String(options.factionKey || "").trim().toLowerCase();
+  if (factionKey && factionKey !== "osa") {
+    return { success: false, errorMsg: "NPC_PILOT_FACTION_UNSUPPORTED" };
+  }
+  const numericTypeID = toPositiveInt(typeID, 0);
+  const requestedAmount = toPositiveInt(amount, 0);
+  if (!numericTypeID || requestedAmount < 1 || requestedAmount > 50) {
+    return { success: false, errorMsg: "NPC_PILOT_SHIP_SPAWN_ARGUMENTS_INVALID" };
+  }
+  const shipType = resolveItemByTypeID(numericTypeID);
+  if (!shipType || toPositiveInt(shipType.categoryID, 0) !== 6) {
+    return { success: false, errorMsg: "NPC_PILOT_SHIP_CATEGORY_REQUIRED" };
+  }
+  const { npcPilotIdentitiesEnabled } = require("./npcPilotIdentityRuntime");
+  if (!npcPilotIdentitiesEnabled()) {
+    return { success: false, errorMsg: "NPC_PILOT_IDENTITIES_DISABLED" };
+  }
+  const definition = buildNpcDefinition(
+    `npc_${factionKey ? `${factionKey}_` : ""}pilot_ship_${numericTypeID}`,
+  );
+  if (!definition) {
+    return { success: false, errorMsg: factionKey
+      ? "NPC_FACTION_HULL_TYPELIST_DENIED" : "NPC_DEFINITION_INCOMPLETE" };
+  }
+  const contextResult = resolveSpawnContextForSession(session);
+  if (!contextResult.success || !contextResult.data) return contextResult;
+  const summonerCharacterID = resolveSessionCharacterID(session);
+  const batchResult = nativeNpcService.spawnNativeDefinitionsInContext(contextResult.data, {
+    success: true,
+    data: {
+      selectionKind: factionKey ? "factionPilotShip" : "pilotShip",
+      selectionID: definition.profile.profileID,
+      selectionName: definition.profile.name,
+      definitions: Array.from({ length: requestedAmount }, () => definition),
+    },
+  }, {
+    createNpcPilot: true,
+    ...(factionKey ? { factionStringOnlyID: factionKey } : {}),
+    trustedFitterCharacterIDs: summonerCharacterID > 0 ? [summonerCharacterID] : [],
+    runtimeKind: "nativeCombat",
+    skipInitialBehaviorTick: true,
+    entityScopeMetadata: resolveSessionSpawnScopeMetadata(session, contextResult.data),
+    behaviorOverrides: { passiveRoaming: false, passiveWarping: false },
+    preferredTargetID: toPositiveInt(session && session._space && session._space.shipID, 0),
+    spawnDistanceMeters: 25_000,
+    spreadMeters: 0,
+    formationSpacingMeters: 0,
+    formationStyle: "fibonacci",
+    anchorKind: contextResult.data.anchorKind,
+    anchorName: contextResult.data.anchorLabel,
+    anchorID: toPositiveInt(contextResult.data.anchorEntity && contextResult.data.anchorEntity.itemID, 0),
+  });
+  if (batchResult.success && Array.isArray(batchResult.data && batchResult.data.spawned)) {
+    const scene = contextResult.data.scene;
+    const wakeAtMs = scene.getCurrentSimTimeMs() + Math.max(
+      1000,
+      toFiniteNumber(scene._tickIntervalMs, 1000),
+    );
+    for (const entry of batchResult.data.spawned) {
+      const entityID = toPositiveInt(entry && entry.entity && entry.entity.itemID, 0);
+      if (entityID > 0) scheduleNpcController(entityID, wakeAtMs);
+    }
+  }
+  return batchResult;
+}
+
+function spawnOsaPilotShipBatchForSession(session, typeID, amount = 1) {
+  return spawnNpcPilotShipBatchForSession(session, typeID, amount, { factionKey: "osa" });
 }
 
 function spawnNpcBatchInSystem(systemID, options: Record<string, any> = {}) {
@@ -2237,6 +2331,8 @@ module.exports = {
   resolveProfileDefinition,
   spawnNpcBatchForSession,
   spawnNpcTypeBatchForSession,
+  spawnNpcPilotShipBatchForSession,
+  spawnOsaPilotShipBatchForSession,
   spawnNpcBatchInSystem,
   spawnNpcForSession,
   spawnConcordBatchForSession,

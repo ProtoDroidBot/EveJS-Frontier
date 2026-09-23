@@ -11,6 +11,7 @@ const { resolveItemByTypeID } = require(path.join(
 ));
 const {
   getCreationModule,
+  getCreationTemplate,
 } = require(path.join(__dirname, "../../services/frontier/creationStaticData"));
 const {
   getHeldBeamUtilityProfile,
@@ -30,6 +31,7 @@ const CUSTODY_SCHEMA_VERSION = 1;
 const MODULE_CATEGORY_ID = 7;
 const CHARGE_CATEGORY_ID = 8;
 const SHIP_CATEGORY_ID = 6;
+const CREATION_FITTING_FLAG_ID = 183;
 const NPC_ENTITY_CATEGORY_ID = 11;
 const TERMINAL_OPERATION_STATUSES = new Set(["committed", "compensated", "failed"]);
 const SEMANTIC_ROLES = Object.freeze([
@@ -725,12 +727,21 @@ function fitItemToNpc(input: Record<string, any>) {
   const policyValidation = validateHardwarePolicy(item, role, policy);
   if (!policyValidation.success) return policyValidation;
 
+  const creationDraft = input.creationDraft === true &&
+    toPositiveInt(input.targetFlagID, 0) === CREATION_FITTING_FLAG_ID &&
+    toPositiveInt(entityRecord.categoryID, 0) === SHIP_CATEGORY_ID &&
+    Boolean(getCreationTemplate(fittingHull.typeID)) &&
+    equipmentProfile.equipmentArchitecture === "creation";
+  if (input.creationDraft === true && !creationDraft) {
+    return { success: false, errorMsg: "NPC_CREATION_MODULE_REQUIRED" };
+  }
+
   const currentFittedItems = nativeNpcStore.buildNativeFittedItems(entityRecord.entityID);
   const roleSlots = getNpcHullRoleSlots(entityRecord, role);
   const occupiedFlags = new Set(
     currentFittedItems.map((entry) => toPositiveInt(entry && entry.flagID, 0)),
   );
-  const targetFlagID = toPositiveInt(
+  const targetFlagID = creationDraft ? CREATION_FITTING_FLAG_ID : toPositiveInt(
     input.targetFlagID,
     roleSlots.find((flagID) => !occupiedFlags.has(flagID)) ||
       npcCapabilityResolver.selectAutoFitFlagForNpcModuleType(
@@ -740,14 +751,14 @@ function fitItemToNpc(input: Record<string, any>) {
       ),
   );
   if (!targetFlagID) return { success: false, errorMsg: "NPC_NATIVE_NO_FREE_SLOT" };
-  const npcHullValidation = validateNpcHullSpecificFit(
+  const npcHullValidation = creationDraft ? null : validateNpcHullSpecificFit(
     entityRecord,
     item,
     role,
     targetFlagID,
     currentFittedItems,
   );
-  const fitValidation = npcHullValidation || fitting.validateFitForShip(
+  const fitValidation = creationDraft ? { success: true } : npcHullValidation || fitting.validateFitForShip(
       toPositiveInt(entityRecord.npcCharacterID, authorization.data.actorCharacterID),
       fittingHull,
       item,
@@ -764,7 +775,7 @@ function fitItemToNpc(input: Record<string, any>) {
     stacksize: 1,
     moduleState: itemStore.normalizeModuleState({ ...(item.moduleState || {}), online: true }),
   };
-  const onlineState = npcHullValidation
+  const onlineState = creationDraft ? { applies: true, online: true } : npcHullValidation
     ? { applies: true, online: true, resourceState: npcHullValidation.data.resourceState }
     : fitting.resolveFitOnlineState(
         toPositiveInt(entityRecord.npcCharacterID, authorization.data.actorCharacterID),

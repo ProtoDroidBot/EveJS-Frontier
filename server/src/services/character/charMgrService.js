@@ -19,14 +19,41 @@ const { buildList, buildDict, extractList, buildFiletimeLong, buildKeyVal, build
 const { CharMgrGlobalAssets, } = require(path.join(__dirname, "./charMgrGlobalAssets"));
 const { deleteCharacterSetting, getCharacterSettings, setCharacterSetting, } = require(path.join(__dirname, "./characterSettingsState"));
 const { getCorporationMember, } = require(path.join(__dirname, "../corporation/corporationRuntimeState"));
+const { isNpcCharacterID } = require(path.join(__dirname, "../_shared/npcIdentityConstants"));
+const { getNpcPilotIdentityStore } = require(path.join(__dirname, "../../space/npc/npcPilotIdentityStore"));
+const nativeNpcStore = require(path.join(__dirname, "../../space/npc/nativeNpcStore"));
 const { addLabelMask, allocateNextLabelID, removeLabelMask, toLabelKey, toMarshalMaskValue, toStoredMaskValue, } = require(path.join(__dirname, "../corporation/contactLabelState"));
 const { buildKillmailPayload, listKillmailsForCharacter, } = require(path.join(__dirname, "../killmail/killmailState"));
 const { listOwnerNotes, getOwnerNote, addOwnerNote, editOwnerNote, removeOwnerNote, getEntityNote, setEntityNote, } = require(path.join(__dirname, "./characterNoteState"));
+function getNpcPublicCharacterData(characterID) {
+    const id = normalizeInteger(characterID, 0);
+    if (!isNpcCharacterID(id))
+        return null;
+    const pilot = getNpcPilotIdentityStore().get(id);
+    if (!pilot)
+        return { npcPilot: true, characterName: `NPC ${id}` };
+    const entity = pilot.activeEntityID
+        ? nativeNpcStore.getNativeEntity(pilot.activeEntityID)
+        : null;
+    const activeShip = entity && Number(entity.npcCharacterID) === id ? entity : null;
+    return {
+        npcPilot: true,
+        characterName: pilot.characterName || `NPC ${id}`,
+        typeID: 1373,
+        corporationID: Number(activeShip?.corporationID || activeShip?.ownerID) || 1000009,
+        allianceID: Number(activeShip?.allianceID) || null,
+        factionID: Number(pilot.factionID) || null,
+        solarSystemID: Number(pilot.systemID) || null,
+        stationID: null,
+        createDateTime: Number(pilot.createdAtMs) || null,
+        gender: 0,
+    };
+}
 function resolveCharacterInfo(args, session) {
     const charId = args && args.length > 0 ? args[0] : session ? session.characterID : 0;
     return {
         charId,
-        charData: getCharacterRecord(charId) || {},
+        charData: getNpcPublicCharacterData(charId) || getCharacterRecord(charId) || {},
     };
 }
 function sessionCharacterID(session) {
@@ -256,13 +283,15 @@ function buildCloneEntries(entries = [], valueBuilder) {
     ]));
 }
 function buildPublicInfoEntries(charId, charData, session) {
+    const viewerSession = charData.npcPilot === true ? null : session;
     const factionID = charData.factionID ?? null;
     const empireID = charData.empireID ?? factionID;
-    const corporationID = charData.corporationID || (session ? session.corporationID : 1000009);
-    const allianceID = charData.allianceID || (session ? session.allianceID : null);
+    const corporationID = charData.corporationID || (viewerSession ? viewerSession.corporationID : 1000009);
+    const allianceID = charData.allianceID || (viewerSession ? viewerSession.allianceID : null);
     const stationID = charData.stationID ??
-        (session ? (session.stationID ?? session.stationid ?? null) : null);
-    const solarSystemID = charData.solarSystemID || (session ? session.solarsystemid2 : 30000142);
+        (viewerSession ? (viewerSession.stationID ?? viewerSession.stationid ?? null) : null);
+    const solarSystemID = charData.solarSystemID || (viewerSession ? viewerSession.solarsystemid2
+        : charData.npcPilot === true ? null : 30000142);
     const createDateTime = buildFiletimeLong(charData.createDateTime);
     const startDateTime = buildFiletimeLong(charData.startDateTime || charData.createDateTime);
     const securityStatus = Number(charData.securityStatus ?? charData.securityRating ?? 0);
@@ -270,7 +299,7 @@ function buildPublicInfoEntries(charId, charData, session) {
         ["characterID", charId],
         [
             "characterName",
-            charData.characterName || (session ? session.characterName : "Unknown"),
+            charData.characterName || (viewerSession ? viewerSession.characterName : "Unknown"),
         ],
         ["typeID", charData.typeID || 1373],
         ["raceID", charData.raceID || 1],
@@ -399,7 +428,8 @@ class CharMgrService extends BaseService {
             .filter((characterID) => characterID > 0);
         log.debug(`[CharMgr] GetOrganizationInfoForCharacters(${characterIDs.length})`);
         return buildDict(characterIDs.map((characterID) => {
-            const character = getCharacterRecord(characterID) || {};
+            const character = getNpcPublicCharacterData(characterID) ||
+                getCharacterRecord(characterID) || {};
             return [
                 characterID,
                 buildKeyVal([

@@ -32,6 +32,131 @@ import frontier_windows_client as windows  # noqa: E402
 NS = types.SimpleNamespace
 
 
+class NpcCreationBridgeTests(unittest.TestCase):
+    def setUp(self):
+        self.events = []
+        test = self
+
+        class Signal:
+            def __init__(self):
+                self.handlers = []
+
+            def connect(self, handler):
+                self.handlers.append(handler)
+
+            def __call__(self, *args):
+                for handler in self.handlers:
+                    handler(*args)
+
+        class Creation:
+            @classmethod
+            def from_dict(cls, value):
+                return NS(item_id=value["item_id"])
+
+        class Diagnostic:
+            @classmethod
+            def from_dict(cls, value):
+                return NS(is_blocker=value.get("severity") == "blocker")
+
+        class Remote:
+            def __init__(self):
+                self.fail_next = False
+
+            def GetNpcCreationSnapshot(self, entity_id):
+                test.events.append(("snapshot", entity_id))
+                return {"item_id": entity_id}
+
+            def CommitNpcCreationDraft(self, entity_id, changes):
+                test.events.append(("commit", entity_id, changes))
+                if self.fail_next:
+                    self.fail_next = False
+                    raise RuntimeError("trust revoked")
+                return []
+
+        self.remote = Remote()
+        self.original = NS(
+            on_active_creation_changed=Signal(),
+            get_creation=lambda creation_id: NS(item_id=creation_id),
+        )
+        modules = {}
+        for name in (
+            "frontier", "frontier.creation", "frontier.creation.common",
+            "frontier.creation.client", "frontier.creation.client.management",
+        ):
+            modules[name] = types.ModuleType(name)
+            modules[name].__path__ = []
+        model = types.ModuleType("frontier.creation.common.model")
+        model.Creation = Creation
+        diagnostics = types.ModuleType("frontier.creation.common.diagnostics")
+        diagnostics.Diagnostic = Diagnostic
+        modules[model.__name__] = model
+        modules[diagnostics.__name__] = diagnostics
+        self.view_state = types.ModuleType(
+            "frontier.creation.client.management.view_state"
+        )
+
+        def integration(*args, **kwargs):
+            return NS(service=kwargs.get("creation_service", args[0] if args else None))
+
+        class ViewState:
+            def UnloadView(self):
+                test.events.append("unload")
+
+        self.view_state.ManagementViewIntegration = integration
+        self.view_state.ManagementViewState = ViewState
+        modules[self.view_state.__name__] = self.view_state
+        modules["frontier.creation.client.management"].view_state = self.view_state
+        self.modules_patch = mock.patch.dict(sys.modules, modules)
+        self.modules_patch.start()
+        adapter._evejs_npc_creation_target = None
+
+    def tearDown(self):
+        adapter._evejs_npc_creation_target = None
+        self.modules_patch.stop()
+
+    def test_target_proxy_commits_to_npc_and_recovers_after_denial(self):
+        proxy = adapter._EvejsNpcCreationServiceProxy(
+            self.original, self.remote, 8101, {"item_id": 8101}
+        )
+        refreshes = []
+        proxy.on_active_creation_changed.connect(refreshes.append)
+        self.assertEqual(proxy.get_active_creation().item_id, 8101)
+        self.remote.fail_next = True
+        change = NS(to_dict=lambda: {"op": "move", "itemID": 9})
+        with self.assertRaisesRegex(RuntimeError, "trust revoked"):
+            proxy.commit_management_draft(100, [change])
+        self.assertEqual(refreshes, [])
+        self.assertEqual(proxy.commit_management_draft(100, [change]), [])
+        self.assertEqual(refreshes, [8101])
+        self.assertEqual(
+            [entry for entry in self.events if entry[0] == "commit"],
+            [("commit", 8101, [{"op": "move", "itemID": 9}])] * 2,
+        )
+
+    def test_native_view_receives_target_proxy_only_while_npc_view_is_active(self):
+        self.assertTrue(adapter._evejs_install_npc_creation_view_bridge({}))
+        ordinary = self.view_state.ManagementViewIntegration(
+            creation_service=self.original
+        )
+        self.assertIs(ordinary.service, self.original)
+        adapter._evejs_npc_creation_target = {
+            "remote": self.remote, "entity_id": 8101,
+            "snapshot": {"item_id": 8101},
+        }
+        target = self.view_state.ManagementViewIntegration(
+            creation_service=self.original
+        )
+        self.assertEqual(target.service.get_active_creation().item_id, 8101)
+        self.view_state.ManagementViewState().UnloadView()
+        self.assertIsNone(adapter._evejs_npc_creation_target)
+        self.assertIs(
+            self.view_state.ManagementViewIntegration(
+                creation_service=self.original
+            ).service,
+            self.original,
+        )
+
+
 def member_for(code):
     return importlib.util.MAGIC_NUMBER + bytes(12) + marshal.dumps(code)
 
@@ -235,8 +360,324 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(opened[0][0], 980000000001)
         self.assertTrue(opened[0][1]["trusted"])
 
+    def test_trusted_legacy_npc_uses_target_specific_native_entry(self):
+        entity_id = 980000000001
+        state = {
+            "trusted": True,
+            "entityID": entity_id,
+            "fittingPath": "legacy",
+            "hull": {"typeID": 72207},
+        }
+        self.namespace["sm"] = NS(
+            RemoteSvc=lambda name: NS(GetNpcFittingState=lambda target: state),
+        )
+        with mock.patch.object(
+            adapter, "_evejs_open_npc_legacy_window", return_value="native"
+        ) as native, mock.patch.object(
+            adapter, "_evejs_open_npc_fitting_window"
+        ) as custom:
+            self.assertEqual(self.Command().OpenNpcFitting(entity_id), "native")
+        native.assert_called_once_with(self.namespace, entity_id, state)
+        custom.assert_not_called()
+
+    def test_native_legacy_failure_keeps_trusted_rpc_editor_available(self):
+        entity_id = 980000000001
+        state = {
+            "trusted": True,
+            "entityID": entity_id,
+            "fittingPath": "legacy",
+            "hull": {"typeID": 72207},
+        }
+        self.namespace["sm"] = NS(
+            RemoteSvc=lambda name: NS(GetNpcFittingState=lambda target: state),
+        )
+        fallback = NS(_presenter=NS(status=""), _status_label=NS(text=""))
+        with mock.patch.object(
+            adapter, "_evejs_open_npc_legacy_window",
+            side_effect=RuntimeError("simulation unavailable"),
+        ), mock.patch.object(
+            adapter, "_evejs_open_npc_fitting_window", return_value=fallback,
+        ) as custom:
+            self.assertIs(self.Command().OpenNpcFitting(entity_id), fallback)
+        custom.assert_called_once_with(self.namespace, entity_id, state)
+        self.assertIn("simulation unavailable", fallback._status_label.text)
+
 
 class NpcFittingPresenterTests(unittest.TestCase):
+    def test_native_legacy_window_uses_retail_open_and_binds_target(self):
+        events = []
+
+        class BaseWindow:
+            @classmethod
+            def Open(cls, **kwargs):
+                events.append("retail-open")
+                instance = cls()
+                instance.ApplyAttributes(kwargs)
+                return instance
+
+            @classmethod
+            def GetIfOpen(cls):
+                return None
+
+        class FittingWindow(BaseWindow):
+            @classmethod
+            def Open(cls, **kwargs):
+                raise AssertionError("Frontier Creation override was used")
+
+            def ApplyAttributes(self, attributes):
+                self.ConstructLayout()
+
+            def ConstructLayout(self):
+                self.overlayCont = object()
+
+        ui = types.ModuleType("eveui")
+        ui.Align = NS(to_bottom="bottom", to_left="left", to_right="right")
+        ui.Container = lambda **kwargs: NS(**kwargs)
+        ui.EveLabelMedium = lambda **kwargs: NS(**kwargs)
+        ui.Button = lambda **kwargs: events.append(("button", kwargs))
+        namespace = {"FittingWindow": FittingWindow}
+        target = NS(hull_type_id=72207, apply_legacy_draft=lambda *args: None)
+        with mock.patch.dict(sys.modules, {"eveui": ui}):
+            window_type = adapter._evejs_npc_legacy_window_type(namespace)
+            window = window_type.Open(
+                shipID="ship_72207", npc_target=target,
+                npc_sim_ship_id="ship_72207",
+            )
+        self.assertIs(window._evejs_target, target)
+        self.assertEqual(window._evejs_sim_ship_id, "ship_72207")
+        self.assertEqual(events[0], "retail-open")
+        self.assertEqual(events[1][1]["label"], "Apply to NPC")
+
+    def test_native_legacy_window_receives_npc_target_and_exact_fit(self):
+        entity_id = 980000000001
+        state = {
+            "trusted": True, "entityID": entity_id,
+            "fittingPath": "legacy", "hull": {"typeID": 72207},
+            "npcCharacterID": 1500000001,
+            "modules": [{
+                "moduleID": 701, "typeID": 100,
+                "flagID": 11, "charges": [],
+            }],
+            "availableModules": [], "availableCharges": [],
+        }
+        calls = []
+        ghost = NS(
+            fittingDogmaLocation=NS(GetCurrentShipID=lambda: "ship_72207"),
+            LoadSimulatedFitting=lambda *args: calls.append(("load", args)),
+            TakeSnapshot=lambda: NS(shipTypeID=72207),
+        )
+        fitting_service = NS(IsShipSimulated=lambda: False)
+        namespace = {
+            "FittingWindow": NS(GetIfOpen=lambda: None),
+            "sm": NS(
+                RemoteSvc=lambda name: object(),
+                GetService=lambda name: {
+                    "fittingSvc": fitting_service,
+                    "ghostFittingSvc": ghost,
+                }[name],
+            ),
+        }
+
+        class NativeWindow:
+            @classmethod
+            def GetIfOpen(cls):
+                return None
+
+            @classmethod
+            def Open(cls, **kwargs):
+                calls.append(("open", kwargs))
+                return "native-window"
+
+        with mock.patch.object(
+            adapter, "_evejs_npc_legacy_window_type", return_value=NativeWindow
+        ), mock.patch.object(
+            adapter, "_evejs_legacy_draft_from_snapshot",
+            return_value=([(100, 11)], []),
+        ):
+            result = adapter._evejs_open_npc_legacy_window(
+                namespace, entity_id, state
+            )
+        self.assertEqual(result, "native-window")
+        self.assertEqual(calls[0][1][0:3], (72207, entity_id, 1500000001))
+        self.assertEqual(calls[0][1][3], [(100, 11, 1)])
+        self.assertEqual(calls[1][1]["shipID"], "ship_72207")
+        self.assertEqual(calls[1][1]["npc_target"].entity_id, entity_id)
+
+    def test_target_controller_applies_legacy_draft_to_npc_rpc_only(self):
+        entity_id = 980000000001
+        calls = []
+        state = {
+            "trusted": True,
+            "entityID": entity_id,
+            "fittingPath": "legacy",
+            "hull": {"typeID": 72207},
+            "modules": [],
+            "availableModules": [
+                {"itemID": 501, "typeID": 100, "quantity": 1},
+                {"itemID": 502, "typeID": 101, "quantity": 1},
+            ],
+            "availableCharges": [],
+        }
+
+        class Remote:
+            fail_first = True
+
+            def GetNpcFittingState(self, target_id):
+                calls.append(("read", target_id))
+                return dict(state)
+
+            def FitItem(self, target_id, item_id, flag_id):
+                calls.append(("fit", target_id, item_id, flag_id))
+                if self.fail_first:
+                    self.fail_first = False
+                    raise RuntimeError("server denied")
+                state["modules"] = [{
+                    "moduleID": item_id, "typeID": 101,
+                    "flagID": flag_id, "charges": [],
+                }]
+                return dict(state)
+
+        controller = adapter._EvejsNpcTargetController(
+            Remote(), entity_id, dict(state)
+        )
+        with self.assertRaisesRegex(RuntimeError, "server denied"):
+            controller.apply_legacy_draft([(100, 11)])
+        self.assertEqual(state["modules"], [])
+        controller.apply_legacy_draft([(101, 12)])
+        self.assertEqual(state["modules"][0]["flagID"], 12)
+        self.assertEqual(
+            [call for call in calls if call[0] == "fit"],
+            [("fit", entity_id, 501, 11), ("fit", entity_id, 502, 12)],
+        )
+
+    def test_target_controller_rejects_wrong_entity_and_stale_draft(self):
+        entity_id = 980000000001
+        state = {
+            "trusted": True, "entityID": entity_id,
+            "fittingPath": "legacy", "hull": {"typeID": 72207},
+            "modules": [], "availableModules": [], "availableCharges": [],
+        }
+
+        class Remote:
+            def GetNpcFittingState(self, target_id):
+                return dict(state)
+
+        controller = adapter._EvejsNpcTargetController(
+            Remote(), entity_id, dict(state)
+        )
+        with self.assertRaisesRegex(RuntimeError, "target changed"):
+            controller.accept(dict(state, entityID=entity_id + 1))
+        state["modules"] = [{
+            "moduleID": 1001, "typeID": 100,
+            "flagID": 11, "charges": [],
+        }]
+        with self.assertRaisesRegex(RuntimeError, "changed; refresh"):
+            controller.apply_legacy_draft([])
+
+    def test_target_controller_unloads_charge_before_unfitting_module(self):
+        entity_id = 980000000001
+        state = {
+            "trusted": True, "entityID": entity_id,
+            "fittingPath": "legacy", "hull": {"typeID": 72207},
+            "modules": [{
+                "moduleID": 701, "typeID": 100, "flagID": 11,
+                "charges": [{"cargoID": 801, "typeID": 200, "quantity": 10}],
+            }],
+            "availableModules": [], "availableCharges": [],
+        }
+        calls = []
+
+        class Remote:
+            def GetNpcFittingState(self, target_id):
+                return dict(state)
+
+            def UnloadCharge(self, target_id, cargo_id):
+                calls.append(("unload", target_id, cargo_id))
+                state["modules"] = [dict(state["modules"][0], charges=[])]
+                return dict(state)
+
+            def UnfitItem(self, target_id, module_id):
+                calls.append(("unfit", target_id, module_id))
+                state["modules"] = []
+                return dict(state)
+
+        controller = adapter._EvejsNpcTargetController(
+            Remote(), entity_id, dict(state)
+        )
+        controller.apply_legacy_draft([])
+        self.assertEqual(calls, [
+            ("unload", entity_id, 801),
+            ("unfit", entity_id, 701),
+        ])
+
+    def test_target_controller_checks_cargo_before_removing_current_fit(self):
+        entity_id = 980000000001
+        state = {
+            "trusted": True, "entityID": entity_id,
+            "fittingPath": "legacy", "hull": {"typeID": 72207},
+            "modules": [{
+                "moduleID": 701, "typeID": 100,
+                "flagID": 11, "charges": [],
+            }],
+            "availableModules": [], "availableCharges": [],
+        }
+        calls = []
+
+        class Remote:
+            def GetNpcFittingState(self, target_id):
+                return state
+
+            def UnfitItem(self, target_id, module_id):
+                calls.append((target_id, module_id))
+                raise AssertionError("unfit must not be reached")
+
+        controller = adapter._EvejsNpcTargetController(
+            Remote(), entity_id, state
+        )
+        with self.assertRaisesRegex(RuntimeError, "needs 1 items"):
+            controller.apply_legacy_draft([(101, 11)])
+        self.assertEqual(calls, [])
+
+    def test_window_factory_does_not_return_its_module_function(self):
+        class BaseWindow:
+            @classmethod
+            def GetIfOpen(cls):
+                return None
+
+            @classmethod
+            def Open(cls, **kwargs):
+                return cls, kwargs
+
+        scroll_module = types.ModuleType(
+            "carbonui.control.scrollContainer"
+        )
+        scroll_module.ScrollContainer = object
+        modules = {
+            "eveui": types.ModuleType("eveui"),
+            "carbonui": types.ModuleType("carbonui"),
+            "carbonui.control": types.ModuleType("carbonui.control"),
+            "carbonui.control.scrollContainer": scroll_module,
+        }
+        namespace = {
+            "Window": BaseWindow,
+            # The bytecode wrapper executes the adapter in its module globals.
+            "_evejs_npc_fitting_window_type": adapter._evejs_npc_fitting_window_type,
+        }
+        with mock.patch.dict(sys.modules, modules):
+            window_type = adapter._evejs_npc_fitting_window_type(namespace)
+            self.assertTrue(issubclass(window_type, BaseWindow))
+            self.assertIs(
+                namespace["_evejs_npc_fitting_window_class"], window_type
+            )
+            self.assertIs(
+                adapter._evejs_npc_fitting_window_type(namespace), window_type
+            )
+            opened_type, attributes = adapter._evejs_open_npc_fitting_window(
+                namespace, 980000000001, {"trusted": True}
+            )
+        self.assertIs(opened_type, window_type)
+        self.assertEqual(attributes["npc_entity_id"], 980000000001)
+
     def test_presenter_replaces_state_after_each_server_authorized_mutation(self):
         calls = []
 
@@ -279,6 +720,149 @@ class NpcFittingPresenterTests(unittest.TestCase):
 
 
 class NpcFittingMenuTests(unittest.TestCase):
+    def test_board_ship_is_only_offered_for_an_unoccupied_hull(self):
+        class Remote:
+            def CanInteractNpc(self, entity_id):
+                return {"canInteract": True, "canModifyFittings": False}
+
+        class MenuSvc:
+            def CelestialMenu(self, itemID, *args, **kwargs):
+                return [
+                    ["Board Ship", lambda: None, ()],
+                    ["Show Info", lambda: None, ()],
+                ]
+
+        slim_items = {
+            980000000008: NS(categoryID=6, charID=1500000001),
+            980000000009: NS(categoryID=6, charID=1400000001),
+            980000000010: NS(categoryID=6, charID=None),
+        }
+        namespace = {
+            "MenuSvc": MenuSvc,
+            "sm": NS(
+                RemoteSvc=lambda name: Remote(),
+                GetService=lambda name: NS(
+                    GetBallpark=lambda: NS(slimItems=slim_items)
+                ),
+            ),
+        }
+        npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
+        service = MenuSvc()
+        self.assertEqual(
+            [row[0] for row in service.CelestialMenu(980000000008)],
+            ["Show Info", "Interact"],
+        )
+        self.assertEqual(
+            [row[0] for row in service.CelestialMenu(980000000009)],
+            ["Show Info"],
+        )
+        self.assertEqual(
+            [row[0] for row in service.CelestialMenu(980000000010)],
+            ["Board Ship", "Show Info"],
+        )
+
+    def test_high_id_asteroid_keeps_the_retail_menu(self):
+        calls = []
+
+        class MenuSvc:
+            def CelestialMenu(self, itemID, *args, **kwargs):
+                return [["Show Info", lambda: None, ()]]
+
+        def remote_service(name):
+            calls.append(name)
+            raise RuntimeError("No NPC or assembly action")
+
+        namespace = {
+            "MenuSvc": MenuSvc,
+            "sm": NS(
+                RemoteSvc=remote_service,
+                GetService=lambda name: NS(GetBallpark=lambda: NS(
+                    slimItems={5000000000001: NS(categoryID=25)}
+                )),
+            ),
+        }
+        npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
+        menu = MenuSvc().CelestialMenu(
+            5000000000001, crData=NS(categoryID=25)
+        )
+        self.assertEqual([row[0] for row in menu], ["Show Info"])
+        self.assertEqual(
+            [row[0] for row in MenuSvc().CelestialMenu(5000000000001)],
+            ["Show Info"],
+        )
+        self.assertNotIn("npcFittingMgr", calls)
+
+    def test_piloted_npc_ship_gets_interaction_but_player_ship_does_not(self):
+        class Remote:
+            def CanInteractNpc(self, entity_id):
+                return {"canInteract": True, "canModifyFittings": False}
+
+        class MenuSvc:
+            def CelestialMenu(self, itemID, *args, **kwargs):
+                return [["Show Info", lambda: None, ()]]
+
+        namespace = {
+            "MenuSvc": MenuSvc,
+            "sm": NS(
+                RemoteSvc=lambda name: Remote(),
+                GetService=lambda name: NS(GetBallpark=lambda: NS(
+                    slimItems={
+                        980000000008: NS(categoryID=6, charID=1500000001),
+                    }
+                )),
+            ),
+        }
+        npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
+        service = MenuSvc()
+        self.assertEqual(
+            [row[0] for row in service.CelestialMenu(
+                980000000008,
+                crData=NS(categoryID=6, charID=1500000001),
+            )],
+            ["Show Info", "Interact"],
+        )
+        self.assertEqual(
+            [row[0] for row in service.CelestialMenu(980000000008)],
+            ["Show Info", "Interact"],
+        )
+        self.assertEqual(
+            [row[0] for row in service.CelestialMenu(
+                980000000009,
+                crData=NS(categoryID=6, charID=1400000001),
+            )],
+            ["Show Info"],
+        )
+
+    def test_faction_entity_has_no_player_npc_menu_or_assembly_probe(self):
+        calls = []
+
+        class Remote:
+            def CanInteractNpc(self, entity_id):
+                return {"canInteract": True, "canModifyFittings": False}
+
+        class MenuSvc:
+            def CelestialMenu(self, itemID, *args, **kwargs):
+                return [["Show Info", lambda: None, ()]]
+
+        def remote_service(name):
+            calls.append(name)
+            if name == "smartAssemblyService":
+                raise AssertionError("NPC is not an assembly")
+            return Remote()
+
+        namespace = {
+            "MenuSvc": MenuSvc,
+            "sm": NS(RemoteSvc=remote_service),
+        }
+        npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
+        self.assertEqual(
+            [row[0] for row in MenuSvc().CelestialMenu(
+                980000000004, crData=NS(categoryID=11)
+            )],
+            ["Show Info"],
+        )
+        self.assertEqual(calls, [])
+
     def test_retail_npc_menu_failure_keeps_interaction_action_available(self):
         class Remote:
             def CanInteractNpc(self, entity_id):
@@ -294,11 +878,19 @@ class NpcFittingMenuTests(unittest.TestCase):
         }
         npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
         self.assertEqual(
-            [row[0] for row in MenuSvc().CelestialMenu(980000000001)],
+            [row[0] for row in MenuSvc().CelestialMenu(
+                980000000001, crData=NS(categoryID=6, charID=1500000001)
+            )],
             ["Interact"],
         )
         with self.assertRaisesRegex(RuntimeError, "retail menu command"):
+            MenuSvc().CelestialMenu(980000000001, crData=NS(categoryID=11))
+        with self.assertRaisesRegex(RuntimeError, "retail menu command"):
             MenuSvc().CelestialMenu(123)
+        with self.assertRaisesRegex(RuntimeError, "retail menu command"):
+            MenuSvc().CelestialMenu(
+                5000000000001, crData=NS(categoryID=25)
+            )
 
     def test_interaction_orders_use_server_probe_and_typed_rpc(self):
         calls = []
@@ -392,11 +984,15 @@ class NpcFittingMenuTests(unittest.TestCase):
             npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
             service = MenuSvc()
             self.assertEqual(
-                [row[0] for row in service.CelestialMenu(980000000001)],
+                [row[0] for row in service.CelestialMenu(
+                    980000000001, crData=NS(categoryID=6, charID=1500000001)
+                )],
                 ["Show Info", "Interact"],
             )
             trusted = True
-            menu = service.CelestialMenu(980000000001)
+            menu = service.CelestialMenu(
+                980000000001, crData=NS(categoryID=6, charID=1500000001)
+            )
             self.assertEqual([row[0] for row in menu], [
                 "Show Info", "Interact", "Modify Fittings",
             ])
@@ -579,7 +1175,9 @@ class NpcFittingMenuTests(unittest.TestCase):
         }
         npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
         self.assertEqual(
-            [row[0] for row in MenuSvc().CelestialMenu(980000000001)],
+            [row[0] for row in MenuSvc().CelestialMenu(
+                980000000001, crData=NS(categoryID=6, charID=1500000001)
+            )],
             ["Show Info", "Interact"],
         )
 
@@ -627,46 +1225,77 @@ class NpcFittingMenuTests(unittest.TestCase):
 
 
 class NpcPrimaryActionTests(unittest.TestCase):
-    def test_interact_key_uses_the_npc_action_within_five_km(self):
-        calls = []
+    def test_unavailable_ballpark_preserves_retail_action(self):
+        action = NS(primary=NS(label_path="UI/Inflight/BoardShip"), secondary=None)
 
+        class Resolver:
+            def resolve(self, bracket_key):
+                return action
+
+        namespace = {
+            "ActionResolver": Resolver,
+            "sm": NS(GetService=lambda name: (_ for _ in ()).throw(
+                RuntimeError("ballpark unavailable")
+            )),
+        }
+        npc_primary_adapter._evejs_install_npc_primary_action(namespace)
+        self.assertIs(Resolver().resolve(NS(ball_id=980000000008)), action)
+
+    def test_boarding_is_removed_when_it_is_the_secondary_action(self):
+        class Resolver:
+            def resolve(self, bracket_key):
+                return NS(
+                    primary=NS(label_path="UI/Inflight/UnlockTarget"),
+                    secondary=NS(label_path="UI/Inflight/BoardShip"),
+                )
+
+        namespace = {
+            "ActionResolver": Resolver,
+            "sm": NS(GetService=lambda name: NS(
+                GetBallpark=lambda: NS(slimItems={
+                    980000000008: NS(categoryID=6, charID=1500000001),
+                })
+            )),
+        }
+        npc_primary_adapter._evejs_install_npc_primary_action(namespace)
+        action = Resolver().resolve(NS(ball_id=980000000008))
+        self.assertEqual(action.primary.label_path, "UI/Inflight/UnlockTarget")
+        self.assertIsNone(action.secondary)
+
+    def test_occupied_ship_hides_boarding_without_replacing_it_with_interact(self):
         class BallKey:
             def __init__(self, ball_id):
                 self.ball_id = ball_id
 
         class Resolver:
-            def __init__(self):
-                self.distance = 4999
-                self._menu_service = NS(EvejsInteractNpc=lambda item_id: (
-                    calls.append(item_id), "interaction-window"
-                )[1])
-
             def resolve(self, bracket_key):
-                return NS(primary="native", secondary="secondary")
+                return NS(
+                    primary=NS(label_path="UI/Inflight/BoardShip"),
+                    secondary=NS(label_path="UI/Inflight/UnlockTarget"),
+                )
 
-            def _get_distance_to_ball(self, ball_id):
-                return self.distance
-
+        slim_items = {
+            980000000008: NS(categoryID=6, charID=1500000001),
+            980000000009: NS(categoryID=6, charID=1400000001),
+            980000000010: NS(categoryID=6, charID=None),
+        }
         namespace = {
             "ActionResolver": Resolver,
-            "ActionData": lambda **kwargs: NS(**kwargs),
-            "ResolvedActions": lambda **kwargs: NS(**kwargs),
-            "BallKey": BallKey,
+            "sm": NS(GetService=lambda name: NS(
+                GetBallpark=lambda: NS(slimItems=slim_items)
+            )),
         }
+        original = Resolver.resolve
         npc_primary_adapter._evejs_install_npc_primary_action(namespace)
         npc_primary_adapter._evejs_install_npc_primary_action(namespace)
-        resolver = Resolver()
-        action = resolver.resolve(BallKey(980000000007))
-        self.assertEqual(action.primary.label_path, "UI/SmartDeployable/Interact")
-        self.assertEqual(action.secondary, "secondary")
-        self.assertEqual(
-            action.primary.callback(NS(clicked=True)), "interaction-window"
-        )
-        self.assertEqual(calls, [980000000007])
-        resolver.distance = 5001
-        self.assertEqual(resolver.resolve(BallKey(980000000007)).primary, "native")
-        resolver.distance = 100
-        self.assertEqual(resolver.resolve(BallKey(8001)).primary, "native")
+        self.assertIsNot(Resolver.resolve, original)
+        for ship_id in (980000000008, 980000000009):
+            action = Resolver().resolve(BallKey(ship_id))
+            self.assertEqual(action.primary.label_path, "UI/Inflight/UnlockTarget")
+            self.assertIsNone(action.secondary)
+        action = Resolver().resolve(BallKey(980000000010))
+        self.assertEqual(action.primary.label_path, "UI/Inflight/BoardShip")
+        self.assertEqual(action.secondary.label_path, "UI/Inflight/UnlockTarget")
 
 
 class AssemblyAccessPresenterTests(unittest.TestCase):

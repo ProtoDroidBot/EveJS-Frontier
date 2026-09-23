@@ -123,6 +123,10 @@ const {
   evaluateSafeLogoffConditions,
   isSafeLogoffEnabled,
 } = require(path.join(__dirname, "./safeLogoffRuntime"));
+const {
+  beginSelfDestruct,
+  abortSelfDestruct,
+} = require(path.join(__dirname, "./selfDestructRuntime"));
 const DBTYPE_I4 = 0x03;
 const DBTYPE_R8 = 0x05;
 const DBTYPE_BOOL = 0x0b;
@@ -1920,6 +1924,28 @@ class ShipService extends BaseService {
     return null;
   }
 
+  Handle_SelfDestruct(args, session, kwargs) {
+    const shipID = normalizeInteger(args && args[0], 0);
+    const result = beginSelfDestruct(session, shipID);
+    if (!result.success) {
+      throwWrappedUserError("CustomNotify", {
+        notify: `Cannot self-destruct this ship: ${result.errorMsg}.`,
+      });
+    }
+    return null;
+  }
+
+  Handle_AbortSelfDestruct(args, session, kwargs) {
+    const shipID = normalizeInteger(args && args[0], 0);
+    const result = abortSelfDestruct(session, shipID);
+    if (!result.success) {
+      throwWrappedUserError("CustomNotify", {
+        notify: `Cannot abort self-destruct: ${result.errorMsg}.`,
+      });
+    }
+    return null;
+  }
+
   Handle_MachoResolveObject(args, session, kwargs) {
     const bindParameter = args && args[0];
     void bindParameter;
@@ -2033,7 +2059,8 @@ class ShipService extends BaseService {
 
   callMethod(method, args, session, kwargs) {
     const response = super.callMethod(method, args, session, kwargs);
-    if (response !== null) {
+    const normalizedMethod = normalizeMethodName(method);
+    if (response !== null || normalizedMethod === "SelfDestruct" || normalizedMethod === "AbortSelfDestruct") {
       return response;
     }
 

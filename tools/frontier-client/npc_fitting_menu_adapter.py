@@ -5,6 +5,10 @@ from functools import wraps
 import uuid
 
 NPC_ENTITY_ID_FLOOR = 980000000000
+NPC_ENTITY_CATEGORY_ID = 11
+SHIP_CATEGORY_ID = 6
+NPC_PILOT_ID_MIN = 1500000000
+NPC_PILOT_ID_MAX = 1599999999
 
 
 def _evejs_runtime_global(namespace, name):
@@ -27,6 +31,78 @@ def _evejs_value(value, key, default=None):
         return getattr(value, key, default)
     except Exception:
         return default
+
+
+def _evejs_npc_menu_kind(namespace, entity_id, cr_data=None):
+    if not isinstance(entity_id, int) or entity_id < NPC_ENTITY_ID_FLOOR:
+        return None
+    category_id = _evejs_value(cr_data, "categoryID")
+    pilot_id = _evejs_value(cr_data, "charID")
+    if category_id is None or (str(category_id) == str(SHIP_CATEGORY_ID) and
+                               pilot_id is None):
+        try:
+            ballpark = _evejs_service_manager(namespace).GetService(
+                "michelle"
+            ).GetBallpark()
+            slim_item = ballpark.slimItems.get(entity_id)
+        except Exception:
+            return None
+        if category_id is None:
+            category_id = _evejs_value(slim_item, "categoryID")
+        if pilot_id is None:
+            pilot_id = _evejs_value(slim_item, "charID")
+    try:
+        category_id = int(category_id)
+        if category_id == NPC_ENTITY_CATEGORY_ID:
+            return "entity"
+        pilot_id = int(pilot_id or 0)
+        if (category_id == SHIP_CATEGORY_ID and
+                NPC_PILOT_ID_MIN <= pilot_id <= NPC_PILOT_ID_MAX):
+            return "pilot"
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _evejs_ship_is_occupied(namespace, entity_id, cr_data=None):
+    if not isinstance(entity_id, int):
+        return False
+    category_id = _evejs_value(cr_data, "categoryID")
+    pilot_id = _evejs_value(cr_data, "charID")
+    if category_id is None or pilot_id is None:
+        try:
+            ballpark = _evejs_service_manager(namespace).GetService(
+                "michelle"
+            ).GetBallpark()
+            slim_item = ballpark.slimItems.get(entity_id)
+        except Exception:
+            slim_item = None
+        if category_id is None:
+            category_id = _evejs_value(slim_item, "categoryID")
+        if pilot_id is None:
+            pilot_id = _evejs_value(slim_item, "charID")
+    try:
+        return int(category_id) == SHIP_CATEGORY_ID and int(pilot_id or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _evejs_is_ship_boarding_row(row):
+    if not isinstance(row, (list, tuple)) or not row:
+        return False
+    try:
+        label = str(row[0]).strip().lower()
+    except Exception:
+        return False
+    return label in (
+        "board ship",
+        "board berthed ship",
+        "swap and board ship",
+        "ui/inflight/boardship",
+        "ui/inflight/boardberthedship",
+        "ui/inflight/swapandboardship",
+        "ui/inflight/pos/boardshipfrombay",
+    )
 
 
 def _evejs_list(value):
@@ -779,6 +855,15 @@ def _evejs_npc_interaction_window_type(namespace):
                 align=eveui.Align.to_top,
                 text="NPC",
             )
+            try:
+                self._pilot_label = eveui.EveLabelMedium(
+                    parent=root,
+                    align=eveui.Align.to_top,
+                    padTop=4,
+                    text="",
+                )
+            except Exception:
+                self._pilot_label = None
             self._status = eveui.EveLabelMedium(
                 parent=root,
                 align=eveui.Align.to_top,
@@ -926,6 +1011,18 @@ def _evejs_npc_interaction_window_type(namespace):
                 probe, "displayName", "NPC {}".format(self._entity_id)
             )
             self._npc_name_label.text = str(name)
+            pilot = _evejs_value(probe, "pilot")
+            pilot_id = _evejs_value(pilot, "characterID", 0)
+            pilot_name = str(_evejs_value(pilot, "characterName", "") or "")
+            if self._pilot_label is not None:
+                try:
+                    self._pilot_label.text = (
+                        "Pilot: {} ({})".format(pilot_name, pilot_id)
+                        if pilot_id and pilot_name else ""
+                    )
+                    self._pilot_label.display = bool(pilot_id and pilot_name)
+                except Exception:
+                    pass
             self.SetCaption("NPC Orders: {}".format(name))
             can_fit = can_interact and _evejs_value(
                 probe, "canModifyFittings", False
@@ -987,7 +1084,8 @@ def _evejs_install_npc_fitting_menu(namespace):
         parentID=None,
         hint=None,
     ):
-        is_npc = isinstance(itemID, int) and itemID >= NPC_ENTITY_ID_FLOOR
+        npc_kind = _evejs_npc_menu_kind(namespace, itemID, crData)
+        is_npc = npc_kind == "pilot"
         try:
             menu = original(
                 self, itemID, mapItem, crData, typeID, parentID, hint
@@ -1000,6 +1098,12 @@ def _evejs_install_npc_fitting_menu(namespace):
             menu = []
         if isinstance(itemID, list):
             return menu
+        if _evejs_ship_is_occupied(namespace, itemID, crData):
+            try:
+                menu[:] = [row for row in menu
+                           if not _evejs_is_ship_boarding_row(row)]
+            except Exception:
+                pass
         interaction = _evejs_npc_interaction_probe(namespace, itemID) if is_npc else None
         try:
             if is_npc and not any(
@@ -1023,7 +1127,7 @@ def _evejs_install_npc_fitting_menu(namespace):
         except Exception:
             pass
         try:
-            if _evejs_assembly_access_available(namespace, itemID):
+            if npc_kind is None and _evejs_assembly_access_available(namespace, itemID):
                 menu.append([
                     "Manage Assembly Access",
                     _evejs_open_assembly_access,

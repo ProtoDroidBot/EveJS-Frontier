@@ -2357,6 +2357,20 @@ function boardSpaceShip(session, shipID) {
             errorMsg: "SCENE_NOT_FOUND",
         };
     }
+    const visibleTargetEntity = scene.getEntityByID(targetShipID);
+    if (visibleTargetEntity &&
+        visibleTargetEntity.kind === "ship" &&
+        scene.canSessionSeeDynamicEntity(session, visibleTargetEntity) &&
+        ((visibleTargetEntity.session && visibleTargetEntity.session !== session) ||
+            Number(visibleTargetEntity.npcCharacterID ||
+                visibleTargetEntity.pilotCharacterID ||
+                visibleTargetEntity.characterID ||
+                0) > 0)) {
+        return {
+            success: false,
+            errorMsg: "SHIP_ALREADY_OCCUPIED",
+        };
+    }
     const targetShip = findCharacterShip(session.characterID, targetShipID);
     if (!targetShip) {
         return {
@@ -2370,7 +2384,7 @@ function boardSpaceShip(session, shipID) {
             errorMsg: "SHIP_NOT_IN_SYSTEM",
         };
     }
-    const targetEntity = scene.getEntityByID(targetShipID);
+    const targetEntity = visibleTargetEntity;
     if (!targetEntity || targetEntity.kind !== "ship") {
         return {
             success: false,
@@ -2381,12 +2395,6 @@ function boardSpaceShip(session, shipID) {
         return {
             success: false,
             errorMsg: "TARGET_SHIP_NOT_ON_GRID",
-        };
-    }
-    if (targetEntity.session && targetEntity.session !== session) {
-        return {
-            success: false,
-            errorMsg: "SHIP_ALREADY_OCCUPIED",
         };
     }
     if (!canEntitiesInteractLocally(currentEntity, targetEntity)) {

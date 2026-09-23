@@ -51,6 +51,7 @@
     },
     "typeMembership": {
       "includedTypeIDs": [],
+      "includedCategoryIDs": [6],
       "excludedTypeIDs": [],
       "sdeTypeListIDs": {
         "hull": [],

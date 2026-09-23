@@ -2,6 +2,11 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const itemTypeRegistry = require("../src/services/inventory/itemTypeRegistry");
+itemTypeRegistry._setEntriesForTests([
+  { typeID: 1230, name: "Veldspar", groupID: 462, categoryID: 25, groupName: "Veldspar", volume: 0.1 },
+  { typeID: 92394, name: "Fine Young Crude Matter", groupID: 4593, categoryID: 25, groupName: "Rift", volume: 1 },
+]);
 
 const {
   DEPLETED_MINEABLE_RESPAWN_DELAY_MS,

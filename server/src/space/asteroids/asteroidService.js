@@ -144,6 +144,9 @@ const GENERATED_ORE_ASTEROID_SHELL_TYPE_IDS = Object.freeze([
     64076,
     64077,
 ]);
+const GENERATED_ORE_ASTEROID_RADIUS_SCALE = 0.25;
+const GENERATED_ORE_ASTEROID_MIN_RADIUS_METERS = 35;
+const GENERATED_ORE_ASTEROID_MAX_RADIUS_METERS = 200;
 function toFiniteNumber(value, fallback = 0) {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : fallback;
@@ -922,6 +925,10 @@ function resolveGeneratedOreAsteroidShellTypeRecord(typeRow, itemID) {
     const shellTypeID = GENERATED_ORE_ASTEROID_SHELL_TYPE_IDS[hashText(`${toPositiveInt(typeRow && typeRow.typeID, 0)}:${toPositiveInt(itemID, 0)}:shell`) % GENERATED_ORE_ASTEROID_SHELL_TYPE_IDS.length];
     return resolveItemByTypeID(shellTypeID) || typeRow || null;
 }
+function resolveGeneratedOreAsteroidRadius(shellTypeRecord) {
+    const shellRadius = toFiniteNumber(shellTypeRecord && shellTypeRecord.radius, 0);
+    return clamp(shellRadius > 0 ? shellRadius * GENERATED_ORE_ASTEROID_RADIUS_SCALE : 75, GENERATED_ORE_ASTEROID_MIN_RADIUS_METERS, GENERATED_ORE_ASTEROID_MAX_RADIUS_METERS);
+}
 function buildSystemOreAsteroidEntity(scene, belt, asteroidIndex, totalCount, fieldProfile, rng, pool, dungeonObjectAnchors = []) {
     const typeRow = selectSystemOreType(pool, rng);
     if (!typeRow) {
@@ -940,6 +947,7 @@ function buildSystemOreAsteroidEntity(scene, belt, asteroidIndex, totalCount, fi
     });
     const visualTypeID = toPositiveInt(visualPresentation.visualTypeID, toPositiveInt(shellTypeRecord && shellTypeRecord.typeID, typeRow.typeID));
     const visualRecord = resolveItemByTypeID(visualTypeID) || shellTypeRecord || typeRow;
+    const radius = resolveGeneratedOreAsteroidRadius(visualRecord);
     const name = carrierTypeRecord.name || `${belt.itemName} Asteroid ${asteroidIndex + 1}`;
     const resourceFieldSource = String(belt.resourceFieldSource || "systemID");
     return {
@@ -962,9 +970,11 @@ function buildSystemOreAsteroidEntity(scene, belt, asteroidIndex, totalCount, fi
         itemName: name,
         slimName: name,
         ownerID: 1,
-        radius: Math.max(500, toFiniteNumber(visualRecord.radius, toFiniteNumber(typeRow.radius, 1_800))),
+        radius,
+        miningBaseRadius: radius,
         graphicID: toPositiveInt(visualPresentation.graphicID, toPositiveInt(visualRecord.graphicID, 0)),
-        slimGraphicID: toPositiveInt(visualPresentation.graphicID, toPositiveInt(visualRecord.graphicID, 0)),
+        slimGraphicID: null,
+        suppressSlimGraphicID: true,
         visualTypeID,
         position,
         velocity: { x: 0, y: 0, z: 0 },
@@ -1186,6 +1196,8 @@ module.exports = {
         buildEnrichedSystemOrePool,
         buildBeltOreSubset,
         buildFrontierResourcePool,
+        buildSystemOreAsteroidEntity,
+        resolveGeneratedOreAsteroidRadius,
         getTypeDogmaAttributeValue,
     },
 };

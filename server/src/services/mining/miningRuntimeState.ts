@@ -586,7 +586,9 @@ function applyYieldPresentationToEntity(entity, state, summary = null) {
           0.000001,
           toFiniteNumber(config.miningBeltQuantityScale, 0.08),
         ),
-        fallbackMinRadius: Math.max(250, state.originalRadius * 0.2),
+        fallbackMinRadius: entity.generatedAsteroid === true
+          ? Math.max(1, state.originalRadius * 0.2)
+          : Math.max(250, state.originalRadius * 0.2),
         fallbackMaxRadius: Math.max(state.originalRadius, entity.radius),
       },
     );
@@ -873,15 +875,20 @@ function buildMineableState(scene, entity, persistedState = null) {
     ? rawPersistedState
     : null;
 
-  const originalRadius = Math.max(
-    1,
-    toFiniteNumber(
-      normalizedPersistedState
-        ? normalizedPersistedState.originalRadius
-        : undefined,
-      entity && entity.radius,
-    ),
-  );
+  const generatedBaseRadius = entity && entity.generatedAsteroid === true
+    ? toFiniteNumber(entity.miningBaseRadius, 0)
+    : 0;
+  const originalRadius = generatedBaseRadius > 0
+    ? generatedBaseRadius
+    : Math.max(
+      1,
+      toFiniteNumber(
+        normalizedPersistedState
+          ? normalizedPersistedState.originalRadius
+          : undefined,
+        entity && entity.radius,
+      ),
+    );
   const originalQuantity = Math.max(
     1,
     toInt(
@@ -2031,6 +2038,7 @@ module.exports = {
   _testing: {
     getTemplateEntriesForFieldStyle,
     buildTemplateEntriesForOreDefinition,
+    buildMineableState,
     applyYieldPresentationToEntity,
     getDepletedMineableRespawnAtMs,
     isDepletedMineableRespawnDue,
