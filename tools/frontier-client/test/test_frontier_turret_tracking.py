@@ -8,6 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 import zipfile
 
 
@@ -135,6 +136,31 @@ class TurretTrackingTests(unittest.TestCase):
 
 
 class TurretTrackingPatchTests(unittest.TestCase):
+    def test_exact_previous_wrapper_is_upgradeable(self):
+        original = (
+            importlib.util.MAGIC_NUMBER + bytes(12) +
+            marshal.dumps(compile("class TurretSvc: pass\n", "fixture.py", "exec"))
+        )
+        wrapper = marshal.loads(patcher.patched_member(original)[16:])
+        old_adapter = marshal.dumps(compile("pass\n", "evejs/turret_target_tracking_adapter.py", "exec"))
+        constants = tuple(
+            old_adapter if isinstance(value, bytes) and value != original else value
+            for value in wrapper.co_consts
+        )
+        previous = original[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
+        with mock.patch.object(patcher, "SOURCE_MEMBER_SHA256", hashlib.sha256(original).hexdigest()), \
+             mock.patch.object(patcher, "PREVIOUS_WRAPPER_SHA256", {hashlib.sha256(previous).hexdigest()}), \
+             tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "code.ccp"
+            with zipfile.ZipFile(archive, "w") as target:
+                target.writestr(patcher.MODULE_NAME, previous)
+            self.assertEqual(patcher.inspect_archive(archive)[0], "outdated")
+            patcher.patch_archive(archive)
+            self.assertEqual(patcher.inspect_archive(archive)[0], "patched")
+            once = archive.read_bytes()
+            patcher.patch_archive(archive)
+            self.assertEqual(archive.read_bytes(), once)
+
     def test_exact_archive_patch_preserves_other_members_and_is_idempotent(self):
         original = (
             importlib.util.MAGIC_NUMBER + bytes(12) +

@@ -405,43 +405,63 @@ def _evejs_install_creation_preset_view(namespace):
 
         def _render(self):
             self._status_text.text = self._presenter.status
-            self._details_text.text = self._presenter.selected_details()
-            self._preview_text.text = self._presenter.preview_details()
-            self._apply_button.state = (
-                normal_state if self._presenter.can_apply else disabled_state
-            )
+            try:
+                self._details_text.text = self._presenter.selected_details()
+            except Exception:
+                self._details_text.text = "Preset details unavailable"
+            try:
+                self._preview_text.text = self._presenter.preview_details()
+            except Exception:
+                self._preview_text.text = "Preview details unavailable"
+            try:
+                self._apply_button.state = (
+                    normal_state if self._presenter.can_apply else disabled_state
+                )
+            except Exception:
+                self._apply_button.state = disabled_state
             self._list.Flush()
             for preset in self._presenter.presets:
-                preset_id = str(_evejs_value(preset, "presetID", ""))
-                summary = _evejs_value(preset, "summary", {})
-                selected = preset_id == self._presenter.selected_id
-                label = "{}{}  |  {} modules / {} cells".format(
-                    "> " if selected else "",
-                    _evejs_value(preset, "name", "Unnamed"),
-                    _evejs_value(summary, "moduleCount", 0),
-                    _evejs_value(summary, "cellCount", 0),
-                )
-                Button(
-                    parent=self._list,
-                    align=Align.TOTOP,
-                    height=32,
-                    label=label,
-                    func=lambda *args, preset_id=preset_id:
-                    self._on_select(preset_id),
-                )
+                try:
+                    preset_id = str(_evejs_value(preset, "presetID", ""))
+                    summary = _evejs_value(preset, "summary", {})
+                    selected = preset_id == self._presenter.selected_id
+                    label = "{}{}  |  {} modules / {} cells".format(
+                        "> " if selected else "",
+                        _evejs_value(preset, "name", "Unnamed"),
+                        _evejs_value(summary, "moduleCount", 0),
+                        _evejs_value(summary, "cellCount", 0),
+                    )
+                    Button(
+                        parent=self._list,
+                        align=Align.TOTOP,
+                        height=32,
+                        label=label,
+                        func=lambda *args, preset_id=preset_id:
+                        self._on_select(preset_id),
+                    )
+                except Exception:
+                    continue
+
+        def _perform(self, callback):
+            try:
+                callback()
+            except Exception as error:
+                self._presenter.status = "Preset action failed: {}".format(error)
+            self._render()
 
         def _on_select(self, preset_id):
             self._pending_delete_id = None
-            preset = self._presenter.select(preset_id)
-            if preset is not None:
-                self._set_edit_value(
-                    self._name_edit, _evejs_value(preset, "name", "")
-                )
-                self._set_edit_value(
-                    self._description_edit,
-                    _evejs_value(preset, "description", ""),
-                )
-            self._render()
+            def select():
+                preset = self._presenter.select(preset_id)
+                if preset is not None:
+                    self._set_edit_value(
+                        self._name_edit, _evejs_value(preset, "name", "")
+                    )
+                    self._set_edit_value(
+                        self._description_edit,
+                        _evejs_value(preset, "description", ""),
+                    )
+            self._perform(select)
 
         def _on_refresh(self, *args):
             self._pending_delete_id = None
@@ -449,19 +469,17 @@ def _evejs_install_creation_preset_view(namespace):
 
         def _on_save(self, *args):
             self._pending_delete_id = None
-            self._presenter.save(
+            self._perform(lambda: self._presenter.save(
                 self._edit_value(self._name_edit),
                 self._edit_value(self._description_edit),
-            )
-            self._render()
+            ))
 
         def _on_rename(self, *args):
             self._pending_delete_id = None
-            self._presenter.rename(
+            self._perform(lambda: self._presenter.rename(
                 self._edit_value(self._name_edit),
                 self._edit_value(self._description_edit),
-            )
-            self._render()
+            ))
 
         def _on_delete(self, *args):
             preset_id = self._presenter.selected_id
@@ -477,13 +495,11 @@ def _evejs_install_creation_preset_view(namespace):
 
         def _on_preview(self, *args):
             self._pending_delete_id = None
-            self._presenter.preview_selected()
-            self._render()
+            self._perform(self._presenter.preview_selected)
 
         def _on_apply(self, *args):
             self._pending_delete_id = None
-            self._presenter.apply_selected()
-            self._render()
+            self._perform(self._presenter.apply_selected)
 
         def _on_presets_changed(self, *args):
             self._refresh()
@@ -506,26 +522,32 @@ def _evejs_install_creation_preset_view(namespace):
     @wraps(original_init)
     def __init__(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
-        service_manager = _evejs_runtime_global(namespace, "sm")
-        current_session = _evejs_runtime_global(namespace, "session")
-        service = service_manager.GetService("creation")
-        creation_id = getattr(current_session, "shipid", None)
-        panel = CreationPresetPanel(
-            parent=self,
-            align=Align.TOALL,
-            service=service,
-            creation_id=creation_id,
-            creation_type_id=_evejs_active_creation_type_id(service),
-        )
-        panel.display = False
-        self._evejs_creation_presets_panel = panel
-        self._evejs_preset_selected = False
-        self._panels_by_tab_id[_EVEJS_PRESETS_TAB_ID] = panel
-        self._tabs.AddTab(
-            tabID=_EVEJS_PRESETS_TAB_ID,
-            label="Presets",
-            tabClass=big_tab_type,
-        )
+        try:
+            service_manager = _evejs_runtime_global(namespace, "sm")
+            current_session = _evejs_runtime_global(namespace, "session")
+            service = service_manager.GetService("creation")
+            creation_id = getattr(current_session, "shipid", None)
+            panel = CreationPresetPanel(
+                parent=self,
+                align=Align.TOALL,
+                service=service,
+                creation_id=creation_id,
+                creation_type_id=_evejs_active_creation_type_id(service),
+            )
+            panel.display = False
+            self._evejs_creation_presets_panel = panel
+            self._evejs_preset_selected = False
+            self._panels_by_tab_id[_EVEJS_PRESETS_TAB_ID] = panel
+            self._tabs.AddTab(
+                tabID=_EVEJS_PRESETS_TAB_ID,
+                label="Presets",
+                tabClass=big_tab_type,
+            )
+        except Exception:
+            # Presets are optional; the native management tabs stay usable.
+            getattr(self, "_panels_by_tab_id", {}).pop(
+                _EVEJS_PRESETS_TAB_ID, None
+            )
 
     @wraps(original_on_tab_group)
     def on_tab_group(self, selected_id, old_id):

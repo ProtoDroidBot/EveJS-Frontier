@@ -48,26 +48,37 @@ class _EvejsNpcFittingPresenter:
 
     @property
     def modules(self):
-        return _evejs_list(_evejs_value(self.state, "modules", []))
+        try:
+            return _evejs_list(_evejs_value(self.state, "modules", []))
+        except Exception:
+            return []
 
     @property
     def available_modules(self):
-        return _evejs_list(
-            _evejs_value(self.state, "availableModules", [])
-        )
+        try:
+            return _evejs_list(
+                _evejs_value(self.state, "availableModules", [])
+            )
+        except Exception:
+            return []
 
     @property
     def available_charges(self):
-        return _evejs_list(
-            _evejs_value(self.state, "availableCharges", [])
-        )
+        try:
+            return _evejs_list(
+                _evejs_value(self.state, "availableCharges", [])
+            )
+        except Exception:
+            return []
 
     def accept(self, state):
         self.state = state
-        available = {
-            int(_evejs_value(module, "moduleID", 0) or 0)
-            for module in self.modules
-        }
+        available = set()
+        for module in self.modules:
+            try:
+                available.add(int(_evejs_value(module, "moduleID", 0) or 0))
+            except Exception:
+                continue
         if self.selected_module_id not in available:
             self.selected_module_id = None
         self.status = (
@@ -207,13 +218,16 @@ def _evejs_npc_fitting_window_type(namespace):
                 )
 
         def _heading(self, ui, text):
-            ui.EveLabelLarge(
-                parent=self._scroll,
-                align=ui.Align.to_top,
-                text=text,
-                padTop=10,
-                padBottom=4,
-            )
+            try:
+                ui.EveLabelLarge(
+                    parent=self._scroll,
+                    align=ui.Align.to_top,
+                    text=text,
+                    padTop=10,
+                    padBottom=4,
+                )
+            except Exception:
+                pass
 
         def _render(self, ui):
             if not self._presenter.trusted:
@@ -239,75 +253,89 @@ def _evejs_npc_fitting_window_type(namespace):
             if not self._presenter.modules:
                 self._row(ui, "No player-compatible modules are fitted")
             for module in self._presenter.modules:
-                module_id = int(_evejs_value(module, "moduleID", 0) or 0)
-                selected = module_id == self._presenter.selected_module_id
-                online = "online" if _evejs_value(
-                    module, "online", False
-                ) else "offline"
-                text = "{}{}  [{} / {}]".format(
-                    "> " if selected else "",
-                    _evejs_value(module, "itemName", "Module"),
-                    _evejs_value(module, "semanticRole", "module"),
-                    online,
-                )
-                self._row(
-                    ui,
-                    text,
-                    "Select" if not selected else "Unfit",
-                    (
-                        lambda *args, module_id=module_id:
-                        self._on_select(module_id)
-                    ) if not selected else (
-                        lambda *args, module_id=module_id:
-                        self._on_unfit(module_id)
-                    ),
-                )
-                for charge in _evejs_list(
-                    _evejs_value(module, "charges", [])
-                ):
-                    cargo_id = int(
-                        _evejs_value(charge, "cargoID", 0) or 0
+                try:
+                    module_id = int(_evejs_value(module, "moduleID", 0) or 0)
+                    selected = module_id == self._presenter.selected_module_id
+                    online = "online" if _evejs_value(
+                        module, "online", False
+                    ) else "offline"
+                    text = "{}{}  [{} / {}]".format(
+                        "> " if selected else "",
+                        _evejs_value(module, "itemName", "Module"),
+                        _evejs_value(module, "semanticRole", "module"),
+                        online,
                     )
                     self._row(
                         ui,
-                        "    {} x{}".format(
-                            _evejs_value(charge, "itemName", "Charge"),
-                            _evejs_value(charge, "quantity", 0),
+                        text,
+                        "Select" if not selected else "Unfit",
+                        (
+                            lambda *args, module_id=module_id:
+                            self._on_select(module_id)
+                        ) if not selected else (
+                            lambda *args, module_id=module_id:
+                            self._on_unfit(module_id)
                         ),
-                        "Unload",
-                        lambda *args, cargo_id=cargo_id:
-                        self._on_unload(cargo_id),
                     )
+                except Exception:
+                    continue
+                try:
+                    charges = _evejs_list(_evejs_value(module, "charges", []))
+                except Exception:
+                    charges = []
+                for charge in charges:
+                    try:
+                        cargo_id = int(
+                            _evejs_value(charge, "cargoID", 0) or 0
+                        )
+                        self._row(
+                            ui,
+                            "    {} x{}".format(
+                                _evejs_value(charge, "itemName", "Charge"),
+                                _evejs_value(charge, "quantity", 0),
+                            ),
+                            "Unload",
+                            lambda *args, cargo_id=cargo_id:
+                            self._on_unload(cargo_id),
+                        )
+                    except Exception:
+                        continue
 
             self._heading(ui, "Modules in active ship cargo")
             if not self._presenter.available_modules:
                 self._row(ui, "No compatible module items are available")
             for item in self._presenter.available_modules:
-                item_id = int(_evejs_value(item, "itemID", 0) or 0)
-                self._row(
-                    ui,
-                    "{} x{}".format(
-                        _evejs_value(item, "itemName", "Module"),
-                        _evejs_value(item, "quantity", 1),
-                    ),
-                    "Fit",
-                    lambda *args, item_id=item_id: self._on_fit(item_id),
-                )
+                try:
+                    item_id = int(_evejs_value(item, "itemID", 0) or 0)
+                    self._row(
+                        ui,
+                        "{} x{}".format(
+                            _evejs_value(item, "itemName", "Module"),
+                            _evejs_value(item, "quantity", 1),
+                        ),
+                        "Fit",
+                        lambda *args, item_id=item_id: self._on_fit(item_id),
+                    )
+                except Exception:
+                    continue
 
             self._heading(ui, "Charges in active ship cargo")
             if not self._presenter.available_charges:
                 self._row(ui, "No ammunition or fuel is available")
             for item in self._presenter.available_charges:
-                item_id = int(_evejs_value(item, "itemID", 0) or 0)
-                self._row(
-                    ui,
-                    "{} x{}".format(
-                        _evejs_value(item, "itemName", "Charge"),
-                        _evejs_value(item, "quantity", 1),
-                    ),
-                    "Load",
-                    lambda *args, item_id=item_id: self._on_load(item_id),
-                )
+                try:
+                    item_id = int(_evejs_value(item, "itemID", 0) or 0)
+                    self._row(
+                        ui,
+                        "{} x{}".format(
+                            _evejs_value(item, "itemName", "Charge"),
+                            _evejs_value(item, "quantity", 1),
+                        ),
+                        "Load",
+                        lambda *args, item_id=item_id: self._on_load(item_id),
+                    )
+                except Exception:
+                    continue
 
         def _execute(self, callback):
             try:
@@ -330,7 +358,12 @@ def _evejs_npc_fitting_window_type(namespace):
             self._execute(self._presenter.refresh)
 
         def _on_select(self, module_id):
-            self._presenter.select_module(module_id)
+            try:
+                self._presenter.select_module(module_id)
+            except Exception as error:
+                self._presenter.status = "NPC fitting selection failed: {}".format(
+                    error
+                )
             self._render(eveui)
 
         def _on_fit(self, item_id):

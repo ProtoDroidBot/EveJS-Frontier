@@ -139,6 +139,10 @@ function getSessions() {
   return Array.from<any>(sessions).filter(isLiveSession);
 }
 
+function getRegisteredSessions() {
+  return Array.from<any>(sessions);
+}
+
 function isRegisteredSession(session) {
   return sessions.has(session);
 }
@@ -212,6 +216,7 @@ module.exports = {
   register,
   unregister,
   getSessions,
+  getRegisteredSessions,
   isRegisteredSession,
   isCharacterSessionIndexed,
   findSessionByCharacterID,

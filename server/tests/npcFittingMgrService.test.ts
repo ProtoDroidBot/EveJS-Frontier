@@ -422,6 +422,50 @@ test("manual NPC order parser preserves distinct navigation and lock modes", () 
   });
 });
 
+test("blank NPC order target resolves to the initiating player's ship entity", (t) => {
+  const actorShipID = 9988400000109;
+  const npcShip = { itemID: ENTITY_ID, position: { x: 0, y: 0, z: 0 } };
+  const playerShip = { itemID: actorShipID, position: { x: 1000, y: 0, z: 0 } };
+  const issued: any[] = [];
+  t.mock.method(nativeNpcStore, "getNativeEntity", (id) =>
+    Number(id) === ENTITY_ID ? entity() : null);
+  t.mock.method(spaceRuntime, "getEntity", (_session, id) =>
+    Number(id) === actorShipID ? playerShip : null);
+  const { service } = createService({
+    authorizeInteraction: () => ({
+      success: true,
+      data: { shipID: actorShipID, shipEntity: playerShip, npcEntity: npcShip },
+    }),
+    orders: {
+      issueManualOrder(id, order) {
+        issued.push([id, order]);
+        return { success: true };
+      },
+    },
+  });
+  const actorSession = {
+    ...session(),
+    _space: { ...session()._space, shipID: actorShipID },
+  };
+  const probe = unwrapMarshalValue(service.Handle_CanInteractNpc([ENTITY_ID], actorSession));
+  assert.equal(probe.actorShipEntityID, actorShipID);
+  for (const targetID of [undefined, "", actorShipID]) {
+    const order = targetID === undefined
+      ? { type: "approach" }
+      : { type: "approach", targetID };
+    const accepted = unwrapMarshalValue(service.Handle_IssueNpcOrder([
+      ENTITY_ID, order,
+    ], actorSession));
+    assert.equal(accepted.accepted, true);
+    assert.equal(accepted.targetID, actorShipID);
+  }
+  assert.equal(issued.length, 3);
+  assert.equal(issued.every(([, order]) => order.targetID === actorShipID), true);
+  assert.throws(() => service.Handle_IssueNpcOrder([
+    ENTITY_ID, { type: "approach", targetID: 0 },
+  ], actorSession));
+});
+
 test("trusted fitting state is sanitized and only advertises active-ship cargo", () => {
   const { service, cargo } = createService();
   const interaction = unwrapMarshalValue(

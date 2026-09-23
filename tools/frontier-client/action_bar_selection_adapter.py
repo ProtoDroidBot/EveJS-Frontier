@@ -31,21 +31,26 @@ def _evejs_iter_consumable_actions(integration):
 
 
 def _evejs_add_available_consumable_entries(integration, menu, slot_index):
-    placed_keys = {
-        slot.action.key
-        for slot in integration._slots
-        if slot.action is not None
-    }
+    placed_keys = set()
+    for slot in integration._slots:
+        try:
+            if slot.action is not None:
+                placed_keys.add(slot.action.key)
+        except Exception:
+            continue
     available = []
     for action in _evejs_iter_consumable_actions(integration):
-        if action.key in placed_keys or action.item_component is None:
+        try:
+            if action.key in placed_keys or action.item_component is None:
+                continue
+            type_id = action.item_component.type_id
+            available.append((
+                type_id,
+                integration._evejs_action_bar_evetypes.GetName(type_id),
+                action,
+            ))
+        except Exception:
             continue
-        type_id = action.item_component.type_id
-        available.append((
-            type_id,
-            integration._evejs_action_bar_evetypes.GetName(type_id),
-            action,
-        ))
     available.sort(key=lambda row: row[1] or "")
 
     menu.AddCaption("Add consumable")
@@ -54,15 +59,18 @@ def _evejs_add_available_consumable_entries(integration, menu, slot_index):
         return
 
     for type_id, name, action in available:
-        icon_id = integration._evejs_action_bar_evetypes.GetIconID(type_id)
-        menu.AddEntry(
-            text=name,
-            texturePath=integration._evejs_action_bar_get_icon_file(icon_id),
-            func=lambda selected=action: integration._set_slot_action(
-                slot_index=slot_index,
-                action=selected,
-            ),
-        )
+        try:
+            icon_id = integration._evejs_action_bar_evetypes.GetIconID(type_id)
+            menu.AddEntry(
+                text=name,
+                texturePath=integration._evejs_action_bar_get_icon_file(icon_id),
+                func=lambda selected=action: integration._set_slot_action(
+                    slot_index=slot_index,
+                    action=selected,
+                ),
+            )
+        except Exception:
+            continue
 
 
 def _evejs_install_action_bar_selection(namespace):
@@ -105,8 +113,14 @@ def _evejs_install_action_bar_selection(namespace):
 
     @wraps(original_add_entries)
     def add_available_entries(self, menu, slot_index):
-        original_add_entries(self, menu, slot_index)
-        _evejs_add_available_consumable_entries(self, menu, slot_index)
+        try:
+            original_add_entries(self, menu, slot_index)
+        except Exception:
+            pass
+        try:
+            _evejs_add_available_consumable_entries(self, menu, slot_index)
+        except Exception:
+            pass
 
     add_available_entries._evejs_action_bar_selection_patch = True
     integration_type._add_available_module_entries = add_available_entries

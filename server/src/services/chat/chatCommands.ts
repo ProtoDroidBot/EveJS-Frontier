@@ -215,6 +215,9 @@ const {
   DEFAULT_CHAT_COLOR,
   DEFAULT_CHAT_ROLE,
   MAX_ACCOUNT_ROLE,
+  ROLE_GML,
+  ROLE_LEGIONEER,
+  ROLE_WORLDMOD,
   buildPersistedAccountRoleRecord,
   composeSessionRoleMask,
   getChatRoleProfile,
@@ -413,6 +416,7 @@ const AVAILABLE_SLASH_COMMANDS = [
   "motd",
   "mailme",
   "spawnsite",
+  "spawn",
   "assembly",
   "assemblies",
   "landscape",
@@ -495,6 +499,7 @@ const COMMANDS_HELP_TEXT = [
   "/rift <list [name]|inspect template|sites|spawn [template] [placement]|remove siteID|nearest|here>",
   "/allskills",
   "/npc [amount] [faction|profile|pool]",
+  "/spawn <NPC typeID> [count]  (GM test command)",
   "/mnpc [amount] [faction|profile|pool]",
   ...CAPITAL_NPC_HELP_LINES,
   ...WORMHOLE_HELP_LINES,
@@ -7261,6 +7266,45 @@ function handleNpcCommand(session, argumentText, chatHub, options) {
   );
 }
 
+function handleSpawnNpcTypeCommand(session, argumentText, chatHub, options) {
+  const gmRoles = BigInt(ROLE_GML) | BigInt(ROLE_LEGIONEER) | BigInt(ROLE_WORLDMOD);
+  if ((BigInt(normalizeRoleValue(session && session.accountRole, 0n)) & gmRoles) === 0n) {
+    return handledResult(chatHub, session, options, "/spawn requires a GM account.");
+  }
+  const args = String(argumentText || "").trim().split(/\s+/).filter(Boolean);
+  if (
+    args.length < 1 || args.length > 2 ||
+    !/^\d+$/.test(args[0]) ||
+    (args.length === 2 && !/^\d+$/.test(args[1]))
+  ) {
+    return handledResult(chatHub, session, options, "Usage: /spawn <NPC typeID> [count]");
+  }
+  const typeID = Number(args[0]);
+  const count = args.length === 2 ? Number(args[1]) : 1;
+  if (!Number.isSafeInteger(typeID) || typeID <= 0 || !Number.isSafeInteger(count) || count < 1 || count > MAX_NPC_COMMAND_SPAWN_COUNT) {
+    return handledResult(
+      chatHub, session, options,
+      `/spawn requires a positive NPC typeID and a count from 1 to ${MAX_NPC_COMMAND_SPAWN_COUNT}.`,
+    );
+  }
+
+  const result = npcService.spawnNpcTypeBatchForSession(session, typeID, count);
+  if (!result.success) {
+    const message = result.errorMsg === "NOT_IN_SPACE"
+      ? "You must be in space before using /spawn."
+      : result.errorMsg === "SHIP_NOT_FOUND"
+        ? "Active ship was not found in space."
+        : result.errorMsg === "NPC_TYPE_NOT_SPAWNABLE"
+          ? `NPC typeID ${typeID} has no spawnable profile.`
+          : `/spawn failed: ${result.errorMsg || "UNKNOWN_ERROR"}.`;
+    return handledResult(chatHub, session, options, message);
+  }
+  return handledResult(
+    chatHub, session, options,
+    `typeID ${typeID}: ${formatNpcSpawnSummary(result, "/spawn")} Spawn positions are spread around your ship.`,
+  );
+}
+
 function handleMissileNpcCommand(session, argumentText, chatHub, options) {
   const parsedArguments = parseNpcSpawnArguments(argumentText, {
     defaultAmount: 5,
@@ -10924,6 +10968,10 @@ function executeChatCommand(session, rawMessage, chatHub, options: Record<string
 
   if (command === "npc") {
     return handleNpcCommand(session, argumentText, chatHub, options);
+  }
+
+  if (command === "spawn") {
+    return handleSpawnNpcTypeCommand(session, argumentText, chatHub, options);
   }
 
   if (command === "mnpc") {

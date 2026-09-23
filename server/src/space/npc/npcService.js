@@ -4,6 +4,7 @@ const path = require("path");
 const config = require(path.join(__dirname, "../../config"));
 const worldData = require(path.join(__dirname, "../worldData"));
 const spaceRuntime = require(path.join(__dirname, "../runtime"));
+const { resolveItemByTypeID } = require(path.join(__dirname, "../../services/inventory/itemTypeRegistry"));
 const { buildChildEntityScopeMetadata, canEntitiesInteractLocally, resolveEntityInteractionScope, } = require(path.join(__dirname, "../destiny/identity/interactionScope"));
 const wormholeAuthority = require(path.join(__dirname, "../../services/exploration/wormholes/wormholeAuthority"));
 const { buildNpcDefinition, listNpcProfiles, listNpcSpawnPools, listNpcSpawnGroups, listNpcSpawnSites, listNpcStartupRules, resolveNpcProfile, resolveNpcSpawnSite, } = require(path.join(__dirname, "./npcData"));
@@ -201,6 +202,41 @@ function spawnNpcBatchForSession(session, options = {}) {
         }
     }
     return batchResult;
+}
+function resolveNpcTypeProfile(typeID, profiles, typeName = "") {
+    const numericTypeID = toPositiveInt(typeID, 0);
+    const normalizedTypeName = String(typeName || "").trim().toLowerCase();
+    const matches = (Array.isArray(profiles) ? profiles : [])
+        .filter((profile) => (String(profile && profile.entityType || "").toLowerCase() === ENTITY_TYPE.NPC &&
+        toPositiveInt(profile && profile.shipTypeID, 0) === numericTypeID))
+        .sort((left, right) => {
+        const score = (profile) => ((String(profile.name || "").trim().toLowerCase() === normalizedTypeName ? 2 : 0) +
+            (String(profile.shipNameTemplate || "").trim().toLowerCase() === normalizedTypeName ? 1 : 0));
+        return score(right) - score(left) ||
+            String(left.profileID || "").localeCompare(String(right.profileID || ""));
+    });
+    return matches[0] || null;
+}
+function spawnNpcTypeBatchForSession(session, typeID, amount = 1) {
+    const numericTypeID = toPositiveInt(typeID, 0);
+    const requestedAmount = toPositiveInt(amount, 0);
+    if (!numericTypeID || requestedAmount < 1 || requestedAmount > 50) {
+        return { success: false, errorMsg: "NPC_TYPE_SPAWN_ARGUMENTS_INVALID" };
+    }
+    const itemType = resolveItemByTypeID(numericTypeID);
+    const profile = resolveNpcTypeProfile(numericTypeID, listNpcProfiles(), itemType && itemType.name);
+    if (!profile) {
+        return { success: false, errorMsg: "NPC_TYPE_NOT_SPAWNABLE" };
+    }
+    return spawnNpcBatchForSession(session, {
+        profileQuery: profile.profileID,
+        amount: requestedAmount,
+        preferPools: false,
+        spawnDistanceMeters: 25_000,
+        spreadMeters: 0,
+        formationSpacingMeters: 0,
+        formationStyle: "fibonacci",
+    });
 }
 function spawnNpcBatchInSystem(systemID, options = {}) {
     const spawnOptions = normalizeNpcSpawnOptions(options);
@@ -1664,6 +1700,7 @@ module.exports = {
     getGateOperatorState,
     resolveProfileDefinition,
     spawnNpcBatchForSession,
+    spawnNpcTypeBatchForSession,
     spawnNpcBatchInSystem,
     spawnNpcForSession,
     spawnConcordBatchForSession,
@@ -1693,6 +1730,7 @@ module.exports = {
     wakeNpcController,
     scheduleNpcController,
     _testing: {
+        resolveNpcTypeProfile,
         ruleAppliesToSystem,
         collectExistingStartupGroupSlots,
         spawnExactEverMoreGatePresenceForAnchor,

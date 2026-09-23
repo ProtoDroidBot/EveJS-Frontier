@@ -42,6 +42,14 @@ const startTCPServer = require(path.join(__dirname, "./src/network/tcp"));
 
 // database
 const database = require(path.join(__dirname, "./src/gameStore"));
+const sessionRegistry = require(path.join(__dirname, "./src/services/chat/sessionRegistry"));
+const spaceRuntime = require(path.join(__dirname, "./src/space/runtime"));
+const { disconnectCharacterSession } = require(path.join(
+  __dirname, "./src/services/_shared/sessionDisconnect",
+));
+const { shutdownWorld } = require(path.join(
+  __dirname, "./src/services/_shared/worldShutdown",
+));
 
 // main startup
 
@@ -135,6 +143,13 @@ if (config.asteroidBeltStartupReset === true) {
 const serviceManager = new ServiceManager();
 const gatewayRuntime = createEvejsWebGatewayRuntime({ serviceManager });
 const runtimeContext = createRuntimeContext({ serviceManager, gatewayRuntime });
+database.registerShutdownHook((reason) => shutdownWorld(reason, {
+  gatewayRuntime,
+  sessionRegistry,
+  disconnectCharacterSession,
+  spaceRuntime,
+  log,
+}), { priority: 100 });
 
 // register services
 const servicesDir = path.join(__dirname, "./src/services");

@@ -29,6 +29,36 @@ def _evejs_install_map_view_lifecycle(namespace):
     if bracket_state is None:
         raise RuntimeError("Frontier map-view patch could not find BracketState")
 
+    ballpark_source = namespace.get("BallparkBracketSource")
+    if ballpark_source is None:
+        raise RuntimeError("Frontier map-view patch could not find BallparkBracketSource")
+
+    original_prime = ballpark_source._prime
+    if not getattr(original_prime, "_evejs_station_map_prime_patch", False):
+
+        def _prime(self):
+            client_session = namespace.get("session") or getattr(
+                __import__("builtins"), "session", None
+            )
+            docked = client_session is not None and any(
+                getattr(client_session, field, None)
+                for field in ("stationid2", "stationid", "structureid")
+            )
+            # The retail prime waits indefinitely for Michelle's ballpark.
+            # A docked character has no ballpark, even while the system view
+            # is open. Ball notifications populate this source after undock.
+            if docked:
+                try:
+                    ballpark = self._michelle.GetBallpark()
+                except Exception:
+                    ballpark = None
+                if ballpark is None:
+                    return
+            return original_prime(self)
+
+        _prime._evejs_station_map_prime_patch = True
+        ballpark_source._prime = _prime
+
     original = bracket_state.set_bracket_filter_mode
     if getattr(original, "_evejs_map_view_lifecycle_patch", False):
         return

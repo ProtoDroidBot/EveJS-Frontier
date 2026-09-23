@@ -27,7 +27,12 @@ def _evejs_install_skillshot_auto_fire_authority(namespace):
                 self._toggle_fire_active = False
                 self._auto_fire_tasklet = None
                 return None
-            fire_automatic()
+            try:
+                fire_automatic()
+            except Exception:
+                self._toggle_fire_active = False
+                self._auto_fire_tasklet = None
+                return None
             uthread2.sleep_sim(poll_interval)
         return None
 
@@ -36,13 +41,19 @@ def _evejs_install_skillshot_auto_fire_authority(namespace):
             AUTO_FIRE_CONTROLLER_OFFLINE,
             AUTO_FIRE_TERMINATED,
         ):
-            self._audio_service.SendUIEvent("skillshot_trigger_failed")
+            try:
+                self._audio_service.SendUIEvent("skillshot_trigger_failed")
+            except Exception:
+                pass
             detail = (
                 "REPEATER OFFLINE"
                 if error_key == AUTO_FIRE_CONTROLLER_OFFLINE
                 else "AUTO-FIRE STOPPED"
             )
-            self._reticle_controller.flash_fire_error("FIRE FAILED", detail)
+            try:
+                self._reticle_controller.flash_fire_error("FIRE FAILED", detail)
+            except Exception:
+                pass
             # This is terminal for the current toggle. Do not delegate to the
             # retail generic UserError path: it creates one popup per poll and
             # leaves the auto loop running.

@@ -1094,22 +1094,28 @@ function dematerializeNativeController(controller, options = {}) {
     if (options.persistState !== false) {
         const storedEntityRecord = nativeNpcStore.getNativeEntity(entityID);
         if (storedEntityRecord && runtimeEntity) {
-            nativeNpcStore.upsertNativeEntity(buildStoredEntityRecordFromRuntimeEntity(storedEntityRecord, runtimeEntity), {
+            const entityWrite = nativeNpcStore.upsertNativeEntity(buildStoredEntityRecordFromRuntimeEntity(storedEntityRecord, runtimeEntity), {
                 transient: storedEntityRecord.transient === true,
             });
+            if (!entityWrite.success)
+                return entityWrite;
         }
         const storedControllerRecord = nativeNpcStore.getNativeController(entityID);
         if (storedControllerRecord) {
-            nativeNpcStore.upsertNativeController(buildStoredControllerRecordFromRuntimeController(storedControllerRecord, runtimeController), {
+            const controllerWrite = nativeNpcStore.upsertNativeController(buildStoredControllerRecordFromRuntimeController(storedControllerRecord, runtimeController), {
                 transient: storedControllerRecord.transient === true,
             });
+            if (!controllerWrite.success)
+                return controllerWrite;
         }
     }
     if (runtimeEntity) {
-        spaceRuntime.removeDynamicEntity(systemID, entityID, {
+        const removal = spaceRuntime.removeDynamicEntity(systemID, entityID, {
             allowSessionOwned: true,
             broadcast: options.broadcast === true,
         });
+        if (!removal.success)
+            return removal;
     }
     unregisterController(entityID);
     if (runtimeController && runtimeController.npcCharacterID) {

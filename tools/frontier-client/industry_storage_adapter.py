@@ -410,20 +410,27 @@ def _evejs_patch_industry_refresh_loop(namespace):
 
 def _evejs_patch_industry_panel(namespace):
     panel_type = namespace["ActiveBlueprintPanel"]
+    original = panel_type._construct_cargo
 
     def construct_cargo(self):
-        from frontier.smart_assemblies.client.storage.location import SmartStorageLocation
+        try:
+            from frontier.smart_assemblies.client.storage.location import SmartStorageLocation
+            inventories = self._controller.get_nearby_inventories()
+        except Exception:
+            return original(self)
         locations = []
-        for inventory in self._controller.get_nearby_inventories():
-            storage_controller = getattr(inventory, "smart_storage_controller", None)
-            if storage_controller is not None:
-                _evejs_patch_industry_storage_grid()
-                # The standard location reconstructs controllers from invControllers
-                # by class name and item ID. SSUs require their existing controller
-                # and SMART_STORAGE container kind for rendering and notifications.
-                locations.append(SmartStorageLocation(storage_controller))
-            else:
-                locations.append(namespace["StandardInventoryLocation"](inventory.GetInvID()))
+        for inventory in inventories:
+            try:
+                storage_controller = getattr(inventory, "smart_storage_controller", None)
+                if storage_controller is not None:
+                    _evejs_patch_industry_storage_grid()
+                    # SSUs need their existing controller and SMART_STORAGE kind.
+                    locations.append(SmartStorageLocation(storage_controller))
+                else:
+                    locations.append(namespace["StandardInventoryLocation"](inventory.GetInvID()))
+            except Exception:
+                # One unavailable inventory must not hide every cargo location.
+                continue
         if not locations:
             return
         # Preserve build 3502403's cargo layout, coupling and shortcut lifecycle.
@@ -453,13 +460,13 @@ def _evejs_patch_industry_lane_panel(namespace):
 
     def construct_center(self):
         original(self)
-        service = self._controller._service
-        facility_id = self._controller._facility_id
-        lanes = [lane for lane in service.get_job_lanes(facility_id)
-                 if lane.get("enabled", True)]
-        if len(lanes) <= 1:
-            return
         try:
+            service = self._controller._service
+            facility_id = self._controller._facility_id
+            lanes = [lane for lane in service.get_job_lanes(facility_id)
+                     if lane.get("enabled", True)]
+            if len(lanes) <= 1:
+                return
             from eve.client.script.ui.control.floatingToggleButtonGroup import FloatingToggleButtonGroup
             group = FloatingToggleButtonGroup(
                 parent=self,
@@ -469,10 +476,13 @@ def _evejs_patch_industry_lane_panel(namespace):
                     facility_id, lane_id),
             )
             for lane in lanes:
-                lane_id = int(lane.get("lane_id") or 1)
-                state = (lane.get("production") or {}).get("state")
-                label = "LANE {}{}".format(lane_id, " [ACTIVE]" if state in ("RUNNING", "DISCONTINUING") else "")
-                group.AddButton(lane_id, label, isDisabled=not lane.get("can_use", False))
+                try:
+                    lane_id = int(lane.get("lane_id") or 1)
+                    state = (lane.get("production") or {}).get("state")
+                    label = "LANE {}{}".format(lane_id, " [ACTIVE]" if state in ("RUNNING", "DISCONTINUING") else "")
+                    group.AddButton(lane_id, label, isDisabled=not lane.get("can_use", False))
+                except Exception:
+                    continue
             group.SelectByID(int(getattr(self._controller.facility_instance,
                                          "_evejs_selected_lane_id", 1) or 1))
             self._evejs_lane_group = group
@@ -579,51 +589,66 @@ def _evejs_patch_industry_nearby(namespace):
 
     def nearby(self, include_ship_hangars, include_nest):
         inventories = original(self, include_ship_hangars, include_nest)
-        from spacecomponents.common import componentConst
-        from spacecomponents.common.data import get_space_component_for_type
-        from frontier.smart_assemblies.client.storage.controller import StorageController
-        from frontier.smart_assemblies.client.storage.smart_storage_inventory import SmartStorageUnitInventory
-        # sm/session are native client builtins, also used by the stock module.
-        ballpark = sm.GetService("michelle").GetBallpark()
+        try:
+            from spacecomponents.common import componentConst
+            from spacecomponents.common.data import get_space_component_for_type
+            from frontier.smart_assemblies.client.storage.controller import StorageController
+            from frontier.smart_assemblies.client.storage.smart_storage_inventory import SmartStorageUnitInventory
+            # sm/session are native client builtins, also used by the stock module.
+            ballpark = sm.GetService("michelle").GetBallpark()
+        except Exception:
+            return inventories
         if ballpark is None:
             return inventories
         cache = getattr(self, "_evejs_industry_storage_cache", {})
         self._evejs_industry_storage_cache = cache
         visible = set()
-        existing = {getattr(inventory, "itemID", None) for inventory in inventories}
-        for row in ballpark.GetCrDataByFilter().values():
-            if row.itemID == self.facility_id:
-                continue
-            if not get_space_component_for_type(row.typeID, componentConst.SMART_STORAGE_UNIT):
-                continue
+        existing = set()
+        for inventory in inventories:
             try:
+                existing.add(getattr(inventory, "itemID", None))
+            except Exception:
+                continue
+        try:
+            rows = ballpark.GetCrDataByFilter().values()
+        except Exception:
+            return inventories
+        row_failed = False
+        for row in rows:
+            try:
+                if row.itemID == self.facility_id:
+                    continue
+                if not get_space_component_for_type(row.typeID, componentConst.SMART_STORAGE_UNIT):
+                    continue
                 distance = ballpark.DistanceBetween(session.shipid, row.ballID)
                 if not 0 <= distance <= 5000 or not self._smart_assembly_svc.is_online(row.itemID):
                     continue
+                key = (row.typeID, row.ownerID)
+                cached = cache.get(row.itemID)
+                if cached is not None and cached[0] != key:
+                    cached[1].smart_storage_controller._disconnect_event_handlers()
+                    cached = None
+                if cached is None:
+                    controller = StorageController(row.itemID, row.typeID, row.ownerID)
+                    # Load the initial item snapshot using the native SSU loader.
+                    controller._fetching_items = True
+                    controller._fetch_items_background()
+                    cached = (key, SmartStorageUnitInventory(ss_controller=controller, itemID=row.itemID, typeID=row.typeID))
+                    cache[row.itemID] = cached
+                if row.itemID not in existing:
+                    inventories.append(cached[1])
+                    existing.add(row.itemID)
+                visible.add(row.itemID)
             except Exception:
+                row_failed = True
                 continue
-            visible.add(row.itemID)
-            key = (row.typeID, row.ownerID)
-            cached = cache.get(row.itemID)
-            if cached is not None and cached[0] != key:
-                cached[1].smart_storage_controller._disconnect_event_handlers()
-                cached = None
-            if cached is None:
-                controller = StorageController(row.itemID, row.typeID, row.ownerID)
-                # The stock items property initially returns [] and loads in a
-                # background task. Industry menus only listen to OnItemChanged,
-                # so that first empty result otherwise stays cached. This is the
-                # same cooperative RPC loader used by the native storage panel.
-                controller._fetching_items = True
-                controller._fetch_items_background()
-                cached = (key, SmartStorageUnitInventory(ss_controller=controller, itemID=row.itemID, typeID=row.typeID))
-                cache[row.itemID] = cached
-            if row.itemID not in existing:
-                inventories.append(cached[1])
-                existing.add(row.itemID)
-        for item_id in list(cache):
-            if item_id not in visible:
-                cache.pop(item_id)[1].smart_storage_controller._disconnect_event_handlers()
+        if not row_failed:
+            for item_id in list(cache):
+                if item_id not in visible:
+                    try:
+                        cache.pop(item_id)[1].smart_storage_controller._disconnect_event_handlers()
+                    except Exception:
+                        continue
         return inventories
 
     facility_type.get_nearby_inventories = nearby
@@ -652,16 +677,22 @@ def _evejs_patch_industry_drop(namespace):
         item_type._evejs_item_ids_installed = True
 
         def get_items(self):
-            return [item_type(
-                item.type_id,
-                item.quantity,
-                item.is_singleton,
-                self.smart_storage_controller.assembly_owner_id,
-                self.locationFlag,
-                self.smart_storage_controller.assembly_id,
-                self.smart_storage_controller.is_owner,
-                item_id=getattr(item, "item_id", None),
-            ) for item in self.smart_storage_controller.items]
+            rows = []
+            for item in self.smart_storage_controller.items:
+                try:
+                    rows.append(item_type(
+                        item.type_id,
+                        item.quantity,
+                        item.is_singleton,
+                        self.smart_storage_controller.assembly_owner_id,
+                        self.locationFlag,
+                        self.smart_storage_controller.assembly_id,
+                        self.smart_storage_controller.is_owner,
+                        item_id=getattr(item, "item_id", None),
+                    ))
+                except Exception:
+                    continue
+            return rows
 
         inventory_type._GetItems = get_items
 

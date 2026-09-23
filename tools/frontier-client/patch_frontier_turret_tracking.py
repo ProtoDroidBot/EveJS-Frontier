@@ -19,6 +19,9 @@ SOURCE_MEMBER_SHA256 = "f4a940cab083a94f863a3cc613b926d6b79e2c5769fd18c55aaee91f
 ADAPTER = Path(__file__).with_name("turret_target_tracking_adapter.py")
 SOURCE_SENTINEL = b"EVEJS_TURRET_SERVICE_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_TURRET_SERVICE_ADAPTER_CODE_V1"
+PREVIOUS_WRAPPER_SHA256 = {
+    "014a578d568e7b39e17d903e4f65b6a752bcbd28fbbb5b8ee7beda062fb62f6f",
+}
 
 
 class TurretTrackingPatchError(RuntimeError):
@@ -64,8 +67,11 @@ def inspect_member(member):
             if isinstance(value, bytes) and
             hashlib.sha256(value).hexdigest() == SOURCE_MEMBER_SHA256
         ]
-        if len(originals) == 1 and patched_member(originals[0]) == member:
-            return "patched", originals[0]
+        if len(originals) == 1:
+            if patched_member(originals[0]) == member:
+                return "patched", originals[0]
+            if hashlib.sha256(member).hexdigest() in PREVIOUS_WRAPPER_SHA256:
+                return "outdated", originals[0]
     except (EOFError, TypeError, ValueError):
         pass
     raise TurretTrackingPatchError("Turret service differs from the supported build")
@@ -88,7 +94,7 @@ def inspect_archive(archive, build=BUILD):
 
 def patch_archive(archive, build=BUILD):
     state, original = inspect_archive(archive, build)
-    if state == "source":
+    if state in {"source", "outdated"}:
         rewrite_archive(archive, {MODULE_NAME: patched_member(original)})
     if inspect_archive(archive, build)[0] != "patched":
         raise TurretTrackingPatchError("Turret tracking patch verification failed")

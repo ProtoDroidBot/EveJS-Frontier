@@ -27,6 +27,11 @@ PROFILES = {
 ADAPTER = Path(__file__).with_name("inventory_view_compatibility_adapter.py")
 SOURCE_SENTINEL = b"EVEJS_INVENTORY_VIEW_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_INVENTORY_VIEW_ADAPTER_CODE_V1"
+# Exact installed wrappers preceding the independent-operation guards.
+PREVIOUS_WRAPPER_SHA256 = {
+    "open": "5e3b741a376507a675064ba62c57890fe5c4a1d3976a2724833721790d7a47b3",
+    "view_state": "d9c4588e940996e11d9725ce9b18e68ae430fd1effca6f84e0df30ddd6acfb52",
+}
 
 
 class InventoryViewPatchError(RuntimeError):
@@ -76,8 +81,11 @@ def inspect_member(member, kind, expected):
             if isinstance(value, bytes)
             and hashlib.sha256(value).hexdigest() == expected
         ]
-        if len(originals) == 1 and patched_member(originals[0], kind) == member:
-            return "patched", originals[0]
+        if len(originals) == 1:
+            if patched_member(originals[0], kind) == member:
+                return "patched", originals[0]
+            if hashlib.sha256(member).hexdigest() == PREVIOUS_WRAPPER_SHA256.get(kind):
+                return "outdated", originals[0]
     except (EOFError, TypeError, ValueError):
         pass
     raise InventoryViewPatchError(
@@ -91,6 +99,7 @@ def inspect_archive(archive, build=BUILD):
             f"No full-screen inventory patch is available for build {build}"
         )
     results = {}
+    digests = {}
     with zipfile.ZipFile(archive) as source:
         for module_name, (kind, expected) in PROFILES.items():
             entries = [
@@ -100,9 +109,14 @@ def inspect_archive(archive, build=BUILD):
             ]
             if len(entries) != 1:
                 raise InventoryViewPatchError(f"Expected exactly one {module_name}")
-            results[module_name] = inspect_member(
-                source.read(entries[0]), kind, expected
-            )
+            member = source.read(entries[0])
+            digests[module_name] = hashlib.sha256(member).hexdigest()
+            results[module_name] = inspect_member(member, kind, expected)
+    if digests == {
+        name: PREVIOUS_WRAPPER_SHA256[kind]
+        for name, (kind, _expected) in PROFILES.items()
+    }:
+        return "outdated", results
     states = {state for state, _ in results.values()}
     state = states.pop() if len(states) == 1 else "partial"
     return state, results
@@ -110,6 +124,8 @@ def inspect_archive(archive, build=BUILD):
 
 def patch_archive(archive, build=BUILD):
     state, results = inspect_archive(archive, build)
+    if state == "partial":
+        raise InventoryViewPatchError("Inventory view adapter is only partially installed")
     if state != "patched":
         replacements = {}
         for module_name, (kind, _expected) in PROFILES.items():

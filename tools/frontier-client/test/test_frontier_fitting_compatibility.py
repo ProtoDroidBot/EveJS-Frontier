@@ -279,13 +279,38 @@ class NpcFittingPresenterTests(unittest.TestCase):
 
 
 class NpcFittingMenuTests(unittest.TestCase):
+    def test_retail_npc_menu_failure_keeps_interaction_action_available(self):
+        class Remote:
+            def CanInteractNpc(self, entity_id):
+                return {"canInteract": True, "canModifyFittings": False}
+
+        class MenuSvc:
+            def CelestialMenu(self, itemID, *args, **kwargs):
+                raise RuntimeError("one retail menu command failed")
+
+        namespace = {
+            "MenuSvc": MenuSvc,
+            "sm": NS(RemoteSvc=lambda name: Remote()),
+        }
+        npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
+        self.assertEqual(
+            [row[0] for row in MenuSvc().CelestialMenu(980000000001)],
+            ["Interact"],
+        )
+        with self.assertRaisesRegex(RuntimeError, "retail menu command"):
+            MenuSvc().CelestialMenu(123)
+
     def test_interaction_orders_use_server_probe_and_typed_rpc(self):
         calls = []
         authorized = True
 
         class Remote:
             def CanInteractNpc(self, entity_id):
-                return {"canInteract": True, "canIssueOrders": authorized}
+                return {
+                    "canInteract": True,
+                    "canIssueOrders": authorized,
+                    "actorShipEntityID": 9988400000109,
+                }
 
             def IssueNpcOrder(self, entity_id, order):
                 calls.append((entity_id, order))
@@ -301,11 +326,16 @@ class NpcFittingMenuTests(unittest.TestCase):
         npc_menu_adapter._evejs_issue_npc_order(
             namespace, 980000000007, "resume"
         )
+        npc_menu_adapter._evejs_issue_npc_order(
+            namespace, 980000000007, "approach"
+        )
         self.assertEqual(calls, [
             (980000000007, {"type": "keepAtRange",
                             "targetID": 900000000001, "rangeMeters": 5000}),
             (980000000007, {"type": "lock", "targetID": 900000000001}),
             (980000000007, {"type": "resume"}),
+            (980000000007, {"type": "approach",
+                            "targetID": 9988400000109}),
         ])
         with self.assertRaises(ValueError):
             npc_menu_adapter._evejs_issue_npc_order(
@@ -316,7 +346,7 @@ class NpcFittingMenuTests(unittest.TestCase):
             npc_menu_adapter._evejs_issue_npc_order(
                 namespace, 980000000007, "approach", 900000000001
             )
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
 
     def test_right_click_interact_and_fitting_actions_are_not_in_gm_menu(self):
         trusted = False
@@ -463,7 +493,7 @@ class NpcFittingMenuTests(unittest.TestCase):
                 return window
 
             def ApplyAttributes(self, attributes):
-                pass
+                self._name = "base-window-name"
 
             def GetMainArea(self):
                 return self
@@ -510,6 +540,7 @@ class NpcFittingMenuTests(unittest.TestCase):
                 namespace, 980000000007
             )
             self.assertIsInstance(window, BaseWindow)
+            self.assertEqual(window._name, "base-window-name")
             self.assertIn("not friendly", window._status.text)
             self.assertFalse(window._order_controls.display)
             self.assertTrue(window._retry_button.display)
@@ -520,8 +551,12 @@ class NpcFittingMenuTests(unittest.TestCase):
             window._target_edit.SetValue("900000000001")
             window._send_order("approach")
             self.assertEqual(window._status.text, "Order accepted: approach")
+            window._target_edit.SetValue("")
+            window._send_order("orbit")
+            self.assertEqual(window._status.text, "Order accepted: orbit")
         self.assertEqual(issued, [
             (980000000007, {"type": "approach", "targetID": 900000000001}),
+            (980000000007, {"type": "orbit", "rangeMeters": 2500}),
         ])
 
     def test_friendly_without_fitting_trust_only_gets_interact(self):
@@ -635,6 +670,30 @@ class NpcPrimaryActionTests(unittest.TestCase):
 
 
 class AssemblyAccessPresenterTests(unittest.TestCase):
+    def test_failed_request_list_does_not_hide_grants(self):
+        class Remote:
+            def get_assembly_access(self, item_id, capabilities):
+                return {"policyRevision": 2}
+
+            def get_assembly_access_requests(self, item_id, options):
+                raise RuntimeError("requests unavailable")
+
+            def get_assembly_access_grants(self, item_id, options):
+                return [{"grantID": "still-visible"}]
+
+            def get_assembly_access_events(self, item_id, options):
+                return {"events": []}
+
+            def get_npc_load_shedding_requests(self, item_id):
+                return []
+
+        presenter = npc_menu_adapter._EvejsAssemblyAccessPresenter(
+            {}, 42, remote=Remote()
+        )
+        presenter.refresh()
+        self.assertEqual(presenter.requests, [])
+        self.assertEqual(presenter.grants[0]["grantID"], "still-visible")
+
     def test_full_player_access_workflow_stays_server_authoritative(self):
         calls = []
 
@@ -1109,6 +1168,18 @@ class ActionBarAdapterTests(unittest.TestCase):
         self.assertNotIn(503, [module.item_id for module in modules])
         self.assertEqual(self.events, [])
 
+    def test_bad_module_does_not_hide_other_action_bar_modules(self):
+        class BadModule:
+            itemID = 999
+
+            @property
+            def typeID(self):
+                raise RuntimeError("module data unavailable")
+
+        self.ship.modules.insert(1, BadModule())
+        modules = self.Provider().get_activatable_modules(100)
+        self.assertEqual([module.item_id for module in modules], [500, 501, 502])
+
     def test_regular_module_actions_use_legacy_dogma(self):
         provider = self.Provider()
         self.assertEqual(
@@ -1302,6 +1373,18 @@ class ActionBarSelectionAdapterTests(unittest.TestCase):
         selection_adapter._evejs_install_action_bar_selection(self.namespace)
         self.assertIs(self.Integration._add_available_module_entries, first)
 
+    def test_failed_module_menu_still_shows_consumables(self):
+        class BrokenIntegration(self.Integration):
+            def _add_available_module_entries(self, menu, slot_index):
+                raise RuntimeError("module menu failed")
+
+        namespace = dict(self.namespace, ActionBarIntegration=BrokenIntegration)
+        selection_adapter._evejs_install_action_bar_selection(namespace)
+        menu = self._menu()
+        BrokenIntegration(100)._add_available_module_entries(menu, 1)
+        self.assertEqual(menu.captions, ["Add consumable"])
+        self.assertEqual([entry["text"] for entry in menu.entries], ["Nanite"])
+
 
 class WindowsUpgradeTests(unittest.TestCase):
     def test_upgrade_installs_fitting_patch_and_records_transaction_backup(self):
@@ -1345,6 +1428,7 @@ class WindowsUpgradeTests(unittest.TestCase):
                 "inventoryView": "patched",
                 "collisionVfx": "patched",
                 "creationTransform": "patched",
+                "turretTracking": "patched",
             }
             with (
                 mock.patch.object(windows, "check_stage", side_effect=check),

@@ -112,22 +112,26 @@ def _evejs_install_creation_transforms(namespace):
 
     def start_drag(self, source):
         original_start_drag(self, source)
-        held = self._held_module
-        if not isinstance(held, held_type):
+        try:
+            held = self._held_module
+            if not isinstance(held, held_type):
+                return
+            rotation_x = rotation_y = 0
+            if isinstance(source, held_part_source):
+                placement = self._creation_manager.creation.interior_placements.get(
+                    source.item_id
+                )
+                if placement is not None:
+                    rotation_x = _evejs_reflection(placement.rotation.x)
+                    rotation_y = _evejs_reflection(placement.rotation.y)
+            held._evejs_rotation_x = rotation_x
+            held._evejs_rotation_y = rotation_y
+            self._creation_manager._evejs_rotation_x = rotation_x
+            self._creation_manager._evejs_rotation_y = rotation_y
+            refresh_held(self)
+        except Exception:
+            # Keep the native drag path after an optional reflection failure.
             return
-        rotation_x = rotation_y = 0
-        if isinstance(source, held_part_source):
-            placement = self._creation_manager.creation.interior_placements.get(
-                source.item_id
-            )
-            if placement is not None:
-                rotation_x = _evejs_reflection(placement.rotation.x)
-                rotation_y = _evejs_reflection(placement.rotation.y)
-        held._evejs_rotation_x = rotation_x
-        held._evejs_rotation_y = rotation_y
-        self._creation_manager._evejs_rotation_x = rotation_x
-        self._creation_manager._evejs_rotation_y = rotation_y
-        refresh_held(self)
 
     def get_snap_location(self, held_module, part_cell_fraction):
         part_id = self._part_id_by_controller.get(
@@ -203,58 +207,73 @@ def _evejs_install_creation_transforms(namespace):
         shift, control = _evejs_modifier_state()
         if not shift and not control:
             return original_mouse_wheel(self, event)
-        if not int(round(event.delta)):
+        try:
+            if not int(round(event.delta)):
+                return None
+            held = self._held_module
+            if shift:
+                held._evejs_rotation_x = 0 if _evejs_reflection(
+                    getattr(held, "_evejs_rotation_x", 0)
+                ) else 180
+            if control:
+                held._evejs_rotation_y = 0 if _evejs_reflection(
+                    getattr(held, "_evejs_rotation_y", 0)
+                ) else 180
+            self._creation_manager._evejs_rotation_x = held._evejs_rotation_x
+            self._creation_manager._evejs_rotation_y = held._evejs_rotation_y
+            refresh_held(self)
             return None
-        held = self._held_module
-        if shift:
-            held._evejs_rotation_x = 0 if _evejs_reflection(
-                getattr(held, "_evejs_rotation_x", 0)
-            ) else 180
-        if control:
-            held._evejs_rotation_y = 0 if _evejs_reflection(
-                getattr(held, "_evejs_rotation_y", 0)
-            ) else 180
-        self._creation_manager._evejs_rotation_x = held._evejs_rotation_x
-        self._creation_manager._evejs_rotation_y = held._evejs_rotation_y
-        refresh_held(self)
-        return None
+        except Exception:
+            return original_mouse_wheel(self, event)
 
     def compute_hints(self):
         result = tuple(original_compute_hints(self))
-        if isinstance(self._held_module, held_type):
-            result += (
-                binding_hint("Shift + Scroll", "Mirror"),
-                binding_hint("Ctrl + Scroll", "Flip"),
-            )
+        try:
+            if isinstance(self._held_module, held_type):
+                result += (
+                    binding_hint("Shift + Scroll", "Mirror"),
+                    binding_hint("Ctrl + Scroll", "Flip"),
+                )
+        except Exception:
+            pass
         return result
 
     def create_controller(self, creation, item_id):
         controller = original_create_controller(self, creation, item_id)
-        placement = creation.interior_placements.get(item_id)
-        if placement is not None:
-            controller.shape = cell_grid_data(
-                transform_for_placement(creation, item_id, placement)
-            )
+        try:
+            placement = creation.interior_placements.get(item_id)
+            if placement is not None:
+                controller.shape = cell_grid_data(
+                    transform_for_placement(creation, item_id, placement)
+                )
+        except Exception:
+            pass
         return controller
 
     def update_part(self, creation, part_id, part_controller):
         result = original_update_part(self, creation, part_id, part_controller)
         for item_id, placement in creation.interior_placements.items():
-            if placement.part_id != part_id:
+            try:
+                if placement.part_id != part_id:
+                    continue
+                controller = self._module_controller_by_id.get(item_id)
+                if controller is not None:
+                    controller.shape = cell_grid_data(
+                        transform_for_placement(creation, item_id, placement)
+                    )
+            except Exception:
                 continue
-            controller = self._module_controller_by_id.get(item_id)
-            if controller is not None:
-                controller.shape = cell_grid_data(
-                    transform_for_placement(creation, item_id, placement)
-                )
         return result
 
     def release(self):
         try:
             return original_release(self)
         finally:
-            self._creation_manager._evejs_rotation_x = 0
-            self._creation_manager._evejs_rotation_y = 0
+            try:
+                self._creation_manager._evejs_rotation_x = 0
+                self._creation_manager._evejs_rotation_y = 0
+            except Exception:
+                pass
 
     def move(self, item_id, part_id, cell, rotation_z):
         return self._apply_change(namespace["MoveChange"](

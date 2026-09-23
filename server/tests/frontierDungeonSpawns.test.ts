@@ -71,7 +71,7 @@ test("Frontier dungeon spawn config loads with the analyzed sites and controller
 
   assert.equal(config.schemaVersion, 2);
   assert.equal(config.enabled, true);
-  assert.equal(Object.keys(config.sites).length, 43);
+  assert.equal(Object.keys(config.sites).length, 73);
   assert.equal(config.sites["13938"], undefined);
   assert.equal(config.sites["13582"], undefined);
   assert.deepEqual(config.sites["10659"], {
@@ -430,9 +430,14 @@ test("Frontier dungeon loot config keeps cargo-container and wreck tables separa
   );
 });
 
-test("universe dungeon selection requires exact unified-config authority", () => {
-  const configured = frontierDungeonSpawns.decorateTemplate({
-    ...buildControllerTemplate(11_122, 83_889, 83_552),
+test("temporary universe dungeon selection permits mining, rifts, and Osa Surveyors only", () => {
+  const makeTemplate = (dungeonID, entryTypeID) => frontierDungeonSpawns.decorateTemplate({
+    templateID: `frontier-dungeon:${dungeonID}`,
+    sourceDungeonID: dungeonID,
+    entryObjectGroupID: frontierDungeonSpawns.getConfig().sites[String(dungeonID)].siteTypeID,
+    entryObjectTypeID: entryTypeID,
+    siteFamily: "combat",
+    siteKind: "anomaly",
     rooms: [],
   });
   const extractedButDeleted = {
@@ -440,15 +445,35 @@ test("universe dungeon selection requires exact unified-config authority", () =>
     sourceDungeonID: 13_723,
     frontierDungeonSpawnConfigured: false,
   };
-  const extractedAuthority = new Set([11_122, 13_723]);
+  const allowed = [
+    makeTemplate(11_128, 83_738),
+    makeTemplate(10_460, 78_474),
+    makeTemplate(12_345, 85_743),
+  ];
+  const blocked = [
+    makeTemplate(10_659, 86_823), // Mooneater mining field
+    makeTemplate(13_583, 86_823), // Stacked Storage Stations
+    makeTemplate(12_349, 85_744), // Okryda Surveyors
+    makeTemplate(11_122, 83_889), // Combat site
+  ];
+  const extractedAuthority = new Set([
+    ...allowed, ...blocked, extractedButDeleted,
+  ].map((template) => template.sourceDungeonID));
 
-  assert.equal(
-    dungeonUniverseRuntime._testing.isUniverseSpawnEligibleTemplate(
-      configured,
-      extractedAuthority,
-    ),
-    true,
-  );
+  for (const template of allowed) {
+    assert.equal(
+      dungeonUniverseRuntime._testing.isUniverseSpawnEligibleTemplate(template, extractedAuthority),
+      true,
+      `${template.sourceDungeonID} should be eligible`,
+    );
+  }
+  for (const template of blocked) {
+    assert.equal(
+      dungeonUniverseRuntime._testing.isUniverseSpawnEligibleTemplate(template, extractedAuthority),
+      false,
+      `${template.sourceDungeonID} should be dormant`,
+    );
+  }
   assert.equal(
     dungeonUniverseRuntime._testing.isUniverseSpawnEligibleTemplate(
       extractedButDeleted,

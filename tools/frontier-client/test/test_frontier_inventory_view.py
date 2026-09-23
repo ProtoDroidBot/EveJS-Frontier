@@ -259,6 +259,44 @@ class WindowsUpgradeTests(unittest.TestCase):
     sys.version_info[:2] == (3, 12), "Native code patch requires Python 3.12"
 )
 class BytecodePatchTests(unittest.TestCase):
+    def test_exact_previous_generation_upgrades_and_rejects_tampering(self):
+        profiles = {}
+        previous = {}
+        members = {}
+        for index, kind in enumerate(("open", "view_state")):
+            source = member_for(compile(f"value = {index}\n", "fixture.py", "exec"))
+            name = f"fixture/{kind}.pyc"
+            profiles[name] = (kind, hashlib.sha256(source).hexdigest())
+            wrapper = marshal.loads(patcher.patched_member(source, kind)[16:])
+            old_adapter = marshal.dumps(compile("pass\n", "evejs/inventory_view_compatibility_adapter.py", "exec"))
+            old_constants = tuple(
+                old_adapter if isinstance(value, bytes) and value != source else value
+                for value in wrapper.co_consts
+            )
+            members[name] = source[:16] + marshal.dumps(wrapper.replace(co_consts=old_constants))
+            previous[kind] = hashlib.sha256(members[name]).hexdigest()
+
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.dict(patcher.PROFILES, profiles, clear=True), \
+             mock.patch.dict(patcher.PREVIOUS_WRAPPER_SHA256, previous, clear=True):
+            archive = Path(directory) / "code.ccp"
+            with zipfile.ZipFile(archive, "w") as target:
+                for name, member in members.items():
+                    target.writestr(name, member)
+                target.writestr("unrelated.pyc", b"preserve")
+            self.assertEqual(patcher.inspect_archive(archive)[0], "outdated")
+            changed = bytearray(next(iter(members.values())))
+            changed[-1] ^= 1
+            with self.assertRaises(patcher.InventoryViewPatchError):
+                patcher.inspect_member(bytes(changed), "open", profiles["fixture/open.pyc"][1])
+            patcher.patch_archive(archive)
+            self.assertEqual(patcher.inspect_archive(archive)[0], "patched")
+            once = archive.read_bytes()
+            patcher.patch_archive(archive)
+            self.assertEqual(archive.read_bytes(), once)
+            with zipfile.ZipFile(archive) as result:
+                self.assertEqual(result.read("unrelated.pyc"), b"preserve")
+
     def test_fixture_patch_is_exact_idempotent_and_rejects_tampering(self):
         source = member_for(compile("value = 1\n", "fixture.py", "exec"))
         expected = hashlib.sha256(source).hexdigest()

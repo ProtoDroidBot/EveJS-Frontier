@@ -28,25 +28,26 @@ def _evejs_install_npc_primary_action(namespace):
     @wraps(original)
     def resolve(self, bracket_key):
         result = original(self, bracket_key)
-        if not isinstance(bracket_key, ball_key_type):
-            return result
-        entity_id = getattr(bracket_key, "ball_id", None)
-        if not isinstance(entity_id, int) or entity_id < NPC_ENTITY_ID_FLOOR:
-            return result
         try:
+            if not isinstance(bracket_key, ball_key_type):
+                return result
+            entity_id = getattr(bracket_key, "ball_id", None)
+            if not isinstance(entity_id, int) or entity_id < NPC_ENTITY_ID_FLOOR:
+                return result
             distance = self._get_distance_to_ball(entity_id)
             if distance is None or not 0 <= float(distance) <= NPC_INTERACTION_RANGE_METERS:
                 return result
-        except (TypeError, ValueError):
+            menu = getattr(self, "_menu_service", None)
+            if not callable(getattr(menu, "EvejsInteractNpc", None)):
+                return result
+            interact = action_type(
+                label_path="UI/SmartDeployable/Interact",
+                callback=lambda *args, **kwargs: menu.EvejsInteractNpc(entity_id),
+            )
+            return resolved_type(primary=interact, secondary=result.secondary)
+        except Exception:
+            # The retail action remains usable if NPC-specific lookup fails.
             return result
-        menu = getattr(self, "_menu_service", None)
-        if not callable(getattr(menu, "EvejsInteractNpc", None)):
-            return result
-        interact = action_type(
-            label_path="UI/SmartDeployable/Interact",
-            callback=lambda *args, **kwargs: menu.EvejsInteractNpc(entity_id),
-        )
-        return resolved_type(primary=interact, secondary=result.secondary)
 
     resolve._evejs_npc_primary_action_patch = True
     resolver_type.resolve = resolve

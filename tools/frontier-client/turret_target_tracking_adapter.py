@@ -38,32 +38,41 @@ def _evejs_install_turret_target_tracking(namespace):
         if ship is None:
             return
         for turret_set in getattr(ship, "turrets", ()):
-            if getattr(turret_set, "is_skill_shot_turret", False):
+            try:
+                if getattr(turret_set, "is_skill_shot_turret", False):
+                    continue
+                if not getattr(turret_set, "_evejs_target_tracking_stop_v1", False):
+                    original_stop = turret_set.StopShooting
+
+                    def stop_and_track(_turret=turret_set, _stop=original_stop,
+                                       _ship=ship, _ship_id=ship_id):
+                        result = _stop()
+                        try:
+                            if (eve.session.shipid == _ship_id and
+                                    self.michelle.GetBall(_ship_id) is _ship and
+                                    _turret in getattr(_ship, "turrets", ())):
+                                aim_turret(self, _turret)
+                        except Exception:
+                            pass
+                        return result
+
+                    turret_set.StopShooting = stop_and_track
+                    turret_set._evejs_target_tracking_stop_v1 = True
+                aim_turret(self, turret_set)
+            except Exception:
                 continue
-            if not getattr(turret_set, "_evejs_target_tracking_stop_v1", False):
-                original_stop = turret_set.StopShooting
-
-                def stop_and_track(_turret=turret_set, _stop=original_stop,
-                                   _ship=ship, _ship_id=ship_id):
-                    result = _stop()
-                    if (eve.session.shipid == _ship_id and
-                            self.michelle.GetBall(_ship_id) is _ship and
-                            _turret in getattr(_ship, "turrets", ())):
-                        aim_turret(self, _turret)
-                    return result
-
-                turret_set.StopShooting = stop_and_track
-                turret_set._evejs_target_tracking_stop_v1 = True
-            aim_turret(self, turret_set)
 
     def wrap(method_name):
         original = getattr(turret_service, method_name)
 
         def updated(self, *args, **kwargs):
             result = original(self, *args, **kwargs)
-            if (method_name != "OnStateChange" or
-                    (len(args) > 1 and args[1] == namespace["state"].activeTarget)):
-                sync_turrets(self)
+            try:
+                if (method_name != "OnStateChange" or
+                        (len(args) > 1 and args[1] == namespace["state"].activeTarget)):
+                    sync_turrets(self)
+            except Exception:
+                pass
             return result
 
         setattr(turret_service, method_name, updated)

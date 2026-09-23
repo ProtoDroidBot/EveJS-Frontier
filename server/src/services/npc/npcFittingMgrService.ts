@@ -223,14 +223,17 @@ function throwFittingError(result) {
   });
 }
 
-function normalizePlayerNpcOrder(input) {
+function normalizePlayerNpcOrder(input, defaultTargetID = 0) {
   const request = input && typeof input === "object" ? input : {};
   const type = String(request.type || "").trim();
   const definition = Object.hasOwn(NPC_PLAYER_ORDERS, type)
     ? NPC_PLAYER_ORDERS[type]
     : null;
   if (!definition) return { success: false, errorMsg: "NPC_ORDER_INVALID" };
-  const targetID = definition.needsTarget ? toPositiveInt(request.targetID) : 0;
+  const targetIsBlank = request.targetID == null || String(request.targetID).trim() === "";
+  const targetID = definition.needsTarget
+    ? targetIsBlank ? toPositiveInt(defaultTargetID) : toPositiveInt(request.targetID)
+    : 0;
   if (definition.needsTarget && !targetID) {
     return { success: false, errorMsg: "NPC_ORDER_TARGET_INVALID" };
   }
@@ -443,6 +446,7 @@ class NpcFittingMgrService extends BaseService {
       canModifyFittings: resolved?.success === true && trust?.trusted === true,
       canIssueOrders: trust?.trusted === true,
       entityID: toPositiveInt(entityRecord.entityID),
+      actorShipEntityID: toPositiveInt(scope.shipID),
       displayName: String(entityRecord.itemName || entityRecord.name || "NPC ship"),
     });
   }
@@ -451,7 +455,7 @@ class NpcFittingMgrService extends BaseService {
     const [entityID, rawOrder] = positionalArgs(args);
     const context = this._resolveOrderContext(session, entityID);
     if (!context || context.success !== true) throwFittingError(context);
-    const parsed = normalizePlayerNpcOrder(rawOrder);
+    const parsed = normalizePlayerNpcOrder(rawOrder, sessionShipID(session));
     if (!parsed.success) throwFittingError(parsed);
     const order = {
       ...parsed.data,
@@ -462,7 +466,9 @@ class NpcFittingMgrService extends BaseService {
     };
     if (order.targetID) {
       const source = context.data.interaction.npcEntity;
-      const target = spaceRuntime.getEntity(session, order.targetID);
+      const target = order.targetID === toPositiveInt(context.data.interaction.shipID)
+        ? context.data.interaction.shipEntity || spaceRuntime.getEntity(session, order.targetID)
+        : spaceRuntime.getEntity(session, order.targetID);
       if (!source || !target || target === source ||
           order.targetID === toPositiveInt(context.data.entityRecord.entityID) ||
           !target.position ||

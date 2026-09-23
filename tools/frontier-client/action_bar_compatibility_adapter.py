@@ -39,14 +39,17 @@ def _evejs_iter_ship_modules(provider, ship_id):
 
     seen = set()
     for candidate in modules:
-        module = candidate
-        if isinstance(candidate, int):
-            module = _evejs_get_item(provider, candidate)
-        item_id = getattr(module, "itemID", None)
-        if module is None or not item_id or item_id in seen:
+        try:
+            module = candidate
+            if isinstance(candidate, int):
+                module = _evejs_get_item(provider, candidate)
+            item_id = getattr(module, "itemID", None)
+            if module is None or not item_id or item_id in seen:
+                continue
+            seen.add(item_id)
+            yield module
+        except Exception:
             continue
-        seen.add(item_id)
-        yield module
 
 
 def _evejs_is_regular_action_bar_slot(provider, module):
@@ -109,27 +112,31 @@ def _evejs_build_regular_module_refs(provider, ship_id):
     module_ref_type = provider._evejs_action_bar_module_ref_type
     result = []
     for module in _evejs_iter_ship_modules(provider, ship_id):
-        type_id = getattr(module, "typeID", None)
-        if not type_id or not _evejs_is_regular_action_bar_slot(provider, module):
-            continue
+        try:
+            type_id = getattr(module, "typeID", None)
+            if not type_id or not _evejs_is_regular_action_bar_slot(provider, module):
+                continue
 
-        abilities = []
-        if provider.has_activatable_default_effect(type_id):
-            abilities.extend((
-                ability_id.ACTIVATE_EFFECT,
-                ability_id.DEACTIVATE_EFFECT,
+            abilities = []
+            if provider.has_activatable_default_effect(type_id):
+                abilities.extend((
+                    ability_id.ACTIVATE_EFFECT,
+                    ability_id.DEACTIVATE_EFFECT,
+                ))
+            if provider.has_online_effect(type_id):
+                abilities.extend((ability_id.ONLINE, ability_id.OFFLINE))
+
+            charge = _evejs_get_regular_charge(provider, module.itemID)
+            result.append(module_ref_type(
+                item_id=module.itemID,
+                type_id=type_id,
+                abilities=abilities,
+                loaded_type_id=getattr(charge, "type_id", None),
+                loaded_count=getattr(charge, "quantity", 0),
             ))
-        if provider.has_online_effect(type_id):
-            abilities.extend((ability_id.ONLINE, ability_id.OFFLINE))
-
-        charge = _evejs_get_regular_charge(provider, module.itemID)
-        result.append(module_ref_type(
-            item_id=module.itemID,
-            type_id=type_id,
-            abilities=abilities,
-            loaded_type_id=getattr(charge, "type_id", None),
-            loaded_count=getattr(charge, "quantity", 0),
-        ))
+        except Exception:
+            # A malformed module must not remove every other action-bar slot.
+            continue
     return result
 
 

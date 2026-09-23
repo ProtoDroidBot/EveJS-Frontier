@@ -18,6 +18,7 @@ MODULE = "eve/client/script/environment/spaceObject/ship.pyc"
 SOURCE_SHA256 = "4c1685990e3900228ad53d2ce84bef43e44f534a4a4d89bfcebdf8031b9a0630"
 PREVIOUS_WRAPPER_SHA256 = {
     "041d45a87fb69cd921d76fed9b37e2ad291d496bdedc304783dadb0a84fd9258",
+    "e24f90d2556dc7514a68d14183015f7b55fcba876be662acfcf1c59ed64b16da",
 }
 ADAPTER = Path(__file__).with_name("collision_vfx_compatibility_adapter.py")
 SOURCE_SENTINEL = b"EVEJS_COLLISION_VFX_ORIGINAL_MEMBER_V1"

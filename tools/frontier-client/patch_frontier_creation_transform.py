@@ -40,9 +40,13 @@ MODULES = {
 PREVIOUS_WRAPPER_SHA256 = {
     "creation_transform_adapter.py": {
         "21f0847e98fec8942dc02726a570fcb501bfbb3288bd80874d232b9cbf17d496",
+        "d150d80d35ea1f083c42f91100cf19b1b8a9f1163620f0e8f67477f5e2c8e74a",
     },
     "creation_transform_validation_adapter.py": {
         "cf01cd48c5a144710e77f0ee6f86125f95481e05d774c9212289e36904baad2a",
+    },
+    "creation_preset_view_adapter.py": {
+        "c12b64acca01686d1b85f5b8bc9e00addee14db3239938f84d03f8fb503609da",
     },
 }
 

@@ -21,17 +21,19 @@ def _evejs_service_manager(namespace):
 
 
 def _evejs_value(value, key, default=None):
-    if isinstance(value, dict):
-        return value.get(key, default)
-    return getattr(value, key, default)
+    try:
+        if isinstance(value, dict):
+            return value.get(key, default)
+        return getattr(value, key, default)
+    except Exception:
+        return default
 
 
 def _evejs_list(value):
-    if value is None:
+    try:
+        return [] if value is None else list(value)
+    except Exception:
         return []
-    if isinstance(value, (list, tuple)):
-        return list(value)
-    return list(value)
 
 
 def _evejs_assembly_access_remote(namespace):
@@ -51,11 +53,27 @@ def _evejs_assembly_access_available(namespace, item_id):
 def _evejs_capabilities(value):
     if isinstance(value, str):
         value = value.split(",")
-    return list(dict.fromkeys(
-        str(entry or "").strip().lower()
-        for entry in _evejs_list(value)
-        if str(entry or "").strip()
-    ))
+    capabilities = []
+    for entry in _evejs_list(value):
+        try:
+            name = str(entry or "").strip().lower()
+            if name and name not in capabilities:
+                capabilities.append(name)
+        except Exception:
+            continue
+    return capabilities
+
+
+def _evejs_positive_assembly_ids(entries):
+    result = []
+    for entry in _evejs_list(entries):
+        try:
+            assembly_id = int(_evejs_value(entry, "assemblyID", 0) or 0)
+            if assembly_id > 0:
+                result.append(assembly_id)
+        except Exception:
+            continue
+    return result
 
 
 class _EvejsAssemblyAccessPresenter:
@@ -88,12 +106,18 @@ class _EvejsAssemblyAccessPresenter:
 
     def refresh(self):
         self.access = self.remote.get_assembly_access(self.item_id, [])
-        self.requests = _evejs_list(
-            self.remote.get_assembly_access_requests(self.item_id, {})
-        )
-        self.grants = _evejs_list(
-            self.remote.get_assembly_access_grants(self.item_id, {})
-        )
+        try:
+            self.requests = _evejs_list(
+                self.remote.get_assembly_access_requests(self.item_id, {})
+            )
+        except Exception:
+            self.requests = []
+        try:
+            self.grants = _evejs_list(
+                self.remote.get_assembly_access_grants(self.item_id, {})
+            )
+        except Exception:
+            self.grants = []
         try:
             event_page = self.remote.get_assembly_access_events(
                 self.item_id, {"limit": 50}
@@ -373,13 +397,16 @@ def _evejs_assembly_access_window_type(namespace):
             return capabilities
 
         def _heading(self, ui, text):
-            ui.EveLabelLarge(
-                parent=self._scroll,
-                align=ui.Align.to_top,
-                text=text,
-                padTop=10,
-                padBottom=4,
-            )
+            try:
+                ui.EveLabelLarge(
+                    parent=self._scroll,
+                    align=ui.Align.to_top,
+                    text=text,
+                    padTop=10,
+                    padBottom=4,
+                )
+            except Exception:
+                pass
 
         def _row(self, ui, text, actions=()):
             row = ui.Container(
@@ -407,6 +434,13 @@ def _evejs_assembly_access_window_type(namespace):
                 )
                 offset += 82
 
+        def _try_row(self, ui, text, actions=()):
+            try:
+                self._row(ui, text, actions)
+            except Exception:
+                # Continue constructing the remaining independent entries.
+                pass
+
         def _render(self, ui):
             presenter = self._presenter
             self.SetCaption("Assembly Access: {}".format(presenter.item_id))
@@ -414,7 +448,7 @@ def _evejs_assembly_access_window_type(namespace):
             self._scroll.Flush()
             self._heading(ui, "Current access")
             source = "owner" if presenter.is_owner else "grant-derived"
-            self._row(
+            self._try_row(
                 ui,
                 "{} | {} | {}".format(
                     _evejs_value(presenter.access, "principal", "player"),
@@ -425,7 +459,7 @@ def _evejs_assembly_access_window_type(namespace):
 
             self._heading(ui, "Requests")
             if not presenter.requests:
-                self._row(ui, "No visible access requests")
+                self._try_row(ui, "No visible access requests")
             for request in presenter.requests:
                 request_id = str(_evejs_value(request, "requestID", ""))
                 status = str(_evejs_value(request, "status", "unknown"))
@@ -458,7 +492,7 @@ def _evejs_assembly_access_window_type(namespace):
                             lambda: presenter.cancel_request(request_id),
                         ),
                     ))
-                self._row(
+                self._try_row(
                     ui,
                     "{} | {} | {}".format(
                         requester,
@@ -472,7 +506,7 @@ def _evejs_assembly_access_window_type(namespace):
 
             self._heading(ui, "Active grants")
             if not presenter.grants:
-                self._row(ui, "No visible active grants")
+                self._try_row(ui, "No visible active grants")
             for grant in presenter.grants:
                 grant_id = str(_evejs_value(grant, "grantID", ""))
                 recipient = _evejs_value(
@@ -491,7 +525,7 @@ def _evejs_assembly_access_window_type(namespace):
                             lambda: presenter.revoke_grant(grant_id),
                         ),
                     ))
-                self._row(
+                self._try_row(
                     ui,
                     "{} | {} | {}".format(
                         recipient,
@@ -505,9 +539,9 @@ def _evejs_assembly_access_window_type(namespace):
 
             self._heading(ui, "Audit")
             if not presenter.events:
-                self._row(ui, "No visible audit events")
+                self._try_row(ui, "No visible audit events")
             for event in presenter.events[-20:]:
-                self._row(
+                self._try_row(
                     ui,
                     "#{} {} by {}".format(
                         _evejs_value(event, "sequence", 0),
@@ -519,17 +553,13 @@ def _evejs_assembly_access_window_type(namespace):
 
             self._heading(ui, "Network Node load shedding")
             if not presenter.load_shedding:
-                self._row(ui, "No configure-authorized NPC proposals")
+                self._try_row(ui, "No configure-authorized NPC proposals")
             for proposal in presenter.load_shedding:
                 job_id = str(_evejs_value(proposal, "job_id", ""))
                 plan = _evejs_value(proposal, "proposed_plan", {})
                 selected = _evejs_list(_evejs_value(plan, "selected", []))
-                assembly_ids = [
-                    int(_evejs_value(entry, "assemblyID", 0) or 0)
-                    for entry in selected
-                    if int(_evejs_value(entry, "assemblyID", 0) or 0) > 0
-                ]
-                self._row(
+                assembly_ids = _evejs_positive_assembly_ids(selected)
+                self._try_row(
                     ui,
                     "{} relief proposed / {} required | {}".format(
                         _evejs_value(plan, "energyRelief", 0),
@@ -682,17 +712,26 @@ def _evejs_active_target_id(namespace):
 
 
 def _evejs_issue_npc_order(
-    namespace, entity_id, order_type, target_id=0, range_meters=None
+    namespace, entity_id, order_type, target_id=None, range_meters=None
 ):
     probe = _evejs_npc_interaction_probe(namespace, entity_id)
     if _evejs_value(probe, "canIssueOrders", False) is not True:
         raise PermissionError("NPC order access is no longer available")
     order = {"type": order_type}
     if order_type != "resume":
-        target_id = int(target_id)
-        if target_id <= 0 or target_id == int(entity_id):
+        raw_target = str(target_id).strip() if target_id is not None else ""
+        if raw_target:
+            target_id = int(raw_target)
+        else:
+            target_id = int(_evejs_value(
+                probe, "actorShipEntityID", 0
+            ) or 0)
+        if target_id == int(entity_id) or (raw_target and target_id <= 0):
             raise ValueError("Select a different target entity")
-        order["targetID"] = target_id
+        if target_id > 0:
+            order["targetID"] = target_id
+        # An older probe may omit actorShipEntityID; the server resolves an
+        # omitted target to the authenticated initiator's active ship.
     if order_type in ("keepAtRange", "orbit"):
         order["rangeMeters"] = int(range_meters)
     result = _evejs_service_manager(namespace).RemoteSvc(
@@ -734,7 +773,8 @@ def _evejs_npc_interaction_window_type(namespace):
                 align=eveui.Align.to_all,
                 padding=(16, 16, 16, 16),
             )
-            self._name = eveui.EveLabelLarge(
+            # Window/CarbonUI reserves _name for its own string identity.
+            self._npc_name_label = eveui.EveLabelLarge(
                 parent=root,
                 align=eveui.Align.to_top,
                 text="NPC",
@@ -767,14 +807,14 @@ def _evejs_npc_interaction_window_type(namespace):
             eveui.EveLabelMedium(
                 parent=self._order_controls,
                 align=eveui.Align.to_top,
-                text="NPC Orders (selected target or entity ID)",
+                text="NPC Orders (blank target = your active ship)",
             )
             self._target_edit = SingleLineEditText(
                 parent=self._order_controls,
                 align=eveui.Align.to_top,
                 height=30,
                 top=6,
-                hintText="Target entity ID",
+                hintText="Target ship/entity ID (blank = your ship)",
                 maxLength=20,
             )
             self._range_edit = SingleLineEditText(
@@ -842,12 +882,15 @@ def _evejs_npc_interaction_window_type(namespace):
                 edit.text = str(value)
 
         def _on_use_active_target(self, *args):
-            target_id = _evejs_active_target_id(namespace)
-            if not target_id or target_id == self._entity_id:
-                self._status.text = "Select another target or enter its entity ID"
-                return
-            self._set_edit(self._target_edit, target_id)
-            self._status.text = "Target {} selected".format(target_id)
+            try:
+                target_id = _evejs_active_target_id(namespace)
+                if not target_id or target_id == self._entity_id:
+                    self._status.text = "Select another target or enter its entity ID"
+                    return
+                self._set_edit(self._target_edit, target_id)
+                self._status.text = "Target {} selected".format(target_id)
+            except Exception as error:
+                self._status.text = "Target selection failed: {}".format(error)
 
         def _on_retry(self, *args):
             self.AcceptNpc(_evejs_npc_interaction_probe(
@@ -856,12 +899,12 @@ def _evejs_npc_interaction_window_type(namespace):
 
         def _send_order(self, order_type):
             try:
-                target_id = 0
+                target_id = None
                 if order_type != "resume":
-                    raw_target = self._edit_value(self._target_edit)
-                    target_id = int(raw_target) if raw_target else (
-                        _evejs_active_target_id(namespace)
-                    )
+                    raw_target = str(self._edit_value(
+                        self._target_edit
+                    ) or "").strip()
+                    target_id = int(raw_target) if raw_target else None
                 range_meters = None
                 if order_type in ("keepAtRange", "orbit"):
                     range_meters = int(
@@ -882,7 +925,7 @@ def _evejs_npc_interaction_window_type(namespace):
             name = _evejs_value(
                 probe, "displayName", "NPC {}".format(self._entity_id)
             )
-            self._name.text = str(name)
+            self._npc_name_label.text = str(name)
             self.SetCaption("NPC Orders: {}".format(name))
             can_fit = can_interact and _evejs_value(
                 probe, "canModifyFittings", False
@@ -900,12 +943,15 @@ def _evejs_npc_interaction_window_type(namespace):
             )
 
         def _on_modify_fittings(self, *args):
-            if not _evejs_npc_fitting_action_is_trusted(
-                namespace, self._entity_id
-            ):
-                self.Close()
-                return
-            _evejs_open_npc_fitting(namespace, self._entity_id)
+            try:
+                if not _evejs_npc_fitting_action_is_trusted(
+                    namespace, self._entity_id
+                ):
+                    self.Close()
+                    return
+                _evejs_open_npc_fitting(namespace, self._entity_id)
+            except Exception as error:
+                self._status.text = "NPC fitting unavailable: {}".format(error)
 
     namespace["_evejs_npc_interaction_window_class"] = NpcInteractionWindow
     return NpcInteractionWindow
@@ -941,34 +987,50 @@ def _evejs_install_npc_fitting_menu(namespace):
         parentID=None,
         hint=None,
     ):
-        menu = original(
-            self, itemID, mapItem, crData, typeID, parentID, hint
-        )
+        is_npc = isinstance(itemID, int) and itemID >= NPC_ENTITY_ID_FLOOR
+        try:
+            menu = original(
+                self, itemID, mapItem, crData, typeID, parentID, hint
+            )
+        except Exception:
+            if not is_npc:
+                raise
+            # A failing retail menu entry must not hide the NPC's explicit
+            # interaction action. Keep non-NPC failures on the retail path.
+            menu = []
         if isinstance(itemID, list):
             return menu
-        is_npc = isinstance(itemID, int) and itemID >= NPC_ENTITY_ID_FLOOR
         interaction = _evejs_npc_interaction_probe(namespace, itemID) if is_npc else None
-        if is_npc and not any(
-            isinstance(row, (list, tuple)) and row and row[0] == "Interact"
-            for row in menu
-        ):
-            menu.append([
-                "Interact",
-                _evejs_open_npc_interaction,
-                (namespace, itemID),
-            ])
-        if _evejs_value(interaction, "canModifyFittings", False) is True:
-            menu.append([
-                "Modify Fittings",
-                _evejs_open_npc_fitting,
-                (namespace, itemID),
-            ])
-        if _evejs_assembly_access_available(namespace, itemID):
-            menu.append([
-                "Manage Assembly Access",
-                _evejs_open_assembly_access,
-                (namespace, itemID),
-            ])
+        try:
+            if is_npc and not any(
+                isinstance(row, (list, tuple)) and row and row[0] == "Interact"
+                for row in menu
+            ):
+                menu.append([
+                    "Interact",
+                    _evejs_open_npc_interaction,
+                    (namespace, itemID),
+                ])
+        except Exception:
+            pass
+        try:
+            if _evejs_value(interaction, "canModifyFittings", False) is True:
+                menu.append([
+                    "Modify Fittings",
+                    _evejs_open_npc_fitting,
+                    (namespace, itemID),
+                ])
+        except Exception:
+            pass
+        try:
+            if _evejs_assembly_access_available(namespace, itemID):
+                menu.append([
+                    "Manage Assembly Access",
+                    _evejs_open_assembly_access,
+                    (namespace, itemID),
+                ])
+        except Exception:
+            pass
         return menu
 
     celestial_menu._evejs_npc_fitting_menu_patch = True

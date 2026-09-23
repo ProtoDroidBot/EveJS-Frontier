@@ -367,7 +367,9 @@ function resolveAnchor(systemID, descriptor: Record<string, any> = {}) {
 
 function buildOffsetSpawnState(anchorEntity, distanceMeters = 20_000, options: Record<string, any> = {}) {
   const origin = cloneVector(anchorEntity && anchorEntity.position);
-  const offsetDirection = buildRandomUnitVector();
+  const offsetDirection = options.offsetDirection
+    ? normalizeVector(options.offsetDirection)
+    : buildRandomUnitVector();
   const offsetPosition = addVectors(
     origin,
     scaleVector(offsetDirection, Math.max(1_000, toFiniteNumber(distanceMeters, 20_000))),
@@ -452,11 +454,23 @@ function buildSpawnStateForDefinition(anchorEntity, definition, options: Record<
     ? Math.max(0, explicitFormationSpacingMeters)
     : 1_250;
   const spacingMeters = Math.min(12_000, index * formationSpacingMeters);
+  const formationDirection = options.formationStyle === "fibonacci" && total > 1
+    ? (() => {
+        const y = 1 - ((index + 0.5) * 2 / total);
+        const radialScale = Math.sqrt(Math.max(0, 1 - (y * y)));
+        const theta = Math.PI * (3 - Math.sqrt(5)) * index;
+        return {
+          x: Math.cos(theta) * radialScale,
+          y,
+          z: Math.sin(theta) * radialScale,
+        };
+      })()
+    : null;
 
   return buildOffsetSpawnState(
     anchorEntity,
     Math.max(1_000, baseDistanceMeters + jitterMeters + spacingMeters),
-    options,
+    formationDirection ? { ...options, offsetDirection: formationDirection } : options,
   );
 }
 

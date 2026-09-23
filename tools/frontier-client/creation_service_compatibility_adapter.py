@@ -73,7 +73,13 @@ def _evejs_emit_presets_changed(service, action, result):
         # Older Signal implementations expose emit() instead of __call__().
         emit = getattr(signal, "emit", None)
         if emit is not None:
-            emit(action, result)
+            try:
+                emit(action, result)
+            except Exception:
+                pass
+    except Exception:
+        # A listener failure must not turn a completed RPC into a failed UI action.
+        pass
 
 
 def _evejs_remote_preset_call(service, method_name, *args):
@@ -102,11 +108,14 @@ def _evejs_install_creation_service_compatibility(namespace):
         @wraps(original_init)
         def __init__(self, *args, **kwargs):
             original_init(self, *args, **kwargs)
-            if not hasattr(self, "on_creation_presets_changed"):
-                signals_module = namespace.get("signals")
-                signal_type = getattr(signals_module, "Signal", None)
-                if signal_type is not None:
-                    self.on_creation_presets_changed = signal_type()
+            try:
+                if not hasattr(self, "on_creation_presets_changed"):
+                    signals_module = namespace.get("signals")
+                    signal_type = getattr(signals_module, "Signal", None)
+                    if signal_type is not None:
+                        self.on_creation_presets_changed = signal_type()
+            except Exception:
+                pass
 
         __init__._evejs_creation_presets_patch = True
         creation_service_type.__init__ = __init__

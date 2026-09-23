@@ -228,7 +228,12 @@ function disconnectCharacterSession(session, options = {}) {
     const cleanupErrors = [];
     const attemptCleanup = (label, callback) => {
         try {
-            return callback();
+            const result = callback();
+            if (result && result.success === false) {
+                cleanupErrors.push(label);
+                log.warn(`[SessionDisconnect] ${label} failed for char=${characterID}: ${result.errorMsg || "CLEANUP_FAILED"}`);
+            }
+            return result;
         }
         catch (error) {
             cleanupErrors.push(label);
@@ -320,7 +325,7 @@ function disconnectCharacterSession(session, options = {}) {
         }
     }
     return {
-        success: true,
+        success: cleanupErrors.length === 0,
         cleanupErrors,
     };
 }

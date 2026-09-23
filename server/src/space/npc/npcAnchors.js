@@ -262,7 +262,9 @@ function resolveAnchor(systemID, descriptor = {}) {
 }
 function buildOffsetSpawnState(anchorEntity, distanceMeters = 20_000, options = {}) {
     const origin = cloneVector(anchorEntity && anchorEntity.position);
-    const offsetDirection = buildRandomUnitVector();
+    const offsetDirection = options.offsetDirection
+        ? normalizeVector(options.offsetDirection)
+        : buildRandomUnitVector();
     const offsetPosition = addVectors(origin, scaleVector(offsetDirection, Math.max(1_000, toFiniteNumber(distanceMeters, 20_000))));
     const direction = normalizeVector(buildRandomUnitVector(), cloneVector(anchorEntity && anchorEntity.direction, { x: 1, y: 0, z: 0 }));
     return {
@@ -318,7 +320,19 @@ function buildSpawnStateForDefinition(anchorEntity, definition, options = {}) {
         ? Math.max(0, explicitFormationSpacingMeters)
         : 1_250;
     const spacingMeters = Math.min(12_000, index * formationSpacingMeters);
-    return buildOffsetSpawnState(anchorEntity, Math.max(1_000, baseDistanceMeters + jitterMeters + spacingMeters), options);
+    const formationDirection = options.formationStyle === "fibonacci" && total > 1
+        ? (() => {
+            const y = 1 - ((index + 0.5) * 2 / total);
+            const radialScale = Math.sqrt(Math.max(0, 1 - (y * y)));
+            const theta = Math.PI * (3 - Math.sqrt(5)) * index;
+            return {
+                x: Math.cos(theta) * radialScale,
+                y,
+                z: Math.sin(theta) * radialScale,
+            };
+        })()
+        : null;
+    return buildOffsetSpawnState(anchorEntity, Math.max(1_000, baseDistanceMeters + jitterMeters + spacingMeters), formationDirection ? { ...options, offsetDirection: formationDirection } : options);
 }
 module.exports = {
     toFiniteNumber,

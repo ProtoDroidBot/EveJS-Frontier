@@ -104,6 +104,18 @@ const SOV_GUARANTEED_SPAWN_FAMILIES = Object.freeze([
   "sov_exploration_detector",
 ]);
 const SOV_GUARANTEED_FAMILY_SET = new Set(SOV_GUARANTEED_SPAWN_FAMILIES);
+// Temporary Frontier world-spawn selection. Keep the other configured sites
+// available for direct references while restricting automatic allocation.
+const TEMPORARY_UNIVERSE_DUNGEON_IDS = new Set([
+  // Mining sites, excluding Moon Eater, Xeroti, and stacked storage content.
+  10403, 10456, 10457, 10458, 10459, 10684, 10685, 10688, 10710,
+  11100, 11101, 11102, 11128, 12230, 12686, 13118, 13294, 13295, 13316,
+  // Crude Rift sites (including the Fuel Deposit entry).
+  10460, 10690, 11081, 11082, 11083, 11084, 11085, 12338,
+  12710, 12711, 14001, 14008, 14103, 14104, 14105, 14106,
+  // Osa Surveyors only; other Surveyors factions remain configured but dormant.
+  12345,
+]);
 const DRONE_REGION_IDS = new Set([
   10000013, // Malpais
   10000018, // The Spire
@@ -510,7 +522,10 @@ function getFrontierDungeonSpawnAuthorityIDs() {
       dungeonSpawnEligibility.collectFrontierDungeonSpawnAuthorityIDs(
         worldSnapshot,
         readStaticRows(TABLE.ITEM_TYPES),
-      ).filter((dungeonID) => configuredDungeonIDs.has(dungeonID)),
+      ).filter((dungeonID) => (
+        configuredDungeonIDs.has(dungeonID) &&
+        TEMPORARY_UNIVERSE_DUNGEON_IDS.has(dungeonID)
+      )),
     );
   }
   return frontierDungeonSpawnAuthorityIDsCache;
@@ -527,6 +542,7 @@ function isUniverseSpawnEligibleTemplate(
   return Boolean(
     template &&
     template.templateID &&
+    TEMPORARY_UNIVERSE_DUNGEON_IDS.has(Math.max(0, toInt(template.sourceDungeonID, 0))) &&
     template.frontierDungeonSpawnConfigured === true &&
     frontierDungeonSpawns.resolveSiteConfiguration(template)
   ) &&

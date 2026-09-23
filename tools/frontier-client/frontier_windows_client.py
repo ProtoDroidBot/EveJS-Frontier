@@ -748,7 +748,7 @@ def code_patch_states(archive: Path, build: int) -> dict:
             raise FrontierWindowsError(f"Unexpected fitting compatibility state: {fitting}")
         states["fittingCompatibility"] = fitting
         inventory_view = run_python_patcher(INVENTORY_VIEW_PATCHER, archive, build, check=True)
-        if inventory_view not in {"source", "patched", "partial"}:
+        if inventory_view not in {"source", "patched", "outdated", "partial"}:
             raise FrontierWindowsError(f"Unexpected inventory-view compatibility state: {inventory_view}")
         states["inventoryView"] = inventory_view
         collision_vfx = run_python_patcher(COLLISION_VFX_PATCHER, archive, build, check=True)
@@ -763,6 +763,10 @@ def code_patch_states(archive: Path, build: int) -> dict:
                 f"Unexpected Creation transform state: {creation_transform}"
             )
         states["creationTransform"] = creation_transform
+        turret_tracking = run_python_patcher(TURRET_TRACKING_PATCHER, archive, build, check=True)
+        if turret_tracking not in {"source", "patched", "outdated"}:
+            raise FrontierWindowsError(f"Unexpected turret tracking state: {turret_tracking}")
+        states["turretTracking"] = turret_tracking
     return states
 
 
@@ -775,6 +779,7 @@ def expected_code_states(build: int, state: str) -> dict:
         result["inventoryView"] = state
         result["collisionVfx"] = state
         result["creationTransform"] = state
+        result["turretTracking"] = state
     return result
 
 
@@ -790,15 +795,15 @@ def patch_code_archive(archive: Path, build: int) -> dict:
         run_python_patcher(DOCKING_PATCHER, archive, build, check=False)
     if states["features"] == "source":
         run_python_patcher(FEATURE_PATCHER, archive, build, check=False)
-    if states.get("industryStorage") == "source":
+    if states.get("industryStorage") in {"source", "outdated"}:
         run_python_patcher(INDUSTRY_STORAGE_PATCHER, archive, build, check=False)
     if states.get("mapViewLifecycle") == "source":
         run_python_patcher(MAP_VIEW_PATCHER, archive, build, check=False)
     if states.get("fittingCompatibility") in {"source", "outdated"}:
         run_python_patcher(FITTING_COMPATIBILITY_PATCHER, archive, build, check=False)
-    if build == 3502403:
+    if states.get("turretTracking") in {"source", "outdated"}:
         run_python_patcher(TURRET_TRACKING_PATCHER, archive, build, check=False)
-    if states.get("inventoryView") == "source":
+    if states.get("inventoryView") in {"source", "outdated"}:
         run_python_patcher(INVENTORY_VIEW_PATCHER, archive, build, check=False)
     if states.get("collisionVfx") in {"source", "outdated"}:
         run_python_patcher(COLLISION_VFX_PATCHER, archive, build, check=False)
@@ -1387,9 +1392,12 @@ def check_stage(
     allow_fitting_compatibility_source: bool = False,
     allow_fitting_compatibility_outdated: bool = False,
     allow_inventory_view_source: bool = False,
+    allow_inventory_view_outdated: bool = False,
     allow_collision_vfx_source: bool = False,
     allow_collision_vfx_outdated: bool = False,
     allow_creation_transform_source: bool = False,
+    allow_turret_tracking_source: bool = False,
+    allow_turret_tracking_outdated: bool = False,
 ) -> dict:
     stage_root = stage_root.resolve()
     marker_path, marker = load_stage(stage_root)
@@ -1424,6 +1432,9 @@ def check_stage(
     if (allow_inventory_view_source and build == 3502403
             and code_states.get("inventoryView") == "source"):
         expected_states["inventoryView"] = "source"
+    if (allow_inventory_view_outdated and build == 3502403
+            and code_states.get("inventoryView") == "outdated"):
+        expected_states["inventoryView"] = "outdated"
     if (allow_collision_vfx_source and build == 3502403
             and code_states.get("collisionVfx") == "source"):
         expected_states["collisionVfx"] = "source"
@@ -1433,6 +1444,12 @@ def check_stage(
     if (allow_creation_transform_source and build == 3502403
             and code_states.get("creationTransform") in {"source", "outdated"}):
         expected_states["creationTransform"] = code_states["creationTransform"]
+    if (allow_turret_tracking_source and build == 3502403
+            and code_states.get("turretTracking") == "source"):
+        expected_states["turretTracking"] = "source"
+    if (allow_turret_tracking_outdated and build == 3502403
+            and code_states.get("turretTracking") == "outdated"):
+        expected_states["turretTracking"] = "outdated"
     if code_states != expected_states:
         raise FrontierWindowsError(f"code.ccp patch state is not fully enabled: {code_states}")
     verify_placebo(paths["commonIni"])
@@ -1501,6 +1518,74 @@ def check_stage(
     }
 
 
+def upgrade_map_view_stage(stage_root: Path, profile_path: Path | None = None) -> dict:
+    """Upgrade only the map adapter in a completed 3502403 stage."""
+    stage_root = stage_root.resolve()
+    marker_path, marker = load_stage(stage_root)
+    if int(marker["build"]) != 3502403 or marker.get("patchState") != "complete":
+        raise FrontierWindowsError("Map-view upgrade requires a completed build-3502403 stage")
+    paths = stage_paths(stage_root, marker)
+    assert_protected_stage_paths(stage_root, paths)
+    _, profile = resolve_profile(3502403, str(marker["nativeBlue"]), profile_path)
+    touched = [paths["code"], paths["manifest"], marker_path]
+    current_hashes = marker.get("currentHashes")
+    if not isinstance(current_hashes, dict):
+        raise FrontierWindowsError("Stage marker has no current file hashes")
+    for path in touched[:2]:
+        relative = path.relative_to(stage_root).as_posix()
+        if current_hashes.get(relative) != sha256_file(path):
+            raise FrontierWindowsError(f"Stage marker current hash mismatch: {relative}")
+    if not manifest_hashes_match(paths["manifest"], stage_root, profile):
+        raise FrontierWindowsError("Staged manifest target digests are stale")
+
+    state = run_python_patcher(MAP_VIEW_PATCHER, paths["code"], 3502403, check=True)
+    if state == "patched":
+        return {"mapViewValid": True, "mapViewLifecycle": state, "upgraded": False}
+    if state != "source":
+        raise FrontierWindowsError(f"Unexpected map-view lifecycle state: {state}")
+
+    backup_root, original_hashes = backup_transaction_files(stage_root, touched)
+    if any(
+        sha256_file(path) != original_hashes[path.relative_to(stage_root).as_posix()]
+        for path in touched
+    ):
+        raise FrontierWindowsError("Stage changed before the map-view upgrade")
+    marker = dict(marker)
+    current_hashes = dict(current_hashes)
+    marker["currentHashes"] = current_hashes
+    try:
+        run_python_patcher(MAP_VIEW_PATCHER, paths["code"], 3502403, check=False)
+        if run_python_patcher(MAP_VIEW_PATCHER, paths["code"], 3502403, check=True) != "patched":
+            raise FrontierWindowsError("Map-view patch did not verify")
+        refresh_manifest_atomic(paths["manifest"], stage_root, profile)
+        for path in touched[:2]:
+            current_hashes[path.relative_to(stage_root).as_posix()] = sha256_file(path)
+        marker["mapViewLifecyclePatchState"] = "patched"
+        marker["mapViewLifecyclePatchBackup"] = str(backup_root)
+        marker["preMapViewLifecycleHashes"] = original_hashes
+        write_json_atomic(marker_path, marker)
+        if not manifest_hashes_match(paths["manifest"], stage_root, profile):
+            raise FrontierWindowsError("Map-view manifest verification failed")
+        if run_python_patcher(MAP_VIEW_PATCHER, paths["code"], 3502403, check=True) != "patched":
+            raise FrontierWindowsError("Map-view patch verification failed")
+        for path in touched[:2]:
+            relative = path.relative_to(stage_root).as_posix()
+            if current_hashes[relative] != sha256_file(path):
+                raise FrontierWindowsError(f"Map-view stage hash mismatch: {relative}")
+        return {"mapViewValid": True, "mapViewLifecycle": "patched", "upgraded": True,
+                "backup": str(backup_root)}
+    except BaseException as error:
+        try:
+            restore_transaction_files(stage_root, backup_root, touched, original_hashes)
+        except Exception as rollback_error:
+            raise FrontierWindowsError(
+                f"Map-view upgrade failed ({error}); rollback failed ({rollback_error})"
+            ) from rollback_error
+        raise FrontierWindowsError(
+            f"Map-view upgrade failed and was rolled back; backup: {backup_root}: {error}"
+        ) from error
+
+
 def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
     """Upgrade a verified stage with current build-specific code adapters."""
     check_stage(stage_root, allow_industry_storage_source=True,
@@ -1509,9 +1594,12 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
                 allow_fitting_compatibility_source=True,
                 allow_fitting_compatibility_outdated=True,
                 allow_inventory_view_source=True,
+                allow_inventory_view_outdated=True,
                 allow_collision_vfx_source=True,
                 allow_collision_vfx_outdated=True,
-                allow_creation_transform_source=True, **check_options)
+                allow_creation_transform_source=True,
+                allow_turret_tracking_source=True,
+                allow_turret_tracking_outdated=True, **check_options)
     marker_path, marker = load_stage(stage_root)
     build = int(marker["build"])
     paths = stage_paths(stage_root, marker)
@@ -1521,15 +1609,17 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             and states.get("fittingCompatibility") == "patched"
             and states.get("inventoryView") == "patched"
             and states.get("collisionVfx") == "patched"
-            and states.get("creationTransform") == "patched"):
+            and states.get("creationTransform") == "patched"
+            and states.get("turretTracking") == "patched"):
         return check_stage(stage_root, **check_options)
     if (build != 3502403
             or states.get("industryStorage") not in {"source", "patched", "outdated"}
             or states.get("mapViewLifecycle") not in {"source", "patched"}
             or states.get("fittingCompatibility") not in {"source", "patched", "outdated"}
-            or states.get("inventoryView") not in {"source", "patched"}
+            or states.get("inventoryView") not in {"source", "patched", "outdated"}
             or states.get("collisionVfx") not in {"source", "patched", "outdated"}
-            or states.get("creationTransform") not in {"source", "patched", "outdated"}):
+            or states.get("creationTransform") not in {"source", "patched", "outdated"}
+            or states.get("turretTracking") not in {"source", "patched", "outdated"}):
         raise FrontierWindowsError("Stage cannot receive the current code adapters")
     _, profile = resolve_profile(build, str(marker["nativeBlue"]), check_options.get("profile_path"))
     touched = [paths["code"], paths["manifest"], marker_path]
@@ -1551,6 +1641,8 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             run_python_patcher(COLLISION_VFX_PATCHER, paths["code"], build, check=False)
         if states["creationTransform"] != "patched":
             run_python_patcher(CREATION_TRANSFORM_PATCHER, paths["code"], build, check=False)
+        if states["turretTracking"] != "patched":
+            run_python_patcher(TURRET_TRACKING_PATCHER, paths["code"], build, check=False)
         refresh_manifest_atomic(paths["manifest"], stage_root, profile)
         for path in touched[:2]:
             marker["currentHashes"][path.relative_to(stage_root).as_posix()] = sha256_file(path)
@@ -1578,6 +1670,10 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             marker["creationTransformPatchState"] = "patched"
             marker["creationTransformPatchBackup"] = str(backup_root)
             marker["preCreationTransformHashes"] = original_hashes
+        if states["turretTracking"] != "patched":
+            marker["turretTrackingPatchState"] = "patched"
+            marker["turretTrackingPatchBackup"] = str(backup_root)
+            marker["preTurretTrackingHashes"] = original_hashes
         write_json_atomic(marker_path, marker)
         return check_stage(stage_root, **check_options)
     except BaseException:
@@ -1660,6 +1756,7 @@ def patch_stage(
                 "inventoryViewPatchState": code_states.get("inventoryView"),
                 "collisionVfxPatchState": code_states.get("collisionVfx"),
                 "creationTransformPatchState": code_states.get("creationTransform"),
+                "turretTrackingPatchState": code_states.get("turretTracking"),
                 "fileStates": {
                     "nativeBlue": "exact-target",
                     "codeCcp": "exact-patched",
@@ -1714,7 +1811,7 @@ def main() -> int:
         description="Strict Windows EVE Frontier stage and native-blue patch verifier."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("patch", "check"):
+    for name in ("patch", "check", "map-upgrade"):
         command = subparsers.add_parser(name)
         command.add_argument("--staged-root", type=Path, required=True)
         command.add_argument("--profile", type=Path)
@@ -1730,6 +1827,10 @@ def main() -> int:
     mutate.add_argument("--profile", type=Path, required=True)
     args = parser.parse_args()
     try:
+        if args.command == "map-upgrade":
+            report = upgrade_map_view_stage(args.staged_root, profile_path=args.profile)
+            print(json.dumps(report, sort_keys=True))
+            return 0
         if args.command in {"patch", "check"}:
             function = patch_stage if args.command == "patch" else check_stage
             report = function(

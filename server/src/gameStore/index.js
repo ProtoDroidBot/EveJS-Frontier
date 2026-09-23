@@ -1032,17 +1032,18 @@ function flushAllSync() {
 }
 // ── Graceful shutdown ───────────────────────────────────────────────
 let shutdownInProgress = false;
-const shutdownHooks = new Set();
-function registerShutdownHook(hook) {
+const shutdownHooks = new Map();
+function registerShutdownHook(hook, options = {}) {
     if (typeof hook !== "function") {
         throw new TypeError("database shutdown hook must be a function");
     }
-    shutdownHooks.add(hook);
+    const priority = Number(options.priority || 0);
+    shutdownHooks.set(hook, Number.isFinite(priority) ? priority : 0);
     return () => shutdownHooks.delete(hook);
 }
 function runShutdownHooks(reason) {
     const errors = [];
-    for (const hook of [...shutdownHooks]) {
+    for (const [hook] of [...shutdownHooks].sort((left, right) => right[1] - left[1])) {
         try {
             hook(reason);
         }
@@ -1059,17 +1060,17 @@ function flushDirtyTablesForShutdown(reason) {
     }
     shutdownInProgress = true;
     dbLog(`received ${reason}, flushing cache to disk...`);
-    runShutdownHooks(reason);
-    flushAllSync();
-    return true;
+    const hooks = runShutdownHooks(reason);
+    const flush = flushAllSync();
+    return hooks.success && flush.success;
 }
 function onShutdownSignal(signal, exitCode = 0) {
     if (process[TEST_STORE_CLEANUP_SYMBOL] === true) {
         process.exitCode = exitCode;
         return;
     }
-    flushDirtyTablesForShutdown(signal);
-    process.exit(exitCode);
+    const success = flushDirtyTablesForShutdown(signal);
+    process.exit(success ? exitCode : 1);
 }
 for (const signal of ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"]) {
     try {
@@ -1087,7 +1088,8 @@ process.on("beforeExit", () => {
     // clean before the event loop became empty. Processes with no hooks retain
     // the quiet, no-op behavior used by probes and migration tooling.
     if (shutdownHooks.size > 0 || dirty.size > 0 || inFlightFlushes.size > 0) {
-        flushDirtyTablesForShutdown("beforeExit");
+        if (!flushDirtyTablesForShutdown("beforeExit"))
+            process.exitCode = 1;
     }
 });
 process.on("exit", () => {
