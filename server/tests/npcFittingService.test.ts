@@ -145,13 +145,19 @@ function createNpc(overrides: Record<string, any> = {}) {
     },
     ...overrides,
   };
-  assert.equal(nativeStore.upsertNativeEntity(entity, { durable: true }).success, true);
+  assert.equal(nativeStore.upsertNativeEntity(entity, {
+    durable: entity.transient !== true,
+    transient: entity.transient === true,
+  }).success, true);
   assert.equal(nativeStore.upsertNativeController({
     entityID: entity.entityID,
     systemID: entity.systemID,
     profileID: "test-restricted-hull",
-    transient: false,
-  }, { durable: true }).success, true);
+    transient: entity.transient === true,
+  }, {
+    durable: entity.transient !== true,
+    transient: entity.transient === true,
+  }).success, true);
   database.flushTablesSync([nativeStore.TABLE.ENTITIES, nativeStore.TABLE.CONTROLLERS]);
   return entity;
 }
@@ -391,6 +397,55 @@ test("NPC fitting preserves canonical module and charge IDs through custody", (t
   }));
   assert.equal(itemStore.findItemById(moduleID).locationID, SOURCE_LOCATION_ID);
   assert.equal(nativeStore.getNativeModule(moduleID), null);
+});
+
+test("transient NPCs use the same fitting flow and return custody when removed", (t) => {
+  fixture(t);
+  createNpc({ transient: true });
+  const moduleID = 91000705;
+  const chargeID = 91000706;
+  writeItems([
+    itemRow(moduleID, WEAPON_TYPE_ID, 7, 53, "Transient Weapon"),
+    itemRow(chargeID, CHARGE_TYPE_ID, 8, 85, "Transient Charge", 5),
+  ]);
+  assert.equal(npcFitting.resolveNpcFittingEntity(ENTITY_ID).success, true);
+  ok(npcFitting.fitItemToNpc({ entityID: ENTITY_ID, itemID: moduleID, actor: actor() }));
+  ok(npcFitting.loadChargeToNpcModule({
+    entityID: ENTITY_ID, moduleID, itemID: chargeID, quantity: 5, actor: actor(),
+  }));
+  assert.equal(itemStore.findItemById(moduleID).locationID, ENTITY_ID);
+  assert.equal(itemStore.findItemById(chargeID).locationID, ENTITY_ID);
+  ok(nativeStore.removeNativeEntityCascade(ENTITY_ID));
+  assert.equal(itemStore.findItemById(moduleID).locationID, SOURCE_LOCATION_ID);
+  assert.equal(itemStore.findItemById(chargeID).locationID, SOURCE_LOCATION_ID);
+  assert.equal(nativeStore.getNativeModule(moduleID), null);
+  assert.equal(nativeStore.getNativeCargo(chargeID), null);
+});
+
+test("restart recovery returns custody orphaned by a transient NPC", (t) => {
+  fixture(t);
+  createNpc({ transient: true });
+  const moduleID = 91000707;
+  const chargeID = 91000708;
+  writeItems([
+    itemRow(moduleID, WEAPON_TYPE_ID, 7, 53, "Orphaned Weapon"),
+    itemRow(chargeID, CHARGE_TYPE_ID, 8, 85, "Orphaned Charge", 5),
+  ]);
+  ok(npcFitting.fitItemToNpc({ entityID: ENTITY_ID, itemID: moduleID, actor: actor() }));
+  ok(npcFitting.loadChargeToNpcModule({
+    entityID: ENTITY_ID, moduleID, itemID: chargeID, quantity: 5, actor: actor(),
+  }));
+  // The runtime-only NPC is absent after restart; the inventory and custody
+  // mirrors were committed before the process stopped.
+  ok(nativeStore.removeNativeController(ENTITY_ID));
+  ok(nativeStore.removeNativeEntity(ENTITY_ID));
+  persistence._testing.resetRuntimeForTests();
+  const recovered = persistence.initializeNpcRuntimePersistence();
+  assert.equal(recovered.success, true);
+  assert.equal(itemStore.findItemById(moduleID).locationID, SOURCE_LOCATION_ID);
+  assert.equal(itemStore.findItemById(chargeID).locationID, SOURCE_LOCATION_ID);
+  assert.equal(nativeStore.getNativeModule(moduleID), null);
+  assert.equal(nativeStore.getNativeCargo(chargeID), null);
 });
 
 test("NPC hull restrictions enforce faction, role slots, CPU, and propulsion authority", (t) => {

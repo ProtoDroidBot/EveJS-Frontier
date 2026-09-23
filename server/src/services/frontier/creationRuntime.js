@@ -980,6 +980,7 @@ function syncInventoryChangesForSession(session, changes) {
                     description: "creation module",
                     includeTypeAttributes: true,
                     now,
+                    compatibilityProfile: session.compatibilityProfile,
                 }),
             ]);
         }

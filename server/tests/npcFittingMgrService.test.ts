@@ -301,6 +301,53 @@ test("friendly interaction probe keeps fitting authorization separate", (t) => {
   assert.equal(fitting.trusted, false);
 });
 
+test("live transient NPCs use the trusted interaction and fitting flow", (t) => {
+  const npc = entity({ nativeNpc: true, transient: true });
+  const npcScene: any = { itemID: ENTITY_ID, position: { x: 0, y: 0, z: 0 } };
+  const targetID = 980000004299;
+  const target: any = { itemID: targetID, position: { x: 1000, y: 0, z: 0 } };
+  const issued: any[] = [];
+  t.mock.method(nativeNpcStore, "getNativeEntity", (id) => (
+    Number(id) === ENTITY_ID ? npc : null
+  ));
+  t.mock.method(spaceRuntime, "getEntity", (_session, id) => (
+    Number(id) === targetID ? target : null
+  ));
+  const { service } = createService({
+    entity: npc,
+    authorizeInteraction: () => ({
+      success: true,
+      data: { shipID: SHIP_ID, shipEntity: {}, npcEntity: npcScene },
+    }),
+    orders: {
+      issueManualOrder(id, order) {
+        issued.push([id, order]);
+        return { success: true };
+      },
+    },
+  });
+  const interaction = unwrapMarshalValue(
+    service.Handle_CanInteractNpc([ENTITY_ID], session()),
+  );
+  assert.equal(interaction.canInteract, true);
+  assert.equal(interaction.canIssueOrders, true);
+  assert.equal(interaction.canModifyFittings, true);
+  assert.equal(unwrapMarshalValue(
+    service.Handle_CanOpenNpcFitting([ENTITY_ID], session()),
+  ).trusted, true);
+  assert.equal(unwrapMarshalValue(
+    service.Handle_GetNpcFittingState([ENTITY_ID], session()),
+  ).trusted, true);
+
+  const accepted = unwrapMarshalValue(service.Handle_IssueNpcOrder([
+    ENTITY_ID, { type: "approach", targetID },
+  ], session()));
+  assert.equal(accepted.accepted, true);
+  assert.equal(issued.length, 1);
+  assert.equal(issued[0][0], ENTITY_ID);
+  assert.equal(issued[0][1].targetID, targetID);
+});
+
 test("manual NPC orders are allowlisted, scoped, and recheck trust", (t) => {
   const npc = entity({ nativeNpc: true });
   const npcScene: any = { itemID: ENTITY_ID, position: { x: 0, y: 0, z: 0 } };

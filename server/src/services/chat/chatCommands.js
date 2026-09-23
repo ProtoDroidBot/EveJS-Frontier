@@ -4993,7 +4993,7 @@ function formatNpcSpawnSummary(result, commandLabel) {
         return [
             `Spawned ${data.spawned.length} hull${data.spawned.length === 1 ? "" : "s"}${selectionText}: ${composition}.`,
             `Prepared ${totalModules} fitted weapon module${totalModules === 1 ? "" : "s"} and set preferred target to your ship.`,
-            "These command-spawned NPCs are transient and are not written to disk.",
+            "These command-spawned NPCs are durable and will be restored after a restart.",
             lootSummary,
             partialSummary.trim(),
         ]
@@ -5017,7 +5017,7 @@ function formatNpcSpawnSummary(result, commandLabel) {
         `Hull: ${data.shipItem && data.shipItem.itemName ? data.shipItem.itemName : data.definition.profile.shipNameTemplate}.`,
         `Prepared ${moduleCount} fitted weapon module${moduleCount === 1 ? "" : "s"} and set preferred target to your ship.`,
         nativeNpc
-            ? "This command-spawned NPC is native, transient, and is not written to disk."
+            ? "This command-spawned NPC is native and durable, and will be restored after a restart."
             : "This command-spawned NPC is transient and is not written to disk.",
         lootSummary,
     ].join(" ");

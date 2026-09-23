@@ -1420,13 +1420,13 @@ function buildInventoryDogmaPrimeEntry(item, options: Record<string, any> = {}) 
         ["itemID", primeItem.itemID],
         ["invItem", buildInventoryItemRow(primeItem)],
         ["activeEffects", { type: "dict", entries: [] }],
-        ["attributes", {
+        ["attributes", normalizeInfoAttributesForProfile({
           type: "dict",
           entries: Object.entries<any>(attributes).map(([attributeID, value]) => [
             Number(attributeID),
             Number(value),
           ]),
-        }],
+        }, now, options.compatibilityProfile)],
         ["description", options.description || "item"],
         ["time", now],
         ["wallclockTime", now],

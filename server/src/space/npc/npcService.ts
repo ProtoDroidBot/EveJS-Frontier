@@ -227,13 +227,10 @@ function resolveBatchSelection(options: Record<string, any> = {}) {
 }
 
 function shouldUseRuntimeOnlyNpcSpawn(options: Record<string, any> = {}) {
-  if (options.transient === true) {
-    return true;
-  }
-  if (options.transient === false) {
-    return false;
-  }
-  return true;
+  // Native NPCs now share the durable identity, fitting, and respawn path.
+  // Keep the normalization boundary for older callers that still supply the
+  // historical transient flag.
+  return false;
 }
 
 function normalizeNpcSpawnOptions(options: Record<string, any> = {}) {
@@ -1314,10 +1311,16 @@ function handleSceneCreated(scene) {
 
   scene._npcStartupInitialized = true;
   const removedLegacySyntheticNpcs = cleanupLegacySyntheticNpcShips(scene);
+  const activeStartupRuleIDs = listStartupRulesForSystem(scene.systemID)
+    .map((rule) => String(rule.startupRuleID || "").trim())
+    .filter(Boolean);
+  const removedStaleNativeStartupNpcs = nativeNpcService.cleanupStaleNativeStartupControllers(
+    scene,
+  );
   const rehydrationResult = nativeNpcService.rehydrateStoredNativeControllers(scene, {
     broadcast: false,
+    activeStartupRuleIDs,
   });
-  const removedStaleNativeStartupNpcs = nativeNpcService.cleanupStaleNativeStartupControllers(scene);
   const startupResult = spawnStartupRulesForSystem(scene.systemID);
   return {
     success: startupResult.success && rehydrationResult.success,

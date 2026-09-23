@@ -1702,6 +1702,7 @@ function reconcileNativeNpcPersistence(options: Record<string, any> = {}) {
     previousCleanShutdown: options.previousCleanShutdown === true,
     recoveredOperations: 0,
     compensatedOperations: 0,
+    settledOrphanedEquipment: 0,
     unhandledOperations: 0,
     quarantined: 0,
     migrated: 0,
@@ -1710,6 +1711,10 @@ function reconcileNativeNpcPersistence(options: Record<string, any> = {}) {
   };
   try {
     reconcilePendingOperations(summary);
+    const orphanSettlement = require("./npcFittingService")
+      .settleOrphanedCustodiedEquipment();
+    summary.settledOrphanedEquipment = orphanSettlement.data?.settled || 0;
+    summary.errors.push(...(orphanSettlement.data?.errors || []));
     const nativeNpcStore = require("./nativeNpcStore");
     const entities = nativeNpcStore.listNativeEntities();
     const controllers = nativeNpcStore.listNativeControllers();

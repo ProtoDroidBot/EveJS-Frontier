@@ -247,10 +247,12 @@ Before durable NPCs resume, recovery:
 6. Detects duplicate persistent identities.
 7. Detects orphan modules and cargo.
 8. Resolves old quarantine entries and records current failures.
-9. Rehydrates only non-transient, non-quarantined controllers.
-10. Lets authored startup populations run their existing exact-count reconciliation.
+9. Rehydrates non-quarantined durable controllers; startup members are materialized only while their rule is active.
+10. Lets authored startup populations fill only missing slots without replacing surviving IDs or fittings.
 
 Invalid records are retained as evidence and excluded from materialization. Recovery does not silently discard an ambiguous identity or invent replacement inventory.
+
+Native NPC spawn sources now share one durable lifecycle, including belt, dungeon, command, generated, and authored startup spawns. Entity IDs, fittings/cargo, condition, movement, behavior overrides, and manual orders are checkpointed and restored. A disabled startup rule leaves its durable NPC dormant in storage; re-enabling it can restore that same member. Legacy runtime-only NPCs from before this change cannot be recovered retroactively if they were never written to disk.
 
 ### 0H. Checkpoints, shutdown, and snapshots
 
@@ -398,7 +400,7 @@ If no compatible tool is fitted, the job writes a durable tool request and suspe
 
 ### 2C. Canonical cargo and recovery
 
-Resource yield produced by a durable NPC is now a canonical `items` row. The native cargo mirror uses that exact item ID; transient mining fleets retain their lightweight negative/allocated cargo path. Legacy durable mining cargo is migrated into a canonical stack the next time that resource type is appended. Cargo volume is reconstructed from authored item metadata after a restart, so threshold decisions remain stable.
+Resource yield produced by a durable NPC is now a canonical `items` row. The native cargo mirror uses that exact item ID; only legacy transient mining actors retain their lightweight negative/allocated cargo path. Legacy durable mining cargo is migrated into a canonical stack the next time that resource type is appended. Cargo volume is reconstructed from authored item metadata after a restart, so threshold decisions remain stable.
 
 Delivery moves a recorded set of whole canonical stacks atomically, then removes their NPC cargo mirrors. The `npc-resource-delivery` operation journal records item IDs, quantities, and destination before movement. Recovery handles all crash boundaries: items still at the NPC are moved, items already at the destination have stale mirrors removed, and the operation is committed once. Missing or unexpectedly relocated items stop recovery rather than guessing.
 
@@ -594,7 +596,7 @@ The upgrade path is intentionally separate from the destructive fresh-publish sc
 
 > **Status: Complete for durable same-system coordination.** Cross-system response execution depends on Phase 5.
 
-Phase 4 is implemented by `server/src/space/npc/npcSupportCoordinator.ts` and the Phase 0 persistence extensions in `npcRuntimePersistence.ts`. `NpcSupportCoordinator` now owns durable-NPC distress dispatch. Transient Drifter encounter packs retain the direct-spawn compatibility path because they have no durable pilot identity or resumable work; durable Drifters route their authored reinforcement definitions through the coordinator.
+Phase 4 is implemented by `server/src/space/npc/npcSupportCoordinator.ts` and the Phase 0 persistence extensions in `npcRuntimePersistence.ts`. `NpcSupportCoordinator` now owns durable-NPC distress dispatch. Newly spawned Drifter encounter packs use the same durable native identity and resumable-work path; the direct-spawn compatibility path remains only for legacy transient actors.
 
 A durable incident contains:
 

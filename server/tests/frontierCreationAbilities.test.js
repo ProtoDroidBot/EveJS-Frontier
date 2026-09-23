@@ -1359,9 +1359,10 @@ test("GUI installation primes a Transponder for immediate activation", (t) => {
     const ship = shipGrant.data.items[0];
     const ensured = creationRuntime.ensureCreationState(ship, OWNER_ID);
     assert.equal(ensured.success, true, ensured.errorMsg);
-    const moduleGrant = itemStore.grantItemToCharacterLocation(OWNER_ID, ship.itemID, itemStore.ITEM_FLAGS.CARGO_HOLD, TYPE_TRANSPONDER, 1, { individualItems: true, singleton: 1 });
+    const moduleGrant = itemStore.grantItemToCharacterLocation(OWNER_ID, ship.itemID, itemStore.ITEM_FLAGS.CARGO_HOLD, TYPE_TRANSPONDER, 1, { individualItems: true, singleton: 1, moduleState: { online: false } });
     assert.equal(moduleGrant.success, true, moduleGrant.errorMsg);
     const moduleItem = moduleGrant.data.items[0];
+    assert.equal(creationRuntime.isCreationModuleOnline(moduleItem), false);
     const placement = findValidInteriorPlacement(ensured.data.state, getCreationTemplate(ship.typeID), moduleItem.itemID, TYPE_TRANSPONDER);
     const notifications = [];
     const session = {
@@ -1412,6 +1413,13 @@ test("GUI installation primes a Transponder for immediate activation", (t) => {
     const primeFields = Object.fromEntries(prime.payload[1].args.entries);
     assert.equal(primeFields.itemID, moduleItem.itemID);
     assert.ok(primeFields.attributes.entries.length > 0);
+    for (const [attributeID, valueAndTime] of primeFields.attributes.entries) {
+        assert.equal(typeof attributeID, "number");
+        assert.ok(Array.isArray(valueAndTime));
+        assert.equal(valueAndTime.length, 2);
+        assert.deepEqual(valueAndTime, [valueAndTime[0], session._space.simFileTime], "Frontier Godma must receive a value/time pair for every primed attribute");
+        assert.equal(typeof valueAndTime[0], "number");
+    }
     assert.deepEqual(notifications[onlineEffectIndex].payload.slice(0, 5), [
         moduleItem.itemID,
         16,
@@ -1426,6 +1434,19 @@ test("GUI installation primes a Transponder for immediate activation", (t) => {
         installedModule,
         effects: [...liveFittingState.getTypeDogmaEffects(TYPE_TRANSPONDER)],
     }));
+    const offline = creationRuntime.setCreationModuleOnlineState(persistedShip, OWNER_ID, moduleItem.itemID, false, session);
+    assert.equal(offline.success, true, offline.errorMsg);
+    const online = creationRuntime.setCreationModuleOnlineState(itemStore.findItemById(ship.itemID), OWNER_ID, moduleItem.itemID, true, session);
+    assert.equal(online.success, true, online.errorMsg);
+    const onlineEvents = notifications.filter((entry) => entry.name === "OnMultiEvent");
+    assert.equal(onlineEvents.length, 2);
+    const onlineSubEvents = onlineEvents[1].payload[0].items
+        .map((pair) => pair.items[0].items);
+    assert.ok(onlineSubEvents.some((subEvent) => subEvent[0] === "OnGodmaShipEffect" &&
+        subEvent[1] === moduleItem.itemID &&
+        subEvent[2] === 16 &&
+        subEvent[4] === 1 &&
+        subEvent[5] === 1));
     const effectRuntime = buildIffEffectRuntime(ship.itemID);
     const activated = creationAbilityRuntime.dispatchCreationAbility({
         ability: "activate_effect",

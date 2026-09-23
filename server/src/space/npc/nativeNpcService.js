@@ -156,19 +156,18 @@ function resolveAuthoredModuleQuantity(moduleEntry) {
     const authoredQuantity = toPositiveInt(moduleEntry && moduleEntry.quantity, 0);
     return Math.max(1, authoredQuantity, explicitFlagCount);
 }
-const TRANSIENT_CONCORD_TARGETING_SCAN_RESOLUTION = 5_000;
-const TRANSIENT_CONCORD_TARGETING_RANGE_METERS = 250_000;
+const CONCORD_TARGETING_SCAN_RESOLUTION = 5_000;
+const CONCORD_TARGETING_RANGE_METERS = 250_000;
 const MIN_NATIVE_NPC_LOCK_SLOTS = 1;
-function applyTransientConcordCombatOverrides(entity, entityRecord) {
+function applyConcordCombatOverrides(entity, entityRecord) {
     if (!entity ||
         entity.kind !== "ship" ||
         !entityRecord ||
-        entityRecord.transient !== true ||
         String(entityRecord.npcEntityType || "").trim().toLowerCase() !== ENTITY_TYPE.CONCORD) {
         return entity;
     }
-    entity.scanResolution = Math.max(toFiniteNumber(entity.scanResolution, 0), TRANSIENT_CONCORD_TARGETING_SCAN_RESOLUTION);
-    entity.maxTargetRange = Math.max(toFiniteNumber(entity.maxTargetRange, 0), TRANSIENT_CONCORD_TARGETING_RANGE_METERS);
+    entity.scanResolution = Math.max(toFiniteNumber(entity.scanResolution, 0), CONCORD_TARGETING_SCAN_RESOLUTION);
+    entity.maxTargetRange = Math.max(toFiniteNumber(entity.maxTargetRange, 0), CONCORD_TARGETING_RANGE_METERS);
     entity.cloakingTargetingDelay = 0;
     if (entity.passiveDerivedState && typeof entity.passiveDerivedState === "object") {
         entity.passiveDerivedState.scanResolution = entity.scanResolution;
@@ -725,7 +724,7 @@ function applyNativeRuntimeNpcPresentation(entity, entityRecord, definition = nu
     entity.fittedItems = nativeNpcStore.buildNativeFittedItems(entityRecord.entityID);
     entity.nativeCargoItems = nativeNpcStore.buildNativeCargoItems(entityRecord.entityID);
     entity.modules = nativeNpcStore.buildNativeSlimModuleTuples(entityRecord.entityID);
-    return applyNativeNpcHullCombatOverrides(applyCapitalNpcCombatOverrides(applyTransientConcordCombatOverrides(entity, entityRecord), entityRecord, definition), entityRecord, definition);
+    return applyNativeNpcHullCombatOverrides(applyCapitalNpcCombatOverrides(applyConcordCombatOverrides(entity, entityRecord), entityRecord, definition), entityRecord, definition);
 }
 function resolveIdleOrbitDistance(entity, controller, anchorEntity, behaviorProfile) {
     const explicitDistance = Math.max(0, toFiniteNumber(behaviorProfile && behaviorProfile.idleAnchorOrbitDistanceMeters, 0));
@@ -792,10 +791,10 @@ function registerNativeRuntimeController(entityRecord, controllerRecord, definit
         nextThinkAtMs: runtimeKind === "nativeAmbient" && !passiveRoamingEnabled
             ? Number.MAX_SAFE_INTEGER
             : Math.max(0, toFiniteNumber(controllerRecord && controllerRecord.nextThinkAtMs, 0)),
-        manualOrder: null,
-        lastHomeCommandAtMs: 0,
-        lastHomeDirection: null,
-        returningHome: false,
+        manualOrder: cloneValue(controllerRecord && controllerRecord.manualOrder || null),
+        lastHomeCommandAtMs: toFiniteNumber(controllerRecord && controllerRecord.lastHomeCommandAtMs, 0),
+        lastHomeDirection: cloneValue(controllerRecord && controllerRecord.lastHomeDirection || null),
+        returningHome: controllerRecord && controllerRecord.returningHome === true,
     });
 }
 function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, definition, options = {}) {
@@ -841,7 +840,7 @@ function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, d
         return { success: false, errorMsg: "NPC_PILOT_IDENTITY_FAILED" };
     }
     let spawnLease = null;
-    if (entityRecord.transient !== true) {
+    if (entityRecord.transient !== true && toPositiveInt(entityRecord.npcCharacterID, 0) > 0) {
         try {
             const leaseResult = npcRuntimePersistence.acquireSpawnLease({
                 npcCharacterID: entityRecord.npcCharacterID,
@@ -971,11 +970,17 @@ function materializeStoredNativeController(scene, entityID, options = {}) {
             errorMsg: scopeResolution.errorMsg,
         };
     }
-    const definition = buildNpcDefinition(controllerRecord.profileID) ||
-        (controllerRecord.definitionSnapshot &&
-            typeof controllerRecord.definitionSnapshot === "object"
-            ? cloneValue(controllerRecord.definitionSnapshot)
-            : null);
+    let definition = null;
+    try {
+        definition = buildNpcDefinition(controllerRecord.profileID);
+    }
+    catch (error) {
+        log.warn(`[NativeNpc] Current definition unavailable for ${controllerRecord.profileID}: ${error.message}`);
+    }
+    if (!definition && controllerRecord.definitionSnapshot &&
+        typeof controllerRecord.definitionSnapshot === "object") {
+        definition = cloneValue(controllerRecord.definitionSnapshot);
+    }
     if (!definition) {
         if (isTransientStartupControllerRecord(entityRecord, controllerRecord)) {
             return pruneInvalidStoredStartupController(entityRecord, controllerRecord);
@@ -998,6 +1003,10 @@ function buildStoredEntityRecordFromRuntimeEntity(entityRecord, runtimeEntity) {
             (entityRecord && entityRecord.mode) ||
             "STOP"),
         speedFraction: toFiniteNumber(runtimeEntity && runtimeEntity.speedFraction, entityRecord && entityRecord.speedFraction),
+        targetEntityID: toPositiveInt(runtimeEntity && runtimeEntity.targetEntityID, toPositiveInt(entityRecord && entityRecord.targetEntityID, 0)),
+        followRange: Math.max(0, toFiniteNumber(runtimeEntity && runtimeEntity.followRange, entityRecord && entityRecord.followRange)),
+        orbitDistance: Math.max(0, toFiniteNumber(runtimeEntity && runtimeEntity.orbitDistance, entityRecord && entityRecord.orbitDistance)),
+        maxVelocity: Math.max(0, toFiniteNumber(runtimeEntity && runtimeEntity.maxVelocity, entityRecord && entityRecord.maxVelocity)),
         conditionState: cloneValue((runtimeEntity && runtimeEntity.conditionState) ||
             (entityRecord && entityRecord.conditionState) ||
             {}),
@@ -1022,9 +1031,8 @@ function persistNativeRuntimeEntity(runtimeEntity, options = {}) {
         };
     }
     const result = nativeNpcStore.upsertNativeEntity(buildStoredEntityRecordFromRuntimeEntity(storedEntityRecord, runtimeEntity), {
-        // Dungeon/startup NPCs which were authored as transient must stay out of
-        // the disk snapshot, while durable native NPCs retain their normal store
-        // semantics.  Both variants survive player disconnect virtualization.
+        // Legacy transient rows remain runtime-only; all newly spawned native
+        // NPCs use durable records and retain their latest runtime state.
         transient: storedEntityRecord.transient === true,
     });
     if (result && result.success === true) {
@@ -1118,6 +1126,10 @@ function dematerializeNativeController(controller, options = {}) {
     };
 }
 function spawnNativeNpcEntityInContext(context, definition, options = {}) {
+    // One native NPC lifecycle: encounter, command, belt, and startup spawns all
+    // enter the durable journal and can be rehydrated with the same entity ID.
+    // Legacy callers may still pass transient while their spawn policies migrate.
+    options = { ...options, transient: false };
     definition = applyNpcBehaviorConfig(definition);
     const scopeResolution = nativeNpcStore.validateStoredEntityScopeMetadata(options.entityScopeMetadata);
     if (!scopeResolution.success) {
@@ -1534,6 +1546,13 @@ function cleanupStaleNativeStartupControllers(scene) {
         if (!startupRuleID) {
             continue;
         }
+        const entityRecord = nativeNpcStore.getNativeEntity(controllerRecord.entityID);
+        // Keep durable startup NPCs even if their rule is temporarily disabled;
+        // rehydration leaves them dormant until that rule becomes active again.
+        if (entityRecord && entityRecord.transient !== true &&
+            controllerRecord.transient !== true) {
+            continue;
+        }
         const destroyResult = destroyNativeNpcController({
             entityID: controllerRecord.entityID,
             systemID: controllerRecord.systemID,
@@ -1595,15 +1614,20 @@ function rehydrateStoredNativeControllers(scene, options = {}) {
         return { success: false, errorMsg: "SCENE_NOT_FOUND", data: [] };
     npcRuntimePersistence.initializeNpcRuntimePersistence();
     const results = [];
+    const activeStartupRuleIDs = Array.isArray(options.activeStartupRuleIDs)
+        ? new Set(options.activeStartupRuleIDs)
+        : null;
     for (const controllerRecord of nativeNpcStore.listNativeControllersForSystem(scene.systemID)) {
         const entityRecord = nativeNpcStore.getNativeEntity(controllerRecord.entityID);
         if (!entityRecord || entityRecord.transient === true || controllerRecord.transient === true) {
             continue;
         }
-        // Authored startup populations have their own exact-count reconciliation
-        // and are deliberately recreated by npcService after stale cleanup.
-        if (String(controllerRecord.startupRuleID || "").trim())
+        if (activeStartupRuleIDs && controllerRecord.startupRuleID &&
+            !activeStartupRuleIDs.has(String(controllerRecord.startupRuleID))) {
             continue;
+        }
+        // Startup members are durable too. Their rule's exact-count reconciler
+        // sees these materialized controllers and only fills genuinely empty slots.
         if (npcRuntimePersistence.isNpcEntityQuarantined(controllerRecord.entityID)) {
             results.push({
                 entityID: controllerRecord.entityID,

@@ -379,8 +379,9 @@ class NpcFittingMgrService extends BaseService {
 
   _resolveOrderContext(session, entityID) {
     const entityRecord = nativeNpcStore.getNativeEntity(toPositiveInt(entityID));
-    if (!entityRecord || entityRecord.transient === true ||
-        npcPersistence.isNpcEntityQuarantined(entityRecord.entityID)) {
+    if (!entityRecord ||
+        (entityRecord.transient !== true &&
+          npcPersistence.isNpcEntityQuarantined(entityRecord.entityID))) {
       return { success: false, errorMsg: "NPC_DURABLE_ENTITY_NOT_FOUND" };
     }
     const actor = buildActor(session);
@@ -416,8 +417,9 @@ class NpcFittingMgrService extends BaseService {
       entityID: toPositiveInt(entityID),
       reason,
     });
-    if (!entityRecord || entityRecord.transient === true ||
-        npcPersistence.isNpcEntityQuarantined(entityRecord.entityID)) {
+    if (!entityRecord ||
+        (entityRecord.transient !== true &&
+          npcPersistence.isNpcEntityQuarantined(entityRecord.entityID))) {
       return deny("NPC_DURABLE_ENTITY_NOT_FOUND");
     }
     const actor = buildActor(session);

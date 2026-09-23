@@ -354,10 +354,11 @@ function buildPlayerFittingHull(entityRecord) {
 
 function getEntityOrFailure(entityID) {
   const entityRecord = nativeNpcStore.getNativeEntity(toPositiveInt(entityID, 0));
-  if (!entityRecord || entityRecord.transient === true) {
+  if (!entityRecord) {
     return { success: false, errorMsg: "NPC_DURABLE_ENTITY_NOT_FOUND" };
   }
-  if (persistence.isNpcEntityQuarantined(entityRecord.entityID)) {
+  if (entityRecord.transient !== true &&
+      persistence.isNpcEntityQuarantined(entityRecord.entityID)) {
     return { success: false, errorMsg: "NPC_PERSISTENCE_QUARANTINED" };
   }
   const fittingHull = buildPlayerFittingHull(entityRecord);
@@ -1310,6 +1311,55 @@ function settleNpcEquipmentBeforeRemoval(entityID, options: Record<string, any> 
   return { success: true, data: { settled, lossPolicy } };
 }
 
+// Custodied inventory is durable even when its NPC is runtime-only. If the
+// process stops before normal NPC removal, the transient entity disappears on
+// restart but its canonical item must not be stranded at that entity ID.
+function settleOrphanedCustodiedEquipment() {
+  let settled = 0;
+  const errors: string[] = [];
+  const liveEntityIDs = new Set(nativeNpcStore.listNativeEntities()
+    .map((record) => toPositiveInt(record.entityID, 0)));
+  for (const [kind, table, records, remove] of [
+    ["charge", nativeNpcStore.TABLE.CARGO, nativeNpcStore.listNativeCargo(), nativeNpcStore.removeNativeCargo],
+    ["module", nativeNpcStore.TABLE.MODULES, nativeNpcStore.listNativeModules(), nativeNpcStore.removeNativeModule],
+  ] as const) {
+    let tableSettled = 0;
+    for (const record of records) {
+      const entityID = toPositiveInt(record.entityID, 0);
+      if (!entityID || liveEntityIDs.has(entityID) || !isCustodiedRecord(record)) {
+        continue;
+      }
+      const itemID = toPositiveInt(kind === "module" ? record.moduleID : record.cargoID, 0);
+      const item = itemStore.findItemById(itemID);
+      if (!item) {
+        errors.push(`Missing custodied item ${itemID} for NPC ${entityID}`);
+        continue;
+      }
+      // A separate completed transfer owns an item no longer at this NPC.
+      // Never pull it back from another destination during recovery.
+      if (toPositiveInt(item.locationID, 0) === entityID) {
+        const returned = returnCustodiedItem(record, kind);
+        if (!returned.success) {
+          errors.push(`Could not return custodied item ${itemID}: ${returned.errorMsg}`);
+          continue;
+        }
+      }
+      const removed = remove(itemID);
+      if (!removed.success) {
+        errors.push(`Could not remove orphaned NPC mirror ${itemID}: ${removed.errorMsg}`);
+        continue;
+      }
+      settled += 1;
+      tableSettled += 1;
+    }
+    if (tableSettled > 0) {
+      const flushed = database.flushTableSync(table);
+      if (!flushed.success) errors.push(`Could not flush orphaned NPC ${table} mirrors`);
+    }
+  }
+  return { success: errors.length === 0, data: { settled, errors } };
+}
+
 function recoverNpcFittingOperation(operation) {
   if (!operation || TERMINAL_OPERATION_STATUSES.has(operation.status)) {
     return { success: true, skipped: true };
@@ -1403,6 +1453,7 @@ module.exports = {
   listNpcConsumables,
   selectNpcEquipmentForRole,
   settleNpcEquipmentBeforeRemoval,
+  settleOrphanedCustodiedEquipment,
   recoverNpcFittingOperation,
   syncRuntimeEquipment,
   _testing: {
