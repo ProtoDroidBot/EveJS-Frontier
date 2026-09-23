@@ -1,6 +1,8 @@
 """Expose ordinary fitted modules through Frontier's Creation action bar."""
 
+from datetime import timedelta
 from functools import wraps
+import math
 
 
 _EVEJS_CREATION_TEMPLATE_TYPE_IDS = frozenset((95276, 95735, 95968))
@@ -137,6 +139,29 @@ def _evejs_command_time(provider, result):
     return provider._evejs_action_bar_gametime.now_sim()
 
 
+def _evejs_active_cycle_duration(provider, module_item_id, type_id):
+    """Use the active Dogma effect's server-supplied cycle length.
+
+    Some Frontier effects (notably Leap and Thrust Overdrive) have no
+    durationAttributeID, so the retail provider returns no duration even
+    though Godma received one in OnGodmaShipEffect.
+    """
+    state_manager = provider._godma.GetStateManager()
+    default_effect = state_manager.GetDefaultEffect(type_id)
+    if default_effect is None:
+        return None
+    effect = state_manager.GetEffect(module_item_id, default_effect.effectName)
+    if effect is None or not getattr(effect, "isActive", False):
+        return None
+    try:
+        duration_ms = float(getattr(effect, "duration", None))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(duration_ms) or duration_ms <= 0:
+        return None
+    return timedelta(milliseconds=duration_ms)
+
+
 def _evejs_default_effect_name(provider, module_item_id):
     item = _evejs_get_item(provider, module_item_id)
     if item is None:
@@ -225,6 +250,7 @@ def _evejs_install_action_bar_compatibility(namespace):
 
     original_auto_fire = provider_type.is_auto_fire_available
     original_get_charge = provider_type._get_loaded_charge
+    original_get_duration = getattr(provider_type, "_get_duration", None)
     original_activate = provider_type.activate
     original_reload = provider_type.reload
 
@@ -245,6 +271,19 @@ def _evejs_install_action_bar_compatibility(namespace):
         if _evejs_is_ordinary_module(self, module_item_id):
             return _evejs_get_regular_charge(self, module_item_id)
         return original_get_charge(self, module_item_id)
+
+    if original_get_duration is not None:
+        @wraps(original_get_duration)
+        def get_duration(self, module_item_id, type_id):
+            cycle_duration = _evejs_active_cycle_duration(
+                self, module_item_id, type_id
+            )
+            if cycle_duration is not None:
+                return cycle_duration
+            return original_get_duration(self, module_item_id, type_id)
+
+        get_duration._evejs_action_bar_compatibility_patch = True
+        provider_type._get_duration = get_duration
 
     @wraps(original_activate)
     def activate(

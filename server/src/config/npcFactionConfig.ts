@@ -478,6 +478,16 @@ function validateConfig(rawConfig) {
   }
   const transponder = normalizeNpcTransponderConfig(source.transponder);
   const suiWalletFunding = normalizeSuiWalletFunding(source.suiWalletFunding);
+  const rawDebugFittingTrust = source.debugFittingTrust ?? {};
+  if (rawDebugFittingTrust === null || typeof rawDebugFittingTrust !== "object" ||
+      Array.isArray(rawDebugFittingTrust) ||
+      (rawDebugFittingTrust.allowNearbyPlayers !== undefined &&
+        typeof rawDebugFittingTrust.allowNearbyPlayers !== "boolean")) {
+    throw new TypeError("debugFittingTrust.allowNearbyPlayers must be a boolean");
+  }
+  const debugFittingTrust = {
+    allowNearbyPlayers: rawDebugFittingTrust.allowNearbyPlayers === true,
+  };
   const rawWorldCapabilities = source.worldCapabilities ?? ["npc", "transponder"];
   if (!Array.isArray(rawWorldCapabilities) || rawWorldCapabilities.some(
     (value) => typeof value !== "string" || !WORLD_FACTION_CAPABILITIES.has(value),
@@ -778,6 +788,7 @@ function validateConfig(rawConfig) {
     worldCapabilities,
     suiWalletFunding,
     transponder,
+    debugFittingTrust,
     defaults,
     factions: expandedFactions,
     relations,
@@ -1251,6 +1262,7 @@ function getConfigSummary() {
     enabled: CONFIG.enabled,
     transponderEnabled: CONFIG.transponder.enabled,
     transponderChannel: CONFIG.transponder.channel,
+    debugFittingTrustAllowNearbyPlayers: CONFIG.debugFittingTrust.allowNearbyPlayers,
     transponderSignalCount: CONFIG.factions.filter(
       (faction) => Boolean(faction.transponderSignal),
     ).length,

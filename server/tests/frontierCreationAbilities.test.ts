@@ -2332,6 +2332,136 @@ test("Creation live entities enforce their derived capacitor and retain active m
   );
 });
 
+test("GUI installation primes a Transponder for immediate activation", (t) => {
+  const shipGrant = itemStore.grantItemToCharacterLocation(
+    OWNER_ID,
+    64000004,
+    itemStore.ITEM_FLAGS.HANGAR,
+    95276,
+    1,
+    { individualItems: true, singleton: 1 },
+  );
+  assert.equal(shipGrant.success, true, shipGrant.errorMsg);
+  const ship = shipGrant.data.items[0];
+  const ensured = creationRuntime.ensureCreationState(ship, OWNER_ID);
+  assert.equal(ensured.success, true, ensured.errorMsg);
+
+  const moduleGrant = itemStore.grantItemToCharacterLocation(
+    OWNER_ID,
+    ship.itemID,
+    itemStore.ITEM_FLAGS.CARGO_HOLD,
+    TYPE_TRANSPONDER,
+    1,
+    { individualItems: true, singleton: 1 },
+  );
+  assert.equal(moduleGrant.success, true, moduleGrant.errorMsg);
+  const moduleItem = moduleGrant.data.items[0];
+  const placement = findValidInteriorPlacement(
+    ensured.data.state,
+    getCreationTemplate(ship.typeID),
+    moduleItem.itemID,
+    TYPE_TRANSPONDER,
+  );
+  const notifications: any[] = [];
+  const session: Record<string, any> = {
+    charid: OWNER_ID,
+    characterID: OWNER_ID,
+    shipid: ship.itemID,
+    shipID: ship.itemID,
+    solarsystemid: SOLAR_SYSTEM_ID,
+    solarsystemid2: SOLAR_SYSTEM_ID,
+    compatibilityProfile: "frontier",
+    _space: {
+      systemID: SOLAR_SYSTEM_ID,
+      shipID: ship.itemID,
+      simFileTime: currentFileTime(),
+    },
+    sendNotification(name, idType, payload) {
+      notifications.push({ name, idType, payload });
+    },
+  };
+  const refresh = t.mock.method(
+    frontierSpaceRuntime,
+    "refreshShipDerivedState",
+    () => ({ success: true }),
+  );
+
+  const diagnostics = unwrapMarshalValue(
+    new CreationService().Handle_commit_management_draft([ship.itemID, [{
+      op: "add",
+      itemID: moduleItem.itemID,
+      typeID: TYPE_TRANSPONDER,
+      partID: placement.partID,
+      sourceLocationID: ship.itemID,
+      sourceFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
+      x: placement.x,
+      y: placement.y,
+      z: placement.z,
+      rotationX: placement.rotation.x,
+      rotationY: placement.rotation.y,
+      rotationZ: placement.rotation.z,
+    }]], session),
+  );
+  assert.deepEqual(diagnostics, []);
+
+  const primeIndex = notifications.findIndex((entry) =>
+    entry.name === "OnGodmaPrimeItem");
+  const itemChangeIndex = notifications.findIndex((entry) =>
+    entry.name === "OnItemChange" && entry.payload[0].fields.itemID === moduleItem.itemID);
+  const onlineEffectIndex = notifications.findIndex((entry) =>
+    entry.name === "OnGodmaShipEffect" &&
+    entry.payload[0] === moduleItem.itemID &&
+    entry.payload[1] === 16);
+  const creationChangedIndex = notifications.findIndex((entry) =>
+    entry.name === "OnCreationChanged");
+  assert.ok(primeIndex >= 0, "the client must receive a live Dogma module prime");
+  assert.ok(itemChangeIndex > primeIndex, "the module is primed before its inventory move");
+  assert.ok(onlineEffectIndex > itemChangeIndex, "the primed module is brought online");
+  assert.ok(
+    creationChangedIndex > onlineEffectIndex,
+    "the action-bar snapshot is published after Dogma can activate the module",
+  );
+
+  const prime = notifications[primeIndex];
+  assert.equal(prime.payload[0], ship.itemID);
+  const primeFields = Object.fromEntries(prime.payload[1].args.entries);
+  assert.equal(primeFields.itemID, moduleItem.itemID);
+  assert.ok(primeFields.attributes.entries.length > 0);
+  assert.deepEqual(notifications[onlineEffectIndex].payload.slice(0, 5), [
+    moduleItem.itemID,
+    16,
+    session._space.simFileTime,
+    1,
+    1,
+  ]);
+  assert.equal(refresh.mock.callCount(), 1);
+
+  const persistedShip = itemStore.findItemById(ship.itemID);
+  const installedModule = itemStore.findItemById(moduleItem.itemID);
+  assert.equal(
+    creationRuntime.isCreationModuleOnline(installedModule),
+    true,
+    JSON.stringify({
+      installedModule,
+      effects: [...liveFittingState.getTypeDogmaEffects(TYPE_TRANSPONDER)],
+    }),
+  );
+  const effectRuntime = buildIffEffectRuntime(ship.itemID);
+  const activated = creationAbilityRuntime.dispatchCreationAbility({
+    ability: "activate_effect",
+    kwargs: { iff_channel: "code", iff_code: "LIVE-FIT" },
+    session,
+    creationContext: {
+      item: persistedShip,
+      characterID: OWNER_ID,
+      state: creationRuntime.readCreationState(persistedShip),
+    },
+    moduleItemID: moduleItem.itemID,
+    abilityDependencies: { spaceRuntime: effectRuntime.runtime },
+  });
+  assert.equal(activated.success, true, activated.errorMsg);
+});
+
 test("transponder activation broadcasts explicitly and deactivation preserves its mode", () => {
   const shipGrant = itemStore.grantItemToCharacterLocation(
     OWNER_ID,

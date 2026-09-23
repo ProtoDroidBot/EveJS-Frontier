@@ -7,6 +7,8 @@ const runtime = require("../src/space/runtime");
 const npcData = require("../src/space/npc/npcData");
 const native = require("../src/space/npc/nativeNpcService");
 const nativeStore = require("../src/space/npc/nativeNpcStore");
+const InvBrokerService = require("../src/services/inventory/invBrokerService");
+const { ROLE_GML } = require("../src/services/account/accountRoleProfiles");
 const registry = require("../src/space/npc/npcRegistry");
 const { getNpcPilotIdentityStore } = require("../src/space/npc/npcPilotIdentityStore");
 
@@ -59,7 +61,14 @@ test("native NPC spawn/kill/respawn preserves pilot identity without adopting pl
   const duplicate = native.spawnNativeNpcEntityInContext(f.context, f.definition, f.options);
   assert.equal(duplicate.success, false);
   assert.equal(duplicate.errorMsg, "NPC_PILOT_IDENTITY_FAILED");
-  nativeStore.removeNativeEntityCascade(ship.itemID, { destroyed: true });
+  const destroyItem = new InvBrokerService();
+  assert.equal(destroyItem.callMethod("DestroyItem", [ship.itemID], {
+    accountRole: ROLE_GML,
+    characterID: 140000005,
+    _space: { systemID: f.scene.systemID },
+  }), null);
+  assert.equal(registry.getControllerByEntityID(ship.itemID), null);
+  assert.equal(nativeStore.getNativeEntity(ship.itemID), null);
   const second = native.spawnNativeNpcEntityInContext(f.context, f.definition, f.options);
   assert.equal(second.success, true, second.errorMsg);
   assert.notEqual(second.data.entity.itemID, ship.itemID);

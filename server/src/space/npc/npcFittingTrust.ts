@@ -53,6 +53,15 @@ function matchesNpcFaction(entityRecord, actor) {
   return Boolean(npcFactionKey && actorFactionKey && npcFactionKey === actorFactionKey);
 }
 
+function matchesNpcAlliedFaction(entityRecord, actor) {
+  const actorFactionKey = npcFactionConfig.resolveNpcFactionCanonicalKey(actor);
+  if (!actorFactionKey) return false;
+  const diplomacy = npcFactionConfig.resolveNpcFactionDiplomacy(entityRecord);
+  return Array.isArray(diplomacy?.allies) && diplomacy.allies.some(
+    (ally) => ally?.factionKey === actorFactionKey,
+  );
+}
+
 function normalizeResolverVerdict(verdict) {
   if (verdict === true) return { trusted: true, reason: "behavior-trust" };
   if (verdict === false) return { trusted: false, reason: "behavior-distrust" };
@@ -97,6 +106,17 @@ function evaluateNpcFittingTrust(entityRecord, actor, context: Record<string, an
   if (matchesNpcFaction(entityRecord, actor)) {
     return { trusted: true, reason: "same-faction" };
   }
+  // Configured alliances use the server-authenticated player faction, not a
+  // shareable IFF code.
+  if (matchesNpcAlliedFaction(entityRecord, actor)) {
+    return { trusted: true, reason: "allied-faction" };
+  }
+  // Explicit Localnet debug switch: the caller has already passed the live
+  // same-system and 5 km check. Never bypass an authored character denial.
+  if (npcFactionConfig.getConfig().debugFittingTrust.allowNearbyPlayers &&
+      context.interaction?.shipEntity && context.interaction?.npcEntity) {
+    return { trusted: true, reason: "debug-nearby-player" };
+  }
   return { trusted: false, reason: "no-positive-trust" };
 }
 
@@ -119,6 +139,7 @@ module.exports = {
   _testing: {
     authoredTrustPolicy,
     matchesNpcFaction,
+    matchesNpcAlliedFaction,
     resetTrustResolvers() {
       trustResolvers.clear();
     },

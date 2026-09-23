@@ -264,6 +264,31 @@ test("NPC hulls resolve a player fitting hull where one is appropriate", () => {
     slimTypeID: 589,
     slimCategoryID: 6,
   }), 589);
+  assert.equal(npcFitting.resolveNpcPlayerFittingHullTypeID({
+    typeID: 72207,
+    categoryID: 11,
+    nativeNpc: true,
+  }), 72207);
+  assert.equal(npcFitting.resolveNpcPlayerFittingHullTypeID({
+    typeID: 72207,
+    categoryID: 11,
+  }), 0);
+});
+
+test("durable SDE entity-category NPC ships expose their physical fitting hull", (t) => {
+  fixture(t);
+  createNpc({
+    typeID: 72207,
+    groupID: 759,
+    categoryID: 11,
+    playerFittingHullTypeID: null,
+    npcFittingProfileID: null,
+    npcFittingRestrictions: null,
+  });
+  const resolved = npcFitting.resolveNpcFittingEntity(ENTITY_ID);
+  assert.equal(resolved.success, true);
+  assert.equal(resolved.data.fittingHull.typeID, 72207);
+  assert.equal(resolved.data.fittingHull.npcPhysicalHullTypeID, 72207);
 });
 
 test("player-compatible NPC hulls delegate restrictions and resources to player fitting", (t) => {

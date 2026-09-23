@@ -12,6 +12,10 @@ const {
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const npcFitting = require(path.join(__dirname, "../../space/npc/npcFittingService"));
 const fittingTrust = require(path.join(__dirname, "../../space/npc/npcFittingTrust"));
+const npcFactionConfig = require(path.join(__dirname, "../../config/npcFactionConfig"));
+const nativeNpcStore = require(path.join(__dirname, "../../space/npc/nativeNpcStore"));
+const npcPersistence = require(path.join(__dirname, "../../space/npc/npcRuntimePersistence"));
+const npcService = require(path.join(__dirname, "../../space/npc/npcService"));
 const itemStore = require(path.join(__dirname, "../inventory/itemStore"));
 const characterState = require(path.join(__dirname, "../character/characterState"));
 const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
@@ -19,18 +23,30 @@ const {
   canEntitiesInteractLocally,
 } = require(path.join(__dirname, "../../space/destiny/identity/interactionScope"));
 
-const NPC_FITTING_INTERACTION_RANGE_METERS = 2_500;
+const NPC_FITTING_INTERACTION_RANGE_METERS = 5_000;
 const MAX_AVAILABLE_ITEMS = 200;
 const MODULE_CATEGORY_ID = 7;
 const CHARGE_CATEGORY_ID = 8;
+const NPC_ORDER_MAX_RANGE_METERS = 250_000;
+const NPC_PLAYER_ORDERS = Object.freeze({
+  approach: { needsTarget: true, defaultRangeMeters: 0 },
+  keepAtRange: { needsTarget: true, defaultRangeMeters: 2_500 },
+  orbit: { needsTarget: true, defaultRangeMeters: 2_500 },
+  lock: { needsTarget: true, defaultRangeMeters: 0 },
+  resume: { needsTarget: false, defaultRangeMeters: 0 },
+});
 
 const ERROR_MESSAGES = Object.freeze({
   NPC_DURABLE_ENTITY_NOT_FOUND: "That NPC is no longer available.",
   NPC_FITTING_NOT_LOCAL: "You must be near that NPC to manage its fitting.",
-  NPC_FITTING_OUT_OF_RANGE: "Move within 2,500 meters of that NPC to manage its fitting.",
+  NPC_FITTING_OUT_OF_RANGE: "Move within 5,000 meters of that NPC to manage its fitting.",
   NPC_FITTING_TRUST_REQUIRED: "That NPC does not currently trust you to manage its fitting.",
   NPC_FITTING_ITEM_NOT_IN_ACTIVE_SHIP: "The item must be in your active ship's cargo hold.",
   NPC_FITTING_MODULE_REQUIRED: "Select a module from your active ship's cargo hold.",
+  NPC_ORDER_INVALID: "That NPC order is not available.",
+  NPC_ORDER_TARGET_INVALID: "Select a valid target in the NPC's current space scene.",
+  NPC_ORDER_RANGE_INVALID: "Order range must be between 0 and 250,000 meters.",
+  NPC_NOT_FOUND: "That NPC's behavior controller is unavailable.",
   NPC_CHARGE_ITEM_REQUIRED: "Select ammunition or fuel from your active ship's cargo hold.",
 });
 
@@ -207,11 +223,45 @@ function throwFittingError(result) {
   });
 }
 
+function normalizePlayerNpcOrder(input) {
+  const request = input && typeof input === "object" ? input : {};
+  const type = String(request.type || "").trim();
+  const definition = Object.hasOwn(NPC_PLAYER_ORDERS, type)
+    ? NPC_PLAYER_ORDERS[type]
+    : null;
+  if (!definition) return { success: false, errorMsg: "NPC_ORDER_INVALID" };
+  const targetID = definition.needsTarget ? toPositiveInt(request.targetID) : 0;
+  if (definition.needsTarget && !targetID) {
+    return { success: false, errorMsg: "NPC_ORDER_TARGET_INVALID" };
+  }
+  const rawRange = request.rangeMeters == null || request.rangeMeters === ""
+    ? definition.defaultRangeMeters
+    : Number(request.rangeMeters);
+  if (!Number.isFinite(rawRange) || rawRange < 0 || rawRange > NPC_ORDER_MAX_RANGE_METERS) {
+    return { success: false, errorMsg: "NPC_ORDER_RANGE_INVALID" };
+  }
+  const rangeMeters = type === "keepAtRange" || type === "orbit"
+    ? Math.max(1, Math.trunc(rawRange))
+    : 0;
+  return {
+    success: true,
+    data: {
+      type,
+      targetID,
+      ...(type === "keepAtRange" ? { followRangeMeters: rangeMeters } : {}),
+      ...(type === "orbit" ? { orbitDistanceMeters: rangeMeters } : {}),
+      allowWeapons: false,
+      keepLock: type === "lock",
+    },
+  };
+}
+
 class NpcFittingMgrService extends BaseService {
   declare _npcFitting: any;
   declare _trust: any;
   declare _itemStore: any;
   declare _authorizeInteraction: any;
+  declare _orders: any;
 
   constructor(dependencies: Record<string, any> = {}) {
     super("npcFittingMgr");
@@ -219,6 +269,7 @@ class NpcFittingMgrService extends BaseService {
     this._trust = dependencies.trust || fittingTrust;
     this._itemStore = dependencies.itemStore || itemStore;
     this._authorizeInteraction = dependencies.authorizeInteraction || defaultAuthorizeInteraction;
+    this._orders = dependencies.orders || npcService;
   }
 
   _resolveContext(session, entityID) {
@@ -326,12 +377,108 @@ class NpcFittingMgrService extends BaseService {
     };
   }
 
+  _resolveOrderContext(session, entityID) {
+    const entityRecord = nativeNpcStore.getNativeEntity(toPositiveInt(entityID));
+    if (!entityRecord || entityRecord.transient === true ||
+        npcPersistence.isNpcEntityQuarantined(entityRecord.entityID)) {
+      return { success: false, errorMsg: "NPC_DURABLE_ENTITY_NOT_FOUND" };
+    }
+    const actor = buildActor(session);
+    if (!actor.characterID) return { success: false, errorMsg: "NPC_FITTING_TRUST_REQUIRED" };
+    const interaction = this._authorizeInteraction(session, entityRecord);
+    if (!interaction || interaction.success !== true) return interaction;
+    const trust = this._trust.evaluateNpcFittingTrust(entityRecord, actor, {
+      session, interaction: interaction.data || null,
+    });
+    if (!trust || trust.trusted !== true) {
+      return { success: false, errorMsg: "NPC_FITTING_TRUST_REQUIRED" };
+    }
+    return { success: true, data: { actor, entityRecord, interaction: interaction.data || {} } };
+  }
+
   _denyState(entityID, result) {
     return {
       trusted: false,
       entityID: toPositiveInt(entityID),
       reason: String(result && result.errorMsg || "NPC_FITTING_TRUST_REQUIRED"),
     };
+  }
+
+  Handle_CanInteractNpc(args, session) {
+    const [entityID] = positionalArgs(args);
+    const resolved = this._npcFitting.resolveNpcFittingEntity(entityID);
+    const entityRecord = resolved?.success === true
+      ? resolved.data.entityRecord
+      : nativeNpcStore.getNativeEntity(toPositiveInt(entityID));
+    const deny = (reason) => toMarshalValue({
+      canInteract: false,
+      canModifyFittings: false,
+      entityID: toPositiveInt(entityID),
+      reason,
+    });
+    if (!entityRecord || entityRecord.transient === true ||
+        npcPersistence.isNpcEntityQuarantined(entityRecord.entityID)) {
+      return deny("NPC_DURABLE_ENTITY_NOT_FOUND");
+    }
+    const actor = buildActor(session);
+    if (!actor.characterID) return deny("NPC_FITTING_TRUST_REQUIRED");
+    const interaction = this._authorizeInteraction(session, entityRecord);
+    if (!interaction || interaction.success !== true) {
+      return deny(interaction?.errorMsg || "NPC_FITTING_NOT_LOCAL");
+    }
+    const scope = interaction.data || {};
+    const trust = this._trust.evaluateNpcFittingTrust(entityRecord, actor, {
+      session, interaction: scope,
+    });
+    const identifiedFriend = scope.shipEntity &&
+      npcFactionConfig.resolveNpcTargetIdentification(
+        scope.npcEntity || entityRecord, scope.shipEntity,
+      ) === "ally";
+    const canInteract = trust?.trusted === true || identifiedFriend === true;
+    if (!canInteract) return deny("NPC_INTERACTION_NOT_FRIENDLY");
+    return toMarshalValue({
+      canInteract: true,
+      canModifyFittings: resolved?.success === true && trust?.trusted === true,
+      canIssueOrders: trust?.trusted === true,
+      entityID: toPositiveInt(entityRecord.entityID),
+      displayName: String(entityRecord.itemName || entityRecord.name || "NPC ship"),
+    });
+  }
+
+  Handle_IssueNpcOrder(args, session) {
+    const [entityID, rawOrder] = positionalArgs(args);
+    const context = this._resolveOrderContext(session, entityID);
+    if (!context || context.success !== true) throwFittingError(context);
+    const parsed = normalizePlayerNpcOrder(rawOrder);
+    if (!parsed.success) throwFittingError(parsed);
+    const order = {
+      ...parsed.data,
+      commandSource: {
+        kind: "player",
+        characterID: context.data.actor.characterID,
+      },
+    };
+    if (order.targetID) {
+      const source = context.data.interaction.npcEntity;
+      const target = spaceRuntime.getEntity(session, order.targetID);
+      if (!source || !target || target === source ||
+          order.targetID === toPositiveInt(context.data.entityRecord.entityID) ||
+          !target.position ||
+          !canEntitiesInteractLocally(source, target) ||
+          (source.bubbleID && target.bubbleID && source.bubbleID !== target.bubbleID) ||
+          target.mode === "WARP") {
+        throwFittingError({ errorMsg: "NPC_ORDER_TARGET_INVALID" });
+      }
+    }
+    const result = this._orders.issueManualOrder(context.data.entityRecord.entityID, order);
+    if (!result || result.success !== true) throwFittingError(result);
+    return toMarshalValue({
+      accepted: true,
+      entityID: toPositiveInt(entityID),
+      type: order.type,
+      targetID: order.targetID,
+      rangeMeters: order.followRangeMeters || order.orbitDistanceMeters || 0,
+    });
   }
 
   Handle_CanOpenNpcFitting(args, session) {
@@ -430,3 +577,4 @@ module.exports.NPC_FITTING_INTERACTION_RANGE_METERS = NPC_FITTING_INTERACTION_RA
 module.exports.buildActor = buildActor;
 module.exports.defaultAuthorizeInteraction = defaultAuthorizeInteraction;
 module.exports.toMarshalValue = toMarshalValue;
+module.exports.normalizePlayerNpcOrder = normalizePlayerNpcOrder;

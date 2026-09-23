@@ -1,7 +1,23 @@
-"""Trusted NPC fitting and assembly-access context actions for build 3502403."""
+"""Trusted NPC interaction and assembly-access actions for build 3502403."""
 
+import builtins
 from functools import wraps
 import uuid
+
+NPC_ENTITY_ID_FLOOR = 980000000000
+
+
+def _evejs_runtime_global(namespace, name):
+    # CCP client services such as sm/uicore are often installed in builtins,
+    # not imported into menusvc.pyc's module globals.
+    return namespace.get(name) or getattr(builtins, name, None)
+
+
+def _evejs_service_manager(namespace):
+    manager = _evejs_runtime_global(namespace, "sm")
+    if manager is None:
+        raise RuntimeError("Client service manager is unavailable")
+    return manager
 
 
 def _evejs_value(value, key, default=None):
@@ -19,7 +35,7 @@ def _evejs_list(value):
 
 
 def _evejs_assembly_access_remote(namespace):
-    return namespace["sm"].RemoteSvc("smartAssemblyService")
+    return _evejs_service_manager(namespace).RemoteSvc("smartAssemblyService")
 
 
 def _evejs_assembly_access_available(namespace, item_id):
@@ -179,7 +195,9 @@ class _EvejsAssemblyAccessPresenter:
         self.remote.validate_shared_assembly_gui(
             self.item_id, token, "gui.view"
         )
-        service = self.namespace["sm"].GetService("smartAssemblySvc")
+        service = _evejs_service_manager(self.namespace).GetService(
+            "smartAssemblySvc"
+        )
         service.on_interaction(self.item_id)
         self.status = "Shared assembly session opened"
         return gui_session
@@ -203,7 +221,7 @@ def _evejs_attribute(attributes, name, default=None):
 
 
 def _evejs_assembly_access_window_type(namespace):
-    cached = namespace.get("_evejs_assembly_access_window_type")
+    cached = namespace.get("_evejs_assembly_access_window_class")
     if cached is not None:
         return cached
 
@@ -579,7 +597,7 @@ def _evejs_assembly_access_window_type(namespace):
             self._pending_action = None
             self._execute(self._presenter.refresh)
 
-    namespace["_evejs_assembly_access_window_type"] = AssemblyAccessWindow
+    namespace["_evejs_assembly_access_window_class"] = AssemblyAccessWindow
     return AssemblyAccessWindow
 
 
@@ -592,20 +610,317 @@ def _evejs_open_assembly_access(namespace, item_id):
     return window_type.Open(assembly_item_id=item_id)
 
 
-def _evejs_npc_fitting_action_is_trusted(namespace, entity_id):
+def _evejs_npc_fitting_probe(namespace, entity_id):
     try:
-        result = namespace["sm"].RemoteSvc(
+        return _evejs_service_manager(namespace).RemoteSvc(
             "npcFittingMgr"
         ).CanOpenNpcFitting(entity_id)
     except Exception:
-        return False
-    return _evejs_value(result, "trusted", False) is True
+        return None
+
+
+def _evejs_npc_fitting_action_is_trusted(namespace, entity_id):
+    return _evejs_value(
+        _evejs_npc_fitting_probe(namespace, entity_id),
+        "trusted", False,
+    ) is True
+
+
+def _evejs_npc_interaction_probe(namespace, entity_id):
+    try:
+        return _evejs_service_manager(namespace).RemoteSvc(
+            "npcFittingMgr"
+        ).CanInteractNpc(entity_id)
+    except Exception as error:
+        return {
+            "canInteract": False,
+            "canIssueOrders": False,
+            "canModifyFittings": False,
+            "reason": "NPC_INTERACTION_PROBE_FAILED",
+            "detail": "{}: {}".format(type(error).__name__, error)[:200],
+        }
+
+
+def _evejs_npc_interaction_status(probe):
+    reason = str(_evejs_value(probe, "reason", "") or "")
+    messages = {
+        "NPC_DURABLE_ENTITY_NOT_FOUND": "This NPC is no longer available.",
+        "NPC_FITTING_NOT_LOCAL": "The NPC is not in your current space scene.",
+        "NPC_FITTING_OUT_OF_RANGE": "Move within 5 km of the NPC.",
+        "NPC_FITTING_TRUST_REQUIRED": "NPC command access was not granted.",
+        "NPC_INTERACTION_NOT_FRIENDLY": "This NPC is not friendly or trusted.",
+    }
+    if reason == "NPC_INTERACTION_PROBE_FAILED":
+        detail = str(_evejs_value(probe, "detail", "") or "")
+        return "Interaction service failed: {}".format(detail)
+    return messages.get(reason, "NPC interaction unavailable ({})".format(
+        reason or "no response"
+    ))
+
+
+def _evejs_npc_interaction_available(namespace, entity_id):
+    return _evejs_value(
+        _evejs_npc_interaction_probe(namespace, entity_id),
+        "canInteract", False,
+    ) is True
 
 
 def _evejs_open_npc_fitting(namespace, entity_id):
-    command = getattr(namespace["uicore"], "cmd", None)
+    command = getattr(_evejs_runtime_global(namespace, "uicore"), "cmd", None)
     opener = getattr(command, "OpenNpcFitting", None)
     return opener(entity_id) if opener is not None else None
+
+
+def _evejs_active_target_id(namespace):
+    try:
+        target_service = _evejs_service_manager(namespace).GetService("target")
+        getter = getattr(target_service, "GetActiveTargetID", None)
+        value = getter() if getter is not None else None
+        return int(value) if value else 0
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def _evejs_issue_npc_order(
+    namespace, entity_id, order_type, target_id=0, range_meters=None
+):
+    probe = _evejs_npc_interaction_probe(namespace, entity_id)
+    if _evejs_value(probe, "canIssueOrders", False) is not True:
+        raise PermissionError("NPC order access is no longer available")
+    order = {"type": order_type}
+    if order_type != "resume":
+        target_id = int(target_id)
+        if target_id <= 0 or target_id == int(entity_id):
+            raise ValueError("Select a different target entity")
+        order["targetID"] = target_id
+    if order_type in ("keepAtRange", "orbit"):
+        order["rangeMeters"] = int(range_meters)
+    result = _evejs_service_manager(namespace).RemoteSvc(
+        "npcFittingMgr"
+    ).IssueNpcOrder(entity_id, order)
+    if _evejs_value(result, "accepted", False) is not True:
+        raise RuntimeError("The NPC did not accept that order")
+    return result
+
+
+def _evejs_npc_interaction_window_type(namespace):
+    cached = namespace.get("_evejs_npc_interaction_window_class")
+    if cached is not None:
+        return cached
+
+    import eveui
+    from carbonui.control.singlelineedits.singleLineEditText import (
+        SingleLineEditText,
+    )
+
+    base_window = namespace.get("Window")
+    if base_window is None:
+        from carbonui.control.window import Window as base_window
+
+    class NpcInteractionWindow(base_window):
+        default_windowID = "evejs_npc_interaction"
+        default_caption = "NPC Orders"
+        default_width = 500
+        default_height = 390
+        default_minSize = (430, 340)
+
+        def ApplyAttributes(self, attributes):
+            super().ApplyAttributes(attributes)
+            self._entity_id = int(_evejs_value(
+                attributes, "npc_entity_id", 0
+            ) or 0)
+            root = eveui.Container(
+                parent=self.GetMainArea(),
+                align=eveui.Align.to_all,
+                padding=(16, 16, 16, 16),
+            )
+            self._name = eveui.EveLabelLarge(
+                parent=root,
+                align=eveui.Align.to_top,
+                text="NPC",
+            )
+            self._status = eveui.EveLabelMedium(
+                parent=root,
+                align=eveui.Align.to_top,
+                padTop=8,
+                text="",
+            )
+            self._fit_button = eveui.Button(
+                parent=root,
+                align=eveui.Align.to_top,
+                padTop=18,
+                label="Modify Fittings",
+                func=self._on_modify_fittings,
+            )
+            self._retry_button = eveui.Button(
+                parent=root,
+                align=eveui.Align.to_top,
+                padTop=6,
+                label="Retry Interaction",
+                func=self._on_retry,
+            )
+            self._order_controls = eveui.ContainerAutoSize(
+                parent=root,
+                align=eveui.Align.to_top,
+                padTop=16,
+            )
+            eveui.EveLabelMedium(
+                parent=self._order_controls,
+                align=eveui.Align.to_top,
+                text="NPC Orders (selected target or entity ID)",
+            )
+            self._target_edit = SingleLineEditText(
+                parent=self._order_controls,
+                align=eveui.Align.to_top,
+                height=30,
+                top=6,
+                hintText="Target entity ID",
+                maxLength=20,
+            )
+            self._range_edit = SingleLineEditText(
+                parent=self._order_controls,
+                align=eveui.Align.to_top,
+                height=30,
+                top=6,
+                hintText="Keep/Orbit range in meters",
+                maxLength=6,
+            )
+            self._set_edit(self._range_edit, "2500")
+            first_row = eveui.Container(
+                parent=self._order_controls,
+                align=eveui.Align.to_top,
+                height=34,
+                top=8,
+            )
+            for index, (label, order_type) in enumerate((
+                ("Approach", "approach"),
+                ("Keep at Range", "keepAtRange"),
+                ("Orbit", "orbit"),
+                ("Lock Target", "lock"),
+            )):
+                eveui.Button(
+                    parent=first_row,
+                    align=eveui.Align.to_left,
+                    width=108,
+                    left=index * 5,
+                    label=label,
+                    func=lambda *args, order_type=order_type:
+                    self._send_order(order_type),
+                )
+            second_row = eveui.Container(
+                parent=self._order_controls,
+                align=eveui.Align.to_top,
+                height=34,
+                top=6,
+            )
+            eveui.Button(
+                parent=second_row,
+                align=eveui.Align.to_left,
+                width=130,
+                label="Use Active Target",
+                func=self._on_use_active_target,
+            )
+            eveui.Button(
+                parent=second_row,
+                align=eveui.Align.to_left,
+                width=140,
+                left=6,
+                label="Resume Autonomy",
+                func=lambda *args: self._send_order("resume"),
+            )
+            self.AcceptNpc(_evejs_value(attributes, "initial_probe"))
+
+        def _edit_value(self, edit):
+            getter = getattr(edit, "GetValue", None)
+            return getter() if getter is not None else getattr(edit, "text", "")
+
+        def _set_edit(self, edit, value):
+            setter = getattr(edit, "SetValue", None)
+            if setter is not None:
+                setter(str(value))
+            else:
+                edit.text = str(value)
+
+        def _on_use_active_target(self, *args):
+            target_id = _evejs_active_target_id(namespace)
+            if not target_id or target_id == self._entity_id:
+                self._status.text = "Select another target or enter its entity ID"
+                return
+            self._set_edit(self._target_edit, target_id)
+            self._status.text = "Target {} selected".format(target_id)
+
+        def _on_retry(self, *args):
+            self.AcceptNpc(_evejs_npc_interaction_probe(
+                namespace, self._entity_id
+            ))
+
+        def _send_order(self, order_type):
+            try:
+                target_id = 0
+                if order_type != "resume":
+                    raw_target = self._edit_value(self._target_edit)
+                    target_id = int(raw_target) if raw_target else (
+                        _evejs_active_target_id(namespace)
+                    )
+                range_meters = None
+                if order_type in ("keepAtRange", "orbit"):
+                    range_meters = int(
+                        self._edit_value(self._range_edit)
+                    )
+                _evejs_issue_npc_order(
+                    namespace, self._entity_id, order_type,
+                    target_id, range_meters,
+                )
+                self._status.text = "Order accepted: {}".format(order_type)
+            except Exception as error:
+                self._status.text = "NPC order failed: {}".format(error)
+
+        def AcceptNpc(self, probe):
+            can_interact = _evejs_value(
+                probe, "canInteract", False
+            ) is True
+            name = _evejs_value(
+                probe, "displayName", "NPC {}".format(self._entity_id)
+            )
+            self._name.text = str(name)
+            self.SetCaption("NPC Orders: {}".format(name))
+            can_fit = can_interact and _evejs_value(
+                probe, "canModifyFittings", False
+            ) is True
+            self._fit_button.display = can_fit
+            can_order = can_interact and _evejs_value(
+                probe, "canIssueOrders", False
+            ) is True
+            self._order_controls.display = can_order
+            self._retry_button.display = not can_interact
+            self._status.text = (
+                "Select an interaction" if can_fit or can_order else
+                "This NPC has not granted fitting or order access"
+                if can_interact else _evejs_npc_interaction_status(probe)
+            )
+
+        def _on_modify_fittings(self, *args):
+            if not _evejs_npc_fitting_action_is_trusted(
+                namespace, self._entity_id
+            ):
+                self.Close()
+                return
+            _evejs_open_npc_fitting(namespace, self._entity_id)
+
+    namespace["_evejs_npc_interaction_window_class"] = NpcInteractionWindow
+    return NpcInteractionWindow
+
+
+def _evejs_open_npc_interaction(namespace, entity_id, probe=None):
+    # Recheck on activation: the menu or keyboard selection may be stale.
+    probe = _evejs_npc_interaction_probe(namespace, entity_id)
+    window_type = _evejs_npc_interaction_window_type(namespace)
+    existing = window_type.GetIfOpen()
+    if existing is not None:
+        existing._entity_id = int(entity_id)
+        existing.AcceptNpc(probe)
+        return existing
+    return window_type.Open(npc_entity_id=entity_id, initial_probe=probe)
 
 
 def _evejs_install_npc_fitting_menu(namespace):
@@ -631,9 +946,20 @@ def _evejs_install_npc_fitting_menu(namespace):
         )
         if isinstance(itemID, list):
             return menu
-        if _evejs_npc_fitting_action_is_trusted(namespace, itemID):
+        is_npc = isinstance(itemID, int) and itemID >= NPC_ENTITY_ID_FLOOR
+        interaction = _evejs_npc_interaction_probe(namespace, itemID) if is_npc else None
+        if is_npc and not any(
+            isinstance(row, (list, tuple)) and row and row[0] == "Interact"
+            for row in menu
+        ):
             menu.append([
-                "Manage NPC Fitting",
+                "Interact",
+                _evejs_open_npc_interaction,
+                (namespace, itemID),
+            ])
+        if _evejs_value(interaction, "canModifyFittings", False) is True:
+            menu.append([
+                "Modify Fittings",
                 _evejs_open_npc_fitting,
                 (namespace, itemID),
             ])
@@ -647,3 +973,8 @@ def _evejs_install_npc_fitting_menu(namespace):
 
     celestial_menu._evejs_npc_fitting_menu_patch = True
     menu_type.CelestialMenu = celestial_menu
+
+    def evejs_interact_npc(self, item_id):
+        return _evejs_open_npc_interaction(namespace, item_id)
+
+    menu_type.EvejsInteractNpc = evejs_interact_npc

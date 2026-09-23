@@ -16,6 +16,9 @@
     "enabled": true,
     "channel": "code"
   },
+  "debugFittingTrust": {
+    "allowNearbyPlayers": true
+  },
   "defaults": {
     "sameFactionDisposition": "friendly",
     "sameCorporationDisposition": "friendly",
@@ -76,98 +79,168 @@
       "factionID": 500001,
       "name": "Caldari State",
       "transponderSignal": "CALDARI",
-      "startingRegion": { "regionID": 10000005, "solarSystemIDs": [30000052] },
+      "startingRegion": {
+        "regionID": 10000005,
+        "solarSystemIDs": [
+          30000052
+        ]
+      },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500002,
       "name": "Minmatar Republic",
       "transponderSignal": "MINMATAR",
-      "startingRegion": { "regionID": 10000005, "solarSystemIDs": [30000052] },
+      "startingRegion": {
+        "regionID": 10000005,
+        "solarSystemIDs": [
+          30000052
+        ]
+      },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500003,
       "name": "Amarr Empire",
       "transponderSignal": "AMARR",
-      "startingRegion": { "regionID": 10000022, "solarSystemIDs": [30002187] },
+      "startingRegion": {
+        "regionID": 10000022,
+        "solarSystemIDs": [
+          30002187
+        ]
+      },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500004,
       "name": "Gallente Federation",
       "transponderSignal": "GALLENTE",
-      "startingRegion": { "regionID": 10000005, "solarSystemIDs": [30000052] },
+      "startingRegion": {
+        "regionID": 10000005,
+        "solarSystemIDs": [
+          30000052
+        ]
+      },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500006,
       "name": "CONCORD Assembly",
       "transponderSignal": "CONCORD",
-      "startingRegion": { "regionID": 10000043, "solarSystemIDs": [30005204] },
+      "startingRegion": {
+        "regionID": 10000043,
+        "solarSystemIDs": [
+          30005204
+        ]
+      },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500010,
       "name": "Guristas Pirates",
       "transponderSignal": "GURISTAS",
-      "startingRegion": { "regionID": 10000015, "solarSystemIDs": [30001290] },
+      "startingRegion": {
+        "regionID": 10000015,
+        "solarSystemIDs": [
+          30001290
+        ]
+      },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500011,
       "name": "Angel Cartel",
       "transponderSignal": "ANGEL",
-      "startingRegion": { "regionID": 10000013, "solarSystemIDs": [30001045] },
+      "startingRegion": {
+        "regionID": 10000013,
+        "solarSystemIDs": [
+          30001045
+        ]
+      },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500012,
       "name": "Blood Raider Covenant",
       "transponderSignal": "BLOOD",
-      "startingRegion": { "regionID": 10000029, "solarSystemIDs": [30003088] },
+      "startingRegion": {
+        "regionID": 10000029,
+        "solarSystemIDs": [
+          30003088
+        ]
+      },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500014,
       "name": "Outer Ring Excavations",
       "transponderSignal": "ORE",
-      "startingRegion": { "regionID": 10000038, "solarSystemIDs": [30004504] },
+      "startingRegion": {
+        "regionID": 10000038,
+        "solarSystemIDs": [
+          30004504
+        ]
+      },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500019,
       "name": "Sansha's Nation",
       "transponderSignal": "SANSHA",
-      "startingRegion": { "regionID": 10000020, "solarSystemIDs": [30001868] },
+      "startingRegion": {
+        "regionID": 10000020,
+        "solarSystemIDs": [
+          30001868
+        ]
+      },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500020,
       "name": "Serpentis",
       "transponderSignal": "SERPENTIS",
-      "startingRegion": { "regionID": 10000039, "solarSystemIDs": [30004623] },
+      "startingRegion": {
+        "regionID": 10000039,
+        "solarSystemIDs": [
+          30004623
+        ]
+      },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500024,
       "name": "Drifters",
       "transponderSignal": "DRIFTER",
-      "startingRegion": { "regionID": 10000043, "solarSystemIDs": [30005286] },
+      "startingRegion": {
+        "regionID": 10000043,
+        "solarSystemIDs": [
+          30005286
+        ]
+      },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500025,
       "name": "Rogue Drones",
       "transponderSignal": "ROGUE",
-      "startingRegion": { "regionID": 10000043, "solarSystemIDs": [30005286] },
+      "startingRegion": {
+        "regionID": 10000043,
+        "solarSystemIDs": [
+          30005286
+        ]
+      },
       "unidentifiedDisposition": "suspicious"
     },
     {
       "factionID": 500026,
       "name": "Triglavian Collective",
       "transponderSignal": "TRIGLAVIAN",
-      "startingRegion": { "regionID": 10000043, "solarSystemIDs": [30005286] },
+      "startingRegion": {
+        "regionID": 10000043,
+        "solarSystemIDs": [
+          30005286
+        ]
+      },
       "unidentifiedDisposition": "suspicious"
     },
     {
@@ -205,6 +278,369 @@
       "name": "Feral",
       "transponderSignal": "FERAL",
       "unidentifiedDisposition": "suspicious"
+    },
+    {
+      "factionID": 500005,
+      "name": "Jove Empire",
+      "transponderSignal": "FACTION500005",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30001642
+        ]
+      }
+    },
+    {
+      "factionID": 500007,
+      "name": "Ammatar Mandate",
+      "transponderSignal": "FACTION500007",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30000001
+        ]
+      }
+    },
+    {
+      "factionID": 500008,
+      "name": "Khanid Kingdom",
+      "transponderSignal": "FACTION500008",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30003863
+        ]
+      }
+    },
+    {
+      "factionID": 500009,
+      "name": "The Syndicate",
+      "transponderSignal": "FACTION500009",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30003271
+        ]
+      }
+    },
+    {
+      "factionID": 500013,
+      "name": "The InterBus",
+      "transponderSignal": "FACTION500013",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005203
+        ]
+      }
+    },
+    {
+      "factionID": 500015,
+      "name": "Thukker Tribe",
+      "transponderSignal": "FACTION500015",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30000905
+        ]
+      }
+    },
+    {
+      "factionID": 500016,
+      "name": "Servant Sisters of EVE",
+      "transponderSignal": "FACTION500016",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30001978
+        ]
+      }
+    },
+    {
+      "factionID": 500017,
+      "name": "The Society of Conscious Thought",
+      "transponderSignal": "FACTION500017",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30002423
+        ]
+      }
+    },
+    {
+      "factionID": 500018,
+      "name": "Mordu's Legion Command",
+      "transponderSignal": "FACTION500018",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30002005
+        ]
+      }
+    },
+    {
+      "factionID": 500021,
+      "name": "Unknown",
+      "transponderSignal": "FACTION500021",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500027,
+      "name": "EDENCOM",
+      "transponderSignal": "FACTION500027",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005204
+        ]
+      }
+    },
+    {
+      "factionID": 500028,
+      "name": "Association for Interdisciplinary Research",
+      "transponderSignal": "FACTION500028",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005305
+        ]
+      }
+    },
+    {
+      "factionID": 500057,
+      "name": "Synod",
+      "transponderSignal": "FACTION500057",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500058,
+      "name": "Ukase №1",
+      "transponderSignal": "FACTION500058",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500059,
+      "name": "Ukase №2",
+      "transponderSignal": "FACTION500059",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500060,
+      "name": "Ukase №3",
+      "transponderSignal": "FACTION500060",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500061,
+      "name": "Ukase №4",
+      "transponderSignal": "FACTION500061",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500062,
+      "name": "Ukase №5",
+      "transponderSignal": "FACTION500062",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500063,
+      "name": "Ukase №6",
+      "transponderSignal": "FACTION500063",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500064,
+      "name": "Far Reach",
+      "transponderSignal": "FACTION500064",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500065,
+      "name": "Boreas Line",
+      "transponderSignal": "FACTION500065",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500066,
+      "name": "Notus Line",
+      "transponderSignal": "FACTION500066",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500067,
+      "name": "Regicide",
+      "transponderSignal": "FACTION500067",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500068,
+      "name": "Assault Operations",
+      "transponderSignal": "FACTION500068",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500069,
+      "name": "Siege Operations",
+      "transponderSignal": "FACTION500069",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500070,
+      "name": "Eyrie",
+      "transponderSignal": "FACTION500070",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500071,
+      "name": "Expeditionary Branch",
+      "transponderSignal": "FACTION500071",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500072,
+      "name": "Extraction Branch",
+      "transponderSignal": "FACTION500072",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30005286
+        ]
+      }
+    },
+    {
+      "factionID": 500074,
+      "name": "Ancient Civilization",
+      "transponderSignal": "FACTION500074",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30013758
+        ]
+      }
+    },
+    {
+      "factionID": 500075,
+      "name": "Ancient Civilization",
+      "transponderSignal": "FACTION500075",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30023449
+        ]
+      }
+    },
+    {
+      "factionID": 500077,
+      "name": "Ancient Civilization",
+      "transponderSignal": "FACTION500077",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30000299
+        ]
+      }
+    },
+    {
+      "factionID": 500078,
+      "name": "Ancient Civilization",
+      "transponderSignal": "FACTION500078",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30003578
+        ]
+      }
+    },
+    {
+      "factionID": 500079,
+      "name": "Keep",
+      "transponderSignal": "FACTION500079",
+      "startingRegion": {
+        "regionID": null,
+        "solarSystemIDs": [
+          30011706
+        ]
+      }
     }
   ],
   "relations": [

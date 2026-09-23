@@ -18,30 +18,53 @@ MODULE_NAME = "eve/client/script/ui/eveCommands.pyc"
 SOURCE_MEMBER_SHA256 = "533a19a7e8e995f415bd9f2649b52d64372538de240791d8b5c227ef76c24f4d"
 MENU_MODULE_NAME = "eve/client/script/ui/services/menusvc.pyc"
 MENU_SOURCE_MEMBER_SHA256 = "014f7513310f4027e6617befa0200d1dd1f0ab8a24c7e42529fb9d138961689f"
+PRIMARY_ACTION_MODULE_NAME = "frontier/hud/primary_action.pyc"
+PRIMARY_ACTION_SOURCE_MEMBER_SHA256 = "75f678916ba0a728654b5cc10556f9e8daaf65a938cb621a5b8774c5dad7d3b1"
 MENU_PREVIOUS_WRAPPER_SHA256 = {
+    "83c76df85f5ac7d9c94c85fbd6360971313f065ca67ebdf44defd6eeb004f137",
+    "229d2dfe2331ece15ef7820c59dc5409b936fac772daea97e74cd2e67c3e978e",
+    "be7729c57fd91b4a612fce08cbfbab91ef8de66b7fa0d001f5afc8fa6cb7a294",
+    "54d818b28984aa9451f8accd201283fc823ffac52947ee30d83704e5204a4824",
+    "ce2d4ac6a029186b5c945ca870a2a15ac10baf33fc2f610a464669b73b89393f",
     "ebf9e0ecb83c9cdbb52e03071f84042e10757c50c6fa5ee327eb2c2ce989c66d",
     "7258d52810747642dc9ae7d7ec2f7dee997922f9ccc18772f5c67263bde212c5",
     "f42c7ff948948131f9f214c406389d273ee7000b55f088f2d1635d1e839f2183",
 }
+PRIMARY_ACTION_PREVIOUS_WRAPPER_SHA256 = {
+    "ebc6bea485b75345eac91d7e6c9395ff67fcdfe22169ae90d8f5bab9b171789b",
+    "abdb6117d7b2beb1aa241096405b66ada61e3b4d1c7862b3603733dbdd91b979",
+}
 CREATION_SERVICE_MODULE_NAME = "frontier/creation/client/service.pyc"
 CREATION_SERVICE_SOURCE_MEMBER_SHA256 = "55d9b955b0ab99fed39032db1580076946fb2e554c0ac8691eb7747d792f367c"
 CREATION_SERVICE_PREVIOUS_WRAPPER_SHA256 = {
+    "10ce31f99ddfd8061ccb88d07ffb938cf5110dcc20ef4bb52c11efe310c86d32",
     "f51e3756cd36500b22833a8bf60519c52ba3b778f43390de1a994bb902dfbe8f",
 }
 ACTION_PROVIDER_MODULE_NAME = "frontier/creation/client/module_action_provider.pyc"
 ACTION_PROVIDER_SOURCE_MEMBER_SHA256 = "fe9644684a5c001c6a6509461efcd4905f928c20937dcf6ab7fda813f13a3a5e"
 ACTION_PROVIDER_PREVIOUS_WRAPPER_SHA256 = {
+    "72dab66f740fa29c98c8ae8f34182cd69b18db1181e404182e6208f447c750e4",
     "34fd2f715ff371190737025f185ca715e95593241bd62d7e346834dc7510c7fe",
 }
 ACTION_BAR_INTEGRATION_MODULE_NAME = "frontier/hud/action_bar/integration.pyc"
 ACTION_BAR_INTEGRATION_SOURCE_MEMBER_SHA256 = "092f955e64a6ee6b89b54b395c77c8b9fe432af590fa9a22de210b72068363c4"
+ACTION_BAR_INTEGRATION_PREVIOUS_WRAPPER_SHA256 = {
+    "3d0cae8e94184370c74c676634f330e4d2d6e8eecb481b2a6ca1c30f93018bed",
+}
 SKILLSHOT_CONTROLLER_MODULE_NAME = "frontier/skillshot/client/controller.pyc"
 SKILLSHOT_CONTROLLER_SOURCE_MEMBER_SHA256 = "4c4162c18f4116b728755169581736ffc7984deb1c5d45cc6454e49dbeb81e75"
+SKILLSHOT_CONTROLLER_PREVIOUS_WRAPPER_SHA256 = {
+    "e54131354ae0e00256158d3cf6f8e404cea8e6418ffbe5e15b1c67f5e9ac9e15",
+}
 SKILLSHOT_AUTO_CANNON_MODULE_NAME = (
     "frontier/skillshot/client/mode/auto_cannon.pyc"
 )
 SKILLSHOT_AUTO_CANNON_SOURCE_MEMBER_SHA256 = "b4698b692cfb9c2af113b367b16aea3c5d1603e94b31415018c91460cecd538c"
+SKILLSHOT_AUTO_CANNON_PREVIOUS_WRAPPER_SHA256 = {
+    "a5790102cb176a83c78c4d4b5238067769e298eeebe236c649e9dc4c26ca8ed5",
+}
 PREVIOUS_WRAPPER_SHA256 = {
+    "ef2347759d9456acebf258d6a8ce7b30f2c5eb6d6f93f49346ae53bd62e286f8",
     "3a8b251364c9ca5dcf18f44518a5283869377f4781546885d916a57b8007910a",
     "74bd5fc669dbb04177083c1cdcb4350b3e2ba569a52208fd94b5f446b0c0f1e8",
     "0d79a1a445efe2fe3a6b44eb2afd093b40e0d6e2a9213b55cb520b0a1a7e3b56",
@@ -50,6 +73,7 @@ PREVIOUS_WRAPPER_SHA256 = {
 }
 ADAPTER = Path(__file__).with_name("fitting_compatibility_adapter.py")
 MENU_ADAPTER = Path(__file__).with_name("npc_fitting_menu_adapter.py")
+PRIMARY_ACTION_ADAPTER = Path(__file__).with_name("npc_primary_action_adapter.py")
 CREATION_SERVICE_ADAPTER = Path(__file__).with_name(
     "creation_service_compatibility_adapter.py"
 )
@@ -69,6 +93,8 @@ SOURCE_SENTINEL = b"EVEJS_FITTING_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_FITTING_ADAPTER_CODE_V1"
 MENU_SOURCE_SENTINEL = b"EVEJS_NPC_FITTING_MENU_ORIGINAL_MEMBER_V1"
 MENU_ADAPTER_SENTINEL = b"EVEJS_NPC_FITTING_MENU_ADAPTER_CODE_V1"
+PRIMARY_ACTION_SOURCE_SENTINEL = b"EVEJS_NPC_PRIMARY_ACTION_ORIGINAL_MEMBER_V1"
+PRIMARY_ACTION_ADAPTER_SENTINEL = b"EVEJS_NPC_PRIMARY_ACTION_ADAPTER_CODE_V1"
 CREATION_SERVICE_SOURCE_SENTINEL = b"EVEJS_CREATION_SERVICE_ORIGINAL_MEMBER_V1"
 CREATION_SERVICE_ADAPTER_SENTINEL = b"EVEJS_CREATION_SERVICE_ADAPTER_CODE_V1"
 ACTION_PROVIDER_SOURCE_SENTINEL = b"EVEJS_ACTION_PROVIDER_ORIGINAL_MEMBER_V1"
@@ -147,6 +173,34 @@ def patched_menu_member(member):
         if value == MENU_SOURCE_SENTINEL
         else marshal.dumps(adapter)
         if value == MENU_ADAPTER_SENTINEL
+        else value
+        for value in wrapper.co_consts
+    )
+    return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
+
+
+def patched_primary_action_member(member):
+    original = marshal.loads(member[16:])
+    adapter = compile(
+        PRIMARY_ACTION_ADAPTER.read_text(encoding="utf-8"),
+        "evejs/npc_primary_action_adapter.py",
+        "exec",
+        dont_inherit=True,
+    )
+    wrapper = compile(
+        "import marshal as _evejs_npc_primary_action_marshal\n"
+        "exec(_evejs_npc_primary_action_marshal.loads(b'EVEJS_NPC_PRIMARY_ACTION_ORIGINAL_MEMBER_V1'[16:]))\n"
+        "exec(_evejs_npc_primary_action_marshal.loads(b'EVEJS_NPC_PRIMARY_ACTION_ADAPTER_CODE_V1'))\n"
+        "_evejs_install_npc_primary_action(globals())\n",
+        original.co_filename,
+        "exec",
+        dont_inherit=True,
+    )
+    constants = tuple(
+        member
+        if value == PRIMARY_ACTION_SOURCE_SENTINEL
+        else marshal.dumps(adapter)
+        if value == PRIMARY_ACTION_ADAPTER_SENTINEL
         else value
         for value in wrapper.co_consts
     )
@@ -316,12 +370,12 @@ def inspect_member(
             if isinstance(value, bytes)
             and hashlib.sha256(value).hexdigest() == expected
         ]
+        if len(originals) == 1 and build_patched_member(originals[0]) == member:
+            return "patched", originals[0]
         if digest in previous_wrapper_sha256:
             if len(originals) == 1:
                 return "outdated", originals[0]
             raise ValueError("Previous wrapper did not contain its retail original")
-        if len(originals) == 1 and build_patched_member(originals[0]) == member:
-            return "patched", originals[0]
     except (EOFError, TypeError, ValueError):
         pass
     raise FittingPatchError(
@@ -339,6 +393,7 @@ def inspect_archive(archive, build=BUILD):
         for module_name in (
             MODULE_NAME,
             MENU_MODULE_NAME,
+            PRIMARY_ACTION_MODULE_NAME,
             CREATION_SERVICE_MODULE_NAME,
             ACTION_PROVIDER_MODULE_NAME,
             ACTION_BAR_INTEGRATION_MODULE_NAME,
@@ -363,6 +418,12 @@ def inspect_archive(archive, build=BUILD):
             patched_menu_member,
             MENU_PREVIOUS_WRAPPER_SHA256,
         )
+        primary_action_state, primary_action_original = inspect_member(
+            source.read(entries_by_name[PRIMARY_ACTION_MODULE_NAME]),
+            PRIMARY_ACTION_SOURCE_MEMBER_SHA256,
+            patched_primary_action_member,
+            PRIMARY_ACTION_PREVIOUS_WRAPPER_SHA256,
+        )
         service_state, service_original = inspect_member(
             source.read(entries_by_name[CREATION_SERVICE_MODULE_NAME]),
             CREATION_SERVICE_SOURCE_MEMBER_SHA256,
@@ -380,25 +441,26 @@ def inspect_archive(archive, build=BUILD):
                 source.read(entries_by_name[ACTION_BAR_INTEGRATION_MODULE_NAME]),
                 ACTION_BAR_INTEGRATION_SOURCE_MEMBER_SHA256,
                 patched_action_bar_integration_member,
-                set(),
+                ACTION_BAR_INTEGRATION_PREVIOUS_WRAPPER_SHA256,
             )
         )
         skillshot_controller_state, skillshot_controller_original = inspect_member(
             source.read(entries_by_name[SKILLSHOT_CONTROLLER_MODULE_NAME]),
             SKILLSHOT_CONTROLLER_SOURCE_MEMBER_SHA256,
             patched_skillshot_controller_member,
-            set(),
+            SKILLSHOT_CONTROLLER_PREVIOUS_WRAPPER_SHA256,
         )
         skillshot_auto_cannon_state, skillshot_auto_cannon_original = inspect_member(
             source.read(entries_by_name[SKILLSHOT_AUTO_CANNON_MODULE_NAME]),
             SKILLSHOT_AUTO_CANNON_SOURCE_MEMBER_SHA256,
             patched_skillshot_auto_cannon_member,
-            set(),
+            SKILLSHOT_AUTO_CANNON_PREVIOUS_WRAPPER_SHA256,
         )
 
     states = {
         command_state,
         menu_state,
+        primary_action_state,
         service_state,
         action_provider_state,
         action_bar_integration_state,
@@ -414,6 +476,10 @@ def inspect_archive(archive, build=BUILD):
     return state, {
         MODULE_NAME: (command_state, command_original),
         MENU_MODULE_NAME: (menu_state, menu_original),
+        PRIMARY_ACTION_MODULE_NAME: (
+            primary_action_state,
+            primary_action_original,
+        ),
         CREATION_SERVICE_MODULE_NAME: (service_state, service_original),
         ACTION_PROVIDER_MODULE_NAME: (
             action_provider_state,
@@ -444,6 +510,13 @@ def patch_archive(archive, build=BUILD):
         menu_state, menu_original = originals[MENU_MODULE_NAME]
         if menu_state != "patched":
             replacements[MENU_MODULE_NAME] = patched_menu_member(menu_original)
+        primary_action_state, primary_action_original = originals[
+            PRIMARY_ACTION_MODULE_NAME
+        ]
+        if primary_action_state != "patched":
+            replacements[PRIMARY_ACTION_MODULE_NAME] = (
+                patched_primary_action_member(primary_action_original)
+            )
         service_state, service_original = originals[CREATION_SERVICE_MODULE_NAME]
         if service_state != "patched":
             replacements[CREATION_SERVICE_MODULE_NAME] = (

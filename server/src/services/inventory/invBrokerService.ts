@@ -16,6 +16,17 @@ const { throwWrappedUserError } = require(path.join(
   __dirname,
   "../../common/machoErrors",
 ));
+const {
+  ROLE_GML,
+  ROLE_LEGIONEER,
+  ROLE_WORLDMOD,
+  normalizeRoleValue,
+}: {
+  ROLE_GML: bigint;
+  ROLE_LEGIONEER: bigint;
+  ROLE_WORLDMOD: bigint;
+  normalizeRoleValue: (value: unknown, fallback?: bigint) => bigint;
+} = require(path.join(__dirname, "../account/accountRoleProfiles"));
 const { resolveShipByTypeID } = require(path.join(
   __dirname,
   "../chat/shipTypeRegistry",
@@ -7305,6 +7316,68 @@ class InvBrokerService extends BaseService {
     this._emitInventoryMoveChanges(session, changes);
     this._refreshBallparkShipPresentation(session, changes);
     this._refreshBallparkInventoryPresentation(session, changes);
+    return null;
+  }
+
+  Handle_DestroyItem(args, session) {
+    this._traceInventory("DestroyItem", session, { args });
+    const gmRoles = ROLE_GML | ROLE_LEGIONEER | ROLE_WORLDMOD;
+    if ((normalizeRoleValue(session && session.accountRole, 0n) & gmRoles) === 0n) {
+      throwWrappedUserError("CustomNotify", {
+        notify: "Destroy Item requires a GM account.",
+      });
+    }
+
+    const itemID = this._normalizeInventoryId(args && args[0], 0);
+    if (itemID <= 0) {
+      throwWrappedUserError("CustomNotify", {
+        notify: "Destroy Item requires a valid item ID.",
+      });
+    }
+
+    // The GM menu calls DestroyItem on the inventory manager for NPCs as well
+    // as inventory rows. NPC removal must settle equipment and unregister its
+    // controller; deleting only an item row would leave a live NPC behind.
+    const npcService = require(path.join(__dirname, "../../space/npc/npcService"));
+    const controller = npcService.getControllerByEntityID(itemID);
+    if (controller) {
+      const systemID = this._normalizeInventoryId(
+        session && (
+          (session._space && session._space.systemID) ||
+          session.solarsystemid2 ||
+          session.solarsystemid
+        ),
+        0,
+      );
+      if (systemID <= 0 || systemID !== this._normalizeInventoryId(controller.systemID, 0)) {
+        throwWrappedUserError("CustomNotify", {
+          notify: "Destroy Item can only remove an NPC in your current system.",
+        });
+      }
+      const result = npcService.destroyNpcControllerByEntityID(itemID, {
+        destroyed: true,
+        broadcast: true,
+      });
+      if (!result || result.success !== true) {
+        throwWrappedUserError("CustomNotify", {
+          notify: `Could not destroy NPC ${itemID}: ${result && result.errorMsg || "UNKNOWN_ERROR"}.`,
+        });
+      }
+      return null;
+    }
+
+    const item = findItemById(itemID);
+    if (!this._isInventoryItemTrashable(session, item, 0)) {
+      throwWrappedUserError("CustomNotify", {
+        notify: "Destroy Item cannot remove that inventory item.",
+      });
+    }
+    const outcome = this.Handle_TrashItems([[itemID], 0], session);
+    if (outcome !== null) {
+      throwWrappedUserError("CustomNotify", {
+        notify: `Could not destroy inventory item ${itemID}.`,
+      });
+    }
     return null;
   }
 

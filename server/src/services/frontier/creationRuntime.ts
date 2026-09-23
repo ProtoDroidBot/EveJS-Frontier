@@ -15,6 +15,8 @@ const {
   updateShipItem,
 } = require(path.join(__dirname, "../inventory/itemStore"));
 const {
+  buildInventoryDogmaPrimeEntry,
+  syncModuleOnlineEffectForSession,
   syncInventoryItemForSession,
 } = require(path.join(__dirname, "../character/characterState"));
 const {
@@ -1247,12 +1249,39 @@ function syncInventoryChangesForSession(session, changes) {
     if (!change || !change.item) {
       continue;
     }
+    const previousState = change.previousData || change.previousState || {};
+    const installedCreationModule =
+      toInt(change.item.flagID, 0) === CREATION_FITTING_FLAG_ID &&
+      (
+        toInt(previousState.locationID, 0) !== toInt(change.item.locationID, 0) ||
+        toInt(previousState.flagID, -1) !== CREATION_FITTING_FLAG_ID
+      );
+    if (
+      installedCreationModule &&
+      session &&
+      typeof session.sendNotification === "function"
+    ) {
+      const now = session._space && typeof session._space.simFileTime === "bigint"
+        ? session._space.simFileTime
+        : currentFileTime();
+      session.sendNotification("OnGodmaPrimeItem", "clientID", [
+        toInt(change.item.locationID, 0),
+        buildInventoryDogmaPrimeEntry(change.item, {
+          description: "creation module",
+          includeTypeAttributes: true,
+          now,
+        }),
+      ]);
+    }
     syncInventoryItemForSession(
       session,
       change.item,
-      change.previousData || change.previousState || {},
+      previousState,
       { emitCfgLocation: true },
     );
+    if (installedCreationModule && isCreationModuleOnline(change.item)) {
+      syncModuleOnlineEffectForSession(session, change.item, { active: true });
+    }
   }
 }
 
@@ -1366,6 +1395,19 @@ function commitCreationStateTransition(
           affectsFitting: true,
           preserveMovedItemID: action.preserveMovedItemID !== false,
           treatDestinationAsFitting: true,
+          updateMovedItem(movedItem) {
+            if (!getTypeDogmaEffects(toInt(movedItem && movedItem.typeID, 0))
+              .has(CREATION_ONLINE_EFFECT_ID)) {
+              return movedItem;
+            }
+            return {
+              ...movedItem,
+              moduleState: {
+                ...(movedItem.moduleState || {}),
+                online: true,
+              },
+            };
+          },
           ...(repairingLegacyFittedStack
             ? {
                 remainderLocationID: action.locationID,

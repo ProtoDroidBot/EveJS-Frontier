@@ -6,7 +6,9 @@ const test = require("node:test");
 const { unwrapMarshalValue } = require("../src/services/_shared/serviceHelpers");
 const NpcFittingMgrService = require("../src/services/npc/npcFittingMgrService");
 const fittingTrust = require("../src/space/npc/npcFittingTrust");
+const factionConfig = require("../src/config/npcFactionConfig");
 const spaceRuntime = require("../src/space/runtime");
+const nativeNpcStore = require("../src/space/npc/nativeNpcStore");
 
 const ENTITY_ID = 980000004201;
 const PLAYER_ID = 140004201;
@@ -143,6 +145,7 @@ function createService(options: Record<string, any> = {}) {
   const service = new NpcFittingMgrService({
     npcFitting,
     itemStore,
+    orders: options.orders,
     trust: options.trust || fittingTrust,
     authorizeInteraction: options.authorizeInteraction || (() => ({
       success: true,
@@ -188,6 +191,40 @@ test("NPC fitting trust is positive-only and supports explicit authored trust", 
   );
 });
 
+test("configured allied factions may interact, but IFF alone cannot grant fitting trust", (t) => {
+  t.mock.method(factionConfig, "resolveNpcFactionDiplomacy", () => ({
+    allies: [{ factionKey: "500001-none", transponderCode: "CALDARI" }],
+    enemies: [],
+  }));
+  const actor = { characterID: PLAYER_ID, factionID: 500001 };
+  assert.deepEqual(fittingTrust.evaluateNpcFittingTrust(entity(), actor), {
+    trusted: true,
+    reason: "allied-faction",
+  });
+  assert.equal(fittingTrust.evaluateNpcFittingTrust(entity({
+    npcFittingTrust: { deniedCharacterIDs: [PLAYER_ID] },
+  }), actor).trusted, false);
+  assert.equal(fittingTrust.evaluateNpcFittingTrust(entity(), {
+    characterID: PLAYER_ID,
+    transponderSignal: "CALDARI",
+  }).trusted, false);
+});
+
+test("debug fitting trust allows nearby players but never overrides an explicit denial", () => {
+  const actor = { characterID: PLAYER_ID, factionID: FACTION_ID + 1 };
+  const context = { interaction: { shipEntity: {}, npcEntity: {} } };
+  assert.deepEqual(fittingTrust.evaluateNpcFittingTrust(entity(), actor, context), {
+    trusted: true,
+    reason: "debug-nearby-player",
+  });
+  assert.deepEqual(fittingTrust.evaluateNpcFittingTrust(entity({
+    npcFittingTrust: { deniedCharacterIDs: [PLAYER_ID] },
+  }), actor, context), {
+    trusted: false,
+    reason: "authored-deny",
+  });
+});
+
 test("default fitting interaction requires the live NPC in range", (t) => {
   const playerShip = {
     itemID: SHIP_ID,
@@ -200,7 +237,7 @@ test("default fitting interaction requires the live NPC in range", (t) => {
   const npcShip = {
     itemID: ENTITY_ID,
     nativeNpc: true,
-    position: { x: 2_501, y: 0, z: 0 },
+    position: { x: 5_001, y: 0, z: 0 },
     radius: 0,
   };
   t.mock.method(spaceRuntime, "getEntity", (_session, entityID) => (
@@ -213,7 +250,7 @@ test("default fitting interaction requires the live NPC in range", (t) => {
   assert.equal(distant.success, false);
   assert.equal(distant.errorMsg, "NPC_FITTING_OUT_OF_RANGE");
 
-  npcShip.position.x = 2_500;
+  npcShip.position.x = 5_000;
   assert.equal(
     NpcFittingMgrService.defaultAuthorizeInteraction(currentSession, npc).success,
     true,
@@ -243,8 +280,107 @@ test("fitting action and window state are hidden when the NPC does not trust the
   assert.equal(state.availableModules, undefined);
 });
 
+test("friendly interaction probe keeps fitting authorization separate", (t) => {
+  const { service } = createService({
+    trust: { evaluateNpcFittingTrust: () => ({ trusted: false, reason: "not-authorized" }) },
+    authorizeInteraction: () => ({
+      success: true,
+      data: { shipID: SHIP_ID, shipEntity: {}, npcEntity: {} },
+    }),
+  });
+  t.mock.method(factionConfig, "resolveNpcTargetIdentification", () => "ally");
+  const interaction = unwrapMarshalValue(
+    service.Handle_CanInteractNpc([ENTITY_ID], session(FACTION_ID + 1)),
+  );
+  assert.equal(interaction.canInteract, true);
+  assert.equal(interaction.canModifyFittings, false);
+  assert.equal(interaction.canIssueOrders, false);
+  const fitting = unwrapMarshalValue(
+    service.Handle_CanOpenNpcFitting([ENTITY_ID], session(FACTION_ID + 1)),
+  );
+  assert.equal(fitting.trusted, false);
+});
+
+test("manual NPC orders are allowlisted, scoped, and recheck trust", (t) => {
+  const npc = entity({ nativeNpc: true });
+  const npcScene: any = { itemID: ENTITY_ID, position: { x: 0, y: 0, z: 0 } };
+  const targetID = 980000004299;
+  const target: any = { itemID: targetID, position: { x: 1000, y: 0, z: 0 } };
+  const issued: any[] = [];
+  let trusted = true;
+  t.mock.method(nativeNpcStore, "getNativeEntity", (id) => (
+    Number(id) === ENTITY_ID ? npc : null
+  ));
+  t.mock.method(spaceRuntime, "getEntity", (_session, id) => (
+    Number(id) === targetID ? target : null
+  ));
+  const { service } = createService({
+    entity: npc,
+    trust: { evaluateNpcFittingTrust: () => ({ trusted }) },
+    authorizeInteraction: () => ({
+      success: true,
+      data: { shipID: SHIP_ID, shipEntity: {}, npcEntity: npcScene },
+    }),
+    orders: {
+      issueManualOrder(id, order) {
+        issued.push([id, order]);
+        return { success: true };
+      },
+    },
+  });
+  const accepted = unwrapMarshalValue(service.Handle_IssueNpcOrder([
+    ENTITY_ID, { type: "keepAtRange", targetID, rangeMeters: 5_000,
+      allowWeapons: true, keepLock: true },
+  ], session()));
+  assert.equal(accepted.accepted, true);
+  assert.deepEqual(issued, [[ENTITY_ID, {
+    type: "keepAtRange", targetID, followRangeMeters: 5_000,
+    allowWeapons: false, keepLock: false,
+    commandSource: { kind: "player", characterID: PLAYER_ID },
+  }]]);
+  assert.throws(() => service.Handle_IssueNpcOrder([
+    ENTITY_ID, { type: "attack", targetID },
+  ], session()));
+  assert.throws(() => service.Handle_IssueNpcOrder([
+    ENTITY_ID, { type: "orbit", targetID, rangeMeters: 300_000 },
+  ], session()));
+  target.bubbleID = "other";
+  npcScene.bubbleID = "local";
+  assert.throws(() => service.Handle_IssueNpcOrder([
+    ENTITY_ID, { type: "lock", targetID },
+  ], session()));
+  target.bubbleID = "local";
+  trusted = false;
+  assert.throws(() => service.Handle_IssueNpcOrder([
+    ENTITY_ID, { type: "approach", targetID },
+  ], session()));
+  assert.equal(issued.length, 1);
+});
+
+test("manual NPC order parser preserves distinct navigation and lock modes", () => {
+  const parse = NpcFittingMgrService.normalizePlayerNpcOrder;
+  assert.equal(parse({ type: "toString", targetID: 99 }).success, false);
+  assert.deepEqual(parse({ type: "approach", targetID: 99 }).data, {
+    type: "approach", targetID: 99, allowWeapons: false, keepLock: false,
+  });
+  assert.deepEqual(parse({ type: "orbit", targetID: 99, rangeMeters: 1_500 }).data, {
+    type: "orbit", targetID: 99, orbitDistanceMeters: 1_500,
+    allowWeapons: false, keepLock: false,
+  });
+  assert.deepEqual(parse({ type: "lock", targetID: 99 }).data, {
+    type: "lock", targetID: 99, allowWeapons: false, keepLock: true,
+  });
+  assert.deepEqual(parse({ type: "resume" }).data, {
+    type: "resume", targetID: 0, allowWeapons: false, keepLock: false,
+  });
+});
+
 test("trusted fitting state is sanitized and only advertises active-ship cargo", () => {
   const { service, cargo } = createService();
+  const interaction = unwrapMarshalValue(
+    service.Handle_CanInteractNpc([ENTITY_ID], session()),
+  );
+  assert.equal(interaction.canIssueOrders, true);
   cargo.push({
     ...cargo[0],
     itemID: MODULE_ID + 10,

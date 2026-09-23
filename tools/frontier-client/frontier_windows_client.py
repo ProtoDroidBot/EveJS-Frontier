@@ -34,6 +34,7 @@ FEATURE_PATCHER = SCRIPT_DIR / "patch_frontier_features.py"
 INDUSTRY_STORAGE_PATCHER = SCRIPT_DIR / "patch_frontier_industry_storage.py"
 MAP_VIEW_PATCHER = SCRIPT_DIR / "patch_frontier_map_view.py"
 FITTING_COMPATIBILITY_PATCHER = SCRIPT_DIR / "patch_frontier_fitting.py"
+TURRET_TRACKING_PATCHER = SCRIPT_DIR / "patch_frontier_turret_tracking.py"
 INVENTORY_VIEW_PATCHER = SCRIPT_DIR / "patch_frontier_inventory.py"
 COLLISION_VFX_PATCHER = SCRIPT_DIR / "patch_frontier_collision_vfx.py"
 CREATION_TRANSFORM_PATCHER = (
@@ -795,6 +796,8 @@ def patch_code_archive(archive: Path, build: int) -> dict:
         run_python_patcher(MAP_VIEW_PATCHER, archive, build, check=False)
     if states.get("fittingCompatibility") in {"source", "outdated"}:
         run_python_patcher(FITTING_COMPATIBILITY_PATCHER, archive, build, check=False)
+    if build == 3502403:
+        run_python_patcher(TURRET_TRACKING_PATCHER, archive, build, check=False)
     if states.get("inventoryView") == "source":
         run_python_patcher(INVENTORY_VIEW_PATCHER, archive, build, check=False)
     if states.get("collisionVfx") in {"source", "outdated"}:

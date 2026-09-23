@@ -2007,7 +2007,10 @@ function isValidManualMovementTarget(entity, target) {
     entity &&
     target &&
     target.itemID !== entity.itemID &&
-    target.position,
+    target.position &&
+    canEntitiesInteractLocally(entity, target) &&
+    !(entity.bubbleID && target.bubbleID && entity.bubbleID !== target.bubbleID) &&
+    !isEntityInActiveWarp(target),
   );
 }
 
@@ -3274,8 +3277,11 @@ function normalizeManualOrder(order) {
 
   const mappedType = {
     attack: "attack",
+    approach: "approach",
+    keepatrange: "keepAtRange",
     orbit: "orbit",
     follow: "follow",
+    lock: "lock",
     holdfire: "holdFire",
     stop: "stop",
     returnhome: "returnHome",
@@ -3551,27 +3557,16 @@ function resolveDesiredTarget(scene, controller, entity, behaviorProfile, manual
     manualOrder &&
     (
       manualOrder.type === "orbit" ||
-      manualOrder.type === "follow"
+      manualOrder.type === "follow" ||
+      manualOrder.type === "approach" ||
+      manualOrder.type === "keepAtRange" ||
+      manualOrder.type === "lock"
     ) &&
     manualOrder.targetID > 0
   ) {
     const manualTarget = scene.getEntityByID(manualOrder.targetID);
     if (!isValidManualMovementTarget(entity, manualTarget)) {
       return null;
-    }
-    if (manualTarget.kind === "ship") {
-      return isValidCombatTarget(entity, manualTarget, {
-        scene,
-        allowPodKill,
-        allowOccluded: canRetainOccludedCombatTarget(
-          scene,
-          entity,
-          manualTarget,
-          behaviorProfile,
-        ),
-      })
-        ? manualTarget
-        : null;
     }
     return manualTarget;
   }
@@ -3921,10 +3916,12 @@ function resolveMovementDirective(manualOrder, behaviorProfile) {
     ? manualOrder.movementMode
     : null;
   const typeDrivenMode =
-    manualOrder && manualOrder.type === "follow"
+    manualOrder && ["follow", "approach", "keepAtRange"].includes(manualOrder.type)
       ? "follow"
       : manualOrder && manualOrder.type === "orbit"
         ? "orbit"
+        : manualOrder && manualOrder.type === "lock"
+          ? "hold"
         : null;
   return {
     movementMode: String(
@@ -3947,7 +3944,9 @@ function resolveMovementDirective(manualOrder, behaviorProfile) {
     followRangeMeters: Math.max(
       0,
       toFiniteNumber(
-        manualOrder && manualOrder.followRangeMeters > 0
+        manualOrder && manualOrder.type === "approach"
+          ? 0
+          : manualOrder && manualOrder.followRangeMeters > 0
           ? manualOrder.followRangeMeters
           : behaviorProfile.followRangeMeters,
         0,
@@ -4976,7 +4975,8 @@ function shouldMaintainLock(manualOrder) {
 
   return (
     manualOrder.type === "attack" ||
-    manualOrder.type === "holdFire"
+    manualOrder.type === "holdFire" ||
+    manualOrder.type === "lock"
   );
 }
 
@@ -4987,7 +4987,8 @@ function shouldAllowWeapons(manualOrder, behaviorProfile) {
   if (manualOrder && manualOrder.type === "holdFire") {
     return false;
   }
-  if (manualOrder && (manualOrder.type === "orbit" || manualOrder.type === "follow")) {
+  if (manualOrder && ["orbit", "follow", "approach", "keepAtRange", "lock"]
+    .includes(manualOrder.type)) {
     return false;
   }
   return behaviorProfile.autoActivateWeapons !== false;
@@ -5110,7 +5111,10 @@ function tickController(scene, controller, now) {
       (
         manualOrder.type === "attack" ||
         manualOrder.type === "orbit" ||
-        manualOrder.type === "follow"
+        manualOrder.type === "follow" ||
+        manualOrder.type === "approach" ||
+        manualOrder.type === "keepAtRange" ||
+        manualOrder.type === "lock"
       ),
     );
     clearNpcCombatState(scene, entity, controller, {
@@ -5177,7 +5181,11 @@ function tickController(scene, controller, now) {
     return;
   }
 
-  if (isBeyondLeash(entity, controller, behaviorProfile)) {
+  if (
+    !(manualOrder && ["approach", "keepAtRange", "orbit", "lock"]
+      .includes(manualOrder.type)) &&
+    isBeyondLeash(entity, controller, behaviorProfile)
+  ) {
     syncNpcChaseVelocity(scene, entity, controller, behaviorProfile, null);
     clearNpcCombatState(scene, entity, controller, {
       deactivateWeapons: true,
@@ -5289,8 +5297,16 @@ function tickController(scene, controller, now) {
     syncNpcPropulsion(scene, entity, desiredTarget, behaviorProfile);
   }
 
+  // Navigation and target-lock orders are non-combat directives. In
+  // particular, drifter special systems can activate their own superweapon
+  // before the generic allowWeapons gate below, so do not run them here.
+  const passiveManualOrder = Boolean(
+    manualOrder && ["approach", "keepAtRange", "orbit", "lock"]
+      .includes(manualOrder.type),
+  );
   const drifterEngagement =
-    entity && entity.nativeNpc === true && !investigatingSuspiciousTarget
+    entity && entity.nativeNpc === true && !investigatingSuspiciousTarget &&
+    !passiveManualOrder
       ? syncDrifterCombatSystems(
           scene,
           entity,
@@ -5598,6 +5614,9 @@ function issueManualOrder(entityID, order) {
       normalizedOrder.type === "attack" ||
       normalizedOrder.type === "orbit" ||
       normalizedOrder.type === "follow" ||
+      normalizedOrder.type === "approach" ||
+      normalizedOrder.type === "keepAtRange" ||
+      normalizedOrder.type === "lock" ||
       normalizedOrder.type === "holdFire"
     )
   ) {
@@ -5614,6 +5633,9 @@ function issueManualOrder(entityID, order) {
     )
   ) {
     controller.currentTargetID = 0;
+  } else if (!normalizedOrder) {
+    controller.currentTargetID = 0;
+    controller.preferredTargetID = 0;
   }
   controller.nextThinkAtMs = 0;
   return {
@@ -5686,6 +5708,11 @@ module.exports = {
   noteDungeonArrivalResponse,
   resolveNpcDungeonArrivalDisposition,
   __testing: {
+    normalizeManualOrder,
+    shouldMaintainLock,
+    shouldAllowWeapons,
+    isValidManualMovementTarget,
+    resolveDesiredTarget,
     maybeRequestDrifterReinforcements,
     filterNpcReinforcementDefinitions,
     isFriendlyCombatTarget,

@@ -30,6 +30,7 @@ const CUSTODY_SCHEMA_VERSION = 1;
 const MODULE_CATEGORY_ID = 7;
 const CHARGE_CATEGORY_ID = 8;
 const SHIP_CATEGORY_ID = 6;
+const NPC_ENTITY_CATEGORY_ID = 11;
 const TERMINAL_OPERATION_STATUSES = new Set(["committed", "compensated", "failed"]);
 const SEMANTIC_ROLES = Object.freeze([
   "weapon",
@@ -317,6 +318,13 @@ function resolveNpcPlayerFittingHullTypeID(entityRecord) {
   }
   if (toPositiveInt(entityRecord && entityRecord.slimCategoryID, 0) === SHIP_CATEGORY_ID) {
     return toPositiveInt(entityRecord && entityRecord.slimTypeID, 0);
+  }
+  // Most SDE NPC ships are category 11 "Entity" hulls, not category 6 player
+  // ships. Their physical type remains the fitting host unless an authored
+  // player-hull mapping or NPC-specific slot profile overrides it.
+  if (entityRecord && entityRecord.nativeNpc === true &&
+      toPositiveInt(entityRecord.categoryID, 0) === NPC_ENTITY_CATEGORY_ID) {
+    return toPositiveInt(entityRecord.typeID, 0);
   }
   return 0;
 }

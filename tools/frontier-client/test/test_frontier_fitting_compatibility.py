@@ -1,10 +1,12 @@
 """Regression coverage for non-modular fitting in Frontier build 3502403."""
 
+import builtins
 import hashlib
 import importlib.util
 import json
 import marshal
 import os
+from datetime import timedelta
 from pathlib import Path
 import sys
 import tempfile
@@ -19,6 +21,7 @@ sys.path.insert(0, str(CLIENT_DIR))
 
 import fitting_compatibility_adapter as adapter  # noqa: E402
 import npc_fitting_menu_adapter as npc_menu_adapter  # noqa: E402
+import npc_primary_action_adapter as npc_primary_adapter  # noqa: E402
 import action_bar_compatibility_adapter as action_bar_adapter  # noqa: E402
 import action_bar_selection_adapter as selection_adapter  # noqa: E402
 import creation_service_compatibility_adapter as service_adapter  # noqa: E402
@@ -276,13 +279,56 @@ class NpcFittingPresenterTests(unittest.TestCase):
 
 
 class NpcFittingMenuTests(unittest.TestCase):
-    def test_context_action_exists_only_after_the_server_trust_check(self):
+    def test_interaction_orders_use_server_probe_and_typed_rpc(self):
+        calls = []
+        authorized = True
+
+        class Remote:
+            def CanInteractNpc(self, entity_id):
+                return {"canInteract": True, "canIssueOrders": authorized}
+
+            def IssueNpcOrder(self, entity_id, order):
+                calls.append((entity_id, order))
+                return {"accepted": True}
+
+        namespace = {"sm": NS(RemoteSvc=lambda name: Remote())}
+        npc_menu_adapter._evejs_issue_npc_order(
+            namespace, 980000000007, "keepAtRange", 900000000001, 5000
+        )
+        npc_menu_adapter._evejs_issue_npc_order(
+            namespace, 980000000007, "lock", 900000000001
+        )
+        npc_menu_adapter._evejs_issue_npc_order(
+            namespace, 980000000007, "resume"
+        )
+        self.assertEqual(calls, [
+            (980000000007, {"type": "keepAtRange",
+                            "targetID": 900000000001, "rangeMeters": 5000}),
+            (980000000007, {"type": "lock", "targetID": 900000000001}),
+            (980000000007, {"type": "resume"}),
+        ])
+        with self.assertRaises(ValueError):
+            npc_menu_adapter._evejs_issue_npc_order(
+                namespace, 980000000007, "orbit", 980000000007, 2500
+            )
+        authorized = False
+        with self.assertRaises(PermissionError):
+            npc_menu_adapter._evejs_issue_npc_order(
+                namespace, 980000000007, "approach", 900000000001
+            )
+        self.assertEqual(len(calls), 3)
+
+    def test_right_click_interact_and_fitting_actions_are_not_in_gm_menu(self):
         trusted = False
         opened = []
 
         class Remote:
-            def CanOpenNpcFitting(self, entity_id):
-                return {"trusted": trusted, "entityID": entity_id}
+            def CanInteractNpc(self, entity_id):
+                return {
+                    "canInteract": trusted,
+                    "canModifyFittings": trusted,
+                    "entityID": entity_id,
+                }
 
         class MenuSvc:
             def CelestialMenu(
@@ -298,19 +344,208 @@ class NpcFittingMenuTests(unittest.TestCase):
                 OpenNpcFitting=lambda entity_id: opened.append(entity_id)
             )),
         }
-        npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
-        service = MenuSvc()
-        self.assertEqual(len(service.CelestialMenu(980000000001)), 1)
-        trusted = True
-        menu = service.CelestialMenu(980000000001)
-        self.assertEqual(menu[-1][0], "Manage NPC Fitting")
-        menu[-1][1](*menu[-1][2])
-        self.assertEqual(opened, [980000000001])
+        class InteractionWindow:
+            @classmethod
+            def GetIfOpen(cls):
+                return None
 
-        # Multi-select never performs per-NPC trust probes or adds the action.
+            @classmethod
+            def Open(cls, **kwargs):
+                opened.append(kwargs)
+                return "interaction-window"
+
+        with mock.patch.object(
+            npc_menu_adapter,
+            "_evejs_npc_interaction_window_type",
+            return_value=InteractionWindow,
+        ):
+            npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
+            service = MenuSvc()
+            self.assertEqual(
+                [row[0] for row in service.CelestialMenu(980000000001)],
+                ["Show Info", "Interact"],
+            )
+            trusted = True
+            menu = service.CelestialMenu(980000000001)
+            self.assertEqual([row[0] for row in menu], [
+                "Show Info", "Interact", "Modify Fittings",
+            ])
+            self.assertEqual(menu[-2][1](*menu[-2][2]), "interaction-window")
+            menu[-1][1](*menu[-1][2])
+            self.assertEqual(len(opened), 2)
+            self.assertEqual(opened[0]["npc_entity_id"], 980000000001)
+            self.assertEqual(opened[1], 980000000001)
+
+            # Multi-select never performs per-NPC trust probes or adds the action.
+            self.assertEqual(
+                len(service.CelestialMenu([980000000001, 980000000002])),
+                1,
+            )
+
+    def test_interaction_menu_rechecks_trust_before_opening(self):
+        trusted = False
+        opened = []
+
+        class Remote:
+            def CanInteractNpc(self, entity_id):
+                return {"canInteract": trusted, "entityID": entity_id}
+
+        namespace = {
+            "sm": NS(RemoteSvc=lambda name: Remote()),
+            "uicore": NS(cmd=NS(
+                OpenNpcFitting=lambda entity_id: opened.append(entity_id)
+            )),
+        }
+        class InteractionWindow:
+            @classmethod
+            def GetIfOpen(cls):
+                return None
+
+            @classmethod
+            def Open(cls, **kwargs):
+                opened.append(kwargs)
+                return "interaction-window"
+
+        # A denied probe still opens a read-only diagnostics window; it never
+        # opens the fitting controls or sends an NPC order.
+        with mock.patch.object(
+            npc_menu_adapter,
+            "_evejs_npc_interaction_window_type",
+            return_value=InteractionWindow,
+        ):
+            self.assertEqual(npc_menu_adapter._evejs_open_npc_interaction(
+                namespace, 980000000001
+            ), "interaction-window")
+        self.assertEqual(opened[0]["initial_probe"]["canInteract"], False)
+
+    def test_failed_npc_probe_has_visible_diagnostic(self):
+        class Remote:
+            def CanInteractNpc(self, entity_id):
+                raise RuntimeError("CanInteractNpc is unavailable")
+
+        probe = npc_menu_adapter._evejs_npc_interaction_probe(
+            {"sm": NS(RemoteSvc=lambda name: Remote())}, 980000000001
+        )
+        self.assertFalse(probe["canInteract"])
+        self.assertIn(
+            "CanInteractNpc is unavailable",
+            npc_menu_adapter._evejs_npc_interaction_status(probe),
+        )
+
+    def test_dedicated_npc_window_opens_denied_then_retries_and_sends_order(self):
+        issued = []
+        authorized = False
+
+        class Control:
+            def __init__(self, **kwargs):
+                self.text = kwargs.get("text", "")
+                self.display = True
+                self.value = ""
+
+            def SetValue(self, value):
+                self.value = value
+
+            def GetValue(self):
+                return self.value
+
+        class BaseWindow:
+            opened = None
+
+            @classmethod
+            def GetIfOpen(cls):
+                return cls.opened
+
+            @classmethod
+            def Open(cls, **kwargs):
+                window = cls()
+                window.ApplyAttributes(NS(**kwargs))
+                cls.opened = window
+                return window
+
+            def ApplyAttributes(self, attributes):
+                pass
+
+            def GetMainArea(self):
+                return self
+
+            def SetCaption(self, caption):
+                self.caption = caption
+
+        class Remote:
+            def CanInteractNpc(self, entity_id):
+                return {
+                    "canInteract": authorized,
+                    "canIssueOrders": authorized,
+                    "reason": "NPC_INTERACTION_NOT_FRIENDLY",
+                }
+
+            def IssueNpcOrder(self, entity_id, order):
+                issued.append((entity_id, order))
+                return {"accepted": True}
+
+        ui = types.ModuleType("eveui")
+        ui.Align = NS(to_all="all", to_top="top", to_left="left")
+        for name in ("Container", "ContainerAutoSize", "EveLabelLarge",
+                     "EveLabelMedium", "Button"):
+            setattr(ui, name, Control)
+        module_names = (
+            "carbonui", "carbonui.control", "carbonui.control.singlelineedits",
+            "carbonui.control.singlelineedits.singleLineEditText",
+        )
+        modules = {name: types.ModuleType(name) for name in module_names}
+        modules[module_names[-1]].SingleLineEditText = Control
+        modules["eveui"] = ui
+        namespace = {
+            "Window": BaseWindow,
+            # The real menusvc module exports this factory under its own name
+            # and resolves sm from builtins, not module globals.
+            "_evejs_npc_interaction_window_type": (
+                npc_menu_adapter._evejs_npc_interaction_window_type
+            ),
+        }
+        with mock.patch.dict(sys.modules, modules), mock.patch.object(
+            builtins, "sm", NS(RemoteSvc=lambda name: Remote()), create=True
+        ):
+            window = npc_menu_adapter._evejs_open_npc_interaction(
+                namespace, 980000000007
+            )
+            self.assertIsInstance(window, BaseWindow)
+            self.assertIn("not friendly", window._status.text)
+            self.assertFalse(window._order_controls.display)
+            self.assertTrue(window._retry_button.display)
+            authorized = True
+            window._on_retry()
+            self.assertTrue(window._order_controls.display)
+            self.assertFalse(window._retry_button.display)
+            window._target_edit.SetValue("900000000001")
+            window._send_order("approach")
+            self.assertEqual(window._status.text, "Order accepted: approach")
+        self.assertEqual(issued, [
+            (980000000007, {"type": "approach", "targetID": 900000000001}),
+        ])
+
+    def test_friendly_without_fitting_trust_only_gets_interact(self):
+        class Remote:
+            def CanInteractNpc(self, entity_id):
+                return {
+                    "canInteract": True,
+                    "canModifyFittings": False,
+                    "entityID": entity_id,
+                }
+
+        class MenuSvc:
+            def CelestialMenu(self, itemID, *args, **kwargs):
+                return [["Show Info", lambda: None, ()]]
+
+        namespace = {
+            "MenuSvc": MenuSvc,
+            "sm": NS(RemoteSvc=lambda name: Remote()),
+            "uicore": NS(cmd=NS()),
+        }
+        npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
         self.assertEqual(
-            len(service.CelestialMenu([980000000001, 980000000002])),
-            1,
+            [row[0] for row in MenuSvc().CelestialMenu(980000000001)],
+            ["Show Info", "Interact"],
         )
 
     def test_assembly_access_action_requires_a_valid_assembly_probe(self):
@@ -319,6 +554,9 @@ class NpcFittingMenuTests(unittest.TestCase):
         class Remote:
             def CanOpenNpcFitting(self, entity_id):
                 return {"trusted": False, "entityID": entity_id}
+
+            def CanInteractNpc(self, entity_id):
+                return {"canInteract": False, "entityID": entity_id}
 
             def get_assembly_access(self, item_id, capabilities):
                 if item_id != 7001:
@@ -351,6 +589,49 @@ class NpcFittingMenuTests(unittest.TestCase):
             self.assertEqual(menu[-1][0], "Manage Assembly Access")
             menu[-1][1](*menu[-1][2])
         self.assertEqual(opened, [7001])
+
+
+class NpcPrimaryActionTests(unittest.TestCase):
+    def test_interact_key_uses_the_npc_action_within_five_km(self):
+        calls = []
+
+        class BallKey:
+            def __init__(self, ball_id):
+                self.ball_id = ball_id
+
+        class Resolver:
+            def __init__(self):
+                self.distance = 4999
+                self._menu_service = NS(EvejsInteractNpc=lambda item_id: (
+                    calls.append(item_id), "interaction-window"
+                )[1])
+
+            def resolve(self, bracket_key):
+                return NS(primary="native", secondary="secondary")
+
+            def _get_distance_to_ball(self, ball_id):
+                return self.distance
+
+        namespace = {
+            "ActionResolver": Resolver,
+            "ActionData": lambda **kwargs: NS(**kwargs),
+            "ResolvedActions": lambda **kwargs: NS(**kwargs),
+            "BallKey": BallKey,
+        }
+        npc_primary_adapter._evejs_install_npc_primary_action(namespace)
+        npc_primary_adapter._evejs_install_npc_primary_action(namespace)
+        resolver = Resolver()
+        action = resolver.resolve(BallKey(980000000007))
+        self.assertEqual(action.primary.label_path, "UI/SmartDeployable/Interact")
+        self.assertEqual(action.secondary, "secondary")
+        self.assertEqual(
+            action.primary.callback(NS(clicked=True)), "interaction-window"
+        )
+        self.assertEqual(calls, [980000000007])
+        resolver.distance = 5001
+        self.assertEqual(resolver.resolve(BallKey(980000000007)).primary, "native")
+        resolver.distance = 100
+        self.assertEqual(resolver.resolve(BallKey(8001)).primary, "native")
 
 
 class AssemblyAccessPresenterTests(unittest.TestCase):
@@ -615,6 +896,8 @@ class CreationServiceAdapterTests(unittest.TestCase):
 class ActionBarAdapterTests(unittest.TestCase):
     def setUp(self):
         self.events = []
+        self.active_effect = None
+        self.base_duration = None
         self.ship = NS(typeID=87698, modules=[])
         self.module = NS(
             itemID=500,
@@ -677,7 +960,16 @@ class ActionBarAdapterTests(unittest.TestCase):
                 return [test.charge] if location_id == 100 else []
 
             def GetDefaultEffect(self, type_id):
-                return NS(effectName="useMissiles") if type_id == 600 else None
+                if type_id == 600:
+                    return NS(effectName="useMissiles")
+                if type_id == 95319:
+                    return NS(effectName="modulebonusLeap")
+                if type_id == 95810:
+                    return NS(effectName="modulebonusThrustOverdrive")
+                return None
+
+            def GetEffect(self, item_id, effect_name):
+                return test.active_effect
 
             def Activate(self, item_id, effect_name, target_id, repeat):
                 test.events.append(
@@ -731,6 +1023,9 @@ class ActionBarAdapterTests(unittest.TestCase):
             def _get_loaded_charge(self, module_item_id):
                 test.events.append(("creation-charge", module_item_id))
                 return "creation-charge"
+
+            def _get_duration(self, module_item_id, type_id):
+                return test.base_duration
 
             def _module_charge_from_item(self, item):
                 return NS(
@@ -871,12 +1166,41 @@ class ActionBarAdapterTests(unittest.TestCase):
             ],
         )
 
+    def test_active_creation_effect_uses_authoritative_cycle_duration(self):
+        self.ship.typeID = 95276
+        self.module.typeID = 95319  # Leap has no durationAttributeID.
+        self.active_effect = NS(isActive=True, duration=7000)
+        provider = self.Provider()
+        self.assertEqual(provider._get_duration(500, 95319), timedelta(seconds=7))
+
+        self.module.typeID = 95810  # Thrust Overdrive is also attribute-less.
+        self.base_duration = timedelta(seconds=1)
+        self.active_effect = NS(isActive=True, duration=2500)
+        self.assertEqual(
+            provider._get_duration(500, 95810),
+            timedelta(milliseconds=2500),
+        )
+
+    def test_inactive_or_invalid_effect_keeps_original_duration(self):
+        provider = self.Provider()
+        self.base_duration = timedelta(seconds=3)
+        for effect in (
+            None,
+            NS(isActive=False, duration=7000),
+            NS(isActive=True, duration=-1),
+            NS(isActive=True, duration="invalid"),
+        ):
+            self.active_effect = effect
+            self.assertEqual(provider._get_duration(500, 600), self.base_duration)
+
     def test_action_bar_patch_is_idempotent(self):
         first = self.Provider.get_activatable_modules
+        first_duration = self.Provider._get_duration
         action_bar_adapter._evejs_install_action_bar_compatibility(
             self.namespace
         )
         self.assertIs(self.Provider.get_activatable_modules, first)
+        self.assertIs(self.Provider._get_duration, first_duration)
 
 
 class ActionBarSelectionAdapterTests(unittest.TestCase):
@@ -1164,6 +1488,30 @@ class FittingBytecodePatchTests(unittest.TestCase):
             "patched",
         )
 
+    def test_npc_primary_action_wrapper_is_exact_and_idempotent(self):
+        code = compile(
+            "class ActionResolver:\n"
+            "    def resolve(self, bracket_key): return None\n",
+            "primary_action_fixture.py",
+            "exec",
+        )
+        source = member_for(code)
+        expected = hashlib.sha256(source).hexdigest()
+        patched = patcher.patched_primary_action_member(source)
+        self.assertEqual(
+            patcher.inspect_member(
+                source, expected, patcher.patched_primary_action_member, set()
+            )[0],
+            "source",
+        )
+        self.assertEqual(
+            patcher.inspect_member(
+                patched, expected, patcher.patched_primary_action_member,
+                set(),
+            )[0],
+            "patched",
+        )
+
     def test_skillshot_wrappers_are_exact_and_idempotent(self):
         controller_code = compile(
             "class SkillShotController:\n"
@@ -1214,6 +1562,7 @@ class FittingBytecodePatchTests(unittest.TestCase):
                     for name in (
                         patcher.MODULE_NAME,
                         patcher.MENU_MODULE_NAME,
+                        patcher.PRIMARY_ACTION_MODULE_NAME,
                         patcher.CREATION_SERVICE_MODULE_NAME,
                         patcher.ACTION_PROVIDER_MODULE_NAME,
                         patcher.ACTION_BAR_INTEGRATION_MODULE_NAME,

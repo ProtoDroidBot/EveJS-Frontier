@@ -3,7 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const log = require(path.join(__dirname, "../../utils/logger"));
 const { ITEM_FLAGS, SHIP_CATEGORY_ID, findItemById, grantItemsToCharacterLocation, listContainerItems, moveItemToLocation, moveItemsToLocationsAndUpdateItem, removeInventoryItem, updateInventoryItem, updateShipItem, } = require(path.join(__dirname, "../inventory/itemStore"));
-const { syncInventoryItemForSession, } = require(path.join(__dirname, "../character/characterState"));
+const { buildInventoryDogmaPrimeEntry, syncModuleOnlineEffectForSession, syncInventoryItemForSession, } = require(path.join(__dirname, "../character/characterState"));
 const { getCreationModule, getCreationTemplate, } = require(path.join(__dirname, "./creationStaticData"));
 const { validateCreationLayout, } = require(path.join(__dirname, "./creationLayoutValidation"));
 const { applyModifierGroups, appendDirectModifierEntries, buildEffectiveItemAttributeMap, buildShipResourceState, getAttributeIDByNames, getPassiveModifierEffectRecords, getModuleChargeGroupIDs, getTypeDogmaEffects, } = require(path.join(__dirname, "../fitting/liveFittingState"));
@@ -964,7 +964,29 @@ function syncInventoryChangesForSession(session, changes) {
         if (!change || !change.item) {
             continue;
         }
-        syncInventoryItemForSession(session, change.item, change.previousData || change.previousState || {}, { emitCfgLocation: true });
+        const previousState = change.previousData || change.previousState || {};
+        const installedCreationModule = toInt(change.item.flagID, 0) === CREATION_FITTING_FLAG_ID &&
+            (toInt(previousState.locationID, 0) !== toInt(change.item.locationID, 0) ||
+                toInt(previousState.flagID, -1) !== CREATION_FITTING_FLAG_ID);
+        if (installedCreationModule &&
+            session &&
+            typeof session.sendNotification === "function") {
+            const now = session._space && typeof session._space.simFileTime === "bigint"
+                ? session._space.simFileTime
+                : currentFileTime();
+            session.sendNotification("OnGodmaPrimeItem", "clientID", [
+                toInt(change.item.locationID, 0),
+                buildInventoryDogmaPrimeEntry(change.item, {
+                    description: "creation module",
+                    includeTypeAttributes: true,
+                    now,
+                }),
+            ]);
+        }
+        syncInventoryItemForSession(session, change.item, previousState, { emitCfgLocation: true });
+        if (installedCreationModule && isCreationModuleOnline(change.item)) {
+            syncModuleOnlineEffectForSession(session, change.item, { active: true });
+        }
     }
 }
 function remapCreationStateItemIDs(state, itemIDMap) {
@@ -1039,6 +1061,19 @@ function commitCreationStateTransition(item, characterID, ensured, nextState, in
                     affectsFitting: true,
                     preserveMovedItemID: action.preserveMovedItemID !== false,
                     treatDestinationAsFitting: true,
+                    updateMovedItem(movedItem) {
+                        if (!getTypeDogmaEffects(toInt(movedItem && movedItem.typeID, 0))
+                            .has(CREATION_ONLINE_EFFECT_ID)) {
+                            return movedItem;
+                        }
+                        return {
+                            ...movedItem,
+                            moduleState: {
+                                ...(movedItem.moduleState || {}),
+                                online: true,
+                            },
+                        };
+                    },
                     ...(repairingLegacyFittedStack
                         ? {
                             remainderLocationID: action.locationID,
