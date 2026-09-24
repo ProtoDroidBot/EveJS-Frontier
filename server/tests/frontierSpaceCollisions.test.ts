@@ -18,6 +18,10 @@ const {
   resolveEntityMovementCollision,
 } = require("../src/space/destiny/simulation/collisions");
 const {
+  resetDefaultCollisionBundleForTesting,
+  setDefaultCollisionBundleForTesting,
+} = require("../src/space/destiny/collision/collisionBundle");
+const {
   createDestinyWarpUpdateBuilders,
 } = require("../src/space/destiny/simulation/warpBuilders");
 const {
@@ -155,6 +159,162 @@ test("stations without locator data undock ships beyond the collision sphere", (
   );
 });
 
+test("a 400 m/s Creation impact uses station geometry and damages the ship", () => {
+  const profile = {
+    boundingRadius: 100,
+    balls: [],
+    boxes: [{
+      corner: { x: -50, y: -50, z: -50 },
+      edgeX: { x: 100, y: 0, z: 0 },
+      edgeY: { x: 0, y: 100, z: 0 },
+      edgeZ: { x: 0, y: 0, z: 100 },
+    }],
+    capsules: [],
+  };
+  setDefaultCollisionBundleForTesting({
+    has: (id) => id === 27819,
+    getMetadata: (id) => id === 27819 ? { boundingRadius: 100 } : null,
+    getProfile: (id) => id === 27819 ? profile : null,
+  });
+  try {
+    const damageMessages: any[] = [];
+    const station = runtime._testing.buildStaticStationEntityForTesting({
+      stationID: 64000001,
+      stationTypeID: 85226,
+      stationName: "Frontier BioLab Station",
+      stationGraphicID: 27819,
+      radius: 33_811,
+      position: { x: 0, y: 0, z: 0 },
+    });
+    assert.equal(station.graphicID, 27819);
+    const ship: any = buildShip({
+      typeID: 95276,
+      mass: 1_892_916,
+      radius: 1,
+      position: { x: 0, y: 0, z: 0 },
+      velocity: { x: -400, y: 0, z: 0 },
+      maxVelocity: 900,
+      passiveDerivedState: { maxVelocity: 360 },
+      shieldCapacity: 0,
+      armorHP: 0,
+      structureHP: 2_100,
+      session: {
+        sendNotification(name, idType, args) {
+          if (name === "OnDamageMessage") damageMessages.push({ idType, payload: args[0] });
+        },
+      },
+    });
+    assert.equal(runtime._testing.resolveCollisionStableSpeedForTesting(ship), 360);
+    const scene: any = {
+      _activeTickSequence: 1,
+      staticEntities: [station],
+      staticEntitiesByID: new Map([[station.itemID, station]]),
+      dynamicEntities: new Map([[ship.itemID, ship]]),
+      sessions: new Map(),
+      systemID: 30000001,
+      getCurrentSimTimeMs: () => 1_000,
+      getCurrentDestinyStamp: () => 10,
+    };
+    const collision = resolveEntityMovementCollision(ship, scene,
+      { x: 150, y: 0, z: 0 });
+    assert.ok(collision);
+    assert.equal(collision.entityID, station.itemID);
+    assert.equal(collision.primitiveType, "box");
+    assert.equal(collision.startedOverlapping, false);
+    assert.ok(ship.position.x > 50 && ship.position.x < 60);
+    assert.equal(collision.impact.closingSpeedMetersPerSecond, 400);
+    const immediate = runtime._testing.processSceneCollisionContactsForTesting(
+      scene, [{ mover: ship, candidate: station, collision }], 1_000, [],
+      { damageOnly: true },
+    );
+    assert.equal(immediate.damaged, 1);
+    assert.equal(immediate.pushed, 0);
+    assert.ok(ship.conditionState.damage > 0);
+    assert.equal(damageMessages.length, 1);
+    assert.equal(damageMessages[0].idType, "clientID");
+    const message = Object.fromEntries(damageMessages[0].payload.entries);
+    assert.equal(message.attackType, "otherPlayerWeapons");
+    assert.equal(message.source, station.itemID);
+    assert.equal(message.target, ship.itemID);
+    assert.ok(message.damage > 0);
+    assert.ok(Math.abs(message.damage - ship.conditionState.damage * ship.structureHP) < 0.01);
+    const deferred = runtime._testing.processSceneCollisionContactsForTesting(
+      scene, [{ mover: ship, candidate: station, collision }], 1_000,
+    );
+    assert.equal(deferred.damaged, 0);
+    assert.equal(damageMessages.length, 1);
+  } finally {
+    resetDefaultCollisionBundleForTesting();
+  }
+});
+
+test("a modular ship preserves its passive collision speed when type speed is zero", () => {
+  const ship = runtime._testing.buildRuntimeShipEntityForTesting({
+    itemID: 1009,
+    typeID: 95276,
+    groupID: 5128,
+    categoryID: 6,
+    radius: 1,
+    passiveResourceState: {
+      maxVelocity: 360,
+      mass: 1_892_916,
+      structureHP: 2_100,
+      attributes: {},
+    },
+    spaceState: { position: { x: 0, y: 0, z: 0 } },
+  }, 30000001);
+  assert.equal(ship.collisionStableMaxVelocity, 360);
+  ship.maxVelocity = 900;
+  assert.equal(runtime._testing.resolveCollisionStableSpeedForTesting(ship), 360);
+});
+
+test("movement applies an eligible station impact before the scene contact flush", () => {
+  const notifications: any[] = [];
+  const ship: any = buildShip({
+    itemID: 1010,
+    mode: "STOP",
+    position: { x: 40, y: 0, z: 0 },
+    velocity: { x: -400, y: 0, z: 0 },
+    maxVelocity: 400,
+    collisionStableMaxVelocity: 200,
+    structureHP: 2_100,
+    session: {
+      sendNotification(name, _idType, args) {
+        if (name === "OnDamageMessage") notifications.push(args[0]);
+      },
+    },
+  });
+  const station: any = {
+    itemID: 2010,
+    typeID: 85226,
+    kind: "station",
+    collisionStatic: true,
+    position: { x: 0, y: 0, z: 0 },
+    radius: 20,
+  };
+  const scene: any = {
+    _activeTickSequence: 1,
+    _activeTickDeltaSeconds: 0.2,
+    _activeTickNowMs: 1_000,
+    _collisionContactEvents: [],
+    dynamicEntities: new Map([[ship.itemID, ship]]),
+    staticEntities: [station],
+    staticEntitiesByID: new Map([[station.itemID, station]]),
+    sessions: new Map(),
+    systemID: 30000001,
+    getCurrentSimTimeMs: () => 1_000,
+    getCurrentDestinyStamp: () => 10,
+    getEntityByID(id) {
+      return this.dynamicEntities.get(id) || this.staticEntitiesByID.get(id) || null;
+    },
+  };
+  const advanced = runtime._testing.advanceEntityForActiveSceneTickForTesting(scene, ship);
+  assert.equal(advanced.advanced, true);
+  assert.equal(scene._collisionContactEvents.length, 1);
+  assert.ok(ship.conditionState.damage > 0);
+  assert.equal(notifications.length, 1);
+});
+
 test("co-located Lagrange markers do not eject ships from station undock range", () => {
   const station = {
     stationID: 64000001,
@@ -288,6 +448,8 @@ test("tangent contact records zero inward closing speed", () => {
 
 test("scene collision applies kinetic layers and pushes the lighter ship", () => {
   const { processSceneCollisionContactsForTesting } = runtime._testing;
+  const heavyMessages: any[] = [];
+  const lightMessages: any[] = [];
   const heavy: any = buildShip({
     itemID: 1001,
     typeID: 1,
@@ -295,10 +457,15 @@ test("scene collision applies kinetic layers and pushes the lighter ship", () =>
     maxVelocity: 600,
     collisionStableMaxVelocity: 200,
     position: { x: 100, y: 0, z: 0 },
-    velocity: { x: 500, y: 0, z: 0 },
+    velocity: { x: 300, y: 0, z: 0 },
     shieldCapacity: 1_000,
     armorHP: 1_000,
     structureHP: 1_000,
+    session: {
+      sendNotification(name, _idType, args) {
+        if (name === "OnDamageMessage") heavyMessages.push(Object.fromEntries(args[0].entries));
+      },
+    },
   });
   const light: any = buildShip({
     itemID: 1002,
@@ -313,6 +480,11 @@ test("scene collision applies kinetic layers and pushes the lighter ship", () =>
     shieldCapacity: 50,
     armorHP: 100,
     structureHP: 200,
+    session: {
+      sendNotification(name, _idType, args) {
+        if (name === "OnDamageMessage") lightMessages.push(Object.fromEntries(args[0].entries));
+      },
+    },
   });
   const scene: any = {
     _activeTickSequence: 1,
@@ -331,20 +503,42 @@ test("scene collision applies kinetic layers and pushes the lighter ship", () =>
   );
   assert.ok(collision);
   const updates: any[] = [];
+  const immediate = processSceneCollisionContactsForTesting(
+    scene, [{ mover: heavy, candidate: light, collision }], 1_000, [],
+    { damageOnly: true },
+  );
+  assert.equal(immediate.damaged, 2);
+  assert.equal(immediate.pushed, 0);
+  assert.equal(light.velocity.x, 0, "push waits for all contacts in the tick");
   const result = processSceneCollisionContactsForTesting(
     scene, [{ mover: heavy, candidate: light, collision }], 1_000, updates,
   );
-  assert.equal(result.damaged, 2);
+  assert.equal(result.damaged, 0);
   assert.equal(result.pushed, 1);
   assert.equal(light.conditionState.shieldCharge, 0);
   assert.equal(light.conditionState.armorDamage, 1);
   assert.ok(light.conditionState.damage > 0);
+  assert.equal(heavyMessages.length, 2);
+  assert.equal(lightMessages.length, 2);
+  assert.ok(heavyMessages.some(message =>
+    message.attackType === "otherPlayerWeapons" &&
+    message.source === light.itemID &&
+    message.target === heavy.itemID && message.damage > 0));
+  assert.ok(lightMessages.some(message =>
+    message.attackType === "otherPlayerWeapons" &&
+    message.source === heavy.itemID &&
+    message.target === light.itemID && message.damage > 0));
   assert.equal(light.velocity.x, 250);
   assert.equal(updates.length, 1);
   assert.equal(updates[0].payload[0], "SetBallVelocity");
   assert.equal(updates[0].payload[1][0], light.itemID);
   runtime._testing.advanceMovementForTesting(light, scene, 0.1, 1_100);
   assert.ok(light.position.x > 0, "the pushed ship moves on the next simulation step");
+  processSceneCollisionContactsForTesting(
+    scene, [{ mover: heavy, candidate: light, collision }], 1_001,
+  );
+  assert.equal(heavyMessages.length, 2, "sustained contact has no repeated popup");
+  assert.equal(lightMessages.length, 2, "sustained contact has no repeated popup");
 });
 
 test("contained ships depenetrate to a station boundary instead of phasing out", () => {

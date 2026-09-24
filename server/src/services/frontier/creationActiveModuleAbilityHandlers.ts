@@ -104,14 +104,18 @@ function buildActivationOptions(
   return options;
 }
 
-function stopEffect(runtime, context, reason) {
+function stopEffect(runtime, context, reason, options: Record<string, any> = {}) {
   if (!runtime || typeof runtime.deactivateGenericModule !== "function") {
     return { success: false, errorMsg: "DOGMA_EFFECT_RUNTIME_UNAVAILABLE" };
   }
   return runtime.deactivateGenericModule(
     context.session,
     context.moduleItemID,
-    { reason, deferUntilCycle: reason === "manual" },
+    {
+      reason,
+      deferUntilCycle: options.deferUntilCycle === false ? false : reason === "manual",
+      ...(options.cooldownUntilCycle === true ? { cooldownUntilCycle: true } : {}),
+    },
   );
 }
 
@@ -238,6 +242,22 @@ function activatePropulsion(context, kind, effectName) {
   const runtime = getActiveRuntime(context);
   const space = resolveInSpaceContext(context);
   if (!space.success) return space;
+  const existingEffect = space.data.entity.activeModuleEffects instanceof Map
+    ? space.data.entity.activeModuleEffects.get(context.moduleItemID)
+    : null;
+  if (
+    kind === activeRuntime.ACTIVE_KIND_LEAP &&
+    existingEffect &&
+    existingEffect.creationActiveKind === activeRuntime.ACTIVE_KIND_LEAP &&
+    !(Number(existingEffect.deactivateAtMs) > 0)
+  ) {
+    // Key repeat can deliver another activate while Space is held. The same
+    // Leap remains active without paying fuel or capacitor a second time.
+    return {
+      success: true,
+      data: { durationMs: existingEffect.durationMs, alreadyActive: true },
+    };
+  }
   const effectStatePatch = runtime.buildCreationActiveEffectPatch(
     kind,
     moduleResult.data.moduleItem,
@@ -359,7 +379,7 @@ function activateTargetModule(context, kind, effectName) {
 
 function deactivateModule(context, options: Record<string, any> = {}) {
   const runtime = getSpaceRuntime(context);
-  const result = stopEffect(runtime, context, options.reason || "manual");
+  const result = stopEffect(runtime, context, options.reason || "manual", options);
   if (!result || result.success !== true) return result;
 
   // The runtime result also contains the live entity and effect state, which
@@ -390,7 +410,10 @@ const HANDLERS = Object.freeze({
       ),
     },
     deactivate: {
-      execute: (context) => deactivateModule(context),
+      execute: (context) => deactivateModule(context, {
+        deferUntilCycle: false,
+        cooldownUntilCycle: true,
+      }),
     },
   }),
   [activeRuntime.TYPE_TRANSFUSER]: Object.freeze({

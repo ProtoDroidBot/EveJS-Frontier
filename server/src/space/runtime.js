@@ -6797,6 +6797,8 @@ function logMovementDebug(event, entity, extra = {}) {
 }
 function buildStaticStationEntity(station) {
     const dunRotation = getStationAuthoredDunRotation(station);
+    const graphicID = toInt(station && (station.graphicID || station.stationGraphicID) ||
+        getStationRenderMetadata(station, "graphicID"), 0);
     const dockingGeometry = station
         ? stationLocatorGeometry.buildStationDockingGeometry(station, {
             selectionStrategy: "first",
@@ -6806,6 +6808,7 @@ function buildStaticStationEntity(station) {
         kind: "station",
         itemID: station.stationID,
         typeID: station.stationTypeID,
+        graphicID: graphicID > 0 ? graphicID : undefined,
         groupID: station.groupID,
         categoryID: station.categoryID,
         itemName: station.stationName,
@@ -7665,6 +7668,8 @@ function applyPassiveResourceStateToEntity(entity, resourceState, options = {}) 
     entity.passiveDerivedState = resourceState;
     entity.baseMass = baseMass;
     entity.dogmaMaxVelocity = dogmaMaxVelocity;
+    entity.collisionStableMaxVelocity =
+        getUnmodifiedShipTypeMaxVelocity(entity.typeID, movement) || dogmaMaxVelocity;
     entity.massVelocityMultiplier = resolveMassMobilityMultiplier(nextMass, baseMass);
     applyPassiveMotionBaseCommand(entity, () => (nextMass > 0 ? nextMass : entity.mass), () => (nextInertia > 0 ? nextInertia : entity.inertia), () => (massAdjustedMaxVelocity > 0
         ? massAdjustedMaxVelocity
@@ -12589,6 +12594,35 @@ function notifyWeaponDamageMessages(attackerEntity, targetEntity, moduleItem, sh
     }
     return notified;
 }
+function notifyCollisionDamageMessages(scene, sourceEntity, targetEntity, rawKineticDamage, damageResult, victimSession = null) {
+    const appliedDamage = getAppliedDamageAmount(damageResult);
+    if (!targetEntity || appliedDamage <= 0)
+        return false;
+    const sourceSession = getOwningSessionForEntity(scene, sourceEntity);
+    const targetSession = victimSession || getOwningSessionForEntity(scene, targetEntity);
+    const payload = {
+        attackerEntity: sourceEntity,
+        targetEntity,
+        shotDamage: { kinetic: rawKineticDamage },
+        totalDamage: appliedDamage,
+        hitQuality: 3,
+    };
+    if (sourceSession) {
+        sourceSession.sendNotification("OnDamageMessage", "clientID", [
+            buildLaserDamageMessagePayload({ ...payload, attackType: "me" }),
+        ]);
+    }
+    if (targetSession && targetSession !== sourceSession) {
+        targetSession.sendNotification("OnDamageMessage", "clientID", [
+            buildLaserDamageMessagePayload({
+                ...payload,
+                attackType: "otherPlayerWeapons",
+                includeAttackerID: true,
+            }),
+        ]);
+    }
+    return Boolean(sourceSession || targetSession);
+}
 function buildCombatDestructionOwnerContext(attackerEntity = null) {
     const ownerCharacterID = getShipEntityInventoryCharacterID(attackerEntity, 0);
     return {
@@ -14473,6 +14507,9 @@ function buildShipEntityCore(source, systemID, options = {}) {
         : toFiniteNumber(movement && movement.maxVelocity, 0) > 0
             ? toFiniteNumber(movement.maxVelocity, 0)
             : 200;
+    const collisionStableMaxVelocity = toFiniteNumber(source.collisionStableMaxVelocity, 0) > 0
+        ? toFiniteNumber(source.collisionStableMaxVelocity, 0)
+        : getUnmodifiedShipTypeMaxVelocity(source.typeID, movement) || dogmaMaxVelocity;
     const warpSpeedAU = toFiniteNumber(movement && movement.warpSpeedMultiplier, 0) > 0
         ? toFiniteNumber(movement.warpSpeedMultiplier, 0)
         : 3;
@@ -14551,6 +14588,7 @@ function buildShipEntityCore(source, systemID, options = {}) {
         speedFraction,
         baseMass,
         dogmaMaxVelocity,
+        collisionStableMaxVelocity,
         massVelocityMultiplier,
         mass: resolvedMass,
         inertia: resolvedInertia,
@@ -15844,12 +15882,13 @@ function advanceEntityForActiveSceneTick(scene, entity) {
             activeTickSequence,
         })
         : null;
+    let collisionContactEvent = null;
     if (movementCollision && Array.isArray(scene._collisionContactEvents)) {
         const candidate = typeof scene.getEntityByID === "function"
             ? scene.getEntityByID(movementCollision.entityID)
             : null;
         if (candidate) {
-            scene._collisionContactEvents.push({ mover: entity, candidate, collision: movementCollision });
+            collisionContactEvent = { mover: entity, candidate, collision: movementCollision };
         }
     }
     const collision = sweptWeaponOcclusion
@@ -15872,10 +15911,27 @@ function advanceEntityForActiveSceneTick(scene, entity) {
         : movementResult;
     entity._lastMovementAdvancedTickSequence = activeTickSequence;
     entity._lastMovementAdvancedAtMs = interval.endSimTimeMs;
+    if (collisionContactEvent) {
+        scene._collisionContactEvents.push(collisionContactEvent);
+        try {
+            processSceneCollisionContacts(scene, [collisionContactEvent], interval.endSimTimeMs, [], { damageOnly: true });
+        }
+        catch (error) {
+            log.warn(`[SpaceRuntime] Immediate collision impact failed entity=${entity.itemID}: ${error.message}`);
+        }
+    }
     return {
         advanced: true,
         result,
     };
+}
+function getUnmodifiedShipTypeMaxVelocity(typeID, movement = null) {
+    const typeSpeed = toFiniteNumber(getTypeAttributeValue(typeID, "maxVelocity"), 0);
+    if (typeSpeed > 0)
+        return typeSpeed;
+    const typeMovement = movement || worldData.getMovementAttributesForType(typeID);
+    const movementSpeed = toFiniteNumber(typeMovement && typeMovement.maxVelocity, 0);
+    return movementSpeed > 0 ? movementSpeed : null;
 }
 function resolveCollisionStableSpeed(entity) {
     if (!entity)
@@ -15887,12 +15943,17 @@ function resolveCollisionStableSpeed(entity) {
     if (explicit > 0)
         return explicit;
     const typeID = toInt(entity.typeID, 0);
-    const typeSpeed = toFiniteNumber(getTypeAttributeValue(typeID, "maxVelocity"), 0);
-    if (typeSpeed > 0)
+    const typeSpeed = getUnmodifiedShipTypeMaxVelocity(typeID);
+    if (typeSpeed)
         return typeSpeed;
-    const movement = worldData.getMovementAttributesForType(typeID);
-    const movementSpeed = toFiniteNumber(movement && movement.maxVelocity, 0);
-    return movementSpeed > 0 ? movementSpeed : null;
+    // Modular Creation hulls can have a zero type speed. Their fitted passive
+    // assembly supplies the stable speed; active thrust changes maxVelocity
+    // without changing this saved baseline.
+    const passiveSpeed = toFiniteNumber(entity.passiveDerivedState?.maxVelocity, 0);
+    if (passiveSpeed > 0)
+        return passiveSpeed;
+    const spawnSpeed = toFiniteNumber(entity.dogmaMaxVelocity, 0);
+    return spawnSpeed > 0 ? spawnSpeed : null;
 }
 function isCollisionPushRecipient(scene, entity, nowMs) {
     if (!entity || !isEntityCollisionMover(entity) ||
@@ -15906,7 +15967,7 @@ function isCollisionPushRecipient(scene, entity, nowMs) {
     }
     return true;
 }
-function processSceneCollisionContacts(scene, events, nowMs, sharedUpdates = []) {
+function processSceneCollisionContacts(scene, events, nowMs, sharedUpdates = [], options = {}) {
     return processCollisionContacts(scene, events, {
         tickSequence: scene._activeTickSequence,
         nowMs,
@@ -15923,6 +15984,7 @@ function processSceneCollisionContacts(scene, events, nowMs, sharedUpdates = [])
                 target === event.mover ? null : source;
             try {
                 const result = applyWeaponDamageToTarget(scene, attacker, target, { kinetic: amount }, nowMs, { collisionImpact: true, skipWeaponOcclusion: true });
+                notifyCollisionDamageMessages(scene, source, target, amount, result.damageResult, result.victimSession);
                 return result.damageResult && result.damageResult.success === true;
             }
             catch (error) {
@@ -15930,7 +15992,7 @@ function processSceneCollisionContacts(scene, events, nowMs, sharedUpdates = [])
                 return false;
             }
         },
-        applyPush(target, deltaVelocity) {
+        applyPush: options.damageOnly === true ? undefined : (target, deltaVelocity) => {
             if (!isCollisionPushRecipient(scene, target, nowMs))
                 return false;
             const previousVelocity = cloneVector(target.velocity);
@@ -23043,6 +23105,14 @@ class SolarSystemScene {
                 success: true,
                 data: { entity, effectState, pending: true, deactivateAtMs: cycleBoundaryMs },
             };
+        }
+        if (reason === "manual" &&
+            options.deferUntilCycle === false &&
+            options.cooldownUntilCycle === true &&
+            cycleBoundaryMs > now) {
+            // Release Leap thrust now, but keep the unused part of this activation
+            // cycle as the module's reactivation lock.
+            effectState.reactivationDelayMs = Math.max(toFiniteNumber(effectState.reactivationDelayMs, 0), cycleBoundaryMs - now);
         }
         return this.finalizeGenericModuleDeactivation(session, normalizedModuleID, {
             reason,
@@ -30506,11 +30576,13 @@ class SolarSystemScene {
                             const settledMover = this.getEntityByID(entity.itemID);
                             const candidate = this.getEntityByID(entity.lastCollision.entityID);
                             if (settledMover && candidate) {
-                                this._collisionContactEvents.push({
+                                const collisionContactEvent = {
                                     mover: settledMover,
                                     candidate,
                                     collision: entity.lastCollision,
-                                });
+                                };
+                                this._collisionContactEvents.push(collisionContactEvent);
+                                processSceneCollisionContacts(this, [collisionContactEvent], now, [], { damageOnly: true });
                             }
                         }
                     }
@@ -31460,6 +31532,9 @@ class SolarSystemScene {
                     continue;
                 }
                 const { result } = advanceEntityForActiveSceneTick(this, entity);
+                if (this.dynamicEntities.get(entity.itemID) !== entity) {
+                    continue;
+                }
                 if (entity.pendingWarp) {
                     const pendingWarp = entity.pendingWarp;
                     const pendingWarpState = evaluatePendingWarp(entity, pendingWarp, now);
@@ -35251,6 +35326,8 @@ runtimeExports._testing = {
     },
     buildShipEntityForTesting: buildShipEntity,
     buildRuntimeShipEntityForTesting: buildRuntimeShipEntity,
+    buildStaticStationEntityForTesting: buildStaticStationEntity,
+    resolveCollisionStableSpeedForTesting: resolveCollisionStableSpeed,
     getEntityRuntimeCreationDogmaContextForTesting: getEntityRuntimeCreationDogmaContext,
     getEntityRuntimeModuleOwnerItemsForTesting: getEntityRuntimeModuleOwnerItems,
     recordNpcBountyForCombatDestructionForTesting: recordNpcBountyForCombatDestruction,

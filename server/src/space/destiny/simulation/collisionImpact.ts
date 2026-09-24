@@ -3,6 +3,7 @@
 const REFERENCE_MASS_KG = 1_000_000;
 const MAX_COLLISION_MASS_KG = 1e15;
 const REFERENCE_SPEED_METERS_PER_SECOND = 100;
+const DAMAGE_SPEED_FRACTION = 0.5;
 const DAMAGE_AT_REFERENCE = positiveNumber(
   process.env.EVEJS_COLLISION_DAMAGE_AT_REFERENCE,
 ) || 100;
@@ -77,8 +78,24 @@ function calculateCollisionDamage(collision, movingSafeSpeed, candidateSafeSpeed
   ) {
     return null;
   }
+  const normal = vector(collision.normal);
+  const normalLength = magnitude(normal);
+  if (normalLength <= 0) return null;
+  const unitNormal = scale(normal, 1 / normalLength);
   const closingSpeed = Math.max(0, Number(impact.closingSpeedMetersPerSecond) || 0);
-  const excessSpeed = Math.max(0, closingSpeed - movingSafe - candidateSafe);
+  const movingApproachSpeed = Math.max(0,
+    -dot(vector(impact.movingVelocity), unitNormal));
+  const candidateApproachSpeed = candidateImmovable ? 0 : Math.max(0,
+    dot(vector(impact.candidateVelocity), unitNormal));
+  // A stationary body contributes no allowance. Each approaching body uses up
+  // to half its own stable speed, while retreating motion reduces the actual
+  // closing speed before damage is calculated.
+  const movingAllowance = Math.min(
+    movingApproachSpeed, movingSafe * DAMAGE_SPEED_FRACTION);
+  const candidateAllowance = Math.min(
+    candidateApproachSpeed, candidateSafe * DAMAGE_SPEED_FRACTION);
+  const excessSpeed = Math.max(0,
+    closingSpeed - movingAllowance - candidateAllowance);
   if (excessSpeed <= 0) return null;
 
   const reducedMass = candidateImmovable

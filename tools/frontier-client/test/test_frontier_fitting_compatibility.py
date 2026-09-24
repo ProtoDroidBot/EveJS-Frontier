@@ -398,7 +398,11 @@ class CreationLeapCommandTests(unittest.TestCase):
     def test_shortcut_activates_only_creation_leap_and_releases_it(self):
         command = self.Command()
         self.assertTrue(command._leap_engage())
+        self.assertTrue(command._leap_engage())
+        self.assertEqual(self.calls.count(("activate", 100, 501)), 1)
         self.assertTrue(command._leap_disengage())
+        self.assertTrue(command._leap_engage())
+        self.assertEqual(self.calls.count(("activate", 100, 501)), 2)
         self.assertIn(("activate", 100, 501), self.calls)
         self.assertIn(("deactivate", 100, 501), self.calls)
         self.assertNotIn(("activate", 100, 502), self.calls)

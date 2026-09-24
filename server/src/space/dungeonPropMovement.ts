@@ -36,6 +36,7 @@ const TETHER_GOTO_INTERVAL_MS = 250;
 const TETHER_GOTO_DISTANCE_METERS = 5;
 const TETHER_REFRESH_INTERVAL_MS = 500;
 const SCAN_FX_GUID = "effects.FrontierScanningTest";
+const PHYSICS_GUN_TYPE_ID = 99999;
 
 function finiteVector(value) {
   if (!value || typeof value !== "object") return null;
@@ -170,14 +171,35 @@ function selectDetachedProp(scene, session, worldEntityID, destinationPosition, 
   };
 }
 
-function broadcastMoveFx(scene, entity, sourceID, sourceTypeID, active, nowMs) {
+function broadcastMoveFx(scene, entity, sourceID, sourceTypeID, active, nowMs,
+  sourceEntity = null) {
   if (typeof scene.broadcastDestinyUpdatesToBubble !== "function" ||
       typeof scene.getNextDestinyStamp !== "function" || !entity.bubbleID) return;
+  const state = entity.detachedPropMove || {};
+  const sourcePosition = finiteVector(sourceEntity?.position);
+  const contactOffset = finiteVector(state.tether?.contactOffset) || { x: 0, y: 0, z: 0 };
+  const contactPoint = finiteVector(entity.position) && {
+    x: entity.position.x + contactOffset.x,
+    y: entity.position.y + contactOffset.y,
+    z: entity.position.z + contactOffset.z,
+  };
+  const graphicInfo = active ? {
+    targetBallID: entity.itemID,
+    resolvedTargetBallID: entity.itemID,
+    endpointMode: "hit",
+    ...(sourcePosition && contactPoint ? {
+      targetOffset: [
+        contactPoint.x - sourcePosition.x,
+        contactPoint.y - sourcePosition.y,
+        contactPoint.z - sourcePosition.z,
+      ],
+    } : {}),
+  } : undefined;
   scene.broadcastDestinyUpdatesToBubble(entity.bubbleID, [{
     stamp: scene.getNextDestinyStamp(nowMs),
     payload: buildOnSpecialFXPayload(sourceID, SCAN_FX_GUID, {
-      moduleID: sourceID,
-      moduleTypeID: sourceTypeID,
+      moduleID: state.fxModuleID || sourceID,
+      moduleTypeID: state.fxModuleTypeID || sourceTypeID,
       targetID: entity.itemID,
       isOffensive: false,
       start: active,
@@ -186,6 +208,7 @@ function broadcastMoveFx(scene, entity, sourceID, sourceTypeID, active, nowMs) {
       repeat: 0,
       startTime: nowMs,
       timeFromStart: 0,
+      graphicInfo,
     }),
   }]);
 }
@@ -215,15 +238,22 @@ function movingEntityFromStatic(entity, destination, rotation, fxShip) {
   return moving;
 }
 
-function tetherDestination(ship, direction, holdDistance) {
+function tetherDestination(ship, direction, holdDistance,
+  contactOffset = { x: 0, y: 0, z: 0 }, centerClearance = 0) {
   const position = finiteVector(ship?.position);
   const vector = finiteVector(direction);
+  const offset = finiteVector(contactOffset);
   const length = vector && Math.hypot(vector.x, vector.y, vector.z);
-  if (!position || !length || length < 1e-9) return null;
+  if (!position || !offset || !length || length < 1e-9) return null;
+  const unit = { x: vector.x / length, y: vector.y / length, z: vector.z / length };
+  // Hold the struck point on the aim ray. The center must still clear the
+  // carrier ship even when the contact is on the far side of a large prop.
+  const projectedOffset = offset.x * unit.x + offset.y * unit.y + offset.z * unit.z;
+  const contactDistance = Math.max(holdDistance, centerClearance + projectedOffset);
   return {
-    x: position.x + vector.x / length * holdDistance,
-    y: position.y + vector.y / length * holdDistance,
-    z: position.z + vector.z / length * holdDistance,
+    x: position.x + unit.x * contactDistance - offset.x,
+    y: position.y + unit.y * contactDistance - offset.y,
+    z: position.z + unit.z * contactDistance - offset.z,
   };
 }
 
@@ -241,13 +271,17 @@ function startDetachedPropTether(scene, session, worldEntityID, moduleID, direct
   if (ship.bubbleID > 0 && entity.bubbleID > 0 && ship.bubbleID !== entity.bubbleID) {
     return { success: false, errorMsg: "PROP_NOT_VISIBLE" };
   }
-  const separation = distance(ship.position, entity.position);
-  const holdDistance = Math.max(
-    getEntityCollisionBroadphaseRadius(ship) +
-      getEntityCollisionBroadphaseRadius(entity) + 100,
-    Math.min(separation, 750),
-  );
-  const destination = tetherDestination(ship, direction, holdDistance);
+  const contactPoint = finiteVector(options.contactPoint) || entity.position;
+  const contactOffset = {
+    x: contactPoint.x - entity.position.x,
+    y: contactPoint.y - entity.position.y,
+    z: contactPoint.z - entity.position.z,
+  };
+  const holdDistance = Math.min(distance(ship.position, contactPoint), 750);
+  const centerClearance = getEntityCollisionBroadphaseRadius(ship) +
+    getEntityCollisionBroadphaseRadius(entity) + 100;
+  const destination = tetherDestination(ship, direction, holdDistance,
+    contactOffset, centerClearance);
   if (!destination) return { success: false, errorMsg: "INVALID_AIM" };
   let committed;
   try {
@@ -260,7 +294,12 @@ function startDetachedPropTether(scene, session, worldEntityID, moduleID, direct
     scene.getCurrentSimTimeMs?.() || Date.now();
   const moving = movingEntityFromStatic(entity, destination,
     finiteRotation(entity.dunRotation) || [0, 0, 0], ship);
-  moving.detachedPropMove.tether = { shipID: ship.itemID, moduleID, session, direction: { ...direction }, holdDistance };
+  moving.detachedPropMove.tether = {
+    shipID: ship.itemID, moduleID, session, direction: { ...direction },
+    holdDistance, contactOffset, centerClearance,
+  };
+  moving.detachedPropMove.fxModuleID = moduleID;
+  moving.detachedPropMove.fxModuleTypeID = PHYSICS_GUN_TYPE_ID;
   moving.detachedPropMove.lastGotoPoint = { ...destination };
   moving.detachedPropMove.lastGotoAtMs = 0;
   let removed;
@@ -290,12 +329,15 @@ function startDetachedPropTether(scene, session, worldEntityID, moduleID, direct
       { stamp, payload: buildSetSpeedFractionPayload(moving.itemID, 1) },
       { stamp, payload: buildGotoPointPayload(moving.itemID, destination) },
     ]);
-    broadcastMoveFx(scene, moving, ship.itemID, ship.typeID, true, nowMs);
+    broadcastMoveFx(scene, moving, ship.itemID, ship.typeID, true, nowMs, ship);
   } catch (_error) {
     settleDetachedPropMove(scene, moving, { store, nowMs, reason: "presentation-failed" });
     return { success: false, errorMsg: "DETACHED_PROP_PRESENTATION_FAILED" };
   }
-  return { success: true, data: { worldEntityID: moving.itemID, destination } };
+  return {
+    success: true,
+    data: { worldEntityID: moving.itemID, destination, contactOffset },
+  };
 }
 
 function updateDetachedPropTether(scene, worldEntityID, session, moduleID, direction) {
@@ -338,6 +380,7 @@ function startDetachedPropMove(scene, session, worldEntityID, destinationPositio
   const nowMs = Number.isFinite(options.nowMs) ? options.nowMs :
     scene.getCurrentSimTimeMs?.() || Date.now();
   const moving = movingEntityFromStatic(entity, destination, rotation, ship);
+  moving.collisionQuaternion = committed.data.worldEntity.collisionQuaternion;
   let removed;
   try {
     removed = scene.removeStaticEntity(entity.itemID, { broadcast: true, nowMs });
@@ -367,7 +410,7 @@ function startDetachedPropMove(scene, session, worldEntityID, destinationPositio
       { stamp, payload: buildSetSpeedFractionPayload(moving.itemID, 1) },
       { stamp, payload: buildGotoPointPayload(moving.itemID, destination) },
     ]);
-    broadcastMoveFx(scene, moving, ship.itemID, ship.typeID, true, nowMs);
+    broadcastMoveFx(scene, moving, ship.itemID, ship.typeID, true, nowMs, ship);
   } catch (_error) {
     settleDetachedPropMove(scene, moving, { store, nowMs, reason: "presentation-failed" });
     return { success: false, errorMsg: "DETACHED_PROP_PRESENTATION_FAILED" };
@@ -457,7 +500,8 @@ function tickDetachedPropMove(scene, entity, deltaSeconds, nowMs, options: Recor
         (ship.bubbleID > 0 && entity.bubbleID > 0 && ship.bubbleID !== entity.bubbleID)) {
       return settleDetachedPropMove(scene, entity, { ...options, nowMs, reason: "tether-lost" });
     }
-    const nextDestination = tetherDestination(ship, tether.direction, tether.holdDistance);
+    const nextDestination = tetherDestination(ship, tether.direction, tether.holdDistance,
+      tether.contactOffset, tether.centerClearance);
     if (!nextDestination) {
       return settleDetachedPropMove(scene, entity, { ...options, nowMs, reason: "invalid-aim" });
     }

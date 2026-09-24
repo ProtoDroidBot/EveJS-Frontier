@@ -2,6 +2,7 @@
 
 const { createTableRepository } = require("../gameStore/tableRepository");
 const { BALL_FLAG, BALL_MODE } = require("./destiny/constants");
+const { resolveEntityCollisionPresentation } = require("./destiny/collision/collisionBundle");
 
 const TABLE = "detachedDungeonProps";
 const VERSION = 1;
@@ -14,6 +15,7 @@ const PRESENTATION_FIELDS = Object.freeze([
   "slimCategoryID", "slimGraphicID", "suppressSlimGraphicID",
   "suppressSlimName", "nameID", "radius", "collisionScale",
   "collisionID", "convexCollisionID", "surfaceType",
+  "collisionQuaternion", "collisionRotation",
   "miniBalls", "miniballs", "miniBoxes", "miniboxes",
   "miniCapsules", "minicapsules",
   "dunRotation", "mass", "agility", "inertia", "maxVelocity", "speed",
@@ -47,6 +49,24 @@ function finiteVector(value) {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function collisionQuaternionFromDunRotation(rotation) {
+  if (!Array.isArray(rotation) || rotation.length !== 3 ||
+      !rotation.every(Number.isFinite)) return null;
+  const [yaw, pitch, roll] = rotation.map((angle) => angle * Math.PI / 180);
+  const cy = Math.cos(yaw / 2);
+  const sy = Math.sin(yaw / 2);
+  const cp = Math.cos(pitch / 2);
+  const sp = Math.sin(pitch / 2);
+  const cr = Math.cos(roll / 2);
+  const sr = Math.sin(roll / 2);
+  return {
+    w: cy * cp * cr + sy * sp * sr,
+    x: cy * sp * cr + sy * cp * sr,
+    y: sy * cp * cr - cy * sp * sr,
+    z: cy * cp * sr - sy * sp * cr,
+  };
 }
 
 function sourceKey(systemID, instanceID, siteID, entityID) {
@@ -106,6 +126,29 @@ function buildWorldEntity(source, worldEntityID) {
   if (!Array.isArray(entity.dunRotation) || entity.dunRotation.length !== 3 ||
       !entity.dunRotation.every((part) => Number.isFinite(part))) {
     entity.dunRotation = [0, 0, 0];
+  }
+  // Dungeon scenery can suppress its slim graphic while the authored scene
+  // supplies the model. A detached prop has no such scene, so advertise its
+  // own graphic and snapshot the resolved collider into the durable record.
+  const graphicID = positiveID(entity.graphicID);
+  if (graphicID && entity.suppressSlimGraphicID === true) {
+    entity.slimGraphicID = graphicID;
+    entity.suppressSlimGraphicID = false;
+  }
+  const collisionLookupEntity = entity.collisionID == null || entity.collisionID === 0
+    ? { ...entity, collisionID: undefined }
+    : entity;
+  const collision = resolveEntityCollisionPresentation(collisionLookupEntity, undefined,
+    { metadataOnly: true });
+  if (collision.collisionID > 0 && !positiveID(entity.collisionID)) {
+    entity.collisionID = collision.collisionID;
+  }
+  if (collision.profile?.hasConvexMeshes === true &&
+      !positiveID(entity.convexCollisionID)) {
+    entity.convexCollisionID = collision.collisionID;
+  }
+  if (!entity.collisionQuaternion && !entity.collisionRotation) {
+    entity.collisionQuaternion = collisionQuaternionFromDunRotation(entity.dunRotation);
   }
   return entity;
 }
@@ -261,7 +304,10 @@ function createDetachedDungeonPropStore(options: Record<string, any> = {}) {
       worldEntity: {
         ...record.worldEntity,
         position: nextPosition,
-        ...(rotation === undefined ? {} : { dunRotation: [...rotation] }),
+        ...(rotation === undefined ? {} : {
+          dunRotation: [...rotation],
+          collisionQuaternion: collisionQuaternionFromDunRotation(rotation),
+        }),
       },
     };
     const next = {

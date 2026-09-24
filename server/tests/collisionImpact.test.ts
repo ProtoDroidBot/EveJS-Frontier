@@ -26,15 +26,15 @@ function entity(itemID, mass, velocity) {
   return { itemID, mass, velocity };
 }
 
-test("collision damage uses unmodified safe speed and spills through every health layer", () => {
+test("collision damage starts above half the unmodified safe speed and spills through every health layer", () => {
   const mover = entity(1, 1_000_000, { x: 300, y: 0, z: 0 });
   const wall = entity(2, 0, { x: 0, y: 0, z: 0 });
   const hit = contact(mover, wall, undefined, true);
-  const damage = calculateCollisionDamage(hit.collision, 200, 0);
+  const damage = calculateCollisionDamage(hit.collision, 400, 0);
   assert.equal(damage.total, 100);
   assert.equal(damage.moving, 100);
   assert.equal(damage.candidate, 0);
-  assert.equal(calculateCollisionDamage(hit.collision, 300, 0), null);
+  assert.equal(calculateCollisionDamage(hit.collision, 600, 0), null);
 
   const health = {
     shieldCapacity: 50,
@@ -45,6 +45,34 @@ test("collision damage uses unmodified safe speed and spills through every healt
   const applied = applyDamageToEntity(health, { kinetic: damage.moving });
   assert.equal(applied.success, true);
   assert.deepEqual(applied.data.afterLayers, { shield: 0, armor: 0, structure: 80 });
+});
+
+test("a stationary ship adds no allowance to a 50% speed threshold", () => {
+  const mover = entity(1, 1_000_000, { x: 100, y: 0, z: 0 });
+  const target = entity(2, 1_000_000, { x: 0, y: 0, z: 0 });
+  assert.equal(calculateCollisionDamage(contact(mover, target).collision, 200, 200), null);
+
+  mover.velocity.x = 101;
+  const damage = calculateCollisionDamage(contact(mover, target).collision, 200, 200);
+  assert.ok(damage);
+  assert.equal(damage.excessSpeed, 1);
+});
+
+test("each approaching ship uses at most half its own stable speed", () => {
+  const mover = entity(1, 1_000_000, { x: 40, y: 0, z: 0 });
+  const target = entity(2, 1_000_000, { x: -40, y: 0, z: 0 });
+  assert.equal(calculateCollisionDamage(contact(mover, target).collision, 100, 100), null);
+
+  mover.velocity.x = 60;
+  const damage = calculateCollisionDamage(contact(mover, target).collision, 100, 100);
+  assert.ok(damage);
+  assert.equal(damage.excessSpeed, 10);
+});
+
+test("retreating motion reduces closing speed before the allowance is applied", () => {
+  const mover = entity(1, 1_000_000, { x: 60, y: 0, z: 0 });
+  const target = entity(2, 1_000_000, { x: 55, y: 0, z: 0 });
+  assert.equal(calculateCollisionDamage(contact(mover, target).collision, 100, 100), null);
 });
 
 test("the lighter body receives most of a two-body impact", () => {
@@ -81,7 +109,7 @@ test("a heavy mover pushes a lighter body even below the damage threshold", () =
   const result = processCollisionContacts(scene, [contact(heavy, light)], {
     tickSequence: 1,
     nowMs: 1_000,
-    safeSpeedFor: (target) => target === heavy ? 100 : 0,
+    safeSpeedFor: (target) => target === heavy ? 200 : 0,
     applyDamage: (...args) => { damages.push(args); },
     applyPush: (target, delta) => { pushes.push({ target, delta }); },
   });

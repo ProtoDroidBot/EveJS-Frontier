@@ -449,6 +449,35 @@ test("failed propulsion fuel prepayment removes the effect before derived thrust
   assert.equal(fixture.entity.activeModuleEffects.size, 0);
 });
 
+test("held Leap activation reuses its active effect without another fuel payment", () => {
+  const fixture = buildHandlerFixture();
+  let fuelPayments = 0;
+  fixture.context.dependencies.creationActiveModuleRuntime.consumeCreationPropulsionCycleFuel = () => {
+    fuelPayments += 1;
+    return { success: true, data: { consumedFuel: 1 } };
+  };
+  const first = handlers.activatePropulsion(
+    fixture.context,
+    runtime.ACTIVE_KIND_LEAP,
+    runtime.EFFECT_LEAP,
+  );
+  const repeated = handlers.activatePropulsion(
+    fixture.context,
+    runtime.ACTIVE_KIND_LEAP,
+    runtime.EFFECT_LEAP,
+  );
+  assert.equal(first.success, true);
+  assert.deepEqual(repeated, {
+    success: true,
+    data: { durationMs: first.data.durationMs, alreadyActive: true },
+  });
+  assert.equal(fuelPayments, 1);
+  assert.deepEqual(fixture.calls, [
+    ["activate", runtime.EFFECT_LEAP],
+    ["refresh"],
+  ]);
+});
+
 test("manual Creation module stop waits for its cycle; forced offline stop is immediate", () => {
   const fixture = buildHandlerFixture();
   let requestedOptions = null;
@@ -496,6 +525,52 @@ test("manual Creation module stop waits for its cycle; forced offline stop is im
   assert.equal(entity.activeModuleEffects.has(moduleID), false);
   assert.equal(finalized.reason, "offline");
   assert.equal(finalized.nowMs, 2000);
+});
+
+test("releasing Leap ends thrust immediately and locks reactivation to cycle end", () => {
+  const fixture = buildHandlerFixture();
+  let requestedOptions = null;
+  fixture.context.dependencies.spaceRuntime.deactivateGenericModule = (
+    _session, _moduleID, options,
+  ) => {
+    requestedOptions = options;
+    return { success: true, data: { stoppedAtMs: 2000 } };
+  };
+  const release = handlers.CREATION_ACTIVE_MODULE_ABILITY_HANDLERS[
+    runtime.TYPE_LEAP
+  ].deactivate.execute(fixture.context);
+  assert.equal(release.success, true);
+  assert.deepEqual(requestedOptions, {
+    reason: "manual",
+    deferUntilCycle: false,
+    cooldownUntilCycle: true,
+  });
+
+  const scene = Object.create(spaceRuntime._testing.SolarSystemScene.prototype);
+  const moduleID = 991235;
+  const effectState = {
+    moduleID,
+    effectName: runtime.EFFECT_LEAP,
+    durationMs: 5000,
+    startedAtMs: 1000,
+    nextCycleAtMs: 6000,
+    creationActiveKind: runtime.ACTIVE_KIND_LEAP,
+    reactivationDelayMs: 0,
+  };
+  const entity = { activeModuleEffects: new Map([[moduleID, effectState]]) };
+  scene.getShipEntityForSession = () => entity;
+  scene.getCurrentSimTimeMs = () => 2000;
+  let finalized = null;
+  scene.finalizeGenericModuleDeactivation = (_session, _moduleID, options) => {
+    finalized = options;
+    entity.activeModuleEffects.delete(moduleID);
+    return { success: true, data: { stoppedAtMs: options.nowMs } };
+  };
+  const stopped = scene.deactivateGenericModule({}, moduleID, requestedOptions);
+  assert.equal(stopped.success, true);
+  assert.equal(finalized.nowMs, 2000);
+  assert.equal(effectState.reactivationDelayMs, 4000);
+  assert.equal(entity.activeModuleEffects.has(moduleID), false);
 });
 
 test("Leap stop response excludes live runtime objects for pending and completed cycles", () => {

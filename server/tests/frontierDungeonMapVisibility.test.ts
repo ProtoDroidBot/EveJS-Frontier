@@ -20,6 +20,7 @@ const miningResourceSiteService = require(
 const miningRuntimeState = require(
   "../src/services/mining/miningRuntimeState",
 );
+const itemTypeRegistry = require("../src/services/inventory/itemTypeRegistry");
 const {
   resolveMiningResourceIdentity,
 } = require("../src/services/mining/miningVisuals");
@@ -672,36 +673,75 @@ test("Frontier mining dungeon asteroids have stable variable sizes and size-weig
     .map(([objectID, sizing]) => ({ objectID, ...sizing }))
     .sort((left, right) => left.radius - right.radius);
   const config = require("../src/config");
-  const baselineQuantity = Math.round(
-    Math.min(
-      config.miningBeltMaximumAsteroidVolumeM3,
-      Math.max(
-        config.miningBeltMinimumAsteroidVolumeM3,
-        (100_000 ** 2) * config.miningBeltQuantityScale,
-      ),
-    ),
-  );
-
   assert.deepEqual(second, first);
   assert.deepEqual(
     sortedByRadius.map((entry) => entry.radius),
-    [75_000, 100_000, 125_000],
+    [30_000, 40_000, 50_000],
   );
-  assert.ok(
-    sortedByRadius[0].resourceQuantity < sortedByRadius[1].resourceQuantity,
+  assert.deepEqual(
+    sortedByRadius.map((entry) => entry.resourceQuantity),
+    [30_000, 40_000, 50_000].map((radius) => Math.round(
+      config.miningBeltMaximumAsteroidVolumeM3 * (radius / 50_000) ** 2,
+    )),
   );
-  assert.ok(
-    sortedByRadius[1].resourceQuantity < sortedByRadius[2].resourceQuantity,
-  );
+});
+
+test("Metal-Rich Cluster Slag uses bounded radius and matching yield through site materialization", (t) => {
+  itemTypeRegistry._setEntriesForTests([
+    { typeID: 83_739, name: "Metal-Rich Cluster", groupID: 4_871, categoryID: 2, radius: 1 },
+    { typeID: 91_375, name: "Slag", groupID: 5_005, categoryID: 25, radius: 1, volume: 1 },
+  ]);
+  t.after(() => itemTypeRegistry._setEntriesForTests(null));
+
+  const template = {
+    sourceDungeonID: 10_403,
+    entryTypeID: 83_739,
+    entryObjectID: 1_236_542,
+    rooms: [{
+      roomID: 29_411,
+      objects: [
+        { objectID: 1_236_542, typeID: 83_739, role: "scenery" },
+        { objectID: 1_178_662, typeID: 91_375, role: "scenery", radius: 125_000 },
+        { objectID: 1_261_141, typeID: 91_375, role: "scenery", radius: 125_000 },
+      ],
+    }],
+  };
+  const instance = { instanceID: 7_100_000_010_403 };
+  const siteEntity = { itemID: 7_200_000_010_403, position: { x: 0, y: 0, z: 0 } };
+  const hints = dungeonUniverseSiteService._testing.resolvePopulationHints(instance, template);
+  const entities = dungeonUniverseSiteService._testing
+    .buildEnvironmentEntities(instance, siteEntity, template, hints)
+    .sort((left, right) => left.radius - right.radius);
+
+  assert.deepEqual(entities.map((entity) => entity.radius), [30_000, 50_000]);
+  assert.deepEqual(entities.map((entity) => entity.resourceQuantity), [1_080_000, 3_000_000]);
+  assert.ok(entities.every((entity) => entity.frontierDungeonResource === true));
+});
+
+test("Frontier mining dungeon sizing bounds small rocks and accounts for ore unit volume", () => {
+  const resource = {
+    objectID: 301,
+    roomID: 501,
+    categoryID: 25,
+    groupID: 5_005,
+    typeRecord: { radius: 500, volume: 2 },
+    object: { objectID: 301, radius: 500 },
+  };
+  const sizing = dungeonUniverseSiteService._testing
+    .buildFrontierDungeonMiningResourceSizing([resource], 91_871).get(301);
+
+  assert.ok(sizing.radius >= 10_000 && sizing.radius <= 50_000);
   assert.equal(
-    sortedByRadius.reduce((sum, entry) => sum + entry.resourceQuantity, 0),
-    baselineQuantity * resources.length,
+    sizing.resourceQuantity,
+    Math.round(require("../src/config").miningBeltMaximumAsteroidVolumeM3 *
+      (sizing.radius / 50_000) ** 2 / 2),
   );
 });
 
 test("Frontier mining dungeon resources preserve their derived size during mining registration", () => {
   const siteEntity = {
     itemID: 7_200_000_000_321,
+    groupID: 4_871,
     position: { x: 1_000, y: 2_000, z: 3_000 },
   };
   const environmentEntities = dungeonUniverseSiteService._testing
@@ -730,7 +770,7 @@ test("Frontier mining dungeon resources preserve their derived size during minin
     );
 
   assert.equal(environmentEntities.length, 1);
-  assert.equal(environmentEntities[0].radius, 75_000);
+  assert.equal(environmentEntities[0].radius, 50_000);
   assert.notEqual(environmentEntities[0].typeID, 34);
   assert.equal(environmentEntities[0].graphicID, 26_271);
   assert.equal(environmentEntities[0].slimTypeID, 34);
@@ -740,7 +780,7 @@ test("Frontier mining dungeon resources preserve their derived size during minin
   assert.equal(environmentEntities[0].slimName, "Tritanium [Type ID 34]");
   assert.equal(environmentEntities[0].suppressSlimName, false);
   assert.ok(environmentEntities[0].collisionScale > 1);
-  assert.equal(environmentEntities[0].resourceQuantity, 150_000);
+  assert.equal(environmentEntities[0].resourceQuantity, 66_667);
   assert.equal(environmentEntities[0].skipMiningTemplateResolution, true);
   assert.equal(environmentEntities[0].preserveMiningVisualPresentation, true);
 });

@@ -2,6 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const { marshalEncode } = require("../src/network/tcp/utils/marshal");
 const { ROLE_GML } = require("../src/services/account/accountRoleProfiles");
 const {
   createDetachedDungeonPropStore,
@@ -19,7 +20,11 @@ const {
   tickDetachedPropMove,
 } = require("../src/space/dungeonPropMovement");
 const collisions = require("../src/space/destiny/simulation/collisions");
-const { resolveEntityCollisionPresentation } = require("../src/space/destiny/collision/collisionBundle");
+const {
+  resolveEntityCollisionPresentation,
+  setDefaultCollisionBundleForTesting,
+  resetDefaultCollisionBundleForTesting,
+} = require("../src/space/destiny/collision/collisionBundle");
 const { BALL_FLAG, BALL_MODE } = require("../src/space/destiny/constants");
 const { debugDescribeEntityBall, encodeEntityBall } = require("../src/space/destiny/stream/ballEncoding");
 const { getStaticBallFlags, resolveStaticBallTail } = require("../src/space/destiny/stream/staticBallTail");
@@ -246,6 +251,66 @@ test("Physics Gun lifts a mineable asteroid, checkpoints motion, and release per
   assert.deepEqual([...restarted.scene._detachedWorldSourceIDs], [restarted.prop.itemID]);
 });
 
+test("Physics Gun moves a prop by the beam contact point as aim and ship move", () => {
+  const backend = memoryBackend();
+  const store = createDetachedDungeonPropStore({ store: backend });
+  const value = fixture();
+  value.prop.position = { x: 2_500, y: 0, z: 0 };
+  const contactPoint = { x: 2_405, y: 31, z: 0 };
+  const picked = pickupPhysicsGunTarget(value.scene, value.session, value.prop,
+    901, { x: 1, y: 0, z: 0 }, {
+      store, contactPoint, miningState: { isMineableStaticEntity: () => false },
+      nowMs: 1_000,
+    });
+  assert.equal(picked.success, true, picked.errorMsg);
+  const moving = value.scene.dynamicEntities.get(WORLD_ID_BASE);
+  assert.deepEqual(moving.detachedPropMove.tether.contactOffset,
+    { x: -95, y: 31, z: 0 });
+  const scanStart = value.events.find((entry) =>
+    Array.isArray(entry) && entry[0] === "OnSpecialFX");
+  assert.ok(scanStart);
+  assert.equal(scanStart[1][0], value.ship.itemID);
+  assert.equal(scanStart[1][1], 901);
+  assert.equal(scanStart[1][2], 99999);
+  assert.equal(scanStart[1][3], WORLD_ID_BASE);
+  const scanGraphicInfo = Object.fromEntries(scanStart[1][13].args.entries);
+  assert.equal(scanGraphicInfo.targetBallID, WORLD_ID_BASE);
+  assert.equal(scanGraphicInfo.resolvedTargetBallID, WORLD_ID_BASE);
+  assert.deepEqual(scanGraphicInfo.targetOffset, [1_405, 31, 0]);
+  assert.doesNotThrow(() => marshalEncode(scanStart,
+    { compatibilityProfile: "frontier" }));
+  assert.deepEqual(moving.targetPoint, { x: 1_845, y: -31, z: 0 });
+  assert.deepEqual({
+    x: moving.targetPoint.x - 95,
+    y: moving.targetPoint.y + 31,
+    z: moving.targetPoint.z,
+  }, { x: 1_750, y: 0, z: 0 });
+  assert.equal(tickDetachedPropMove(value.scene, moving, 0.1, 1_100, { store }).success, true);
+  assert.ok(moving.position.x < 2_500);
+
+  value.ship.position.y = 100;
+  assert.equal(updateDetachedPropTether(value.scene, WORLD_ID_BASE,
+    value.session, 901, { x: 0, y: 1, z: 0 }), true);
+  assert.equal(tickDetachedPropMove(value.scene, moving, 0.1, 1_200, { store }).success, true);
+  assert.deepEqual(moving.targetPoint, { x: 1_095, y: 819, z: 0 });
+  assert.deepEqual({
+    x: moving.targetPoint.x - 95,
+    y: moving.targetPoint.y + 31,
+    z: moving.targetPoint.z,
+  }, { x: 1_000, y: 850, z: 0 });
+  assert.equal(releaseDetachedPropTether(value.scene, WORLD_ID_BASE,
+    value.session, 901, { store, nowMs: 1_300 }).success, true);
+  const scanStop = value.events.filter((entry) =>
+    Array.isArray(entry) && entry[0] === "OnSpecialFX").at(-1);
+  assert.equal(scanStop[1][1], 901);
+  assert.equal(scanStop[1][3], WORLD_ID_BASE);
+  assert.equal(scanStop[1][7], 0);
+  assert.deepEqual(value.scene.staticEntitiesByID.get(WORLD_ID_BASE).position,
+    moving.position);
+  assert.deepEqual(store.getByWorldID(value.scene.systemID, WORLD_ID_BASE)
+    .worldEntity.position, moving.position);
+});
+
 test("dropping a prop restores its authored collision ball and geometry after restart", () => {
   const backend = memoryBackend();
   const store = createDetachedDungeonPropStore({ store: backend });
@@ -331,6 +396,81 @@ test("dropping a prop restores its authored collision ball and geometry after re
   assert.equal(resolveEntityCollisionPresentation(restored, null).collisionID, 4242);
   assert.deepEqual(restored.miniBalls, value.prop.miniBalls);
   assert.equal(collisions.canEntitiesCollide(restarted.ship, restored), true);
+});
+
+test("a convex dungeon asteroid keeps its collision mesh and rotation after pickup and drop", () => {
+  const asteroidGraphicID = 27420; // Mooneater Exploded Asteroid in Pulverized Asteroid Cluster
+  const profile = { collisionID: asteroidGraphicID, boundingRadius: 18_526.9,
+    hasConvexMeshes: true, balls: [], boxes: [], capsules: [] };
+  setDefaultCollisionBundleForTesting({
+    has: (id) => id === asteroidGraphicID,
+    getMetadata: (id) => id === asteroidGraphicID ? profile : null,
+    getProfile: (id) => id === asteroidGraphicID ? profile : null,
+  });
+  try {
+    const backend = memoryBackend();
+    const store = createDetachedDungeonPropStore({ store: backend });
+    const value = fixture();
+    value.prop.typeID = 83408;
+    value.prop.graphicID = asteroidGraphicID;
+    value.prop.slimGraphicID = null;
+    value.prop.suppressSlimGraphicID = true;
+    value.prop.dunRotation = [100.57, -18.24, -114.71];
+    value.prop.radius = 1;
+    delete value.prop.collisionScale;
+    value.prop.destinyForceFree = true;
+    value.prop.destinyBallMode = "STOP";
+    delete value.prop.destinyCollisionTail;
+
+    const picked = pickupPhysicsGunTarget(value.scene, value.session, value.prop,
+      901, { x: -1, y: 0, z: 0 }, {
+        store, miningState: { isMineableStaticEntity: () => false }, nowMs: 1_000,
+      });
+    assert.equal(picked.success, true, picked.errorMsg);
+    const moving = value.scene.dynamicEntities.get(WORLD_ID_BASE);
+    assert.equal(resolveEntityCollisionPresentation(moving).collisionID, asteroidGraphicID);
+    assert.equal(tickDetachedPropMove(value.scene, moving, 0.5, 1_050, { store }).success, true);
+    assert.ok(moving.position.x < 0);
+    assert.equal(releaseDetachedPropTether(value.scene, WORLD_ID_BASE,
+      value.session, 901, { store, nowMs: 1_100 }).success, true);
+
+    const dropped = value.scene.staticEntitiesByID.get(WORLD_ID_BASE);
+    assert.equal(dropped.graphicID, asteroidGraphicID);
+    assert.equal(dropped.slimGraphicID, asteroidGraphicID);
+    assert.equal(dropped.suppressSlimGraphicID, false);
+    assert.equal(dropped.collisionID, asteroidGraphicID);
+    assert.equal(dropped.convexCollisionID, asteroidGraphicID);
+    assert.equal(resolveEntityCollisionPresentation(dropped).profile.hasConvexMeshes, true);
+    assert.notDeepEqual(dropped.collisionQuaternion, { w: 1, x: 0, y: 0, z: 0 });
+    assert.equal(collisions.getEntityCollisionBroadphaseRadius(dropped), 18_526.9);
+    const encoded = encodeEntityBall(dropped, { compatibilityProfile: "frontier" });
+    assert.equal(encoded.readInt32LE(74), asteroidGraphicID);
+    assert.equal(encoded.readInt32LE(82), asteroidGraphicID);
+    assert.equal(encoded.readUInt8(37) & BALL_FLAG.IS_MASSIVE, BALL_FLAG.IS_MASSIVE);
+
+    // Old persisted records lack these fields. Rehydration must resolve the
+    // same authored collider before the prop is shown after a server restart.
+    const oldState = backend.durable();
+    const [oldRecord] = Object.values<any>(oldState.recordsBySource);
+    delete oldRecord.worldEntity.collisionID;
+    delete oldRecord.worldEntity.convexCollisionID;
+    delete oldRecord.worldEntity.collisionQuaternion;
+    oldRecord.worldEntity.slimGraphicID = null;
+    oldRecord.worldEntity.suppressSlimGraphicID = true;
+    assert.equal(backend.write("detachedDungeonProps", "/", oldState).success, true);
+    assert.equal(backend.flushTableSync().success, true);
+    backend.restart();
+    const restarted = fixture();
+    assert.equal(restoreDetachedPropsToScene(restarted.scene, {
+      store: createDetachedDungeonPropStore({ store: backend }),
+    }).success, true);
+    const restored = restarted.scene.staticEntitiesByID.get(WORLD_ID_BASE);
+    assert.equal(restored.convexCollisionID, asteroidGraphicID);
+    assert.equal(restored.slimGraphicID, asteroidGraphicID);
+    assert.deepEqual(restored.collisionQuaternion, dropped.collisionQuaternion);
+  } finally {
+    resetDefaultCollisionBundleForTesting();
+  }
 });
 
 test("existing detached records with free presentation replay as collidable statics", () => {
@@ -651,6 +791,8 @@ test("movement sweeps into an obstacle, checkpoints the contact pose, and stops 
   assert.equal(value.scene.staticEntitiesByID.has(worldID), false);
   const fx = value.events.filter((entry) => Array.isArray(entry) && entry[0] === "OnSpecialFX");
   assert.equal(fx.length, 1);
+  assert.equal(fx[0][1][1], value.ship.itemID);
+  assert.equal(fx[0][1][2], value.ship.typeID);
   assert.equal(fx[0][1][3], worldID);
   assert.equal(fx[0][1][5], "effects.FrontierScanningTest");
   assert.equal(fx[0][1][7], 1);
@@ -694,6 +836,7 @@ test("a moving prop's authored collision shape stops before its radius fallback"
   };
   value.scene.dynamicEntities.get(worldID).collisionScale = 1;
   value.scene.dynamicEntities.get(worldID).dunRotation = [0, 0, 0];
+  value.scene.dynamicEntities.get(worldID).collisionQuaternion = { w: 1, x: 0, y: 0, z: 0 };
   const profileHit = findMovingPropProfileCollision(
     value.scene, value.scene.dynamicEntities.get(worldID),
     { x: 0, y: 0, z: 0 }, { x: 750, y: 0, z: 0 },

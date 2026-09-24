@@ -19,6 +19,9 @@ on a client reported speed.
 - `space/runtime.ts` advances ordinary moving entities and receives that contact.
   Detached dungeon props have an additional authored-profile collision path in
   `space/dungeonPropMovement.ts`.
+- Station entities carry their authored graphic ID so the collision bundle's
+  compound geometry is used in place of the station interaction sphere when
+  the bundle contains that graphic.
 - `combat/damage.ts` applies kinetic damage through shield, armor, and structure
   with layer resistances and spillover. Runtime code must also persist health,
   notify observers, and run the appropriate destruction path.
@@ -55,15 +58,20 @@ cap, and maximum push velocity change are server environment settings:
 `EVEJS_COLLISION_MAX_DAMAGE_PER_CONTACT`, and
 `EVEJS_COLLISION_MAX_PUSH_DELTA_SPEED` (250 m/s by default).
 
-The safe baseline for a ship is its **stable, unmodified maximum velocity**.
-It must come from the ship's base speed attribute or a preserved spawn-time
-value, not `entity.maxVelocity` after modules or other temporary modifiers.
-For two moving ships, add their baseline closing-speed allowances; against
-an immovable object, use only the moving ship's allowance. Other movable
-objects use a zero safe-speed baseline unless assigned
-`collisionStableMaxVelocity`. This allows normal-speed travel and ordinary
-head-on passes at stable speed without
-collision damage, while excess closing speed can cause damage.
+The safe baseline for a ship is **50% of its stable, unmodified maximum
+velocity**. The maximum velocity must come from the ship's base speed
+attribute or a preserved spawn-time value, not `entity.maxVelocity` after
+modules or other temporary modifiers. Each body's allowance is limited to its
+actual inward speed at contact, so a stationary target adds no allowance. For
+two approaching ships, subtract their individual allowances from the actual
+closing speed. Motion away from the contact lowers that closing speed. Other
+movable objects use a zero safe-speed baseline unless assigned
+`collisionStableMaxVelocity`. Damage begins only when the resulting excess
+closing speed is greater than zero; a ship striking a stationary object at
+exactly half its base speed takes no collision damage.
+Modular Creation hulls can have a static type speed of zero. For those hulls,
+the assembled passive speed is preserved as the stable baseline and refreshed
+with passive fitting changes; temporary active thrust does not change it.
 
 For two movable objects, divide impact damage according to the mass ratio so
 the lighter object receives the larger share. An immovable, indestructible
@@ -81,6 +89,14 @@ Reuse the shared damage lifecycle for health notifications, persistence, and
 destruction with a collision-specific option that bypasses weapon line
 occlusion and aggression. Attribute a two-body impact to the other body; a
 ship striking immovable scenery takes environmental damage.
+Send the existing client damage-message notification to involved pilots for
+each positive collision hit, using the effective damage absorbed across shield,
+armor, and structure for the floating number.
+Resolve eligible damage and send its notification as soon as the server's swept
+contact is found, rather than waiting for the end of the scene tick. Retain
+the contact for end-of-tick mass aggregation and push; the contact episode
+state prevents that later pass from applying the same damage again. Client
+collision effects may also play for contacts below the 50% damage threshold.
 Include the detached prop collision path after its durable pose checkpoint.
 
 Attempt to move a movable object away from an active contact using the same

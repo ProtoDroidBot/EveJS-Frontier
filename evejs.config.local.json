@@ -1326,13 +1326,13 @@
   // Enables CPU- and memory-aware adjustment of the authoritative space-runtime tick interval.
   // High resource pressure lowers the tick rate; sustained headroom raises it again within the configured bounds.
   // Valid values: true or false.
-  // Default: false.
+  // Default: true.
 
   "adaptiveTickRateEnabled": false,
 
   // Fastest allowed adaptive space-runtime cadence in milliseconds. 50ms is 20 ticks per second.
   // Valid values: Number from 10 through 1000, no greater than the maximum interval.
-  // Default: 50.
+  // Default: 100.
 
   "adaptiveTickRateMinIntervalMs": 50,
 

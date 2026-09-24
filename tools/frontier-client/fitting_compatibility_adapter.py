@@ -1103,7 +1103,12 @@ def _evejs_install_creation_leap_command(namespace):
         if target is None:
             return False
         provider, ship_id = target
+        if getattr(self, "_evejs_creation_leap_pressed_ship_id", None) == ship_id:
+            return True
         item_ids = _evejs_creation_leap_item_ids(provider, ship_id)
+        if not item_ids:
+            return False
+        self._evejs_creation_leap_pressed_ship_id = ship_id
         activated = False
         first_error = None
         for item_id in item_ids:
@@ -1113,6 +1118,8 @@ def _evejs_install_creation_leap_command(namespace):
             except Exception as error:
                 if first_error is None:
                     first_error = error
+        if not activated:
+            self._evejs_creation_leap_pressed_ship_id = None
         if not activated and first_error is not None:
             raise first_error
         return activated
@@ -1125,6 +1132,7 @@ def _evejs_install_creation_leap_command(namespace):
         if target is None:
             return False
         provider, ship_id = target
+        self._evejs_creation_leap_pressed_ship_id = None
         item_ids = _evejs_creation_leap_item_ids(provider, ship_id)
         if not item_ids:
             return False

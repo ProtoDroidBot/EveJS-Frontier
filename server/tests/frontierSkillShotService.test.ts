@@ -963,8 +963,9 @@ test("an immediate held-beam restart sends a marshalable cooldown notification",
 test("Physics Gun grabs once, follows aim, and releases on EndHeldBeam without mining or damage", () => {
   const calls: any[] = [];
   const physicsGun = {
-    pickup(_scene, _session, target, moduleID, direction) {
-      calls.push(["pickup", target.itemID, moduleID, direction.x]);
+    pickup(_scene, _session, target, moduleID, direction, options) {
+      calls.push(["pickup", target.itemID, moduleID, direction.x,
+        options.contactPoint]);
       return { success: true, data: { worldEntityID: 8600 } };
     },
     update(_scene, id, _session, moduleID, direction) {
@@ -993,11 +994,15 @@ test("Physics Gun grabs once, follows aim, and releases on EndHeldBeam without m
   assert.equal(harness.runtime.beginHeldBeam(harness.session,
     [[harness.moduleItem.itemID, [1, 0, 0]]]).success, true);
   harness.scheduler.runNext();
-  assert.deepEqual(calls[0], ["pickup", harness.target.itemID, harness.moduleItem.itemID, 1]);
+  assert.deepEqual(calls[0], ["pickup", harness.target.itemID,
+    harness.moduleItem.itemID, 1, { x: 950, y: 0, z: 0 }]);
   assert.equal(harness.effects[0].options.targetID, grabbed.itemID);
+  assert.deepEqual(harness.effects[0].options.graphicInfo.targetOffset,
+    [950, 0, 0]);
   assert.equal(harness.damagedTargets.length, 0);
   harness.runtime.heldBeamAimUpdate(harness.session,
     [[harness.moduleItem.itemID, [0, 1, 0]]]);
+  grabbed.position.x = 1_200;
   // A carried prop must remain held while the reticle is still, so the ship
   // can move it without continuous client aim updates.
   harness.setNow(10_000);
@@ -1008,6 +1013,8 @@ test("Physics Gun grabs once, follows aim, and releases on EndHeldBeam without m
     harness.moduleItem.itemID).data.ended, true);
   assert.deepEqual(calls.at(-1), ["release", grabbed.itemID, harness.moduleItem.itemID]);
   assert.equal(harness.effects.at(-1).options.start, false);
+  assert.deepEqual(harness.effects.at(-1).options.graphicInfo.targetOffset,
+    [1_150, 0, 0]);
   assert.equal(harness.damagedTargets.length, 0);
   assert.equal(harness.utilityHits.length, 0);
 });

@@ -540,9 +540,15 @@ class SkillShotRuntime {
     }
     const fraction = Math.min(1, Math.max(0, toFiniteNumber(earliest.collision.fraction, 0)));
     const endpoint = addVector(start, scaleVector(subtractVector(end, start), fraction));
+    const contactNormal = earliest.collision.startedOverlapping
+      ? null : normalizeDirection(earliest.collision.normal);
+    const contactPoint = contactNormal
+      ? subtractVector(endpoint, scaleVector(contactNormal, SKILL_SHOT_BEAM_RADIUS_METERS))
+      : endpoint;
     return {
       entity: earliest.candidate,
       endpoint,
+      contactPoint,
       direction: normalizedDirection,
       distance: range * fraction,
       collision: earliest.collision,
@@ -631,11 +637,13 @@ class SkillShotRuntime {
     const targetEntity = trace && trace.entity;
     if (moduleItem.typeID === PHYSICS_GUN_TYPE_ID) {
       if (!targetEntity) return { damageResult: null, destroyResult: null };
+      const contactPoint = cloneVector(trace.contactPoint || trace.endpoint);
+      const contactOffset = subtractVector(contactPoint, cloneVector(targetEntity.position));
       let pickup;
       try {
         pickup = this._physicsGun.pickup(
           scene, options.session, targetEntity, moduleItem.itemID,
-          options.heldState.direction, { nowMs },
+          options.heldState.direction, { nowMs, contactPoint },
         );
       } catch (error) {
         log.warn(`[SkillShot] Physics Gun pickup failed: ${error.message}`);
@@ -643,9 +651,13 @@ class SkillShotRuntime {
       }
       if (pickup?.success) {
         options.heldState.grabbedWorldEntityID = pickup.data.worldEntityID;
+        options.heldState.grabbedContactOffset = pickup.data.contactOffset
+          ? cloneVector(pickup.data.contactOffset) : contactOffset;
         trace.entity = scene.getEntityByID?.(pickup.data.worldEntityID) ||
           scene.dynamicEntities?.get(pickup.data.worldEntityID) || targetEntity;
-        trace.endpoint = { ...trace.entity.position };
+        trace.endpoint = addVector(cloneVector(trace.entity.position),
+          options.heldState.grabbedContactOffset);
+        trace.contactPoint = { ...trace.endpoint };
       }
       return {
         damageResult: null,
@@ -789,14 +801,15 @@ class SkillShotRuntime {
       )) return failure("PHYSICS_GUN_HOLD_LOST");
       trace = {
         entity: grabbed,
-        endpoint: { ...grabbed.position },
+        endpoint: addVector(cloneVector(grabbed.position),
+          cloneVector(state.grabbedContactOffset)),
         direction: state.direction,
-        distance: Math.hypot(
-          grabbed.position.x - context.entity.position.x,
-          grabbed.position.y - context.entity.position.y,
-          grabbed.position.z - context.entity.position.z,
-        ),
       };
+      trace.distance = Math.hypot(
+        trace.endpoint.x - context.entity.position.x,
+        trace.endpoint.y - context.entity.position.y,
+        trace.endpoint.z - context.entity.position.z,
+      );
       hitResult = { damageResult: null, destroyResult: null };
     } else {
       trace = this._traceShot(

@@ -94,6 +94,8 @@ const FRONTIER_DUNGEON_MAX_RESOURCE_PROPS = 48;
 const FRONTIER_DUNGEON_MAX_STRUCTURAL_PROPS = 32;
 const FRONTIER_DUNGEON_MINING_MIN_RADIUS_SCALE = 0.75;
 const FRONTIER_DUNGEON_MINING_MAX_RADIUS_SCALE = 1.25;
+const FRONTIER_DUNGEON_MINING_MIN_RADIUS_METERS = 10_000;
+const FRONTIER_DUNGEON_MINING_MAX_RADIUS_METERS = 50_000;
 const SITE_CONTENT_CONTAINER_ID_BASE = 6_200_000_000_000;
 const SITE_CONTENT_HAZARD_ID_BASE = 6_300_000_000_000;
 const SITE_CONTENT_ENVIRONMENT_ID_BASE = 6_400_000_000_000;
@@ -1883,12 +1885,15 @@ function resolveFrontierDungeonResourceBaseRadius(entry) {
     0,
     toFiniteNumber(entry && entry.object && entry.object.radius, 0),
   );
-  if (authoredRadius > 0) {
-    return authoredRadius;
-  }
-  return Math.max(
-    500,
-    toFiniteNumber(entry && entry.typeRecord && entry.typeRecord.radius, 1_500),
+  const sourceRadius = authoredRadius > 0
+    ? authoredRadius
+    : Math.max(500, toFiniteNumber(entry && entry.typeRecord && entry.typeRecord.radius, 1_500));
+  return Math.min(
+    FRONTIER_DUNGEON_MINING_MAX_RADIUS_METERS / FRONTIER_DUNGEON_MINING_MAX_RADIUS_SCALE,
+    Math.max(
+      FRONTIER_DUNGEON_MINING_MIN_RADIUS_METERS / FRONTIER_DUNGEON_MINING_MIN_RADIUS_SCALE,
+      sourceRadius,
+    ),
   );
 }
 
@@ -1915,16 +1920,15 @@ function resolveFrontierDungeonResourceExplicitQuantity(entry) {
 
 function estimateFrontierDungeonResourceQuantity(entry, radius) {
   const explicitQuantity = resolveFrontierDungeonResourceExplicitQuantity(entry);
+  // Treat the configured maximum volume as the yield of a 50 km rock;
+  // the mining runtime's normal fallback also scales material by radius squared.
+  const areaRatio = (radius / FRONTIER_DUNGEON_MINING_MAX_RADIUS_METERS) ** 2;
   if (explicitQuantity > 0) {
-    return explicitQuantity;
+    return Math.max(1, Math.round(explicitQuantity * areaRatio));
   }
   const unitVolume = Math.max(
     0.000001,
     toFiniteNumber(entry && entry.typeRecord && entry.typeRecord.volume, 1),
-  );
-  const quantityScale = Math.max(
-    0.000001,
-    toFiniteNumber(serverConfig.miningBeltQuantityScale, 0.08),
   );
   const minimumVolume = Math.max(
     1,
@@ -1936,7 +1940,7 @@ function estimateFrontierDungeonResourceQuantity(entry, radius) {
   );
   const estimatedVolume = Math.min(
     maximumVolume,
-    Math.max(minimumVolume, (Math.max(1, radius) ** 2) * quantityScale),
+    Math.max(minimumVolume, maximumVolume * areaRatio),
   );
   return Math.max(1, Math.round(estimatedVolume / unitVolume));
 }
@@ -1975,64 +1979,15 @@ function buildFrontierDungeonMiningResourceSizing(entries, sourceDungeonID) {
     radiusScaleByObjectID.set(toInt(candidate.entry.objectID, 0), scale);
   }
 
-  const drafts = resources.map((entry) => {
+  return new Map(resources.map((entry) => {
     const objectID = toInt(entry.objectID, 0);
     const baseRadius = resolveFrontierDungeonResourceBaseRadius(entry);
-    const radius = Math.max(
-      1,
-      Math.round(baseRadius * toFiniteNumber(radiusScaleByObjectID.get(objectID), 1)),
-    );
-    const unitVolume = Math.max(
-      0.000001,
-      toFiniteNumber(entry && entry.typeRecord && entry.typeRecord.volume, 1),
-    );
-    return {
-      entry,
+    const radius = Math.round(baseRadius * toFiniteNumber(radiusScaleByObjectID.get(objectID), 1));
+    return [
       objectID,
-      radius,
-      baselineQuantity: estimateFrontierDungeonResourceQuantity(entry, baseRadius),
-      // The mining runtime's fallback relation is area-based. Weighting by
-      // radius squared keeps the material amount consistent with the visible
-      // asteroid size while unit volume preserves comparable physical yield.
-      quantityWeight: (radius ** 2) / unitVolume,
-    };
-  });
-  const totalQuantity = drafts.reduce(
-    (sum, draft) => sum + Math.max(1, toInt(draft.baselineQuantity, 1)),
-    0,
-  );
-  const totalWeight = drafts.reduce(
-    (sum, draft) => sum + Math.max(0.000001, draft.quantityWeight),
-    0,
-  );
-  const distributableQuantity = Math.max(0, totalQuantity - drafts.length);
-  const allocations = drafts.map((draft) => {
-    const exactShare = distributableQuantity * (draft.quantityWeight / totalWeight);
-    const wholeShare = Math.floor(exactShare);
-    return {
-      ...draft,
-      quantity: 1 + wholeShare,
-      remainder: exactShare - wholeShare,
-    };
-  });
-  let unallocatedQuantity = totalQuantity - allocations.reduce(
-    (sum, allocation) => sum + allocation.quantity,
-    0,
-  );
-  const remainderOrder = [...allocations].sort((left, right) => (
-    right.remainder - left.remainder || left.objectID - right.objectID
-  ));
-  for (let index = 0; index < unallocatedQuantity; index += 1) {
-    remainderOrder[index % remainderOrder.length].quantity += 1;
-  }
-
-  return new Map(allocations.map((allocation) => [
-    allocation.objectID,
-    {
-      radius: allocation.radius,
-      resourceQuantity: allocation.quantity,
-    },
-  ]));
+      { radius, resourceQuantity: estimateFrontierDungeonResourceQuantity(entry, radius) },
+    ];
+  }));
 }
 
 function normalizeFrontierDungeonUsageChance(value, fallback = 100) {
@@ -5702,6 +5657,9 @@ function resolveEnvironmentStaticVisibilityScope(candidate) {
 }
 
 function buildEnvironmentEntities(instance, siteEntity, template, populationHints) {
+  const isMiningAsteroidSite =
+    resolveFrontierDungeonTemplateGroupID(template) === FRONTIER_DUNGEON_MINING_SITE_GROUP_ID ||
+    toInt(siteEntity && siteEntity.groupID, 0) === FRONTIER_DUNGEON_MINING_SITE_GROUP_ID;
   const sceneProfile = resolveSiteSceneProfile(template);
   const environmentTemplates =
     template &&
@@ -5937,9 +5895,18 @@ function buildEnvironmentEntities(instance, siteEntity, template, populationHint
     const presentedTypeRecord = shellTypeRecord || candidate.typeRecord;
     const presentedTypeID =
       toInt(presentedTypeRecord && presentedTypeRecord.typeID, authoredResourceTypeID) || authoredResourceTypeID;
-    const authoredRadius = candidate.exact && toFiniteNumber(candidate.authoredRadius, 0) > 0
+    const sourceRadius = candidate.exact && toFiniteNumber(candidate.authoredRadius, 0) > 0
       ? Math.max(1, toFiniteNumber(candidate.authoredRadius, 1))
       : Math.max(500, toFiniteNumber(candidate.typeRecord && candidate.typeRecord.radius, 1_500));
+    // Stored exact site hints may still contain radii from before the mining
+    // site limit. Bound those at materialization as well as at generation.
+    const authoredRadius = frontierDungeonResource && isMiningAsteroidSite
+      ? Math.min(sourceRadius, FRONTIER_DUNGEON_MINING_MAX_RADIUS_METERS)
+      : sourceRadius;
+    const resourceQuantity = Math.max(0, toInt(candidate.resourceQuantity, 0));
+    const boundedResourceQuantity = resourceQuantity > 0 && authoredRadius < sourceRadius
+      ? Math.max(1, Math.round(resourceQuantity * (authoredRadius / sourceRadius) ** 2))
+      : resourceQuantity;
     const healthState = resolveTypeHealthState(authoredResourceTypeID);
     const destinyPresentation = resolveSiteEnvironmentPropDestinyPresentation(
       {
@@ -6025,7 +5992,7 @@ function buildEnvironmentEntities(instance, siteEntity, template, populationHint
       skipMiningTemplateResolution: candidate.frontierDungeonResource === true,
       preserveMiningVisualPresentation: candidate.frontierDungeonResource === true,
       position: addVectors(clonePosition(siteEntity && siteEntity.position), contentOffset),
-      resourceQuantity: Math.max(0, toInt(candidate.resourceQuantity, 0)) || undefined,
+      resourceQuantity: boundedResourceQuantity || undefined,
       velocity: { x: 0, y: 0, z: 0 },
       direction: { x: 1, y: 0, z: 0 },
       radius: authoredRadius,
