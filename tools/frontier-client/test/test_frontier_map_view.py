@@ -237,6 +237,7 @@ class MapViewPatchTests(unittest.TestCase):
                     "inventoryView": "patched",
                     "collisionVfx": "patched",
                     "creationTransform": "patched",
+                    "dungeonPropHologram": "patched",
                     "turretTracking": "patched",
                 }
                 with (

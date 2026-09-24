@@ -103,6 +103,12 @@ define(["frontierRiftSites"], {
     confidence: CONFIDENCE.SCANNER,
     note: "Persistent Frontier Crude Rift anchors authored through the Rift GM command.",
 });
+define(["detachedDungeonProps"], {
+    tier: TIERS.RUNTIME,
+    domain: "in-space",
+    confidence: CONFIDENCE.INFERRED,
+    note: "Durable world props detached from dungeon scenery and their source suppression keys.",
+});
 define([
     "npcEntities",
     "npcModules",

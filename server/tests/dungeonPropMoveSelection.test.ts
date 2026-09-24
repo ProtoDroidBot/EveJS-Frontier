@@ -11,7 +11,12 @@ const {
 } = require("../src/services/chat/dungeonPropMoveCommand");
 
 function buildFixture(): any {
-  const session = { accountRole: ROLE_GML, _space: { systemID: 30000142 } };
+  const notifications: any[] = [];
+  const session = {
+    accountRole: ROLE_GML,
+    _space: { systemID: 30000142 },
+    sendNotification: (...args) => notifications.push(args),
+  };
   const ship = {
     itemID: 900,
     kind: "ship",
@@ -50,7 +55,7 @@ function buildFixture(): any {
     entityID: prop.itemID,
     destinationPosition: { x: 15_000, y: 0, z: 0 },
   };
-  return { session, ship, root, prop, scene, options, request };
+  return { session, ship, root, prop, scene, options, request, notifications };
 }
 
 test("a GM can preview one passive prop without changing the scene", () => {
@@ -141,9 +146,104 @@ test("the preview command parses an entity and pose but never moves it", () => {
   assert.deepEqual(result.data.rotation, [1, 2, 3]);
   assert.match(result.message, /no prop was moved/i);
   assert.deepEqual(fixture.prop.position, { x: 0, y: 0, z: 0 });
+  assert.equal(fixture.notifications.length, 1);
+  assert.equal(fixture.notifications[0][0], "OnDungeonPropMovePreview");
+  assert.equal(fixture.notifications[0][1], "clientID");
+  assert.deepEqual(fixture.notifications[0][2][0].position, [15_000, 0, 0]);
+  assert.equal(fixture.notifications[0][2][0].graphicID, fixture.prop.graphicID);
+  assert.equal(fixture.notifications[0][2][0].active, true);
+  assert.equal(executeDungeonPropMoveCommand(
+    fixture.session, "clear", {},
+  ).success, true);
+  assert.equal(fixture.notifications[1][2][0].active, false);
   assert.equal(executeDungeonPropMoveCommand(
     fixture.session,
     `preview ${fixture.prop.itemID} Infinity 0 0`,
     { spaceRuntime: { getSceneForSession: () => fixture.scene } },
   ).success, false);
+});
+
+test("denied previews clear stale holograms and do not create a new one", () => {
+  const fixture = buildFixture();
+  fixture.session.accountRole = 0n;
+  const result = executeDungeonPropMoveCommand(
+    fixture.session,
+    `preview ${fixture.prop.itemID} 15000 0 0`,
+    { spaceRuntime: { getSceneForSession: () => fixture.scene }, selectionOptions: fixture.options },
+  );
+  assert.equal(result.success, false);
+  assert.deepEqual(fixture.notifications, [[
+    "OnDungeonPropMovePreview", "clientID", [{ active: false }],
+  ]]);
+});
+
+test("preview reports a notification failure without moving the prop", () => {
+  const fixture = buildFixture();
+  fixture.session.sendNotification = () => { throw new Error("disconnected"); };
+  const result = executeDungeonPropMoveCommand(
+    fixture.session,
+    `preview ${fixture.prop.itemID} 15000 0 0`,
+    { spaceRuntime: { getSceneForSession: () => fixture.scene }, selectionOptions: fixture.options },
+  );
+  assert.equal(result.success, false);
+  assert.match(result.message, /could not be sent/i);
+  assert.deepEqual(fixture.prop.position, { x: 0, y: 0, z: 0 });
+});
+
+test("detach command delegates one entity and clears its hologram", () => {
+  const fixture = buildFixture();
+  const calls: any[] = [];
+  const result = executeDungeonPropMoveCommand(
+    fixture.session,
+    `detach ${fixture.prop.itemID}`,
+    {
+      spaceRuntime: { getSceneForSession: () => fixture.scene },
+      detachment: {
+        detachDungeonProp: (...args) => {
+          calls.push(args);
+          return { success: true, data: { worldEntityID: 8_600_000_000_000_000 } };
+        },
+      },
+    },
+  );
+  assert.equal(result.success, true);
+  assert.equal(calls[0][0], fixture.scene);
+  assert.equal(calls[0][2], fixture.prop.itemID);
+  assert.deepEqual(fixture.notifications, [[
+    "OnDungeonPropMovePreview", "clientID", [{ active: false }],
+  ]]);
+});
+
+test("move command validates the requested pose before detaching and starting motion", () => {
+  const fixture = buildFixture();
+  const calls: string[] = [];
+  const worldEntityID = 8_600_000_000_000_000;
+  const options = {
+    spaceRuntime: { getSceneForSession: () => fixture.scene },
+    selectionOptions: fixture.options,
+    detachment: {
+      detachDungeonProp: () => {
+        calls.push("detach");
+        return { success: true, data: { worldEntityID } };
+      },
+    },
+    movement: {
+      startDetachedPropMove: (_scene, _session, id, destination) => {
+        calls.push("move");
+        assert.equal(id, worldEntityID);
+        assert.deepEqual(destination, { x: 15_000, y: 0, z: 0 });
+        return { success: true, data: { worldEntityID } };
+      },
+    },
+  };
+  const denied = executeDungeonPropMoveCommand(
+    fixture.session, `move ${fixture.prop.itemID} 200000 0 0`, options,
+  );
+  assert.equal(denied.success, false);
+  assert.deepEqual(calls, []);
+  const accepted = executeDungeonPropMoveCommand(
+    fixture.session, `move ${fixture.prop.itemID} 15000 0 0`, options,
+  );
+  assert.equal(accepted.success, true);
+  assert.deepEqual(calls, ["detach", "move"]);
 });

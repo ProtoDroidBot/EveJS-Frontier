@@ -2513,6 +2513,7 @@ class WindowsUpgradeTests(unittest.TestCase):
                 "inventoryView": "patched",
                 "collisionVfx": "patched",
                 "creationTransform": "patched",
+                "dungeonPropHologram": "patched",
                 "turretTracking": "patched",
             }
             with (

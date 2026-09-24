@@ -156,6 +156,11 @@ function validateDungeonPropMovePreview(
       instanceID,
       systemID,
       typeID: positiveSafeInteger(entity.typeID),
+      graphicID: positiveSafeInteger(entity.graphicID),
+      radius: Math.max(1, Number(entity.radius) || 1),
+      collisionScale: Number.isFinite(Number(entity.collisionScale)) && Number(entity.collisionScale) > 0
+        ? Number(entity.collisionScale)
+        : 1,
       sourcePosition,
       destinationPosition,
       rotation,

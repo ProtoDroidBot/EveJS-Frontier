@@ -6563,6 +6563,9 @@ function materializeSiteContents(scene, instance, siteEntity, template, options 
         phaseStartedAtMs = finishedAtMs;
     };
     const materializedSiteID = Math.max(0, toInt(siteEntity && siteEntity.itemID, instance && instance.metadata && instance.metadata.siteID));
+    // Read suppression before any site content or bookkeeping is changed. If the
+    // durable prop store is unavailable, materialization must fail closed.
+    const detachedSourceIDs = (options.detachedDungeonPropStore || require(path.join(__dirname, "../../space/detachedDungeonProps")).getDetachedDungeonPropStore()).suppressedSourceIDs(scene.systemID, instance.instanceID, materializedSiteID);
     if (materializedSiteID > 0) {
         markSceneSiteMaterialized(scene, materializedSiteID, instance.instanceID);
     }
@@ -6635,6 +6638,9 @@ function materializeSiteContents(scene, instance, siteEntity, template, options 
     let environmentMiningRegisterMs = 0;
     const frontierDungeonResourceEntityIDs = [];
     for (const entity of environmentEntities) {
+        if (detachedSourceIDs.has(Number(entity.itemID))) {
+            continue;
+        }
         if (scene.staticEntitiesByID && scene.staticEntitiesByID.has(Number(entity.itemID))) {
             continue;
         }
@@ -7215,6 +7221,9 @@ function removeSceneSiteContent(scene, siteID, options = {}) {
         siteID: numericSiteID,
     }).filter((entity) => (normalizedInstanceID === null ||
         entityIDsEqual(entity && entity.dungeonSiteInstanceID, normalizedInstanceID)))
+        // A detached world prop is never owned by a site, even if a stale scope
+        // marker was copied onto its live ball by another scene path.
+        .filter((entity) => entity && entity.kind !== "detachedDungeonProp")
         // Site NPC wrecks carry the site's dungeonMaterializedSiteContent tag, so they land in this list
         // by default. They must survive the site: see the note in removeStoredDungeonSiteContent.
         .filter((entity) => !(entity && entity.nativeNpcWreck === true));

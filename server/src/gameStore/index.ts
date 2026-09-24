@@ -298,6 +298,7 @@ const SQLITE_TABLES = new Set([
   "contractRuntime",
   "remoteSystemScans",
   "systemSignatureEvents",
+  "detachedDungeonProps",
 ]);
 const SQLITE_DB_PATH = path.resolve(DATA_DIR, "..", "gamestore.sqlite");
 let sqliteRecoveryRequired = true;

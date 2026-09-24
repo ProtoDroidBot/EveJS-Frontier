@@ -503,7 +503,7 @@ const COMMANDS_HELP_TEXT = [
   "/assembly <types|list|info|spawn|state|link|unlink|complete|remove>",
   "/landscape <list [name]|inspect ecosystemID|sites|spawn ecosystemID [placement]|remove siteID|nearest|here>",
   "/rift <list [name]|inspect template|sites|spawn [template] [placement]|remove siteID|nearest|here>",
-  "/dungeonprop preview <entityID> <x> <y> <z> [yaw pitch roll] (GM validation only)",
+  "/dungeonprop preview|move <entityID> <x> <y> <z> [yaw pitch roll] | detach <entityID> | stop <worldEntityID> | clear (GM)",
   "/allskills",
   "/npc [amount] [faction|profile|pool]",
   "/spawn <NPC typeID> [count]  (GM test command)",

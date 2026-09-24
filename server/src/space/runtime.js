@@ -15373,6 +15373,17 @@ function persistDynamicEntity(entity) {
     if (!entity) {
         return;
     }
+    if (entity.kind === "detachedDungeonProp" && entity.detachedPropMove) {
+        try {
+            return require(path.join(__dirname, "./detachedDungeonProps"))
+                .getDetachedDungeonPropStore()
+                .checkpointPose(entity.systemID, entity.itemID, entity.position);
+        }
+        catch (error) {
+            log.warn(`[SpaceRuntime] Failed to persist detached prop ${entity.itemID}: ${error.message}`);
+            return { success: false, errorMsg: "DETACHED_PROP_STORE_FAILED" };
+        }
+    }
     if (isNativeNpcEntity(entity)) {
         try {
             const nativeNpcService = lazyRequire("./npc/nativeNpcService");
@@ -16262,6 +16273,12 @@ class SolarSystemScene {
         }
         for (const entity of authoredSpaceProps.getConfiguredStaticEntitiesForSystem(this.systemID)) {
             this.addStaticEntity(entity);
+        }
+        const detachedPropRestore = require(path.join(__dirname, "./dungeonPropDetachment"))
+            .restoreDetachedPropsToScene(this);
+        if (!detachedPropRestore.success) {
+            throw new Error(`Detached dungeon prop restore failed in system ${this.systemID}: ` +
+                JSON.stringify(detachedPropRestore.failures));
         }
         const systemSpaceItems = listSystemSpaceItems(this.systemID);
         const inventoryBackedOrbitalIDs = new Set();
@@ -30355,6 +30372,19 @@ class SolarSystemScene {
             // authored so deferred missile launch snapshots retain their current lane.
             this.pruneExpiredCommandBurstBuffs(now);
             for (const entity of this.dynamicEntities.values()) {
+                if (entity.kind === "detachedDungeonProp" && entity.detachedPropMove) {
+                    try {
+                        const movement = require(path.join(__dirname, "./dungeonPropMovement"));
+                        const result = movement.tickDetachedPropMove(this, entity, deltaSeconds, now);
+                        if (!result.success) {
+                            log.warn(`[SpaceRuntime] Detached prop move failed entity=${entity.itemID}: ${result.errorMsg}`);
+                        }
+                    }
+                    catch (error) {
+                        log.warn(`[SpaceRuntime] Detached prop move threw entity=${entity.itemID}: ${error.message}`);
+                    }
+                    continue;
+                }
                 if (Array.isArray(entity.pendingModuleStopNotifications) && entity.pendingModuleStopNotifications.length > 0) {
                     const flushSession = entity.session || getOwningSessionForEntity(this, entity);
                     if (flushSession && isReadyForDestiny(flushSession)) {

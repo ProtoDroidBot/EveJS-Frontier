@@ -40,6 +40,7 @@ COLLISION_VFX_PATCHER = SCRIPT_DIR / "patch_frontier_collision_vfx.py"
 CREATION_TRANSFORM_PATCHER = (
     SCRIPT_DIR / "patch_frontier_creation_transform.py"
 )
+DUNGEON_PROP_HOLOGRAM_PATCHER = SCRIPT_DIR / "patch_frontier_dungeon_prop_hologram.py"
 PEM_CERTIFICATE_RE = re.compile(
     rb"-----BEGIN CERTIFICATE-----\s+([A-Za-z0-9+/=\r\n]+?)\s+"
     rb"-----END CERTIFICATE-----",
@@ -763,6 +764,12 @@ def code_patch_states(archive: Path, build: int) -> dict:
                 f"Unexpected Creation transform state: {creation_transform}"
             )
         states["creationTransform"] = creation_transform
+        dungeon_hologram = run_python_patcher(
+            DUNGEON_PROP_HOLOGRAM_PATCHER, archive, build, check=True
+        )
+        if dungeon_hologram not in {"source", "patched", "outdated"}:
+            raise FrontierWindowsError(f"Unexpected dungeon hologram state: {dungeon_hologram}")
+        states["dungeonPropHologram"] = dungeon_hologram
         turret_tracking = run_python_patcher(TURRET_TRACKING_PATCHER, archive, build, check=True)
         if turret_tracking not in {"source", "patched", "outdated"}:
             raise FrontierWindowsError(f"Unexpected turret tracking state: {turret_tracking}")
@@ -779,6 +786,7 @@ def expected_code_states(build: int, state: str) -> dict:
         result["inventoryView"] = state
         result["collisionVfx"] = state
         result["creationTransform"] = state
+        result["dungeonPropHologram"] = state
         result["turretTracking"] = state
     return result
 
@@ -809,6 +817,8 @@ def patch_code_archive(archive: Path, build: int) -> dict:
         run_python_patcher(COLLISION_VFX_PATCHER, archive, build, check=False)
     if states.get("creationTransform") in {"source", "outdated"}:
         run_python_patcher(CREATION_TRANSFORM_PATCHER, archive, build, check=False)
+    if states.get("dungeonPropHologram") in {"source", "outdated"}:
+        run_python_patcher(DUNGEON_PROP_HOLOGRAM_PATCHER, archive, build, check=False)
     patched = code_patch_states(archive, build)
     if patched != expected_code_states(build, "patched"):
         raise FrontierWindowsError(f"code.ccp did not reach the exact patched state: {patched}")
@@ -1396,6 +1406,8 @@ def check_stage(
     allow_collision_vfx_source: bool = False,
     allow_collision_vfx_outdated: bool = False,
     allow_creation_transform_source: bool = False,
+    allow_dungeon_prop_hologram_source: bool = False,
+    allow_dungeon_prop_hologram_outdated: bool = False,
     allow_turret_tracking_source: bool = False,
     allow_turret_tracking_outdated: bool = False,
 ) -> dict:
@@ -1444,6 +1456,12 @@ def check_stage(
     if (allow_creation_transform_source and build == 3502403
             and code_states.get("creationTransform") in {"source", "outdated"}):
         expected_states["creationTransform"] = code_states["creationTransform"]
+    if (allow_dungeon_prop_hologram_source and build == 3502403
+            and code_states.get("dungeonPropHologram") == "source"):
+        expected_states["dungeonPropHologram"] = "source"
+    if (allow_dungeon_prop_hologram_outdated and build == 3502403
+            and code_states.get("dungeonPropHologram") == "outdated"):
+        expected_states["dungeonPropHologram"] = "outdated"
     if (allow_turret_tracking_source and build == 3502403
             and code_states.get("turretTracking") == "source"):
         expected_states["turretTracking"] = "source"
@@ -1598,6 +1616,8 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
                 allow_collision_vfx_source=True,
                 allow_collision_vfx_outdated=True,
                 allow_creation_transform_source=True,
+                allow_dungeon_prop_hologram_source=True,
+                allow_dungeon_prop_hologram_outdated=True,
                 allow_turret_tracking_source=True,
                 allow_turret_tracking_outdated=True, **check_options)
     marker_path, marker = load_stage(stage_root)
@@ -1610,6 +1630,7 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             and states.get("inventoryView") == "patched"
             and states.get("collisionVfx") == "patched"
             and states.get("creationTransform") == "patched"
+            and states.get("dungeonPropHologram") == "patched"
             and states.get("turretTracking") == "patched"):
         return check_stage(stage_root, **check_options)
     if (build != 3502403
@@ -1619,6 +1640,7 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             or states.get("inventoryView") not in {"source", "patched", "outdated"}
             or states.get("collisionVfx") not in {"source", "patched", "outdated"}
             or states.get("creationTransform") not in {"source", "patched", "outdated"}
+            or states.get("dungeonPropHologram") not in {"source", "patched", "outdated"}
             or states.get("turretTracking") not in {"source", "patched", "outdated"}):
         raise FrontierWindowsError("Stage cannot receive the current code adapters")
     _, profile = resolve_profile(build, str(marker["nativeBlue"]), check_options.get("profile_path"))
@@ -1641,6 +1663,8 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             run_python_patcher(COLLISION_VFX_PATCHER, paths["code"], build, check=False)
         if states["creationTransform"] != "patched":
             run_python_patcher(CREATION_TRANSFORM_PATCHER, paths["code"], build, check=False)
+        if states["dungeonPropHologram"] != "patched":
+            run_python_patcher(DUNGEON_PROP_HOLOGRAM_PATCHER, paths["code"], build, check=False)
         if states["turretTracking"] != "patched":
             run_python_patcher(TURRET_TRACKING_PATCHER, paths["code"], build, check=False)
         refresh_manifest_atomic(paths["manifest"], stage_root, profile)
@@ -1670,6 +1694,10 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             marker["creationTransformPatchState"] = "patched"
             marker["creationTransformPatchBackup"] = str(backup_root)
             marker["preCreationTransformHashes"] = original_hashes
+        if states["dungeonPropHologram"] != "patched":
+            marker["dungeonPropHologramPatchState"] = "patched"
+            marker["dungeonPropHologramPatchBackup"] = str(backup_root)
+            marker["preDungeonPropHologramHashes"] = original_hashes
         if states["turretTracking"] != "patched":
             marker["turretTrackingPatchState"] = "patched"
             marker["turretTrackingPatchBackup"] = str(backup_root)
@@ -1756,6 +1784,7 @@ def patch_stage(
                 "inventoryViewPatchState": code_states.get("inventoryView"),
                 "collisionVfxPatchState": code_states.get("collisionVfx"),
                 "creationTransformPatchState": code_states.get("creationTransform"),
+                "dungeonPropHologramPatchState": code_states.get("dungeonPropHologram"),
                 "turretTrackingPatchState": code_states.get("turretTracking"),
                 "fileStates": {
                     "nativeBlue": "exact-target",
@@ -1811,7 +1840,7 @@ def main() -> int:
         description="Strict Windows EVE Frontier stage and native-blue patch verifier."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("patch", "check", "map-upgrade"):
+    for name in ("patch", "check", "map-upgrade", "adapters-upgrade"):
         command = subparsers.add_parser(name)
         command.add_argument("--staged-root", type=Path, required=True)
         command.add_argument("--profile", type=Path)
@@ -1829,6 +1858,17 @@ def main() -> int:
     try:
         if args.command == "map-upgrade":
             report = upgrade_map_view_stage(args.staged_root, profile_path=args.profile)
+            print(json.dumps(report, sort_keys=True))
+            return 0
+        if args.command == "adapters-upgrade":
+            report = upgrade_industry_storage_stage(
+                args.staged_root,
+                profile_path=args.profile,
+                node_path=args.node,
+                ca_path=args.ca,
+                xmpp_leaf=args.xmpp_leaf,
+                gateway_leaf=args.gateway_leaf,
+            )
             print(json.dumps(report, sort_keys=True))
             return 0
         if args.command in {"patch", "check"}:
