@@ -4,13 +4,13 @@ const path = require("path");
 const crypto = require("node:crypto");
 const nativeNpcStore = require(path.join(__dirname, "../../space/npc/nativeNpcStore"));
 const itemStore = require(path.join(__dirname, "../inventory/itemStore"));
+const { resolveItemByTypeID } = require(path.join(__dirname, "../inventory/itemTypeRegistry"));
 const npcFitting = require(path.join(__dirname, "../../space/npc/npcFittingService"));
 const { getCreationTemplate } = require(path.join(__dirname, "../frontier/creationStaticData"));
 const {
   CREATION_FITTING_FLAG_ID,
   buildCreationSeedPlan,
   buildSeededCreationState,
-  getCreationModuleAbilities,
   normalizeCreationState,
   stageCreationChanges,
 } = require(path.join(__dirname, "../frontier/creationRuntime"));
@@ -40,10 +40,11 @@ function creationTemplateForHull(fittingHull) {
 function moduleMatchesState(entityID, module) {
   const record = nativeNpcStore.getNativeModule(positive(module?.itemID));
   return record && positive(record.entityID) === entityID &&
-    positive(record.typeID) === positive(module?.typeID);
+    positive(record.typeID) === positive(module?.typeID) &&
+    Number(record.flagID) === CREATION_FITTING_FLAG_ID;
 }
 
-function ensureNpcCreationState(entityRecord, fittingHull) {
+function ensureNpcCreationState(entityRecord, fittingHull, options: Record<string, any> = {}) {
   const template = creationTemplateForHull(fittingHull);
   if (!template) return { success: false, errorMsg: "NPC_CREATION_TEMPLATE_MISSING" };
   const entityID = positive(entityRecord?.entityID);
@@ -61,7 +62,8 @@ function ensureNpcCreationState(entityRecord, fittingHull) {
   // matching native modules before allocating the missing default modules.
   const plan = buildCreationSeedPlan(template);
   const available = nativeNpcStore.listNativeModulesForEntity(entityID)
-    .filter((record) => !record.custody && positive(record.typeID));
+    .filter((record) => !record.custody && positive(record.typeID) &&
+      Number(record.flagID) === CREATION_FITTING_FLAG_ID);
   const used = new Set();
   const createdItems = [];
   for (const entry of plan) {
@@ -74,13 +76,15 @@ function ensureNpcCreationState(entityRecord, fittingHull) {
       const profile = npcFitting.resolveNpcEquipmentProfile({
         itemID: moduleID, typeID: entry.typeID, categoryID: 7,
       });
+      const moduleType = resolveItemByTypeID(entry.typeID);
       record = {
         moduleID,
         entityID,
         ownerID: positive(latest.ownerID) || positive(latest.npcCharacterID),
         typeID: entry.typeID,
+        groupID: positive(moduleType?.groupID),
         categoryID: 7,
-        itemName: `Creation module ${entry.typeID}`,
+        itemName: String(moduleType?.name || `Creation module ${entry.typeID}`),
         flagID: CREATION_FITTING_FLAG_ID,
         singleton: true,
         transient: latest.transient === true,
@@ -91,7 +95,7 @@ function ensureNpcCreationState(entityRecord, fittingHull) {
         moduleState: { online: true },
       };
       const stored = nativeNpcStore.upsertNativeModule(record, {
-        durable: latest.transient !== true,
+        durable: options.durable !== false && latest.transient !== true,
       });
       if (!stored.success) return stored;
     }
@@ -105,10 +109,11 @@ function ensureNpcCreationState(entityRecord, fittingHull) {
     return { success: false, errorMsg: "NPC_CREATION_SEED_INVALID", data: blockers };
   }
   const stored = nativeNpcStore.upsertNativeEntity({ ...latest, npcCreationState: state }, {
-    durable: latest.transient !== true,
+    durable: options.durable !== false && latest.transient !== true,
   });
   if (!stored.success) return stored;
-  return { success: true, data: { state, template, entityRecord: stored.data || latest } };
+  return { success: true, data: { state, template,
+    entityRecord: nativeNpcStore.getNativeEntity(entityID) || { ...latest, npcCreationState: state } } };
 }
 
 function stageNpcCreationDraft(context, changes, dependencies: Record<string, any> = {}) {
@@ -121,6 +126,13 @@ function stageNpcCreationDraft(context, changes, dependencies: Record<string, an
   }
   const entityID = positive(context.entityRecord.entityID);
   const actorID = positive(context.actor.characterID);
+  const targetPilotID = positive(context.entityRecord.npcCharacterID);
+  const allowedOwnerIDs = new Set([actorID]);
+  if (context.actor.kind === "npc" && targetPilotID &&
+      Array.isArray(context.actor.authorizedNpcOwnerIDs) &&
+      context.actor.authorizedNpcOwnerIDs.some((id) => positive(id) === targetPilotID)) {
+    allowedOwnerIDs.add(targetPilotID);
+  }
   const shipID = positive(context.interaction.shipID);
   const store = dependencies.itemStore || itemStore;
   const cargoFlag = store.ITEM_FLAGS.CARGO_HOLD;
@@ -131,7 +143,7 @@ function stageNpcCreationDraft(context, changes, dependencies: Record<string, an
     );
     if (op === "add" || op === "attach") {
       const source = store.findItemById(itemID);
-      if (!source || positive(source.ownerID) !== actorID ||
+      if (!source || !allowedOwnerIDs.has(positive(source.ownerID)) ||
           positive(source.locationID) !== shipID ||
           Number(source.flagID) !== Number(cargoFlag) ||
           positive(source.typeID) !== positive(change.typeID) ||
@@ -142,7 +154,7 @@ function stageNpcCreationDraft(context, changes, dependencies: Record<string, an
     if (op === "remove" || op === "detach") {
       const record = nativeNpcStore.getNativeModule(itemID);
       if (!record || positive(record.entityID) !== entityID || !record.custody ||
-          positive(record.ownerID) !== actorID) {
+          !allowedOwnerIDs.has(positive(record.ownerID))) {
         return { success: false, diagnostics: [diagnostic("item_unavailable", change)] };
       }
       if (change.destLocationID != null && positive(change.destLocationID) !== shipID ||
@@ -153,6 +165,7 @@ function stageNpcCreationDraft(context, changes, dependencies: Record<string, an
   }
   const staged = stageCreationChanges(
     ensured.data.state, ensured.data.template, entityID, actorID, changes,
+    { allowedOwnerIDs: [...allowedOwnerIDs] },
   );
   if (staged.diagnostic) return { success: false, diagnostics: [staged.diagnostic] };
   const actionIDs = staged.inventoryActions.map((action) => positive(action?.item?.itemID));

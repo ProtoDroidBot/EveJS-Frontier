@@ -197,7 +197,7 @@ class SlashService extends BaseService {
     return null;
   }
 
-  Handle_SlashCmd(args, session, kwargs) {
+  async Handle_SlashCmd(args, session, kwargs) {
     const command = extractCommand(args, kwargs).trim();
     const feedbackChannel = extractFeedbackChannel(args, kwargs);
 
@@ -215,7 +215,7 @@ class SlashService extends BaseService {
         this._throwCommandListError();
       }
 
-      const result = executeChatCommand(session, command, chatHub, {
+      const result = await executeChatCommand(session, command, chatHub, {
         emitChatFeedback: true,
         feedbackChannel,
         serviceManager: this.serviceManager,

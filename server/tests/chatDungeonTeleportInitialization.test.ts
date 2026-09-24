@@ -4,6 +4,8 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const chatCommands = require("../src/services/chat/chatCommands");
+const chatHub = require("../src/services/chat/chatHub");
+const SlashService = require("../src/services/admin/slashService");
 const spaceRuntime = require("../src/space/runtime");
 
 const {
@@ -162,4 +164,44 @@ test("session transport initializes a dungeon before teleporting the ship", asyn
     spaceRuntime.getSceneForSession = originalGetSceneForSession;
     spaceRuntime.teleportSessionShipToPoint = originalTeleportSessionShipToPoint;
   }
+});
+
+test("repeated slash transports follow a moving NPC and return one success message", async (t) => {
+  const shipID = 9_000_000_002;
+  const npcID = 980_000_000_000;
+  const ship = { itemID: shipID, kind: "ship", systemID: 30_000_142,
+    position: { x: 0, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, radius: 13.5 };
+  const npc = { itemID: npcID, kind: "ship", systemID: 30_000_142,
+    position: { x: 100_000, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, radius: 13.5 };
+  const entities = new Map([[shipID, ship], [npcID, npc]]);
+  const scene = { systemID: 30_000_142, staticEntities: [], dynamicEntities: entities,
+    getEntityByID: (id) => entities.get(id) || null };
+  const session = { characterID: 140_000_002, solarsystemid2: scene.systemID,
+    _space: { shipID, systemID: scene.systemID } };
+  const messages: string[] = [];
+  t.mock.method(spaceRuntime, "getSceneForSession", () => scene);
+  t.mock.method(spaceRuntime, "getEntity", (_session, id) => entities.get(id) || null);
+  t.mock.method(spaceRuntime, "teleportSessionShipToPoint", (_session, point) => {
+    ship.position = { ...point };
+    return { success: true, data: { entity: ship } };
+  });
+  t.mock.method(require("../src/space/frontierLandscapeSceneService"),
+    "materializeNearbyLandscapeSites", () => null);
+  t.mock.method(chatHub, "sendSystemMessage", (_session, message) => messages.push(message));
+  const slash = new SlashService();
+
+  const first = await slash.callMethod("SlashCmd", [`/tr me ${npcID}`], session, null);
+  assert.match(first, /Transported me to ship 980000000000/u);
+  assert.deepEqual(ship.position, { x: 97_500, y: 0, z: 0 });
+  npc.position = { x: 200_000, y: 0, z: 0 };
+  const second = await slash.callMethod("SlashCmd", [`/tr me ${npcID}`], session, null);
+  assert.match(second, /Transported me to ship 980000000000/u);
+  assert.deepEqual(ship.position, { x: 197_500, y: 0, z: 0 });
+  assert.deepEqual(messages, [first, second]);
+
+  const explicitOffset = await slash.callMethod("SlashCmd",
+    [`/tr me ${npcID} offset=0,0,100`], session, null);
+  assert.match(explicitOffset, /Transported me to ship 980000000000/u);
+  assert.deepEqual(ship.position, { x: 200_000, y: 0, z: 100 });
+  assert.equal(messages.length, 3);
 });

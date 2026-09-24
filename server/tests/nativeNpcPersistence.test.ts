@@ -3,12 +3,13 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
+const spaceRuntime = require("../src/space/runtime");
 const nativeNpcStore = require("../src/space/npc/nativeNpcStore");
 const nativeNpcService = require("../src/space/npc/nativeNpcService");
 const npcRuntimePersistence = require("../src/space/npc/npcRuntimePersistence");
-const spaceRuntime = require("../src/space/runtime");
 const npcRegistry = require("../src/space/npc/npcRegistry");
 const config = require("../src/config");
+const database = require("../src/gameStore");
 
 test("durable NPC checkpoints retain movement and shield/armor/hull condition", (t) => {
   const storedRecord: Record<string, any> = {
@@ -148,4 +149,57 @@ test("durable NPC rehydration keeps its ID, fittings, properties, and manual ord
   assert.equal(result.data.entity.targetEntityID, entityRecord.targetEntityID);
   assert.deepEqual(result.data.controller.manualOrder, manualOrder);
   assert.equal(result.data.controller.returningHome, true);
+});
+
+test("async scene bootstrap restores a durable NPC when authored startup is skipped", async (t) => {
+  const systemID = 39_999_995;
+  const entityID = 980000000995;
+  const tables = ["npcRuntimeState", "npcEntities", "npcRuntimeControllers"];
+  const originals = tables.map((table) => [table, structuredClone(database.read(table, "/").data || {})]);
+  const previousSkip = process.env.EVEJS_SKIP_NPC_STARTUP;
+  const previousAsteroidsEnabled = config.asteroidFieldsEnabled;
+  const previousMiningEnabled = config.miningEnabled;
+  process.env.EVEJS_SKIP_NPC_STARTUP = "1";
+  config.asteroidFieldsEnabled = false;
+  config.miningEnabled = false;
+  t.after(() => {
+    spaceRuntime.scenes.delete(systemID);
+    npcRegistry.unregisterController(entityID);
+    for (const [table, value] of originals) database.write(table, "/", value, { force: true });
+    database.flushTablesSync(tables);
+    config.asteroidFieldsEnabled = previousAsteroidsEnabled;
+    config.miningEnabled = previousMiningEnabled;
+    if (previousSkip === undefined) delete process.env.EVEJS_SKIP_NPC_STARTUP;
+    else process.env.EVEJS_SKIP_NPC_STARTUP = previousSkip;
+  });
+
+  assert.equal(nativeNpcStore.upsertNativeEntity({
+    entityID, systemID, nativeNpc: true, transient: false,
+    npcPilotRequested: false, typeID: 72207, groupID: 759, categoryID: 11,
+    itemName: "Restarted NPC", npcEntityType: "npc", radius: 100,
+    position: { x: 100, y: 200, z: 300 },
+    velocity: { x: 0, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 },
+    targetPoint: { x: 100, y: 200, z: 300 }, mode: "STOP",
+    conditionState: { shieldCharge: 0.4, armorDamage: 0.2, damage: 0.1 },
+  }, { durable: true }).success, true);
+  assert.equal(nativeNpcStore.upsertNativeController({
+    entityID, systemID, transient: false, profileID: "restart_snapshot",
+    runtimeKind: "nativeCombat", manualOrder: { type: "hold" },
+    definitionSnapshot: {
+      profile: { profileID: "restart_snapshot", name: "Restarted NPC" },
+      loadout: { loadoutID: "restart_empty", modules: [], charges: [] },
+      behaviorProfile: { behaviorProfileID: "restart_behavior", autoAggro: false },
+      behaviorPolicy: { role: "combat", activity: "combat" },
+    },
+  }, { durable: true }).success, true);
+
+  const scene = await spaceRuntime.ensureSceneReady(systemID, {
+    reconcileUniverseSites: false,
+    materializeUniverseSites: false,
+    refreshStargates: false,
+  });
+  assert.equal(scene._bootstrapReady, true);
+  assert.equal(scene._npcStartupInitialized, true);
+  assert.equal(scene.getEntityByID(entityID)?.itemID, entityID);
+  assert.equal(npcRegistry.getControllerByEntityID(entityID)?.manualOrder?.type, "hold");
 });

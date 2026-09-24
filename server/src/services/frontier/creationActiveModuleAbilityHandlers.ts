@@ -111,7 +111,7 @@ function stopEffect(runtime, context, reason) {
   return runtime.deactivateGenericModule(
     context.session,
     context.moduleItemID,
-    { reason, deferUntilCycle: false },
+    { reason, deferUntilCycle: reason === "manual" },
   );
 }
 

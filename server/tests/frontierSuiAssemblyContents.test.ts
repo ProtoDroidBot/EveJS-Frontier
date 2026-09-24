@@ -64,7 +64,8 @@ function fixture(assemblies: AssemblySnapshot[] = [snapshot()], assertInventoryS
   const objects = new Map<string, any>();
   const dynamic = new Map<string, any>();
   const chainObjects = new Map<string, any>();
-  const executed: Array<{ label: string; transaction: Transaction; ownerId: number | undefined }> = [];
+  const executed: Array<{ label: string; transaction: Transaction; ownerId: number | undefined;
+    gasPayerOwnerId: number | undefined }> = [];
   const borrowed: Array<{ ownerId: number; refs: any[] }> = [];
   let onRead: () => void = () => {};
   for (const assembly of assemblies) {
@@ -97,10 +98,10 @@ function fixture(assemblies: AssemblySnapshot[] = [snapshot()], assertInventoryS
   const contents = createSuiAssemblyContents({
     client, chain, world, serverSigner: signer, now: () => 123_000, assertInventorySnapshotCurrent, assertGateSnapshotCurrent,
     getCharacter: async (ownerId) => ({ id: id(ownerId), address: id(ownerId + 500), ownerCapId: id(ownerId + 2000) }),
-    execute: async (label, transaction, ownerId, assertSnapshotCurrent) => {
+    execute: async (label, transaction, ownerId, assertSnapshotCurrent, gasPayerOwnerId) => {
       onExecute(label);
       assertSnapshotCurrent?.();
-      executed.push({ label, transaction, ownerId });
+      executed.push({ label, transaction, ownerId, gasPayerOwnerId });
     },
   });
   return { contents, chainObjects, objects, dynamic, executed, borrowed,
@@ -247,6 +248,7 @@ test("Smart Catapult sync creates, confirms, and clears a one-way solar-system r
   await f.contents.syncGateLinks([catapult]);
   assert.equal(f.executed.length, 1);
   assert.equal(f.executed[0].label, "catapult-route:100:3002");
+  assert.equal(f.executed[0].gasPayerOwnerId, catapult.ownerId);
   assert.equal(calls(f.executed[0].transaction)[0].function, "create");
   assert.equal(calls(f.executed[0].transaction)[0].package, catapultPackageId);
 
@@ -271,6 +273,7 @@ test("Smart Catapult sync creates, confirms, and clears a one-way solar-system r
   await f.contents.syncGateLinks([cleared]);
   assert.equal(f.executed.length, 2);
   assert.equal(f.executed[1].label, "catapult-route:100:0");
+  assert.equal(f.executed[1].gasPayerOwnerId, catapult.ownerId);
   assert.equal(calls(f.executed[1].transaction)[0].function, "sync_destination");
 });
 
@@ -295,6 +298,7 @@ test("a new selected partner replaces the stale reciprocal chain pair before lin
   });
   await f.contents.syncGateLinks([a, b, c]);
   assert.deepEqual(f.executed.map(entry => entry.label), ["gate-unlink:100", "gate-link:100:102"]);
+  assert.equal(f.executed[0].gasPayerOwnerId, a.ownerId);
   assert.equal((await f.contents.getGateStatus(a, c)).synchronized, true);
   assert.equal((await f.contents.getGateStatus(c, a)).synchronized, true);
   assert.deepEqual(f.chainObjects.get("101").fields.linked_gate_id.fields.vec, []);

@@ -2,6 +2,7 @@
 
 import builtins
 from functools import wraps
+import importlib
 import uuid
 
 NPC_ENTITY_ID_FLOOR = 980000000000
@@ -33,6 +34,37 @@ def _evejs_value(value, key, default=None):
         return default
 
 
+def _evejs_ball_cr_data(namespace, entity_id):
+    try:
+        manager = _evejs_service_manager(namespace)
+        try:
+            michelle = manager.GetService("michelle")
+        except Exception:
+            michelle = manager.StartService("michelle")
+    except Exception:
+        return None
+    try:
+        cr_data = michelle.GetCrData(entity_id)
+        if cr_data is not None:
+            return cr_data
+    except Exception:
+        pass
+    try:
+        ballpark = michelle.GetBallpark()
+    except Exception:
+        return None
+    try:
+        cr_data = ballpark.GetCrData(entity_id)
+        if cr_data is not None:
+            return cr_data
+    except Exception:
+        pass
+    try:
+        return ballpark.slimItems.get(entity_id)
+    except Exception:
+        return None
+
+
 def _evejs_npc_menu_kind(namespace, entity_id, cr_data=None):
     if not isinstance(entity_id, int) or entity_id < NPC_ENTITY_ID_FLOOR:
         return None
@@ -40,13 +72,7 @@ def _evejs_npc_menu_kind(namespace, entity_id, cr_data=None):
     pilot_id = _evejs_value(cr_data, "charID")
     if category_id is None or (str(category_id) == str(SHIP_CATEGORY_ID) and
                                pilot_id is None):
-        try:
-            ballpark = _evejs_service_manager(namespace).GetService(
-                "michelle"
-            ).GetBallpark()
-            slim_item = ballpark.slimItems.get(entity_id)
-        except Exception:
-            return None
+        slim_item = _evejs_ball_cr_data(namespace, entity_id)
         if category_id is None:
             category_id = _evejs_value(slim_item, "categoryID")
         if pilot_id is None:
@@ -70,13 +96,7 @@ def _evejs_ship_is_occupied(namespace, entity_id, cr_data=None):
     category_id = _evejs_value(cr_data, "categoryID")
     pilot_id = _evejs_value(cr_data, "charID")
     if category_id is None or pilot_id is None:
-        try:
-            ballpark = _evejs_service_manager(namespace).GetService(
-                "michelle"
-            ).GetBallpark()
-            slim_item = ballpark.slimItems.get(entity_id)
-        except Exception:
-            slim_item = None
+        slim_item = _evejs_ball_cr_data(namespace, entity_id)
         if category_id is None:
             category_id = _evejs_value(slim_item, "categoryID")
         if pilot_id is None:
@@ -116,12 +136,39 @@ def _evejs_assembly_access_remote(namespace):
     return _evejs_service_manager(namespace).RemoteSvc("smartAssemblyService")
 
 
+def _evejs_is_smart_assembly_menu_target(namespace, item_id, map_item=None,
+                                         cr_data=None, type_id=None):
+    if not isinstance(item_id, int) or item_id <= 0:
+        return False
+    candidates = (
+        type_id,
+        _evejs_value(cr_data, "typeID"),
+        _evejs_value(map_item, "typeID"),
+    )
+    resolved_type = next((value for value in candidates if value), None)
+    if resolved_type is None:
+        resolved_type = _evejs_value(
+            _evejs_ball_cr_data(namespace, item_id), "typeID"
+        )
+    try:
+        resolved_type = int(resolved_type)
+        if resolved_type <= 0:
+            return False
+        from spacecomponents.common.componentConst import SMART_DEPLOYABLE
+        from spacecomponents.common.data import type_has_space_component
+        return type_has_space_component(
+            resolved_type, SMART_DEPLOYABLE
+        ) is True
+    except Exception:
+        return False
+
+
 def _evejs_assembly_access_available(namespace, item_id):
     try:
-        _evejs_assembly_access_remote(namespace).get_assembly_access(
+        access = _evejs_assembly_access_remote(namespace).get_assembly_access(
             item_id, []
         )
-        return True
+        return int(_evejs_value(access, "assemblyID", 0) or 0) == item_id
     except Exception:
         return False
 
@@ -721,8 +768,12 @@ def _evejs_npc_fitting_probe(namespace, entity_id):
         return _evejs_service_manager(namespace).RemoteSvc(
             "npcFittingMgr"
         ).CanOpenNpcFitting(entity_id)
-    except Exception:
-        return None
+    except Exception as error:
+        return {
+            "trusted": False,
+            "reason": "NPC_FITTING_PROBE_FAILED",
+            "detail": "{}: {}".format(type(error).__name__, error)[:200],
+        }
 
 
 def _evejs_npc_fitting_action_is_trusted(namespace, entity_id):
@@ -756,6 +807,9 @@ def _evejs_npc_interaction_status(probe):
         "NPC_FITTING_TRUST_REQUIRED": "NPC command access was not granted.",
         "NPC_INTERACTION_NOT_FRIENDLY": "This NPC is not friendly or trusted.",
     }
+    if reason == "NPC_FITTING_PROBE_FAILED":
+        detail = str(_evejs_value(probe, "detail", "") or "")
+        return "NPC fitting service failed: {}".format(detail)
     if reason == "NPC_INTERACTION_PROBE_FAILED":
         detail = str(_evejs_value(probe, "detail", "") or "")
         return "Interaction service failed: {}".format(detail)
@@ -772,9 +826,38 @@ def _evejs_npc_interaction_available(namespace, entity_id):
 
 
 def _evejs_open_npc_fitting(namespace, entity_id):
-    command = getattr(_evejs_runtime_global(namespace, "uicore"), "cmd", None)
+    # uicore.cmd is a shortcut dispatcher and does not necessarily expose
+    # methods added to the cmd service after its command map was built.
+    try:
+        command = _evejs_service_manager(namespace).GetService("cmd")
+    except Exception:
+        command = None
     opener = getattr(command, "OpenNpcFitting", None)
-    return opener(entity_id) if opener is not None else None
+    if not callable(opener):
+        command = getattr(_evejs_runtime_global(namespace, "uicore"), "cmd", None)
+        opener = getattr(command, "OpenNpcFitting", None)
+    if callable(opener):
+        window = opener(entity_id)
+        if window is not None:
+            return window
+
+    # The command may return None after a failed native simulation or an RPC
+    # error. Recheck the server state before opening the RPC-backed editor.
+    state = _evejs_service_manager(namespace).RemoteSvc(
+        "npcFittingMgr"
+    ).GetNpcFittingState(entity_id)
+    if _evejs_value(state, "trusted", False) is not True:
+        raise PermissionError("NPC fitting access denied ({})".format(
+            _evejs_value(state, "reason", "no server trust")
+        ))
+    command_module = importlib.import_module("eve.client.script.ui.eveCommands")
+    fallback = getattr(command_module, "_evejs_open_npc_fitting_window", None)
+    if not callable(fallback):
+        raise RuntimeError("NPC fitting editor is unavailable")
+    window = fallback(command_module.__dict__, entity_id, state)
+    if window is None:
+        raise RuntimeError("NPC fitting window did not open")
+    return window
 
 
 def _evejs_active_target_id(namespace):
@@ -1041,10 +1124,9 @@ def _evejs_npc_interaction_window_type(namespace):
 
         def _on_modify_fittings(self, *args):
             try:
-                if not _evejs_npc_fitting_action_is_trusted(
-                    namespace, self._entity_id
-                ):
-                    self.Close()
+                probe = _evejs_npc_fitting_probe(namespace, self._entity_id)
+                if _evejs_value(probe, "trusted", False) is not True:
+                    self._status.text = _evejs_npc_interaction_status(probe)
                     return
                 _evejs_open_npc_fitting(namespace, self._entity_id)
             except Exception as error:
@@ -1098,6 +1180,9 @@ def _evejs_install_npc_fitting_menu(namespace):
             menu = []
         if isinstance(itemID, list):
             return menu
+        if npc_kind is None:
+            npc_kind = _evejs_npc_menu_kind(namespace, itemID, crData)
+            is_npc = npc_kind == "pilot"
         if _evejs_ship_is_occupied(namespace, itemID, crData):
             try:
                 menu[:] = [row for row in menu
@@ -1127,7 +1212,11 @@ def _evejs_install_npc_fitting_menu(namespace):
         except Exception:
             pass
         try:
-            if npc_kind is None and _evejs_assembly_access_available(namespace, itemID):
+            if (npc_kind is None and
+                    _evejs_is_smart_assembly_menu_target(
+                        namespace, itemID, mapItem, crData, typeID,
+                    ) and
+                    _evejs_assembly_access_available(namespace, itemID)):
                 menu.append([
                     "Manage Assembly Access",
                     _evejs_open_assembly_access,

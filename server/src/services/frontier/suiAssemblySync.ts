@@ -672,7 +672,17 @@ export function startSuiAssemblySync() {
     const journalPath = path.join(root, `${synced.chainId}-${synced.packageId}.transactions.json`);
     const journalStore = await supervisor.openJournal(journalPath, synced.chainId, synced.packageId);
     const executor = createAssemblyTransactionExecutor({
-      client, chainId: synced.chainId, packageId: synced.packageId, adminSigner, getSigner, assertCurrent,
+      client, chainId: synced.chainId, packageId: synced.packageId, adminSigner, getSigner,
+      getFactionGasSigner: ownerId => {
+        const pilot = npcPilotIdentityStore.get(ownerId);
+        if (!pilot) return null;
+        if (pilot.sui?.status !== "confirmed" || !pilot.sui?.npcProfileObjectId ||
+            pilot.sui?.chainId !== synced.chainId) {
+          throw new Error(`NPC Character ${ownerId} has no confirmed faction wallet on this chain`);
+        }
+        return getSigner(ownerId);
+      },
+      assertCurrent,
       journalPath, journalStore,
       onCommitted: (digest, label) => log.info(`[SuiAssemblySync] ${label}: ${digest}`),
       reconcileSponsored: async metadata => { deploymentRuntime.reconcileSponsoredAssemblyState(metadata); },

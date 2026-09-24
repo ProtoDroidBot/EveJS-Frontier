@@ -333,7 +333,8 @@ function readSnapshot(raw: any): IndustrySnapshot {
 export function createSuiIndustryChain(options: {
   client: Pick<SuiJsonRpcClient, "getObject">; world: SuiAssemblyWorld; tenant: string;
   chain: { deriveId(itemId: string): string; readAssembly(assembly: AssemblySnapshot): Promise<any> };
-  execute(label: string, tx: Transaction, ownerId?: number, assertCurrent?: () => void): Promise<unknown>;
+  execute(label: string, tx: Transaction, ownerId?: number, assertCurrent?: () => void,
+    gasPayerOwnerId?: number): Promise<unknown>;
   assertSnapshotCurrent(facility: IndustryFacilitySnapshot): void;
   /** An upgrade can add this module while the underlying Assembly retains its original type. */
   industryPackageId?: string; industryTypeOrigin?: string; industryRegistryId?: string;
@@ -409,7 +410,7 @@ export function createSuiIndustryChain(options: {
         tx.pure.u64(observed), lanes, tx.object(SUI_CLOCK_OBJECT_ID)] });
     options.assertSnapshotCurrent(facility);
     await options.execute(`industry:${facility.itemId}:${previous.state ? "sync" : "create"}`, tx, undefined,
-      () => options.assertSnapshotCurrent(facility));
+      () => options.assertSnapshotCurrent(facility), Number(facility.snapshot.owner_id));
     if (!(await status(facility, assembly)).synchronized) throw new Error("Smart Industry snapshot was not confirmed");
   }
   return { read, status, sync };

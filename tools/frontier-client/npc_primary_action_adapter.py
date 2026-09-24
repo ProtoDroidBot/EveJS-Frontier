@@ -8,15 +8,33 @@ SHIP_CATEGORY_ID = 6
 BOARD_SHIP_LABEL_PATH = "UI/Inflight/BoardShip"
 
 
-def _evejs_is_occupied_ship(namespace, entity_id):
+def _evejs_is_occupied_ship(namespace, entity_id, michelle=None):
     try:
-        service_manager = namespace.get("sm") or getattr(builtins, "sm", None)
-        if service_manager is None:
-            return False
-        ballpark = service_manager.GetService("michelle").GetBallpark()
-        slim_item = ballpark.slimItems.get(entity_id)
+        if michelle is None:
+            service_manager = namespace.get("sm") or getattr(builtins, "sm", None)
+            if service_manager is None:
+                return False
+            michelle = service_manager.GetService("michelle")
     except Exception:
         return False
+    try:
+        slim_item = michelle.GetCrData(entity_id)
+    except Exception:
+        slim_item = None
+    if slim_item is None:
+        try:
+            ballpark = michelle.GetBallpark()
+        except Exception:
+            return False
+        try:
+            slim_item = ballpark.GetCrData(entity_id)
+        except Exception:
+            slim_item = None
+    if slim_item is None:
+        try:
+            slim_item = ballpark.slimItems.get(entity_id)
+        except Exception:
+            return False
     try:
         value = (slim_item.get if isinstance(slim_item, dict)
                  else lambda key: getattr(slim_item, key, None))
@@ -47,7 +65,8 @@ def _evejs_install_npc_primary_action(namespace):
         result = original(self, bracket_key)
         try:
             entity_id = getattr(bracket_key, "ball_id", None)
-            if result is None or not _evejs_is_occupied_ship(namespace, entity_id):
+            if result is None or not _evejs_is_occupied_ship(
+                    namespace, entity_id, getattr(self, "_michelle", None)):
                 return result
             primary = result.primary
             secondary = result.secondary

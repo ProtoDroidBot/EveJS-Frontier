@@ -63,9 +63,9 @@ function fixture(assembly = snapshot(), options: {
   const chain = createSuiAssemblyChain({ client, world, tenant: "dev", deriveId: address,
     fuelAuthority: options.fuelAuthority,
     assertFuelSnapshotCurrent: options.assertFuelSnapshotCurrent,
-    execute: async (label, tx, ownerId) => {
+    execute: async (label, tx, ownerId, _assertSnapshotCurrent, gasPayerOwnerId) => {
       const data = tx.getData();
-      executions.push({ label, tx: data, ownerId });
+      executions.push({ label, tx: data, ownerId, gasPayerOwnerId });
       const integer = (argument: any) => Buffer.from((data.inputs[argument.Input] as any).Pure.bytes, "base64").readBigUInt64LE();
       for (const command of data.commands) {
         const call = command.MoveCall;
@@ -126,6 +126,7 @@ test("bringing node online restores the initial consumed fuel within its cap tra
   assert.equal(f.executions.length, 1);
   const tx = f.executions[0];
   assert.equal(tx.ownerId, f.assembly.ownerId);
+  assert.equal(tx.gasPayerOwnerId, undefined, "owner-signed calls select their own faction gas payer");
   assert.deepEqual(tx.tx.commands.map((c: any) => c.MoveCall?.function), [
     "borrow_owner_cap", "online", "deposit_fuel", "return_owner_cap",
   ]);

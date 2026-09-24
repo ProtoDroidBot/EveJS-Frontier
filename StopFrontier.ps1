@@ -161,6 +161,18 @@ function Read-PidMarker {
     return $marker
 }
 
+function Remove-MatchingServerPidMarker {
+    param([Parameter(Mandatory)] [object]$Expected)
+    $current = Read-PidMarker
+    if ($null -eq $current) { return }
+    if ([int64]$current.pid -ne [int64]$Expected.pid -or
+        [int64]$current.processStartTimeUtcTicks -ne
+        [int64]$Expected.processStartTimeUtcTicks) {
+        throw 'The server PID marker changed while stopping; refusing to remove it.'
+    }
+    Remove-Item -LiteralPath $PidMarker -Force
+}
+
 function Get-OwnedProcessState {
     $marker = Read-PidMarker
     if ($null -eq $marker) {
@@ -196,6 +208,16 @@ function Get-OwnedProcessState {
         throw "PID $($marker.pid) command line does not identify $ServerEntry; refusing to stop it."
     }
     return [pscustomobject]@{ State = 'running'; Marker = $marker; Process = $process }
+}
+
+function Get-ServerProcessLabel {
+    param([object]$Marker)
+    if ($null -ne $Marker -and
+        @($Marker.PSObject.Properties.Name) -contains 'launchMode' -and
+        [string]$Marker.launchMode -eq 'foreground') {
+        return 'Foreground server'
+    }
+    return 'Background process'
 }
 
 function Read-DappPidMarker {
@@ -329,12 +351,13 @@ $processState = Get-OwnedProcessState
 $dappProcessState = Get-OwnedDappProcessState
 
 if ($Status) {
+    $serverLabel = Get-ServerProcessLabel -Marker $processState.Marker
     switch ($processState.State) {
         'running' {
-            Write-Output "[evejs-frontier] Background process: running pid=$($processState.Marker.pid)"
+            Write-Output "[evejs-frontier] ${serverLabel}: running pid=$($processState.Marker.pid)"
         }
         'stale' {
-            Write-Output "[evejs-frontier] Background process: stale marker pid=$($processState.Marker.pid)"
+            Write-Output "[evejs-frontier] ${serverLabel}: stale marker pid=$($processState.Marker.pid)"
         }
         default {
             Write-Output '[evejs-frontier] Background process: not running'
@@ -355,14 +378,14 @@ if ($Status) {
 }
 
 if ($processState.State -eq 'absent') {
-    Write-Output "[evejs-frontier] No marker-owned background server is running for build $Build."
+    Write-Output "[evejs-frontier] No marker-owned server is running for build $Build."
 }
 elseif ($processState.State -eq 'stale') {
     if ($DryRun) {
         Write-Output "[evejs-frontier] Dry run: would remove stale PID marker for pid=$($processState.Marker.pid)"
     }
     else {
-        Remove-Item -LiteralPath $PidMarker -Force
+        Remove-MatchingServerPidMarker -Expected $processState.Marker
         Write-Output "[evejs-frontier] Removed stale PID marker for pid=$($processState.Marker.pid)."
     }
 }
@@ -382,10 +405,11 @@ else {
     if ($null -ne (Get-Process -Id ([int]$processState.Marker.pid) -ErrorAction SilentlyContinue)) {
         throw "Marker-owned PID $($processState.Marker.pid) is still running; PID marker was retained."
     }
-    Remove-Item -LiteralPath $PidMarker -Force
+    Remove-MatchingServerPidMarker -Expected $processState.Marker
     Write-Output "[evejs-frontier] Stopped marker-owned Frontier server pid=$($processState.Marker.pid)."
 }
 
+$dappProcessState = Get-OwnedDappProcessState
 if ($dappProcessState.State -eq 'absent') {
     Write-Output "[evejs-frontier] No marker-owned Smart Assembly dApp is running for build $Build."
 }

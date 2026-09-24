@@ -10842,6 +10842,21 @@ function notifyFuelPropertyChangesToSession(session, entity, previousFuelPropert
     notifyAttributeChanges(session, changes);
 }
 function cleanupCreationActiveModuleEffectOnDeactivation(scene, entity, effectState) {
+    if (effectState && effectState.iffCreationEffect === true) {
+        try {
+            const iffHandlers = lazyRequire("../services/frontier/iffAbilityHandlers");
+            if (effectState.effectName === "iffBroadcast") {
+                iffHandlers.handleIffBroadcastEffectStopped(effectState, scene && scene.systemID);
+            }
+            else if (effectState.effectName === "iffBeacon") {
+                iffHandlers.handleIffBeaconEffectStopped(effectState);
+            }
+        }
+        catch (error) {
+            log.warn(`[SpaceRuntime] Failed to finish IFF effect module=${toInt(effectState.moduleID, 0)}: ` +
+                `${error?.message || error}`);
+        }
+    }
     if (!effectState || effectState.creationActiveModuleEffect !== true) {
         return;
     }
@@ -21136,7 +21151,9 @@ class SolarSystemScene {
         const reason = String(options.reason || "manual");
         const cycleBoundaryMs = getEffectCycleBoundaryMs(effectState, now);
         const shouldDefer = options.deferUntilCycle !== false && reason === "manual";
-        if (effectState.deactivateAtMs > 0 && effectState.deactivateAtMs > now) {
+        if (effectState.deactivateAtMs > 0 &&
+            effectState.deactivateAtMs > now &&
+            options.deferUntilCycle !== false) {
             return {
                 success: true,
                 data: {
@@ -21164,7 +21181,9 @@ class SolarSystemScene {
         }
         return this.finalizePropulsionModuleDeactivation(session, normalizedModuleID, {
             reason,
-            nowMs: cycleBoundaryMs > 0 ? cycleBoundaryMs : now,
+            nowMs: options.deferUntilCycle === false
+                ? now
+                : (cycleBoundaryMs > 0 ? cycleBoundaryMs : now),
         });
     }
     // -------------------------------------------------------------------
@@ -22811,12 +22830,12 @@ class SolarSystemScene {
         const shouldDefer = !isCloakingEffect &&
             options.deferUntilCycle !== false &&
             reason === "manual";
-        // EVE parity: basic mining lasers / strip miners can be short-cycled — a
-        // manual mid-cycle stop interrupts the cycle immediately and deposits ore
-        // proportional to the elapsed time. Modulated Strip Miners load crystals
-        // and CANNOT be short-cycled, so they fall through to the deferred boundary
-        // stop below (and deliver the full final-cycle yield via the tick path).
-        if (reason === "manual" && effectState.miningEffect === true) {
+        // An explicit short-cycle request is still available for callers that
+        // need proportional mining yield. Normal manual deactivation finishes the
+        // current cycle, matching the action bar timing of other modules.
+        if (reason === "manual" &&
+            effectState.miningEffect === true &&
+            options.shortCycle === true) {
             const miningRuntime = config.miningEnabled === true
                 ? lazyRequire("../services/mining/miningRuntime")
                 : null;
@@ -22869,7 +22888,9 @@ class SolarSystemScene {
                 return finalizeResult;
             }
         }
-        if (effectState.deactivateAtMs > 0 && effectState.deactivateAtMs > now) {
+        if (effectState.deactivateAtMs > 0 &&
+            effectState.deactivateAtMs > now &&
+            options.deferUntilCycle !== false) {
             return {
                 success: true,
                 data: { entity, effectState, pending: true, deactivateAtMs: effectState.deactivateAtMs },
@@ -22886,7 +22907,9 @@ class SolarSystemScene {
         }
         return this.finalizeGenericModuleDeactivation(session, normalizedModuleID, {
             reason,
-            nowMs: isCloakingEffect ? now : (cycleBoundaryMs > 0 ? cycleBoundaryMs : now),
+            nowMs: isCloakingEffect || options.deferUntilCycle === false
+                ? now
+                : (cycleBoundaryMs > 0 ? cycleBoundaryMs : now),
         });
     }
     deactivateAllActiveModules(session, options = {}) {
@@ -30398,12 +30421,9 @@ class SolarSystemScene {
                         // is finalized after the effect is applied, and the stop cycle does
                         // not charge capacitor/fuel for the next (non-existent) cycle. This
                         // covers:
-                        //   - crystal-based (Modulated) Strip Miners, which cannot be
-                        //     short-cycled and must deliver their full final-cycle yield (ore
-                        //     only lands when a cycle completes). Basic mining lasers
-                        //     short-cycle immediately in deactivateGenericModule and never set
-                        //     deactivateAtMs, so only modulated miners reach this branch among
-                        //     mining effects; and
+                        //   - mining modules, which deliver their full final-cycle yield at
+                        //     the boundary when manually deactivated. An explicit short-cycle
+                        //     request finalizes immediately and never sets deactivateAtMs; and
                         //   - end-of-cycle local-cycle repairers (armor, hull/structure, and
                         //     ancillary armor repairers), whose final repair tick lands at the
                         //     cycle end.
@@ -32385,24 +32405,24 @@ class SpaceRuntime {
                     log.warn(`[SpaceRuntime] Mining scene startup failed for system=${numericSystemID}: ${error.message}`);
                 }
             }
-            if (process.env.EVEJS_SKIP_NPC_STARTUP !== "1") {
-                try {
-                    const startupStartedAtMs = Date.now();
-                    const npcService = lazyRequire("./npc");
-                    if (npcService && typeof npcService.handleSceneCreated === "function") {
-                        npcService.handleSceneCreated(scene);
-                    }
-                    const startupElapsedMs = Date.now() - startupStartedAtMs;
-                    if (bootstrapMetrics) {
-                        bootstrapMetrics.npcElapsedMs = startupElapsedMs;
-                    }
-                    if (startupElapsedMs >= 500) {
-                        log.info(`[SpaceRuntime] Scene startup npc system=${numericSystemID} took ${startupElapsedMs}ms`);
-                    }
+            // The skip flag suppresses authored startup rules inside npcService;
+            // durable NPCs still need this hook to rehydrate after a restart.
+            try {
+                const startupStartedAtMs = Date.now();
+                const npcService = lazyRequire("./npc");
+                if (npcService && typeof npcService.handleSceneCreated === "function") {
+                    npcService.handleSceneCreated(scene);
                 }
-                catch (error) {
-                    log.warn(`[SpaceRuntime] NPC scene startup failed for system=${numericSystemID}: ${error.message}`);
+                const startupElapsedMs = Date.now() - startupStartedAtMs;
+                if (bootstrapMetrics) {
+                    bootstrapMetrics.npcElapsedMs = startupElapsedMs;
                 }
+                if (startupElapsedMs >= 500) {
+                    log.info(`[SpaceRuntime] Scene startup npc system=${numericSystemID} took ${startupElapsedMs}ms`);
+                }
+            }
+            catch (error) {
+                log.warn(`[SpaceRuntime] NPC scene startup failed for system=${numericSystemID}: ${error.message}`);
             }
             // Reconciliation can be deferred during login, but the active dungeon
             // instances already present in runtime state are cheap to materialize
@@ -32577,16 +32597,15 @@ class SpaceRuntime {
             error.code = "STALE_SCENE_BOOTSTRAP";
             throw error;
         }
-        if (process.env.EVEJS_SKIP_NPC_STARTUP !== "1") {
-            try {
-                const npcService = lazyRequire("./npc");
-                if (npcService && typeof npcService.handleSceneCreated === "function") {
-                    npcService.handleSceneCreated(scene);
-                }
+        // Recovery is independent of authored NPC startup rules.
+        try {
+            const npcService = lazyRequire("./npc");
+            if (npcService && typeof npcService.handleSceneCreated === "function") {
+                npcService.handleSceneCreated(scene);
             }
-            catch (error) {
-                log.warn(`[SpaceRuntime] NPC scene startup failed for system=${scene.systemID}: ${error.message}`);
-            }
+        }
+        catch (error) {
+            log.warn(`[SpaceRuntime] NPC scene startup failed for system=${scene.systemID}: ${error.message}`);
         }
         await new Promise((resolve) => setImmediate(resolve));
         if (!this._isSceneBootstrapCurrent(scene, generation)) {
@@ -33662,7 +33681,9 @@ class SpaceRuntime {
                 errorMsg: "SOLAR_SYSTEM_NOT_FOUND",
             };
         }
-        const scene = this.ensureScene(numericSystemID);
+        const scene = this.ensureScene(numericSystemID, {
+            allowPendingBootstrap: options.allowPendingBootstrap === true,
+        });
         if (!scene) {
             return {
                 success: false,

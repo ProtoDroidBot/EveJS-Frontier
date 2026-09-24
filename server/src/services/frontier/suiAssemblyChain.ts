@@ -35,7 +35,8 @@ export type SuiAssemblyChainOptions = {
   client: SuiJsonRpcClient;
   world: SuiAssemblyWorld;
   tenant: string;
-  execute: (label: string, tx: Transaction, ownerId?: number, assertSnapshotCurrent?: () => void) => Promise<unknown>;
+  execute: (label: string, tx: Transaction, ownerId?: number, assertSnapshotCurrent?: () => void,
+    gasPayerOwnerId?: number) => Promise<unknown>;
   deriveId?: (itemId: string) => string;
   /** Existing nodes use chain fuel; inventory changes require explicit transfer intents. */
   fuelAuthority?: boolean;
@@ -289,7 +290,7 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
           tx.pure.u64(assembly.solarSystemId), tx.pure.string(String(p.x)),
           tx.pure.string(String(p.y)), tx.pure.string(String(p.z)),
         ] });
-        await execute(`assembly:${assembly.itemId}:location`, tx);
+        await execute(`assembly:${assembly.itemId}:location`, tx, undefined, undefined, assembly.ownerId);
       }
     }
   }
@@ -314,7 +315,7 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
       }
       const [anchored] = tx.moveCall({ target: `${world.packageId}::${assembly.kind}::anchor`, arguments: args });
       tx.moveCall({ target: `${world.packageId}::${assembly.kind}::share_${assembly.kind}`, arguments: [anchored, tx.object(world.adminAclId)] });
-      await execute(`assembly:${assembly.itemId}:anchor`, tx);
+      await execute(`assembly:${assembly.itemId}:anchor`, tx, undefined, undefined, assembly.ownerId);
       state = await readAssembly(assembly);
       if (!state) throw new Error(`Assembly ${assembly.itemId} anchor was not visible after confirmation`);
     }
@@ -420,7 +421,8 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
     }
     tx.moveCall({ target: `${world.packageId}::network_node::destroy_offline_assemblies`, arguments: [hotPotato] });
     assertSnapshotCurrent?.();
-    await execute(`assembly:${assembly.itemId}:fuel-burn`, tx, undefined, assertSnapshotCurrent);
+    await execute(`assembly:${assembly.itemId}:fuel-burn`, tx, undefined, assertSnapshotCurrent,
+      assembly.ownerId);
     return true;
   }
 
@@ -711,7 +713,7 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
         tx.object(state.id), tx.object(state.networkNodeId!), tx.object(world.energyConfigId), tx.object(world.adminAclId),
       ] });
     }
-    await execute(`assembly:${assembly.itemId}:unanchor`, tx);
+    await execute(`assembly:${assembly.itemId}:unanchor`, tx, undefined, undefined, assembly.ownerId);
   }
 
   return { deriveId, readAssembly, readObject, ensureAssembly, syncMetadata, configureFuelEfficiency, readEnergyRequirements,

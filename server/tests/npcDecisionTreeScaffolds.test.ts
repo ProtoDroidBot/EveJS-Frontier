@@ -22,8 +22,9 @@ function bindingsFor(treeName: string, activeGuards: string[] = [], trace: strin
 
 test("decision scaffolds are opt-in and reject missing authoritative bindings", () => {
   assert.deepEqual(Object.keys(NPC_DECISION_TREE_SCAFFOLDS).sort(), [
-    "factionEntity", "factionSiteResponse", "pilotDiscovery", "pilotPriority", "pilotResourceGathering",
-    "pilotScouting", "pilotShipLifecycle", "pilotStranding", "pilotSystemTransit", "pilotWork",
+    "factionEntity", "factionSiteResponse", "pilotDiscovery", "pilotNpcFittingSupport", "pilotPriority",
+    "pilotResourceGathering", "pilotScouting", "pilotShipLifecycle", "pilotStranding", "pilotSystemTransit",
+    "pilotTaskPreparation", "pilotTaskRefit", "pilotTaskShipSwap", "pilotWork",
   ]);
   assert.throws(() => createNpcDecisionTreeScaffold("pilotPriority", {}), /requires guard/);
   assert.throws(() => createNpcDecisionTreeScaffold("unknown", {}), /Unknown NPC decision tree/);
@@ -169,7 +170,10 @@ test("resource chain resumes after storage wait without re-extracting or duplica
 });
 
 test("structure deployment requires placement and construction materials before realization", () => {
-  const base = ["isCategorySixPilot", "durableJobReady", "assignedStructureJob"];
+  const base = [
+    "isCategorySixPilot", "durableJobReady", "currentShipCanPerformAssignedTaskOrIsPreparationJob",
+    "assignedStructureJob",
+  ];
   const blocked: string[] = [];
   createNpcDecisionTreeScaffold("pilotWork", bindingsFor("pilotWork", base, blocked)).tick({});
   assert.deepEqual(blocked, ["suspendStructureForPlacementOrTools"]);
@@ -184,13 +188,11 @@ test("structure deployment requires placement and construction materials before 
   assert.deepEqual(fulfilled, ["journalConstructionSitePlacement", "journalRealizeStructure"]);
 });
 
-test("manufacturing, hauling, refitting, and ship swaps use their own readiness gates", () => {
-  const base = ["isCategorySixPilot", "durableJobReady"];
+test("manufacturing and hauling use their own readiness gates", () => {
+  const base = ["isCategorySixPilot", "durableJobReady", "currentShipCanPerformAssignedTaskOrIsPreparationJob"];
   for (const [jobGuard, readyGuard, blockedAction, readyAction] of [
     ["assignedManufacturingJob", "industryLaneInputsAndAccessReady", "suspendManufacturingForInputsOrAccess", "journalManufacturingJob"],
     ["assignedHaulJob", "cargoRouteAndCustodyValid", "replanHaul", "journalHaulCycle"],
-    ["assignedRefitJob", "fittingTrustAndCompatibleItemsReady", "suspendRefitAndRequestItems", "journalShipRefit"],
-    ["assignedShipSwapJob", "shipSwapAuthorized", "suspendShipSwap", "runPilotShipLifecycle"],
   ]) {
     const blocked: string[] = [];
     createNpcDecisionTreeScaffold("pilotWork", bindingsFor(
@@ -206,7 +208,10 @@ test("manufacturing, hauling, refitting, and ship swaps use their own readiness 
 });
 
 test("ally refueling prefers a ready transfuser, then a physical fuel drop", () => {
-  const base = ["isCategorySixPilot", "durableJobReady", "assignedAllyRefuelJob"];
+  const base = [
+    "isCategorySixPilot", "durableJobReady", "currentShipCanPerformAssignedTaskOrIsPreparationJob",
+    "assignedAllyRefuelJob",
+  ];
   const denied: string[] = [];
   createNpcDecisionTreeScaffold("pilotWork", bindingsFor("pilotWork", base, denied)).tick({});
   assert.deepEqual(denied, ["suspendRefuelForTargetOrPermission"]);
@@ -230,13 +235,16 @@ test("pilot priority delegates a ready specialist job and unknown jobs fail clos
   const trace: string[] = [];
   createNpcDecisionTreeScaffold("pilotPriority", bindingsFor(
     "pilotPriority", [
-      "isCategorySixPilot", "durableJobReady", "assignedResourceGatheringJob",
+      "isCategorySixPilot", "durableJobReady", "currentShipCanPerformAssignedTaskOrIsPreparationJob",
+      "assignedResourceGatheringJob",
     ], trace,
   )).tick({});
   assert.deepEqual(trace, ["runResourceGatheringTree"]);
   const unknown: string[] = [];
   createNpcDecisionTreeScaffold("pilotWork", bindingsFor(
-    "pilotWork", ["isCategorySixPilot", "durableJobReady"], unknown,
+    "pilotWork", [
+      "isCategorySixPilot", "durableJobReady", "currentShipCanPerformAssignedTaskOrIsPreparationJob",
+    ], unknown,
   )).tick({});
   assert.deepEqual(unknown, ["suspendUnclassifiedDurableJob"]);
 });
@@ -376,7 +384,7 @@ test("decision trees accept injected lightweight behavior primitives", () => {
 });
 
 test("pilot work delegates scouting and transit jobs before the unknown-job fallback", () => {
-  const base = ["isCategorySixPilot", "durableJobReady"];
+  const base = ["isCategorySixPilot", "durableJobReady", "currentShipCanPerformAssignedTaskOrIsPreparationJob"];
   for (const [job, action] of [
     ["assignedScoutingJob", "runScoutingTree"],
     ["assignedSystemTransitJob", "runSystemTransitTree"],
@@ -387,4 +395,206 @@ test("pilot work delegates scouting and transit jobs before the unknown-job fall
     )).tick({});
     assert.deepEqual(trace, [action]);
   }
+});
+
+test("an incapable task fit is prepared before specialist work may run", () => {
+  const blocked: string[] = [];
+  createNpcDecisionTreeScaffold("pilotWork", bindingsFor("pilotWork", [
+    "isCategorySixPilot", "durableJobReady", "currentShipLacksAssignedTaskCapability",
+    "assignedResourceGatheringJob",
+  ], blocked)).tick({});
+  assert.deepEqual(blocked, ["runTaskPreparationTree"]);
+  const unknown: string[] = [];
+  createNpcDecisionTreeScaffold("pilotWork", bindingsFor("pilotWork", [
+    "isCategorySixPilot", "durableJobReady", "assignedResourceGatheringJob",
+  ], unknown)).tick({});
+  assert.deepEqual(unknown, ["suspendWorkForUnknownCapability"]);
+  for (const [jobGuard, expected] of [
+    ["assignedRefitJob", "runTaskRefitTree"],
+    ["assignedShipSwapJob", "runTaskShipSwapTree"],
+  ]) {
+    const trace: string[] = [];
+    createNpcDecisionTreeScaffold("pilotWork", bindingsFor("pilotWork", [
+      "isCategorySixPilot", "durableJobReady", "currentShipCanPerformAssignedTaskOrIsPreparationJob",
+      jobGuard,
+    ], trace)).tick({});
+    assert.deepEqual(trace, [expected]);
+  }
+});
+
+test("task preparation chooses an authorized refit or replacement ship plan", () => {
+  const base = ["isCategorySixPilot", "assignedTaskNeedsCapability", "taskPreparationWakeDue"];
+  const alreadyReady: string[] = [];
+  createNpcDecisionTreeScaffold("pilotTaskPreparation", bindingsFor(
+    "pilotTaskPreparation", [...base, "currentShipCanPerformAssignedTask", "taskCapabilityPlanSettled"], alreadyReady,
+  )).tick({});
+  assert.deepEqual(alreadyReady, ["completeTaskReadiness"]);
+  for (const [planGuard, action] of [
+    ["selectedRefitPlan", "runTaskRefitTree"],
+    ["selectedShipSwapPlan", "runTaskShipSwapTree"],
+  ]) {
+    const trace: string[] = [];
+    createNpcDecisionTreeScaffold("pilotTaskPreparation", bindingsFor(
+      "pilotTaskPreparation", [...base, planGuard], trace,
+    )).tick({});
+    assert.deepEqual(trace, ["checkpointTaskCapabilityPlan", action]);
+  }
+  const unavailable: string[] = [];
+  createNpcDecisionTreeScaffold("pilotTaskPreparation", bindingsFor(
+    "pilotTaskPreparation", base, unavailable,
+  )).tick({});
+  assert.deepEqual(unavailable, ["checkpointTaskCapabilityPlan", "suspendTaskForEquipmentOrHull"]);
+});
+
+test("refitting requires an authorized service and rechecks capability after custody commit", () => {
+  const base = ["isCategorySixPilot", "selectedRefitPlan", "taskRefitCheckpointPending"];
+  const noService: string[] = [];
+  createNpcDecisionTreeScaffold("pilotTaskRefit", bindingsFor("pilotTaskRefit", base, noService)).tick({});
+  assert.deepEqual(noService, ["suspendRefitForServiceItemsOrPolicy"]);
+  const traveling: string[] = [];
+  const travel = bindingsFor("pilotTaskRefit", [...base, "authorizedFittingServiceAvailable"], traveling);
+  travel.actions.advanceToFittingService = () => {
+    traveling.push("advanceToFittingService");
+    return { status: "running" };
+  };
+  assert.equal(createNpcDecisionTreeScaffold("pilotTaskRefit", travel).tick({}).status, "running");
+  assert.deepEqual(traveling, ["advanceToFittingService"]);
+  const fitted: string[] = [];
+  createNpcDecisionTreeScaffold("pilotTaskRefit", bindingsFor("pilotTaskRefit", [
+    ...base, "authorizedFittingServiceAvailable", "currentlyAtAuthorizedFittingService",
+    "taskFitItemsAndPolicyCurrent", "taskFitChangePending", "currentShipCanPerformAssignedTask",
+  ], fitted)).tick({});
+  assert.deepEqual(fitted, ["journalApplyNextTaskFitChange"]);
+  const completed: string[] = [];
+  createNpcDecisionTreeScaffold("pilotTaskRefit", bindingsFor("pilotTaskRefit", [
+    ...base, "taskFitChangesCommitted", "currentShipCanPerformAssignedTask",
+  ], completed)).tick({});
+  assert.deepEqual(completed, ["journalCompleteTaskFit"]);
+  const recovered: string[] = [];
+  createNpcDecisionTreeScaffold("pilotTaskRefit", bindingsFor("pilotTaskRefit", [
+    "isCategorySixPilot", "selectedRefitPlan", "taskRefitCheckpointComplete",
+    "currentShipCanPerformAssignedTask",
+  ], recovered)).tick({});
+  assert.deepEqual(recovered, []);
+  const incomplete: string[] = [];
+  createNpcDecisionTreeScaffold("pilotTaskRefit", bindingsFor("pilotTaskRefit", [
+    "isCategorySixPilot", "selectedRefitPlan", "taskRefitCheckpointComplete",
+  ], incomplete)).tick({});
+  assert.deepEqual(incomplete, ["suspendRefitForServiceItemsOrPolicy"]);
+});
+
+test("ship swapping requires an eligible hull and does not repeat a committed boarding", () => {
+  const base = ["isCategorySixPilot", "selectedShipSwapPlan", "taskShipSwapCheckpointPending"];
+  const unavailable: string[] = [];
+  createNpcDecisionTreeScaffold("pilotTaskShipSwap", bindingsFor(
+    "pilotTaskShipSwap", base, unavailable,
+  )).tick({});
+  assert.deepEqual(unavailable, ["suspendSwapForHullAccessOrTravel"]);
+  const traveling: string[] = [];
+  const travel = bindingsFor("pilotTaskShipSwap", [
+    ...base, "replacementShipAuthorizedAndStillEligible",
+  ], traveling);
+  travel.actions.advanceToReplacementShip = () => {
+    traveling.push("advanceToReplacementShip");
+    return { status: "suspended" };
+  };
+  assert.equal(createNpcDecisionTreeScaffold("pilotTaskShipSwap", travel).tick({}).status, "suspended");
+  assert.deepEqual(traveling, ["advanceToReplacementShip"]);
+  const swapped: string[] = [];
+  createNpcDecisionTreeScaffold("pilotTaskShipSwap", bindingsFor("pilotTaskShipSwap", [
+    ...base, "replacementShipAuthorizedAndStillEligible", "currentlyAtReplacementShip",
+    "currentShipCanPerformAssignedTask",
+  ], swapped)).tick({});
+  assert.deepEqual(swapped, ["journalTaskShipSwap"]);
+  const recovered: string[] = [];
+  createNpcDecisionTreeScaffold("pilotTaskShipSwap", bindingsFor("pilotTaskShipSwap", [
+    "isCategorySixPilot", "selectedShipSwapPlan", "taskShipSwapCheckpointComplete",
+    "currentShipCanPerformAssignedTask",
+  ], recovered)).tick({});
+  assert.deepEqual(recovered, []);
+  const incomplete: string[] = [];
+  createNpcDecisionTreeScaffold("pilotTaskShipSwap", bindingsFor("pilotTaskShipSwap", [
+    "isCategorySixPilot", "selectedShipSwapPlan", "taskShipSwapCheckpointComplete",
+  ], incomplete)).tick({});
+  assert.deepEqual(incomplete, ["suspendSwapForHullAccessOrTravel"]);
+});
+
+test("NPC fitting support requires a pilot actor, target authority, and shared service", () => {
+  const base = ["assignedNpcFittingSupportJob", "npcFittingSupportWakeDue", "npcFittingSupportCheckpointPending"];
+  const nonPilot: string[] = [];
+  assert.equal(createNpcDecisionTreeScaffold("pilotNpcFittingSupport", bindingsFor(
+    "pilotNpcFittingSupport", base, nonPilot,
+  )).tick({}).status, "failure");
+  assert.deepEqual(nonPilot, []);
+
+  for (const guards of [
+    ["isCategorySixPilot"],
+    ["isCategorySixPilot", "targetNpcFittingPrincipalValid"],
+    ["isCategorySixPilot", "targetNpcFittingPrincipalValid", "npcToNpcFittingAuthorityCurrent"],
+  ]) {
+    const denied: string[] = [];
+    createNpcDecisionTreeScaffold("pilotNpcFittingSupport", bindingsFor(
+      "pilotNpcFittingSupport", [...base, ...guards], denied,
+    )).tick({});
+    assert.deepEqual(denied, ["suspendNpcFittingSupport"]);
+  }
+});
+
+test("NPC fitting support travels, commits once, and verifies the target fit", () => {
+  const base = [
+    "isCategorySixPilot", "assignedNpcFittingSupportJob", "npcFittingSupportWakeDue",
+    "targetNpcFittingPrincipalValid", "npcToNpcFittingAuthorityCurrent",
+    "authorizedSharedFittingServiceAvailable", "npcFittingSupportCheckpointPending",
+  ];
+  const enRoute: string[] = [];
+  const traveling = bindingsFor("pilotNpcFittingSupport", base, enRoute);
+  traveling.actions.advanceActorOrTargetToFittingService = () => {
+    enRoute.push("advanceActorOrTargetToFittingService");
+    return { status: "running" };
+  };
+  assert.equal(createNpcDecisionTreeScaffold("pilotNpcFittingSupport", traveling).tick({}).status, "running");
+  assert.deepEqual(enRoute, ["advanceActorOrTargetToFittingService"]);
+
+  const atService = [...base, "actorAndTargetAtFittingService"];
+  const noItems: string[] = [];
+  createNpcDecisionTreeScaffold("pilotNpcFittingSupport", bindingsFor(
+    "pilotNpcFittingSupport", atService, noItems,
+  )).tick({});
+  assert.deepEqual(noItems, ["suspendNpcFittingSupport"]);
+
+  const fitted: string[] = [];
+  createNpcDecisionTreeScaffold("pilotNpcFittingSupport", bindingsFor(
+    "pilotNpcFittingSupport", [
+      ...atService, "targetFitItemsAndPolicyCurrent", "targetFitChangePending",
+      "targetNpcFitMeetsRequestedCapability",
+    ], fitted,
+  )).tick({});
+  assert.deepEqual(fitted, ["journalApplyNextTargetFitChange"]);
+  const completed: string[] = [];
+  createNpcDecisionTreeScaffold("pilotNpcFittingSupport", bindingsFor(
+    "pilotNpcFittingSupport", [
+      "isCategorySixPilot", "assignedNpcFittingSupportJob", "npcFittingSupportWakeDue",
+      "targetFitChangesCommitted",
+      "targetNpcFitMeetsRequestedCapability",
+    ], completed,
+  )).tick({});
+  assert.deepEqual(completed, ["journalCompleteTargetFit"]);
+
+  const recovered: string[] = [];
+  createNpcDecisionTreeScaffold("pilotNpcFittingSupport", bindingsFor(
+    "pilotNpcFittingSupport", [
+      "isCategorySixPilot", "assignedNpcFittingSupportJob", "npcFittingSupportWakeDue",
+      "npcFittingSupportCheckpointComplete",
+      "targetNpcFitMeetsRequestedCapability",
+    ], recovered,
+  )).tick({});
+  assert.deepEqual(recovered, []);
+  const incomplete: string[] = [];
+  createNpcDecisionTreeScaffold("pilotNpcFittingSupport", bindingsFor(
+    "pilotNpcFittingSupport", [
+      "isCategorySixPilot", "assignedNpcFittingSupportJob", "npcFittingSupportWakeDue",
+      "npcFittingSupportCheckpointComplete",
+    ], incomplete,
+  )).tick({});
+  assert.deepEqual(incomplete, ["suspendNpcFittingSupport"]);
 });

@@ -3,7 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const log = require(path.join(__dirname, "../../utils/logger"));
 const { ITEM_FLAGS, SHIP_CATEGORY_ID, findItemById, grantItemsToCharacterLocation, listContainerItems, moveItemToLocation, moveItemsToLocationsAndUpdateItem, removeInventoryItem, updateInventoryItem, updateShipItem, } = require(path.join(__dirname, "../inventory/itemStore"));
-const { buildInventoryDogmaPrimeEntry, syncModuleOnlineEffectForSession, syncInventoryItemForSession, } = require(path.join(__dirname, "../character/characterState"));
+const { buildInventoryDogmaPrimeEntry, syncInventoryItemForSession, } = require(path.join(__dirname, "../character/characterState"));
 const { getCreationModule, getCreationTemplate, } = require(path.join(__dirname, "./creationStaticData"));
 const { validateCreationLayout, } = require(path.join(__dirname, "./creationLayoutValidation"));
 const { applyModifierGroups, appendDirectModifierEntries, buildEffectiveItemAttributeMap, buildShipResourceState, getAttributeIDByNames, getPassiveModifierEffectRecords, getModuleChargeGroupIDs, getTypeDogmaEffects, } = require(path.join(__dirname, "../fitting/liveFittingState"));
@@ -16,6 +16,7 @@ const CREATION_STATE_VERSION = 1;
 const CREATION_FITTING_FLAG_ID = 183;
 const HIDDEN_CREATION_MODULE_FLAG_ID = CREATION_FITTING_FLAG_ID;
 const CREATION_ONLINE_EFFECT_ID = 16;
+const ATTRIBUTE_IS_ONLINE = getAttributeIDByNames("isOnline") || 2;
 const CREATION_FRICTION_CONSTANT = 1.0e-6;
 const ATTRIBUTE_MAX_VELOCITY = getAttributeIDByNames("maxVelocity") || 37;
 const ATTRIBUTE_AGILITY = getAttributeIDByNames("agility") || 70;
@@ -542,10 +543,10 @@ function findHardpoint(state, interiorItemID, hardpointIndex) {
     return state.hardpoints.find((hardpoint) => hardpoint.interiorItemID === interiorItemID &&
         hardpoint.hardpointIndex === hardpointIndex);
 }
-function validateOwnedSourceItem(itemID, typeID, characterID, change) {
+function validateOwnedSourceItem(itemID, typeID, characterID, change, allowedOwnerIDs = null) {
     const item = findItemById(itemID);
     if (!item ||
-        toInt(item.ownerID, 0) !== characterID ||
+        !(allowedOwnerIDs || new Set([characterID])).has(toInt(item.ownerID, 0)) ||
         toInt(item.typeID, 0) !== typeID) {
         return { diagnostic: buildDiagnostic("item_unavailable", change), item: null };
     }
@@ -749,9 +750,13 @@ function buildHardpoint(change, creationID, attachedItemID = null) {
         attachedItemID,
     };
 }
-function stageCreationChanges(state, template, creationID, characterID, changes) {
+function stageCreationChanges(state, template, creationID, characterID, changes, options = {}) {
     const next = cloneValue(state);
     const inventoryActions = [];
+    const allowedOwnerIDs = new Set([
+        characterID,
+        ...(Array.isArray(options.allowedOwnerIDs) ? options.allowedOwnerIDs : []),
+    ].map((id) => toInt(id, 0)).filter(Boolean));
     for (const rawChange of changes) {
         const change = rawChange && typeof rawChange === "object" ? rawChange : {};
         const op = String(change.op || "").trim().toLowerCase();
@@ -761,7 +766,7 @@ function stageCreationChanges(state, template, creationID, characterID, changes)
         if (op === "add") {
             const typeID = toInt(change.typeID, 0);
             const definition = getCreationModule(typeID);
-            const source = validateOwnedSourceItem(itemID, typeID, characterID, change);
+            const source = validateOwnedSourceItem(itemID, typeID, characterID, change, allowedOwnerIDs);
             if (!definition ||
                 !definition.placement ||
                 !definition.placement.occupancy ||
@@ -802,7 +807,7 @@ function stageCreationChanges(state, template, creationID, characterID, changes)
                 return { diagnostic: buildDiagnostic("item_unavailable", change) };
             }
             const item = findItemById(itemID);
-            if (!item || toInt(item.ownerID, 0) !== characterID) {
+            if (!item || !allowedOwnerIDs.has(toInt(item.ownerID, 0))) {
                 return { diagnostic: buildDiagnostic("item_unavailable", change) };
             }
             const removalDiagnostic = validateCreationModuleRemoval(item, change);
@@ -860,7 +865,7 @@ function stageCreationChanges(state, template, creationID, characterID, changes)
                 Array.isArray(exteriorDefinition.placement.compatible_hardpoints)
                 ? exteriorDefinition.placement.compatible_hardpoints
                 : [];
-            const source = validateOwnedSourceItem(attachedItemID, typeID, characterID, change);
+            const source = validateOwnedSourceItem(attachedItemID, typeID, characterID, change, allowedOwnerIDs);
             if (!target || !hardpointType || !compatible.includes(hardpointType) || source.diagnostic) {
                 return {
                     diagnostic: source.diagnostic || buildDiagnostic("invalid_placement", change),
@@ -885,7 +890,7 @@ function stageCreationChanges(state, template, creationID, characterID, changes)
             const target = next.hardpoints
                 .find((hardpoint) => hardpoint.attachedItemID === attachedItemID);
             const item = findItemById(attachedItemID);
-            if (!target || !item || toInt(item.ownerID, 0) !== characterID) {
+            if (!target || !item || !allowedOwnerIDs.has(toInt(item.ownerID, 0))) {
                 return { diagnostic: buildDiagnostic("item_unavailable", change) };
             }
             target.attachedItemID = null;
@@ -968,25 +973,36 @@ function syncInventoryChangesForSession(session, changes) {
         const installedCreationModule = toInt(change.item.flagID, 0) === CREATION_FITTING_FLAG_ID &&
             (toInt(previousState.locationID, 0) !== toInt(change.item.locationID, 0) ||
                 toInt(previousState.flagID, -1) !== CREATION_FITTING_FLAG_ID);
+        const hasOnlineEffect = getTypeDogmaEffects(toInt(change.item.typeID, 0))
+            .has(CREATION_ONLINE_EFFECT_ID);
+        const onlineOnInstall = installedCreationModule && hasOnlineEffect && isCreationModuleOnline(change.item);
+        const now = session && session._space &&
+            typeof session._space.simFileTime === "bigint"
+            ? session._space.simFileTime
+            : currentFileTime();
         if (installedCreationModule &&
             session &&
             typeof session.sendNotification === "function") {
-            const now = session._space && typeof session._space.simFileTime === "bigint"
-                ? session._space.simFileTime
-                : currentFileTime();
             session.sendNotification("OnGodmaPrimeItem", "clientID", [
                 toInt(change.item.locationID, 0),
                 buildInventoryDogmaPrimeEntry(change.item, {
                     description: "creation module",
                     includeTypeAttributes: true,
+                    attributeOverrides: hasOnlineEffect
+                        ? { [ATTRIBUTE_IS_ONLINE]: onlineOnInstall ? 1 : 0 }
+                        : {},
                     now,
                     compatibilityProfile: session.compatibilityProfile,
                 }),
             ]);
         }
         syncInventoryItemForSession(session, change.item, previousState, { emitCfgLocation: true });
-        if (installedCreationModule && isCreationModuleOnline(change.item)) {
-            syncModuleOnlineEffectForSession(session, change.item, { active: true });
+        if (onlineOnInstall) {
+            const onlineTime = now + 1n;
+            sendOnMultiEvent(session, [
+                buildModuleAttributeChangeEvent(toInt(change.item.ownerID, 0), toInt(change.item.itemID, 0), ATTRIBUTE_IS_ONLINE, 1, 0, onlineTime),
+                buildGodmaShipEffectEvent(toInt(change.item.itemID, 0), toInt(change.item.ownerID, 0), toInt(change.item.locationID, 0), CREATION_ONLINE_EFFECT_ID, onlineTime, { isStart: 1, shouldStart: 1 }),
+            ], onlineTime);
         }
     }
 }
@@ -1557,8 +1573,7 @@ function setCreationModuleOnlineState(item, characterID, moduleItemID, online, s
         typeof session._space.simFileTime === "bigint") ? session._space.simFileTime : currentFileTime();
     if (previousOnline !== nextOnline) {
         const subEvents = [];
-        const isOnlineAttributeID = getAttributeIDByNames("isOnline") || 1153;
-        subEvents.push(buildModuleAttributeChangeEvent(characterID, numericModuleItemID, isOnlineAttributeID, nextOnline ? 1 : 0, previousOnline ? 1 : 0, serverTime));
+        subEvents.push(buildModuleAttributeChangeEvent(characterID, numericModuleItemID, ATTRIBUTE_IS_ONLINE, nextOnline ? 1 : 0, previousOnline ? 1 : 0, serverTime));
         subEvents.push(buildGodmaShipEffectEvent(numericModuleItemID, characterID, item.itemID, CREATION_ONLINE_EFFECT_ID, serverTime, {
             isStart: nextOnline ? 1 : 0,
             shouldStart: nextOnline ? 1 : 0,

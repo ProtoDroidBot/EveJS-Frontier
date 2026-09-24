@@ -814,6 +814,8 @@ function startServer(runtimeContext) {
     mountSmartAssemblyAdminEndpoints(app);
     const { mountSmartAssemblyEnergyEndpoints } = require("./smartAssemblyEnergyEndpoints");
     mountSmartAssemblyEnergyEndpoints(app);
+    const { mountSmartFactionTaskEndpoints } = require("./smartFactionTaskEndpoints");
+    mountSmartFactionTaskEndpoints(app);
     const { mountSmartGateEndpoints } = require("./smartGateEndpoints");
     mountSmartGateEndpoints(app);
     const { mountSmartIndustryEndpoints } = require("./smartIndustryEndpoints");

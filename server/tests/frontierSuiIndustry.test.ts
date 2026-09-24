@@ -149,12 +149,14 @@ function chainFixture(industryPackageId?: string, industryTypeOrigin?: string, i
   const chain = { deriveId: () => assemblyID, readAssembly: async () => ({ online: current.online }) };
   const adapter = () => createSuiIndustryChain({ client: objects as any, world, chain, tenant: "dev", industryPackageId, industryTypeOrigin, industryRegistryId, now: () => 1700000000000,
     assertSnapshotCurrent(expected) { current.checks++; assert.deepEqual(expected, current.facility, "stale snapshot"); },
-    async execute(label, tx, ownerId, assertCurrent) {
+    async execute(label, tx, ownerId, assertCurrent, gasPayerOwnerId) {
       assertCurrent?.();
-      const data = tx.getData(); current.executions.push({ label, ownerId, data });
+      const data = tx.getData(); current.executions.push({ label, ownerId, gasPayerOwnerId, data });
       const call = data.commands.at(-1).MoveCall;
       const integer = (argument: any) => Buffer.from((data.inputs[argument.Input] as any).Pure.bytes, "base64").readBigUInt64LE().toString();
       assert.equal(ownerId, undefined, "Only the existing server executor signs mirrors");
+      assert.equal(gasPayerOwnerId, Number(current.facility.snapshot.owner_id),
+        "Industry gas must be charged to the facility owner when it is an NPC");
       const isSync = call.function === "sync_with_lane_states";
       if (isSync) assert.equal(integer(call.arguments[3]), current.fields.revision);
       const observed = integer(call.arguments[isSync ? 4 : 3]);
@@ -200,6 +202,18 @@ test("Smart Industry creates a sidecar, verifies it and deduplicates across adap
   assert.equal(result.industryObjectID, deriveSuiIndustryId(f.world, f.assemblyID));
   await f.adapter().sync(f.current.facility, f.assembly);
   assert.equal(f.current.executions.length, 1);
+});
+
+test("NPC Industry creation and subsequent lane sync retain the NPC gas-payer identity", async () => {
+  const f = chainFixture();
+  const npcOwnerId = 1_500_000_001;
+  f.assembly.ownerId = npcOwnerId;
+  f.current.facility.snapshot.owner_id = String(npcOwnerId);
+  const adapter = f.adapter();
+  await adapter.sync(f.current.facility, f.assembly);
+  f.current.facility.snapshot.inputs = [];
+  await adapter.sync(f.current.facility, f.assembly);
+  assert.deepEqual(f.current.executions.map(entry => entry.gasPayerOwnerId), [npcOwnerId, npcOwnerId]);
 });
 
 test("inventory, blueprint clearing and status changes replace snapshots with revision guards", async () => {

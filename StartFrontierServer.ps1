@@ -358,6 +358,16 @@ function Get-OwnedProcessState {
     return [pscustomobject]@{ State = 'running'; Marker = $marker; Process = $process }
 }
 
+function Get-ServerProcessLabel {
+    param([object]$Marker)
+    if ($null -ne $Marker -and
+        @($Marker.PSObject.Properties.Name) -contains 'launchMode' -and
+        [string]$Marker.launchMode -eq 'foreground') {
+        return 'Foreground server'
+    }
+    return 'Background process'
+}
+
 function Assert-GeneratedInputs {
     if (-not (Test-Path -LiteralPath $GeneratedData -PathType Container)) {
         throw (
@@ -929,12 +939,13 @@ function Show-FrontierStatus {
     [void](Assert-RecognizedRuntime)
     Write-Output "[evejs-frontier] Runtime: initialized ($RuntimeRoot)"
     $processState = Get-OwnedProcessState
+    $serverLabel = Get-ServerProcessLabel -Marker $processState.Marker
     switch ($processState.State) {
         'running' {
-            Write-Output "[evejs-frontier] Background process: running pid=$($processState.Marker.pid)"
+            Write-Output "[evejs-frontier] ${serverLabel}: running pid=$($processState.Marker.pid)"
         }
         'stale' {
-            Write-Output "[evejs-frontier] Background process: stale marker pid=$($processState.Marker.pid)"
+            Write-Output "[evejs-frontier] ${serverLabel}: stale marker pid=$($processState.Marker.pid)"
         }
         default {
             Write-Output '[evejs-frontier] Background process: not running'
@@ -1108,6 +1119,7 @@ if ($Background) {
             schemaVersion = $script:PidMarkerSchemaVersion
             build = $Build
             runtimeRoot = $RuntimeRoot
+            launchMode = 'background'
             pid = $process.Id
             processStartTimeUtcTicks = $process.StartTime.ToUniversalTime().Ticks
             nodePath = $NodePath
@@ -1167,8 +1179,13 @@ Write-Host '[evejs-frontier] Running in the foreground; press Ctrl+C to stop.'
 $dappStdoutLog = Join-Path $RuntimeRoot 'dapp.stdout.log'
 $dappStderrLog = Join-Path $RuntimeRoot 'dapp.stderr.log'
 $quotedDappEntry = '"' + $DappEntry + '"'
+$quotedServerEntry = '"' + $ServerEntry + '"'
 $dappProcess = $null
+$serverProcess = $null
 $dappPidMarkerWritten = $false
+$serverPidMarkerWritten = $false
+$dappStartTicks = [int64]0
+$serverStartTicks = [int64]0
 $exitCode = 1
 try {
     $dappProcess = Start-Process -FilePath $NodePath `
@@ -1186,13 +1203,14 @@ try {
             "See $dappStderrLog"
         )
     }
+    $dappStartTicks = $dappProcess.StartTime.ToUniversalTime().Ticks
     Write-JsonAtomic -Path $DappPidMarker -Value ([ordered]@{
         kind = $script:DappPidMarkerKind
         schemaVersion = $script:DappPidMarkerSchemaVersion
         build = $Build
         runtimeRoot = $RuntimeRoot
         pid = $dappProcess.Id
-        processStartTimeUtcTicks = $dappProcess.StartTime.ToUniversalTime().Ticks
+        processStartTimeUtcTicks = $dappStartTicks
         nodePath = $NodePath
         dappEntry = $DappEntry
         startedAtUtc = [DateTime]::UtcNow.ToString('o')
@@ -1201,14 +1219,56 @@ try {
     })
     $dappPidMarkerWritten = $true
     Write-Host "[evejs-frontier] Smart Assembly dApp started: pid=$($dappProcess.Id)"
-    Invoke-WithChildEnvironment -Environment $ServerEnvironment -Action {
-        & $NodePath --enable-source-maps $ServerEntry
-        $script:exitCode = $LASTEXITCODE
+    $serverProcess = Invoke-WithChildEnvironment -Environment $ServerEnvironment -Action {
+        Start-Process -FilePath $NodePath `
+            -ArgumentList @('--enable-source-maps', $quotedServerEntry) `
+            -WorkingDirectory $RepoRoot `
+            -NoNewWindow `
+            -PassThru
     }
+    $serverProcess.Refresh()
+    if ($serverProcess.HasExited) {
+        throw "Frontier server exited during foreground startup with code $($serverProcess.ExitCode)."
+    }
+    $serverStartTicks = $serverProcess.StartTime.ToUniversalTime().Ticks
+    Write-JsonAtomic -Path $PidMarker -Value ([ordered]@{
+        kind = $script:PidMarkerKind
+        schemaVersion = $script:PidMarkerSchemaVersion
+        build = $Build
+        runtimeRoot = $RuntimeRoot
+        launchMode = 'foreground'
+        pid = $serverProcess.Id
+        processStartTimeUtcTicks = $serverStartTicks
+        nodePath = $NodePath
+        serverEntry = $ServerEntry
+        startedAtUtc = [DateTime]::UtcNow.ToString('o')
+    })
+    $serverPidMarkerWritten = $true
+    Write-Host "[evejs-frontier] Foreground server started: pid=$($serverProcess.Id)"
+    $serverProcess.WaitForExit()
+    $exitCode = $serverProcess.ExitCode
 }
 finally {
     if ($null -eq $exitCode) {
         $exitCode = 1
+    }
+    if ($null -ne $serverProcess) {
+        $serverProcess.Refresh()
+        if (-not $serverProcess.HasExited) {
+            if (-not $serverProcess.WaitForExit(10000)) {
+                $serverProcess.Kill($true)
+                if (-not $serverProcess.WaitForExit(10000)) {
+                    throw "Frontier server PID $($serverProcess.Id) did not exit within 10 seconds."
+                }
+            }
+        }
+    }
+    if ($serverPidMarkerWritten -and (Test-Path -LiteralPath $PidMarker -PathType Leaf)) {
+        $currentServerMarker = Get-Content -LiteralPath $PidMarker -Raw | ConvertFrom-Json
+        if ([int64]$currentServerMarker.pid -eq [int64]$serverProcess.Id -and
+            [int64]$currentServerMarker.processStartTimeUtcTicks -eq [int64]$serverStartTicks) {
+            Remove-Item -LiteralPath $PidMarker -Force
+        }
     }
     if ($null -ne $dappProcess) {
         $dappProcess.Refresh()
@@ -1220,7 +1280,11 @@ finally {
         }
     }
     if ($dappPidMarkerWritten -and (Test-Path -LiteralPath $DappPidMarker -PathType Leaf)) {
-        Remove-Item -LiteralPath $DappPidMarker -Force
+        $currentDappMarker = Get-Content -LiteralPath $DappPidMarker -Raw | ConvertFrom-Json
+        if ([int64]$currentDappMarker.pid -eq [int64]$dappProcess.Id -and
+            [int64]$currentDappMarker.processStartTimeUtcTicks -eq $dappStartTicks) {
+            Remove-Item -LiteralPath $DappPidMarker -Force
+        }
     }
 }
 if ($exitCode -ne 0) {

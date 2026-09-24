@@ -619,6 +619,12 @@ function despawn(entityID, options: Record<string, any> = {}) {
   return npcService.destroyNpcControllerByEntityID(entityID, options);
 }
 
+function openHeadlessFittingWindow(actorEntityID, targetEntityID = actorEntityID) {
+  return require("./npcHeadlessFittingWindow").openNpcHeadlessFittingWindow({
+    actorEntityID, targetEntityID,
+  });
+}
+
 module.exports = {
   resolveNpcContext,
   wakeNpcController,
@@ -642,4 +648,5 @@ module.exports = {
   warpToEntity,
   warpBatchToPoints,
   despawn,
+  openHeadlessFittingWindow,
 };

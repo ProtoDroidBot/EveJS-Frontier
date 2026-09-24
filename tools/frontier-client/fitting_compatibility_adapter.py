@@ -1,5 +1,6 @@
 """Player fitting compatibility and server-trusted NPC fitting for 3502403."""
 
+import builtins
 from functools import wraps
 
 
@@ -12,6 +13,11 @@ def _evejs_value(value, key, default=None):
     return getattr(value, key, default)
 
 
+def _evejs_npc_fitting_error_text(error):
+    notice = _evejs_value(_evejs_value(error, "dict", {}), "notify")
+    return str(notice or error)
+
+
 def _evejs_list(value):
     if value is None:
         return []
@@ -20,8 +26,61 @@ def _evejs_list(value):
     return list(value)
 
 
+def _evejs_service_manager(namespace):
+    manager = namespace.get("sm") or getattr(builtins, "sm", None)
+    if manager is None:
+        raise RuntimeError("Client service manager is unavailable")
+    return manager
+
+
+def _evejs_patch_escrow_tree_node(node_type, controller_type, get_facility):
+    """Give the native escrow tree the controller used by inventory entries."""
+    if hasattr(node_type, "invController"):
+        return False
+
+    @property
+    def inv_controller(self):
+        controller = getattr(self, "_evejs_escrow_inv_controller", None)
+        if controller is not None:
+            return controller
+        try:
+            facility = get_facility(
+                self._module_item_id, self._module_type_id,
+                self._creation_id,
+            )
+        except Exception:
+            facility = None
+        try:
+            controller = controller_type(
+                facility, self._module_item_id, self._module_type_id,
+            )
+        except Exception:
+            return None
+        # The controller's itemID keeps this tree branch addressable while a
+        # facility is unavailable. The native container retries the lookup.
+        if facility is not None:
+            self._evejs_escrow_inv_controller = controller
+        return controller
+
+    node_type.invController = inv_controller
+    return True
+
+
+def _evejs_install_escrow_tree_controller():
+    from frontier.industry.client.inventory import tree_node
+    from frontier.industry.client.inventory.escrow_inv_cont import (
+        EscrowInvController,
+    )
+
+    return _evejs_patch_escrow_tree_node(
+        tree_node.TreeDataEscrowSection,
+        EscrowInvController,
+        tree_node._get_facility_instance,
+    )
+
+
 def _evejs_npc_fitting_remote(namespace):
-    return namespace["sm"].RemoteSvc("npcFittingMgr")
+    return _evejs_service_manager(namespace).RemoteSvc("npcFittingMgr")
 
 
 def _evejs_get_npc_fitting_state(namespace, entity_id):
@@ -471,12 +530,23 @@ def _evejs_npc_fitting_window_type(namespace):
                 padTop=4,
                 text="",
             )
-            ui.Button(
+            actions = ui.Container(
                 parent=header,
-                align=ui.Align.to_right,
-                label="Refresh",
-                func=self._on_refresh,
+                align=ui.Align.to_top,
+                height=32,
+                padTop=8,
             )
+            try:
+                ui.Button(
+                    parent=actions,
+                    align=ui.Align.to_right,
+                    label="Refresh",
+                    func=self._on_refresh,
+                )
+            except Exception as error:
+                self._presenter.status = "Refresh unavailable: {}".format(
+                    error
+                )
             self._scroll = scroll_type(
                 parent=root,
                 align=ui.Align.to_all,
@@ -758,6 +828,16 @@ def _evejs_npc_legacy_window_type(namespace):
             target = getattr(self, "_evejs_target", None)
             if target is None:
                 return
+            # The retail fitting-name link and drag gesture save a fitting
+            # through fittingSvc for the simulated ship's owner. NPC pilots
+            # have no player fitting manager, so these gestures must stay in
+            # the target-bound editor instead of calling that player path.
+            try:
+                fit_name = self.fitNameParent
+                fit_name.GetDragData = lambda *args: []
+                fit_name.isDragObject = False
+            except Exception:
+                pass
             footer = eveui.Container(
                 parent=self.overlayCont,
                 align=eveui.Align.to_bottom,
@@ -775,6 +855,15 @@ def _evejs_npc_legacy_window_type(namespace):
                 func=self._evejs_apply,
             )
 
+        def OpenFittingForCurrentShip(self, *args):
+            try:
+                self._evejs_status.text = (
+                    "Use Apply to NPC to commit this fitting"
+                )
+            except Exception:
+                pass
+            return None
+
         def ConstructCurrentGhostIcon(self, parent):
             result = super().ConstructCurrentGhostIcon(parent)
             try:
@@ -790,7 +879,7 @@ def _evejs_npc_legacy_window_type(namespace):
             if target is None:
                 return
             try:
-                service_manager = namespace["sm"]
+                service_manager = _evejs_service_manager(namespace)
                 if service_manager.GetService(
                     "fittingSvc"
                 ).IsShipSimulated() is not True:
@@ -812,7 +901,9 @@ def _evejs_npc_legacy_window_type(namespace):
                 except Exception:
                     self.Close()
                     return
-                self._evejs_status.text = "NPC fitting failed: {}".format(error)
+                self._evejs_status.text = "NPC fitting failed: {}".format(
+                    _evejs_npc_fitting_error_text(error)
+                )
 
     namespace["_evejs_npc_legacy_window_class"] = NpcLegacyFittingWindow
     return NpcLegacyFittingWindow
@@ -824,7 +915,7 @@ def _evejs_open_npc_legacy_window(namespace, entity_id, state):
     )
     if target.fitting_path != "legacy" or target.hull_type_id <= 0:
         raise RuntimeError("NPC hull is not eligible for legacy fitting")
-    service_manager = namespace["sm"]
+    service_manager = _evejs_service_manager(namespace)
     fitting_service = service_manager.GetService("fittingSvc")
     if fitting_service.IsShipSimulated():
         raise RuntimeError("Close the current fitting simulation first")
@@ -897,7 +988,7 @@ def _evejs_open_npc_legacy_window(namespace, entity_id, state):
 
 def _evejs_get_active_ship(namespace, ship_id):
     """Resolve the active ship in both space and station dogma locations."""
-    service_manager = namespace["sm"]
+    service_manager = _evejs_service_manager(namespace)
     try:
         ship = service_manager.GetService("godma").GetItem(ship_id)
         if ship is not None:
@@ -948,6 +1039,13 @@ def _evejs_install_fitting_compatibility(namespace):
     if command_type is None or fitting_window is None:
         raise RuntimeError("Frontier fitting patch could not find its client types")
 
+    try:
+        _evejs_install_escrow_tree_controller()
+    except Exception:
+        # Escrow is optional during early client import. Keep fitting usable
+        # and retry when a trusted NPC fitting view is opened.
+        pass
+
     original_command = command_type.OpenFitting
     if not getattr(original_command, "_evejs_fitting_compatibility_patch", False):
         original_open = fitting_window.Open.__func__
@@ -988,6 +1086,10 @@ def _evejs_install_fitting_compatibility(namespace):
                 return None
             if _evejs_value(state, "fittingPath") == "legacy":
                 try:
+                    try:
+                        _evejs_install_escrow_tree_controller()
+                    except Exception:
+                        pass
                     return _evejs_open_npc_legacy_window(
                         namespace, entity_id, state
                     )

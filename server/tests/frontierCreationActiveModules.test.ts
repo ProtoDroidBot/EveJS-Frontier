@@ -447,6 +447,55 @@ test("failed propulsion fuel prepayment removes the effect before derived thrust
   assert.equal(fixture.entity.activeModuleEffects.size, 0);
 });
 
+test("manual Creation module stop waits for its cycle; forced offline stop is immediate", () => {
+  const fixture = buildHandlerFixture();
+  let requestedOptions = null;
+  fixture.context.dependencies.spaceRuntime.deactivateGenericModule = (
+    _session, _moduleID, options,
+  ) => {
+    requestedOptions = options;
+    return { success: true, data: { pending: true } };
+  };
+  assert.equal(handlers.deactivateModule(fixture.context).success, true);
+  assert.deepEqual(requestedOptions, { reason: "manual", deferUntilCycle: true });
+
+  const scene = Object.create(spaceRuntime._testing.SolarSystemScene.prototype);
+  const moduleID = 991234;
+  const effectState = {
+    moduleID,
+    effectName: "miningLaser",
+    durationMs: 5000,
+    startedAtMs: 1000,
+    nextCycleAtMs: 6000,
+    miningEffect: true,
+  };
+  const entity = { activeModuleEffects: new Map([[moduleID, effectState]]) };
+  scene.getShipEntityForSession = () => entity;
+  scene.getCurrentSimTimeMs = () => 2000;
+  let finalized = null;
+  scene.finalizeGenericModuleDeactivation = (_session, _moduleID, options) => {
+    finalized = options;
+    entity.activeModuleEffects.delete(moduleID);
+    return { success: true, data: {} };
+  };
+
+  const pending = scene.deactivateGenericModule({}, moduleID, { reason: "manual" });
+  assert.equal(pending.success, true);
+  assert.equal(pending.data.pending, true);
+  assert.equal(pending.data.deactivateAtMs, 6000);
+  assert.equal(entity.activeModuleEffects.has(moduleID), true);
+  assert.equal(finalized, null);
+
+  const interrupted = scene.deactivateGenericModule({}, moduleID, {
+    reason: "offline",
+    deferUntilCycle: false,
+  });
+  assert.equal(interrupted.success, true);
+  assert.equal(entity.activeModuleEffects.has(moduleID), false);
+  assert.equal(finalized.reason, "offline");
+  assert.equal(finalized.nowMs, 2000);
+});
+
 test("propulsion preflight fails before generic activation can charge or publish HUD state", () => {
   const fixture = buildHandlerFixture();
   fixture.context.dependencies.creationActiveModuleRuntime = {

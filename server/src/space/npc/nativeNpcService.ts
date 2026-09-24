@@ -46,6 +46,10 @@ const {
   buildNpcEntityIdentity,
 } = require(path.join(__dirname, "./npcPresentation"));
 const nativeNpcStore = require(path.join(__dirname, "./nativeNpcStore"));
+const {
+  creationTemplateForHull,
+  ensureNpcCreationState,
+} = require(path.join(__dirname, "../../services/npc/npcCreationDraft"));
 const npcRuntimePersistence = require(path.join(__dirname, "./npcRuntimePersistence"));
 const { ensureNpcPilotIdentity, applyNpcPilotIdentity } = require("./npcPilotIdentityRuntime");
 const { getNpcPilotIdentityStore } = require("./npcPilotIdentityStore");
@@ -817,6 +821,7 @@ function buildNativeRuntimeShipSpec(entityRecord, definition = null) {
     playerFittingHullTypeID: toPositiveInt(entityRecord.playerFittingHullTypeID, 0) || null,
     npcFittingProfileID: entityRecord.npcFittingProfileID || null,
     npcFittingRestrictions: cloneValue(entityRecord.npcFittingRestrictions || null),
+    npcCreationState: cloneValue(entityRecord.npcCreationState || null),
     npcFuelRequirementsEnabled:
       entityRecord.npcFuelRequirementsEnabled === true,
     securityStatus: entityRecord.securityStatus,
@@ -912,6 +917,7 @@ function applyNativeRuntimeNpcPresentation(entity, entityRecord, definition = nu
   ) || null;
   entity.npcFittingProfileID = entityRecord.npcFittingProfileID || null;
   entity.npcFittingRestrictions = cloneValue(entityRecord.npcFittingRestrictions || null);
+  entity.npcCreationState = cloneValue(entityRecord.npcCreationState || null);
   entity.slimTypeID = entityRecord.slimTypeID;
   entity.slimGroupID = entityRecord.slimGroupID;
   entity.slimCategoryID = entityRecord.slimCategoryID;
@@ -1184,6 +1190,7 @@ function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, d
     scene.systemID,
     buildNativeRuntimeShipSpec(entityRecord, definition),
     {
+      allowPendingBootstrap: true,
       persistSpaceState: false,
       broadcast: options.broadcast !== false,
       excludedSession: options.excludedSession || null,
@@ -1797,14 +1804,23 @@ function spawnNativeNpcEntityInContext(context, definition, options: Record<stri
     compensateSpawn(moduleResult.errorMsg || "module write failed");
     return moduleResult;
   }
+  if (entityRecord.categoryID === 6 && creationTemplateForHull(entityRecord)) {
+    const seedResult = ensureNpcCreationState(entityRecord, entityRecord, { durable: false });
+    if (!seedResult.success) {
+      compensateSpawn(seedResult.errorMsg || "Creation template seed failed");
+      return seedResult;
+    }
+    Object.assign(entityRecord, seedResult.data.entityRecord);
+  }
+  const fittedModules = nativeNpcStore.listNativeModulesForEntity(entityRecord.entityID);
   if (spawnOperation) {
     npcRuntimePersistence.checkpointNpcOperation(
       spawnOperation.operationID,
       "modules-written",
       {
-        expectedModuleIDs: (moduleResult.data || []).map((record) => record.moduleID),
+        expectedModuleIDs: fittedModules.map((record) => record.moduleID),
       },
-      { flushTables: [nativeNpcStore.TABLE.MODULES] },
+      { flushTables: [nativeNpcStore.TABLE.ENTITIES, nativeNpcStore.TABLE.MODULES] },
     );
   }
 
@@ -1903,8 +1919,8 @@ function spawnNativeNpcEntityInContext(context, definition, options: Record<stri
       virtualizedRuntime: options.materializeRuntime === false,
       entityRecord,
       shipItem: null,
-      modules: moduleResult.data || [],
-      fittedModules: moduleResult.data || [],
+      modules: fittedModules,
+      fittedModules,
       cargo: cargoResult.data || [],
       lootEntries: [],
       definition,

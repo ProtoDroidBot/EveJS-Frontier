@@ -3,20 +3,21 @@
 /**
  * IFF Creation ability handlers.
  *
- * - behavior "iff" + "activate_effect"/"deactivate_effect": starts or stops
- *   the Transponder broadcast. Activation carries the locally saved
- *   iff_channel/iff_code settings; deactivation preserves those settings.
+ * - behavior "iff" + "activate_effect"/"deactivate_effect": starts the
+ *   Transponder broadcast or stops it after the current cycle. Activation
+ *   carries the locally saved iff_channel/iff_code settings; deactivation
+ *   preserves those settings.
  * - behavior "iff" + ability "iff_reconfigure": validates iff_channel /
  *   iff_code kwargs and updates the selected mode without changing whether
  *   the Transponder is broadcasting.
- * - behavior "iff_beacon" + "activate_effect"/"deactivate_effect": starts or
- *   stops the Transponder Beacon. Activation requires an undocked, in-space
- *   ship; the ship is held stationary through the established
- *   activeModuleEffects immobilizer authority for the authored Dogma
- *   duration (30 s for type 96039) and released on expiry, deactivation, or
+ * - behavior "iff_beacon" + "activate_effect"/"deactivate_effect": starts the
+ *   Transponder Beacon or stops it after the current cycle. Activation
+ *   requires an undocked, in-space ship; the ship is held stationary through
+ *   the established activeModuleEffects immobilizer authority for the authored
+ *   Dogma duration (30 s for type 96039) and released on expiry, deactivation, or
  *   any scene teardown.
  *
- * After every accepted state change the same-system sessions receive
+ * After every effective state change the same-system sessions receive
  * OnIffMapChanged (clients then refetch beacons/cairns) and refreshed
  * OnIffVerdicts.
  */
@@ -342,7 +343,7 @@ function startIffDogmaEffect(context, moduleItem, effectName, options: Record<st
   };
 }
 
-function stopIffDogmaEffect(context, reason = "iff-deactivated") {
+function stopIffDogmaEffect(context, reason = "iff-deactivated", deferUntilCycle = false) {
   const runtime = context.dependencies && context.dependencies.spaceRuntime
     ? context.dependencies.spaceRuntime
     : getSpaceRuntime();
@@ -352,7 +353,7 @@ function stopIffDogmaEffect(context, reason = "iff-deactivated") {
   const result = runtime.deactivateGenericModule(
     context.session,
     context.moduleItemID,
-    { reason, deferUntilCycle: false },
+    { reason, deferUntilCycle },
   );
   if (
     result &&
@@ -362,6 +363,54 @@ function stopIffDogmaEffect(context, reason = "iff-deactivated") {
     return { success: true as const, data: { alreadyStopped: true } };
   }
   return result || { success: false as const, errorMsg: "DOGMA_EFFECT_STOP_FAILED" };
+}
+
+function handleIffBroadcastEffectStopped(effectState, solarSystemID = 0) {
+  if (
+    !effectState ||
+    effectState.iffCreationEffect !== true ||
+    effectState.effectName !== IFF_BROADCAST_EFFECT_NAME
+  ) {
+    return false;
+  }
+  const reason = String(effectState.stopReason || "");
+  // A power interruption suspends the saved activation intent. A manual stop
+  // requested before that interruption still has to complete the deactivation.
+  if (
+    effectState.iffManualDeactivationPending !== true &&
+    (reason === "offline" || reason.startsWith("iff-"))
+  ) {
+    return false;
+  }
+  const result = iffRuntime.setTransponderBroadcastState(effectState.moduleID, false);
+  if (!result || result.success !== true) {
+    log.warn(
+      `[iff] failed to persist stopped transponder module=${effectState.moduleID} ` +
+      `reason=${(result && result.errorMsg) || "IFF_WRITE_FAILED"}`,
+    );
+    return false;
+  }
+  scheduleIffStateChanged(solarSystemID, "transponder-deactivated");
+  return true;
+}
+
+function handleIffBeaconEffectStopped(effectState) {
+  if (
+    !effectState ||
+    effectState.iffBeaconEffect !== true ||
+    effectState.effectName !== IFF_BEACON_EFFECT_NAME
+  ) {
+    return false;
+  }
+  const reason = String(effectState.stopReason || "");
+  if (
+    effectState.iffManualDeactivationPending !== true &&
+    (reason === "offline" || reason.startsWith("iff-"))
+  ) {
+    return false;
+  }
+  const result = iffRuntime.stopBeacon(effectState.moduleID, reason || "cycle");
+  return Boolean(result && result.success === true);
 }
 
 function isIffEffectActive(context) {
@@ -573,10 +622,20 @@ function registerIffAbilityHandlers() {
       execute(context) {
         const effectResult = stopIffDogmaEffect(
           context,
-          "iff-transponder-deactivated",
+          "manual",
+          true,
         );
         if (!effectResult.success) {
           return effectResult;
+        }
+        if (effectResult.data && effectResult.data.pending === true) {
+          if (effectResult.data.effectState) {
+            effectResult.data.effectState.iffManualDeactivationPending = true;
+          }
+          return {
+            success: true as const,
+            data: { pending: true, deactivateAtMs: effectResult.data.deactivateAtMs },
+          };
         }
         const result = iffRuntime.setTransponderBroadcastState(
           context.moduleItemID,
@@ -727,11 +786,24 @@ function registerIffAbilityHandlers() {
     ABILITY_DEACTIVATE_EFFECT,
     {
       execute(context) {
+        const effectResult = stopIffDogmaEffect(context, "manual", true);
+        if (!effectResult.success) {
+          return effectResult;
+        }
+        if (effectResult.data && effectResult.data.pending === true) {
+          if (effectResult.data.effectState) {
+            effectResult.data.effectState.iffManualDeactivationPending = true;
+          }
+          return {
+            success: true as const,
+            data: { pending: true, deactivateAtMs: effectResult.data.deactivateAtMs },
+          };
+        }
         const stopResult = iffRuntime.stopBeacon(
           context.moduleItemID,
           "deactivated",
         );
-        if (!stopResult.success) {
+        if (!stopResult.success && stopResult.errorMsg !== "BEACON_NOT_ACTIVE") {
           return stopResult;
         }
         return { success: true as const, data: {} };
@@ -744,6 +816,8 @@ module.exports = {
   buildVerdictsForViewer,
   buildNpcTransponderShipsForSystem,
   handleCreationIffStateChange,
+  handleIffBroadcastEffectStopped,
+  handleIffBeaconEffectStopped,
   notifyIffMapChanged,
   notifyIffStateChanged,
   notifyIffVerdicts,

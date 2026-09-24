@@ -27,7 +27,8 @@ type ContentsOptions = {
     catapultRegistryId: string;
   };
   chain: SuiAssemblyChain;
-  execute(label: string, transaction: Transaction, ownerId?: number, assertSnapshotCurrent?: () => void): Promise<unknown>;
+  execute(label: string, transaction: Transaction, ownerId?: number, assertSnapshotCurrent?: () => void,
+    gasPayerOwnerId?: number): Promise<unknown>;
   getCharacter(ownerId: number): Promise<SuiContentsCharacter>;
   serverSigner: Ed25519Keypair;
   now?: () => number;
@@ -462,7 +463,7 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
       ] });
       const assertCurrent = () => assertGateCurrent([snapshot]);
       assertCurrent();
-      await execute(`catapult-unlink:${snapshot.itemId}`, unlink, undefined, assertCurrent);
+      await execute(`catapult-unlink:${snapshot.itemId}`, unlink, undefined, assertCurrent, snapshot.ownerId);
     }
     const assertCurrent = () => assertGateCurrent([snapshot]);
     await ensureGateRange(snapshot, assertCurrent);
@@ -488,7 +489,7 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
       ] });
     }
     assertCurrent();
-    await execute(`catapult-route:${snapshot.itemId}:${destination}`, tx, undefined, assertCurrent);
+    await execute(`catapult-route:${snapshot.itemId}:${destination}`, tx, undefined, assertCurrent, snapshot.ownerId);
   }
 
   async function getGateStatus(snapshot: AssemblySnapshot, destinationSnapshot?: AssemblySnapshot): Promise<SuiGateChainStatus> {
@@ -572,7 +573,7 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
       tx.moveCall({ target: target("gate", "unlink_gates_by_admin"), arguments: [tx.object(gate.id), tx.object(actual), tx.object(world.adminAclId)] });
       const assertCurrent = () => assertGateCurrent(pairedGates);
       assertCurrent();
-      await execute(`gate-unlink:${snapshot.itemId}`, tx, undefined, assertCurrent);
+      await execute(`gate-unlink:${snapshot.itemId}`, tx, undefined, assertCurrent, snapshot.ownerId);
     }
     const processed = new Set<string>();
     for (const snapshot of pairedGates) {

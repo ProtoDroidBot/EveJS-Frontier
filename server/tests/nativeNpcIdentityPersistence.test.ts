@@ -48,6 +48,67 @@ test("native transient and durable entities share a persistent allocation cursor
   assert.equal(Number(probe.stdout.trim()), third.data + 1);
 });
 
+test("durable NPC state survives a clean process restart", (t) => {
+  restoreTablesAfter(t, [
+    "npcRuntimeState", "npcEntities", "npcModules", "npcCargo", "npcRuntimeControllers",
+  ]);
+  const repoRoot = require("node:path").resolve(__dirname, "../..");
+  const entityID = 980000000987;
+  const moduleID = 980100000987;
+  const cargoID = 980200000987;
+  const stage = spawnSync(process.execPath, ["-e", [
+    "const assert=require('node:assert/strict');",
+    "const store=require('./server/src/space/npc/nativeNpcStore');",
+    "const service=require('./server/src/space/npc/nativeNpcService');",
+    "const persistence=require('./server/src/space/npc/npcRuntimePersistence');",
+    "persistence.initializeNpcRuntimePersistence({reconcile:false});",
+    `assert.equal(store.upsertNativeEntity({entityID:${entityID},systemID:30000004,nativeNpc:true,transient:false,typeID:72207,categoryID:11,factionID:500025,position:{x:1,y:2,z:3}},{durable:true}).success,true);`,
+    `assert.equal(store.upsertNativeModule({moduleID:${moduleID},entityID:${entityID},ownerID:500025,typeID:12345,flagID:27,moduleState:{active:true}},{durable:true}).success,true);`,
+    `assert.equal(store.upsertNativeCargo({cargoID:${cargoID},entityID:${entityID},ownerID:500025,typeID:54321,quantity:7},{durable:true}).success,true);`,
+    `assert.equal(store.upsertNativeController({entityID:${entityID},systemID:30000004,transient:false,profileID:'restart-probe',manualOrder:{type:'approach',targetEntityID:76543},behaviorOverrides:{aggressive:false}},{durable:true}).success,true);`,
+    `assert.equal(service.persistNativeRuntimeEntity({itemID:${entityID},nativeNpc:true,position:{x:45000,y:-12000,z:900},velocity:{x:30,y:4,z:-2},direction:{x:0,y:1,z:0},targetPoint:{x:46000,y:-12000,z:900},mode:'GOTO',speedFraction:0.65,targetEntityID:76543,conditionState:{shieldCharge:0.28,armorDamage:0.36,damage:0.19}}).success,true);`,
+    "assert.equal(service.checkpointAllNativeRuntimeState({reason:'restart-probe'}).success,true);",
+    "process.stdout.write('STAGED\\n');",
+    "process.exit(0);",
+  ].join("\n")], {
+    cwd: repoRoot, env: process.env, encoding: "utf8",
+  });
+  assert.equal(stage.status, 0, stage.stderr);
+  assert.match(stage.stdout, /STAGED/);
+
+  const restarted = spawnSync(process.execPath, ["-e", [
+    "const store=require('./server/src/space/npc/nativeNpcStore');",
+    "const persistence=require('./server/src/space/npc/npcRuntimePersistence');",
+    "const status=persistence.initializeNpcRuntimePersistence();",
+    `const entity=store.getNativeEntity(${entityID});`,
+    `const module=store.getNativeModule(${moduleID});`,
+    `const cargo=store.getNativeCargo(${cargoID});`,
+    `const controller=store.getNativeController(${entityID});`,
+    `process.stdout.write('RESTORED:'+JSON.stringify({entityID:entity?.entityID,position:entity?.position,velocity:entity?.velocity,mode:entity?.mode,conditionState:entity?.conditionState,targetEntityID:entity?.targetEntityID,moduleID:module?.moduleID,moduleState:module?.moduleState,cargoID:cargo?.cargoID,quantity:cargo?.quantity,manualOrder:controller?.manualOrder,quarantined:persistence.isNpcEntityQuarantined(${entityID}),previousCleanShutdown:status.data.server.previousCleanShutdown,snapshotCount:status.data.snapshotCount})+'\\n');`,
+  ].join("\n")], {
+    cwd: repoRoot, env: process.env, encoding: "utf8",
+  });
+  assert.equal(restarted.status, 0, restarted.stderr);
+  const restored = JSON.parse(restarted.stdout.match(/RESTORED:(\{.*\})/)?.[1] || "null");
+  assert.ok(restored.snapshotCount >= 1);
+  delete restored.snapshotCount;
+  assert.deepEqual(restored, {
+    entityID,
+    position: { x: 45_000, y: -12_000, z: 900 },
+    velocity: { x: 30, y: 4, z: -2 },
+    mode: "GOTO",
+    conditionState: { shieldCharge: 0.28, armorDamage: 0.36, damage: 0.19 },
+    targetEntityID: 76543,
+    moduleID,
+    moduleState: { active: true },
+    cargoID,
+    quantity: 7,
+    manualOrder: { type: "approach", targetEntityID: 76543 },
+    quarantined: false,
+    previousCleanShutdown: true,
+  });
+});
+
 test("native module, cargo and wreck allocations use the same cursor across persistence modes", (t) => {
   const cases = [
     ["npcModules", "nextModuleID", "allocateModuleID"],

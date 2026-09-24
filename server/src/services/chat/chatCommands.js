@@ -40,6 +40,7 @@ const npcService = require("../../space/npc");
 const dungeonAuthorityForSpawnSite = require("../dungeon/dungeonAuthority");
 const { executeFrontierLandscapeCommand, } = require("./frontierLandscapeCommands");
 const { executeFrontierRiftCommand, } = require("./frontierRiftCommands");
+const { executeDungeonPropMoveCommand, } = require("./dungeonPropMoveCommand");
 const { executeFrontierAssemblyCommand, } = require("../frontier/assemblyChatCommands");
 const { CAPITAL_NPC_CHAT_COMMANDS, CAPITAL_NPC_HELP_LINES, executeCapitalNpcCommand, } = require("./capitalNpc");
 const { WORMHOLE_CHAT_COMMANDS, WORMHOLE_HELP_LINES, executeWormholeCommand, } = require("./wormhole");
@@ -181,6 +182,7 @@ const AVAILABLE_SLASH_COMMANDS = [
     "landscape",
     "ecosystem",
     "rift",
+    "dungeonprop",
     "npc",
     "mnpc",
     "npctest",
@@ -256,6 +258,7 @@ const COMMANDS_HELP_TEXT = [
     "/assembly <types|list|info|spawn|state|link|unlink|complete|remove>",
     "/landscape <list [name]|inspect ecosystemID|sites|spawn ecosystemID [placement]|remove siteID|nearest|here>",
     "/rift <list [name]|inspect template|sites|spawn [template] [placement]|remove siteID|nearest|here>",
+    "/dungeonprop preview <entityID> <x> <y> <z> [yaw pitch roll] (GM validation only)",
     "/allskills",
     "/npc [amount] [faction|profile|pool]",
     "/spawn <NPC typeID> [count]  (GM test command)",
@@ -2992,7 +2995,11 @@ function resolveTransportLocationToken(session, targetDescriptor, token) {
                     `station ${numericID}`,
             };
         }
-        return buildTransportPointAnchor(entity, scene.systemID);
+        const anchor = buildTransportPointAnchor(entity, scene.systemID);
+        return anchor && scene.dynamicEntities instanceof Map &&
+            scene.dynamicEntities.has(numericID)
+            ? { ...anchor, arrivalEntityID: numericID }
+            : anchor;
     }
     return findStaticTransportAnchorByID(numericID);
 }
@@ -3000,9 +3007,43 @@ function withTransportOffset(destination, offsetVector) {
     if (!destination || destination.kind !== "point" || !destination.point) {
         return null;
     }
+    const { arrivalEntityID, ...baseDestination } = destination;
+    return {
+        ...baseDestination,
+        point: addVectors(destination.point, offsetVector),
+    };
+}
+function resolveDynamicTransportArrival(destination, scene, session) {
+    const entityID = normalizePositiveInteger(destination && destination.arrivalEntityID);
+    if (!entityID)
+        return destination;
+    const target = scene && scene.getEntityByID(entityID);
+    if (!target || !(scene.dynamicEntities instanceof Map) ||
+        !scene.dynamicEntities.has(entityID) || !target.position) {
+        return null;
+    }
+    const egoID = normalizePositiveInteger(session && session._space && session._space.shipID);
+    if (egoID === entityID)
+        return { ...destination, point: cloneSpaceVector(target.position) };
+    const ego = egoID ? scene.getEntityByID(egoID) : null;
+    const targetPoint = cloneSpaceVector(target.position);
+    const difference = {
+        x: Number(ego && ego.position && ego.position.x || 0) - targetPoint.x,
+        y: Number(ego && ego.position && ego.position.y || 0) - targetPoint.y,
+        z: Number(ego && ego.position && ego.position.z || 0) - targetPoint.z,
+    };
+    const magnitude = Math.hypot(difference.x, difference.y, difference.z);
+    const direction = magnitude > 0
+        ? { x: difference.x / magnitude, y: difference.y / magnitude, z: difference.z / magnitude }
+        : { x: 1, y: 0, z: 0 };
+    const clearance = Math.max(2_500, Math.max(0, Number(target.radius) || 0) + Math.max(0, Number(ego && ego.radius) || 0) + 500);
     return {
         ...destination,
-        point: addVectors(destination.point, offsetVector),
+        point: addVectors(targetPoint, {
+            x: direction.x * clearance,
+            y: direction.y * clearance,
+            z: direction.z * clearance,
+        }),
     };
 }
 function formatTransportTargetLabel(targetDescriptor) {
@@ -3113,13 +3154,17 @@ async function executeSessionTransportTarget(requestSession, targetDescriptor, d
             crossedLocationBoundary = true;
         }
         const destinationScene = spaceRuntime.getSceneForSession(targetSession);
-        const dungeonInitialization = initializeTransportDestinationDungeon(destinationScene, destination, targetSession, {
+        const currentDestination = resolveDynamicTransportArrival(destination, destinationScene, targetSession);
+        if (!currentDestination) {
+            return handledResult(chatHub, requestSession, options, `Failed to transport ${targetLabel}: destination is no longer in space.`);
+        }
+        const dungeonInitialization = initializeTransportDestinationDungeon(destinationScene, currentDestination, targetSession, {
             dependencies: options && options.transportDungeonInitializationDependencies,
         });
         if (!dungeonInitialization.success) {
             return handledResult(chatHub, requestSession, options, `Failed to initialize the dungeon at ${destinationLabel}: ${dungeonInitialization.errorMsg || "unknown error"}.`);
         }
-        const teleportResult = spaceRuntime.teleportSessionShipToPoint(targetSession, destination.point, {
+        const teleportResult = spaceRuntime.teleportSessionShipToPoint(targetSession, currentDestination.point, {
             direction: destination.direction,
             refreshOwnerSession: true,
         });
@@ -3137,7 +3182,7 @@ async function executeSessionTransportTarget(requestSession, targetDescriptor, d
                     destinationStaticInstanceID: destinationDungeonIdentity.instanceID,
                     destinationDungeonRoomKey: destinationDungeonIdentity.roomKey,
                     destinationDungeonSiteID: destinationDungeonIdentity.siteID,
-                    roomPosition: destination.point,
+                    roomPosition: currentDestination.point,
                 });
                 if (typeof destinationScene.requestFinalSceneVisibilityReconciliation === "function") {
                     destinationScene.requestFinalSceneVisibilityReconciliation();
@@ -7491,6 +7536,10 @@ function executeChatCommand(session, rawMessage, chatHub, options = {}) {
     }
     if (command === "rift") {
         const result = executeFrontierRiftCommand(session, argumentText);
+        return handledResult(chatHub, session, options, result.message);
+    }
+    if (command === "dungeonprop") {
+        const result = executeDungeonPropMoveCommand(session, argumentText);
         return handledResult(chatHub, session, options, result.message);
     }
     if (command === "assembly" || command === "assemblies") {

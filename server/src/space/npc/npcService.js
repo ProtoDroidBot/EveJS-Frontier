@@ -1090,8 +1090,7 @@ function maintainStartupRulesInScene(scene, now) {
         }
     }
 }
-function spawnStartupRulesForSystem(systemID) {
-    const scene = spaceRuntime.ensureScene(systemID);
+function spawnStartupRulesInScene(scene) {
     if (!scene) {
         return {
             success: false,
@@ -1110,6 +1109,9 @@ function spawnStartupRulesForSystem(systemID) {
             applied,
         },
     };
+}
+function spawnStartupRulesForSystem(systemID) {
+    return spawnStartupRulesInScene(spaceRuntime.ensureScene(systemID));
 }
 function refreshStartupRulesForScene(scene) {
     if (!scene || toPositiveInt(scene.systemID, 0) <= 0) {
@@ -1144,7 +1146,9 @@ function handleSceneCreated(scene) {
         broadcast: false,
         activeStartupRuleIDs,
     });
-    const startupResult = spawnStartupRulesForSystem(scene.systemID);
+    // Reuse the scene being bootstrapped; ensureScene would invalidate an
+    // in-flight async bootstrap and discard its recovery work.
+    const startupResult = spawnStartupRulesInScene(scene);
     return {
         success: startupResult.success && rehydrationResult.success,
         errorMsg: startupResult.errorMsg || rehydrationResult.errorMsg || null,

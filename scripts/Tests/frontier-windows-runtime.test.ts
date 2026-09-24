@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
@@ -604,7 +604,7 @@ test(
 );
 
 test(
-  "Windows background startup rolls back its exact child before PID publication",
+  "Windows startup rolls back failed background launch and stops a foreground server",
   { skip: !canRunPowerShell },
   async (t) => {
     const fixtureRoot = fs.mkdtempSync(
@@ -780,5 +780,60 @@ test(
       )),
       false,
     );
+
+    // Exercise the foreground launcher from another terminal. Mock only CIM,
+    // which is unavailable in the managed test host; PID/path/time checks run.
+    const stopScript = path.join(fixtureRoot, "StopFrontier.ps1");
+    const stopSource = fs.readFileSync(path.join(REPO_ROOT, "StopFrontier.ps1"), "utf8");
+    const cimLookup =
+      'Get-CimInstance Win32_Process -Filter "ProcessId = $($marker.pid)" -ErrorAction SilentlyContinue';
+    assert.equal(stopSource.includes(cimLookup), true);
+    fs.writeFileSync(stopScript, stopSource.replaceAll(
+      cimLookup,
+      '[pscustomobject]@{ CommandLine = "$ServerEntry $DappEntry" }',
+    ));
+    const commonModuleRelative = path.join(
+      "tools", "frontier-client", "FrontierWindows.Common.psm1",
+    );
+    const commonModule = path.join(fixtureRoot, commonModuleRelative);
+    fs.mkdirSync(path.dirname(commonModule), { recursive: true });
+    fs.copyFileSync(path.join(REPO_ROOT, commonModuleRelative), commonModule);
+
+    const foreground = spawn(POWERSHELL, [
+      "-NoLogo", "-NoProfile", "-NonInteractive", "-File", startScript,
+      "-Build", build,
+    ], { cwd: fixtureRoot, env: process.env, windowsHide: true });
+    let foregroundOutput = "";
+    foreground.stdout.on("data", chunk => { foregroundOutput += chunk; });
+    foreground.stderr.on("data", chunk => { foregroundOutput += chunk; });
+    const serverMarkerPath = path.join(
+      fixtureRoot, "_local", "frontier-runtime", build,
+      ".evejs-frontier-server.pid.json",
+    );
+    t.after(() => {
+      if (fs.existsSync(serverMarkerPath)) {
+        runScript(stopScript, ["-Build", build]);
+      }
+      if (foreground.exitCode === null) foreground.kill();
+    });
+    const deadline = Date.now() + 15_000;
+    while (!fs.existsSync(serverMarkerPath) && Date.now() < deadline &&
+           foreground.exitCode === null) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal(fs.existsSync(serverMarkerPath), true, foregroundOutput);
+    const serverMarker = JSON.parse(fs.readFileSync(serverMarkerPath, "utf8"));
+    assert.equal(serverMarker.launchMode, "foreground");
+    assert.equal(serverMarker.pid, Number.parseInt(fs.readFileSync(childPidPath, "utf8"), 10));
+
+    const stopped = runScript(stopScript, ["-Build", build]);
+    assert.equal(stopped.status, 0, stopped.stderr || stopped.stdout);
+    assert.match(stopped.stdout, /Stopped marker-owned Frontier server/);
+    const foregroundExit = await new Promise(resolve => {
+      if (foreground.exitCode !== null) resolve(foreground.exitCode);
+      else foreground.once("exit", resolve);
+    });
+    assert.notEqual(foregroundExit, null);
+    assert.equal(fs.existsSync(serverMarkerPath), false);
   },
 );

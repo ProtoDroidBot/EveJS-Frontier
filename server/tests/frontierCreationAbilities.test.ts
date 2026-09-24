@@ -50,6 +50,8 @@ const {
   buildNpcTransponderShipsForSystem,
   buildVerdictsForViewer,
   handleCreationIffStateChange,
+  handleIffBeaconEffectStopped,
+  handleIffBroadcastEffectStopped,
 } = require("../src/services/frontier/iffAbilityHandlers");
 const TYPE_SCANNER = 95322;
 const TYPE_TRANSPONDER = 95988;
@@ -1109,6 +1111,17 @@ function buildIffEffectRuntime(shipID) {
   return {
     calls,
     entity,
+    finishCycle(moduleItemID) {
+      const effectState = entity.activeModuleEffects.get(moduleItemID);
+      assert.ok(effectState);
+      entity.activeModuleEffects.delete(moduleItemID);
+      effectState.stopReason = "manual";
+      if (effectState.effectName === "iffBeacon") {
+        handleIffBeaconEffectStopped(effectState);
+      } else {
+        handleIffBroadcastEffectStopped(effectState, SOLAR_SYSTEM_ID);
+      }
+    },
     runtime: {
       getEntity(_session, requestedShipID) {
         return Number(requestedShipID) === Number(shipID) ? entity : null;
@@ -1135,7 +1148,20 @@ function buildIffEffectRuntime(shipID) {
         if (!effectState) {
           return { success: false, errorMsg: "MODULE_NOT_ACTIVE" };
         }
+        if (options.reason === "manual" && options.deferUntilCycle === true) {
+          calls.push({ action: "deactivate-requested", options, effectState });
+          return {
+            success: true,
+            data: { entity, effectState, pending: true, deactivateAtMs: Date.now() + 5000 },
+          };
+        }
         entity.activeModuleEffects.delete(moduleItemID);
+        effectState.stopReason = options.reason || null;
+        if (effectState.effectName === "iffBeacon") {
+          handleIffBeaconEffectStopped(effectState);
+        } else {
+          handleIffBroadcastEffectStopped(effectState, SOLAR_SYSTEM_ID);
+        }
         calls.push({ action: "deactivate", options, effectState });
         return { success: true, data: { entity, effectState } };
       },
@@ -1753,7 +1779,7 @@ test("Creation fitting splits one singleton and Dogma bridges online state", () 
   );
   assert.equal(
     notifications.filter((entry) => entry.name === "OnMultiEvent").length,
-    2,
+    3,
   );
 
   const stateBeforeUndock = creationRuntime.readCreationState(
@@ -2410,9 +2436,11 @@ test("GUI installation primes a Transponder for immediate activation", (t) => {
   const itemChangeIndex = notifications.findIndex((entry) =>
     entry.name === "OnItemChange" && entry.payload[0].fields.itemID === moduleItem.itemID);
   const onlineEffectIndex = notifications.findIndex((entry) =>
-    entry.name === "OnGodmaShipEffect" &&
-    entry.payload[0] === moduleItem.itemID &&
-    entry.payload[1] === 16);
+    entry.name === "OnMultiEvent" &&
+    entry.payload[0].items.some((pair) =>
+      pair.items[0].items[0] === "OnGodmaShipEffect" &&
+      pair.items[0].items[1] === moduleItem.itemID &&
+      pair.items[0].items[2] === 16));
   const creationChangedIndex = notifications.findIndex((entry) =>
     entry.name === "OnCreationChanged");
   assert.ok(primeIndex >= 0, "the client must receive a live Dogma module prime");
@@ -2428,6 +2456,13 @@ test("GUI installation primes a Transponder for immediate activation", (t) => {
   const primeFields = Object.fromEntries(prime.payload[1].args.entries);
   assert.equal(primeFields.itemID, moduleItem.itemID);
   assert.ok(primeFields.attributes.entries.length > 0);
+  const primeAttributes = new Map(primeFields.attributes.entries);
+  const isOnlineAttributeID = liveFittingState.getAttributeIDByNames("isOnline") || 2;
+  assert.deepEqual(
+    primeAttributes.get(isOnlineAttributeID),
+    [1, session._space.simFileTime],
+    "the fitted module must be primed online before the power view reads it",
+  );
   for (const [attributeID, valueAndTime] of primeFields.attributes.entries) {
     assert.equal(typeof attributeID, "number");
     assert.ok(Array.isArray(valueAndTime));
@@ -2439,10 +2474,24 @@ test("GUI installation primes a Transponder for immediate activation", (t) => {
     );
     assert.equal(typeof valueAndTime[0], "number");
   }
-  assert.deepEqual(notifications[onlineEffectIndex].payload.slice(0, 5), [
+  const installEvents = notifications[onlineEffectIndex].payload[0].items
+    .map((pair) => pair.items[0].items);
+  assert.deepEqual(
+    installEvents.map((event) => event[0]),
+    ["OnModuleAttributeChange", "OnGodmaShipEffect"],
+  );
+  assert.deepEqual(installEvents[0].slice(1, 7), [
+    OWNER_ID,
+    moduleItem.itemID,
+    isOnlineAttributeID,
+    session._space.simFileTime + 1n,
+    1,
+    0,
+  ]);
+  assert.deepEqual(installEvents[1].slice(1, 6), [
     moduleItem.itemID,
     16,
-    session._space.simFileTime,
+    session._space.simFileTime + 1n,
     1,
     1,
   ]);
@@ -2467,8 +2516,8 @@ test("GUI installation primes a Transponder for immediate activation", (t) => {
   );
   assert.equal(online.success, true, online.errorMsg);
   const onlineEvents = notifications.filter((entry) => entry.name === "OnMultiEvent");
-  assert.equal(onlineEvents.length, 2);
-  const onlineSubEvents = onlineEvents[1].payload[0].items
+  assert.equal(onlineEvents.length, 3);
+  const onlineSubEvents = onlineEvents[2].payload[0].items
     .map((pair) => pair.items[0].items);
   assert.ok(onlineSubEvents.some((subEvent) =>
     subEvent[0] === "OnGodmaShipEffect" &&
@@ -2548,6 +2597,19 @@ test("transponder activation broadcasts explicitly and deactivation preserves it
       moduleItemID: moduleItem.itemID,
       abilityDependencies: { spaceRuntime: effectRuntime.runtime },
     });
+  const peer = {
+    shipID: ship.itemID + 1,
+    corporationID: 98000001,
+    transponder: { channel: "code", code: "RALLY-7" },
+  };
+  const broadcastVerdicts = () => buildVerdictsForViewer(peer, [
+    peer,
+    {
+      shipID: ship.itemID,
+      corporationID: 98000002,
+      transponder: iffRuntime.resolveActiveTransponder(OWNER_ID, ship.itemID),
+    },
+  ]);
 
   assert.deepEqual(
     iffRuntime.readTransponderState(itemStore.findItemById(moduleItem.itemID)),
@@ -2583,6 +2645,7 @@ test("transponder activation broadcasts explicitly and deactivation preserves it
       code: "RALLY-7",
     },
   );
+  assert.deepEqual(broadcastVerdicts(), [[ship.itemID, true]]);
 
   const poweredOffShip = persistCreationAuthorityStateForTest(
     ship.itemID,
@@ -2603,6 +2666,7 @@ test("transponder activation broadcasts explicitly and deactivation preserves it
   assert.equal(suspended.stopped, 1);
   assert.equal(effectRuntime.entity.activeModuleEffects.has(moduleItem.itemID), false);
   assert.equal(iffRuntime.resolveActiveTransponder(OWNER_ID, ship.itemID), null);
+  assert.deepEqual(broadcastVerdicts(), [], "powered-off ships must not broadcast their code");
   assert.equal(
     iffRuntime.readTransponderState(itemStore.findItemById(moduleItem.itemID)).active,
     true,
@@ -2646,7 +2710,9 @@ test("transponder activation broadcasts explicitly and deactivation preserves it
     spaceRuntime: effectRuntime.runtime,
   });
   assert.equal(moduleOffline.stopped, 1);
+  assert.equal(effectRuntime.entity.activeModuleEffects.has(moduleItem.itemID), false);
   assert.equal(iffRuntime.resolveActiveTransponder(OWNER_ID, ship.itemID), null);
+  assert.deepEqual(broadcastVerdicts(), [], "offline modules must not broadcast their code");
 
   assert.equal(itemStore.updateInventoryItem(moduleItem.itemID, (currentItem) => ({
     ...currentItem,
@@ -2666,24 +2732,80 @@ test("transponder activation broadcasts explicitly and deactivation preserves it
   });
   assert.equal(moduleOnline.started, 1);
   assert.equal(iffRuntime.resolveActiveTransponder(OWNER_ID, ship.itemID).code, "RALLY-7");
+  assert.deepEqual(broadcastVerdicts(), [[ship.itemID, true]]);
+
+  const deactivated = invoke("deactivate_effect");
+  assert.equal(deactivated.success, true, deactivated.errorMsg);
+  assert.equal(deactivated.data.pending, true);
+  const stopCall = effectRuntime.calls.find((entry) =>
+    entry.action === "deactivate-requested" && entry.effectState.effectName === "iffBroadcast");
+  assert.equal(stopCall.options.deferUntilCycle, true);
+  assert.equal(effectRuntime.entity.activeModuleEffects.has(moduleItem.itemID), true);
+  assert.deepEqual(broadcastVerdicts(), [[ship.itemID, true]],
+    "the code remains live through the final cycle");
+
+  effectRuntime.finishCycle(moduleItem.itemID);
+  assert.equal(effectRuntime.entity.activeModuleEffects.has(moduleItem.itemID), false);
+  assert.deepEqual(
+    iffRuntime.readTransponderState(itemStore.findItemById(moduleItem.itemID)),
+    { channel: "code", code: "RALLY-7", active: false },
+  );
+  assert.equal(iffRuntime.resolveActiveTransponder(OWNER_ID, ship.itemID), null);
+  assert.deepEqual(broadcastVerdicts(), [], "deactivated modules must not broadcast their saved code");
 
   const reconfigured = invoke("iff_reconfigure", { iff_channel: "tribe" });
   assert.equal(reconfigured.success, true, reconfigured.errorMsg);
   assert.deepEqual(
     iffRuntime.readTransponderState(itemStore.findItemById(moduleItem.itemID)),
-    { channel: "tribe", code: null, active: true },
-  );
-
-  const deactivated = invoke("deactivate_effect");
-  assert.equal(deactivated.success, true, deactivated.errorMsg);
-  assert.equal(
-    effectRuntime.calls.some((entry) => entry.action === "deactivate"),
-    true,
-  );
-  assert.deepEqual(
-    iffRuntime.readTransponderState(itemStore.findItemById(moduleItem.itemID)),
     { channel: "tribe", code: null, active: false },
   );
+
+  assert.equal(invoke("activate_effect", {
+    iff_channel: "code",
+    iff_code: "RALLY-7",
+  }).success, true);
+  assert.equal(invoke("deactivate_effect").data.pending, true);
+  assert.equal(itemStore.updateInventoryItem(moduleItem.itemID, (currentItem) => ({
+    ...currentItem,
+    moduleState: { ...(currentItem.moduleState || {}), online: false },
+  })).success, true);
+  const interrupted = handleCreationIffStateChange({
+    reason: "module_online_state",
+    session,
+    characterID: OWNER_ID,
+    creationID: ship.itemID,
+    item: poweredOnShip,
+    state: poweredOnState,
+    moduleItemID: moduleItem.itemID,
+    previousOnline: true,
+    nextOnline: false,
+    spaceRuntime: effectRuntime.runtime,
+  });
+  assert.equal(interrupted.stopped, 1);
+  assert.equal(
+    iffRuntime.readTransponderState(itemStore.findItemById(moduleItem.itemID)).active,
+    false,
+    "offlining during a pending manual stop must not resume the broadcast later",
+  );
+  assert.deepEqual(broadcastVerdicts(), []);
+  assert.equal(itemStore.updateInventoryItem(moduleItem.itemID, (currentItem) => ({
+    ...currentItem,
+    moduleState: { ...(currentItem.moduleState || {}), online: true },
+  })).success, true);
+  const restored = handleCreationIffStateChange({
+    reason: "module_online_state",
+    session,
+    characterID: OWNER_ID,
+    creationID: ship.itemID,
+    item: poweredOnShip,
+    state: poweredOnState,
+    moduleItemID: moduleItem.itemID,
+    previousOnline: false,
+    nextOnline: true,
+    spaceRuntime: effectRuntime.runtime,
+  });
+  assert.equal(restored.started, 0);
+  assert.deepEqual(broadcastVerdicts(), []);
   assert.equal(
     iffRuntime.resolveActiveTransponder(OWNER_ID, ship.itemID, {
       readCreationState: () => ({
@@ -2874,6 +2996,10 @@ test("beacon activation publishes a one-cycle immobilizing Dogma effect", () => 
 
   const deactivated = invoke("deactivate_effect");
   assert.equal(deactivated.success, true, deactivated.errorMsg);
+  assert.equal(deactivated.data.pending, true);
+  assert.ok(iffRuntime.getActiveBeacon(moduleItem.itemID));
+  assert.equal(effectRuntime.entity.activeModuleEffects.has(moduleItem.itemID), true);
+  effectRuntime.finishCycle(moduleItem.itemID);
   assert.equal(iffRuntime.getActiveBeacon(moduleItem.itemID), null);
   assert.equal(effectRuntime.entity.activeModuleEffects.has(moduleItem.itemID), false);
   iffRuntime.resetIffRuntimeForTests();

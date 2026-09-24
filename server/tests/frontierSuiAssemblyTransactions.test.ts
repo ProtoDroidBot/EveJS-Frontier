@@ -9,6 +9,8 @@ import { createAssemblyTransactionExecutor } from "../src/services/frontier/suiA
 
 const admin = normalizeSuiAddress("0xa");
 const player = normalizeSuiAddress("0xb");
+const faction = normalizeSuiAddress("0x99");
+const npcOwnerId = 1_500_000_001;
 const gas6744 = {
   objectId: "0x71d5ee936b9f9c64463d3c9e8c7bd91608ccca8b63e6747b20e253b6e2c7d74a",
   version: "6744", digest: "B6W2nvxdKsSh3SK12kkiU6jLtmkr5fJkoQb4wvic1vM3",
@@ -271,6 +273,78 @@ for (const status of ["success", "failure"] as const) {
     else assert.equal(completed.error, undefined);
   });
 }
+
+test("NPC-owned transactions use only the confirmed faction wallet for sender and gas", async t => {
+  const f = fixture(t);
+  const assigned: Record<string, string> = {};
+  let submitted: any;
+  const tx = { ...f.transaction,
+    setSender(value: string) { assigned.sender = value; },
+    setGasOwner(value: string) { assigned.gasOwner = value; },
+  };
+  const executor = createAssemblyTransactionExecutor({ ...f.options,
+    getSigner: () => ({ toSuiAddress: () => faction, signTransaction: async () => ({ signature: "faction-signature" }) }),
+    getFactionGasSigner: () => ({ toSuiAddress: () => faction, signTransaction: async () => ({ signature: "faction-signature" }) }),
+    client: { ...f.options.client, async executeTransactionBlock(input: any) { submitted = input; return f.success; } },
+  });
+  await executor.execute("npc inventory", tx, npcOwnerId);
+  assert.deepEqual(assigned, { sender: faction, gasOwner: faction });
+  assert.deepEqual(submitted.signature, ["faction-signature"]);
+});
+
+test("NPC Industry mirror keeps its authorized sender but the faction pays gas", async t => {
+  const f = fixture(t);
+  const assigned: Record<string, string> = {};
+  let submitted: any;
+  const tx = { ...f.transaction,
+    setSender(value: string) { assigned.sender = value; },
+    setGasOwner(value: string) { assigned.gasOwner = value; },
+  };
+  const executor = createAssemblyTransactionExecutor({ ...f.options,
+    getFactionGasSigner: () => ({ toSuiAddress: () => faction, signTransaction: async () => ({ signature: "faction-signature" }) }),
+    client: { ...f.options.client, async executeTransactionBlock(input: any) { submitted = input; return f.success; } },
+  });
+  await executor.execute("industry:5000000001:sync", tx, undefined, undefined, npcOwnerId);
+  assert.deepEqual(assigned, { sender: admin, gasOwner: faction });
+  assert.deepEqual(submitted.signature, ["admin-signature", "faction-signature"]);
+});
+
+test("missing NPC faction signer fails closed without an admin-paid submission", async t => {
+  const f = fixture(t);
+  const executor = createAssemblyTransactionExecutor(f.options);
+  await assert.rejects(executor.execute("npc industry", f.transaction, undefined, undefined, npcOwnerId),
+    /no distinct confirmed gas signer/);
+  assert.equal(f.submissions(), 0);
+  assert.equal(fs.existsSync(f.options.journalPath), false);
+});
+
+test("one NPC faction cannot be selected as the gas payer for another owner", async t => {
+  const f = fixture(t);
+  const executor = createAssemblyTransactionExecutor({ ...f.options,
+    getFactionGasSigner: () => ({ toSuiAddress: () => faction, signTransaction: async () => ({ signature: "faction-signature" }) }),
+  });
+  await assert.rejects(executor.execute("wrong faction", f.transaction, npcOwnerId, undefined, npcOwnerId + 1),
+    /must match the NPC transaction owner/);
+  assert.equal(f.submissions(), 0);
+});
+
+test("an unfunded faction transaction is not retried with admin gas", async t => {
+  const f = fixture(t);
+  let adminSignatures = 0;
+  const executor = createAssemblyTransactionExecutor({ ...f.options,
+    adminSigner: { toSuiAddress: () => admin, async signTransaction() {
+      adminSignatures++; return { signature: "admin-signature" };
+    } },
+    getSigner: () => ({ toSuiAddress: () => faction, signTransaction: async () => ({ signature: "faction-signature" }) }),
+    getFactionGasSigner: () => ({ toSuiAddress: () => faction, signTransaction: async () => ({ signature: "faction-signature" }) }),
+  });
+  await assert.rejects(executor.execute("npc industry", { ...f.transaction,
+    async build() { throw new Error("InsufficientGas"); },
+  }, npcOwnerId), /InsufficientGas/);
+  assert.equal(adminSignatures, 0);
+  assert.equal(f.submissions(), 0);
+  assert.equal(fs.existsSync(f.options.journalPath), false);
+});
 
 test("a visibility timeout survives restart and waits again without resubmitting a committed transaction", async t => {
   const f = fixture(t);

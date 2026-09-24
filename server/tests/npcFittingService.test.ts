@@ -9,6 +9,9 @@ const liveFittingState = require("../src/services/fitting/liveFittingState");
 const nativeStore = require("../src/space/npc/nativeNpcStore");
 const persistence = require("../src/space/npc/npcRuntimePersistence");
 const npcFitting = require("../src/space/npc/npcFittingService");
+const { openNpcHeadlessFittingWindow } = require(
+  "../src/space/npc/npcHeadlessFittingWindow",
+);
 
 const TABLES = [
   "npcRuntimeState",
@@ -397,6 +400,66 @@ test("NPC fitting preserves canonical module and charge IDs through custody", (t
   }));
   assert.equal(itemStore.findItemById(moduleID).locationID, SOURCE_LOCATION_ID);
   assert.equal(nativeStore.getNativeModule(moduleID), null);
+});
+
+test("NPC-owned equipment can be fitted by its pilot or an authorized peer fitting actor", (t) => {
+  fixture(t);
+  const npc = createNpc({ categoryID: 6 });
+  assert.equal(nativeStore.upsertNativeEntity({ ...npc, npcFittingRestrictions: {
+    ...npc.npcFittingRestrictions, allowPlayerOwned: false,
+  } }, { durable: true }).success, true);
+  const selfItemID = 91000731;
+  const peerItemID = 91000732;
+  const targetPilotID = 1500000701;
+  const peerPilotID = 1500000702;
+  const peerEntityID = ENTITY_ID + 1;
+  assert.equal(nativeStore.upsertNativeEntity({ ...npc, entityID: peerEntityID,
+    npcCharacterID: peerPilotID }, { durable: true }).success, true);
+  for (const [characterID, activeEntityID] of [
+    [targetPilotID, ENTITY_ID], [peerPilotID, peerEntityID],
+  ]) {
+    assert.equal(database.write("npcPilotIdentities", `/pilots/${characterID}`, {
+      characterID, activeEntityID, incarnation: 1,
+      factionID: FACTION_ID, factionKey: `${FACTION_ID}-test`,
+    }).success, true);
+  }
+  database.flushTablesSync(["npcEntities", "npcPilotIdentities"]);
+  writeItems([
+    { ...itemRow(selfItemID, WEAPON_TYPE_ID, 7, 53, "Self Weapon"),
+      ownerID: targetPilotID },
+    { ...itemRow(peerItemID, WEAPON_TYPE_ID, 7, 53, "Peer Weapon"),
+      ownerID: targetPilotID, locationID: peerEntityID,
+      flagID: itemStore.ITEM_FLAGS.CARGO_HOLD },
+  ]);
+  const selfActor = { kind: "npc", characterID: targetPilotID,
+    factionID: FACTION_ID, shipEntityID: ENTITY_ID, npcIncarnation: 1,
+    authorizedNpcOwnerIDs: [targetPilotID] };
+  assert.equal(npcFitting.fitItemToNpc({ entityID: ENTITY_ID,
+    itemID: selfItemID, actor: { ...selfActor, shipEntityID: 0 },
+    idempotencyKey: "npc-impersonation" }).errorMsg,
+  "NPC_FITTING_ACTOR_PILOT_REQUIRED");
+  ok(npcFitting.fitItemToNpc({ entityID: ENTITY_ID, itemID: selfItemID,
+    actor: selfActor, idempotencyKey: "npc-self-fit" }));
+  assert.equal(nativeStore.getNativeModule(selfItemID).custody.ownershipKind, "npc");
+  ok(npcFitting.unfitItemFromNpc({ entityID: ENTITY_ID, moduleID: selfItemID,
+    actor: selfActor, idempotencyKey: "npc-self-unfit" }));
+  const peerWindow = ok(openNpcHeadlessFittingWindow({
+    actorEntityID: peerEntityID, targetEntityID: ENTITY_ID,
+  }, {
+    getLiveEntity: (record) => ({ itemID: record.entityID,
+      position: { x: record.entityID === peerEntityID ? 1000 : 0,
+        y: 0, z: 0 } }),
+    canEntitiesInteractLocally: () => true,
+    trust: { evaluateNpcFittingTrust: () => ({
+      trusted: true, reason: "same-faction",
+    }) },
+  }));
+  ok(peerWindow.fitItem(peerItemID));
+  assert.equal(nativeStore.getNativeModule(peerItemID).custody.actorCharacterID, peerPilotID);
+  assert.equal(nativeStore.getNativeModule(peerItemID).custody.ownershipKind, "npc");
+  ok(peerWindow.unfitItem(peerItemID));
+  assert.equal(itemStore.findItemById(peerItemID).locationID, peerEntityID);
+  peerWindow.close();
 });
 
 test("transient NPCs use the same fitting flow and return custody when removed", (t) => {

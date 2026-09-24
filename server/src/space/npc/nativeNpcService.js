@@ -14,6 +14,7 @@ const { tickScene: tickBehaviorScene, normalizeBehaviorOverrides, } = require(pa
 const { cloneVector, normalizeVector, resolveAnchor, buildSpawnStateForDefinition, } = require(path.join(__dirname, "./npcAnchors"));
 const { buildNpcEntityIdentity, } = require(path.join(__dirname, "./npcPresentation"));
 const nativeNpcStore = require(path.join(__dirname, "./nativeNpcStore"));
+const { creationTemplateForHull, ensureNpcCreationState, } = require(path.join(__dirname, "../../services/npc/npcCreationDraft"));
 const npcRuntimePersistence = require(path.join(__dirname, "./npcRuntimePersistence"));
 const { ensureNpcPilotIdentity, applyNpcPilotIdentity } = require("./npcPilotIdentityRuntime");
 const { getNpcPilotIdentityStore } = require("./npcPilotIdentityStore");
@@ -601,6 +602,7 @@ function buildNativeRuntimeShipSpec(entityRecord, definition = null) {
         playerFittingHullTypeID: toPositiveInt(entityRecord.playerFittingHullTypeID, 0) || null,
         npcFittingProfileID: entityRecord.npcFittingProfileID || null,
         npcFittingRestrictions: cloneValue(entityRecord.npcFittingRestrictions || null),
+        npcCreationState: cloneValue(entityRecord.npcCreationState || null),
         npcFuelRequirementsEnabled: entityRecord.npcFuelRequirementsEnabled === true,
         securityStatus: entityRecord.securityStatus,
         bounty: entityRecord.bounty,
@@ -687,6 +689,7 @@ function applyNativeRuntimeNpcPresentation(entity, entityRecord, definition = nu
     entity.playerFittingHullTypeID = toPositiveInt(entityRecord.playerFittingHullTypeID, 0) || null;
     entity.npcFittingProfileID = entityRecord.npcFittingProfileID || null;
     entity.npcFittingRestrictions = cloneValue(entityRecord.npcFittingRestrictions || null);
+    entity.npcCreationState = cloneValue(entityRecord.npcCreationState || null);
     entity.slimTypeID = entityRecord.slimTypeID;
     entity.slimGroupID = entityRecord.slimGroupID;
     entity.slimCategoryID = entityRecord.slimCategoryID;
@@ -912,6 +915,7 @@ function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, d
             `resume position in system ${scene.systemID}`);
     }
     const spawnResult = spaceRuntime.spawnDynamicShip(scene.systemID, buildNativeRuntimeShipSpec(entityRecord, definition), {
+        allowPendingBootstrap: true,
         persistSpaceState: false,
         broadcast: options.broadcast !== false,
         excludedSession: options.excludedSession || null,
@@ -1356,10 +1360,19 @@ function spawnNativeNpcEntityInContext(context, definition, options = {}) {
         compensateSpawn(moduleResult.errorMsg || "module write failed");
         return moduleResult;
     }
+    if (entityRecord.categoryID === 6 && creationTemplateForHull(entityRecord)) {
+        const seedResult = ensureNpcCreationState(entityRecord, entityRecord, { durable: false });
+        if (!seedResult.success) {
+            compensateSpawn(seedResult.errorMsg || "Creation template seed failed");
+            return seedResult;
+        }
+        Object.assign(entityRecord, seedResult.data.entityRecord);
+    }
+    const fittedModules = nativeNpcStore.listNativeModulesForEntity(entityRecord.entityID);
     if (spawnOperation) {
         npcRuntimePersistence.checkpointNpcOperation(spawnOperation.operationID, "modules-written", {
-            expectedModuleIDs: (moduleResult.data || []).map((record) => record.moduleID),
-        }, { flushTables: [nativeNpcStore.TABLE.MODULES] });
+            expectedModuleIDs: fittedModules.map((record) => record.moduleID),
+        }, { flushTables: [nativeNpcStore.TABLE.ENTITIES, nativeNpcStore.TABLE.MODULES] });
     }
     const cargoResult = buildNativeCargoRecords(entityRecord, moduleResult.data || [], definition, options);
     if (!cargoResult.success) {
@@ -1419,8 +1432,8 @@ function spawnNativeNpcEntityInContext(context, definition, options = {}) {
             virtualizedRuntime: options.materializeRuntime === false,
             entityRecord,
             shipItem: null,
-            modules: moduleResult.data || [],
-            fittedModules: moduleResult.data || [],
+            modules: fittedModules,
+            fittedModules,
             cargo: cargoResult.data || [],
             lootEntries: [],
             definition,

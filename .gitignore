@@ -83,3 +83,4 @@ server/tidi_probe.log
 tools/FRONTIER-COMPATIBILITY.md
 decompiled___init__.py
 /.pnpm-store
+/.tmp

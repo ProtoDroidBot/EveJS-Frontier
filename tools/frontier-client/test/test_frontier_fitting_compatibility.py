@@ -23,6 +23,7 @@ import fitting_compatibility_adapter as adapter  # noqa: E402
 import npc_fitting_menu_adapter as npc_menu_adapter  # noqa: E402
 import npc_primary_action_adapter as npc_primary_adapter  # noqa: E402
 import action_bar_compatibility_adapter as action_bar_adapter  # noqa: E402
+import action_bar_deactivation_adapter as deactivation_adapter  # noqa: E402
 import action_bar_selection_adapter as selection_adapter  # noqa: E402
 import creation_service_compatibility_adapter as service_adapter  # noqa: E402
 import patch_frontier_fitting as patcher  # noqa: E402
@@ -30,6 +31,168 @@ import frontier_windows_client as windows  # noqa: E402
 
 
 NS = types.SimpleNamespace
+
+
+class EscrowTreeBridgeTests(unittest.TestCase):
+    def test_escrow_nodes_use_the_native_facility_controller(self):
+        facility = object()
+        calls = []
+
+        class EscrowNode:
+            def __init__(self, module_id):
+                self._module_item_id = module_id
+                self._module_type_id = 95302
+                self._creation_id = 700
+
+            def GetInvCont(self):
+                return "native escrow container"
+
+        class EscrowController:
+            def __init__(self, instance, module_id, type_id):
+                calls.append((instance, module_id, type_id))
+
+            def GetInvID(self):
+                return ("EscrowSection", calls[-1][1])
+
+        def get_facility(module_id, type_id, creation_id):
+            calls.append((module_id, type_id, creation_id))
+            return facility
+
+        self.assertTrue(adapter._evejs_patch_escrow_tree_node(
+            EscrowNode, EscrowController, get_facility,
+        ))
+        node = EscrowNode(42)
+        controller = node.invController
+        self.assertIs(node.invController, controller)
+        self.assertEqual(controller.GetInvID(), ("EscrowSection", 42))
+        self.assertEqual(calls, [
+            (42, 95302, 700), (facility, 42, 95302),
+        ])
+        self.assertEqual(node.GetInvCont(), "native escrow container")
+        self.assertFalse(adapter._evejs_patch_escrow_tree_node(
+            EscrowNode, EscrowController, get_facility,
+        ))
+
+    def test_failed_escrow_facility_does_not_block_another_node(self):
+        available = {1: False}
+
+        class EscrowNode:
+            def __init__(self, module_id):
+                self._module_item_id = module_id
+                self._module_type_id = 95302
+                self._creation_id = 700
+
+        class EscrowController:
+            def __init__(self, facility, module_id, _type_id):
+                self.facility = facility
+                self.itemID = module_id
+
+        def get_facility(module_id, _type_id, _creation_id):
+            if module_id == 1 and not available[1]:
+                raise RuntimeError("facility unavailable")
+            return "facility"
+
+        adapter._evejs_patch_escrow_tree_node(
+            EscrowNode, EscrowController, get_facility,
+        )
+        first = EscrowNode(1)
+        self.assertEqual(first.invController.itemID, 1)
+        self.assertIsNone(first.invController.facility)
+        self.assertEqual(EscrowNode(2).invController.facility, "facility")
+        available[1] = True
+        self.assertEqual(first.invController.facility, "facility")
+
+
+class ActionBarDeactivationVisualTests(unittest.TestCase):
+    def test_manual_stop_hides_repeat_arrow_but_keeps_cycle_outline(self):
+        class Active:
+            def __init__(self, repeat):
+                self.repeat = repeat
+                self.start_time = 10
+                self.duration = 5
+
+        class Idle:
+            pass
+
+        class Slot:
+            def __init__(self, state):
+                self._slot = NS(action=NS(_module_interactor=NS(
+                    _state=state,
+                    _pending_reactivation_request=None,
+                )))
+                self._repeat_icon = NS(color=None)
+                self._progress_indicator = NS(color="cycle ring", background_color="outline")
+                self.repeat_updates = 0
+
+            def _get_repeat_icon_color(self):
+                return (
+                    "arrow"
+                    if isinstance(state.value, Active) and state.value.repeat
+                    else "clear"
+                )
+
+            def _on_repeat_changed(self, *_args):
+                self.repeat_updates += 1
+
+            def _update_repeat_icon_color(self):
+                self._repeat_icon.color = self._get_repeat_icon_color()
+
+        deactivation_adapter._evejs_install_action_bar_deactivation({
+            "ActionBarSlot": Slot,
+            "HudColor": NS(CONTENT_HIGHLIGHT=NS(with_alpha=lambda alpha: ("clear", alpha))),
+        })
+        state = NS(server_value=Active(True), value=Active(True), client_value=Active(True))
+        slot = Slot(state)
+        self.assertEqual(slot._get_repeat_icon_color(), "arrow")
+
+        state.value = Active(False)
+        slot._on_repeat_changed()
+        self.assertEqual(slot.repeat_updates, 1)
+        self.assertEqual(slot._repeat_icon.color, ("clear", 0.0))
+        self.assertEqual(slot._progress_indicator.color, "cycle ring")
+        self.assertEqual(slot._progress_indicator.background_color, "outline")
+
+        # A newer active server snapshot can supersede the predicted value.
+        state.client_value = Active(False)
+        state.value = Active(True)
+        self.assertEqual(slot._get_repeat_icon_color(), ("clear", 0.0))
+
+        state.server_value = Idle()
+        state.value = Idle()
+        self.assertEqual(slot._get_repeat_icon_color(), "clear")
+
+    def test_single_cycle_and_visual_failure_keep_native_behavior(self):
+        class Active:
+            repeat = False
+            start_time = 10
+            duration = 5
+
+        class Slot:
+            def __init__(self):
+                state = NS(server_value=Active(), value=Active(), client_value=Active())
+                self._slot = NS(action=NS(_module_interactor=NS(
+                    _state=state,
+                    _pending_reactivation_request=None,
+                )))
+                self.repeat_updates = 0
+
+            def _get_repeat_icon_color(self):
+                return "clear"
+
+            def _on_repeat_changed(self, *_args):
+                self.repeat_updates += 1
+
+            def _update_repeat_icon_color(self):
+                raise RuntimeError("visual unavailable")
+
+        deactivation_adapter._evejs_install_action_bar_deactivation({
+            "ActionBarSlot": Slot,
+            "HudColor": NS(CONTENT_HIGHLIGHT=NS(with_alpha=lambda alpha: ("clear", alpha))),
+        })
+        slot = Slot()
+        self.assertEqual(slot._get_repeat_icon_color(), "clear")
+        slot._on_repeat_changed()
+        self.assertEqual(slot.repeat_updates, 1)
 
 
 class NpcCreationBridgeTests(unittest.TestCase):
@@ -404,6 +567,14 @@ class AdapterTests(unittest.TestCase):
 
 
 class NpcFittingPresenterTests(unittest.TestCase):
+    def test_npc_fitting_error_uses_server_notification(self):
+        error = RuntimeError("CustomInfo")
+        error.dict = {"notify": "Move within 5,000 meters of that NPC"}
+        self.assertEqual(
+            adapter._evejs_npc_fitting_error_text(error),
+            "Move within 5,000 meters of that NPC",
+        )
+
     def test_native_legacy_window_uses_retail_open_and_binds_target(self):
         events = []
 
@@ -424,11 +595,19 @@ class NpcFittingPresenterTests(unittest.TestCase):
             def Open(cls, **kwargs):
                 raise AssertionError("Frontier Creation override was used")
 
+            def OpenFittingForCurrentShip(self, *args):
+                raise AssertionError("player fitting manager was used")
+
             def ApplyAttributes(self, attributes):
                 self.ConstructLayout()
 
             def ConstructLayout(self):
                 self.overlayCont = object()
+                self.fitNameParent = NS(
+                    OnClick=self.OpenFittingForCurrentShip,
+                    GetDragData=lambda *args: ["player fitting"],
+                    isDragObject=True,
+                )
 
         ui = types.ModuleType("eveui")
         ui.Align = NS(to_bottom="bottom", to_left="left", to_right="right")
@@ -447,6 +626,13 @@ class NpcFittingPresenterTests(unittest.TestCase):
         self.assertEqual(window._evejs_sim_ship_id, "ship_72207")
         self.assertEqual(events[0], "retail-open")
         self.assertEqual(events[1][1]["label"], "Apply to NPC")
+        self.assertFalse(window.fitNameParent.isDragObject)
+        self.assertEqual(window.fitNameParent.GetDragData(), [])
+        self.assertIsNone(window.fitNameParent.OnClick())
+        self.assertEqual(
+            window._evejs_status.text,
+            "Use Apply to NPC to commit this fitting",
+        )
 
     def test_native_legacy_window_receives_npc_target_and_exact_fit(self):
         entity_id = 980000000001
@@ -678,6 +864,122 @@ class NpcFittingPresenterTests(unittest.TestCase):
         self.assertIs(opened_type, window_type)
         self.assertEqual(attributes["npc_entity_id"], 980000000001)
 
+    def test_npc_window_resolves_builtin_service_manager_during_initialization(self):
+        class BaseWindow:
+            def ApplyAttributes(self, attributes):
+                self.attributes = attributes
+
+        scroll_module = types.ModuleType(
+            "carbonui.control.scrollContainer"
+        )
+        scroll_module.ScrollContainer = object
+        modules = {
+            "eveui": types.ModuleType("eveui"),
+            "carbonui": types.ModuleType("carbonui"),
+            "carbonui.control": types.ModuleType("carbonui.control"),
+            "carbonui.control.scrollContainer": scroll_module,
+        }
+        namespace = {"Window": BaseWindow}
+        state = {"trusted": True, "entityID": 980000000001, "modules": []}
+        remote = object()
+        calls = []
+        manager = NS(RemoteSvc=lambda name: (
+            calls.append(name), remote
+        )[1])
+        with mock.patch.dict(sys.modules, modules):
+            window_type = adapter._evejs_npc_fitting_window_type(namespace)
+            with mock.patch.object(window_type, "_construct_layout"), \
+                    mock.patch.object(window_type, "_render"):
+                with mock.patch.object(builtins, "sm", None, create=True):
+                    with self.assertRaisesRegex(
+                        RuntimeError, "service manager is unavailable"
+                    ):
+                        window_type().ApplyAttributes(NS(
+                            npc_entity_id=980000000001,
+                            initial_state=state,
+                        ))
+                with mock.patch.object(builtins, "sm", manager, create=True):
+                    window = window_type()
+                    window.ApplyAttributes(NS(
+                        npc_entity_id=980000000001,
+                        initial_state=state,
+                    ))
+        self.assertIs(window._presenter.remote, remote)
+        self.assertEqual(window._presenter.entity_id, 980000000001)
+        self.assertEqual(calls, ["npcFittingMgr"])
+
+    def test_npc_window_header_keeps_autosize_alignment_and_survives_button_failure(self):
+        class Control:
+            def __init__(self, **kwargs):
+                self.parent = kwargs.get("parent")
+                self.align = kwargs.get("align")
+                if isinstance(self.parent, AutoSize):
+                    self.parent.accept(self.align)
+
+        class AutoSize(Control):
+            def __init__(self, **kwargs):
+                self.child_alignment = None
+                super().__init__(**kwargs)
+
+            def accept(self, alignment):
+                if self.child_alignment is None:
+                    self.child_alignment = alignment
+                elif self.child_alignment != alignment:
+                    raise ValueError("AutoSize children must share alignment")
+
+        buttons = []
+
+        def button(**kwargs):
+            instance = Control(**kwargs)
+            buttons.append(instance)
+            return instance
+
+        ui = types.ModuleType("eveui")
+        ui.Align = NS(to_all="all", to_top="top", to_right="right")
+        ui.Container = Control
+        ui.ContainerAutoSize = AutoSize
+        ui.EveLabelLarge = Control
+        ui.EveLabelMedium = Control
+        ui.Button = button
+        scroll_module = types.ModuleType(
+            "carbonui.control.scrollContainer"
+        )
+        scroll_module.ScrollContainer = Control
+        modules = {
+            "eveui": ui,
+            "carbonui": types.ModuleType("carbonui"),
+            "carbonui.control": types.ModuleType("carbonui.control"),
+            "carbonui.control.scrollContainer": scroll_module,
+        }
+
+        class BaseWindow:
+            def GetMainArea(self):
+                return object()
+
+        with mock.patch.dict(sys.modules, modules):
+            window_type = adapter._evejs_npc_fitting_window_type(
+                {"Window": BaseWindow}
+            )
+            window = window_type()
+            window._presenter = NS(status="")
+            window._construct_layout(Control, ui)
+            self.assertIsInstance(window._scroll, Control)
+            self.assertEqual(buttons[0].parent.align, ui.Align.to_top)
+            self.assertIsInstance(buttons[0].parent.parent, AutoSize)
+            self.assertEqual(
+                buttons[0].parent.parent.child_alignment, ui.Align.to_top
+            )
+
+            def unavailable_button(**kwargs):
+                raise RuntimeError("button unavailable")
+
+            ui.Button = unavailable_button
+            another_window = window_type()
+            another_window._presenter = NS(status="")
+            another_window._construct_layout(Control, ui)
+            self.assertIsInstance(another_window._scroll, Control)
+            self.assertIn("button unavailable", another_window._presenter.status)
+
     def test_presenter_replaces_state_after_each_server_authorized_mutation(self):
         calls = []
 
@@ -720,6 +1022,76 @@ class NpcFittingPresenterTests(unittest.TestCase):
 
 
 class NpcFittingMenuTests(unittest.TestCase):
+    def test_retail_menu_startup_can_supply_missing_pilot_data(self):
+        state = {"started": False}
+
+        class MenuSvc:
+            def CelestialMenu(self, itemID, *args, **kwargs):
+                state["started"] = True
+                return [["Board Ship", lambda: None, ()]]
+
+        def get_service(name):
+            if not state["started"]:
+                raise RuntimeError("Michelle not started")
+            return NS(GetBallpark=lambda: NS(
+                GetCrData=lambda item_id: NS(
+                    categoryID=6, charID=1500000001
+                )
+            ))
+
+        namespace = {
+            "MenuSvc": MenuSvc,
+            "sm": NS(
+                GetService=get_service,
+                RemoteSvc=lambda name: NS(CanInteractNpc=lambda item_id: {
+                    "canInteract": True, "canModifyFittings": False,
+                }),
+            ),
+        }
+        npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
+        self.assertEqual(
+            [row[0] for row in MenuSvc().CelestialMenu(980000000008)],
+            ["Interact"],
+        )
+
+    def test_frontier_cr_data_drives_pilot_menu_without_slim_items(self):
+        class Remote:
+            def CanInteractNpc(self, entity_id):
+                return {"canInteract": True, "canModifyFittings": False}
+
+        class MenuSvc:
+            def CelestialMenu(self, itemID, *args, **kwargs):
+                return [["Board Ship", lambda: None, ()]]
+
+        cr_data = {
+            980000000008: NS(categoryID=6, charID=1500000001),
+            980000000009: NS(categoryID=6, charID=1400000001),
+            980000000010: NS(categoryID=6, charID=0),
+        }
+        namespace = {
+            "MenuSvc": MenuSvc,
+            "sm": NS(
+                RemoteSvc=lambda name: Remote(),
+                GetService=lambda name: NS(
+                    GetCrData=lambda item_id: cr_data.get(item_id)
+                ),
+            ),
+        }
+        npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
+        service = MenuSvc()
+        self.assertEqual(
+            [row[0] for row in service.CelestialMenu(980000000008)],
+            ["Interact"],
+        )
+        self.assertEqual(
+            [row[0] for row in service.CelestialMenu(980000000009)],
+            [],
+        )
+        self.assertEqual(
+            [row[0] for row in service.CelestialMenu(980000000010)],
+            ["Board Ship"],
+        )
+
     def test_board_ship_is_only_offered_for_an_unoccupied_hull(self):
         class Remote:
             def CanInteractNpc(self, entity_id):
@@ -944,6 +1316,10 @@ class NpcFittingMenuTests(unittest.TestCase):
         trusted = False
         opened = []
 
+        def open_npc_fitting(entity_id):
+            opened.append(entity_id)
+            return "fitting-window"
+
         class Remote:
             def CanInteractNpc(self, entity_id):
                 return {
@@ -963,7 +1339,7 @@ class NpcFittingMenuTests(unittest.TestCase):
             "MenuSvc": MenuSvc,
             "sm": NS(RemoteSvc=lambda name: Remote()),
             "uicore": NS(cmd=NS(
-                OpenNpcFitting=lambda entity_id: opened.append(entity_id)
+                OpenNpcFitting=open_npc_fitting
             )),
         }
         class InteractionWindow:
@@ -1061,6 +1437,21 @@ class NpcFittingMenuTests(unittest.TestCase):
     def test_dedicated_npc_window_opens_denied_then_retries_and_sends_order(self):
         issued = []
         authorized = False
+        fitting_result = ["fitting-window"]
+        fitting_opened = []
+        fallback_result = ["fallback-window"]
+        fallback_opened = []
+
+        def open_npc_fitting(entity_id):
+            fitting_opened.append(entity_id)
+            return fitting_result[0]
+
+        def open_fitting_fallback(module_namespace, entity_id, state):
+            fallback_opened.append((entity_id, state["trusted"]))
+            return fallback_result[0]
+
+        fitting_module = types.ModuleType("eve.client.script.ui.eveCommands")
+        fitting_module._evejs_open_npc_fitting_window = open_fitting_fallback
 
         class Control:
             def __init__(self, **kwargs):
@@ -1102,8 +1493,15 @@ class NpcFittingMenuTests(unittest.TestCase):
                 return {
                     "canInteract": authorized,
                     "canIssueOrders": authorized,
+                    "canModifyFittings": authorized,
                     "reason": "NPC_INTERACTION_NOT_FRIENDLY",
                 }
+
+            def CanOpenNpcFitting(self, entity_id):
+                return {"trusted": authorized, "entityID": entity_id}
+
+            def GetNpcFittingState(self, entity_id):
+                return {"trusted": authorized, "entityID": entity_id}
 
             def IssueNpcOrder(self, entity_id, order):
                 issued.append((entity_id, order))
@@ -1130,7 +1528,13 @@ class NpcFittingMenuTests(unittest.TestCase):
             ),
         }
         with mock.patch.dict(sys.modules, modules), mock.patch.object(
-            builtins, "sm", NS(RemoteSvc=lambda name: Remote()), create=True
+            builtins, "sm", NS(
+                RemoteSvc=lambda name: Remote(),
+                GetService=lambda name: NS(OpenNpcFitting=open_npc_fitting),
+            ), create=True
+        ), mock.patch.object(
+            npc_menu_adapter.importlib, "import_module",
+            return_value=fitting_module,
         ):
             window = npc_menu_adapter._evejs_open_npc_interaction(
                 namespace, 980000000007
@@ -1142,8 +1546,17 @@ class NpcFittingMenuTests(unittest.TestCase):
             self.assertTrue(window._retry_button.display)
             authorized = True
             window._on_retry()
+            self.assertTrue(window._fit_button.display)
             self.assertTrue(window._order_controls.display)
             self.assertFalse(window._retry_button.display)
+            window._on_modify_fittings()
+            self.assertEqual(fitting_opened, [980000000007])
+            fitting_result[0] = None
+            window._on_modify_fittings()
+            self.assertEqual(fallback_opened, [(980000000007, True)])
+            fallback_result[0] = None
+            window._on_modify_fittings()
+            self.assertIn("did not open", window._status.text)
             window._target_edit.SetValue("900000000001")
             window._send_order("approach")
             self.assertEqual(window._status.text, "Order accepted: approach")
@@ -1183,6 +1596,7 @@ class NpcFittingMenuTests(unittest.TestCase):
 
     def test_assembly_access_action_requires_a_valid_assembly_probe(self):
         opened = []
+        probes = []
 
         class Remote:
             def CanOpenNpcFitting(self, entity_id):
@@ -1192,6 +1606,7 @@ class NpcFittingMenuTests(unittest.TestCase):
                 return {"canInteract": False, "entityID": entity_id}
 
             def get_assembly_access(self, item_id, capabilities):
+                probes.append(item_id)
                 if item_id != 7001:
                     raise RuntimeError("not an assembly")
                 return {
@@ -1211,20 +1626,61 @@ class NpcFittingMenuTests(unittest.TestCase):
             "sm": NS(RemoteSvc=lambda name: Remote()),
             "uicore": NS(cmd=NS()),
         }
+        component = types.ModuleType("spacecomponents.common.componentConst")
+        component.SMART_DEPLOYABLE = "smartDeployable"
+        data = types.ModuleType("spacecomponents.common.data")
+        data.type_has_space_component = (
+            lambda type_id, name: type_id == 1001 and
+            name == component.SMART_DEPLOYABLE
+        )
         with mock.patch.object(
             npc_menu_adapter,
             "_evejs_open_assembly_access",
             side_effect=lambda ns, item_id: opened.append(item_id),
-        ):
+        ), mock.patch.dict(sys.modules, {
+            "spacecomponents": types.ModuleType("spacecomponents"),
+            "spacecomponents.common": types.ModuleType("spacecomponents.common"),
+            "spacecomponents.common.componentConst": component,
+            "spacecomponents.common.data": data,
+        }):
             npc_menu_adapter._evejs_install_npc_fitting_menu(namespace)
-            self.assertEqual(len(MenuSvc().CelestialMenu(8001)), 1)
-            menu = MenuSvc().CelestialMenu(7001)
+            self.assertEqual(len(MenuSvc().CelestialMenu(
+                8001, crData=NS(typeID=1001)
+            )), 1)
+            menu = MenuSvc().CelestialMenu(7001, crData=NS(typeID=1001))
             self.assertEqual(menu[-1][0], "Manage Assembly Access")
             menu[-1][1](*menu[-1][2])
+            for _ in range(3):
+                self.assertEqual(
+                    [row[0] for row in MenuSvc().CelestialMenu(
+                        30000004, mapItem=NS(typeID=5),
+                    )],
+                    ["Show Info"],
+                )
         self.assertEqual(opened, [7001])
+        self.assertEqual(probes, [8001, 7001])
 
 
 class NpcPrimaryActionTests(unittest.TestCase):
+    def test_frontier_cr_data_hides_hud_boarding_without_slim_items(self):
+        class Resolver:
+            def __init__(self):
+                self._michelle = NS(GetCrData=lambda item_id: NS(
+                    categoryID=6, charID=1500000001
+                ))
+
+            def resolve(self, bracket_key):
+                return NS(
+                    primary=NS(label_path="UI/Inflight/BoardShip"),
+                    secondary=NS(label_path="UI/Inflight/UnlockTarget"),
+                )
+
+        namespace = {"ActionResolver": Resolver}
+        npc_primary_adapter._evejs_install_npc_primary_action(namespace)
+        action = Resolver().resolve(NS(ball_id=980000000008))
+        self.assertEqual(action.primary.label_path, "UI/Inflight/UnlockTarget")
+        self.assertIsNone(action.secondary)
+
     def test_unavailable_ballpark_preserves_retail_action(self):
         action = NS(primary=NS(label_path="UI/Inflight/BoardShip"), secondary=None)
 
@@ -2262,6 +2718,30 @@ class FittingBytecodePatchTests(unittest.TestCase):
                 "patched",
             )
 
+    def test_action_bar_slot_wrapper_is_exact_and_idempotent(self):
+        code = compile(
+            "class ActionBarSlot:\n"
+            "    def _get_repeat_icon_color(self): return None\n"
+            "    def _on_repeat_changed(self): pass\n",
+            "action_bar_slot_fixture.py",
+            "exec",
+        )
+        source = member_for(code)
+        expected = hashlib.sha256(source).hexdigest()
+        patched = patcher.patched_action_bar_slot_member(source)
+        self.assertEqual(
+            patcher.inspect_member(
+                source, expected, patcher.patched_action_bar_slot_member, set()
+            )[0],
+            "source",
+        )
+        self.assertEqual(
+            patcher.inspect_member(
+                patched, expected, patcher.patched_action_bar_slot_member, set()
+            )[0],
+            "patched",
+        )
+
     @unittest.skipUnless(
         os.environ.get("EVE_FRONTIER_TEST_ARCHIVE"),
         "Set EVE_FRONTIER_TEST_ARCHIVE for real bytecode validation",
@@ -2279,6 +2759,7 @@ class FittingBytecodePatchTests(unittest.TestCase):
                         patcher.CREATION_SERVICE_MODULE_NAME,
                         patcher.ACTION_PROVIDER_MODULE_NAME,
                         patcher.ACTION_BAR_INTEGRATION_MODULE_NAME,
+                        patcher.ACTION_BAR_SLOT_MODULE_NAME,
                         patcher.SKILLSHOT_CONTROLLER_MODULE_NAME,
                         patcher.SKILLSHOT_AUTO_CANNON_MODULE_NAME,
                     )

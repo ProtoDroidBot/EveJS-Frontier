@@ -21,6 +21,12 @@ MENU_SOURCE_MEMBER_SHA256 = "014f7513310f4027e6617befa0200d1dd1f0ab8a24c7e42529f
 PRIMARY_ACTION_MODULE_NAME = "frontier/hud/primary_action.pyc"
 PRIMARY_ACTION_SOURCE_MEMBER_SHA256 = "75f678916ba0a728654b5cc10556f9e8daaf65a938cb621a5b8774c5dad7d3b1"
 MENU_PREVIOUS_WRAPPER_SHA256 = {
+    "f99291674b57057c633f68320da6ff96b61f54ea0d7e5731621431154b605bb5",
+    "bb60780df4172697ac16be90fb901921b7e3a816691405b8b41965d9a8ccdc29",
+    "730ddc9a29f376a3f653e5d36cd6259fce2a8c63423ef92e8f9069bde3815988",
+    "0648949c86cd1dae56cca4c4750277d3a761027eebf1149642c016f6b4d2171f",
+    "f6f1548bab7bebce8ae25041cb631f0667178783de345a782505a943ea0b8ef2",
+    "f45b153b2e1844fe8d507a22d1da2d631e0e78400c7c7c938af4ea2b93193f9c",
     "aba3efbe9d2168c4971fec5db1b98842a9334c83c5c328c922de625309235a6c",
     "bff3c6014309496ca59508121dd480966d92e1da66577127898d4ed08f19b0a1",
     "d4dfec554b46c9be207a7e3f6aad582119ea63c827744ed1d9e4cabf6b874d89",
@@ -35,6 +41,8 @@ MENU_PREVIOUS_WRAPPER_SHA256 = {
     "f42c7ff948948131f9f214c406389d273ee7000b55f088f2d1635d1e839f2183",
 }
 PRIMARY_ACTION_PREVIOUS_WRAPPER_SHA256 = {
+    "32d02437a7ae19165894cfaef7a1bb8579cc8ef6ebf5967837aa677154254559",
+    "904f31c0e62ee893cbaa0100c6756da15f8e4faa562e0049869889753eb70353",
     "5bccc0d07b755bc8296a5a1001d91ca520a433d5521177b780c20e4a730ba743",
     "b4ed357025fdf71d9951ad40043eb10b5c28fefc8827277fd620877f4312bca9",
     "a8e6cf6be2ae18eb63276f025d522f90d4652bcf79064e2815952dafdc8de32a",
@@ -63,6 +71,12 @@ ACTION_BAR_INTEGRATION_SOURCE_MEMBER_SHA256 = "092f955e64a6ee6b89b54b395c77c8b9f
 ACTION_BAR_INTEGRATION_PREVIOUS_WRAPPER_SHA256 = {
     "3d0cae8e94184370c74c676634f330e4d2d6e8eecb481b2a6ca1c30f93018bed",
 }
+ACTION_BAR_SLOT_MODULE_NAME = "frontier/hud/action_bar/slot/ui.pyc"
+ACTION_BAR_SLOT_SOURCE_MEMBER_SHA256 = "8e35c8469499c816c8c052922a9768e12821339c48c4fccb20524f4cd97ac435"
+ACTION_BAR_SLOT_PREVIOUS_WRAPPER_SHA256 = {
+    "5581c2fd975d1dda469a9949f4049174b661ba8876777d36234461f2de533876",
+    "48f7f7967c2e50a8d734995b270608f0c24fcbc8849187251364da9a629fd320",
+}
 SKILLSHOT_CONTROLLER_MODULE_NAME = "frontier/skillshot/client/controller.pyc"
 SKILLSHOT_CONTROLLER_SOURCE_MEMBER_SHA256 = "4c4162c18f4116b728755169581736ffc7984deb1c5d45cc6454e49dbeb81e75"
 SKILLSHOT_CONTROLLER_PREVIOUS_WRAPPER_SHA256 = {
@@ -76,6 +90,9 @@ SKILLSHOT_AUTO_CANNON_PREVIOUS_WRAPPER_SHA256 = {
     "a5790102cb176a83c78c4d4b5238067769e298eeebe236c649e9dc4c26ca8ed5",
 }
 PREVIOUS_WRAPPER_SHA256 = {
+    "9e2f068d69fa3c0c1b5e84b240743842f22ed1dcd5bce30059f5d5813a88b3d3",
+    "41894b6c80d6f736a5037479dc1146e9d0a920f00e625e22b6ebd5506f58cdb1",
+    "31e934d6fbc00a419c4e85a682d6505fc4beddc097c7dc5a93d4a210d5a62f4c",
     "5d2503d33a71f9f9e0b03b0da58d95b4da33fcbeed5ef6281c062a0a35642870",
     "5012d66efa24162040e00ef21a84cacfad86c34de9da2e11f4e47e454dd84d07",
     "1273c6c08296005679ddab9d98e8165445b5b313ccc8afba4934555363e84e45",
@@ -99,6 +116,9 @@ ACTION_PROVIDER_ADAPTER = Path(__file__).with_name(
 ACTION_BAR_INTEGRATION_ADAPTER = Path(__file__).with_name(
     "action_bar_selection_adapter.py"
 )
+ACTION_BAR_SLOT_ADAPTER = Path(__file__).with_name(
+    "action_bar_deactivation_adapter.py"
+)
 SKILLSHOT_CONTROLLER_ADAPTER = Path(__file__).with_name(
     "skillshot_authority_controller_adapter.py"
 )
@@ -121,6 +141,8 @@ ACTION_BAR_INTEGRATION_SOURCE_SENTINEL = (
 ACTION_BAR_INTEGRATION_ADAPTER_SENTINEL = (
     b"EVEJS_ACTION_BAR_INTEGRATION_ADAPTER_CODE_V1"
 )
+ACTION_BAR_SLOT_SOURCE_SENTINEL = b"EVEJS_ACTION_BAR_SLOT_ORIGINAL_MEMBER_V1"
+ACTION_BAR_SLOT_ADAPTER_SENTINEL = b"EVEJS_ACTION_BAR_SLOT_ADAPTER_CODE_V1"
 SKILLSHOT_CONTROLLER_SOURCE_SENTINEL = (
     b"EVEJS_SKILLSHOT_CONTROLLER_ORIGINAL_MEMBER_V1"
 )
@@ -307,6 +329,34 @@ def patched_action_bar_integration_member(member):
     return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
 
 
+def patched_action_bar_slot_member(member):
+    original = marshal.loads(member[16:])
+    adapter = compile(
+        ACTION_BAR_SLOT_ADAPTER.read_text(encoding="utf-8"),
+        "evejs/action_bar_deactivation_adapter.py",
+        "exec",
+        dont_inherit=True,
+    )
+    wrapper = compile(
+        "import marshal as _evejs_action_bar_slot_marshal\n"
+        "exec(_evejs_action_bar_slot_marshal.loads(b'EVEJS_ACTION_BAR_SLOT_ORIGINAL_MEMBER_V1'[16:]))\n"
+        "exec(_evejs_action_bar_slot_marshal.loads(b'EVEJS_ACTION_BAR_SLOT_ADAPTER_CODE_V1'))\n"
+        "_evejs_install_action_bar_deactivation(globals())\n",
+        original.co_filename,
+        "exec",
+        dont_inherit=True,
+    )
+    constants = tuple(
+        member
+        if value == ACTION_BAR_SLOT_SOURCE_SENTINEL
+        else marshal.dumps(adapter)
+        if value == ACTION_BAR_SLOT_ADAPTER_SENTINEL
+        else value
+        for value in wrapper.co_consts
+    )
+    return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
+
+
 def patched_skillshot_controller_member(member):
     original = marshal.loads(member[16:])
     adapter = compile(
@@ -413,6 +463,7 @@ def inspect_archive(archive, build=BUILD):
             CREATION_SERVICE_MODULE_NAME,
             ACTION_PROVIDER_MODULE_NAME,
             ACTION_BAR_INTEGRATION_MODULE_NAME,
+            ACTION_BAR_SLOT_MODULE_NAME,
             SKILLSHOT_CONTROLLER_MODULE_NAME,
             SKILLSHOT_AUTO_CANNON_MODULE_NAME,
         ):
@@ -460,6 +511,12 @@ def inspect_archive(archive, build=BUILD):
                 ACTION_BAR_INTEGRATION_PREVIOUS_WRAPPER_SHA256,
             )
         )
+        action_bar_slot_state, action_bar_slot_original = inspect_member(
+            source.read(entries_by_name[ACTION_BAR_SLOT_MODULE_NAME]),
+            ACTION_BAR_SLOT_SOURCE_MEMBER_SHA256,
+            patched_action_bar_slot_member,
+            ACTION_BAR_SLOT_PREVIOUS_WRAPPER_SHA256,
+        )
         skillshot_controller_state, skillshot_controller_original = inspect_member(
             source.read(entries_by_name[SKILLSHOT_CONTROLLER_MODULE_NAME]),
             SKILLSHOT_CONTROLLER_SOURCE_MEMBER_SHA256,
@@ -480,6 +537,7 @@ def inspect_archive(archive, build=BUILD):
         service_state,
         action_provider_state,
         action_bar_integration_state,
+        action_bar_slot_state,
         skillshot_controller_state,
         skillshot_auto_cannon_state,
     }
@@ -504,6 +562,10 @@ def inspect_archive(archive, build=BUILD):
         ACTION_BAR_INTEGRATION_MODULE_NAME: (
             action_bar_integration_state,
             action_bar_integration_original,
+        ),
+        ACTION_BAR_SLOT_MODULE_NAME: (
+            action_bar_slot_state,
+            action_bar_slot_original,
         ),
         SKILLSHOT_CONTROLLER_MODULE_NAME: (
             skillshot_controller_state,
@@ -553,6 +615,13 @@ def patch_archive(archive, build=BUILD):
                 patched_action_bar_integration_member(
                     action_bar_integration_original
                 )
+            )
+        action_bar_slot_state, action_bar_slot_original = originals[
+            ACTION_BAR_SLOT_MODULE_NAME
+        ]
+        if action_bar_slot_state != "patched":
+            replacements[ACTION_BAR_SLOT_MODULE_NAME] = (
+                patched_action_bar_slot_member(action_bar_slot_original)
             )
         skillshot_controller_state, skillshot_controller_original = originals[
             SKILLSHOT_CONTROLLER_MODULE_NAME

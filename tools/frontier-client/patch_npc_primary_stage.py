@@ -13,7 +13,7 @@ import patch_frontier_fitting as fitting
 
 
 BASELINE_PRIMARY_MEMBER_SHA256 = (
-    "5bccc0d07b755bc8296a5a1001d91ca520a433d5521177b780c20e4a730ba743"
+    "32d02437a7ae19165894cfaef7a1bb8579cc8ef6ebf5967837aa677154254559"
 )
 
 

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { TransactionDataBuilder } from "@mysten/sui/transactions";
 import type { SuiJsonRpcClient, SuiObjectRef, SuiTransactionBlockResponse } from "@mysten/sui/jsonRpc";
+import { isNpcCharacterID } from "../_shared/npcIdentityConstants";
 
 type PendingTransaction = {
   label: string;
@@ -61,6 +62,8 @@ export function createAssemblyTransactionExecutor(options: {
   packageId: string;
   adminSigner: any;
   getSigner: (ownerId: number) => any;
+  /** Resolve a confirmed NPC faction wallet; never fall back to admin gas for an NPC. */
+  getFactionGasSigner?: (npcOwnerId: number) => any;
   assertCurrent: () => Promise<void>;
   onCommitted?: (digest: string, label: string) => void;
   /** Persist confirmed wallet changes locally before the journal unlocks the mirror. */
@@ -250,22 +253,39 @@ export function createAssemblyTransactionExecutor(options: {
     await options.assertCurrent();
     return finish(result, pending);
   }
-  async function execute(label: string, transaction: any, ownerId?: number, assertSnapshotCurrent?: () => void) {
+  async function execute(label: string, transaction: any, ownerId?: number,
+    assertSnapshotCurrent?: () => void, gasPayerOwnerId?: number) {
     if (journal.pending) {
       await recover();
       throw new Error("Recovered a pending assembly transaction; rescan current chain state before continuing");
     }
     await options.assertCurrent();
+    if (ownerId !== undefined && gasPayerOwnerId !== undefined && isNpcCharacterID(gasPayerOwnerId) &&
+        ownerId !== gasPayerOwnerId) {
+      throw new Error("NPC faction gas payer must match the NPC transaction owner");
+    }
     const signer = ownerId === undefined ? options.adminSigner : options.getSigner(ownerId);
+    const factionOwnerId = gasPayerOwnerId !== undefined && isNpcCharacterID(gasPayerOwnerId)
+      ? gasPayerOwnerId : ownerId !== undefined && isNpcCharacterID(ownerId) ? ownerId : null;
+    const gasSigner = factionOwnerId === null ? options.adminSigner
+      : options.getFactionGasSigner?.(factionOwnerId);
+    if (!gasSigner || factionOwnerId !== null &&
+        gasSigner.toSuiAddress() === options.adminSigner.toSuiAddress()) {
+      throw new Error(`NPC faction ${factionOwnerId} has no distinct confirmed gas signer`);
+    }
+    if (ownerId !== undefined && isNpcCharacterID(ownerId) &&
+        signer.toSuiAddress() !== gasSigner.toSuiAddress()) {
+      throw new Error(`NPC Character ${ownerId} sender differs from its faction gas payer`);
+    }
     transaction.setSender(signer.toSuiAddress());
-    transaction.setGasOwner(options.adminSigner.toSuiAddress());
+    transaction.setGasOwner(gasSigner.toSuiAddress());
     transaction.setGasBudget(GAS_BUDGET);
-    const gas = await gasForBuild();
+    const gas = factionOwnerId === null ? await gasForBuild() : undefined;
     if (gas) transaction.setGasPayment([gas]);
     const bytes = await transaction.build({ client: options.client });
     const signatures = [(await signer.signTransaction(bytes)).signature];
-    if (signer.toSuiAddress() !== options.adminSigner.toSuiAddress()) {
-      signatures.push((await options.adminSigner.signTransaction(bytes)).signature);
+    if (signer.toSuiAddress() !== gasSigner.toSuiAddress()) {
+      signatures.push((await gasSigner.signTransaction(bytes)).signature);
     }
     await options.assertCurrent();
     const pending = {

@@ -180,6 +180,23 @@ try {
         & (Join-Path $RepoRoot 'StageFrontierClient.ps1') -SourceRoot $client.buildRoot `
             -Build $Build -CopyResFiles:$CopyResFiles -Clean:$CleanStage
     }
+    $runtimeRoot = Join-Path $RepoRoot "_local\frontier-runtime\$Build"
+    if (Test-Path -LiteralPath $runtimeRoot -PathType Container) {
+        $runtimeMarker = Join-Path $runtimeRoot '.evejs-frontier-runtime'
+        if (-not (Test-Path -LiteralPath $runtimeMarker -PathType Leaf)) {
+            Write-Warning (
+                "An unmarked server runtime remains at $runtimeRoot. " +
+                'StartFrontierServer.ps1 will refuse it until the directory is preserved and reconciled.'
+            )
+        }
+        elseif ($ForceData) {
+            Write-Warning (
+                "-ForceData rebuilt generated data but preserved the mutable server runtime at $runtimeRoot. " +
+                "Stop the server and use .\StartFrontierServer.ps1 -Build $Build -ResetRuntime -InitializeOnly " +
+                'only if a runtime reset is intended.'
+            )
+        }
+    }
     Write-SetupStep "Windows Frontier setup completed for build $Build."
 }
 finally {

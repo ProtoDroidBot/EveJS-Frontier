@@ -7,25 +7,33 @@ const database = require("../src/gameStore");
 const nativeStore = require("../src/space/npc/nativeNpcStore");
 const itemStore = require("../src/services/inventory/itemStore");
 const itemTypeRegistry = require("../src/services/inventory/itemTypeRegistry");
+const config = require("../src/config");
 const draft = require("../src/services/npc/npcCreationDraft");
+const nativeNpcService = require("../src/space/npc/nativeNpcService");
+const npcData = require("../src/space/npc/npcData");
+const spaceRuntime = require("../src/space/runtime");
 const staticData = require("../src/services/frontier/creationStaticData");
+const creationRuntime = require("../src/services/frontier/creationRuntime");
 const { validateCreationLayout } = require("../src/services/frontier/creationLayoutValidation");
 const { unwrapMarshalValue } = require("../src/services/_shared/serviceHelpers");
 const NpcFittingMgrService = require("../src/services/npc/npcFittingMgrService");
+const { openNpcHeadlessFittingWindow } = require(
+  "../src/space/npc/npcHeadlessFittingWindow",
+);
 
 const STATIC_ROOT = path.resolve(__dirname, "../../_local/frontier-runtime/3502403/gameStore/data");
 const STATIC_TABLES = [
   "creationHardpointTypes", "creationModules", "creationParts", "creationTemplates",
 ];
 
-test("NPC Creation snapshots and drafts stay on the piloted target and validate its layout", (t) => {
+function loadCreationStaticData(t) {
   if (!STATIC_TABLES.every((table) => fs.existsSync(path.join(STATIC_ROOT, table, "data.json")))) {
     t.skip("build 3502403 Creation static data is unavailable");
-    return;
+    return false;
   }
   if (!STATIC_TABLES.every((table) => database.read(table, "/").success === true)) {
     t.skip("the isolated game store has no Creation static tables");
-    return;
+    return false;
   }
   const previous = Object.fromEntries(STATIC_TABLES.map((table) => [
     table, structuredClone(database.read(table, "/").data),
@@ -41,6 +49,11 @@ test("NPC Creation snapshots and drafts stay on the piloted target and validate 
     }
     staticData.resetCreationStaticDataForTests();
   });
+  return true;
+}
+
+test("NPC Creation snapshots and drafts stay on the piloted target and validate its layout", (t) => {
+  if (!loadCreationStaticData(t)) return;
 
   const typeID = 95276;
   const entityID = 980000123456;
@@ -160,4 +173,152 @@ test("NPC Creation snapshots and drafts stay on the piloted target and validate 
   assert.equal(nativeStore.getNativeModule(replacementID), null);
   assert.equal(draft.ensureNpcCreationState(entity, { typeID }).data.state.modules
     .some((module) => module.itemID === additionID), false);
+});
+
+test("headless NPC peer can commit a Creation module draft from NPC cargo", (t) => {
+  if (!loadCreationStaticData(t)) return;
+  const tables = ["npcEntities", "npcModules", "npcPilotIdentities", "npcRuntimeState"];
+  const backups = Object.fromEntries(tables.map((name) => [
+    name, structuredClone(database.read(name, "/").data),
+  ]));
+  const previousItems = structuredClone(itemStore.getAllItems());
+  t.after(() => {
+    itemStore._writeItemsForTest(previousItems, { force: true });
+    for (const [name, data] of Object.entries(backups)) {
+      database.write(name, "/", data, { force: true });
+    }
+    database.flushTablesSync([...tables, itemStore.ITEMS_TABLE]);
+    itemTypeRegistry._setEntriesForTests(null);
+    itemStore.resetInventoryStoreForTests();
+  });
+  const targetEntityID = 980000123556;
+  const actorEntityID = 980000123557;
+  const targetPilotID = 1500004251;
+  const actorPilotID = 1500004252;
+  const target = { entityID: targetEntityID, typeID: 95276,
+    categoryID: 6, ownerID: 500010, npcFactionID: 500010,
+    npcCharacterID: targetPilotID, npcIncarnation: 1,
+    systemID: 30000004, transient: true };
+  const actorShip = { ...target, entityID: actorEntityID,
+    npcCharacterID: actorPilotID };
+  assert.equal(nativeStore.upsertNativeEntity(target).success, true);
+  assert.equal(nativeStore.upsertNativeEntity(actorShip).success, true);
+  for (const [characterID, activeEntityID] of [
+    [targetPilotID, targetEntityID], [actorPilotID, actorEntityID],
+  ]) {
+    assert.equal(database.write("npcPilotIdentities", `/pilots/${characterID}`, {
+      characterID, activeEntityID, incarnation: 1,
+      factionID: 500010, factionKey: "500010-test",
+    }).success, true);
+  }
+  const seed = draft.ensureNpcCreationState(target, { typeID: 95276 });
+  assert.equal(seed.success, true, JSON.stringify(seed));
+  const hardpoint = seed.data.state.hardpoints.find((entry) => !entry.attachedItemID);
+  assert.ok(hardpoint);
+  itemTypeRegistry._setEntriesForTests([{ typeID: 95317, categoryID: 7,
+    groupID: 53, groupName: "Weapon", name: "Cutting Laser",
+    portionSize: 1, volume: 1 }]);
+  const moduleID = 910004252;
+  const source = { itemID: moduleID, typeID: 95317,
+    ownerID: targetPilotID, locationID: actorEntityID,
+    flagID: itemStore.ITEM_FLAGS.CARGO_HOLD,
+    quantity: -1, stacksize: 1, singleton: 1,
+    groupID: 53, categoryID: 7, customInfo: "", itemName: "Cutting Laser",
+    mass: 0, volume: 1, capacity: 0, radius: 0 };
+  assert.equal(itemStore._writeItemsForTest({ [moduleID]: source }, { force: true }), true);
+  const opened = openNpcHeadlessFittingWindow({ actorEntityID,
+    targetEntityID }, {
+    getLiveEntity: (record) => ({ itemID: record.entityID,
+      position: { x: record.entityID === actorEntityID ? 1000 : 0,
+        y: 0, z: 0 } }),
+    canEntitiesInteractLocally: () => true,
+    trust: { evaluateNpcFittingTrust: () => ({
+      trusted: true, reason: "same-faction",
+    }) },
+  });
+  assert.equal(opened.success, true, JSON.stringify(opened));
+  const window = opened.data;
+  assert.equal(window.refresh().data.fittingPath, "creation");
+  assert.equal(window.getCreationDraft().success, true);
+  const attached = window.commitCreationDraft([{ op: "attach", typeID: 95317,
+    attachedItemID: moduleID, interiorItemID: hardpoint.interiorItemID,
+    hardpointIndex: hardpoint.hardpointIndex,
+    sourceLocationID: actorEntityID,
+    sourceFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD }]);
+  assert.equal(attached.success, true, JSON.stringify(attached));
+  assert.equal(nativeStore.getNativeModule(moduleID).entityID, targetEntityID);
+  const detached = window.commitCreationDraft([{ op: "detach",
+    attachedItemID: moduleID, destLocationID: actorEntityID,
+    destFlagID: itemStore.ITEM_FLAGS.CARGO_HOLD }]);
+  assert.equal(detached.success, true, JSON.stringify(detached));
+  assert.equal(itemStore.findItemById(moduleID).locationID, actorEntityID);
+  window.close();
+});
+
+test("spawned modular NPC ships use the player Creation seed plan before materialization", (t) => {
+  if (!loadCreationStaticData(t)) return;
+  const oldProfile = config.clientCompatibilityProfile;
+  const oldEnabled = config.npcPilotIdentitiesEnabled;
+  config.clientCompatibilityProfile = "frontier";
+  config.npcPilotIdentitiesEnabled = true;
+  const tables = ["npcPilotIdentities", "npcEntities", "npcModules", "npcCargo", "npcRuntimeControllers"];
+  const backups = tables.map((name) => [name, structuredClone(database.read(name, "/").data)]);
+  itemTypeRegistry._setEntriesForTests([
+    { typeID: 95276, groupID: 5128, categoryID: 6, name: "Creation" },
+    { typeID: 95735, groupID: 5128, categoryID: 6, name: "Refuge Ship" },
+    { typeID: 95968, groupID: 5128, categoryID: 6, name: "Reiver" },
+  ]);
+  t.after(() => {
+    for (const [name, snapshot] of backups) database.write(name, "/", snapshot, { force: true });
+    database.flushTablesSync(tables);
+    config.clientCompatibilityProfile = oldProfile;
+    config.npcPilotIdentitiesEnabled = oldEnabled;
+    itemTypeRegistry._setEntriesForTests(null);
+  });
+  const entities = new Map<number, any>();
+  const scene: any = { systemID: 30_000_004, getCurrentSimTimeMs: () => 1_000,
+    getEntityByID: (id) => entities.get(id) || null };
+  t.mock.method(spaceRuntime, "spawnDynamicShip", (_systemID, spec) => {
+    const entity = { ...spec, kind: "ship" };
+    entities.set(spec.itemID, entity);
+    return { success: true, data: { entity } };
+  });
+  t.mock.method(require("../src/services/frontier/iffAbilityHandlers"),
+    "scheduleIffVerdicts", () => false);
+  const context = { scene, systemID: scene.systemID,
+    anchorEntity: { itemID: 9001, position: { x: 0, y: 0, z: 0 } } };
+
+  for (const typeID of [95276, 95735, 95968]) {
+    const result = nativeNpcService.spawnNativeNpcEntityInContext(
+      context, npcData.buildNpcDefinition(`npc_pilot_ship_${typeID}`), {
+        createNpcPilot: true, npcIdentitySlot: `test:creation:${typeID}`,
+        skipInitialBehaviorTick: true, broadcast: false,
+      },
+    );
+    assert.equal(result.success, true, `${typeID}: ${result.errorMsg}`);
+    const { entityRecord, entity, fittedModules } = result.data;
+    const template = staticData.getCreationTemplate(typeID);
+    const plan = creationRuntime.buildCreationSeedPlan(template);
+    const state = entityRecord.npcCreationState;
+    assert.ok(state, `Creation state missing for spawned type ${typeID}`);
+    assert.ok(entityRecord.npcCharacterID >= 1_500_000_000);
+    assert.equal(state.templateTypeID, typeID);
+    assert.equal(fittedModules.length, plan.length);
+    assert.deepEqual(fittedModules.map((record) => record.typeID).sort(),
+      plan.map((entry) => entry.typeID).sort());
+    assert.ok(fittedModules.every((record) => record.flagID ===
+      creationRuntime.CREATION_FITTING_FLAG_ID));
+    assert.deepEqual(state, creationRuntime.buildSeededCreationState(
+      template, entityRecord.entityID, plan,
+      state.modules.map((module) => ({ itemID: module.itemID, typeID: module.typeID })),
+    ));
+    assert.deepEqual(validateCreationLayout(state, template)
+      .filter((entry) => entry.severity === "blocker"), []);
+    assert.deepEqual(nativeStore.getNativeEntity(entityRecord.entityID).npcCreationState, state);
+    assert.equal(nativeStore.listNativeModulesForEntity(entityRecord.entityID).length, plan.length);
+    assert.equal(entity.npcCreationState.templateTypeID, typeID);
+    assert.equal(entity.fittedItems.length, plan.length);
+    assert.equal(draft.ensureNpcCreationState(entityRecord, { typeID }).data.state.modules.length,
+      plan.length);
+  }
 });

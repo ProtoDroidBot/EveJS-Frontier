@@ -23,6 +23,8 @@ const {
   resolveWeaponFamily,
 } = require(path.join(__dirname, "../combat/weaponDogma"));
 const nativeNpcStore = require("./nativeNpcStore");
+const { getNpcPilotIdentityStore } = require("./npcPilotIdentityStore");
+const { isNpcCharacterID } = require("../../services/_shared/npcIdentityConstants");
 const persistence = require("./npcRuntimePersistence");
 const npcCapabilityResolver = require("./npcCapabilityResolver");
 const npcFactionConfig = require(path.join(__dirname, "../../config/npcFactionConfig"));
@@ -391,7 +393,30 @@ function authorizeCustodyTransfer(item, entityRecord, actor, policy) {
   if (!actorCharacterID || !itemOwnerID) {
     return { success: false, errorMsg: "NPC_FITTING_ACTOR_REQUIRED" };
   }
+  if (actor?.kind === "npc") {
+    const shipEntityID = toPositiveInt(actor.shipEntityID, 0);
+    const incarnation = toPositiveInt(actor.npcIncarnation, 0);
+    const actorShip = nativeNpcStore.getNativeEntity(shipEntityID);
+    let pilot = null;
+    try {
+      pilot = isNpcCharacterID(actorCharacterID)
+        ? getNpcPilotIdentityStore().get(actorCharacterID) : null;
+    } catch (_) {
+      return { success: false, errorMsg: "NPC_FITTING_ACTOR_PILOT_REQUIRED" };
+    }
+    if (!actorShip || toPositiveInt(actorShip.categoryID, 0) !== SHIP_CATEGORY_ID ||
+        toPositiveInt(actorShip.npcCharacterID, 0) !== actorCharacterID ||
+        toPositiveInt(actorShip.npcIncarnation, 0) !== incarnation ||
+        !pilot || toPositiveInt(pilot.activeEntityID, 0) !== shipEntityID ||
+        toPositiveInt(pilot.incarnation, 0) !== incarnation) {
+      return { success: false, errorMsg: "NPC_FITTING_ACTOR_PILOT_REQUIRED" };
+    }
+  }
   const actorOwnsItem = itemOwnerID === actorCharacterID;
+  const npcOwnsTargetItem = actor?.kind === "npc" &&
+    itemOwnerID === toPositiveInt(entityRecord?.npcCharacterID, 0) &&
+    Array.isArray(actor.authorizedNpcOwnerIDs) &&
+    actor.authorizedNpcOwnerIDs.some((id) => toPositiveInt(id, 0) === itemOwnerID);
   const authorizedOwnerIDs = new Set(
     (Array.isArray(actor && actor.authorizedOwnerIDs) ? actor.authorizedOwnerIDs : [])
       .map((value) => toPositiveInt(value, 0))
@@ -400,10 +425,11 @@ function authorizeCustodyTransfer(item, entityRecord, actor, policy) {
   const factionOwnsItem =
     itemOwnerID === toPositiveInt(entityRecord && entityRecord.ownerID, 0) ||
     authorizedOwnerIDs.has(itemOwnerID);
-  if (actorOwnsItem && policy.allowPlayerOwned !== true) {
+  if (actorOwnsItem && actor?.kind !== "npc" && policy.allowPlayerOwned !== true) {
     return { success: false, errorMsg: "NPC_PLAYER_EQUIPMENT_NOT_ALLOWED" };
   }
-  if (!actorOwnsItem && (!factionOwnsItem || policy.allowFactionOwned !== true)) {
+  if (!actorOwnsItem && !npcOwnsTargetItem &&
+      (!factionOwnsItem || policy.allowFactionOwned !== true)) {
     return { success: false, errorMsg: "NPC_FITTING_ITEM_NOT_AUTHORIZED" };
   }
   if (
@@ -414,7 +440,9 @@ function authorizeCustodyTransfer(item, entityRecord, actor, policy) {
   }
   return {
     success: true,
-    data: { actorCharacterID, ownershipKind: actorOwnsItem ? "player" : "faction" },
+    data: { actorCharacterID, ownershipKind:
+      actorOwnsItem ? actor?.kind === "npc" ? "npc" : "player" :
+      npcOwnsTargetItem ? "npc" : "faction" },
   };
 }
 
