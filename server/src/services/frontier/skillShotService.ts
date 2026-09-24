@@ -13,15 +13,12 @@ const skillShotRuntime = require(path.join(__dirname, "./skillShotRuntime"));
 
 const BEGIN_FIRE_ACK_CLASS = "frontier.skillshot.common.BeginFireAck";
 
-function buildPythonUtcTimezonePayload() {
-  return buildObjectEx1("datetime.timezone", [
-    buildObjectEx1("datetime.timedelta", [0, 0, 0]),
-  ]);
-}
-
 function buildPythonDatetimePayload(milliseconds) {
   const date = new Date(Number(milliseconds));
   const normalized = Number.isFinite(date.getTime()) ? date : new Date();
+  // The client marshaler accepts datetime.datetime, while its simulated game
+  // clock also returns a UTC-naive datetime. Nested timezone/timedelta objects
+  // abort BeginHeldBeam reply decoding before the beam session can start.
   return buildObjectEx1("datetime.datetime", [
     normalized.getUTCFullYear(),
     normalized.getUTCMonth() + 1,
@@ -30,7 +27,6 @@ function buildPythonDatetimePayload(milliseconds) {
     normalized.getUTCMinutes(),
     normalized.getUTCSeconds(),
     normalized.getUTCMilliseconds() * 1000,
-    buildPythonUtcTimezonePayload(),
   ]);
 }
 

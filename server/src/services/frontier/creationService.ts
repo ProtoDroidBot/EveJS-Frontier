@@ -280,6 +280,40 @@ function marshalPresetValue(value) {
   return value;
 }
 
+const MARSHAL_VALUE_TYPES = new Set([
+  "dict", "wstring", "frontier-string", "long", "real", "tuple", "list",
+  "bytes", "frontier-bytes", "rawstr", "object", "packedrow", "substruct",
+  "substream", "token", "objectex1", "objectex2", "cpicked",
+]);
+
+function marshalAbilityResponseValue(value) {
+  if (Array.isArray(value)) {
+    return buildList(value.map((entry) => marshalAbilityResponseValue(entry)));
+  }
+  if (value && typeof value === "object" && !Buffer.isBuffer(value)) {
+    // Scan and industry handlers already return wire-format descriptors.
+    if (MARSHAL_VALUE_TYPES.has(value.type)) {
+      return value;
+    }
+    return buildDict(Object.entries<any>(value)
+      .map(([key, entry]) => [key, marshalAbilityResponseValue(entry)]));
+  }
+  return value;
+}
+
+function buildCreationAbilityResponse(data, session) {
+  const entries = [[
+    "server_time",
+    data.serverTime || getSessionFileTime(session),
+  ]];
+  for (const [key, value] of Object.entries<any>(data)) {
+    if (key !== "serverTime") {
+      entries.push([key, marshalAbilityResponseValue(value)]);
+    }
+  }
+  return buildDict(entries);
+}
+
 function buildPresetResult(result) {
   return buildDict([
     ["success", result && result.success === true],
@@ -593,17 +627,7 @@ class CreationService extends BaseService {
         throwCreationError(mapAbilityFailureToCreationError(result.errorMsg));
       }
       recordCreationModuleEmission(session, requestedItemID);
-      const data = result.data || {};
-      const entries = [[
-        "server_time",
-        data.serverTime || getSessionFileTime(session),
-      ]];
-      for (const [key, value] of Object.entries<any>(data)) {
-        if (key !== "serverTime") {
-          entries.push([key, value]);
-        }
-      }
-      return buildDict(entries);
+      return buildCreationAbilityResponse(result.data || {}, session);
     };
     return dispatched && typeof dispatched.then === "function"
       ? dispatched.then(finish)
@@ -612,6 +636,7 @@ class CreationService extends BaseService {
 }
 
 module.exports = CreationService;
+module.exports.buildCreationAbilityResponse = buildCreationAbilityResponse;
 module.exports.buildCreationSnapshot = buildCreationSnapshot;
 module.exports.resolveOwnedCreation = resolveOwnedCreation;
 module.exports.resolveOwnedCreationItem = resolveOwnedCreationItem;

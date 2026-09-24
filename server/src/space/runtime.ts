@@ -18749,6 +18749,7 @@ function applyCrystalVolatilityDamage(
   moduleItem,
   chargeItem,
   whenMs = null,
+  random = Math.random,
 ) {
   if (!scene || !attackerEntity || !moduleItem || !chargeItem) {
     return {
@@ -18797,7 +18798,7 @@ function applyCrystalVolatilityDamage(
       },
     };
   }
-  if (Math.random() > volatilityChance) {
+  if (random() >= volatilityChance) {
     return {
       success: true,
       data: {
@@ -18818,6 +18819,12 @@ function applyCrystalVolatilityDamage(
   );
   const nextDamage = clamp(previousDamage + volatilityDamage, 0, 1);
   const when = resolveSessionNotificationFileTime(attackerEntity.session, whenMs);
+  // Creation lenses are real inventory items beneath the module on flag 184.
+  // Ordinary turret crystals use a ship/slot charge tuple instead.
+  const isCreationCharge =
+    !isNativeNpcEntity(attackerEntity) &&
+    toInt(chargeItem.locationID, 0) === toInt(moduleItem.itemID, 0) &&
+    toInt(chargeItem.flagID, 0) === 184;
   let updatedChargeItem = chargeItem;
   if (isNativeNpcEntity(attackerEntity)) {
     const cargoRecord = nativeNpcStore
@@ -18878,16 +18885,27 @@ function applyCrystalVolatilityDamage(
   }
 
   if (attackerEntity.session) {
-    notifyChargeDamageChangeToSession(
-      attackerEntity.session,
-      attackerEntity.itemID,
-      moduleItem.flagID,
-      chargeItem.typeID,
-      nextDamage,
-      previousDamage,
-      when,
-      updatedChargeItem,
-    );
+    if (isCreationCharge) {
+      notifyAttributeChanges(attackerEntity.session, [buildAttributeChange(
+        attackerEntity.session,
+        updatedChargeItem.itemID,
+        ATTRIBUTE_ITEM_DAMAGE,
+        getChargeDamageAttributeValue(chargeItem.typeID, nextDamage),
+        getChargeDamageAttributeValue(chargeItem.typeID, previousDamage),
+        when,
+      )]);
+    } else {
+      notifyChargeDamageChangeToSession(
+        attackerEntity.session,
+        attackerEntity.itemID,
+        moduleItem.flagID,
+        chargeItem.typeID,
+        nextDamage,
+        previousDamage,
+        when,
+        updatedChargeItem,
+      );
+    }
   }
 
   if (nextDamage < 1 - 1e-9) {
@@ -18928,34 +18946,43 @@ function applyCrystalVolatilityDamage(
     removeResult = removeInventoryItem(chargeItem.itemID);
   }
   if (removeResult.success && attackerEntity.session) {
-    notifyRuntimeChargeTransitionToSession(
-      attackerEntity.session,
-      attackerEntity.itemID,
-      moduleItem.flagID,
-      {
-        typeID: chargeItem.typeID,
-        quantity: 1,
-      },
-      {
-        typeID: chargeItem.typeID,
-        quantity: 0,
-      },
-      toInt(
-        chargeItem && chargeItem.ownerID,
-        getShipEntityInventoryCharacterID(attackerEntity, 0),
-      ),
-      {
-        previousChargeItem:
-          chargeItem && typeof chargeItem === "object"
-            ? {
-                ...chargeItem,
-                quantity: 1,
-                stacksize: 1,
-              }
-            : null,
-        nextChargeItem: null,
-      },
-    );
+    if (isCreationCharge) {
+      syncInventoryChangesToSession(attackerEntity.session, removeResult.data.changes);
+      lazyRequire("../services/frontier/creationChargeRuntime")
+        .notifyCreationChargeChangedForSession(
+          attackerEntity.session,
+          attackerEntity.itemID,
+        );
+    } else {
+      notifyRuntimeChargeTransitionToSession(
+        attackerEntity.session,
+        attackerEntity.itemID,
+        moduleItem.flagID,
+        {
+          typeID: chargeItem.typeID,
+          quantity: 1,
+        },
+        {
+          typeID: chargeItem.typeID,
+          quantity: 0,
+        },
+        toInt(
+          chargeItem && chargeItem.ownerID,
+          getShipEntityInventoryCharacterID(attackerEntity, 0),
+        ),
+        {
+          previousChargeItem:
+            chargeItem && typeof chargeItem === "object"
+              ? {
+                  ...chargeItem,
+                  quantity: 1,
+                  stacksize: 1,
+                }
+              : null,
+          nextChargeItem: null,
+        },
+      );
+    }
   }
 
   return {
@@ -23370,6 +23397,7 @@ function popMinHeapEntry(heap, compareEntries) {
 }
 
 class SolarSystemScene {
+  declare _detachedWorldSourceIDs: Set<number> | undefined;
   declare _bootstrapGeneration: any;
   declare _bootstrapReady: any;
   declare _dungeonUniversePendingSiteTeardowns: Map<any, any>;
@@ -23873,6 +23901,12 @@ class SolarSystemScene {
 
     const normalizedItemID = Number(entity.itemID);
     if (!Number.isInteger(normalizedItemID) || normalizedItemID <= 0) {
+      return false;
+    }
+
+    // A Physics Gun detachment owns the original world source ID durably.
+    // Generated asteroid fields may be populated again after scene restore.
+    if (this._detachedWorldSourceIDs?.has(normalizedItemID)) {
       return false;
     }
 

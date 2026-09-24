@@ -6,6 +6,7 @@ const test = require("node:test");
 const {
   marshalEncode,
 } = require("../src/network/tcp/utils/marshal");
+const { buildDict } = require("../src/services/_shared/serviceHelpers");
 const SkillShotService = require("../src/services/frontier/skillShotService");
 const {
   AUTO_FIRE_CONTRACT_MARKER,
@@ -97,7 +98,8 @@ function createHarness(options: Record<string, any> = {}) {
   };
   source.session = session;
   const entities = [source, target, ...additionalEntities];
-  const scene = {
+  const scene: any = {
+    dynamicEntities: new Map(),
     getAllVisibleEntities: () => entities,
     getEntityByID: (itemID) => entities.find((entity) => entity.itemID === itemID) || null,
     broadcastSpecialFx(shipID, guid, fxOptions, visibilityEntity) {
@@ -211,9 +213,11 @@ function createHarness(options: Record<string, any> = {}) {
     clearTimer: scheduler.clearTimer,
     resolveCreationControlAuthority:
       options.resolveCreationControlAuthority || (() => creationAuthorityState),
+    ...(options.physicsGun ? { physicsGun: options.physicsGun } : {}),
   });
   return {
     runtime,
+    scene,
     scheduler,
     session,
     source,
@@ -445,7 +449,7 @@ test("explicit Creation auto-fire is rejected when the Repeater is absent or off
   assert.deepEqual(harness.notifications.at(-1), {
     name: "OnSkillShotFailed",
     idType: "clientID",
-    payload: ["AutoFireControllerOffline", {}],
+    payload: ["AutoFireControllerOffline", buildDict([])],
   });
 });
 
@@ -474,7 +478,7 @@ test("the auto-fire marker applies to the whole request even when its tuple is m
   assert.deepEqual(harness.notifications.at(-1), {
     name: "OnSkillShotFailed",
     idType: "clientID",
-    payload: ["AutoFireControllerOffline", {}],
+    payload: ["AutoFireControllerOffline", buildDict([])],
   });
 });
 
@@ -566,7 +570,7 @@ for (const authorityLoss of [
     assert.deepEqual(harness.notifications.at(-1), {
       name: "OnSkillShotFailed",
       idType: "clientID",
-      payload: ["AutoFireControllerOffline", {}],
+      payload: ["AutoFireControllerOffline", buildDict([])],
     });
   });
 }
@@ -599,7 +603,7 @@ for (const weaponLoss of ["offline", "removed"]) {
     assert.deepEqual(harness.notifications.at(-1), {
       name: "OnSkillShotFailed",
       idType: "clientID",
-      payload: ["AutoFireTerminated", {}],
+      payload: ["AutoFireTerminated", buildDict([])],
     });
   });
 }
@@ -649,7 +653,7 @@ test("unresolved automatic-fire authority fails closed without consuming resourc
   assert.deepEqual(harness.notifications.at(-1), {
     name: "OnSkillShotFailed",
     idType: "clientID",
-    payload: ["AutoFireTerminated", {}],
+    payload: ["AutoFireTerminated", buildDict([])],
   });
 });
 
@@ -778,6 +782,58 @@ test("held beams tick, expose ramp metadata, update endpoints, and stop cleanly"
   assert.equal(harness.effects.at(-1).options.start, false);
 });
 
+test("a held skill-shot beam keeps hitting one target as damage ramps and caps", () => {
+  const harness = createHarness({
+    moduleTypeID: 95317,
+    family: "laserTurret",
+    chargeMode: "crystal",
+    cycleDurationMs: 2_000,
+    rampMaxMultiplier: 2.3,
+    rampDurationMs: 16_000,
+  });
+  harness.source.capacitorCapacity = 200;
+  const states = [[harness.moduleItem.itemID, [1, 0, 0]]];
+  assert.equal(harness.runtime.beginHeldBeam(harness.session, states).success, true);
+
+  for (let cycle = 0; cycle < 10; cycle += 1) {
+    harness.setNow(1_000 + cycle * 2_000);
+    if (cycle > 0) {
+      assert.equal(harness.runtime.heldBeamAimUpdate(
+        harness.session, states,
+      ).data.updated, 1);
+    }
+    assert.equal(harness.scheduler.runNext(), true);
+    assert.equal(harness.damagedTargets.length, cycle + 1);
+    assert.equal(harness.damagedTargets[cycle].victim, harness.target);
+    assert.equal(harness.effects.length, 1);
+    assert.equal(harness.effects[0].options.start, true);
+    assert.equal(harness.effects[0].options.targetID, harness.target.itemID);
+  }
+
+  assert.equal(harness.damagedTargets[0].damage.kinetic, 25);
+  for (const [cycle, expectedDamage] of [
+    [1, 29.0625],
+    [4, 41.25],
+    [8, 57.5],
+    [9, 57.5],
+  ]) {
+    assert.ok(Math.abs(
+      harness.damagedTargets[cycle].damage.kinetic - expectedDamage,
+    ) < 1e-9);
+  }
+  assert.equal(harness.crystalVolatilityApplications.length, 10);
+  assert.equal(harness.notifications.filter(
+    (entry) => entry.name === "OnSkillShotSucceeded",
+  ).length, 1);
+
+  assert.equal(harness.runtime.endHeldBeam(
+    harness.session, harness.moduleItem.itemID,
+  ).data.ended, true);
+  assert.equal(harness.effects.at(-1).options.start, false);
+  assert.equal(harness.scheduler.runNext(), false);
+  assert.equal(harness.damagedTargets.length, 10);
+});
+
 test("held-beam utility collisions keep resources and FX but do not also deal combat damage", () => {
   const harness = createHarness({
     moduleTypeID: 95317,
@@ -841,7 +897,7 @@ test("a blocked utility transfer stops the beam and reports its authored failure
   assert.deepEqual(harness.notifications.at(-1), {
     name: "OnSkillShotFailed",
     idType: "clientID",
-    payload: ["NotEnoughCargoSpace", {}],
+    payload: ["NotEnoughCargoSpace", buildDict([])],
   });
 });
 
@@ -871,6 +927,89 @@ test("held-beam utility authority receives the first physical obstruction", () =
   assert.equal(harness.utilityHits[0].targetEntity, blocker);
   assert.equal(harness.damagedTargets.length, 0);
   assert.equal(harness.effects[0].options.targetID, blocker.itemID);
+});
+
+test("an immediate held-beam restart sends a marshalable cooldown notification", () => {
+  const harness = createHarness({
+    moduleTypeID: 99999,
+    family: "laserTurret",
+    chargeMode: "crystal",
+    cycleDurationMs: 2_000,
+    physicsGun: {
+      pickup: () => ({ success: true, data: { worldEntityID: 202 } }),
+      update: () => true,
+      release: () => ({ success: true }),
+    },
+  });
+  const states = [[harness.moduleItem.itemID, [1, 0, 0]]];
+  assert.equal(harness.runtime.beginHeldBeam(harness.session, states).success, true);
+  harness.scheduler.runNext();
+  assert.equal(harness.runtime.endHeldBeam(
+    harness.session, harness.moduleItem.itemID,
+  ).data.ended, true);
+  const result = harness.runtime.beginHeldBeam(harness.session, states);
+  assert.equal(result.success, false);
+  assert.equal(result.errorMsg, "MODULE_REACTIVATING");
+  const notification = harness.notifications.at(-1);
+  assert.equal(notification.name, "OnSkillShotFailed");
+  assert.equal(notification.payload[0], "ModuleReactivationDelayed2");
+  assert.deepEqual(notification.payload[1], buildDict([]));
+  assert.doesNotThrow(() => marshalEncode(
+    [0, [1, notification.payload]],
+    { compatibilityProfile: "frontier" },
+  ));
+});
+
+test("Physics Gun grabs once, follows aim, and releases on EndHeldBeam without mining or damage", () => {
+  const calls: any[] = [];
+  const physicsGun = {
+    pickup(_scene, _session, target, moduleID, direction) {
+      calls.push(["pickup", target.itemID, moduleID, direction.x]);
+      return { success: true, data: { worldEntityID: 8600 } };
+    },
+    update(_scene, id, _session, moduleID, direction) {
+      calls.push(["update", id, moduleID, direction.y]);
+      return true;
+    },
+    release(_scene, id, _session, moduleID) {
+      calls.push(["release", id, moduleID]);
+      return { success: true };
+    },
+  };
+  const harness = createHarness({
+    moduleTypeID: 99999,
+    family: "laserTurret",
+    chargeMode: "crystal",
+    cycleDurationMs: 2_000,
+    physicsGun,
+    applySkillShotUtilityHit: () => {
+      throw new Error("Physics Gun must not mine");
+    },
+  });
+  const grabbed = { ...harness.target, itemID: 8600, kind: "detachedDungeonProp" };
+  harness.scene.dynamicEntities.set(grabbed.itemID, grabbed);
+  harness.scene.getEntityByID = (id) => id === grabbed.itemID ? grabbed :
+    id === harness.source.itemID ? harness.source : harness.target;
+  assert.equal(harness.runtime.beginHeldBeam(harness.session,
+    [[harness.moduleItem.itemID, [1, 0, 0]]]).success, true);
+  harness.scheduler.runNext();
+  assert.deepEqual(calls[0], ["pickup", harness.target.itemID, harness.moduleItem.itemID, 1]);
+  assert.equal(harness.effects[0].options.targetID, grabbed.itemID);
+  assert.equal(harness.damagedTargets.length, 0);
+  harness.runtime.heldBeamAimUpdate(harness.session,
+    [[harness.moduleItem.itemID, [0, 1, 0]]]);
+  // A carried prop must remain held while the reticle is still, so the ship
+  // can move it without continuous client aim updates.
+  harness.setNow(10_000);
+  harness.scheduler.runNext();
+  assert.equal(calls.filter((call) => call[0] === "pickup").length, 1);
+  assert.ok(calls.some((call) => call[0] === "update" && call[3] === 1));
+  assert.equal(harness.runtime.endHeldBeam(harness.session,
+    harness.moduleItem.itemID).data.ended, true);
+  assert.deepEqual(calls.at(-1), ["release", grabbed.itemID, harness.moduleItem.itemID]);
+  assert.equal(harness.effects.at(-1).options.start, false);
+  assert.equal(harness.damagedTargets.length, 0);
+  assert.equal(harness.utilityHits.length, 0);
 });
 
 test("skillShot service exposes the exact RPC method and BeginFireAck shapes", () => {
@@ -913,11 +1052,16 @@ test("skillShot service exposes the exact RPC method and BeginFireAck shapes", (
   assert.equal(service.name, "skillShot");
   assert.equal(singleAck.header[0].value, "frontier.skillshot.common.BeginFireAck");
   assert.equal(singleAck.header[1][0].header[0].value, "datetime.datetime");
+  assert.equal(singleAck.header[1][0].header[1].length, 7);
   assert.equal(singleAck.header[1][1], null);
   assert.doesNotThrow(() => marshalEncode(singleAck, { compatibilityProfile: "frontier" }));
 
   const heldAck = service.Handle_BeginHeldBeam([states], session);
   assert.equal(heldAck.header[1][1].header[0].value, "datetime.datetime");
+  assert.equal(heldAck.header[1][0].header[1].length, 7);
+  assert.equal(heldAck.header[1][1].header[1].length, 7);
+  assert.ok(!JSON.stringify(heldAck).includes("datetime.timezone"));
+  assert.ok(!JSON.stringify(heldAck).includes("datetime.timedelta"));
   assert.equal(heldAck.header[1][2], 0);
   assert.equal(heldAck.header[1][3], 250);
   assert.doesNotThrow(() => marshalEncode(heldAck, { compatibilityProfile: "frontier" }));

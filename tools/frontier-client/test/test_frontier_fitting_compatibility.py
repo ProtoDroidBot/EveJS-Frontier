@@ -26,6 +26,7 @@ import action_bar_compatibility_adapter as action_bar_adapter  # noqa: E402
 import action_bar_deactivation_adapter as deactivation_adapter  # noqa: E402
 import action_bar_selection_adapter as selection_adapter  # noqa: E402
 import creation_service_compatibility_adapter as service_adapter  # noqa: E402
+import leap_hint_compatibility_adapter as leap_hint_adapter  # noqa: E402
 import patch_frontier_fitting as patcher  # noqa: E402
 import frontier_windows_client as windows  # noqa: E402
 
@@ -344,6 +345,100 @@ class Window:
             cls.opened = None
             return None
         return cls.Open(*args, **kwargs)
+
+
+class CreationLeapCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.calls = []
+        self.ship = NS(typeID=95276)
+        self.modules = {
+            501: NS(item_id=501, type_id=95319),
+            502: NS(item_id=502, type_id=92421),
+        }
+        test = self
+
+        class Provider:
+            def get_creation(self, ship_id):
+                test.calls.append(("snapshot", ship_id))
+                return NS(modules=test.modules)
+
+            def activate(self, ship_id, item_id):
+                test.calls.append(("activate", ship_id, item_id))
+                return "server-time"
+
+            def deactivate(self, ship_id, item_id):
+                test.calls.append(("deactivate", ship_id, item_id))
+
+        self.provider = Provider()
+
+        class Command:
+            def _leap_target(self):
+                test.calls.append("original-target")
+                return None
+
+            def _leap_engage(self):
+                test.calls.append("original-engage")
+                return False
+
+            def _leap_disengage(self):
+                test.calls.append("original-disengage")
+                return False
+
+        self.Command = Command
+        self.namespace = {
+            "EveCommandService": Command,
+            "session": NS(shipid=100),
+            "sm": NS(GetService=lambda name: (
+                NS(GetItem=lambda _item_id: test.ship) if name == "godma"
+                else NS(get_module_action_provider=lambda: test.provider)
+            )),
+        }
+        adapter._evejs_install_creation_leap_command(self.namespace)
+
+    def test_shortcut_activates_only_creation_leap_and_releases_it(self):
+        command = self.Command()
+        self.assertTrue(command._leap_engage())
+        self.assertTrue(command._leap_disengage())
+        self.assertIn(("activate", 100, 501), self.calls)
+        self.assertIn(("deactivate", 100, 501), self.calls)
+        self.assertNotIn(("activate", 100, 502), self.calls)
+        self.assertNotIn(("deactivate", 100, 502), self.calls)
+
+    def test_one_failed_leap_does_not_block_another(self):
+        self.modules[503] = NS(item_id=503, type_id=95319)
+        original_activate = self.provider.activate
+
+        def activate(ship_id, item_id):
+            if item_id == 501:
+                raise RuntimeError("first module failed")
+            return original_activate(ship_id, item_id)
+
+        self.provider.activate = activate
+        self.assertTrue(self.Command()._leap_engage())
+        self.assertIn(("activate", 100, 503), self.calls)
+
+    def test_other_hulls_keep_original_command_and_patch_is_idempotent(self):
+        installed = self.Command._leap_target
+        adapter._evejs_install_creation_leap_command(self.namespace)
+        self.assertIs(self.Command._leap_target, installed)
+        self.ship.typeID = 87698
+        self.assertFalse(self.Command()._leap_engage())
+        self.assertEqual(self.calls, ["original-engage"])
+
+
+class CreationLeapHintTests(unittest.TestCase):
+    def test_hint_uses_creation_snapshot_and_exact_leap_type(self):
+        modules = {1: NS(type_id=92421), 2: NS(type_id=95319)}
+        provider = NS(get_creation=lambda _ship_id: NS(modules=modules))
+        service_manager = NS(GetService=lambda _name: NS(
+            get_module_action_provider=lambda: provider,
+        ))
+        namespace = {"_ego_has_online_leap": lambda _manager: False}
+        leap_hint_adapter._evejs_install_leap_hint_compatibility(namespace)
+        with mock.patch.object(builtins, "session", NS(shipid=100), create=True):
+            self.assertTrue(namespace["_ego_has_online_leap"](service_manager))
+            modules.pop(2)
+            self.assertFalse(namespace["_ego_has_online_leap"](service_manager))
 
 
 class AdapterTests(unittest.TestCase):
@@ -2472,6 +2567,77 @@ class ActionBarSelectionAdapterTests(unittest.TestCase):
 
 
 class WindowsUpgradeTests(unittest.TestCase):
+    def test_synced_source_upgrade_copies_and_rolls_back_with_stage(self):
+        for fail_postcheck in (False, True):
+            with self.subTest(fail_postcheck=fail_postcheck), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                stage = root / "stage"
+                source = root / "source"
+                stage.mkdir()
+                source.mkdir()
+                code = stage / "code.ccp"
+                manifest = stage / "manifest.dat"
+                code.write_bytes(b"old code")
+                manifest.write_bytes(b"old manifest")
+                (source / "code.ccp").write_bytes(code.read_bytes())
+                (source / "manifest.dat").write_bytes(manifest.read_bytes())
+                hashes = {
+                    name: windows.sha256_file(stage / name)
+                    for name in ("code.ccp", "manifest.dat")
+                }
+                marker_path = stage / windows.STAGE_MARKER_NAME
+                marker = {
+                    "build": 3502403,
+                    "nativeBlue": "blue.pyd",
+                    "sourceRoot": str(source),
+                    "currentHashes": dict(hashes),
+                    "sourceSync": {"targetHashes": dict(hashes)},
+                }
+                windows.write_json_atomic(marker_path, marker)
+                original_marker = marker_path.read_bytes()
+                states = {
+                    "docking": "patched", "features": "patched",
+                    "industryStorage": "patched", "mapViewLifecycle": "patched",
+                    "fittingCompatibility": "outdated", "inventoryView": "patched",
+                    "collisionVfx": "patched", "creationTransform": "patched",
+                    "dungeonPropHologram": "patched", "physicsGun": "patched",
+                    "turretTracking": "patched",
+                }
+                checks = [None, RuntimeError("postcheck failed")] if fail_postcheck else [None, None]
+
+                def check(*_args, **_kwargs):
+                    error = checks.pop(0)
+                    if error is not None:
+                        raise error
+                    return {"valid": True}
+
+                with (
+                    mock.patch.object(windows, "check_stage", side_effect=check),
+                    mock.patch.object(windows, "load_stage", return_value=(marker_path, marker)),
+                    mock.patch.object(windows, "stage_paths", return_value={"code": code, "manifest": manifest}),
+                    mock.patch.object(windows, "code_patch_states", return_value=states),
+                    mock.patch.object(windows, "resolve_profile", return_value=(None, {})),
+                    mock.patch.object(windows, "run_python_patcher", side_effect=lambda *_a, **_k: code.write_bytes(b"new code")),
+                    mock.patch.object(windows, "refresh_manifest_atomic", side_effect=lambda *_a: manifest.write_bytes(b"new manifest")),
+                ):
+                    if fail_postcheck:
+                        with self.assertRaisesRegex(RuntimeError, "postcheck failed"):
+                            windows.upgrade_industry_storage_stage(stage)
+                    else:
+                        self.assertTrue(windows.upgrade_industry_storage_stage(stage)["valid"])
+
+                expected_code = b"old code" if fail_postcheck else b"new code"
+                expected_manifest = b"old manifest" if fail_postcheck else b"new manifest"
+                self.assertEqual(code.read_bytes(), expected_code)
+                self.assertEqual((source / "code.ccp").read_bytes(), expected_code)
+                self.assertEqual(manifest.read_bytes(), expected_manifest)
+                self.assertEqual((source / "manifest.dat").read_bytes(), expected_manifest)
+                if fail_postcheck:
+                    self.assertEqual(marker_path.read_bytes(), original_marker)
+                else:
+                    saved = windows.read_json(marker_path)
+                    self.assertEqual(saved["sourceSync"]["targetHashes"]["code.ccp"], windows.sha256_file(code))
+
     def test_upgrade_installs_fitting_patch_and_records_transaction_backup(self):
         with tempfile.TemporaryDirectory() as directory:
             stage = Path(directory)
@@ -2555,6 +2721,23 @@ class WindowsUpgradeTests(unittest.TestCase):
     sys.version_info[:2] == (3, 12), "Native code patch requires Python 3.12"
 )
 class FittingBytecodePatchTests(unittest.TestCase):
+    def test_leap_hint_wrapper_is_exact_and_idempotent(self):
+        source = member_for(compile(
+            "def _ego_has_online_leap(service_manager): return False\n",
+            "leap_hint_fixture.py",
+            "exec",
+        ))
+        expected = hashlib.sha256(source).hexdigest()
+        patched = patcher.patched_leap_hint_member(source)
+        self.assertEqual(patcher.inspect_member(
+            patched, expected, patcher.patched_leap_hint_member, set(),
+        )[0], "patched")
+        with self.assertRaises(patcher.FittingPatchError):
+            patcher.inspect_member(
+                patched[:-1] + b"!", expected,
+                patcher.patched_leap_hint_member, set(),
+            )
+
     def test_fixture_patch_is_exact_idempotent_and_rejects_tampering(self):
         code = compile(
             "class FittingWindow: pass\n"

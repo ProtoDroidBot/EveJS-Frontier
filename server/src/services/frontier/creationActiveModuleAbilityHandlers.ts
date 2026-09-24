@@ -359,7 +359,21 @@ function activateTargetModule(context, kind, effectName) {
 
 function deactivateModule(context, options: Record<string, any> = {}) {
   const runtime = getSpaceRuntime(context);
-  return stopEffect(runtime, context, options.reason || "manual");
+  const result = stopEffect(runtime, context, options.reason || "manual");
+  if (!result || result.success !== true) return result;
+
+  // The runtime result also contains the live entity and effect state, which
+  // may reference the session and cannot be sent through the packet worker.
+  const runtimeData = result.data || {};
+  const data: Record<string, any> = {};
+  if (runtimeData.pending === true) data.pending = true;
+  if (Number.isFinite(runtimeData.deactivateAtMs)) {
+    data.deactivateAtMs = runtimeData.deactivateAtMs;
+  }
+  if (Number.isFinite(runtimeData.stoppedAtMs)) {
+    data.stoppedAtMs = runtimeData.stoppedAtMs;
+  }
+  return { success: true, data };
 }
 
 const HANDLERS = Object.freeze({

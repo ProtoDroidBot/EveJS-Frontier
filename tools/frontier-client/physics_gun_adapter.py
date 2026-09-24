@@ -27,7 +27,6 @@ def _evejs_install_physics_gun(namespace):
         "evetypes.data", "dogma.data", "frontier.creation.common.data_loader"
     ):
         from collections.abc import Mapping
-        from types import SimpleNamespace
 
         class _PhysicsGunRow:
             def __init__(self, source, overrides):
@@ -78,7 +77,6 @@ def _evejs_install_physics_gun(namespace):
                 "_key": PHYSICS_GUN_TYPE_ID,
                 "behavior": "generic",
                 "capability": "weapon",
-                "placement": SimpleNamespace(compatible_hardpoints=["weapon"]),
                 "system": "weapons",
             }
         if loader is None:

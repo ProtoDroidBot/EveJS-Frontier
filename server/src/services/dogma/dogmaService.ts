@@ -3580,6 +3580,42 @@ class DogmaService extends BaseService {
         }
       }
     }
+    // Creation charges live beneath their module on flag 184, rather than in
+    // a ship fitting slot. The held-beam client checks Godma's items in the
+    // module location before sending BeginHeldBeam, so prime these real rows
+    // in shipInfo even when ordinary ship-slot charges are omitted in space.
+    if (creationModuleItems.length > 0) {
+      const { getCreationModuleChargeState } = require(path.join(
+        __dirname,
+        "../frontier/creationChargeRuntime",
+      ));
+      for (const moduleItem of creationModuleItems) {
+        const loaded = getCreationModuleChargeState(charID, moduleItem.itemID);
+        if (!loaded || loaded.success !== true || !loaded.data.item) {
+          continue;
+        }
+        const item = loaded.data.item;
+        inventoryEntries.push([
+          item.itemID,
+          this._buildCommonGetInfoEntry({
+            itemID: item.itemID,
+            typeID: item.typeID,
+            ownerID: item.ownerID || ownerID,
+            locationID: item.locationID,
+            flagID: item.flagID,
+            groupID: item.groupID,
+            categoryID: item.categoryID,
+            quantity: item.quantity,
+            singleton: item.singleton,
+            stacksize: item.stacksize,
+            customInfo: item.customInfo || "",
+            description: item.itemName || "charge",
+            attributes: this._buildInventoryItemAttributeDict(item, session),
+            session,
+          }),
+        ]);
+      }
+    }
     if (options.includeLoadedCharges === true) {
       const loadedCharges = listFittedRows(true);
       if (Array.isArray(loadedCharges)) {

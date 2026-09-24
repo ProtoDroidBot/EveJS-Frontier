@@ -3,9 +3,11 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
+const { marshalEncode } = require("../src/network/tcp/utils/marshal");
 const abilityRuntime = require("../src/services/frontier/creationAbilityRuntime");
 const handlers = require("../src/services/frontier/creationActiveModuleAbilityHandlers");
 const runtime = require("../src/services/frontier/creationActiveModuleRuntime");
+const { buildCreationAbilityResponse } = require("../src/services/frontier/creationService");
 const spaceRuntime = require("../src/space/runtime");
 const itemStore = require("../src/services/inventory/itemStore");
 const gameStore = require("../src/gameStore");
@@ -494,6 +496,40 @@ test("manual Creation module stop waits for its cycle; forced offline stop is im
   assert.equal(entity.activeModuleEffects.has(moduleID), false);
   assert.equal(finalized.reason, "offline");
   assert.equal(finalized.nowMs, 2000);
+});
+
+test("Leap stop response excludes live runtime objects for pending and completed cycles", () => {
+  for (const [runtimeData, expectedData] of [
+    [
+      { pending: true, deactivateAtMs: 6000 },
+      { pending: true, deactivateAtMs: 6000 },
+    ],
+    [
+      { stoppedAtMs: 6000 },
+      { stoppedAtMs: 6000 },
+    ],
+  ]) {
+    const fixture = buildHandlerFixture({ moduleTypeID: runtime.TYPE_LEAP });
+    fixture.context.dependencies.spaceRuntime.deactivateGenericModule = () => ({
+      success: true,
+      data: {
+        ...runtimeData,
+        entity: { session: { cleanup: () => {} } },
+        effectState: { callback: () => {} },
+      },
+    });
+    const result = handlers.deactivateModule(fixture.context);
+    assert.deepEqual(result, { success: true, data: expectedData });
+
+    const response = buildCreationAbilityResponse({
+      serverTime: 123456789n,
+      ...result.data,
+    }, null);
+    assert.doesNotThrow(() => structuredClone(response));
+    assert.doesNotThrow(() => marshalEncode(response, {
+      compatibilityProfile: "frontier",
+    }));
+  }
 });
 
 test("propulsion preflight fails before generic activation can charge or publish HUD state", () => {

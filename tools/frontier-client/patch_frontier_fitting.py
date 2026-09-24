@@ -77,6 +77,8 @@ ACTION_BAR_SLOT_PREVIOUS_WRAPPER_SHA256 = {
     "5581c2fd975d1dda469a9949f4049174b661ba8876777d36234461f2de533876",
     "48f7f7967c2e50a8d734995b270608f0c24fcbc8849187251364da9a629fd320",
 }
+LEAP_HINT_MODULE_NAME = "frontier/hud/leap_hint.pyc"
+LEAP_HINT_SOURCE_MEMBER_SHA256 = "b18124158bf3455fe87223d4e56b78ea79e0a15e7872a519614e84926df01af0"
 SKILLSHOT_CONTROLLER_MODULE_NAME = "frontier/skillshot/client/controller.pyc"
 SKILLSHOT_CONTROLLER_SOURCE_MEMBER_SHA256 = "4c4162c18f4116b728755169581736ffc7984deb1c5d45cc6454e49dbeb81e75"
 SKILLSHOT_CONTROLLER_PREVIOUS_WRAPPER_SHA256 = {
@@ -90,6 +92,7 @@ SKILLSHOT_AUTO_CANNON_PREVIOUS_WRAPPER_SHA256 = {
     "a5790102cb176a83c78c4d4b5238067769e298eeebe236c649e9dc4c26ca8ed5",
 }
 PREVIOUS_WRAPPER_SHA256 = {
+    "2fe48420ddbeef27c039494a260aa287730306f23de75ae2cfa147a7bd6a3860",
     "9e2f068d69fa3c0c1b5e84b240743842f22ed1dcd5bce30059f5d5813a88b3d3",
     "41894b6c80d6f736a5037479dc1146e9d0a920f00e625e22b6ebd5506f58cdb1",
     "31e934d6fbc00a419c4e85a682d6505fc4beddc097c7dc5a93d4a210d5a62f4c",
@@ -119,6 +122,9 @@ ACTION_BAR_INTEGRATION_ADAPTER = Path(__file__).with_name(
 ACTION_BAR_SLOT_ADAPTER = Path(__file__).with_name(
     "action_bar_deactivation_adapter.py"
 )
+LEAP_HINT_ADAPTER = Path(__file__).with_name(
+    "leap_hint_compatibility_adapter.py"
+)
 SKILLSHOT_CONTROLLER_ADAPTER = Path(__file__).with_name(
     "skillshot_authority_controller_adapter.py"
 )
@@ -143,6 +149,8 @@ ACTION_BAR_INTEGRATION_ADAPTER_SENTINEL = (
 )
 ACTION_BAR_SLOT_SOURCE_SENTINEL = b"EVEJS_ACTION_BAR_SLOT_ORIGINAL_MEMBER_V1"
 ACTION_BAR_SLOT_ADAPTER_SENTINEL = b"EVEJS_ACTION_BAR_SLOT_ADAPTER_CODE_V1"
+LEAP_HINT_SOURCE_SENTINEL = b"EVEJS_LEAP_HINT_ORIGINAL_MEMBER_V1"
+LEAP_HINT_ADAPTER_SENTINEL = b"EVEJS_LEAP_HINT_ADAPTER_CODE_V1"
 SKILLSHOT_CONTROLLER_SOURCE_SENTINEL = (
     b"EVEJS_SKILLSHOT_CONTROLLER_ORIGINAL_MEMBER_V1"
 )
@@ -357,6 +365,34 @@ def patched_action_bar_slot_member(member):
     return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
 
 
+def patched_leap_hint_member(member):
+    original = marshal.loads(member[16:])
+    adapter = compile(
+        LEAP_HINT_ADAPTER.read_text(encoding="utf-8"),
+        "evejs/leap_hint_compatibility_adapter.py",
+        "exec",
+        dont_inherit=True,
+    )
+    wrapper = compile(
+        "import marshal as _evejs_leap_hint_marshal\n"
+        "exec(_evejs_leap_hint_marshal.loads(b'EVEJS_LEAP_HINT_ORIGINAL_MEMBER_V1'[16:]))\n"
+        "exec(_evejs_leap_hint_marshal.loads(b'EVEJS_LEAP_HINT_ADAPTER_CODE_V1'))\n"
+        "_evejs_install_leap_hint_compatibility(globals())\n",
+        original.co_filename,
+        "exec",
+        dont_inherit=True,
+    )
+    constants = tuple(
+        member
+        if value == LEAP_HINT_SOURCE_SENTINEL
+        else marshal.dumps(adapter)
+        if value == LEAP_HINT_ADAPTER_SENTINEL
+        else value
+        for value in wrapper.co_consts
+    )
+    return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
+
+
 def patched_skillshot_controller_member(member):
     original = marshal.loads(member[16:])
     adapter = compile(
@@ -464,6 +500,7 @@ def inspect_archive(archive, build=BUILD):
             ACTION_PROVIDER_MODULE_NAME,
             ACTION_BAR_INTEGRATION_MODULE_NAME,
             ACTION_BAR_SLOT_MODULE_NAME,
+            LEAP_HINT_MODULE_NAME,
             SKILLSHOT_CONTROLLER_MODULE_NAME,
             SKILLSHOT_AUTO_CANNON_MODULE_NAME,
         ):
@@ -517,6 +554,12 @@ def inspect_archive(archive, build=BUILD):
             patched_action_bar_slot_member,
             ACTION_BAR_SLOT_PREVIOUS_WRAPPER_SHA256,
         )
+        leap_hint_state, leap_hint_original = inspect_member(
+            source.read(entries_by_name[LEAP_HINT_MODULE_NAME]),
+            LEAP_HINT_SOURCE_MEMBER_SHA256,
+            patched_leap_hint_member,
+            set(),
+        )
         skillshot_controller_state, skillshot_controller_original = inspect_member(
             source.read(entries_by_name[SKILLSHOT_CONTROLLER_MODULE_NAME]),
             SKILLSHOT_CONTROLLER_SOURCE_MEMBER_SHA256,
@@ -538,6 +581,7 @@ def inspect_archive(archive, build=BUILD):
         action_provider_state,
         action_bar_integration_state,
         action_bar_slot_state,
+        leap_hint_state,
         skillshot_controller_state,
         skillshot_auto_cannon_state,
     }
@@ -567,6 +611,7 @@ def inspect_archive(archive, build=BUILD):
             action_bar_slot_state,
             action_bar_slot_original,
         ),
+        LEAP_HINT_MODULE_NAME: (leap_hint_state, leap_hint_original),
         SKILLSHOT_CONTROLLER_MODULE_NAME: (
             skillshot_controller_state,
             skillshot_controller_original,
@@ -622,6 +667,11 @@ def patch_archive(archive, build=BUILD):
         if action_bar_slot_state != "patched":
             replacements[ACTION_BAR_SLOT_MODULE_NAME] = (
                 patched_action_bar_slot_member(action_bar_slot_original)
+            )
+        leap_hint_state, leap_hint_original = originals[LEAP_HINT_MODULE_NAME]
+        if leap_hint_state != "patched":
+            replacements[LEAP_HINT_MODULE_NAME] = (
+                patched_leap_hint_member(leap_hint_original)
             )
         skillshot_controller_state, skillshot_controller_original = originals[
             SKILLSHOT_CONTROLLER_MODULE_NAME

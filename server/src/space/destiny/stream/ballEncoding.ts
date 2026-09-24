@@ -27,6 +27,9 @@ const {
   resolveFreeBallCorporationID,
 } = require("./freeBallHeader");
 const {
+  MINI_GEOMETRY_FLAG_MASK,
+  appendMiniGeometrySections,
+  getEntityMiniGeometryFlags,
   getStaticBallFlags,
   getStaticBallMode,
   resolveStaticBallTail,
@@ -660,6 +663,7 @@ function encodeFrontierRigidBall(entity) {
   const chunks: any[] = [];
   const position = buildVector(entity && entity.position);
   const mode = getStaticBallMode(entity);
+  const miniGeometryFlags = getEntityMiniGeometryFlags(entity);
   pushBigInt64(
     chunks,
     requireEntityID(entity && entity.itemID, "Destiny ball itemID"),
@@ -669,10 +673,16 @@ function encodeFrontierRigidBall(entity) {
   pushDouble(chunks, position.x);
   pushDouble(chunks, position.y);
   pushDouble(chunks, position.z);
-  pushUInt8(chunks, getRigidBallFlags(entity));
+  pushUInt8(chunks, (getRigidBallFlags(entity) & ~MINI_GEOMETRY_FLAG_MASK) |
+    miniGeometryFlags);
   appendFrontierCommonBallTail(chunks, entity);
   pushInt32(chunks, toInt32(entity && entity.convexCollisionID, 0));
   pushUInt8(chunks, 0xff);
+  // Frontier carries mini geometry after the native rigid header. Derive its
+  // flags from the sections sent here, including when a legacy tail exists.
+  if (miniGeometryFlags !== 0) {
+    appendMiniGeometrySections(chunks, entity);
+  }
   appendFrontierModeData(chunks, entity, mode);
   return Buffer.concat(chunks);
 }

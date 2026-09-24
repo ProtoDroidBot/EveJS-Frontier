@@ -20,7 +20,7 @@ const { syncChargeGodmaPrimeForSession, syncInventoryItemForSession, } = require
 const itemStore = require(path.join(__dirname, "../inventory/itemStore"));
 const { buildEffectiveItemAttributeMap, buildShipResourceState, evaluateModuleChargeCompatibility, getAttributeIDByNames, getTypeAttributeValue, } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const { ABILITY_DEPLOY, registerCreationAbilityHandler, resolveCreationAbilityHandler, } = require(path.join(__dirname, "./creationAbilityRuntime"));
-const { CREATION_FITTING_FLAG_ID, getCreationDogmaContext, isCreationModuleOnline, } = require(path.join(__dirname, "./creationRuntime"));
+const { CREATION_FITTING_FLAG_ID, ensureCreationState, getCreationDogmaContext, isCreationModuleOnline, } = require(path.join(__dirname, "./creationRuntime"));
 const { buildCreationSnapshot, } = require(path.join(__dirname, "./creationCompatibility"));
 const launchBayPayloadRuntime = require(path.join(__dirname, "./launchBayPayloadRuntime"));
 const CREATION_MODULE_CHARGE_FLAG_ID = 184;
@@ -395,6 +395,29 @@ function notifyCreationChanged(resolved) {
         log.warn(`[CreationCharge] Creation snapshot notification failed ship=${toPositiveSafeInteger(resolved.creationID)}: ${error && error.message ? error.message : error}`);
     }
 }
+function notifyCreationChargeChangedForSession(session, creationID) {
+    const characterID = getSessionCharacterID(session);
+    if (characterID <= 0 ||
+        toPositiveSafeInteger(creationID) !== getSessionActiveShipID(session)) {
+        return false;
+    }
+    const creationItem = itemStore.findShipItemById(creationID);
+    if (!creationItem || toPositiveSafeInteger(creationItem.ownerID) !== characterID) {
+        return false;
+    }
+    const ensured = ensureCreationState(creationItem, characterID);
+    if (!ensured.success)
+        return false;
+    notifyCreationChanged({
+        session,
+        characterID,
+        creationID,
+        creationItem: ensured.data.item,
+        creationState: ensured.data.state,
+        creationTemplate: ensured.data.template,
+    });
+    return true;
+}
 function normalizeAmmoItemIDs(value) {
     const source = Array.isArray(value)
         ? value
@@ -734,6 +757,7 @@ module.exports = {
     TYPE_HEAT_TRAP,
     deployCreationLaunchBayPayload,
     getCreationModuleChargeState,
+    notifyCreationChargeChangedForSession,
     registerCreationLaunchBayAbilityHandler,
     reloadCreationModule,
     unloadCreationModule,

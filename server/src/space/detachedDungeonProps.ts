@@ -1,6 +1,7 @@
 "use strict";
 
 const { createTableRepository } = require("../gameStore/tableRepository");
+const { BALL_FLAG, BALL_MODE } = require("./destiny/constants");
 
 const TABLE = "detachedDungeonProps";
 const VERSION = 1;
@@ -12,11 +13,23 @@ const PRESENTATION_FIELDS = Object.freeze([
   "ownerID", "itemName", "slimName", "slimTypeID", "slimGroupID",
   "slimCategoryID", "slimGraphicID", "suppressSlimGraphicID",
   "suppressSlimName", "nameID", "radius", "collisionScale",
+  "collisionID", "convexCollisionID", "surfaceType",
+  "miniBalls", "miniballs", "miniBoxes", "miniboxes",
+  "miniCapsules", "minicapsules",
   "dunRotation", "mass", "agility", "inertia", "maxVelocity", "speed",
   "speedFraction",
   "destinyBallMode", "destinyForceFree", "destinyBallFlags",
   "destinyCollisionTail", "destinyCollisionTailSource",
   "destinyBootstrapDelivery", "destinyMode", "destinyFlags",
+  "collisionRadius", "collisionEnabled", "destinyCollisionEnabled",
+  "nonPhysicalCollision", "nonPhysicalDecloakExempt", "collisionProfile",
+  "destinyForceMassive",
+  "beltID", "fieldStyleID", "miningYieldTypeID", "miningYieldKind",
+  "miningPresentationTypeID", "miningBaseRadius", "resourceQuantity",
+  "mineableQuantity", "originalQuantity", "preserveMiningVisualPresentation",
+  "skipMiningTemplateResolution", "generatedAsteroid",
+  "generatedFromFrontierLandscape", "sourceLandscapeSiteID",
+  "physicsGunMineableState",
 ]);
 
 function positiveID(value) {
@@ -37,8 +50,14 @@ function clone(value) {
 }
 
 function sourceKey(systemID, instanceID, siteID, entityID) {
-  const ids = [systemID, instanceID, siteID, entityID].map(positiveID);
-  return ids.every(Boolean) ? ids.join(":") : null;
+  const system = positiveID(systemID);
+  const entity = positiveID(entityID);
+  const instance = Number(instanceID);
+  const site = Number(siteID);
+  if (!system || !entity || !Number.isSafeInteger(instance) ||
+      !Number.isSafeInteger(site) || instance < 0 || site < 0 ||
+      ((instance === 0) !== (site === 0))) return null;
+  return [system, instance, site, entity].join(":");
 }
 
 function buildWorldEntity(source, worldEntityID) {
@@ -62,8 +81,25 @@ function buildWorldEntity(source, worldEntityID) {
         : clone(source[field]);
     }
   }
+  if (entity.physicsGunMineableState) {
+    entity.physicsGunMineableState.entityID = itemID;
+  }
   entity.typeID = typeID;
   entity.radius = Math.max(1, Number(entity.radius) || 1);
+  // A source may be presented as a free STOP ball while it belongs to a
+  // dungeon. Once detached, its durable world form must be a stationary
+  // collision ball; movingEntityFromStatic temporarily makes it free again.
+  entity.destinyForceFree = false;
+  if (entity.destinyBallFlags !== undefined) {
+    const flags = Number(entity.destinyBallFlags);
+    if (Number.isFinite(flags)) entity.destinyBallFlags = Math.trunc(flags) & ~BALL_FLAG.IS_FREE;
+  }
+  const mode = entity.destinyBallMode;
+  if (mode !== BALL_MODE.STOP && mode !== BALL_MODE.RIGID &&
+      String(mode || "").toUpperCase() !== "STOP" &&
+      String(mode || "").toUpperCase() !== "RIGID") {
+    entity.destinyBallMode = "RIGID";
+  }
   if (!Number.isFinite(Number(entity.collisionScale)) || Number(entity.collisionScale) <= 0) {
     delete entity.collisionScale;
   }
@@ -78,12 +114,14 @@ function normalizeRecord(raw, key) {
   const record = raw && typeof raw === "object" ? raw : null;
   if (!record) return null;
   const systemID = positiveID(record.systemID);
-  const instanceID = positiveID(record.sourceInstanceID);
-  const siteID = positiveID(record.sourceSiteID);
+  const instanceID = Number(record.sourceInstanceID);
+  const siteID = Number(record.sourceSiteID);
   const sourceEntityID = positiveID(record.sourceEntityID);
   const worldEntityID = positiveID(record.worldEntityID);
   if (
-    !systemID || !instanceID || !siteID || !sourceEntityID || !worldEntityID ||
+    !systemID || !sourceEntityID || !worldEntityID ||
+    !Number.isSafeInteger(instanceID) || !Number.isSafeInteger(siteID) ||
+    instanceID < 0 || siteID < 0 || ((instanceID === 0) !== (siteID === 0)) ||
     worldEntityID < WORLD_ID_BASE || worldEntityID >= WORLD_ID_LIMIT ||
     sourceKey(systemID, instanceID, siteID, sourceEntityID) !== key
   ) return null;
@@ -95,6 +133,8 @@ function normalizeRecord(raw, key) {
     systemID,
     sourceInstanceID: instanceID,
     sourceSiteID: siteID,
+    sourceScope: instanceID === 0 ? "world" : "dungeon",
+    sourceKind: String(record.sourceKind || (instanceID === 0 ? "asteroid" : "siteEnvironmentProp")),
     sourceEntityID,
     worldEntityID,
     createdAtMs: Math.max(0, Math.trunc(Number(record.createdAtMs) || 0)),
@@ -236,8 +276,8 @@ function createDetachedDungeonPropStore(options: Record<string, any> = {}) {
 
   function detach(source, identity, scene = null) {
     const systemID = positiveID(identity && identity.systemID);
-    const instanceID = positiveID(identity && identity.instanceID);
-    const siteID = positiveID(identity && identity.siteID);
+    const instanceID = Number(identity && identity.instanceID);
+    const siteID = Number(identity && identity.siteID);
     const sourceEntityID = positiveID(identity && identity.entityID);
     const key = sourceKey(systemID, instanceID, siteID, sourceEntityID);
     if (!key || positiveID(source && source.itemID) !== sourceEntityID) {
@@ -269,6 +309,8 @@ function createDetachedDungeonPropStore(options: Record<string, any> = {}) {
       systemID,
       sourceInstanceID: instanceID,
       sourceSiteID: siteID,
+      sourceScope: instanceID === 0 ? "world" : "dungeon",
+      sourceKind: String(source.kind || ""),
       sourceEntityID,
       worldEntityID,
       createdAtMs: Date.now(),
@@ -285,7 +327,17 @@ function createDetachedDungeonPropStore(options: Record<string, any> = {}) {
       : writeResult;
   }
 
-  return { listSystem, suppressedSourceIDs, getBySource, getByWorldID, checkpointPose, detach };
+  function removeByWorldID(systemID, worldEntityID) {
+    const state = readState();
+    const entry = Object.entries<any>(state.recordsBySource).find(([, record]) =>
+      record.systemID === Number(systemID) && record.worldEntityID === Number(worldEntityID));
+    if (!entry) return { success: false, errorMsg: "DETACHED_PROP_NOT_FOUND" };
+    const nextRecords = { ...state.recordsBySource };
+    delete nextRecords[entry[0]];
+    return writeState({ ...state, recordsBySource: nextRecords }, state);
+  }
+
+  return { listSystem, suppressedSourceIDs, getBySource, getByWorldID, checkpointPose, detach, removeByWorldID };
 }
 
 let defaultStore = null;

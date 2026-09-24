@@ -324,6 +324,9 @@ if ($existingMarker -and -not $stageMatchesSelectedSource -and -not $Clean) {
 }
 
 if ($Clean -and $existingMarker) {
+    if ($existingMarker.sourceSync) {
+        throw 'Cannot clean a stage whose source client was intentionally synced. Restore the original source from its recorded base-sync backup first.'
+    }
     Assert-StagedClientNotRunning -StageRoot $StageRoot -ExpectedBuild $Build
     Remove-OwnedStage -StageRoot $StageRoot -ExpectedBuild $Build
     Write-Host "[evejs-frontier] Removed marker-owned stage: $StageRoot"
@@ -338,8 +341,13 @@ if ($existingMarker) {
     }
     $before = $marker.retailHashesBefore
     foreach ($property in $before.PSObject.Properties) {
+        $expected = [string]$property.Value
+        if ($marker.sourceSync -and $marker.sourceSync.targetHashes) {
+            $synced = $marker.sourceSync.targetHashes.PSObject.Properties[$property.Name]
+            if ($synced) { $expected = [string]$synced.Value }
+        }
         $actual = Get-FrontierSha256 (Join-Path $SourceBuild $property.Name.Replace('/', '\'))
-        if ($actual -ne [string]$property.Value) {
+        if ($actual -ne $expected) {
             throw "Source client changed since staging: $($property.Name)"
         }
     }

@@ -1033,6 +1033,114 @@ def _evejs_active_ship_uses_creation(namespace):
     return ship.typeID in creation_type_ids
 
 
+_EVEJS_CREATION_LEAP_TYPE_ID = 95319
+
+
+def _evejs_creation_leap_item_ids(provider, ship_id):
+    creation = provider.get_creation(ship_id)
+    if creation is None:
+        return []
+    try:
+        modules = creation.modules.values()
+    except Exception:
+        return []
+    item_ids = []
+    for module in modules:
+        try:
+            if module.type_id == _EVEJS_CREATION_LEAP_TYPE_ID:
+                item_ids.append(module.item_id)
+        except Exception:
+            continue
+    return item_ids
+
+
+def _evejs_release_creation_leaps(provider, ship_id, item_ids):
+    first_error = None
+    for item_id in item_ids:
+        try:
+            provider.deactivate(ship_id, item_id)
+        except Exception as error:
+            # A failed module must not prevent the other fitted Leaps stopping.
+            if first_error is None:
+                first_error = error
+    if first_error is not None:
+        raise first_error
+
+
+def _evejs_install_creation_leap_command(namespace):
+    command_type = namespace.get("EveCommandService")
+    if command_type is None or not all(
+        hasattr(command_type, name)
+        for name in ("_leap_target", "_leap_engage", "_leap_disengage")
+    ):
+        return
+    original_target = command_type._leap_target
+    if getattr(original_target, "_evejs_creation_leap_patch", False):
+        return
+    original_engage = command_type._leap_engage
+    original_disengage = command_type._leap_disengage
+
+    @wraps(original_target)
+    def leap_target(self):
+        if not _evejs_active_ship_uses_creation(namespace):
+            return original_target(self)
+        ship_id = getattr(namespace.get("session"), "shipid", None)
+        if not ship_id:
+            return None
+        try:
+            creation_service = _evejs_service_manager(namespace).GetService(
+                "creation"
+            )
+            return creation_service.get_module_action_provider(), ship_id
+        except Exception:
+            return None
+
+    @wraps(original_engage)
+    def leap_engage(self):
+        if not _evejs_active_ship_uses_creation(namespace):
+            return original_engage(self)
+        target = self._leap_target()
+        if target is None:
+            return False
+        provider, ship_id = target
+        item_ids = _evejs_creation_leap_item_ids(provider, ship_id)
+        activated = False
+        first_error = None
+        for item_id in item_ids:
+            try:
+                if provider.activate(ship_id, item_id) is not None:
+                    activated = True
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+        if not activated and first_error is not None:
+            raise first_error
+        return activated
+
+    @wraps(original_disengage)
+    def leap_disengage(self):
+        if not _evejs_active_ship_uses_creation(namespace):
+            return original_disengage(self)
+        target = self._leap_target()
+        if target is None:
+            return False
+        provider, ship_id = target
+        item_ids = _evejs_creation_leap_item_ids(provider, ship_id)
+        if not item_ids:
+            return False
+        worker = getattr(namespace.get("uthread"), "new", None)
+        if worker is not None:
+            worker(_evejs_release_creation_leaps, provider, ship_id, item_ids)
+        else:
+            _evejs_release_creation_leaps(provider, ship_id, item_ids)
+        return True
+
+    leap_target._evejs_creation_leap_patch = True
+    command_type._leap_target = leap_target
+    command_type._leap_engage = leap_engage
+    command_type._leap_disengage = leap_disengage
+
+
 def _evejs_install_fitting_compatibility(namespace):
     command_type = namespace.get("EveCommandService")
     fitting_window = namespace.get("FittingWindow")
@@ -1142,6 +1250,8 @@ def _evejs_install_fitting_compatibility(namespace):
         fitting_window.ToggleOpenClose = toggle_window
         command_type.OpenFitting = open_fitting
         command_type.OpenNpcFitting = open_npc_fitting
+
+    _evejs_install_creation_leap_command(namespace)
 
     creation_service_type = namespace.get("_evejs_creation_service_type")
     if creation_service_type is None:

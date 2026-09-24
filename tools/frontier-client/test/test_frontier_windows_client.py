@@ -406,6 +406,116 @@ class CertificateAndTransactionTests(unittest.TestCase):
             windows_client.retail_hashes(marker)
 
 
+class BaseSyncTests(unittest.TestCase):
+    def make_fixture(self, root: Path):
+        source = root / "retail" / "stillness"
+        stage = root / "staged-client" / "3502403"
+        source.mkdir(parents=True)
+        stage.mkdir(parents=True)
+        marker = {
+            "format": windows_client.STAGE_FORMAT,
+            "platform": "windows",
+            "build": 3502403,
+            "stagePath": str(stage),
+            "stagingBase": str(stage.parent),
+            "sourceRoot": str(source),
+            "nativeBlue": "blue.pyd",
+            "patchState": "complete",
+            "retailHashesBefore": {},
+            "currentHashes": {},
+        }
+        protected = windows_client.base_sync_relatives(marker)
+        for relative in protected | {"bin64/exefile.exe", "start.ini"}:
+            original = windows_client.safe_relative_path(source, relative)
+            original.parent.mkdir(parents=True, exist_ok=True)
+            original.write_bytes(f"original {relative}".encode())
+            marker["retailHashesBefore"][relative] = windows_client.sha256_file(original)
+            if relative in protected:
+                staged = windows_client.safe_relative_path(stage, relative)
+                staged.parent.mkdir(parents=True, exist_ok=True)
+                staged.write_bytes(f"patched {relative}".encode())
+                marker["currentHashes"][relative] = windows_client.sha256_file(staged)
+        marker_path = stage / windows_client.STAGE_MARKER_NAME
+        windows_client.write_json_atomic(marker_path, marker)
+        return stage, source, marker_path, marker
+
+    def test_base_sync_checks_source_stage_and_original_backup(self):
+        with tempfile.TemporaryDirectory(prefix="frontier base sync ") as raw:
+            root = Path(raw)
+            stage, source, _, marker = self.make_fixture(root)
+            with (mock.patch.object(windows_client, "REPO_ROOT", root),
+                  mock.patch.object(windows_client, "check_stage", return_value={})):
+                report = windows_client.sync_base_client(stage)
+                self.assertEqual(report["baseSync"], "installed")
+                synced = windows_client.read_json(stage / windows_client.STAGE_MARKER_NAME)
+                windows_client.verify_retail_unchanged(synced, stage)
+                relative = "code.ccp"
+                source_file = source / relative
+                source_file.write_bytes(b"unexpected drift")
+                with self.assertRaisesRegex(windows_client.FrontierWindowsError, "changed:code.ccp"):
+                    windows_client.verify_retail_unchanged(synced, stage)
+                source_file.write_bytes((stage / relative).read_bytes())
+                backup_file = Path(synced["sourceSync"]["backupRoot"]) / relative
+                backup_file.write_bytes(b"damaged backup")
+                with self.assertRaisesRegex(windows_client.FrontierWindowsError, "backup hash mismatch"):
+                    windows_client.verify_retail_unchanged(synced, stage)
+                self.assertEqual(set(synced["retailHashesBefore"]), set(marker["retailHashesBefore"]))
+
+    def test_failed_postcheck_restores_every_source_file_and_marker(self):
+        with tempfile.TemporaryDirectory(prefix="frontier base sync rollback ") as raw:
+            root = Path(raw)
+            stage, source, marker_path, marker = self.make_fixture(root)
+            original_marker = marker_path.read_bytes()
+            with (mock.patch.object(windows_client, "REPO_ROOT", root),
+                  mock.patch.object(windows_client, "check_stage", side_effect=[{},
+                      windows_client.FrontierWindowsError("postcheck failed")])):
+                with self.assertRaisesRegex(windows_client.FrontierWindowsError, "rolled back"):
+                    windows_client.sync_base_client(stage)
+            self.assertEqual(marker_path.read_bytes(), original_marker)
+            for relative, digest in marker["retailHashesBefore"].items():
+                self.assertEqual(windows_client.sha256_file(source / relative), digest)
+
+    def test_restoring_base_sync_recovers_retail_source(self):
+        with tempfile.TemporaryDirectory(prefix="frontier base restore ") as raw:
+            root = Path(raw)
+            stage, source, marker_path, marker = self.make_fixture(root)
+            with (mock.patch.object(windows_client, "REPO_ROOT", root),
+                  mock.patch.object(windows_client, "check_stage", return_value={})):
+                windows_client.sync_base_client(stage)
+                report = windows_client.restore_base_client(stage)
+            self.assertEqual(report["baseSync"], "restored")
+            self.assertNotIn("sourceSync", windows_client.read_json(marker_path))
+            for relative, digest in marker["retailHashesBefore"].items():
+                self.assertEqual(windows_client.sha256_file(source / relative), digest)
+
+    def test_failed_base_restore_keeps_synced_client_usable(self):
+        with tempfile.TemporaryDirectory(prefix="frontier base restore rollback ") as raw:
+            root = Path(raw)
+            stage, source, marker_path, _ = self.make_fixture(root)
+            with (mock.patch.object(windows_client, "REPO_ROOT", root),
+                  mock.patch.object(windows_client, "check_stage", return_value={})):
+                windows_client.sync_base_client(stage)
+                synced_marker = marker_path.read_bytes()
+                original_copy = windows_client.copy_file_atomic
+                calls = 0
+
+                def fail_second_copy(from_path, to_path):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 2:
+                        raise OSError("simulated copy failure")
+                    return original_copy(from_path, to_path)
+
+                with mock.patch.object(windows_client, "copy_file_atomic", side_effect=fail_second_copy):
+                    with self.assertRaisesRegex(windows_client.FrontierWindowsError, "rolled back"):
+                        windows_client.restore_base_client(stage)
+                self.assertEqual(marker_path.read_bytes(), synced_marker)
+                synced = windows_client.read_json(marker_path)
+                windows_client.verify_retail_unchanged(synced, stage)
+                for relative, digest in synced["sourceSync"]["targetHashes"].items():
+                    self.assertEqual(windows_client.sha256_file(source / relative), digest)
+
+
 class ResFilesVerificationTests(unittest.TestCase):
     def test_copy_is_bound_to_official_cache_and_complete_index(self):
         with tempfile.TemporaryDirectory(prefix="frontier resfiles path with spaces ") as raw:

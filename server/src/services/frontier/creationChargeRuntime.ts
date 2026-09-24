@@ -39,6 +39,7 @@ const {
 } = require(path.join(__dirname, "./creationAbilityRuntime"));
 const {
   CREATION_FITTING_FLAG_ID,
+  ensureCreationState,
   getCreationDogmaContext,
   isCreationModuleOnline,
 } = require(path.join(__dirname, "./creationRuntime"));
@@ -572,6 +573,31 @@ function notifyCreationChanged(resolved) {
   }
 }
 
+function notifyCreationChargeChangedForSession(session, creationID) {
+  const characterID = getSessionCharacterID(session);
+  if (
+    characterID <= 0 ||
+    toPositiveSafeInteger(creationID) !== getSessionActiveShipID(session)
+  ) {
+    return false;
+  }
+  const creationItem = itemStore.findShipItemById(creationID);
+  if (!creationItem || toPositiveSafeInteger(creationItem.ownerID) !== characterID) {
+    return false;
+  }
+  const ensured = ensureCreationState(creationItem, characterID);
+  if (!ensured.success) return false;
+  notifyCreationChanged({
+    session,
+    characterID,
+    creationID,
+    creationItem: ensured.data.item,
+    creationState: ensured.data.state,
+    creationTemplate: ensured.data.template,
+  });
+  return true;
+}
+
 function normalizeAmmoItemIDs(value) {
   const source = Array.isArray(value)
     ? value
@@ -1051,6 +1077,7 @@ module.exports = {
   TYPE_HEAT_TRAP,
   deployCreationLaunchBayPayload,
   getCreationModuleChargeState,
+  notifyCreationChargeChangedForSession,
   registerCreationLaunchBayAbilityHandler,
   reloadCreationModule,
   unloadCreationModule,

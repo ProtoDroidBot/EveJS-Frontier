@@ -46,16 +46,21 @@ class PhysicsGunAdapterTests(unittest.TestCase):
         self.assertIs(Loader.GetData()[42], source[42])
 
     def test_creation_module_and_held_beam_profile(self):
+        exterior = type("exterior", (), {"compatible_hardpoints": ["weapon"]})()
+        cutting_laser = type("CreationModule", (), {"placement": exterior})()
+
         class Loader:
             @classmethod
             def GetData(cls):
-                return {95317: object()}
+                return {95317: cutting_laser}
 
         adapter._evejs_install_physics_gun({"__name__": "frontier.creation.common.data_loader",
                                             "CreationModulesLoader": Loader})
         module = Loader.GetData()[99999]
         self.assertEqual(module.capability, "weapon")
         self.assertEqual(module.placement.compatible_hardpoints, ["weapon"])
+        self.assertIs(module.placement, exterior)
+        self.assertEqual(type(module.placement).__name__, "exterior")
         profiles = {95317: object()}
         adapter._evejs_install_physics_gun({"__name__": "frontier.skillshot.profile", "_PROFILES": profiles})
         self.assertIs(profiles[99999], profiles[95317])

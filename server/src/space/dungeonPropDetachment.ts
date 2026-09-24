@@ -10,9 +10,11 @@ function reconcileDetachedProp(scene, record, options: Record<string, any> = {})
   }
   const candidate = scene.staticEntitiesByID.get(record.sourceEntityID);
   const source = candidate &&
-    Number(candidate.dungeonSiteInstanceID) === record.sourceInstanceID &&
-    Number(candidate.dungeonSiteID) === record.sourceSiteID &&
-    candidate.kind === "siteEnvironmentProp"
+    (record.sourceScope === "world"
+      ? candidate.kind === record.sourceKind
+      : Number(candidate.dungeonSiteInstanceID) === record.sourceInstanceID &&
+        Number(candidate.dungeonSiteID) === record.sourceSiteID &&
+        candidate.kind === record.sourceKind)
     ? candidate
     : null;
   const existing = scene.staticEntitiesByID.get(record.worldEntityID);
@@ -80,6 +82,9 @@ function reconcileDetachedProp(scene, record, options: Record<string, any> = {})
 function restoreDetachedPropsToScene(scene, options: Record<string, any> = {}) {
   const store = options.store || getDetachedDungeonPropStore();
   const records = store.listSystem(scene && scene.systemID);
+  scene._detachedWorldSourceIDs = new Set(records
+    .filter((record) => record.sourceScope === "world")
+    .map((record) => record.sourceEntityID));
   const failures: any[] = [];
   for (const record of records) {
     const result = reconcileDetachedProp(scene, record, {

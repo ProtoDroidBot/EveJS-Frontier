@@ -208,6 +208,14 @@ function canEntitiesCollide(movingEntity, candidate) {
     return false;
   }
 
+  // The carried ball is held outside the carrier's collision envelope. Do
+  // not let the carrier's own movement immediately collide with its tethered
+  // ball before the tether has caught up with a new ship position.
+  if (Number(movingEntity?.detachedPropMove?.tether?.shipID) === Number(candidate?.itemID) ||
+      Number(candidate?.detachedPropMove?.tether?.shipID) === Number(movingEntity?.itemID)) {
+    return false;
+  }
+
   const movingSystemID = Number(
     movingEntity && (movingEntity.systemID ?? movingEntity.solarSystemID),
   );
@@ -1269,6 +1277,13 @@ function resolveEntityMovementCollision(
       candidateStart,
       candidateEnd,
     );
+    if (collision?.startedOverlapping && options.ignoreSeparatingInitialOverlaps === true) {
+      const relativeTravel = subtractVectors(
+        subtractVectors(movingEnd, movingStart),
+        subtractVectors(candidateEnd, candidateStart),
+      );
+      if (dotProduct(relativeTravel, collision.normal) > 1e-9) continue;
+    }
     if (
       collision &&
       (

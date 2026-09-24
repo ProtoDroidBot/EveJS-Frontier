@@ -32,6 +32,9 @@ const MAX_SPEED_METERS_PER_SECOND = 1_500;
 const ACCELERATION_METERS_PER_SECOND_SQUARED = 750;
 const MAX_STEP_SECONDS = 1;
 const ARRIVAL_EPSILON_METERS = 0.25;
+const TETHER_GOTO_INTERVAL_MS = 250;
+const TETHER_GOTO_DISTANCE_METERS = 5;
+const TETHER_REFRESH_INTERVAL_MS = 500;
 const SCAN_FX_GUID = "effects.FrontierScanningTest";
 
 function finiteVector(value) {
@@ -54,7 +57,8 @@ function distance(left, right) {
   return Math.hypot(left.x - right.x, left.y - right.y, left.z - right.z);
 }
 
-function findMovingPropProfileCollision(scene, prop, start, end) {
+function findMovingPropProfileCollision(scene, prop, start, end,
+  options: Record<string, any> = {}) {
   const profile = resolveEntityCollisionPresentation(prop).profile;
   if (!profile || !["balls", "boxes", "capsules"]
     .some((kind) => Array.isArray(profile[kind]) && profile[kind].length > 0)) {
@@ -79,6 +83,17 @@ function findMovingPropProfileCollision(scene, prop, start, end) {
       start,
       end,
     );
+    if (inverse?.startedOverlapping && options.ignoreSeparatingInitialOverlaps === true) {
+      const relativeTravel = {
+        x: (end.x - start.x) - (obstacleEnd.x - obstacleStart.x),
+        y: (end.y - start.y) - (obstacleEnd.y - obstacleStart.y),
+        z: (end.z - start.z) - (obstacleEnd.z - obstacleStart.z),
+      };
+      const outwardNormal = inverse.normal;
+      if (relativeTravel.x * -outwardNormal.x +
+          relativeTravel.y * -outwardNormal.y +
+          relativeTravel.z * -outwardNormal.z > 1e-9) continue;
+    }
     if (inverse && (!first || inverse.fraction < first.fraction)) {
       const { resolvedPosition, ...contact } = inverse;
       first = {
@@ -198,6 +213,107 @@ function movingEntityFromStatic(entity, destination, rotation, fxShip) {
   };
   delete moving.staticVisibilityScope;
   return moving;
+}
+
+function tetherDestination(ship, direction, holdDistance) {
+  const position = finiteVector(ship?.position);
+  const vector = finiteVector(direction);
+  const length = vector && Math.hypot(vector.x, vector.y, vector.z);
+  if (!position || !length || length < 1e-9) return null;
+  return {
+    x: position.x + vector.x / length * holdDistance,
+    y: position.y + vector.y / length * holdDistance,
+    z: position.z + vector.z / length * holdDistance,
+  };
+}
+
+function startDetachedPropTether(scene, session, worldEntityID, moduleID, direction,
+  options: Record<string, any> = {}) {
+  const store = options.store || getDetachedDungeonPropStore();
+  const ship = scene?.getShipEntityForSession?.(session);
+  const entity = scene?.staticEntitiesByID?.get(Number(worldEntityID));
+  if (!ship || !finiteVector(ship.position) || ship.mode === "WARP" || ship.pendingDock ||
+      Number(session?._space?.systemID) !== Number(scene.systemID) ||
+      !entity || entity.kind !== "detachedDungeonProp" ||
+      scene.dynamicEntities?.has(Number(worldEntityID))) {
+    return { success: false, errorMsg: "DETACHED_PROP_NOT_READY" };
+  }
+  if (ship.bubbleID > 0 && entity.bubbleID > 0 && ship.bubbleID !== entity.bubbleID) {
+    return { success: false, errorMsg: "PROP_NOT_VISIBLE" };
+  }
+  const separation = distance(ship.position, entity.position);
+  const holdDistance = Math.max(
+    getEntityCollisionBroadphaseRadius(ship) +
+      getEntityCollisionBroadphaseRadius(entity) + 100,
+    Math.min(separation, 750),
+  );
+  const destination = tetherDestination(ship, direction, holdDistance);
+  if (!destination) return { success: false, errorMsg: "INVALID_AIM" };
+  let committed;
+  try {
+    committed = store.checkpointPose(scene.systemID, entity.itemID, entity.position);
+  } catch (_error) {
+    return { success: false, errorMsg: "DETACHED_PROP_STORE_FAILED" };
+  }
+  if (!committed?.success) return committed || { success: false, errorMsg: "DETACHED_PROP_STORE_FAILED" };
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs :
+    scene.getCurrentSimTimeMs?.() || Date.now();
+  const moving = movingEntityFromStatic(entity, destination,
+    finiteRotation(entity.dunRotation) || [0, 0, 0], ship);
+  moving.detachedPropMove.tether = { shipID: ship.itemID, moduleID, session, direction: { ...direction }, holdDistance };
+  moving.detachedPropMove.lastGotoPoint = { ...destination };
+  moving.detachedPropMove.lastGotoAtMs = 0;
+  let removed;
+  try {
+    removed = scene.removeStaticEntity(entity.itemID, { broadcast: true, nowMs });
+  } catch (_error) {
+    removed = scene.staticEntitiesByID.has(entity.itemID)
+      ? { success: false } : { success: true };
+  }
+  if (!removed?.success) return { success: false, errorMsg: "DETACHED_PROP_STATIC_REMOVE_FAILED" };
+  let spawned;
+  try {
+    spawned = scene.spawnDynamicEntity(moving, { broadcast: true });
+  } catch (_error) {
+    spawned = scene.dynamicEntities?.has(entity.itemID)
+      ? { success: true } : { success: false };
+  }
+  if (!spawned?.success) {
+    const world = { ...committed.data.worldEntity };
+    if (scene.addStaticEntity(world)) scene.broadcastAddBalls?.([world]);
+    return { success: false, errorMsg: "DETACHED_PROP_DYNAMIC_SPAWN_FAILED" };
+  }
+  try {
+    const stamp = scene.getNextDestinyStamp?.(nowMs);
+    if (stamp != null) scene.broadcastDestinyUpdatesToBubble?.(moving.bubbleID, [
+      { stamp, payload: buildSetMaxSpeedPayload(moving.itemID, moving.maxVelocity) },
+      { stamp, payload: buildSetSpeedFractionPayload(moving.itemID, 1) },
+      { stamp, payload: buildGotoPointPayload(moving.itemID, destination) },
+    ]);
+    broadcastMoveFx(scene, moving, ship.itemID, ship.typeID, true, nowMs);
+  } catch (_error) {
+    settleDetachedPropMove(scene, moving, { store, nowMs, reason: "presentation-failed" });
+    return { success: false, errorMsg: "DETACHED_PROP_PRESENTATION_FAILED" };
+  }
+  return { success: true, data: { worldEntityID: moving.itemID, destination } };
+}
+
+function updateDetachedPropTether(scene, worldEntityID, session, moduleID, direction) {
+  const moving = scene?.dynamicEntities?.get(Number(worldEntityID));
+  const tether = moving?.detachedPropMove?.tether;
+  if (!tether || tether.session !== session || tether.moduleID !== moduleID ||
+      !tetherDestination({ position: { x: 0, y: 0, z: 0 } }, direction, 1)) return false;
+  tether.direction = { ...direction };
+  return true;
+}
+
+function releaseDetachedPropTether(scene, worldEntityID, session, moduleID, options: Record<string, any> = {}) {
+  const moving = scene?.dynamicEntities?.get(Number(worldEntityID));
+  const tether = moving?.detachedPropMove?.tether;
+  if (!tether || tether.session !== session || tether.moduleID !== moduleID) {
+    return { success: false, errorMsg: "DETACHED_PROP_NOT_HELD" };
+  }
+  return settleDetachedPropMove(scene, moving, { ...options, reason: "beam-ended" });
 }
 
 function startDetachedPropMove(scene, session, worldEntityID, destinationPosition, options: Record<string, any> = {}) {
@@ -333,6 +449,40 @@ function stopDetachedPropMove(scene, session, worldEntityID, options: Record<str
 function tickDetachedPropMove(scene, entity, deltaSeconds, nowMs, options: Record<string, any> = {}) {
   const state = entity?.detachedPropMove;
   if (!state) return { success: false, errorMsg: "DETACHED_PROP_NOT_MOVING" };
+  if (state.tether) {
+    const tether = state.tether;
+    const ship = scene.getShipEntityForSession?.(tether.session);
+    if (!ship || ship.itemID !== tether.shipID || ship.mode === "WARP" || ship.pendingDock ||
+        Number(tether.session?._space?.systemID) !== Number(scene.systemID) ||
+        (ship.bubbleID > 0 && entity.bubbleID > 0 && ship.bubbleID !== entity.bubbleID)) {
+      return settleDetachedPropMove(scene, entity, { ...options, nowMs, reason: "tether-lost" });
+    }
+    const nextDestination = tetherDestination(ship, tether.direction, tether.holdDistance);
+    if (!nextDestination) {
+      return settleDetachedPropMove(scene, entity, { ...options, nowMs, reason: "invalid-aim" });
+    }
+    if (distance(state.destination, nextDestination) > 0.25) {
+      state.destination = nextDestination;
+      entity.targetPoint = { ...nextDestination };
+    }
+    const lastPoint = finiteVector(state.lastGotoPoint) || state.destination;
+    const gotoDelta = distance(lastPoint, nextDestination);
+    if (gotoDelta >= TETHER_GOTO_DISTANCE_METERS &&
+        (nowMs - (state.lastGotoAtMs || 0) >= TETHER_GOTO_INTERVAL_MS ||
+          gotoDelta >= 100)) {
+      try {
+        const stamp = scene.getNextDestinyStamp?.(nowMs);
+        if (stamp != null) scene.broadcastDestinyUpdatesToBubble?.(entity.bubbleID, [
+          { stamp, payload: buildGotoPointPayload(entity.itemID, nextDestination) },
+        ]);
+        state.lastGotoPoint = { ...nextDestination };
+        state.lastGotoAtMs = nowMs;
+      } catch (_error) {
+        // Presentation failure must not prevent the authoritative prop step.
+        scene.requestFinalSceneVisibilityReconciliation?.();
+      }
+    }
+  }
   const destination = finiteVector(state.destination);
   const current = finiteVector(entity.position);
   if (!destination || !current) {
@@ -340,22 +490,30 @@ function tickDetachedPropMove(scene, entity, deltaSeconds, nowMs, options: Recor
   }
   const remaining = distance(current, destination);
   if (remaining <= ARRIVAL_EPSILON_METERS) {
+    if (state.tether) {
+      state.speed = 0;
+      entity.velocity = { x: 0, y: 0, z: 0 };
+      return { success: true, data: { moving: true, held: true } };
+    }
     return settleDetachedPropMove(scene, entity, { ...options, nowMs });
   }
   const stepSeconds = Math.min(MAX_STEP_SECONDS, Math.max(0, Number(deltaSeconds) || 0));
   if (stepSeconds <= 0) return { success: true, data: { moving: true } };
-  const maxApproachSpeed = Math.sqrt(2 * ACCELERATION_METERS_PER_SECOND_SQUARED * remaining);
-  const speed = Math.min(
-    MAX_SPEED_METERS_PER_SECOND,
-    maxApproachSpeed,
-    Math.max(0, Number(state.speed) || 0) + ACCELERATION_METERS_PER_SECOND_SQUARED * stepSeconds,
-  );
-  const travel = Math.min(remaining, speed * stepSeconds);
   const unit = {
     x: (destination.x - current.x) / remaining,
     y: (destination.y - current.y) / remaining,
     z: (destination.z - current.z) / remaining,
   };
+  const velocity = finiteVector(entity.velocity) || { x: 0, y: 0, z: 0 };
+  const speedTowardDestination = Math.max(0,
+    velocity.x * unit.x + velocity.y * unit.y + velocity.z * unit.z);
+  const maxApproachSpeed = Math.sqrt(2 * ACCELERATION_METERS_PER_SECOND_SQUARED * remaining);
+  const speed = Math.min(
+    MAX_SPEED_METERS_PER_SECOND,
+    maxApproachSpeed,
+    speedTowardDestination + ACCELERATION_METERS_PER_SECOND_SQUARED * stepSeconds,
+  );
+  const travel = Math.min(remaining, speed * stepSeconds);
   const proposed = {
     ...entity,
     position: {
@@ -369,9 +527,11 @@ function tickDetachedPropMove(scene, entity, deltaSeconds, nowMs, options: Recor
   const intendedVelocity = { ...proposed.velocity };
   let collision = resolveEntityMovementCollision(proposed, scene, current, {
     activeTickSequence: scene._activeTickSequence,
+    ignoreSeparatingInitialOverlaps: Boolean(state.tether),
   });
   const profileCollision = findMovingPropProfileCollision(
     scene, entity, current, intendedPosition,
+    { ignoreSeparatingInitialOverlaps: Boolean(state.tether) },
   );
   if (profileCollision &&
       (!collision || profileCollision.fraction < collision.fraction)) {
@@ -417,7 +577,7 @@ function tickDetachedPropMove(scene, entity, deltaSeconds, nowMs, options: Recor
   state.speed = speed;
   scene.reconcileEntityPublicGrid?.(entity);
   scene.reconcileEntityBubble?.(entity);
-  if (collision || distance(entity.position, destination) <= ARRIVAL_EPSILON_METERS) {
+  if (collision || (!state.tether && distance(entity.position, destination) <= ARRIVAL_EPSILON_METERS)) {
     return settleDetachedPropMove(scene, entity, {
       ...options, nowMs, reason: collision ? "collision" : "arrived",
     });
@@ -425,9 +585,14 @@ function tickDetachedPropMove(scene, entity, deltaSeconds, nowMs, options: Recor
   // AddBalls refreshes the authoritative position for observers without
   // publishing one teleport per physics step. The GotoPoint command animates
   // motion between these corrections.
-  if (nowMs - (state.lastRefreshAtMs || 0) >= 2_000) {
-    scene.broadcastBallRefresh?.([entity]);
-    state.lastRefreshAtMs = nowMs;
+  if (nowMs - (state.lastRefreshAtMs || 0) >=
+      (state.tether ? TETHER_REFRESH_INTERVAL_MS : 2_000)) {
+    try {
+      scene.broadcastBallRefresh?.([entity]);
+      state.lastRefreshAtMs = nowMs;
+    } catch (_error) {
+      scene.requestFinalSceneVisibilityReconciliation?.();
+    }
   }
   return { success: true, data: { moving: true, position: entity.position } };
 }
@@ -441,4 +606,7 @@ module.exports = {
   stopDetachedPropMove,
   settleDetachedPropMove,
   tickDetachedPropMove,
+  startDetachedPropTether,
+  updateDetachedPropTether,
+  releaseDetachedPropTether,
 };

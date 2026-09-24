@@ -22,6 +22,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 STAGE_MARKER_NAME = ".evejs-frontier-stage.json"
 STAGE_FORMAT = "evejs-frontier-stage-v2"
+BASE_SYNC_FORMAT = "evejs-frontier-base-sync-v1"
 PE_PROFILE_FORMAT = "evejs-frontier-windows-pe-patch-v1"
 DEFAULT_CA = REPO_ROOT / "server/certs/xmpp-ca-cert.pem"
 DEFAULT_XMPP_LEAF = REPO_ROOT / "server/certs/xmpp-dev-cert.pem"
@@ -1179,19 +1180,59 @@ def verify_unpatched_stage_sources(
         raise FrontierWindowsError("Unpatched staged manifest digests do not match source files.")
 
 
-def verify_retail_unchanged(marker: dict) -> dict[str, str]:
+def base_sync_relatives(marker: dict) -> set[str]:
+    return {
+        f"bin64/{marker['nativeBlue']}",
+        "code.ccp",
+        "manifest.dat",
+        "bin64/cacert.pem",
+        "bin64/packages/certifi/cacert.pem",
+    }
+
+
+def verify_retail_unchanged(marker: dict, stage_root: Path | None = None) -> dict[str, str]:
     source_root = Path(str(marker["sourceRoot"]))
     before = retail_hashes(marker)
+    sync = marker.get("sourceSync")
+    targets = {}
+    if sync is not None:
+        if (not isinstance(sync, dict) or sync.get("format") != BASE_SYNC_FORMAT
+                or int(marker["build"]) != 3502403
+                or marker.get("patchState") != "complete"
+                or stage_root is None):
+            raise FrontierWindowsError("Invalid official client base-sync marker.")
+        targets = sync.get("targetHashes")
+        if not isinstance(targets, dict) or set(targets) != base_sync_relatives(marker):
+            raise FrontierWindowsError("Base-sync target file set is invalid.")
+        backup_base = REPO_ROOT / "_local/frontier-client-source-backups" / str(marker["build"])
+        backup_root = Path(str(sync.get("backupRoot", "")))
+        if (normalized_path(backup_root.parent) != normalized_path(backup_base)
+                or not backup_root.is_dir()):
+            raise FrontierWindowsError("Base-sync original backup location is invalid.")
+        assert_no_reparse_ancestors(backup_base, backup_root)
+        for relative, target in targets.items():
+            if not re.fullmatch(r"[0-9a-fA-F]{64}", str(target)):
+                raise FrontierWindowsError(f"Invalid base-sync hash: {relative}")
+            staged = safe_relative_path(stage_root, relative)
+            original = safe_relative_path(backup_root, relative)
+            assert_no_reparse_ancestors(stage_root, staged)
+            assert_no_reparse_ancestors(backup_root, original)
+            if (not staged.is_file() or sha256_file(staged) != str(target).lower()
+                    or str(marker.get("currentHashes", {}).get(relative, "")).lower() != str(target).lower()):
+                raise FrontierWindowsError(f"Base-sync stage hash mismatch: {relative}")
+            if not original.is_file() or sha256_file(original) != before[relative]:
+                raise FrontierWindowsError(f"Base-sync original backup hash mismatch: {relative}")
     after = {}
     failures = []
     for relative, expected in before.items():
         path = safe_relative_path(source_root, relative)
+        assert_no_reparse_ancestors(source_root, path)
         if not path.is_file():
             failures.append(f"missing:{relative}")
             continue
         actual = sha256_file(path)
         after[relative] = actual
-        if actual != expected:
+        if actual != str(targets.get(relative, expected)).lower():
             failures.append(f"changed:{relative}")
     if failures:
         raise FrontierWindowsError(
@@ -1507,7 +1548,7 @@ def check_stage(
     )
     if certificate_report.get("caFingerprintSha256") != ca_fingerprint:
         raise FrontierWindowsError("Certificate verifier CA fingerprint disagrees with the PEM file.")
-    retail_after = verify_retail_unchanged(marker)
+    retail_after = verify_retail_unchanged(marker, stage_root)
     if marker.get("patchState") != "complete":
         raise FrontierWindowsError("Stage marker does not record a complete patch transaction.")
     if int(marker.get("nativeBluePatchBuild", 0)) != build:
@@ -1666,6 +1707,19 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
     _, profile = resolve_profile(build, str(marker["nativeBlue"]), check_options.get("profile_path"))
     touched = [paths["code"], paths["manifest"], marker_path]
     backup_root, original_hashes = backup_transaction_files(stage_root, touched)
+    source_root = Path(str(marker["sourceRoot"])) if marker.get("sourceSync") is not None else None
+    synced_source_paths = []
+    synced_source_written = {}
+    if marker.get("sourceSync") is not None:
+        for relative in ("code.ccp", "manifest.dat"):
+            source_path = safe_relative_path(source_root, relative)
+            assert_no_reparse_ancestors(source_root, source_path)
+            if (not source_path.is_file()
+                    or sha256_file(source_path) != original_hashes[relative]):
+                raise FrontierWindowsError(
+                    f"Synced source changed before code-adapter upgrade: {relative}"
+                )
+            synced_source_paths.append((relative, source_path))
     # Recheck before entering rollback scope; a competing writer's newer state
     # must never be overwritten by our backup if this operation did not write.
     if any(sha256_file(path) != original_hashes[path.relative_to(stage_root).as_posix()] for path in touched):
@@ -1692,6 +1746,20 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
         refresh_manifest_atomic(paths["manifest"], stage_root, profile)
         for path in touched[:2]:
             marker["currentHashes"][path.relative_to(stage_root).as_posix()] = sha256_file(path)
+        if synced_source_paths:
+            for relative, source_path in synced_source_paths:
+                if sha256_file(source_path) != original_hashes[relative]:
+                    raise FrontierWindowsError(
+                        f"Synced source changed during code-adapter upgrade: {relative}"
+                    )
+                synced_hash = marker["currentHashes"][relative]
+                copy_file_atomic(safe_relative_path(stage_root, relative), source_path)
+                synced_source_written[relative] = synced_hash
+                if sha256_file(source_path) != synced_hash:
+                    raise FrontierWindowsError(
+                        f"Synced source copy did not verify: {relative}"
+                    )
+                marker["sourceSync"]["targetHashes"][relative] = synced_hash
         if states["industryStorage"] != "patched":
             marker["industryStoragePatchState"] = "patched"
             marker["industryStoragePatchBackup"] = str(backup_root)
@@ -1730,8 +1798,31 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             marker["preTurretTrackingHashes"] = original_hashes
         write_json_atomic(marker_path, marker)
         return check_stage(stage_root, **check_options)
-    except BaseException:
+    except BaseException as error:
+        source_rollback_error = None
+        for relative, source_path in synced_source_paths:
+            if relative not in synced_source_written:
+                continue
+            try:
+                actual_hash = sha256_file(source_path)
+                if actual_hash not in {original_hashes[relative], synced_source_written[relative]}:
+                    raise FrontierWindowsError(
+                        f"Synced source changed during rollback: {relative}"
+                    )
+                if actual_hash != original_hashes[relative]:
+                    copy_file_atomic(backup_root / relative, source_path)
+                    if sha256_file(source_path) != original_hashes[relative]:
+                        raise FrontierWindowsError(
+                            f"Could not roll back synced source: {relative}"
+                        )
+            except BaseException as rollback_error:
+                source_rollback_error = rollback_error
         restore_transaction_files(stage_root, backup_root, touched, original_hashes)
+        if source_rollback_error is not None:
+            raise FrontierWindowsError(
+                f"Code-adapter upgrade failed ({error}); synced source rollback "
+                f"failed ({source_rollback_error})"
+            ) from source_rollback_error
         raise
 
 
@@ -1765,7 +1856,7 @@ def patch_stage(
     resolved_profile_path, profile = resolve_profile(
         build, str(marker["nativeBlue"]), profile_path
     )
-    verify_retail_unchanged(marker)
+    verify_retail_unchanged(marker, stage_root)
     verify_placebo(paths["commonIni"])
     verify_start_ini(paths["startIni"], build)
     verify_resfiles(stage_root, marker, paths)
@@ -1786,7 +1877,7 @@ def patch_stage(
             gateway_leaf,
             [paths["bundleMain"], paths["bundleCertifi"]],
         )
-        retail_after = verify_retail_unchanged(marker)
+        retail_after = verify_retail_unchanged(marker, stage_root)
         current_hashes = {
             path.relative_to(stage_root).as_posix(): sha256_file(path)
             for path in [
@@ -1862,12 +1953,139 @@ def patch_stage(
         ) from error
 
 
+def sync_base_client(
+    stage_root: Path,
+    profile_path: Path | None = None,
+    node_path: Path | None = None,
+    ca_path: Path = DEFAULT_CA,
+    xmpp_leaf: Path = DEFAULT_XMPP_LEAF,
+    gateway_leaf: Path = DEFAULT_GATEWAY_LEAF,
+) -> dict:
+    """Install the verified stage overlay into its source with a retail backup."""
+    stage_root = stage_root.resolve()
+    options = dict(profile_path=profile_path, node_path=node_path, ca_path=ca_path,
+                   xmpp_leaf=xmpp_leaf, gateway_leaf=gateway_leaf)
+    report = check_stage(stage_root, **options)
+    marker_path, marker = load_stage(stage_root)
+    if marker.get("sourceSync") is not None:
+        report["baseSync"] = "already-current"
+        return report
+    if int(marker["build"]) != 3502403 or marker.get("patchState") != "complete":
+        raise FrontierWindowsError("Base sync requires a complete build 3502403 stage.")
+    source_root = Path(str(marker["sourceRoot"]))
+    originals = retail_hashes(marker)
+    relatives = sorted(base_sync_relatives(marker))
+    current = marker.get("currentHashes", {})
+    for relative in relatives:
+        staged = safe_relative_path(stage_root, relative)
+        source = safe_relative_path(source_root, relative)
+        assert_no_reparse_ancestors(stage_root, staged)
+        assert_no_reparse_ancestors(source_root, source)
+        if (not staged.is_file() or sha256_file(staged) != str(current.get(relative, "")).lower()
+                or not source.is_file() or sha256_file(source) != originals[relative]):
+            raise FrontierWindowsError(f"Base sync preflight hash mismatch: {relative}")
+    backup_base = REPO_ROOT / "_local/frontier-client-source-backups" / str(marker["build"])
+    backup_base.mkdir(parents=True, exist_ok=True)
+    assert_no_reparse_ancestors(REPO_ROOT, backup_base)
+    backup_root = backup_base / f"base-sync-{uuid.uuid4().hex}"
+    backup_root.mkdir()
+    marker_bytes = marker_path.read_bytes()
+    copied = []
+    try:
+        for relative in relatives:
+            source = safe_relative_path(source_root, relative)
+            original = safe_relative_path(backup_root, relative)
+            original.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, original)
+            if sha256_file(original) != originals[relative]:
+                raise FrontierWindowsError(f"Base sync backup hash mismatch: {relative}")
+        for relative in relatives:
+            staged = safe_relative_path(stage_root, relative)
+            source = safe_relative_path(source_root, relative)
+            copied.append(relative)
+            copy_file_atomic(staged, source)
+            if sha256_file(source) != str(current[relative]).lower():
+                raise FrontierWindowsError(f"Base sync copied hash mismatch: {relative}")
+        marker["sourceSync"] = {
+            "format": BASE_SYNC_FORMAT,
+            "backupRoot": str(backup_root),
+            "targetHashes": {relative: str(current[relative]).lower() for relative in relatives},
+            "timestamp": datetime.datetime.now(datetime.timezone.utc)
+            .replace(microsecond=0).isoformat(),
+        }
+        write_json_atomic(marker_path, marker)
+        report = check_stage(stage_root, **options)
+        report["baseSync"] = "installed"
+        report["baseSyncBackup"] = str(backup_root)
+        return report
+    except BaseException as error:
+        try:
+            for relative in copied:
+                source = safe_relative_path(source_root, relative)
+                original = safe_relative_path(backup_root, relative)
+                copy_file_atomic(original, source)
+                if sha256_file(source) != originals[relative]:
+                    raise FrontierWindowsError(f"Base sync rollback hash mismatch: {relative}")
+            write_bytes_atomic(marker_path, marker_bytes)
+        except BaseException as rollback_error:
+            raise FrontierWindowsError(
+                f"Base sync failed ({error}); rollback failed ({rollback_error}). "
+                f"Originals are at {backup_root}"
+            ) from rollback_error
+        raise FrontierWindowsError(
+            f"Base sync failed and was rolled back. Originals are at {backup_root}: {error}"
+        ) from error
+
+
+def restore_base_client(stage_root: Path) -> dict:
+    """Return an intentionally synced source to its recorded retail hashes."""
+    stage_root = stage_root.resolve()
+    marker_path, marker = load_stage(stage_root)
+    sync = marker.get("sourceSync")
+    if sync is None:
+        raise FrontierWindowsError("Stage has no recorded base sync to restore.")
+    verify_retail_unchanged(marker, stage_root)
+    source_root = Path(str(marker["sourceRoot"]))
+    backup_root = Path(str(sync["backupRoot"]))
+    originals = retail_hashes(marker)
+    relatives = sorted(base_sync_relatives(marker))
+    marker_bytes = marker_path.read_bytes()
+    touched = []
+    try:
+        for relative in relatives:
+            source = safe_relative_path(source_root, relative)
+            original = safe_relative_path(backup_root, relative)
+            touched.append(relative)
+            copy_file_atomic(original, source)
+            if sha256_file(source) != originals[relative]:
+                raise FrontierWindowsError(f"Base restore hash mismatch: {relative}")
+        del marker["sourceSync"]
+        write_json_atomic(marker_path, marker)
+        verify_retail_unchanged(marker, stage_root)
+        return {"baseSync": "restored", "originalBackup": str(backup_root),
+                "sourceRoot": str(source_root)}
+    except BaseException as error:
+        try:
+            for relative in touched:
+                source = safe_relative_path(source_root, relative)
+                staged = safe_relative_path(stage_root, relative)
+                copy_file_atomic(staged, source)
+                if sha256_file(source) != str(sync["targetHashes"][relative]).lower():
+                    raise FrontierWindowsError(f"Base restore rollback mismatch: {relative}")
+            write_bytes_atomic(marker_path, marker_bytes)
+        except BaseException as rollback_error:
+            raise FrontierWindowsError(
+                f"Base restore failed ({error}); rollback failed ({rollback_error})."
+            ) from rollback_error
+        raise FrontierWindowsError(f"Base restore failed and was rolled back: {error}") from error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Strict Windows EVE Frontier stage and native-blue patch verifier."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("patch", "check", "map-upgrade", "adapters-upgrade"):
+    for name in ("patch", "check", "sync-base", "map-upgrade", "adapters-upgrade"):
         command = subparsers.add_parser(name)
         command.add_argument("--staged-root", type=Path, required=True)
         command.add_argument("--profile", type=Path)
@@ -1881,6 +2099,8 @@ def main() -> int:
     mutate = subparsers.add_parser("blue-patch")
     mutate.add_argument("--path", type=Path, required=True)
     mutate.add_argument("--profile", type=Path, required=True)
+    restore = subparsers.add_parser("restore-base")
+    restore.add_argument("--staged-root", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.command == "map-upgrade":
@@ -1898,8 +2118,16 @@ def main() -> int:
             )
             print(json.dumps(report, sort_keys=True))
             return 0
-        if args.command in {"patch", "check"}:
-            function = patch_stage if args.command == "patch" else check_stage
+        if args.command == "restore-base":
+            report = restore_base_client(args.staged_root)
+            print(json.dumps(report, sort_keys=True))
+            return 0
+        if args.command in {"patch", "check", "sync-base"}:
+            function = {
+                "patch": patch_stage,
+                "check": check_stage,
+                "sync-base": sync_base_client,
+            }[args.command]
             report = function(
                 args.staged_root,
                 profile_path=args.profile,

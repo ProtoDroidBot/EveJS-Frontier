@@ -685,6 +685,12 @@ function isMineableStaticEntity(entity) {
     if (entity.generatedMiningSiteAnchor === true) {
         return false;
     }
+    if (entity.kind === "detachedDungeonProp" && entity.physicsGunMineableState) {
+        return true;
+    }
+    if (entity.frontierDungeonResource === true && toInt(entity.miningYieldTypeID, 0) > 0) {
+        return true;
+    }
     if (String(entity.kind || "").toLowerCase() === "asteroid") {
         return true;
     }
@@ -736,7 +742,8 @@ function registerMineableEntityInCache(scene, entity, cache, options = {}) {
         ? cache.persistedByEntityID[String(entityID)] || null
         : null;
     const existingCachedState = cache.byEntityID.get(entityID) || null;
-    let persistedState = rawPersistedState || existingCachedState;
+    let persistedState = rawPersistedState || existingCachedState ||
+        (entity.kind === "detachedDungeonProp" ? entity.physicsGunMineableState : null);
     if (persistedState &&
         isDepletedMineableRespawnDue(entity, persistedState, options.nowMs ?? Date.now())) {
         removePersistedState(scene, entityID, {
@@ -917,6 +924,21 @@ function updateMineableState(scene, entity, nextState, options = {}) {
         recomputeNextDepletedMineableRespawn(cache);
     }
     if (normalizedState.remainingQuantity <= 0) {
+        if (entity.kind === "detachedDungeonProp") {
+            // Depletion destroys the independent object as well as its resource.
+            // Retaining its detachment record would resurrect it at scene restart.
+            const detachedStore = require(path.join(__dirname, "../../space/detachedDungeonProps"))
+                .getDetachedDungeonPropStore();
+            const detachedRecord = detachedStore.getByWorldID(scene.systemID, normalizedState.entityID);
+            if (detachedRecord) {
+                const removedRecord = detachedStore.removeByWorldID(scene.systemID, normalizedState.entityID);
+                if (!removedRecord.success)
+                    return removedRecord;
+                if (detachedRecord.sourceScope === "world") {
+                    scene._detachedWorldSourceIDs?.delete(detachedRecord.sourceEntityID);
+                }
+            }
+        }
         if (typeof scene.clearAllTargetingForEntity === "function") {
             scene.clearAllTargetingForEntity(entity, {
                 reason: "Exploding",
@@ -939,7 +961,10 @@ function updateMineableState(scene, entity, nextState, options = {}) {
         if (typeof scene.removeStaticEntity === "function" &&
             scene.getEntityByID &&
             scene.getEntityByID(normalizedState.entityID)) {
-            scene.removeStaticEntity(normalizedState.entityID, {
+            const removeEntity = scene.dynamicEntities?.has(normalizedState.entityID)
+                ? scene.removeDynamicEntity?.bind(scene)
+                : scene.removeStaticEntity.bind(scene);
+            removeEntity?.(normalizedState.entityID, {
                 broadcast: options.broadcast !== false,
                 nowMs: options.nowMs,
                 terminalDestructionEffectID: resolveDepletionDestructionEffectID(entity, normalizedState),

@@ -13,6 +13,7 @@
 const path = require("path");
 
 const log = require(path.join(__dirname, "../../utils/logger"));
+const { buildDict } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const {
   canEntitiesCollide,
   findSweptEntityCollision,
@@ -23,6 +24,9 @@ const creationControlAuthority = require(path.join(
   __dirname,
   "./creationControlAuthority",
 ));
+const physicsGunPickup = require(path.join(__dirname, "../../space/physicsGunPickup"));
+const physicsGunMovement = require(path.join(__dirname, "../../space/dungeonPropMovement"));
+const PHYSICS_GUN_TYPE_ID = 99999;
 
 const SKILL_SHOT_EFFECT_GUID = "effects.SkillShotWeapon";
 const SKILL_SHOT_BEAM_RADIUS_METERS = 50;
@@ -339,6 +343,7 @@ class SkillShotRuntime {
   declare _resolveCreationControlAuthority: any;
   declare _schedule: any;
   declare _singleSessions: WeakMap<any, any>;
+  declare _physicsGun: any;
 
   constructor(dependencies: Record<string, any> = {}) {
     this._getSpaceRuntime = dependencies.getSpaceRuntime || (() =>
@@ -355,6 +360,11 @@ class SkillShotRuntime {
     this._resolveCreationControlAuthority =
       dependencies.resolveCreationControlAuthority ||
       creationControlAuthority.resolveCreationControlAuthority;
+    this._physicsGun = dependencies.physicsGun || {
+      pickup: physicsGunPickup.pickupPhysicsGunTarget,
+      update: physicsGunMovement.updateDetachedPropTether,
+      release: physicsGunMovement.releaseDetachedPropTether,
+    };
     this._cooldowns = new Map();
     this._singleSessions = new WeakMap();
     this._heldSessions = new WeakMap();
@@ -619,6 +629,36 @@ class SkillShotRuntime {
   _applyHit(context, trace, nowMs, options: Record<string, any> = {}) {
     const { scene, entity, moduleItem, chargeItem, weaponSnapshot, interop } = context;
     const targetEntity = trace && trace.entity;
+    if (moduleItem.typeID === PHYSICS_GUN_TYPE_ID) {
+      if (!targetEntity) return { damageResult: null, destroyResult: null };
+      let pickup;
+      try {
+        pickup = this._physicsGun.pickup(
+          scene, options.session, targetEntity, moduleItem.itemID,
+          options.heldState.direction, { nowMs },
+        );
+      } catch (error) {
+        log.warn(`[SkillShot] Physics Gun pickup failed: ${error.message}`);
+        pickup = { success: false, errorMsg: "PHYSICS_GUN_PICKUP_FAILED" };
+      }
+      if (pickup?.success) {
+        options.heldState.grabbedWorldEntityID = pickup.data.worldEntityID;
+        trace.entity = scene.getEntityByID?.(pickup.data.worldEntityID) ||
+          scene.dynamicEntities?.get(pickup.data.worldEntityID) || targetEntity;
+        trace.endpoint = { ...trace.entity.position };
+      }
+      return {
+        damageResult: null,
+        destroyResult: null,
+        utilityResult: {
+          matched: true,
+          success: pickup?.success === true,
+          blockCombatDamage: true,
+          stopReason: "target",
+          errorMsg: pickup?.errorMsg,
+        },
+      };
+    }
     if (!targetEntity) {
       return { damageResult: null, destroyResult: null };
     }
@@ -739,13 +779,35 @@ class SkillShotRuntime {
     if (!resourceResult.success) {
       return resourceResult;
     }
-    const trace = this._traceShot(
-      context.scene,
-      context.entity,
-      state.direction,
-      context.weaponSnapshot.optimalRange,
-    );
-    const hitResult = this._applyHit(context, trace, nowMs, {
+    let trace;
+    let hitResult;
+    if (expectedMode === "held_beam" &&
+        context.moduleItem.typeID === PHYSICS_GUN_TYPE_ID && state.grabbedWorldEntityID) {
+      const grabbed = context.scene.dynamicEntities?.get(state.grabbedWorldEntityID);
+      if (!grabbed || !this._physicsGun.update(
+        context.scene, grabbed.itemID, session, state.moduleID, state.direction,
+      )) return failure("PHYSICS_GUN_HOLD_LOST");
+      trace = {
+        entity: grabbed,
+        endpoint: { ...grabbed.position },
+        direction: state.direction,
+        distance: Math.hypot(
+          grabbed.position.x - context.entity.position.x,
+          grabbed.position.y - context.entity.position.y,
+          grabbed.position.z - context.entity.position.z,
+        ),
+      };
+      hitResult = { damageResult: null, destroyResult: null };
+    } else {
+      trace = this._traceShot(
+        context.scene,
+        context.entity,
+        state.direction,
+        context.weaponSnapshot.optimalRange,
+      );
+      hitResult = this._applyHit(context, trace, nowMs, {
+        session,
+        heldState: state,
       damageMultiplier: expectedMode === "held_beam"
         ? resolveHeldBeamDamageMultiplier(
             context.weaponSnapshot,
@@ -753,7 +815,8 @@ class SkillShotRuntime {
             nowMs,
           )
         : 1,
-    });
+      });
+    }
     this._cooldowns.set(
       context.cooldownKey,
       nowMs + (
@@ -785,7 +848,8 @@ class SkillShotRuntime {
               result && result.errorMsg,
               options,
             ),
-        {},
+        // Notification arguments go through EVE marshal, which rejects raw {}.
+        buildDict([]),
       ],
     );
   }
@@ -969,6 +1033,16 @@ class SkillShotRuntime {
       );
       state.lastEffect = null;
     }
+    if (state.grabbedWorldEntityID) {
+      try {
+        const scene = this._getSceneAndEntity(session).data?.scene || state.grabbedScene;
+        this._physicsGun.release(scene, state.grabbedWorldEntityID,
+          session, state.moduleID, { nowMs: this._now() });
+      } catch (error) {
+        log.warn(`[SkillShot] Physics Gun release failed: ${error.message}`);
+      }
+      state.grabbedWorldEntityID = null;
+    }
     const heldMap = this._getHeldMap(session, false);
     if (heldMap) {
       heldMap.delete(state.moduleID);
@@ -988,7 +1062,11 @@ class SkillShotRuntime {
       if (state.stopped) {
         return;
       }
-      if (this._now() - state.lastAimUpdateMs > SKILL_SHOT_AIM_GRACE_MS) {
+      // The client may keep a held beam active while the reticle is unchanged.
+      // A carried prop still needs to follow ship movement in that case; the
+      // module and ship are revalidated on every cycle and on every scene tick.
+      if (!state.grabbedWorldEntityID &&
+          this._now() - state.lastAimUpdateMs > SKILL_SHOT_AIM_GRACE_MS) {
         this._stopHeldState(session, state);
         return;
       }
@@ -1010,6 +1088,7 @@ class SkillShotRuntime {
         context: result.data.context,
         trace: result.data.trace,
       };
+      if (state.grabbedWorldEntityID) state.grabbedScene = result.data.context.scene;
       if (result.data.consequenceFailure) {
         this._stopHeldState(session, state, {
           failure: result.data.consequenceFailure,
@@ -1098,6 +1177,11 @@ class SkillShotRuntime {
       current.direction = state.direction;
       current.lastAimUpdateMs = this._now();
       updated += 1;
+      if (current.grabbedWorldEntityID) {
+        this._physicsGun.update(current.grabbedScene,
+          current.grabbedWorldEntityID, session, current.moduleID, state.direction);
+        continue;
+      }
       if (!aimChanged) {
         continue;
       }

@@ -5,7 +5,7 @@ const { BALL_FLAG, BALL_MODE, RUNTIME_UNANCHORED_STRUCTURE_HULL_KIND, } = requir
 const { parseEntityIDBigInt, requireEntityID, toJSONSafeEntityID, } = require("../identity/entityID");
 const { getEntityBallRadius, resolveConfiguredBallFlags, resolveConfiguredBallMode, resolveDestinyPhysicalMass, } = require("./ballConfig");
 const { appendFreeBallOwnershipHeader, resolveDestinyHarmonic, resolveFreeBallAllianceID, resolveFreeBallCorporationID, } = require("./freeBallHeader");
-const { getStaticBallFlags, getStaticBallMode, resolveStaticBallTail, } = require("./staticBallTail");
+const { MINI_GEOMETRY_FLAG_MASK, appendMiniGeometrySections, getEntityMiniGeometryFlags, getStaticBallFlags, getStaticBallMode, resolveStaticBallTail, } = require("./staticBallTail");
 const { buildVector, normalizeVector, pushBigInt64, pushDouble, pushFloat, pushInt32, pushUInt8, toFiniteNumber, toInt32, } = require("./primitives");
 const { ENTITY_TYPE, } = require("../../entityConstants");
 const { resolveEntityCollisionPresentation, } = require("../collision/collisionBundle");
@@ -487,16 +487,23 @@ function encodeFrontierRigidBall(entity) {
     const chunks = [];
     const position = buildVector(entity && entity.position);
     const mode = getStaticBallMode(entity);
+    const miniGeometryFlags = getEntityMiniGeometryFlags(entity);
     pushBigInt64(chunks, requireEntityID(entity && entity.itemID, "Destiny ball itemID"));
     pushUInt8(chunks, mode);
     pushFloat(chunks, getEntityBallRadius(entity));
     pushDouble(chunks, position.x);
     pushDouble(chunks, position.y);
     pushDouble(chunks, position.z);
-    pushUInt8(chunks, getRigidBallFlags(entity));
+    pushUInt8(chunks, (getRigidBallFlags(entity) & ~MINI_GEOMETRY_FLAG_MASK) |
+        miniGeometryFlags);
     appendFrontierCommonBallTail(chunks, entity);
     pushInt32(chunks, toInt32(entity && entity.convexCollisionID, 0));
     pushUInt8(chunks, 0xff);
+    // Frontier carries mini geometry after the native rigid header. Derive its
+    // flags from the sections sent here, including when a legacy tail exists.
+    if (miniGeometryFlags !== 0) {
+        appendMiniGeometrySections(chunks, entity);
+    }
     appendFrontierModeData(chunks, entity, mode);
     return Buffer.concat(chunks);
 }

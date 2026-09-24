@@ -1,15 +1,13 @@
-# Physics turret for dungeon props — proposed grab behavior
+# Physics turret for dungeon props
 
 ## Status and dependency
 
-The base item is implemented as Physics Gun (99999), a local copy of Cutting
-Laser (95317); see `docs/PHYSICS_GUN.md`. It has a weapon hardpoint adapter,
-Cutting Laser Dogma and held-beam activation, and a localized client name. The
-prop-grab behavior in this document remains a design plan. The current
-SkillShot activation sends a fitted module ID and aim direction, without an
-authoritative target ID or grab/release contract. The player grab resolver
-must remain unavailable until that contract and any physics-specific balance
-attributes are implemented.
+The base item is Physics Gun (99999), a local copy of Cutting Laser (95317);
+see `docs/PHYSICS_GUN.md`. The held-beam contract sends a fitted module ID and
+aim direction. The server now uses the first authoritative collision as its
+selection, detaches an eligible object, tethers it while the beam is held, and
+settles it when the beam ends. Mineable asteroids are included. The sections
+below record the broader design and future SDE-driven balance work.
 
 The existing GM dungeon prop workflow is described in
 `docs/DUNGEON_PROP_MOVEMENT.md`. It already supplies passive-scenery eligibility,
@@ -21,20 +19,16 @@ dungeon scenery.
 
 ## Player interaction
 
-1. The pilot selects one visible passive dungeon scenery ball and activates the
-   fitted physics turret on it. The server verifies the ship, module, target,
-   current dungeon instance, interaction scope, range, and an exclusive grab.
-   The module's authored mass and size limits must also pass.
+1. The pilot aims the fitted Physics Gun at a visible movable ball and fires
+   the held beam. The server selects the first physical collision, verifies the
+   ship, module, dungeon scope when applicable, and an exclusive grab.
 2. On successful grab, the server durably detaches that exact source prop, then
    replaces its site ball with the independent world ball. The initial pose is
    unchanged. The detached prop remains in the world even if the pilot releases
    it immediately or the dungeon resets.
 3. The turret draws the prop toward a safe standoff from the ship, then carries
-   it as the ship moves. The pilot steers the ship to reposition the prop. The
-   hold point follows the ship and the target bearing; it stays outside the
-   combined ship/prop collision radii. This first control scheme needs only a
-   selected target and module activation. If the authored client later supplies
-   an aim point, that input can replace the hold point after server validation.
+   it as the ship moves. The hold point follows the ship and the beam aim; it
+   stays outside the combined ship/prop collision radii.
 4. Deactivating the module releases the prop at its last durable pose. A later
    grab uses the detached world ID and does not make another detached record.
    The GM move command remains available as an administrative override.
@@ -48,10 +42,10 @@ site-derived ID.
 
 ## Server authority and physics
 
-- Extract the passive-scenery predicate from the GM-only preview resolver so
-  module activation can share the same allowlist without granting players GM
-  preview or movement commands. Deny resource, encounter, gate, objective,
-  container, hazard, component, and explicitly immovable props.
+- Share passive-scenery selection with the GM workflow without granting GM
+  commands. Include mineable asteroids and dungeon resource asteroids. Deny
+  encounter, gate, objective, container, hazard, component, and explicitly
+  immovable props.
 - Add a dedicated physics turret module adapter to the normal fitted-module
   activation/cycle/deactivation path. Use its authored effect identity and live
   Dogma attributes when available. Require an online, powered, fitted module;
@@ -92,16 +86,15 @@ use that authored module FX for the ship-to-prop link. Stop both on release,
 collision, or abort. Retarget and bubble changes must refresh the visible ball
 without exposing the GM-only preview hologram to other pilots.
 
-## SDE and client integration gate
+## SDE and client integration
 
 Physics Gun currently inherits Cutting Laser's group 4767, category 7,
 Creation weapon hardpoint, and effects 16, 1212, and 12887. Its held-beam
-activation effect is 12887. The prop-grab contract still needs an explicit
-target or aim selection, grab/release commands, mass and size limits, and
-client retarget behavior when a site ball becomes a detached world ball.
-Confirm that the client can select scenery and display the replacement ball
-before enabling the grab resolver. Avoid approximating missing physics
-attributes with tractor beam constants.
+activation effect is 12887. The implemented grab uses the server's first beam
+collision, retargets beam FX to the independent world ball, and uses
+`EndHeldBeam` for release. A future SDE entry can add dedicated force, mass,
+size, range, and visual attributes. Live client verification of the
+replacement-ball presentation remains necessary.
 
 ## Implementation sequence and acceptance
 
@@ -122,8 +115,7 @@ attributes with tractor beam constants.
    Test observer visibility, immediate release, dungeon reset, repeated
    materialization, restart during a grab, and live client activation/visuals.
 
-Completion means a normal fitted module can grab one eligible prop, carry it
-with bounded collision-aware motion, and release it; the prop remains detached
-and recoverable after dungeon reset or restart. The Physics Gun base item is
-implemented, but player-facing prop grabbing remains blocked on the contract and
-server motion work above.
+The current server implementation covers the fitted beam, one active grab per
+prop, collision-aware movement, release, and durable replay. The original
+four-step list remains a roadmap for dedicated SDE balance, mass-based tuning,
+and live-client validation.
