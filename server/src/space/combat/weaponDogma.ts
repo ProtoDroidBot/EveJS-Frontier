@@ -128,6 +128,7 @@ const WEAPON_FAMILY_BY_MODULE_GROUP_ID = Object.freeze({
 const WEAPON_FAMILY_BY_SKILL_SHOT_TYPE_ID = Object.freeze({
   94076: "projectileTurret", // Skill-Shot Cannon
   95317: "laserTurret", // Cutting Laser / Knife
+  99999: "laserTurret", // Physics Gun (Cutting Laser copy)
   95503: "laserTurret", // Crude Extractor
   95753: "projectileTurret", // Stuttergun
   95778: "laserTurret", // Needle

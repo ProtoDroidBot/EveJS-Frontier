@@ -5,6 +5,7 @@ const test = require("node:test");
 
 const {
   TYPE_CUTTING_LASER,
+  TYPE_PHYSICS_GUN,
   TYPE_CRUDE_EXTRACTOR,
   TYPE_NEEDLE,
   applySkillShotUtilityHit,
@@ -41,6 +42,9 @@ test("build 3502403 utility profiles distinguish multipurpose beams from the Cru
     kind: "multipurpose",
     allowsCombatDamage: true,
   });
+  assert.deepEqual(getHeldBeamUtilityProfile(TYPE_PHYSICS_GUN),
+    getHeldBeamUtilityProfile(TYPE_CUTTING_LASER));
+  assert.equal(miningRuntime.isFrontierHeldBeamMiningModuleType(TYPE_PHYSICS_GUN), true);
   assert.deepEqual(getHeldBeamUtilityProfile(TYPE_CRUDE_EXTRACTOR), {
     kind: "crude_extraction",
     allowsCombatDamage: false,

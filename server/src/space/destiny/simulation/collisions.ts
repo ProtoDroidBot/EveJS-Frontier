@@ -18,6 +18,7 @@ const NON_PHYSICAL_COLLISION_KINDS = new Set([
 
 const COLLISION_EPSILON_METERS = 0.01;
 const COLLISION_MOTION_EPSILON_SQUARED = 1e-12;
+const MAX_COLLISION_MASS_KG = 1e15;
 // Large authored dungeon meshes can extend a few hundred metres beyond the
 // collision bundle's coarse bound (including render-only shell pieces).  A
 // narrow beam tested against the unpadded bound can therefore look as though
@@ -98,6 +99,28 @@ function getEntityCollisionRadius(entity) {
       0,
     ),
   );
+}
+
+function getEntityCollisionMassKg(entity) {
+  const mass = Number(entity && entity.mass);
+  return Number.isFinite(mass) && mass > 0 && mass < MAX_COLLISION_MASS_KG
+    ? mass
+    : null;
+}
+
+function buildCollisionImpactSnapshot(movingEntity, candidate, normal, candidateImmovable) {
+  const movingVelocity = cloneVector(movingEntity && movingEntity.velocity);
+  const candidateVelocity = cloneVector(candidate && candidate.velocity);
+  const relativeVelocity = subtractVectors(movingVelocity, candidateVelocity);
+  return {
+    movingVelocity,
+    candidateVelocity,
+    relativeVelocity,
+    closingSpeedMetersPerSecond: Math.max(0, -dotProduct(relativeVelocity, normal)),
+    movingMassKg: getEntityCollisionMassKg(movingEntity),
+    candidateMassKg: getEntityCollisionMassKg(candidate),
+    candidateImmovable: candidateImmovable === true,
+  };
 }
 
 function getEntityCollisionBroadphaseRadius(entity) {
@@ -1291,9 +1314,20 @@ function resolveEntityMovementCollision(
     );
   }
 
-  const candidateVelocity = cloneVector(earliest.candidate.velocity);
-  const entityVelocity = cloneVector(entity.velocity);
-  const relativeVelocity = subtractVectors(entityVelocity, candidateVelocity);
+  // Capture the contact inputs before removing the inward velocity. Damage
+  // calculation can consume this snapshot later without depending on the
+  // post-resolution velocity or on mutable entity references.
+  const impact = buildCollisionImpactSnapshot(
+    entity,
+    earliest.candidate,
+    earliest.normal,
+    earliest.candidate.collisionStatic === true ||
+      (Array.isArray(scene.staticEntities) &&
+        scene.staticEntities.includes(earliest.candidate)),
+  );
+  const candidateVelocity = impact.candidateVelocity;
+  const entityVelocity = impact.movingVelocity;
+  const relativeVelocity = impact.relativeVelocity;
   const inwardSpeed = dotProduct(relativeVelocity, earliest.normal);
   entity.velocity = inwardSpeed < 0
     ? addVectors(
@@ -1315,6 +1349,7 @@ function resolveEntityMovementCollision(
     penetrationDepth: Math.max(0, toFiniteNumber(earliest.penetrationDepth, 0)),
     primitiveType: earliest.primitiveType || "sphereFallback",
     collisionID: earliest.collisionID || null,
+    impact,
   };
   entity.lastCollision = collision;
   if (entity.lastMotionDebug && typeof entity.lastMotionDebug === "object") {
@@ -1331,6 +1366,7 @@ function resolveEntityMovementCollision(
 
 module.exports = {
   COLLISION_EPSILON_METERS,
+  buildCollisionImpactSnapshot,
   canEntitiesCollide,
   findLineSegmentSphereIntersection,
   findSweptEntityCollision,

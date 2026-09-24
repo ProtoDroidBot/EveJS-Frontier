@@ -218,7 +218,133 @@ test("server swept-sphere collision prevents tunneling through an object", () =>
   assert.equal(collision.entityID, obstacle.itemID);
   assert.ok(Math.abs(collision.fraction - 0.35) < 1e-12);
   assert.ok(Math.abs(ship.position.x - -30.01) < 1e-9);
+  assert.deepEqual(collision.impact.movingVelocity, { x: 200, y: 0, z: 0 });
+  assert.deepEqual(collision.impact.candidateVelocity, { x: 0, y: 0, z: 0 });
+  assert.equal(collision.impact.closingSpeedMetersPerSecond, 200);
+  assert.equal(collision.impact.movingMassKg, 1_000_000);
+  assert.equal(collision.impact.candidateMassKg, null);
+  assert.equal(collision.impact.candidateImmovable, true);
   assert.deepEqual(ship.velocity, { x: 0, y: 0, z: 0 });
+});
+
+test("collision snapshot uses both pre-resolution velocities and masses", () => {
+  const ship = buildShip();
+  const other = buildShip({
+    itemID: 2001,
+    mass: 4_000_000,
+    radius: 20,
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: -50, y: 0, z: 0 },
+    _lastMovementAdvancedTickSequence: 7,
+    lastMotionDebug: { previousPosition: { x: 50, y: 0, z: 0 } },
+  });
+  const scene = {
+    _activeTickSequence: 7,
+    staticEntities: [],
+    dynamicEntities: new Map([[ship.itemID, ship], [other.itemID, other]]),
+  };
+
+  const collision = resolveEntityMovementCollision(
+    ship, scene, { x: -100, y: 0, z: 0 },
+  );
+
+  assert.ok(collision);
+  assert.deepEqual(collision.impact.relativeVelocity, { x: 250, y: 0, z: 0 });
+  assert.equal(collision.impact.closingSpeedMetersPerSecond, 250);
+  assert.equal(collision.impact.movingMassKg, 1_000_000);
+  assert.equal(collision.impact.candidateMassKg, 4_000_000);
+  assert.equal(collision.impact.candidateImmovable, false);
+  assert.deepEqual(ship.velocity, { x: -50, y: 0, z: 0 });
+  assert.deepEqual((ship as any).lastCollision.impact, collision.impact);
+});
+
+test("tangent contact records zero inward closing speed", () => {
+  const ship = buildShip({
+    position: { x: 100, y: -30, z: 0 },
+  });
+  const obstacle = {
+    itemID: 2001,
+    kind: "structure",
+    radius: 20,
+    mass: 0,
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+  };
+  const scene = {
+    staticEntities: [obstacle],
+    dynamicEntities: new Map([[ship.itemID, ship]]),
+  };
+
+  const collision = resolveEntityMovementCollision(
+    ship, scene, { x: -100, y: -30, z: 0 },
+  );
+
+  assert.ok(collision);
+  assert.equal(collision.startedOverlapping, false);
+  assert.equal(collision.impact.closingSpeedMetersPerSecond, 0);
+  assert.equal(collision.impact.candidateMassKg, null);
+  assert.deepEqual(ship.velocity, { x: 200, y: 0, z: 0 });
+});
+
+test("scene collision applies kinetic layers and pushes the lighter ship", () => {
+  const { processSceneCollisionContactsForTesting } = runtime._testing;
+  const heavy: any = buildShip({
+    itemID: 1001,
+    typeID: 1,
+    mass: 4_000_000,
+    maxVelocity: 600,
+    collisionStableMaxVelocity: 200,
+    position: { x: 100, y: 0, z: 0 },
+    velocity: { x: 500, y: 0, z: 0 },
+    shieldCapacity: 1_000,
+    armorHP: 1_000,
+    structureHP: 1_000,
+  });
+  const light: any = buildShip({
+    itemID: 1002,
+    typeID: 2,
+    mass: 1_000_000,
+    maxVelocity: 200,
+    collisionStableMaxVelocity: 100,
+    radius: 20,
+    mode: "STOP",
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+    shieldCapacity: 50,
+    armorHP: 100,
+    structureHP: 200,
+  });
+  const scene: any = {
+    _activeTickSequence: 1,
+    dynamicEntities: new Map([[heavy.itemID, heavy], [light.itemID, light]]),
+    staticEntities: [],
+    staticEntitiesByID: new Map(),
+    sessions: new Map(),
+    systemID: 30000001,
+    getCurrentSimTimeMs: () => 1_000,
+    getCurrentDestinyStamp: () => 10,
+    getMovementStamp: () => 10,
+    getEntityByID(id) { return this.dynamicEntities.get(id) || null; },
+  };
+  const collision = resolveEntityMovementCollision(
+    heavy, scene, { x: -100, y: 0, z: 0 },
+  );
+  assert.ok(collision);
+  const updates: any[] = [];
+  const result = processSceneCollisionContactsForTesting(
+    scene, [{ mover: heavy, candidate: light, collision }], 1_000, updates,
+  );
+  assert.equal(result.damaged, 2);
+  assert.equal(result.pushed, 1);
+  assert.equal(light.conditionState.shieldCharge, 0);
+  assert.equal(light.conditionState.armorDamage, 1);
+  assert.ok(light.conditionState.damage > 0);
+  assert.equal(light.velocity.x, 250);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].payload[0], "SetBallVelocity");
+  assert.equal(updates[0].payload[1][0], light.itemID);
+  runtime._testing.advanceMovementForTesting(light, scene, 0.1, 1_100);
+  assert.ok(light.position.x > 0, "the pushed ship moves on the next simulation step");
 });
 
 test("contained ships depenetrate to a station boundary instead of phasing out", () => {
@@ -792,6 +918,42 @@ test("the shared weapon damage path redirects damage and reports the obstruction
     defenderNotifications[0][2][1].entries.find(([key]) => key === "notify")[1],
     /Incoming weapon fire was obstructed by Bulkhead/,
   );
+});
+
+test("collision damage bypasses weapon occlusion even for a native NPC source", () => {
+  const source = buildShip({
+    itemID: 2001,
+    nativeNpc: true,
+    position: { x: 0, y: 0, z: 0 },
+  });
+  const blocker: any = buildShip({
+    itemID: 2002,
+    position: { x: 50, y: 0, z: 0 },
+    shieldCapacity: 100,
+    armorHP: 100,
+    structureHP: 100,
+  });
+  const target: any = buildShip({
+    itemID: 2003,
+    position: { x: 100, y: 0, z: 0 },
+    shieldCapacity: 100,
+    armorHP: 100,
+    structureHP: 100,
+  });
+  const scene = {
+    getAllVisibleEntities: () => [source, blocker, target],
+    getCurrentSimTimeMs: () => 1_000,
+    getCurrentDestinyStamp: () => 10,
+    sessions: new Map(),
+    staticEntitiesByID: new Map(),
+  };
+  const result = runtime._testing.applyWeaponDamageToTargetForTesting(
+    scene, source, target, { kinetic: 25 }, 1_000,
+    { collisionImpact: true },
+  );
+  assert.equal(result.damageResult.success, true);
+  assert.ok(target.conditionState.shieldCharge < 1);
+  assert.equal(blocker.conditionState, undefined);
 });
 
 test("NPC behavior profiles cannot permit firing through physical occluders", () => {

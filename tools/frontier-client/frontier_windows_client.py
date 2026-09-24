@@ -41,6 +41,7 @@ CREATION_TRANSFORM_PATCHER = (
     SCRIPT_DIR / "patch_frontier_creation_transform.py"
 )
 DUNGEON_PROP_HOLOGRAM_PATCHER = SCRIPT_DIR / "patch_frontier_dungeon_prop_hologram.py"
+PHYSICS_GUN_PATCHER = SCRIPT_DIR / "patch_frontier_physics_gun.py"
 PEM_CERTIFICATE_RE = re.compile(
     rb"-----BEGIN CERTIFICATE-----\s+([A-Za-z0-9+/=\r\n]+?)\s+"
     rb"-----END CERTIFICATE-----",
@@ -770,6 +771,10 @@ def code_patch_states(archive: Path, build: int) -> dict:
         if dungeon_hologram not in {"source", "patched", "outdated"}:
             raise FrontierWindowsError(f"Unexpected dungeon hologram state: {dungeon_hologram}")
         states["dungeonPropHologram"] = dungeon_hologram
+        physics_gun = run_python_patcher(PHYSICS_GUN_PATCHER, archive, build, check=True)
+        if physics_gun not in {"source", "patched", "outdated"}:
+            raise FrontierWindowsError(f"Unexpected Physics Gun state: {physics_gun}")
+        states["physicsGun"] = physics_gun
         turret_tracking = run_python_patcher(TURRET_TRACKING_PATCHER, archive, build, check=True)
         if turret_tracking not in {"source", "patched", "outdated"}:
             raise FrontierWindowsError(f"Unexpected turret tracking state: {turret_tracking}")
@@ -787,6 +792,7 @@ def expected_code_states(build: int, state: str) -> dict:
         result["collisionVfx"] = state
         result["creationTransform"] = state
         result["dungeonPropHologram"] = state
+        result["physicsGun"] = state
         result["turretTracking"] = state
     return result
 
@@ -819,6 +825,8 @@ def patch_code_archive(archive: Path, build: int) -> dict:
         run_python_patcher(CREATION_TRANSFORM_PATCHER, archive, build, check=False)
     if states.get("dungeonPropHologram") in {"source", "outdated"}:
         run_python_patcher(DUNGEON_PROP_HOLOGRAM_PATCHER, archive, build, check=False)
+    if states.get("physicsGun") in {"source", "outdated"}:
+        run_python_patcher(PHYSICS_GUN_PATCHER, archive, build, check=False)
     patched = code_patch_states(archive, build)
     if patched != expected_code_states(build, "patched"):
         raise FrontierWindowsError(f"code.ccp did not reach the exact patched state: {patched}")
@@ -1408,6 +1416,8 @@ def check_stage(
     allow_creation_transform_source: bool = False,
     allow_dungeon_prop_hologram_source: bool = False,
     allow_dungeon_prop_hologram_outdated: bool = False,
+    allow_physics_gun_source: bool = False,
+    allow_physics_gun_outdated: bool = False,
     allow_turret_tracking_source: bool = False,
     allow_turret_tracking_outdated: bool = False,
 ) -> dict:
@@ -1462,6 +1472,12 @@ def check_stage(
     if (allow_dungeon_prop_hologram_outdated and build == 3502403
             and code_states.get("dungeonPropHologram") == "outdated"):
         expected_states["dungeonPropHologram"] = "outdated"
+    if (allow_physics_gun_source and build == 3502403
+            and code_states.get("physicsGun") == "source"):
+        expected_states["physicsGun"] = "source"
+    if (allow_physics_gun_outdated and build == 3502403
+            and code_states.get("physicsGun") == "outdated"):
+        expected_states["physicsGun"] = "outdated"
     if (allow_turret_tracking_source and build == 3502403
             and code_states.get("turretTracking") == "source"):
         expected_states["turretTracking"] = "source"
@@ -1618,6 +1634,8 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
                 allow_creation_transform_source=True,
                 allow_dungeon_prop_hologram_source=True,
                 allow_dungeon_prop_hologram_outdated=True,
+                allow_physics_gun_source=True,
+                allow_physics_gun_outdated=True,
                 allow_turret_tracking_source=True,
                 allow_turret_tracking_outdated=True, **check_options)
     marker_path, marker = load_stage(stage_root)
@@ -1631,6 +1649,7 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             and states.get("collisionVfx") == "patched"
             and states.get("creationTransform") == "patched"
             and states.get("dungeonPropHologram") == "patched"
+            and states.get("physicsGun") == "patched"
             and states.get("turretTracking") == "patched"):
         return check_stage(stage_root, **check_options)
     if (build != 3502403
@@ -1641,6 +1660,7 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             or states.get("collisionVfx") not in {"source", "patched", "outdated"}
             or states.get("creationTransform") not in {"source", "patched", "outdated"}
             or states.get("dungeonPropHologram") not in {"source", "patched", "outdated"}
+            or states.get("physicsGun") not in {"source", "patched", "outdated"}
             or states.get("turretTracking") not in {"source", "patched", "outdated"}):
         raise FrontierWindowsError("Stage cannot receive the current code adapters")
     _, profile = resolve_profile(build, str(marker["nativeBlue"]), check_options.get("profile_path"))
@@ -1665,6 +1685,8 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             run_python_patcher(CREATION_TRANSFORM_PATCHER, paths["code"], build, check=False)
         if states["dungeonPropHologram"] != "patched":
             run_python_patcher(DUNGEON_PROP_HOLOGRAM_PATCHER, paths["code"], build, check=False)
+        if states["physicsGun"] != "patched":
+            run_python_patcher(PHYSICS_GUN_PATCHER, paths["code"], build, check=False)
         if states["turretTracking"] != "patched":
             run_python_patcher(TURRET_TRACKING_PATCHER, paths["code"], build, check=False)
         refresh_manifest_atomic(paths["manifest"], stage_root, profile)
@@ -1698,6 +1720,10 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             marker["dungeonPropHologramPatchState"] = "patched"
             marker["dungeonPropHologramPatchBackup"] = str(backup_root)
             marker["preDungeonPropHologramHashes"] = original_hashes
+        if states["physicsGun"] != "patched":
+            marker["physicsGunPatchState"] = "patched"
+            marker["physicsGunPatchBackup"] = str(backup_root)
+            marker["prePhysicsGunHashes"] = original_hashes
         if states["turretTracking"] != "patched":
             marker["turretTrackingPatchState"] = "patched"
             marker["turretTrackingPatchBackup"] = str(backup_root)
@@ -1785,6 +1811,7 @@ def patch_stage(
                 "collisionVfxPatchState": code_states.get("collisionVfx"),
                 "creationTransformPatchState": code_states.get("creationTransform"),
                 "dungeonPropHologramPatchState": code_states.get("dungeonPropHologram"),
+                "physicsGunPatchState": code_states.get("physicsGun"),
                 "turretTrackingPatchState": code_states.get("turretTracking"),
                 "fileStates": {
                     "nativeBlue": "exact-target",

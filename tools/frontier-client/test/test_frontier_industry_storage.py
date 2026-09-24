@@ -393,6 +393,7 @@ class PatcherTests(unittest.TestCase):
                           "mapViewLifecycle": "patched", "fittingCompatibility": "patched",
                           "inventoryView": "patched", "collisionVfx": "patched",
                           "creationTransform": "patched", "dungeonPropHologram": "patched",
+                          "physicsGun": "patched",
                           "turretTracking": "patched"})
         self.assertEqual(windows.expected_code_states(3488090, "source"), {"docking": "source", "features": "source"})
         with mock.patch.object(windows, "run_python_patcher", return_value="patched") as run:
@@ -425,7 +426,7 @@ class PatcherTests(unittest.TestCase):
                 with mock.patch.object(windows, "check_stage", side_effect=check), \
                      mock.patch.object(windows, "load_stage", return_value=(marker_path, marker)), \
                      mock.patch.object(windows, "stage_paths", return_value={"code": code, "manifest": manifest}), \
-                     mock.patch.object(windows, "code_patch_states", return_value={"docking": "patched", "features": "patched", "industryStorage": "source", "mapViewLifecycle": "patched", "fittingCompatibility": "patched", "inventoryView": "patched", "collisionVfx": "patched", "creationTransform": "patched", "dungeonPropHologram": "patched", "turretTracking": "patched"}), \
+                     mock.patch.object(windows, "code_patch_states", return_value={"docking": "patched", "features": "patched", "industryStorage": "source", "mapViewLifecycle": "patched", "fittingCompatibility": "patched", "inventoryView": "patched", "collisionVfx": "patched", "creationTransform": "patched", "dungeonPropHologram": "patched", "physicsGun": "patched", "turretTracking": "patched"}), \
                      mock.patch.object(windows, "resolve_profile", return_value=(None, {})), \
                      mock.patch.object(windows, "run_python_patcher", side_effect=patch), \
                      mock.patch.object(windows, "refresh_manifest_atomic", side_effect=refresh):

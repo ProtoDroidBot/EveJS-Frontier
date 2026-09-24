@@ -150,7 +150,9 @@ const { createDestinyWarpUpdateBuilders, } = require(path.join(__dirname, "./des
 const { createDestinyWarpStateHelpers, } = require(path.join(__dirname, "./destiny/simulation/warpState.js"));
 const { handleActiveWarpTickPresentation, } = require(path.join(__dirname, "./destiny/simulation/activeWarpTick.js"));
 const { createDestinyMovementSimulator, } = require(path.join(__dirname, "./destiny/simulation/movement.js"));
-const { findSweptWeaponOccluder, findWeaponLineOccluder, resolveEntityMovementCollision, } = require(path.join(__dirname, "./destiny/simulation/collisions.js"));
+const { findSweptWeaponOccluder, findWeaponLineOccluder, isEntityCollisionMover, resolveEntityMovementCollision, } = require(path.join(__dirname, "./destiny/simulation/collisions.js"));
+const { processCollisionContacts, } = require(path.join(__dirname, "./destiny/simulation/collisionImpact.js"));
+const { buildSetBallVelocityPayload, } = require(path.join(__dirname, "./destiny/stream/actions.js"));
 const { npcRetainsOccludedTargetLocks, } = require(path.join(__dirname, "./npc/npcBehaviorCapabilities.js"));
 const { createNativeSubwarpController, } = require(path.join(__dirname, "./destiny/simulation/nativeSubwarp.js"));
 const { clonePilotWarpMaxSpeedRamp, } = require(path.join(__dirname, "./destiny/simulation/warpRamp.js"));
@@ -12644,6 +12646,7 @@ function advanceEntityForDestructionSnapshot(scene, entity) {
     return advanceEntityForActiveSceneTick(scene, entity).advanced;
 }
 function applyWeaponDamageToTarget(scene, attackerEntity, targetEntity, shotDamage, whenMs, options = {}) {
+    const collisionImpact = options.collisionImpact === true;
     const resolvedShotDamage = shotDamage && typeof shotDamage === "object"
         ? shotDamage
         : {};
@@ -12659,18 +12662,20 @@ function applyWeaponDamageToTarget(scene, attackerEntity, targetEntity, shotDama
             destroyResult: null,
         };
     }
-    try {
-        const smartTurretRuntime = lazyRequire("../services/frontier/smartTurretRuntime");
-        if (smartTurretRuntime &&
-            typeof smartTurretRuntime.noteIncomingAggression === "function") {
-            smartTurretRuntime.noteIncomingAggression(attackerEntity, targetEntity, whenMs);
+    if (!collisionImpact) {
+        try {
+            const smartTurretRuntime = lazyRequire("../services/frontier/smartTurretRuntime");
+            if (smartTurretRuntime &&
+                typeof smartTurretRuntime.noteIncomingAggression === "function") {
+                smartTurretRuntime.noteIncomingAggression(attackerEntity, targetEntity, whenMs);
+            }
+        }
+        catch (error) {
+            log.warn(`[SpaceRuntime] Smart Turret aggression note failed: ${error.message}`);
         }
     }
-    catch (error) {
-        log.warn(`[SpaceRuntime] Smart Turret aggression note failed: ${error.message}`);
-    }
-    const weaponOcclusion = options.skipWeaponOcclusion === true &&
-        !(attackerEntity && attackerEntity.nativeNpc === true)
+    const weaponOcclusion = collisionImpact || (options.skipWeaponOcclusion === true &&
+        !(attackerEntity && attackerEntity.nativeNpc === true))
         ? null
         : findWeaponLineOccluder(scene, attackerEntity, targetEntity, {
             // Authored dungeon collision bundles can contain sparse primitives
@@ -12743,7 +12748,8 @@ function applyWeaponDamageToTarget(scene, attackerEntity, targetEntity, shotDama
             impactTargetEntity: targetEntity,
         };
     }
-    if (attackerEntity &&
+    if (!collisionImpact &&
+        attackerEntity &&
         scene &&
         typeof scene.revealCombatSourceToTargetSession === "function") {
         scene.revealCombatSourceToTargetSession(attackerEntity, targetEntity, {
@@ -12762,22 +12768,28 @@ function applyWeaponDamageToTarget(scene, attackerEntity, targetEntity, shotDama
     let destroyResult = null;
     if (damageResult.success) {
         const appliedDamage = getAppliedDamageAmount(damageResult);
-        const feralizationResult = environmentalEffectsRuntime.applyNpcFeralization(targetEntity, attackerEntity, "hit", whenMs, { appliedDamage });
-        npcMetamorphosisRuntime.generateNpcMetamorphosisItems(attackerEntity, "hit", {
-            appliedDamage,
-            dependencies: options.npcMetamorphosisDependencies,
-        });
+        const feralizationResult = collisionImpact
+            ? { applied: false }
+            : environmentalEffectsRuntime.applyNpcFeralization(targetEntity, attackerEntity, "hit", whenMs, { appliedDamage });
+        if (!collisionImpact) {
+            npcMetamorphosisRuntime.generateNpcMetamorphosisItems(attackerEntity, "hit", {
+                appliedDamage,
+                dependencies: options.npcMetamorphosisDependencies,
+            });
+        }
         if (feralizationResult.applied === true) {
             notifyEnvironmentalEffectsToSession(getOwningSessionForEntity(scene, targetEntity), targetEntity, feralizationResult, whenMs);
         }
-        try {
-            const droneRuntime = lazyRequire("../services/drone/droneRuntime");
-            if (droneRuntime && typeof droneRuntime.noteIncomingAggression === "function") {
-                droneRuntime.noteIncomingAggression(attackerEntity, targetEntity, whenMs);
+        if (!collisionImpact) {
+            try {
+                const droneRuntime = lazyRequire("../services/drone/droneRuntime");
+                if (droneRuntime && typeof droneRuntime.noteIncomingAggression === "function") {
+                    droneRuntime.noteIncomingAggression(attackerEntity, targetEntity, whenMs);
+                }
             }
-        }
-        catch (error) {
-            log.warn(`[SpaceRuntime] Drone aggression note failed: ${error.message}`);
+            catch (error) {
+                log.warn(`[SpaceRuntime] Drone aggression note failed: ${error.message}`);
+            }
         }
         if (targetEntity.kind === "structure") {
             const structureDamageResult = structureState.applyRuntimeStructureDamage(targetEntity.itemID, damageResult, whenMs, {
@@ -12826,14 +12838,16 @@ function applyWeaponDamageToTarget(scene, attackerEntity, targetEntity, shotDama
                 log.warn(`[SpaceRuntime] Orbital damage persistence failed for ${targetEntity.itemID}: ${orbitalDamageResult.errorMsg || "UNKNOWN"}`);
             }
         }
-        try {
-            const npcService = lazyRequire("./npc");
-            if (npcService && typeof npcService.noteNpcIncomingAggression === "function") {
-                npcService.noteNpcIncomingAggression(targetEntity, attackerEntity, whenMs);
+        if (!collisionImpact) {
+            try {
+                const npcService = lazyRequire("./npc");
+                if (npcService && typeof npcService.noteNpcIncomingAggression === "function") {
+                    npcService.noteNpcIncomingAggression(targetEntity, attackerEntity, whenMs);
+                }
             }
-        }
-        catch (error) {
-            log.warn(`[SpaceRuntime] NPC aggression note failed: ${error.message}`);
+            catch (error) {
+                log.warn(`[SpaceRuntime] NPC aggression note failed: ${error.message}`);
+            }
         }
         const mobileDepotReinforcementResult = mobileDepotRuntime.enterMobileDepotReinforcementFromDamage(scene, targetEntity, damageResult, { nowMs: Date.now() });
         if (mobileDepotReinforcementResult &&
@@ -15813,6 +15827,14 @@ function advanceEntityForActiveSceneTick(scene, entity) {
             activeTickSequence,
         })
         : null;
+    if (movementCollision && Array.isArray(scene._collisionContactEvents)) {
+        const candidate = typeof scene.getEntityByID === "function"
+            ? scene.getEntityByID(movementCollision.entityID)
+            : null;
+        if (candidate) {
+            scene._collisionContactEvents.push({ mover: entity, candidate, collision: movementCollision });
+        }
+    }
     const collision = sweptWeaponOcclusion
         ? {
             entityID: sweptWeaponOcclusion.entityID,
@@ -15837,6 +15859,84 @@ function advanceEntityForActiveSceneTick(scene, entity) {
         advanced: true,
         result,
     };
+}
+function resolveCollisionStableSpeed(entity) {
+    if (!entity)
+        return null;
+    if (entity.kind !== "ship") {
+        return Math.max(0, toFiniteNumber(entity.collisionStableMaxVelocity, 0));
+    }
+    const explicit = toFiniteNumber(entity.collisionStableMaxVelocity, 0);
+    if (explicit > 0)
+        return explicit;
+    const typeID = toInt(entity.typeID, 0);
+    const typeSpeed = toFiniteNumber(getTypeAttributeValue(typeID, "maxVelocity"), 0);
+    if (typeSpeed > 0)
+        return typeSpeed;
+    const movement = worldData.getMovementAttributesForType(typeID);
+    const movementSpeed = toFiniteNumber(movement && movement.maxVelocity, 0);
+    return movementSpeed > 0 ? movementSpeed : null;
+}
+function isCollisionPushRecipient(scene, entity, nowMs) {
+    if (!entity || !isEntityCollisionMover(entity) ||
+        !(scene.dynamicEntities instanceof Map) ||
+        scene.dynamicEntities.get(entity.itemID) !== entity ||
+        entity.anchored === true || entity.isAnchored === true ||
+        ["structure", "orbital", "station", "stargate", "deployable"].includes(entity.kind) ||
+        entity.pendingWarp || entity.pendingDock ||
+        (entity.kind === "ship" && isShipMovementLockedByRuntime(entity, nowMs))) {
+        return false;
+    }
+    return true;
+}
+function processSceneCollisionContacts(scene, events, nowMs, sharedUpdates = []) {
+    return processCollisionContacts(scene, events, {
+        tickSequence: scene._activeTickSequence,
+        nowMs,
+        safeSpeedFor: resolveCollisionStableSpeed,
+        applyDamage(target, source, amount, event) {
+            const targetID = target && target.itemID;
+            const liveTarget = scene.dynamicEntities instanceof Map &&
+                scene.dynamicEntities.get(targetID) === target ||
+                scene.staticEntitiesByID instanceof Map &&
+                    scene.staticEntitiesByID.get(targetID) === target;
+            if (!liveTarget || !hasDamageableHealth(target))
+                return false;
+            const attacker = event.collision.impact.candidateImmovable === true &&
+                target === event.mover ? null : source;
+            try {
+                const result = applyWeaponDamageToTarget(scene, attacker, target, { kinetic: amount }, nowMs, { collisionImpact: true, skipWeaponOcclusion: true });
+                return result.damageResult && result.damageResult.success === true;
+            }
+            catch (error) {
+                log.warn(`[SpaceRuntime] Collision damage failed target=${targetID}: ${error.message}`);
+                return false;
+            }
+        },
+        applyPush(target, deltaVelocity) {
+            if (!isCollisionPushRecipient(scene, target, nowMs))
+                return false;
+            const previousVelocity = cloneVector(target.velocity);
+            const nextVelocity = addVectors(previousVelocity, deltaVelocity);
+            const maxSpeed = Math.max(magnitude(previousVelocity), 500, 2 * Math.max(0, toFiniteNumber(target.maxVelocity, 0)));
+            const nextSpeed = magnitude(nextVelocity);
+            const boundedVelocity = nextSpeed > maxSpeed
+                ? scaleVector(nextVelocity, maxSpeed / nextSpeed)
+                : nextVelocity;
+            if (magnitude(subtractVectors(boundedVelocity, previousVelocity)) <= 0.000001) {
+                return false;
+            }
+            target.velocity = boundedVelocity;
+            persistDynamicEntity(target);
+            if (typeof scene.getMovementStamp === "function") {
+                sharedUpdates.push({
+                    stamp: scene.getMovementStamp(nowMs),
+                    payload: buildSetBallVelocityPayload(target.itemID, target.velocity),
+                });
+            }
+            return true;
+        },
+    });
 }
 function finalizeActiveNativeSubwarpPlan(scene) {
     if (!scene) {
@@ -30213,6 +30313,7 @@ class SolarSystemScene {
         const deltaSeconds = Math.max(clockState.simDeltaMs / 1000, 0);
         this._activeTickSequence = this._nextTickSequence;
         this._nextTickSequence += 1;
+        this._collisionContactEvents = [];
         this._activeTickDeltaSeconds = deltaSeconds;
         this._activeTickNowMs = now;
         this._tickTargetingStatsCache = new Map();
@@ -30378,6 +30479,17 @@ class SolarSystemScene {
                         const result = movement.tickDetachedPropMove(this, entity, deltaSeconds, now);
                         if (!result.success) {
                             log.warn(`[SpaceRuntime] Detached prop move failed entity=${entity.itemID}: ${result.errorMsg}`);
+                        }
+                        else if (result.data && result.data.reason === "collision" && entity.lastCollision) {
+                            const settledMover = this.getEntityByID(entity.itemID);
+                            const candidate = this.getEntityByID(entity.lastCollision.entityID);
+                            if (settledMover && candidate) {
+                                this._collisionContactEvents.push({
+                                    mover: settledMover,
+                                    candidate,
+                                    collision: entity.lastCollision,
+                                });
+                            }
                         }
                     }
                     catch (error) {
@@ -31853,6 +31965,13 @@ class SolarSystemScene {
             catch (error) {
                 log.warn(`[SpaceRuntime] Environmental-effects tick failed for system=${this.systemID}: ${error.message}`);
             }
+            try {
+                processSceneCollisionContacts(this, this._collisionContactEvents, now, sharedUpdates);
+            }
+            catch (error) {
+                log.warn(`[SpaceRuntime] Collision impacts failed for system=${this.systemID}: ${error.message}`);
+            }
+            this._collisionContactEvents = [];
             finalizeActiveNativeSubwarpPlan(this);
             if (dockRequests.size > 0) {
                 const { dockSession } = lazyRequire("./transitions");
@@ -35129,6 +35248,7 @@ runtimeExports._testing = {
     prepareActiveNativeSubwarpPlanForTesting: prepareActiveNativeSubwarpPlan,
     refreshActiveNativeSubwarpPlanForTesting: refreshActiveNativeSubwarpPlan,
     advanceEntityForActiveSceneTickForTesting: advanceEntityForActiveSceneTick,
+    processSceneCollisionContactsForTesting: processSceneCollisionContacts,
     enforceFrontierBerthedShipMotionForTesting: enforceFrontierBerthedShipMotion,
     isShipMovementLockedByRuntimeForTesting: isShipMovementLockedByRuntime,
     finalizeActiveNativeSubwarpPlanForTesting: finalizeActiveNativeSubwarpPlan,

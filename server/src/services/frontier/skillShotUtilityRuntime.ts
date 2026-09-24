@@ -12,11 +12,16 @@
 const path = require("path");
 
 const TYPE_CUTTING_LASER = 95317;
+const TYPE_PHYSICS_GUN = 99999;
 const TYPE_CRUDE_EXTRACTOR = 95503;
 const TYPE_NEEDLE = 95778;
 
 const HELD_BEAM_UTILITY_PROFILES = new Map<number, Record<string, any>>([
   [TYPE_CUTTING_LASER, {
+    kind: "multipurpose",
+    allowsCombatDamage: true,
+  }],
+  [TYPE_PHYSICS_GUN, {
     kind: "multipurpose",
     allowsCombatDamage: true,
   }],
@@ -108,10 +113,10 @@ function applySkillShotUtilityHit({
 
 module.exports = {
   TYPE_CUTTING_LASER,
+  TYPE_PHYSICS_GUN,
   TYPE_CRUDE_EXTRACTOR,
   TYPE_NEEDLE,
   HELD_BEAM_UTILITY_PROFILES,
   getHeldBeamUtilityProfile,
   applySkillShotUtilityHit,
 };
-

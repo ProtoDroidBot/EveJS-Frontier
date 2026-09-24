@@ -57,6 +57,12 @@ const SKILL_SHOT_PROFILES = new Map<number, Record<string, any>>([
     spoolUpMs: 250,
     activationEffectID: 12887,
   }],
+  [99999, {
+    mode: "held_beam",
+    fireDelayMs: 0,
+    spoolUpMs: 250,
+    activationEffectID: 12887,
+  }],
   [95503, {
     mode: "held_beam",
     fireDelayMs: 0,

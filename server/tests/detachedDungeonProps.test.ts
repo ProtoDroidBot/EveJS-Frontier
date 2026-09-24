@@ -428,10 +428,16 @@ test("a moving prop's authored collision shape stops before its radius fallback"
     { x: 0, y: 0, z: 0 }, { x: 750, y: 0, z: 0 },
   );
   assert.ok(profileHit, "authored moving profile should find the obstacle");
+  assert.equal(profileHit.candidate.itemID, 778);
+  assert.ok(profileHit.normal.x < 0, "normal points toward the moving prop");
+  const moving = value.scene.dynamicEntities.get(worldID);
   const result = tickDetachedPropMove(
-    value.scene, value.scene.dynamicEntities.get(worldID), 1, 2_000, { store },
+    value.scene, moving, 1, 2_000, { store },
   );
   assert.equal(result.data.reason, "collision");
+  assert.equal(moving.lastCollision.impact.closingSpeedMetersPerSecond, 750);
+  assert.equal(moving.lastCollision.impact.movingMassKg, null);
+  assert.equal(moving.lastCollision.impact.candidateImmovable, true);
   const position = value.scene.staticEntitiesByID.get(worldID).position;
   assert.ok(position.x > 100 && position.x < 200, JSON.stringify(position));
 });

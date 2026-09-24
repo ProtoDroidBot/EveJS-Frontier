@@ -731,6 +731,36 @@ function typeRecord(raw, groups, categories) {
         tags: intArray(raw.tags),
     };
 }
+function addPhysicsGunAuthority(types, typeByID, dogmaByTypeID, creationModules) {
+    const cuttingLaserType = typeByID.get(95317);
+    const cuttingLaserDogma = dogmaByTypeID.get("95317");
+    const cuttingLaserModule = creationModules.find((row) => row.typeID === 95317);
+    if (!cuttingLaserType || !cuttingLaserDogma || !cuttingLaserModule) {
+        throw new Error("Physics Gun requires Cutting Laser (95317) type, dogma, and Creation_Modules data");
+    }
+    if (typeByID.has(99999) || dogmaByTypeID.has("99999") ||
+        creationModules.some((row) => row.typeID === 99999)) {
+        throw new Error("Physics Gun type ID 99999 collides with source SDE data");
+    }
+    const physicsGunType = {
+        ...cuttingLaserType,
+        typeID: 99999,
+        name: "Physics Gun",
+        description: "A modular held-beam weapon with the cutting and extraction behavior of the Cutting Laser.",
+    };
+    types.push(physicsGunType);
+    typeByID.set(99999, physicsGunType);
+    dogmaByTypeID.set("99999", structuredClone(cuttingLaserDogma));
+    creationModules.push({
+        ...structuredClone(cuttingLaserModule),
+        _key: 99999,
+        typeID: 99999,
+        behavior: "generic",
+        capability: "weapon",
+        placement: { compatible_hardpoints: ["weapon"] },
+        system: "weapons",
+    });
+}
 function publicTypeRecord(type, shape = "full") {
     const base = {
         typeID: type.typeID,
@@ -2540,7 +2570,7 @@ function sha256File(filePath) {
     hash.update(fs.readFileSync(filePath));
     return hash.digest("hex");
 }
-async function loadSdeAuthority(sdeDir) {
+async function loadSdeAuthority(sdeDir, options = {}) {
     const categories = new Map();
     const groups = new Map();
     const types = [];
@@ -2867,6 +2897,12 @@ async function loadSdeAuthority(sdeDir) {
     await readJsonlRecords(sdeDir, "creationModules.jsonl", (row) => {
         creationModules.push({ ...row, typeID: toInt(row._key, 0) });
     });
+    // Physics Gun is a local type until it receives an upstream SDE entry.
+    // Clone the complete Cutting Laser contract so fitting, charge groups,
+    // effects, and activation stay in sync with the source item.
+    if (options.profile === "frontier" && toInt(options.build, 0) === 3502403) {
+        addPhysicsGunAuthority(types, typeByID, dogmaByTypeID, creationModules);
+    }
     await readJsonlRecords(sdeDir, "creationParts.jsonl", (row) => {
         creationParts.push({ ...row, graphicID: toInt(row._key, 0) });
     });
@@ -3390,7 +3426,7 @@ function defaultPlaceholderForTable(tableName) {
 async function createDatabase(options) {
     assertDirectory(options.sdeDir, "SDE JSONL directory");
     ensureCleanOutDir(options.outDir, options.force);
-    const authority = await loadSdeAuthority(options.sdeDir);
+    const authority = await loadSdeAuthority(options.sdeDir, options);
     const tables = buildTables(authority, options);
     const bootstrap = resolveBootstrapProfile(authority, options);
     const local = buildLocalAccountsAndCharacters(bootstrap, options.profile);
@@ -3510,6 +3546,7 @@ module.exports = {
     skillLevelRecords,
     typeRecord,
     publicTypeRecord,
+    addPhysicsGunAuthority,
     clientTypeListRecord,
     clientTypeListCounts,
     resolveBootstrapProfile,

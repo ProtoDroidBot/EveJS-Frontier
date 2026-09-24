@@ -1,13 +1,15 @@
-# Physics turret for dungeon props — proposed plan
+# Physics turret for dungeon props — proposed grab behavior
 
 ## Status and dependency
 
-This is a design plan, not an implemented module. The physics turret's SDE entry
-has not been implemented. There is no authoritative item type, effect, fitting
-rule, attribute set, or client activation contract to bind to yet. Do not assign
-a placeholder type ID, make the module obtainable, or recognize an unrelated
-tractor beam effect as this turret. Activation must remain unavailable until
-the authored data and client behavior are inspected together.
+The base item is implemented as Physics Gun (99999), a local copy of Cutting
+Laser (95317); see `docs/PHYSICS_GUN.md`. It has a weapon hardpoint adapter,
+Cutting Laser Dogma and held-beam activation, and a localized client name. The
+prop-grab behavior in this document remains a design plan. The current
+SkillShot activation sends a fitted module ID and aim direction, without an
+authoritative target ID or grab/release contract. The player grab resolver
+must remain unavailable until that contract and any physics-specific balance
+attributes are implemented.
 
 The existing GM dungeon prop workflow is described in
 `docs/DUNGEON_PROP_MOVEMENT.md`. It already supplies passive-scenery eligibility,
@@ -92,21 +94,21 @@ without exposing the GM-only preview hologram to other pilots.
 
 ## SDE and client integration gate
 
-When the entry arrives, record the exact type ID, group/category, fitting slot,
-effect ID/name, effect category, required skills, charge requirements, Dogma
-attributes, and FX GUID from the imported static tables. If it is a Creation
-module, also confirm its `creationModules` row and powered-hull behavior.
-Inspect the client activation payload to decide whether it sends a target ID,
-an aim point, or both, and confirm that the client can activate on a scenery
-ball and display the replacement world ball. Keep the server resolver disabled
-until this contract is verified. Avoid approximating missing SDE values with
-tractor beam constants.
+Physics Gun currently inherits Cutting Laser's group 4767, category 7,
+Creation weapon hardpoint, and effects 16, 1212, and 12887. Its held-beam
+activation effect is 12887. The prop-grab contract still needs an explicit
+target or aim selection, grab/release commands, mass and size limits, and
+client retarget behavior when a site ball becomes a detached world ball.
+Confirm that the client can select scenery and display the replacement ball
+before enabling the grab resolver. Avoid approximating missing physics
+attributes with tractor beam constants.
 
 ## Implementation sequence and acceptance
 
-1. **Contract:** import and validate the new SDE/client entry; document its
-   identifiers and attributes. Test that absence or incompleteness disables
-   the module without affecting ordinary tractor beams.
+1. **Contract:** extend Physics Gun's current held-beam client contract with
+   an explicit prop selection and grab/release payload. Define physics limits
+   and test that an incomplete contract disables grabbing without affecting
+   ordinary Cutting Laser behavior or tractor beams.
 2. **Authority:** share scenery eligibility, add player/module validation and
    the exclusive lease, then commit detachment before scene replacement. Test
    stale target, wrong instance, hidden/active props, oversized props, failed
@@ -122,5 +124,6 @@ tractor beam constants.
 
 Completion means a normal fitted module can grab one eligible prop, carry it
 with bounded collision-aware motion, and release it; the prop remains detached
-and recoverable after dungeon reset or restart. Until the SDE entry exists,
-this plan is ready for implementation but the player-facing module is blocked.
+and recoverable after dungeon reset or restart. The Physics Gun base item is
+implemented, but player-facing prop grabbing remains blocked on the contract and
+server motion work above.

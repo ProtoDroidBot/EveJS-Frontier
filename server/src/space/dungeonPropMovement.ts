@@ -12,6 +12,7 @@ const {
 } = require("../services/dungeon/dungeonPropMoveSelection");
 const { getDetachedDungeonPropStore } = require("./detachedDungeonProps");
 const {
+  buildCollisionImpactSnapshot,
   canEntitiesCollide,
   findSweptEntityCollision,
   getEntityCollisionBroadphaseRadius,
@@ -79,10 +80,19 @@ function findMovingPropProfileCollision(scene, prop, start, end) {
       end,
     );
     if (inverse && (!first || inverse.fraction < first.fraction)) {
+      const { resolvedPosition, ...contact } = inverse;
       first = {
-        ...inverse,
+        ...contact,
+        candidate: obstacle,
         entityID: obstacle.itemID,
         kind: String(obstacle.kind || "object"),
+        // The inverse sweep treats the obstacle as the mover. Present the
+        // normal from the obstacle toward the actual moving prop.
+        normal: {
+          x: -inverse.normal.x,
+          y: -inverse.normal.y,
+          z: -inverse.normal.z,
+        },
       };
     }
   }
@@ -356,6 +366,7 @@ function tickDetachedPropMove(scene, entity, deltaSeconds, nowMs, options: Recor
     velocity: { x: unit.x * speed, y: unit.y * speed, z: unit.z * speed },
   };
   const intendedPosition = { ...proposed.position };
+  const intendedVelocity = { ...proposed.velocity };
   let collision = resolveEntityMovementCollision(proposed, scene, current, {
     activeTickSequence: scene._activeTickSequence,
   });
@@ -371,7 +382,17 @@ function tickDetachedPropMove(scene, entity, deltaSeconds, nowMs, options: Recor
       y: current.y + (intendedPosition.y - current.y) * stopFraction,
       z: current.z + (intendedPosition.z - current.z) * stopFraction,
     };
-    collision = profileCollision;
+    const obstacle = profileCollision.candidate;
+    collision = {
+      ...profileCollision,
+      impact: buildCollisionImpactSnapshot(
+        { ...proposed, velocity: intendedVelocity },
+        obstacle,
+        profileCollision.normal,
+        obstacle.collisionStatic === true ||
+          (Array.isArray(scene.staticEntities) && scene.staticEntities.includes(obstacle)),
+      ),
+    };
   }
   const store = options.store || getDetachedDungeonPropStore();
   let checkpoint;

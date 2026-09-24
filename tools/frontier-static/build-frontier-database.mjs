@@ -133,11 +133,13 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
         "mapMoons.jsonl",
         "mapLagrangePoints.jsonl",
     ].reduce((sum, fileName) => sum + snapshotManifest.outputs[fileName].records, 0);
+    // Build 3502403 adds one local Cutting Laser copy outside the extracted SDE.
+    const localPhysicsGunCount = Number(snapshotManifest.source.client.build) === 3502403 ? 1 : 0;
     const expected = {
         celestials: expectedCelestials,
-        itemTypes: snapshotManifest.outputs["types.jsonl"].records - 1,
+        itemTypes: snapshotManifest.outputs["types.jsonl"].records - 1 + localPhysicsGunCount,
         creationHardpointTypes: snapshotManifest.outputs["creationHardpointTypes.jsonl"].records,
-        creationModules: snapshotManifest.outputs["creationModules.jsonl"].records,
+        creationModules: snapshotManifest.outputs["creationModules.jsonl"].records + localPhysicsGunCount,
         creationParts: snapshotManifest.outputs["creationParts.jsonl"].records,
         creationTemplates: snapshotManifest.outputs["creationTemplates.jsonl"].records,
         frontierDungeonTemplates: snapshotManifest.outputs["frontierDungeonTemplates.jsonl"].records,
@@ -168,6 +170,30 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
     for (const key of Object.keys(expected)) {
         if (actual[key] !== expected[key]) {
             throw new Error(`Generated ${key} count mismatch: expected ${expected[key]}, found ${actual[key]}`);
+        }
+    }
+    if (localPhysicsGunCount) {
+        const sourceType = itemTypes.find((entry) => Number(entry.typeID) === 95317);
+        const physicsGunTypes = itemTypes.filter((entry) => Number(entry.typeID) === 99999);
+        const physicsGunModules = creationModules.filter((entry) => Number(entry.typeID) === 99999);
+        const dogma = readTable(dataDir, "typeDogma", "typesByTypeID");
+        const sourceDogma = dogma["95317"];
+        const physicsGunDogma = dogma["99999"];
+        if (!sourceType || physicsGunTypes.length !== 1 ||
+            physicsGunTypes[0].name !== "Physics Gun" ||
+            !["groupID", "categoryID", "mass", "volume", "capacity", "iconID", "graphicID"]
+                .every((field) => physicsGunTypes[0][field] === sourceType[field]) ||
+            physicsGunModules.length !== 1 ||
+            physicsGunModules[0].behavior !== "generic" ||
+            physicsGunModules[0].capability !== "weapon" ||
+            physicsGunModules[0].system !== "weapons" ||
+            JSON.stringify(physicsGunModules[0].placement?.compatible_hardpoints) !== JSON.stringify(["weapon"]) ||
+            !sourceDogma || !physicsGunDogma ||
+            physicsGunDogma.typeName !== "Physics Gun" ||
+            JSON.stringify(physicsGunDogma.attributes) !== JSON.stringify(sourceDogma.attributes) ||
+            JSON.stringify(physicsGunDogma.effects) !== JSON.stringify(sourceDogma.effects) ||
+            JSON.stringify(physicsGunDogma.effectEntries) !== JSON.stringify(sourceDogma.effectEntries)) {
+            throw new Error("Generated Physics Gun type, Creation module, or Dogma differs from Cutting Laser");
         }
     }
     if (clientTypeListTable.schemaVersion !== 2 ||

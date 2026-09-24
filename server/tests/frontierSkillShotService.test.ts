@@ -10,6 +10,7 @@ const SkillShotService = require("../src/services/frontier/skillShotService");
 const {
   AUTO_FIRE_CONTRACT_MARKER,
   SkillShotRuntime,
+  SKILL_SHOT_PROFILES,
   SKILL_SHOT_EFFECT_GUID,
 } = require("../src/services/frontier/skillShotRuntime");
 const {
@@ -235,6 +236,8 @@ test("Creation skill-shot types participate in normal weapon dogma snapshots", (
   assert.equal(resolveWeaponFamily({ typeID: 94076, groupID: 55 }), "projectileTurret");
   assert.equal(resolveWeaponFamily({ typeID: 95753, groupID: 56 }), "projectileTurret");
   assert.equal(resolveWeaponFamily({ typeID: 95317, groupID: 4767 }), "laserTurret");
+  assert.equal(resolveWeaponFamily({ typeID: 99999, groupID: 4767 }), "laserTurret");
+  assert.deepEqual(SKILL_SHOT_PROFILES.get(99999), SKILL_SHOT_PROFILES.get(95317));
   assert.equal(resolveWeaponFamily({ typeID: 95503, groupID: 4767 }), "laserTurret");
   assert.equal(resolveWeaponFamily({ typeID: 95778, groupID: 4767 }), "laserTurret");
 });

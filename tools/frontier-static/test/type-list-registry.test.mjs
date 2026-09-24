@@ -7,7 +7,7 @@ import { buildTypeListRegistry } from "../build-type-list-registry.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const source = path.join(repoRoot, "_local/frontier-sde/3502403/typeLists.jsonl");
-const output = path.join(repoRoot, "doc/SDE_TYPELIST_REGISTRY_3502403.json");
+const output = path.join(repoRoot, "docs/SDE_TYPELIST_REGISTRY_3502403.json");
 
 test("P4 registry classifies every source list and stays pinned to build 3502403", {
   skip: !fs.existsSync(source) && "local SDE snapshot is not installed",
