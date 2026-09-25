@@ -18,6 +18,26 @@ const {
   normalizeDestinyStamp,
   resolveOptionalDestinyStamp,
 } = require("../delivery/stamps");
+const {
+  isPostSetStateBootstrapStaticEntity,
+  uniqueEntitiesByItemID,
+} = require("../bootstrap/initialBallpark");
+
+function planStateRefreshEntities(visibleEntities, isIncrementalStaticVisibilityEntity) {
+  const allEntities = uniqueEntitiesByItemID(visibleEntities);
+  const deferredStaticEntities = allEntities.filter((entity) => (
+    (entity.dungeonMaterializedSiteContent === true &&
+      entity.staticVisibilityScope === "bubble") ||
+    isPostSetStateBootstrapStaticEntity(entity, {
+      isIncrementalStaticVisibilityEntity,
+    })
+  ));
+  const deferredIDs = new Set(deferredStaticEntities.map((entity) => entity.itemID));
+  return {
+    stateEntities: allEntities.filter((entity) => !deferredIDs.has(entity.itemID)),
+    deferredStaticEntities,
+  };
+}
 
 function createMovementSceneRefresh(deps: Record<string, any> = {}) {
   const {
@@ -27,6 +47,7 @@ function createMovementSceneRefresh(deps: Record<string, any> = {}) {
     notifyActiveHostileJamStatesToSession,
     notifyActiveCommandBurstHudStatesToSession,
     isReadyForDestiny,
+    isIncrementalStaticVisibilityEntity,
     logMissileDebug,
     logMovementDebug,
     refreshEntitiesForSlimPayload,
@@ -47,11 +68,10 @@ function createMovementSceneRefresh(deps: Record<string, any> = {}) {
       const visibleEntities = refreshEntitiesForSlimPayload(
         runtime.getVisibleEntitiesForSession(session),
       );
-      const stateRefreshVisibleEntities = visibleEntities.filter((entity) => !(
-        entity &&
-        entity.dungeonMaterializedSiteContent === true &&
-        entity.staticVisibilityScope === "bubble"
-      ));
+      const {
+        stateEntities: stateRefreshVisibleEntities,
+        deferredStaticEntities,
+      } = planStateRefreshEntities(visibleEntities, isIncrementalStaticVisibilityEntity);
       const rawStamp =
         stampOverride === null
           ? runtime.getNextDestinyStamp()
@@ -203,6 +223,7 @@ function createMovementSceneRefresh(deps: Record<string, any> = {}) {
         liveStateResetFloor,
         finalStamp: stamp,
         visibleEntityCount: stateRefreshVisibleEntities.length,
+        deferredStaticEntityCount: deferredStaticEntities.length,
       });
       // SetState must skip the owner-critical monotonic restamp pass.
       // During missile combat, lifecycle stamps compound far ahead of
@@ -234,6 +255,25 @@ function createMovementSceneRefresh(deps: Record<string, any> = {}) {
             ? `set-state:${options.reason}`
             : "set-state:unspecified",
       });
+      // SetState resets Michelle's native ballpark. Reacquire the statics that
+      // bootstrap deliberately keeps out of its full-state stream; otherwise
+      // a later UpdateStateRequest puts those balls in an incompatible lane.
+      if (deferredStaticEntities.length > 0) {
+        const addStamp = normalizeDestinyStamp(stamp + 1, stamp);
+        runtime.sendDestinyUpdates(session, [
+          {
+            stamp: addStamp,
+            payload: destiny.buildAddBalls2Payload(
+              addStamp,
+              deferredStaticEntities,
+              simFileTime,
+            ),
+          },
+        ], false, {
+          destinyAuthorityContract: DESTINY_CONTRACTS.BOOTSTRAP_ACQUIRE,
+          translateStamps: false,
+        });
+      }
       if (
         options.skipHudIconReseed !== true &&
         typeof notifyActiveAssistanceJamStatesToSession === "function"
@@ -292,4 +332,5 @@ function createMovementSceneRefresh(deps: Record<string, any> = {}) {
 
 module.exports = {
   createMovementSceneRefresh,
+  planStateRefreshEntities,
 };

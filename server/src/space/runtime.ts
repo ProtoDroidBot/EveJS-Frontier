@@ -23175,6 +23175,7 @@ const movementSceneRefresh = createMovementSceneRefresh({
   notifyActiveHostileJamStatesToSession,
   notifyActiveCommandBurstHudStatesToSession,
   isReadyForDestiny,
+  isIncrementalStaticVisibilityEntity,
   logMissileDebug,
   logMovementDebug,
   refreshEntitiesForSlimPayload,

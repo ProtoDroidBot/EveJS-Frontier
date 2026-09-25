@@ -11,6 +11,7 @@ sys.path.insert(0, str(CLIENT_DIR))
 
 import skillshot_authority_auto_cannon_adapter as auto_adapter  # noqa: E402
 import skillshot_authority_controller_adapter as controller_adapter  # noqa: E402
+import skillshot_held_beam_charge_adapter as held_beam_adapter  # noqa: E402
 
 
 class ControllerAdapterTests(unittest.TestCase):
@@ -192,6 +193,30 @@ class AutoCannonAdapterTests(unittest.TestCase):
             self.original_failures,
             [("NoCharges", {"module": 701})],
         )
+
+
+class HeldBeamChargeAuthorityTests(unittest.TestCase):
+    def test_stale_local_charge_cache_does_not_suppress_server_fire(self):
+        calls = []
+
+        class HeldBeamFireUnit:
+            def _has_loaded_charge(self):
+                return False
+
+            def begin_firing(self):
+                if self._has_loaded_charge():
+                    calls.append("BeginHeldBeam")
+
+        held_beam_adapter._evejs_install_held_beam_charge_authority({
+            "HeldBeamFireUnit": HeldBeamFireUnit,
+        })
+        patched = HeldBeamFireUnit._has_loaded_charge
+        held_beam_adapter._evejs_install_held_beam_charge_authority({
+            "HeldBeamFireUnit": HeldBeamFireUnit,
+        })
+        self.assertIs(HeldBeamFireUnit._has_loaded_charge, patched)
+        HeldBeamFireUnit().begin_firing()
+        self.assertEqual(calls, ["BeginHeldBeam"])
 
 
 if __name__ == "__main__":

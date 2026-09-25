@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { emitPhysicsGunPose } = require("../src/space/physicsGunPoseStream");
+const { emitPhysicsGunPose, POSE_HEARTBEAT_MS } = require("../src/space/physicsGunPoseStream");
 const { marshalEncode } = require("../src/network/tcp/utils/marshal");
 
 test("Physics Gun pose stream stays bubble-scoped, ordered, throttled, and terminal", () => {
@@ -64,4 +64,34 @@ test("Physics Gun pose stream stays bubble-scoped, ordered, throttled, and termi
   assert.deepEqual(terminal.position, [160, 2, 3]);
   assert.equal(received[1].at(-1)[2].mode, "hide");
   assert.equal(received[2].at(-1)[2].mode, "stop");
+});
+
+test("unchanged held pose stays live while the beam is active", () => {
+  const received: any[] = [];
+  const session = {
+    _space: { systemID: 30000142 },
+    sendNotification(_name, _route, values) {
+      received.push(Object.fromEntries(values[0].entries));
+    },
+  };
+  const scene = {
+    systemID: 30000142,
+    sessions: new Map([[1, session]]),
+    canSessionSeeDynamicEntity: () => true,
+  };
+  const entity = {
+    itemID: 8_600_000_000_000_000,
+    position: { x: 10, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+  };
+  const state = { tether: { moduleID: 99999, contactOffset: { x: 0, y: 0, z: 0 } } };
+  emitPhysicsGunPose(scene, entity, state, "start", 1_000);
+  assert.equal(emitPhysicsGunPose(scene, entity, state, "update",
+    1_000 + POSE_HEARTBEAT_MS - 1), null);
+  const heartbeat = emitPhysicsGunPose(scene, entity, state, "update",
+    1_000 + POSE_HEARTBEAT_MS);
+  assert.equal(heartbeat.revision, 2);
+  assert.equal(heartbeat.simTimeMs, 1_000 + POSE_HEARTBEAT_MS);
+  assert.deepEqual(received.map((payload) => payload.mode), ["start", "update"]);
+  assert.deepEqual(received[1].position, received[0].position);
 });

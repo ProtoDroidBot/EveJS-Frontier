@@ -5,7 +5,7 @@ import time
 
 
 _MAX_SAMPLES = 8
-_STALE_SIM_MS = 1000.0
+_STALE_SIM_MS = 1500.0
 
 
 def _evejs_phys_field(value, name, default=None):
@@ -58,6 +58,8 @@ class _EvejsPhysicsPoseTrack:
         self.revision = 0
         self.samples = []
         self.receipt_ms = receipt_ms
+        self.interval_ms = 100.0
+        self.render_sim_ms = None
         self.model = None
         self.translation = None
         self.rotation = None
@@ -70,6 +72,15 @@ class _EvejsPhysicsPoseTrack:
             return False
         if self.samples and sample["sim_ms"] <= self.samples[-1]["sim_ms"]:
             return False
+        if self.samples:
+            interval = sample["sim_ms"] - self.samples[-1]["sim_ms"]
+            if interval > _STALE_SIM_MS:
+                # A discontinuity is an authoritative snap, not a path to blend.
+                self.samples.clear()
+                self.render_sim_ms = None
+            else:
+                self.interval_ms = (interval if len(self.samples) == 1 else
+                                    0.8 * self.interval_ms + 0.2 * interval)
         self.revision = sample["revision"]
         self.receipt_ms = receipt_ms
         self.samples.append(sample)
@@ -79,11 +90,16 @@ class _EvejsPhysicsPoseTrack:
     def pose(self, now_ms):
         latest = self.samples[-1]
         if len(self.samples) == 1:
+            self.render_sim_ms = latest["sim_ms"]
             return latest
-        interval = max(1.0, latest["sim_ms"] - self.samples[-2]["sim_ms"])
-        delay = max(100.0, min(500.0, interval * 1.5))
+        delay = max(100.0, min(300.0, self.interval_ms * 1.5))
         elapsed = max(0.0, now_ms - self.receipt_ms)
-        target = latest["sim_ms"] + elapsed - delay
+        target = min(latest["sim_ms"], latest["sim_ms"] + elapsed - delay)
+        if self.render_sim_ms is not None:
+            # Packet jitter may grow the adaptive delay. Never play a held
+            # object backward merely because a later sample arrived late.
+            target = max(target, self.render_sim_ms)
+        self.render_sim_ms = target
         if target <= self.samples[0]["sim_ms"]:
             return self.samples[0]
         for left, right in zip(self.samples, self.samples[1:]):

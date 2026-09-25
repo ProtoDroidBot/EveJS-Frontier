@@ -65,6 +65,7 @@ ACTION_PROVIDER_PREVIOUS_WRAPPER_SHA256 = {
     "6275cf9bb8ecd7c1618d7198a05c623ea49b1c9b77cd5cfea5728ada68a8ce60",
     "72dab66f740fa29c98c8ae8f34182cd69b18db1181e404182e6208f447c750e4",
     "34fd2f715ff371190737025f185ca715e95593241bd62d7e346834dc7510c7fe",
+    "cd6775cf4eab24032c6d079b9211ac87bdc03ac45cca967db2b79b21bdbaebd4",
 }
 ACTION_BAR_INTEGRATION_MODULE_NAME = "frontier/hud/action_bar/integration.pyc"
 ACTION_BAR_INTEGRATION_SOURCE_MEMBER_SHA256 = "092f955e64a6ee6b89b54b395c77c8b9fe432af590fa9a22de210b72068363c4"
@@ -91,6 +92,8 @@ SKILLSHOT_AUTO_CANNON_SOURCE_MEMBER_SHA256 = "b4698b692cfb9c2af113b367b16aea3c5d
 SKILLSHOT_AUTO_CANNON_PREVIOUS_WRAPPER_SHA256 = {
     "a5790102cb176a83c78c4d4b5238067769e298eeebe236c649e9dc4c26ca8ed5",
 }
+SKILLSHOT_HELD_BEAM_MODULE_NAME = "frontier/skillshot/client/mode/held_beam.pyc"
+SKILLSHOT_HELD_BEAM_SOURCE_MEMBER_SHA256 = "bdca981a4054cdd13dca7988eb2322243259a787316236f42e60ddfb0d57427b"
 PREVIOUS_WRAPPER_SHA256 = {
     "7bc9a9c35d68d5ae16afc2395f97393596a9b1f3bfb82199b556048b93bc8372",
     "2fe48420ddbeef27c039494a260aa287730306f23de75ae2cfa147a7bd6a3860",
@@ -132,6 +135,9 @@ SKILLSHOT_CONTROLLER_ADAPTER = Path(__file__).with_name(
 SKILLSHOT_AUTO_CANNON_ADAPTER = Path(__file__).with_name(
     "skillshot_authority_auto_cannon_adapter.py"
 )
+SKILLSHOT_HELD_BEAM_ADAPTER = Path(__file__).with_name(
+    "skillshot_held_beam_charge_adapter.py"
+)
 SOURCE_SENTINEL = b"EVEJS_FITTING_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_FITTING_ADAPTER_CODE_V1"
 MENU_SOURCE_SENTINEL = b"EVEJS_NPC_FITTING_MENU_ORIGINAL_MEMBER_V1"
@@ -163,6 +169,12 @@ SKILLSHOT_AUTO_CANNON_SOURCE_SENTINEL = (
 )
 SKILLSHOT_AUTO_CANNON_ADAPTER_SENTINEL = (
     b"EVEJS_SKILLSHOT_AUTO_CANNON_ADAPTER_CODE_V1"
+)
+SKILLSHOT_HELD_BEAM_SOURCE_SENTINEL = (
+    b"EVEJS_SKILLSHOT_HELD_BEAM_ORIGINAL_MEMBER_V1"
+)
+SKILLSHOT_HELD_BEAM_ADAPTER_SENTINEL = (
+    b"EVEJS_SKILLSHOT_HELD_BEAM_ADAPTER_CODE_V1"
 )
 
 
@@ -450,6 +462,34 @@ def patched_skillshot_auto_cannon_member(member):
     return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
 
 
+def patched_skillshot_held_beam_member(member):
+    original = marshal.loads(member[16:])
+    adapter = compile(
+        SKILLSHOT_HELD_BEAM_ADAPTER.read_text(encoding="utf-8"),
+        "evejs/skillshot_held_beam_charge_adapter.py",
+        "exec",
+        dont_inherit=True,
+    )
+    wrapper = compile(
+        "import marshal as _evejs_skillshot_held_beam_marshal\n"
+        "exec(_evejs_skillshot_held_beam_marshal.loads(b'EVEJS_SKILLSHOT_HELD_BEAM_ORIGINAL_MEMBER_V1'[16:]))\n"
+        "exec(_evejs_skillshot_held_beam_marshal.loads(b'EVEJS_SKILLSHOT_HELD_BEAM_ADAPTER_CODE_V1'))\n"
+        "_evejs_install_held_beam_charge_authority(globals())\n",
+        original.co_filename,
+        "exec",
+        dont_inherit=True,
+    )
+    constants = tuple(
+        member
+        if value == SKILLSHOT_HELD_BEAM_SOURCE_SENTINEL
+        else marshal.dumps(adapter)
+        if value == SKILLSHOT_HELD_BEAM_ADAPTER_SENTINEL
+        else value
+        for value in wrapper.co_consts
+    )
+    return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
+
+
 def inspect_member(
     member,
     expected=SOURCE_MEMBER_SHA256,
@@ -504,6 +544,7 @@ def inspect_archive(archive, build=BUILD):
             LEAP_HINT_MODULE_NAME,
             SKILLSHOT_CONTROLLER_MODULE_NAME,
             SKILLSHOT_AUTO_CANNON_MODULE_NAME,
+            SKILLSHOT_HELD_BEAM_MODULE_NAME,
         ):
             entries = [
                 entry
@@ -573,6 +614,12 @@ def inspect_archive(archive, build=BUILD):
             patched_skillshot_auto_cannon_member,
             SKILLSHOT_AUTO_CANNON_PREVIOUS_WRAPPER_SHA256,
         )
+        skillshot_held_beam_state, skillshot_held_beam_original = inspect_member(
+            source.read(entries_by_name[SKILLSHOT_HELD_BEAM_MODULE_NAME]),
+            SKILLSHOT_HELD_BEAM_SOURCE_MEMBER_SHA256,
+            patched_skillshot_held_beam_member,
+            set(),
+        )
 
     states = {
         command_state,
@@ -585,6 +632,7 @@ def inspect_archive(archive, build=BUILD):
         leap_hint_state,
         skillshot_controller_state,
         skillshot_auto_cannon_state,
+        skillshot_held_beam_state,
     }
     if states == {"patched"}:
         state = "patched"
@@ -620,6 +668,10 @@ def inspect_archive(archive, build=BUILD):
         SKILLSHOT_AUTO_CANNON_MODULE_NAME: (
             skillshot_auto_cannon_state,
             skillshot_auto_cannon_original,
+        ),
+        SKILLSHOT_HELD_BEAM_MODULE_NAME: (
+            skillshot_held_beam_state,
+            skillshot_held_beam_original,
         ),
     }
 
@@ -689,6 +741,13 @@ def patch_archive(archive, build=BUILD):
                 patched_skillshot_auto_cannon_member(
                     skillshot_auto_cannon_original
                 )
+            )
+        skillshot_held_beam_state, skillshot_held_beam_original = originals[
+            SKILLSHOT_HELD_BEAM_MODULE_NAME
+        ]
+        if skillshot_held_beam_state != "patched":
+            replacements[SKILLSHOT_HELD_BEAM_MODULE_NAME] = (
+                patched_skillshot_held_beam_member(skillshot_held_beam_original)
             )
         rewrite_archive(archive, replacements)
     if inspect_archive(archive, build)[0] != "patched":

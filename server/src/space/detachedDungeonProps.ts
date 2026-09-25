@@ -18,7 +18,7 @@ const PRESENTATION_FIELDS = Object.freeze([
   "collisionQuaternion", "collisionRotation",
   "miniBalls", "miniballs", "miniBoxes", "miniboxes",
   "miniCapsules", "minicapsules",
-  "dunRotation", "mass", "agility", "inertia", "maxVelocity", "speed",
+  "dunObjectID", "dunRadius", "dunRotation", "mass", "agility", "inertia", "maxVelocity", "speed",
   "speedFraction",
   "destinyBallMode", "destinyForceFree", "destinyBallFlags",
   "destinyCollisionTail", "destinyCollisionTailSource",

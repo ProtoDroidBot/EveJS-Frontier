@@ -1222,7 +1222,6 @@ function buildDogmaInfoInventoryRow(item) {
     0,
     Number(item && (item.stacksize ?? item.quantity ?? 0)) || 0,
   );
-  const singleton = Number(item && item.singleton) === 1 ? 1 : 0;
   return {
     type: "object",
     name: "util.Row",
@@ -1239,8 +1238,6 @@ function buildDogmaInfoInventoryRow(item) {
           "groupID",
           "categoryID",
           "customInfo",
-          "stacksize",
-          "singleton",
         ]],
         ["line", [
           item.itemID,
@@ -1252,8 +1249,6 @@ function buildDogmaInfoInventoryRow(item) {
           item.groupID,
           item.categoryID,
           item.customInfo || "",
-          normalizedChargeQuantity,
-          singleton,
         ]],
       ],
     },

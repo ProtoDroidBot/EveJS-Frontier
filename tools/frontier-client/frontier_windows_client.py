@@ -38,6 +38,7 @@ FITTING_COMPATIBILITY_PATCHER = SCRIPT_DIR / "patch_frontier_fitting.py"
 TURRET_TRACKING_PATCHER = SCRIPT_DIR / "patch_frontier_turret_tracking.py"
 INVENTORY_VIEW_PATCHER = SCRIPT_DIR / "patch_frontier_inventory.py"
 COLLISION_VFX_PATCHER = SCRIPT_DIR / "patch_frontier_collision_vfx.py"
+ASTEROID_VISUAL_SCALE_PATCHER = SCRIPT_DIR / "patch_frontier_asteroid_visual_scale.py"
 CREATION_TRANSFORM_PATCHER = (
     SCRIPT_DIR / "patch_frontier_creation_transform.py"
 )
@@ -758,6 +759,12 @@ def code_patch_states(archive: Path, build: int) -> dict:
         if collision_vfx not in {"source", "patched", "outdated"}:
             raise FrontierWindowsError(f"Unexpected collision VFX state: {collision_vfx}")
         states["collisionVfx"] = collision_vfx
+        asteroid_visual_scale = run_python_patcher(
+            ASTEROID_VISUAL_SCALE_PATCHER, archive, build, check=True)
+        if asteroid_visual_scale not in {"source", "patched", "outdated"}:
+            raise FrontierWindowsError(
+                f"Unexpected asteroid visual-scale state: {asteroid_visual_scale}")
+        states["asteroidVisualScale"] = asteroid_visual_scale
         creation_transform = run_python_patcher(
             CREATION_TRANSFORM_PATCHER, archive, build, check=True
         )
@@ -791,6 +798,7 @@ def expected_code_states(build: int, state: str) -> dict:
         result["fittingCompatibility"] = state
         result["inventoryView"] = state
         result["collisionVfx"] = state
+        result["asteroidVisualScale"] = state
         result["creationTransform"] = state
         result["dungeonPropHologram"] = state
         result["physicsGun"] = state
@@ -822,6 +830,8 @@ def patch_code_archive(archive: Path, build: int) -> dict:
         run_python_patcher(INVENTORY_VIEW_PATCHER, archive, build, check=False)
     if states.get("collisionVfx") in {"source", "outdated"}:
         run_python_patcher(COLLISION_VFX_PATCHER, archive, build, check=False)
+    if states.get("asteroidVisualScale") in {"source", "outdated"}:
+        run_python_patcher(ASTEROID_VISUAL_SCALE_PATCHER, archive, build, check=False)
     if states.get("creationTransform") in {"source", "outdated"}:
         run_python_patcher(CREATION_TRANSFORM_PATCHER, archive, build, check=False)
     if states.get("dungeonPropHologram") in {"source", "outdated"}:
@@ -1454,6 +1464,8 @@ def check_stage(
     allow_inventory_view_outdated: bool = False,
     allow_collision_vfx_source: bool = False,
     allow_collision_vfx_outdated: bool = False,
+    allow_asteroid_visual_scale_source: bool = False,
+    allow_asteroid_visual_scale_outdated: bool = False,
     allow_creation_transform_source: bool = False,
     allow_dungeon_prop_hologram_source: bool = False,
     allow_dungeon_prop_hologram_outdated: bool = False,
@@ -1504,6 +1516,12 @@ def check_stage(
     if (allow_collision_vfx_outdated and build == 3502403
             and code_states.get("collisionVfx") == "outdated"):
         expected_states["collisionVfx"] = "outdated"
+    if (allow_asteroid_visual_scale_source and build == 3502403
+            and code_states.get("asteroidVisualScale") == "source"):
+        expected_states["asteroidVisualScale"] = "source"
+    if (allow_asteroid_visual_scale_outdated and build == 3502403
+            and code_states.get("asteroidVisualScale") == "outdated"):
+        expected_states["asteroidVisualScale"] = "outdated"
     if (allow_creation_transform_source and build == 3502403
             and code_states.get("creationTransform") in {"source", "outdated"}):
         expected_states["creationTransform"] = code_states["creationTransform"]
@@ -1672,6 +1690,8 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
                 allow_inventory_view_outdated=True,
                 allow_collision_vfx_source=True,
                 allow_collision_vfx_outdated=True,
+                allow_asteroid_visual_scale_source=True,
+                allow_asteroid_visual_scale_outdated=True,
                 allow_creation_transform_source=True,
                 allow_dungeon_prop_hologram_source=True,
                 allow_dungeon_prop_hologram_outdated=True,
@@ -1688,6 +1708,7 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             and states.get("fittingCompatibility") == "patched"
             and states.get("inventoryView") == "patched"
             and states.get("collisionVfx") == "patched"
+            and states.get("asteroidVisualScale") == "patched"
             and states.get("creationTransform") == "patched"
             and states.get("dungeonPropHologram") == "patched"
             and states.get("physicsGun") == "patched"
@@ -1699,6 +1720,7 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             or states.get("fittingCompatibility") not in {"source", "patched", "outdated"}
             or states.get("inventoryView") not in {"source", "patched", "outdated"}
             or states.get("collisionVfx") not in {"source", "patched", "outdated"}
+            or states.get("asteroidVisualScale") not in {"source", "patched", "outdated"}
             or states.get("creationTransform") not in {"source", "patched", "outdated"}
             or states.get("dungeonPropHologram") not in {"source", "patched", "outdated"}
             or states.get("physicsGun") not in {"source", "patched", "outdated"}
@@ -1735,6 +1757,8 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             run_python_patcher(INVENTORY_VIEW_PATCHER, paths["code"], build, check=False)
         if states["collisionVfx"] != "patched":
             run_python_patcher(COLLISION_VFX_PATCHER, paths["code"], build, check=False)
+        if states["asteroidVisualScale"] != "patched":
+            run_python_patcher(ASTEROID_VISUAL_SCALE_PATCHER, paths["code"], build, check=False)
         if states["creationTransform"] != "patched":
             run_python_patcher(CREATION_TRANSFORM_PATCHER, paths["code"], build, check=False)
         if states["dungeonPropHologram"] != "patched":
@@ -1780,6 +1804,10 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             marker["collisionVfxPatchState"] = "patched"
             marker["collisionVfxPatchBackup"] = str(backup_root)
             marker["preCollisionVfxHashes"] = original_hashes
+        if states["asteroidVisualScale"] != "patched":
+            marker["asteroidVisualScalePatchState"] = "patched"
+            marker["asteroidVisualScalePatchBackup"] = str(backup_root)
+            marker["preAsteroidVisualScaleHashes"] = original_hashes
         if states["creationTransform"] != "patched":
             marker["creationTransformPatchState"] = "patched"
             marker["creationTransformPatchBackup"] = str(backup_root)
@@ -1900,6 +1928,7 @@ def patch_stage(
                 "fittingCompatibilityPatchState": code_states.get("fittingCompatibility"),
                 "inventoryViewPatchState": code_states.get("inventoryView"),
                 "collisionVfxPatchState": code_states.get("collisionVfx"),
+                "asteroidVisualScalePatchState": code_states.get("asteroidVisualScale"),
                 "creationTransformPatchState": code_states.get("creationTransform"),
                 "dungeonPropHologramPatchState": code_states.get("dungeonPropHologram"),
                 "physicsGunPatchState": code_states.get("physicsGun"),

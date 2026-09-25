@@ -17,8 +17,13 @@ BUILD = 3502403
 MODULE_NAME = "frontier/hud/bracket/state.pyc"
 SOURCE_MEMBER_SHA256 = "55ac03aed94839e454c947aab18fc5fbfe7a7eddc5178dbf7fad59ba4abb848a"
 ADAPTER = Path(__file__).with_name("map_view_lifecycle_adapter.py")
+SCENE_MODULE_NAME = "eve/client/script/ui/shared/mapView/mapView.pyc"
+SCENE_SOURCE_SHA256 = "8988074150c99949b45ca4028493cd29557a06ea137ff23f5ae1a7bb78815169"
+SCENE_ADAPTER = Path(__file__).with_name("map_view_scene_adapter.py")
 SOURCE_SENTINEL = b"EVEJS_MAP_VIEW_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_MAP_VIEW_ADAPTER_CODE_V1"
+SCENE_SOURCE_SENTINEL = b"EVEJS_MAP_SCENE_ORIGINAL_MEMBER_V1"
+SCENE_ADAPTER_SENTINEL = b"EVEJS_MAP_SCENE_ADAPTER_CODE_V1"
 UPGRADEABLE_ADAPTER_CODE_SHA256S = {
     # Original lifecycle-only adapter.
     "d8bdf08c29f3191bca104f92ded4c83fb4b5011cd350587c9ac18db9a7e9170e",
@@ -64,6 +69,47 @@ def patched_member(member):
     return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
 
 
+def patched_scene_member(member):
+    original = marshal.loads(member[16:])
+    adapter = compile(
+        SCENE_ADAPTER.read_text(encoding="utf-8"),
+        "evejs/map_view_scene_adapter.py", "exec", dont_inherit=True,
+    )
+    wrapper = compile(
+        "import marshal as _evejs_map_scene_marshal\n"
+        "exec(_evejs_map_scene_marshal.loads(b'EVEJS_MAP_SCENE_ORIGINAL_MEMBER_V1'[16:]))\n"
+        "exec(_evejs_map_scene_marshal.loads(b'EVEJS_MAP_SCENE_ADAPTER_CODE_V1'))\n"
+        "_evejs_install_map_view_scene_lifecycle(globals())\n",
+        original.co_filename, "exec", dont_inherit=True,
+    )
+    constants = tuple(
+        member if value == SCENE_SOURCE_SENTINEL else
+        marshal.dumps(adapter) if value == SCENE_ADAPTER_SENTINEL else value
+        for value in wrapper.co_consts
+    )
+    return member[:16] + marshal.dumps(wrapper.replace(co_consts=constants))
+
+
+def inspect_scene_member(member, expected=SCENE_SOURCE_SHA256):
+    if len(member) < 16 or member[:4] != importlib.util.MAGIC_NUMBER:
+        raise MapViewPatchError("Unexpected map scene bytecode header")
+    if hashlib.sha256(member).hexdigest() == expected:
+        return "source", member
+    try:
+        wrapper = marshal.loads(member[16:])
+        if not isinstance(wrapper, types.CodeType):
+            raise ValueError("Not a code object")
+        originals = [
+            value for value in wrapper.co_consts
+            if isinstance(value, bytes) and hashlib.sha256(value).hexdigest() == expected
+        ]
+        if len(originals) == 1 and patched_scene_member(originals[0]) == member:
+            return "patched", originals[0]
+    except (EOFError, TypeError, ValueError):
+        pass
+    raise MapViewPatchError("Map scene module differs from the supported source or patch")
+
+
 def inspect_member(member, expected=SOURCE_MEMBER_SHA256):
     if len(member) < 16 or member[:4] != importlib.util.MAGIC_NUMBER:
         raise MapViewPatchError("Unexpected Python bytecode header")
@@ -107,19 +153,27 @@ def inspect_archive(archive, build=BUILD):
             f"No map-view lifecycle patch is available for build {build}"
         )
     with zipfile.ZipFile(archive) as source:
-        entries = [
-            entry for entry in source.infolist() if entry.filename == MODULE_NAME
-        ]
-        if len(entries) != 1:
-            raise MapViewPatchError(f"Expected exactly one {MODULE_NAME}")
-        return inspect_member(source.read(entries[0]))
+        for name in (MODULE_NAME, SCENE_MODULE_NAME):
+            if source.namelist().count(name) != 1:
+                raise MapViewPatchError(f"Expected exactly one {name}")
+        bracket_state = inspect_member(source.read(MODULE_NAME))[0]
+        scene_state = inspect_scene_member(source.read(SCENE_MODULE_NAME))[0]
+        return "patched" if bracket_state == scene_state == "patched" else "source"
 
 
 def patch_archive(archive, build=BUILD):
-    state, original = inspect_archive(archive, build)
-    if state == "source":
-        rewrite_archive(archive, {MODULE_NAME: patched_member(original)})
-    if inspect_archive(archive, build)[0] != "patched":
+    inspect_archive(archive, build)
+    with zipfile.ZipFile(archive) as source:
+        bracket_state, bracket_original = inspect_member(source.read(MODULE_NAME))
+        scene_state, scene_original = inspect_scene_member(source.read(SCENE_MODULE_NAME))
+    updates = {}
+    if bracket_state == "source":
+        updates[MODULE_NAME] = patched_member(bracket_original)
+    if scene_state == "source":
+        updates[SCENE_MODULE_NAME] = patched_scene_member(scene_original)
+    if updates:
+        rewrite_archive(archive, updates)
+    if inspect_archive(archive, build) != "patched":
         raise MapViewPatchError("Map-view lifecycle patch verification failed")
 
 
@@ -132,7 +186,7 @@ def main():
     if sys.version_info[:2] != (3, 12):
         raise MapViewPatchError("Python 3.12 exactly is required for client bytecode")
     if args.check:
-        print(inspect_archive(args.archive, args.build)[0])
+        print(inspect_archive(args.archive, args.build))
     else:
         patch_archive(args.archive, args.build)
         print("patched")

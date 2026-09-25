@@ -187,6 +187,21 @@ test("detachment flushes first, replaces the source, and survives restart", () =
   assert.equal(restarted.scene.staticEntitiesByID.size, 2);
 });
 
+test("detached asteroid keeps its dungeon radius for client visual scaling", () => {
+  const value = fixture();
+  value.prop.dunObjectID = 1_179_556;
+  value.prop.dunRadius = 40_000;
+  value.prop.radius = 40_000;
+  const store = createDetachedDungeonPropStore({ store: memoryBackend() });
+  const result = detachDungeonProp(value.scene, value.session, value.prop.itemID, {
+    store, selectionOptions: value.selectionOptions,
+  });
+  assert.equal(result.success, true);
+  const world = value.scene.staticEntitiesByID.get(WORLD_ID_BASE);
+  assert.equal(world.dunObjectID, 1_179_556);
+  assert.equal(world.dunRadius, 40_000);
+});
+
 test("Physics Gun lifts a mineable asteroid, checkpoints motion, and release persists its pose", () => {
   const backend = memoryBackend();
   const store = createDetachedDungeonPropStore({ store: backend });

@@ -5,6 +5,7 @@ const { buildDict } = require("../services/_shared/serviceHelpers");
 // Presentation for the Physics Gun only. Destiny balls and the checkpointed
 // detached-prop record remain the authority for gameplay and persistence.
 const POSE_INTERVAL_MS = 100;
+const POSE_HEARTBEAT_MS = 500;
 const PHYSICS_GUN_TYPE_ID = 99999;
 
 function poseWire(payload) {
@@ -70,10 +71,12 @@ function emitPhysicsGunPose(scene, entity, state, mode, nowMs) {
   const velocity = finitePoint(entity.velocity) || [0, 0, 0];
   const signature = JSON.stringify([position, orientation, velocity]);
   const changed = signature !== state.lastPoseSignature;
+  const heartbeatDue = nowMs - (state.lastPoseAtMs || 0) >= POSE_HEARTBEAT_MS;
   const visibilityChanged = [...current].some((session) => !recipients.has(session)) ||
     [...recipients].some((session) => !current.has(session));
   if (mode === "update" && !visibilityChanged &&
-      (!changed || nowMs - (state.lastPoseAtMs || 0) < POSE_INTERVAL_MS)) return null;
+      ((!changed && !heartbeatDue) ||
+       nowMs - (state.lastPoseAtMs || 0) < POSE_INTERVAL_MS)) return null;
   const payload = {
     systemID: Number(scene.systemID),
     moduleTypeID: PHYSICS_GUN_TYPE_ID,
@@ -101,7 +104,7 @@ function emitPhysicsGunPose(scene, entity, state, mode, nowMs) {
     return payload;
   }
   for (const session of current) {
-    if (recipients.has(session) && !changed) continue;
+    if (recipients.has(session) && !changed && !heartbeatDue) continue;
     const delivered = { ...payload, mode: recipients.has(session) ? mode : "start" };
     try {
       session.sendNotification("OnPhysicsGunPose", "clientID", [poseWire(delivered)]);
@@ -121,4 +124,4 @@ function emitPhysicsGunPose(scene, entity, state, mode, nowMs) {
   return payload;
 }
 
-module.exports = { POSE_INTERVAL_MS, emitPhysicsGunPose, orientationFor, anchorLocalFor };
+module.exports = { POSE_INTERVAL_MS, POSE_HEARTBEAT_MS, emitPhysicsGunPose, orientationFor, anchorLocalFor };

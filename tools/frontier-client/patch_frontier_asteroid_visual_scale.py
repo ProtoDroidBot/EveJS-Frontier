@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the build-3502403 dungeon prop hologram preview adapter."""
+"""Install the build-3502403 dungeon asteroid visual-radius adapter."""
 
 import argparse
 import hashlib
@@ -14,39 +14,33 @@ from patch_frontier_features import rewrite_archive
 
 
 BUILD = 3502403
-MODULE = "eve/client/script/remote/michelle.pyc"
-SOURCE_SHA256 = "08dc47213d7c506c750d3d4e681312a1b36cdcc3450ee54064050e20fd86036e"
+MODULE = "eve/client/script/environment/spaceObject/scalableSpaceObject.pyc"
+SOURCE_SHA256 = "660d5bc8e4dd58a4e76c6c080fea28bcf7a0dc82aaabde5745be4690c831b586"
 PREVIOUS_WRAPPER_SHA256 = {
-    "4a320fc73a2a19523fff6f2b38132cbd25e9f2ab38f807abc160eaa5c30fb23f",
-    "fac6385de78a8af377d4801b80cfcd818ddaf73af0cc79fa561823cf4a7896aa",
-    # Physics Gun interpolation before held-pose heartbeat and monotonic playout.
-    "3f444bb57ab38f4404e20125a114fce8076f384c0c9daac6dbd3550660c380b5",
+    "70afc129c460c865c7182660c9321a8c1a8244e058e2ba9e3ad417bac065f468",
+    "b9faa6b43d63878f9e4a77351674f143c4e077798a0a91606574db29557cf612",
+    "13a345f038b9b61172f2529a45ae26c6c6afed45bdc7b610751138f5960423e7",
+    "2b4e87218be03b08e85059e6a70ee02be31ec809420f3204a53960704d706c01",
 }
-ADAPTER = Path(__file__).with_name("dungeon_prop_hologram_adapter.py")
-# Michelle already has an exact-build wrapper here. Keep the Physics Gun-only
-# presentation hook in the same wrapper instead of stacking archive patches.
-PHYSICS_INTERPOLATION_ADAPTER = Path(__file__).with_name(
-    "physics_gun_interpolation_adapter.py")
-SOURCE_SENTINEL = b"EVEJS_DUNGEON_PROP_HOLOGRAM_ORIGINAL_V1"
-ADAPTER_SENTINEL = b"EVEJS_DUNGEON_PROP_HOLOGRAM_ADAPTER_V1"
+ADAPTER = Path(__file__).with_name("asteroid_visual_scale_adapter.py")
+SOURCE_SENTINEL = b"EVEJS_ASTEROID_VISUAL_SCALE_ORIGINAL_V1"
+ADAPTER_SENTINEL = b"EVEJS_ASTEROID_VISUAL_SCALE_ADAPTER_V1"
 
 
-class DungeonPropHologramPatchError(RuntimeError):
+class AsteroidVisualScalePatchError(RuntimeError):
     pass
 
 
 def patched_member(member):
     original = marshal.loads(member[16:])
-    adapter = compile(ADAPTER.read_text(encoding="utf-8") + "\n" +
-                      PHYSICS_INTERPOLATION_ADAPTER.read_text(encoding="utf-8"),
-                      "evejs/dungeon_prop_hologram_adapter.py", "exec",
+    adapter = compile(ADAPTER.read_text(encoding="utf-8"),
+                      "evejs/asteroid_visual_scale_adapter.py", "exec",
                       dont_inherit=True)
     wrapper = compile(
-        "import marshal as _evejs_dungeon_holo_marshal\n"
-        "exec(_evejs_dungeon_holo_marshal.loads(b'EVEJS_DUNGEON_PROP_HOLOGRAM_ORIGINAL_V1'[16:]))\n"
-        "exec(_evejs_dungeon_holo_marshal.loads(b'EVEJS_DUNGEON_PROP_HOLOGRAM_ADAPTER_V1'))\n"
-        "_evejs_install_dungeon_prop_hologram(globals())\n"
-        "_evejs_install_physics_gun_interpolation(globals())\n",
+        "import marshal as _evejs_asteroid_scale_marshal\n"
+        "exec(_evejs_asteroid_scale_marshal.loads(b'EVEJS_ASTEROID_VISUAL_SCALE_ORIGINAL_V1'[16:]))\n"
+        "exec(_evejs_asteroid_scale_marshal.loads(b'EVEJS_ASTEROID_VISUAL_SCALE_ADAPTER_V1'))\n"
+        "_evejs_install_asteroid_visual_scale(globals())\n",
         original.co_filename, "exec", dont_inherit=True)
     constants = tuple(
         member if value == SOURCE_SENTINEL else
@@ -57,7 +51,7 @@ def patched_member(member):
 
 def inspect_member(member):
     if len(member) < 16 or member[:4] != importlib.util.MAGIC_NUMBER:
-        raise DungeonPropHologramPatchError("Unexpected Python bytecode header")
+        raise AsteroidVisualScalePatchError("Unexpected Python bytecode header")
     if hashlib.sha256(member).hexdigest() == SOURCE_SHA256:
         return "source", member
     try:
@@ -74,29 +68,28 @@ def inspect_member(member):
                 return "outdated", originals[0]
     except (EOFError, TypeError, ValueError):
         pass
-    raise DungeonPropHologramPatchError(
-        "Michelle module differs from the supported source or patch")
+    raise AsteroidVisualScalePatchError(
+        "ScalableSpaceObject differs from the supported source or patch")
 
 
 def inspect_archive(archive, build=BUILD):
     if build != BUILD:
-        raise DungeonPropHologramPatchError(
-            f"No dungeon hologram patch is available for build {build}")
+        raise AsteroidVisualScalePatchError(
+            f"No asteroid visual-scale patch is available for build {build}")
     with zipfile.ZipFile(archive) as source:
         entries = [entry for entry in source.infolist() if entry.filename == MODULE]
         if len(entries) != 1:
-            raise DungeonPropHologramPatchError(f"Expected exactly one {MODULE}")
+            raise AsteroidVisualScalePatchError(f"Expected exactly one {MODULE}")
         return inspect_member(source.read(entries[0]))[0]
 
 
 def patch_archive(archive, build=BUILD):
-    state = inspect_archive(archive, build)
-    if state in {"source", "outdated"}:
+    if inspect_archive(archive, build) in {"source", "outdated"}:
         with zipfile.ZipFile(archive) as source:
             _, original = inspect_member(source.read(MODULE))
         rewrite_archive(archive, {MODULE: patched_member(original)})
     if inspect_archive(archive, build) != "patched":
-        raise DungeonPropHologramPatchError("Dungeon hologram patch verification failed")
+        raise AsteroidVisualScalePatchError("Asteroid scale patch verification failed")
 
 
 def main():
@@ -106,7 +99,7 @@ def main():
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     if sys.version_info[:2] != (3, 12):
-        raise DungeonPropHologramPatchError("Python 3.12 exactly is required")
+        raise AsteroidVisualScalePatchError("Python 3.12 exactly is required")
     if args.check:
         print(inspect_archive(args.archive, args.build))
     else:
@@ -117,6 +110,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (DungeonPropHologramPatchError, OSError, zipfile.BadZipFile) as error:
+    except (AsteroidVisualScalePatchError, OSError, zipfile.BadZipFile) as error:
         print(f"[evejs-frontier] {error}", file=sys.stderr)
         raise SystemExit(1)

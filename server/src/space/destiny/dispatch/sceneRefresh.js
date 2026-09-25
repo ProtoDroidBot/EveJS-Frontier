@@ -6,8 +6,22 @@ const { resolveStateRefreshStamp, } = require("../delivery/sync.js");
 const { DESTINY_CONTRACTS, } = require("../authority/destinyContracts.js");
 const { resolveDestinyAuthorityLaneTuple, snapshotDestinyAuthorityState, } = require("../authority/destinySessionState.js");
 const { getDestinyStampForwardDistance, hasDestinyStamp, normalizeDestinyStamp, resolveOptionalDestinyStamp, } = require("../delivery/stamps");
+const { isPostSetStateBootstrapStaticEntity, uniqueEntitiesByItemID, } = require("../bootstrap/initialBallpark");
+function planStateRefreshEntities(visibleEntities, isIncrementalStaticVisibilityEntity) {
+    const allEntities = uniqueEntitiesByItemID(visibleEntities);
+    const deferredStaticEntities = allEntities.filter((entity) => ((entity.dungeonMaterializedSiteContent === true &&
+        entity.staticVisibilityScope === "bubble") ||
+        isPostSetStateBootstrapStaticEntity(entity, {
+            isIncrementalStaticVisibilityEntity,
+        })));
+    const deferredIDs = new Set(deferredStaticEntities.map((entity) => entity.itemID));
+    return {
+        stateEntities: allEntities.filter((entity) => !deferredIDs.has(entity.itemID)),
+        deferredStaticEntities,
+    };
+}
 function createMovementSceneRefresh(deps = {}) {
-    const { buildMissileSessionSnapshot, buildDbuffStateEntriesForSession, notifyActiveAssistanceJamStatesToSession, notifyActiveHostileJamStatesToSession, notifyActiveCommandBurstHudStatesToSession, isReadyForDestiny, logMissileDebug, logMovementDebug, refreshEntitiesForSlimPayload, refreshShipPresentationFields, roundNumber, summarizeRuntimeEntityForMissileDebug, toInt, MICHELLE_HELD_FUTURE_DESTINY_LEAD, } = deps;
+    const { buildMissileSessionSnapshot, buildDbuffStateEntriesForSession, notifyActiveAssistanceJamStatesToSession, notifyActiveHostileJamStatesToSession, notifyActiveCommandBurstHudStatesToSession, isReadyForDestiny, isIncrementalStaticVisibilityEntity, logMissileDebug, logMovementDebug, refreshEntitiesForSlimPayload, refreshShipPresentationFields, roundNumber, summarizeRuntimeEntityForMissileDebug, toInt, MICHELLE_HELD_FUTURE_DESTINY_LEAD, } = deps;
     return {
         sendStateRefresh(runtime, session, egoEntity, stampOverride = null, options = {}) {
             if (!session || !egoEntity || !isReadyForDestiny(session)) {
@@ -15,9 +29,7 @@ function createMovementSceneRefresh(deps = {}) {
             }
             refreshShipPresentationFields(egoEntity);
             const visibleEntities = refreshEntitiesForSlimPayload(runtime.getVisibleEntitiesForSession(session));
-            const stateRefreshVisibleEntities = visibleEntities.filter((entity) => !(entity &&
-                entity.dungeonMaterializedSiteContent === true &&
-                entity.staticVisibilityScope === "bubble"));
+            const { stateEntities: stateRefreshVisibleEntities, deferredStaticEntities, } = planStateRefreshEntities(visibleEntities, isIncrementalStaticVisibilityEntity);
             const rawStamp = stampOverride === null
                 ? runtime.getNextDestinyStamp()
                 : normalizeDestinyStamp(stampOverride, runtime.getNextDestinyStamp());
@@ -113,6 +125,7 @@ function createMovementSceneRefresh(deps = {}) {
                 liveStateResetFloor,
                 finalStamp: stamp,
                 visibleEntityCount: stateRefreshVisibleEntities.length,
+                deferredStaticEntityCount: deferredStaticEntities.length,
             });
             // SetState must skip the owner-critical monotonic restamp pass.
             // During missile combat, lifecycle stamps compound far ahead of
@@ -136,6 +149,21 @@ function createMovementSceneRefresh(deps = {}) {
                     ? `set-state:${options.reason}`
                     : "set-state:unspecified",
             });
+            // SetState resets Michelle's native ballpark. Reacquire the statics that
+            // bootstrap deliberately keeps out of its full-state stream; otherwise
+            // a later UpdateStateRequest puts those balls in an incompatible lane.
+            if (deferredStaticEntities.length > 0) {
+                const addStamp = normalizeDestinyStamp(stamp + 1, stamp);
+                runtime.sendDestinyUpdates(session, [
+                    {
+                        stamp: addStamp,
+                        payload: destiny.buildAddBalls2Payload(addStamp, deferredStaticEntities, simFileTime),
+                    },
+                ], false, {
+                    destinyAuthorityContract: DESTINY_CONTRACTS.BOOTSTRAP_ACQUIRE,
+                    translateStamps: false,
+                });
+            }
             if (options.skipHudIconReseed !== true &&
                 typeof notifyActiveAssistanceJamStatesToSession === "function") {
                 notifyActiveAssistanceJamStatesToSession(runtime, session, egoEntity, stateRefreshVisibleEntities, rawSimTimeMs);
@@ -163,5 +191,6 @@ function createMovementSceneRefresh(deps = {}) {
 }
 module.exports = {
     createMovementSceneRefresh,
+    planStateRefreshEntities,
 };
 //# sourceMappingURL=sceneRefresh.js.map

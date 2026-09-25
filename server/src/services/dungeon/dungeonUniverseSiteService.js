@@ -4759,8 +4759,8 @@ function buildEnvironmentEntities(instance, siteEntity, template, populationHint
             velocity: { x: 0, y: 0, z: 0 },
             direction: { x: 1, y: 0, z: 0 },
             radius: authoredRadius,
-            // Frontier's Asteroid renderer reads crData.dunRadius for modelScale.
-            // Keep the visible shell tied to the bounded Destiny ball radius.
+            // The client scales the loaded asteroid graphic from this radius and
+            // its native bounding sphere, keeping it aligned with the Destiny ball.
             dunRadius: frontierDungeonResource ? authoredRadius : undefined,
             collisionScale: frontierDungeonResource
                 ? authoredRadius / Math.max(1, toFiniteNumber(presentedTypeRecord && presentedTypeRecord.radius, 1))

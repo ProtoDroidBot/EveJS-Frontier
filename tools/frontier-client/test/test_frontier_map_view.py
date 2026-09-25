@@ -191,6 +191,49 @@ class MapViewPatchTests(unittest.TestCase):
         with self.assertRaises(patcher.MapViewPatchError):
             patcher.inspect_archive(Path("unused"), 3502404)
 
+    def test_closing_map_mid_color_pass_stops_stale_scene_work(self):
+        code = compile(
+            "class MapView:\n"
+            " def __init__(self):\n"
+            "  self.destroyed = False\n"
+            "  self.activeFilter = object()\n"
+            "  self.calls = 0\n"
+            " def ApplyStarColors(self):\n"
+            "  self.calls += 1\n"
+            "  self.destroyed = True\n"
+            "  self.activeFilter = None\n"
+            "  return self.activeFilter.GetStarColor(42)\n",
+            "fixture.py", "exec",
+        )
+        source = member_for(code)
+        expected = hashlib.sha256(source).hexdigest()
+        patched = patcher.patched_scene_member(source)
+        self.assertEqual(patcher.inspect_scene_member(source, expected)[0], "source")
+        self.assertEqual(patcher.inspect_scene_member(patched, expected)[0], "patched")
+        namespace = {}
+        exec(marshal.loads(patched[16:]), namespace)
+        view = namespace["MapView"]()
+        self.assertIsNone(view.ApplyStarColors())
+        self.assertIsNone(view.ApplyStarColors())
+        self.assertEqual(view.calls, 1)
+
+        view.destroyed = False
+        view.activeFilter = object()
+        self.assertIsNone(view.ApplyStarColors())
+        self.assertEqual(view.calls, 2)
+
+        bad = compile(
+            "class MapView:\n"
+            " destroyed = False\n"
+            " activeFilter = object()\n"
+            " def ApplyStarColors(self): raise AttributeError('real error')\n",
+            "fixture.py", "exec",
+        )
+        other = {}
+        exec(marshal.loads(patcher.patched_scene_member(member_for(bad))[16:]), other)
+        with self.assertRaisesRegex(AttributeError, "real error"):
+            other["MapView"]().ApplyStarColors()
+
     def test_completed_windows_stage_can_receive_map_patch_transactionally(self):
         for fail in (False, True):
             with self.subTest(fail=fail), tempfile.TemporaryDirectory() as directory:
@@ -365,14 +408,16 @@ class MapViewPatchTests(unittest.TestCase):
             archive_path = Path(directory) / "code.ccp"
             with zipfile.ZipFile(os.environ["EVE_FRONTIER_TEST_ARCHIVE"]) as source:
                 member = source.read(patcher.MODULE_NAME)
+                scene_member = source.read(patcher.SCENE_MODULE_NAME)
             with zipfile.ZipFile(archive_path, "w") as archive:
                 archive.writestr(patcher.MODULE_NAME, member)
+                archive.writestr(patcher.SCENE_MODULE_NAME, scene_member)
                 archive.writestr("unrelated.pyc", b"preserve exactly")
 
-            self.assertEqual(patcher.inspect_archive(archive_path)[0], "source")
+            self.assertIn(patcher.inspect_archive(archive_path), {"source", "patched"})
             patcher.patch_archive(archive_path)
             once = archive_path.read_bytes()
-            self.assertEqual(patcher.inspect_archive(archive_path)[0], "patched")
+            self.assertEqual(patcher.inspect_archive(archive_path), "patched")
             patcher.patch_archive(archive_path)
             self.assertEqual(archive_path.read_bytes(), once)
             with zipfile.ZipFile(archive_path) as result:

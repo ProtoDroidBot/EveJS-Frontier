@@ -2265,6 +2265,8 @@ class ActionBarAdapterTests(unittest.TestCase):
 
             def _get_loaded_charge(self, module_item_id):
                 test.events.append(("creation-charge", module_item_id))
+                if getattr(test, "charge_error", False):
+                    raise TypeError("Sequence must be at most 9 elements")
                 return "creation-charge"
 
             def _get_duration(self, module_item_id, type_id):
@@ -2457,6 +2459,13 @@ class ActionBarAdapterTests(unittest.TestCase):
         self.assertIs(self.Provider.get_activatable_modules, first)
         self.assertIs(self.Provider._get_duration, first_duration)
 
+    def test_stale_creation_charge_row_does_not_abort_action_bar(self):
+        self.ship.typeID = 95276
+        self.charge_error = True
+        provider = self.Provider()
+        self.assertIsNone(provider._get_loaded_charge(500))
+        self.assertEqual(provider.get_activatable_modules(100), ["creation-module"])
+
 
 class ActionBarSelectionAdapterTests(unittest.TestCase):
     def setUp(self):
@@ -2603,7 +2612,8 @@ class WindowsUpgradeTests(unittest.TestCase):
                     "docking": "patched", "features": "patched",
                     "industryStorage": "patched", "mapViewLifecycle": "patched",
                     "fittingCompatibility": "outdated", "inventoryView": "patched",
-                    "collisionVfx": "patched", "creationTransform": "patched",
+                    "collisionVfx": "patched", "asteroidVisualScale": "patched",
+                    "creationTransform": "patched",
                     "dungeonPropHologram": "patched", "physicsGun": "patched",
                     "turretTracking": "patched",
                 }
@@ -2682,6 +2692,7 @@ class WindowsUpgradeTests(unittest.TestCase):
                 "fittingCompatibility": "outdated",
                 "inventoryView": "patched",
                 "collisionVfx": "patched",
+                "asteroidVisualScale": "patched",
                 "creationTransform": "patched",
                 "dungeonPropHologram": "patched",
                 "physicsGun": "patched",
@@ -2887,9 +2898,16 @@ class FittingBytecodePatchTests(unittest.TestCase):
             "skillshot_auto_cannon_fixture.py",
             "exec",
         )
+        held_beam_code = compile(
+            "class HeldBeamFireUnit:\n"
+            "    def _has_loaded_charge(self): return False\n",
+            "skillshot_held_beam_fixture.py",
+            "exec",
+        )
         for code, builder in (
             (controller_code, patcher.patched_skillshot_controller_member),
             (auto_cannon_code, patcher.patched_skillshot_auto_cannon_member),
+            (held_beam_code, patcher.patched_skillshot_held_beam_member),
         ):
             source = member_for(code)
             expected = hashlib.sha256(source).hexdigest()
@@ -2949,8 +2967,10 @@ class FittingBytecodePatchTests(unittest.TestCase):
                         patcher.ACTION_PROVIDER_MODULE_NAME,
                         patcher.ACTION_BAR_INTEGRATION_MODULE_NAME,
                         patcher.ACTION_BAR_SLOT_MODULE_NAME,
+                        patcher.LEAP_HINT_MODULE_NAME,
                         patcher.SKILLSHOT_CONTROLLER_MODULE_NAME,
                         patcher.SKILLSHOT_AUTO_CANNON_MODULE_NAME,
+                        patcher.SKILLSHOT_HELD_BEAM_MODULE_NAME,
                     )
                 }
             with zipfile.ZipFile(archive_path, "w") as archive:

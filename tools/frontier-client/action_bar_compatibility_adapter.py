@@ -277,7 +277,11 @@ def _evejs_install_action_bar_compatibility(namespace):
     def get_loaded_charge(self, module_item_id):
         if _evejs_is_ordinary_module(self, module_item_id):
             return _evejs_get_regular_charge(self, module_item_id)
-        return original_get_charge(self, module_item_id)
+        try:
+            return original_get_charge(self, module_item_id)
+        except (TypeError, ValueError):
+            # A stale Godma row must not abort loading the entire action bar.
+            return None
 
     if original_get_duration is not None:
         @wraps(original_get_duration)

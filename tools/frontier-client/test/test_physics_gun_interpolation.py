@@ -135,10 +135,31 @@ class PhysicsInterpolationTests(unittest.TestCase):
                 second = physics._evejs_phys_parse(sample(2, 100, 1000 + interval))
                 track = physics._EvejsPhysicsPoseTrack(first, 1900)
                 self.assertTrue(track.push(second, 2000))
-                delay = max(100, min(500, interval * 1.5))
+                delay = max(100, min(300, track.interval_ms * 1.5))
                 halfway = track.pose(2000 + delay - interval / 2)
                 self.assertAlmostEqual(halfway["position"][0], 50)
                 self.assertEqual(track.pose(3000)["position"], (100.0, 0.0, 0.0))
+
+    def test_cadence_change_never_rewinds_rendered_pose(self):
+        first = physics._evejs_phys_parse(sample(1, 0, 1000, "start"))
+        track = physics._EvejsPhysicsPoseTrack(first, 1900)
+        track.pose(1900)
+        track.push(physics._evejs_phys_parse(sample(2, 100, 1100)), 2000)
+        self.assertEqual(track.pose(2300)["position"], (100.0, 0.0, 0.0))
+        # A faster packet immediately after a delayed frame used to move the
+        # playhead backward because the delay was recomputed from that packet.
+        track.push(physics._evejs_phys_parse(sample(3, 150, 1150)), 2400)
+        self.assertGreaterEqual(track.pose(2400)["position"][0], 100.0)
+        self.assertEqual(track.pose(3000)["position"], (150.0, 0.0, 0.0))
+
+    def test_lost_continuity_snaps_to_new_authoritative_pose(self):
+        first = physics._evejs_phys_parse(sample(1, 0, 1000, "start"))
+        track = physics._EvejsPhysicsPoseTrack(first, 1900)
+        track.push(physics._evejs_phys_parse(sample(2, 100, 1100)), 2000)
+        track.pose(2200)
+        track.push(physics._evejs_phys_parse(sample(3, 500, 3000)), 3900)
+        self.assertEqual(len(track.samples), 1)
+        self.assertEqual(track.pose(3900)["position"], (500.0, 0.0, 0.0))
 
     def test_terminal_packet_prevents_delayed_pose_resurrection(self):
         with mock.patch.object(physics, "_evejs_phys_clock_ms", return_value=2000):
