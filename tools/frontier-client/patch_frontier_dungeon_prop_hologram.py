@@ -18,8 +18,13 @@ MODULE = "eve/client/script/remote/michelle.pyc"
 SOURCE_SHA256 = "08dc47213d7c506c750d3d4e681312a1b36cdcc3450ee54064050e20fd86036e"
 PREVIOUS_WRAPPER_SHA256 = {
     "4a320fc73a2a19523fff6f2b38132cbd25e9f2ab38f807abc160eaa5c30fb23f",
+    "fac6385de78a8af377d4801b80cfcd818ddaf73af0cc79fa561823cf4a7896aa",
 }
 ADAPTER = Path(__file__).with_name("dungeon_prop_hologram_adapter.py")
+# Michelle already has an exact-build wrapper here. Keep the Physics Gun-only
+# presentation hook in the same wrapper instead of stacking archive patches.
+PHYSICS_INTERPOLATION_ADAPTER = Path(__file__).with_name(
+    "physics_gun_interpolation_adapter.py")
 SOURCE_SENTINEL = b"EVEJS_DUNGEON_PROP_HOLOGRAM_ORIGINAL_V1"
 ADAPTER_SENTINEL = b"EVEJS_DUNGEON_PROP_HOLOGRAM_ADAPTER_V1"
 
@@ -30,14 +35,16 @@ class DungeonPropHologramPatchError(RuntimeError):
 
 def patched_member(member):
     original = marshal.loads(member[16:])
-    adapter = compile(ADAPTER.read_text(encoding="utf-8"),
+    adapter = compile(ADAPTER.read_text(encoding="utf-8") + "\n" +
+                      PHYSICS_INTERPOLATION_ADAPTER.read_text(encoding="utf-8"),
                       "evejs/dungeon_prop_hologram_adapter.py", "exec",
                       dont_inherit=True)
     wrapper = compile(
         "import marshal as _evejs_dungeon_holo_marshal\n"
         "exec(_evejs_dungeon_holo_marshal.loads(b'EVEJS_DUNGEON_PROP_HOLOGRAM_ORIGINAL_V1'[16:]))\n"
         "exec(_evejs_dungeon_holo_marshal.loads(b'EVEJS_DUNGEON_PROP_HOLOGRAM_ADAPTER_V1'))\n"
-        "_evejs_install_dungeon_prop_hologram(globals())\n",
+        "_evejs_install_dungeon_prop_hologram(globals())\n"
+        "_evejs_install_physics_gun_interpolation(globals())\n",
         original.co_filename, "exec", dont_inherit=True)
     constants = tuple(
         member if value == SOURCE_SENTINEL else

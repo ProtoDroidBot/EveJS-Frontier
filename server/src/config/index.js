@@ -1914,7 +1914,7 @@ const CONFIG_ENTRY_DEFINITIONS = [
         // authored against a stable scene cadence; automatically accelerating an
         // idle server before a dungeon login can double the amount of work just as
         // the active grid and its NPCs are restored.
-        defaultValue: true,
+        defaultValue: false,
         envVar: "EVEJS_ADAPTIVE_TICK_RATE_ENABLED",
         envType: "boolean",
         description: [
@@ -1925,7 +1925,7 @@ const CONFIG_ENTRY_DEFINITIONS = [
     },
     {
         key: "adaptiveTickRateMinIntervalMs",
-        defaultValue: 100,
+        defaultValue: 50,
         envVar: "EVEJS_ADAPTIVE_TICK_RATE_MIN_INTERVAL_MS",
         envType: "number",
         minValue: 10,

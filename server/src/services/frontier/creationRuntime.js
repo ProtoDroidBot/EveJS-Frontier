@@ -492,10 +492,18 @@ function ensureCreationState(item, characterID) {
         };
     }
     const plan = buildCreationSeedPlan(template);
+    // Only effect-16 components have a manual online action. Passive parts keep
+    // their authored behavior, while power-controlled template parts start off.
     const grantResult = grantItemsToCharacterLocation(characterID, canonicalItem.itemID, HIDDEN_CREATION_MODULE_FLAG_ID, plan.map((entry) => ({
         itemType: entry.typeID,
         quantity: 1,
-        options: { individualItems: true, singleton: 1 },
+        options: {
+            individualItems: true,
+            singleton: 1,
+            ...(getTypeDogmaEffects(entry.typeID).has(CREATION_ONLINE_EFFECT_ID)
+                ? { moduleState: { online: false } }
+                : {}),
+        },
     })));
     if (!grantResult.success) {
         return grantResult;
@@ -598,9 +606,12 @@ function validateCreationModuleRemoval(item, change) {
     }
     return null;
 }
-function resolveCreationFuelCapacity(shipItem, state, characterID) {
+function resolveCreationFuelCapacity(shipItem, state, characterID, options = {}) {
     const ownerID = toInt(characterID, 0);
     const poweredOff = state && state.poweredOff === true;
+    const onlineOverrides = options.onlineOverrides instanceof Map
+        ? options.onlineOverrides
+        : new Map();
     const moduleItems = (state && Array.isArray(state.modules) ? state.modules : [])
         .map((module) => {
         const source = findItemById(toInt(module && module.itemID, 0));
@@ -609,13 +620,15 @@ function resolveCreationFuelCapacity(shipItem, state, characterID) {
             toInt(source.typeID, 0) !== toInt(module && module.typeID, 0)) {
             return null;
         }
+        const authoredOnline = onlineOverrides.has(source.itemID)
+            ? onlineOverrides.get(source.itemID) === true
+            : isCreationModuleOnline(source);
         return {
             ...source,
             moduleState: {
                 ...(source.moduleState || {}),
-                online: toInt(source.typeID, 0) === TYPE_BLACKSTART_CELL
-                    ? isCreationModuleOnline(source)
-                    : !poweredOff && isCreationModuleOnline(source),
+                online: authoredOnline &&
+                    (toInt(source.typeID, 0) === TYPE_BLACKSTART_CELL || !poweredOff),
             },
         };
     })
@@ -1038,10 +1051,18 @@ function commitCreationStateTransition(item, characterID, ensured, nextState, in
         capacityItemIDMap.set(toInt(action.stateItemID, toInt(action.item && action.item.itemID, 0)), toInt(action.item && action.item.itemID, 0));
     }
     const nextCapacityState = remapCreationStateItemIDs(nextState, capacityItemIDMap) || nextState;
+    const installOnlineOverrides = new Map();
+    for (const action of Array.isArray(inventoryActions) ? inventoryActions : []) {
+        if (action.fitToCreation === true &&
+            (toInt(action.item && action.item.locationID, 0) !== toInt(action.locationID, 0) ||
+                toInt(action.item && action.item.flagID, -1) !== CREATION_FITTING_FLAG_ID)) {
+            installOnlineOverrides.set(toInt(action.item && action.item.itemID, 0), false);
+        }
+    }
     const previousFuelCapacity = resolveCreationFuelCapacity(ensured.data.item, ensured.data.state, characterID);
-    const nextFuelCapacity = resolveCreationFuelCapacity(ensured.data.item, nextCapacityState, characterID);
+    const nextFuelCapacity = resolveCreationFuelCapacity(ensured.data.item, nextCapacityState, characterID, { onlineOverrides: installOnlineOverrides });
     const previousCapacitorCapacity = resolveCreationCapacitorCapacity(ensured.data.state, characterID);
-    const nextCapacitorCapacity = resolveCreationCapacitorCapacity(nextCapacityState, characterID);
+    const nextCapacitorCapacity = resolveCreationCapacitorCapacity(nextCapacityState, characterID, { onlineOverrides: installOnlineOverrides });
     const fuelCapacityDecreased = nextFuelCapacity < previousFuelCapacity;
     let voidedFuel = 0;
     let voidedBlackstartEnergy = 0;
@@ -1087,7 +1108,9 @@ function commitCreationStateTransition(item, characterID, ensured, nextState, in
                             ...movedItem,
                             moduleState: {
                                 ...(movedItem.moduleState || {}),
-                                online: true,
+                                online: repairingLegacyFittedStack
+                                    ? isCreationModuleOnline(currentSource)
+                                    : false,
                             },
                         };
                     },

@@ -1753,6 +1753,11 @@ test("Creation fitting splits one singleton and Dogma bridges online state", () 
     .filter((entry) => entry.typeID === TYPE_BEACON);
   assert.equal(cargoRemainders.length, 1);
   assert.equal(cargoRemainders[0].stacksize, 1);
+  assert.equal(
+    creationRuntime.isCreationModuleOnline(fitted),
+    false,
+    "a newly fitted component waits for manual onlining",
+  );
 
   const dogma = new DogmaService();
   const online = dogma._setModuleOnlineState(
@@ -1779,7 +1784,7 @@ test("Creation fitting splits one singleton and Dogma bridges online state", () 
   );
   assert.equal(
     notifications.filter((entry) => entry.name === "OnMultiEvent").length,
-    3,
+    2,
   );
 
   const stateBeforeUndock = creationRuntime.readCreationState(
@@ -1944,6 +1949,15 @@ test("Creation live entities enforce their derived capacitor and retain active m
   const ship = shipGrant.data.items[0];
   const ensured = creationRuntime.ensureCreationState(ship, OWNER_ID);
   assert.equal(ensured.success, true, ensured.errorMsg);
+  // Bring the template modules online for this derived-state fixture.
+  for (const module of ensured.data.state.modules) {
+    if (liveFittingState.getTypeDogmaEffects(module.typeID).has(16)) {
+      assert.equal(itemStore.updateInventoryItem(module.itemID, (item) => ({
+        ...item,
+        moduleState: { ...(item.moduleState || {}), online: true },
+      })).success, true);
+    }
+  }
   const moduleGrant = itemStore.grantItemToCharacterLocation(
     OWNER_ID,
     ship.itemID,
@@ -2023,13 +2037,35 @@ test("Creation live entities enforce their derived capacitor and retain active m
     itemStore.setActiveShipForCharacter(OWNER_ID, ship.itemID).success,
     true,
   );
-  assert.equal(itemStore.updateInventoryItem(sourceModule.itemID, (item) => ({
+  for (const moduleID of [sourceModule.itemID, sourceBlackstart.itemID]) {
+    const online = creationRuntime.setCreationModuleOnlineState(
+      itemStore.findItemById(ship.itemID), OWNER_ID, moduleID, true,
+    );
+    assert.equal(online.success, true, online.errorMsg);
+  }
+  const fueledShip = itemStore.findShipItemById(ship.itemID);
+  const fuelCapacity = creationRuntime.getCreationStateCapacities(
+    fueledShip,
+    OWNER_ID,
+    creationRuntime.readCreationState(fueledShip),
+  ).fuelCapacity;
+  const reserveCapacity = fuelTankRuntime.resolveCreationReserveFuelCapacity(
+    fueledShip,
+    fuelTankRuntime.resolveShipFuelTank(fueledShip, fuelCapacity),
+  );
+  const fuelQueue = fuelTankRuntime.partitionFuelQueueByReserveCapacity(
+    [{ fuelTypeID: fuelTankRuntime.UNSTABLE_FUEL_TYPE_ID, quantity: fuelCapacity }],
+    fuelCapacity,
+    reserveCapacity,
+  );
+  assert.equal(itemStore.updateShipItem(ship.itemID, (item) => ({
     ...item,
-    moduleState: { ...(item.moduleState || {}), online: true },
-  })).success, true);
-  assert.equal(itemStore.updateInventoryItem(sourceBlackstart.itemID, (item) => ({
-    ...item,
-    moduleState: { ...(item.moduleState || {}), online: true },
+    conditionState: {
+      ...(item.conditionState || {}),
+      fuelCharge: fuelCapacity,
+      fuelTypeID: fuelTankRuntime.UNSTABLE_FUEL_TYPE_ID,
+      fuelQueue,
+    },
   })).success, true);
 
   const session: Record<string, any> = {
@@ -2358,7 +2394,7 @@ test("Creation live entities enforce their derived capacitor and retain active m
   );
 });
 
-test("GUI installation primes a Transponder for immediate activation", (t) => {
+test("GUI installation leaves a Transponder offline until manually onlined", (t) => {
   const shipGrant = itemStore.grantItemToCharacterLocation(
     OWNER_ID,
     64000004,
@@ -2371,6 +2407,15 @@ test("GUI installation primes a Transponder for immediate activation", (t) => {
   const ship = shipGrant.data.items[0];
   const ensured = creationRuntime.ensureCreationState(ship, OWNER_ID);
   assert.equal(ensured.success, true, ensured.errorMsg);
+  for (const seededModule of ensured.data.state.modules) {
+    if (liveFittingState.getTypeDogmaEffects(seededModule.typeID).has(16)) {
+      assert.equal(
+        creationRuntime.isCreationModuleOnline(itemStore.findItemById(seededModule.itemID)),
+        false,
+        "template installed modules start offline",
+      );
+    }
+  }
 
   const moduleGrant = itemStore.grantItemToCharacterLocation(
     OWNER_ID,
@@ -2445,10 +2490,10 @@ test("GUI installation primes a Transponder for immediate activation", (t) => {
     entry.name === "OnCreationChanged");
   assert.ok(primeIndex >= 0, "the client must receive a live Dogma module prime");
   assert.ok(itemChangeIndex > primeIndex, "the module is primed before its inventory move");
-  assert.ok(onlineEffectIndex > itemChangeIndex, "the primed module is brought online");
+  assert.equal(onlineEffectIndex, -1, "installation must not start the online effect");
   assert.ok(
-    creationChangedIndex > onlineEffectIndex,
-    "the action-bar snapshot is published after Dogma can activate the module",
+    creationChangedIndex > itemChangeIndex,
+    "the action-bar snapshot is published after the offline module is fitted",
   );
 
   const prime = notifications[primeIndex];
@@ -2460,8 +2505,8 @@ test("GUI installation primes a Transponder for immediate activation", (t) => {
   const isOnlineAttributeID = liveFittingState.getAttributeIDByNames("isOnline") || 2;
   assert.deepEqual(
     primeAttributes.get(isOnlineAttributeID),
-    [1, session._space.simFileTime],
-    "the fitted module must be primed online before the power view reads it",
+    [0, session._space.simFileTime],
+    "the fitted module must be primed offline before the power view reads it",
   );
   for (const [attributeID, valueAndTime] of primeFields.attributes.entries) {
     assert.equal(typeof attributeID, "number");
@@ -2474,50 +2519,25 @@ test("GUI installation primes a Transponder for immediate activation", (t) => {
     );
     assert.equal(typeof valueAndTime[0], "number");
   }
-  const installEvents = notifications[onlineEffectIndex].payload[0].items
-    .map((pair) => pair.items[0].items);
-  assert.deepEqual(
-    installEvents.map((event) => event[0]),
-    ["OnModuleAttributeChange", "OnGodmaShipEffect"],
-  );
-  assert.deepEqual(installEvents[0].slice(1, 7), [
-    OWNER_ID,
-    moduleItem.itemID,
-    isOnlineAttributeID,
-    session._space.simFileTime + 1n,
-    1,
-    0,
-  ]);
-  assert.deepEqual(installEvents[1].slice(1, 6), [
-    moduleItem.itemID,
-    16,
-    session._space.simFileTime + 1n,
-    1,
-    1,
-  ]);
   assert.equal(refresh.mock.callCount(), 1);
 
   const persistedShip = itemStore.findItemById(ship.itemID);
   const installedModule = itemStore.findItemById(moduleItem.itemID);
   assert.equal(
     creationRuntime.isCreationModuleOnline(installedModule),
-    true,
+    false,
     JSON.stringify({
       installedModule,
       effects: [...liveFittingState.getTypeDogmaEffects(TYPE_TRANSPONDER)],
     }),
   );
-  const offline = creationRuntime.setCreationModuleOnlineState(
-    persistedShip, OWNER_ID, moduleItem.itemID, false, session,
-  );
-  assert.equal(offline.success, true, offline.errorMsg);
-  const online = creationRuntime.setCreationModuleOnlineState(
-    itemStore.findItemById(ship.itemID), OWNER_ID, moduleItem.itemID, true, session,
+  const online = new DogmaService()._setModuleOnlineState(
+    ship.itemID, moduleItem.itemID, true, session,
   );
   assert.equal(online.success, true, online.errorMsg);
   const onlineEvents = notifications.filter((entry) => entry.name === "OnMultiEvent");
-  assert.equal(onlineEvents.length, 3);
-  const onlineSubEvents = onlineEvents[2].payload[0].items
+  assert.equal(onlineEvents.length, 1);
+  const onlineSubEvents = onlineEvents[0].payload[0].items
     .map((pair) => pair.items[0].items);
   assert.ok(onlineSubEvents.some((subEvent) =>
     subEvent[0] === "OnGodmaShipEffect" &&

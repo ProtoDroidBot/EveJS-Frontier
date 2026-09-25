@@ -1348,10 +1348,10 @@ test("space recharge advances a live ship to the next queued fuel batch", () => 
     capacitorChargeRatio: 0,
     conditionState: {
       charge: 0,
-      fuelCharge: 4,
+      fuelCharge: 21,
       fuelQueue: [
         { fuelTypeID: FUEL_TYPE_UNSTABLE, quantity: 1 },
-        { fuelTypeID: FUEL_TYPE_EU_40, quantity: 3 },
+        { fuelTypeID: FUEL_TYPE_EU_40, quantity: 20 },
       ],
     },
     passiveDerivedState: {
@@ -1375,11 +1375,12 @@ test("space recharge advances a live ship to the next queued fuel batch", () => 
   assert.equal(result.changed, true);
   assert.equal(result.fuelEfficiency, 8);
   assert.equal(entity.capacitorChargeRatio, 0.5);
-  assert.equal(entity.conditionState.fuelCharge, 1.95);
+  assert.ok(Math.abs(result.consumedFuel - 13.1) < 1e-9);
+  assert.ok(Math.abs(entity.conditionState.fuelCharge - 7.9) < 1e-9);
   assert.equal(entity.conditionState.fuelTypeID, FUEL_TYPE_EU_40);
-  assert.deepEqual(entity.conditionState.fuelQueue, [
-    { fuelTypeID: FUEL_TYPE_EU_40, quantity: 1.95 },
-  ]);
+  assert.equal(entity.conditionState.fuelQueue.length, 1);
+  assert.equal(entity.conditionState.fuelQueue[0].fuelTypeID, FUEL_TYPE_EU_40);
+  assert.ok(Math.abs(entity.conditionState.fuelQueue[0].quantity - 7.9) < 1e-9);
   assert.equal(
     entity.passiveDerivedState.attributes[ATTRIBUTE_FUEL_EFFICIENCY],
     40,

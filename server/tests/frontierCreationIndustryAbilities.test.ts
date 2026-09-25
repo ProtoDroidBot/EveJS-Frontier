@@ -86,6 +86,17 @@ function fixture(t, { docked = false } = {}) {
   const processor = ensured.data.state.modules.find(module => module.typeID === PROCESSOR_TYPE_ID);
   assert.ok(printer, "Creation template must contain an Emergency Printer");
   assert.ok(processor, "Creation template must contain a Material Processor");
+  for (const module of [printer, processor]) {
+    assert.equal(
+      creationRuntime.isCreationModuleOnline(itemStore.findItemById(module.itemID)),
+      false,
+      "template facilities await manual onlining",
+    );
+    const online = creationRuntime.setCreationModuleOnlineState(
+      itemStore.findItemById(ship.itemID), OWNER_ID, module.itemID, true,
+    );
+    assert.equal(online.success, true, online.errorMsg);
+  }
   const notifications: any[] = [];
   const session: Record<string, any> = {
     characterID: OWNER_ID,

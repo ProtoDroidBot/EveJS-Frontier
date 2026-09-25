@@ -20,6 +20,7 @@ const {
   resolveEntityMovementCollision,
 } = require("./destiny/simulation/collisions");
 const { resolveEntityCollisionPresentation } = require("./destiny/collision/collisionBundle");
+const { emitPhysicsGunPose } = require("./physicsGunPoseStream");
 const {
   buildGotoPointPayload,
   buildOnSpecialFXPayload,
@@ -37,6 +38,11 @@ const TETHER_GOTO_DISTANCE_METERS = 5;
 const TETHER_REFRESH_INTERVAL_MS = 500;
 const SCAN_FX_GUID = "effects.FrontierScanningTest";
 const PHYSICS_GUN_TYPE_ID = 99999;
+
+function emitPhysicsGunPoseSafely(scene, entity, state, mode, nowMs) {
+  try { emitPhysicsGunPose(scene, entity, state, mode, nowMs); }
+  catch (_error) { /* Optional presentation cannot stop authoritative motion. */ }
+}
 
 function finiteVector(value) {
   if (!value || typeof value !== "object") return null;
@@ -298,6 +304,7 @@ function startDetachedPropTether(scene, session, worldEntityID, moduleID, direct
     shipID: ship.itemID, moduleID, session, direction: { ...direction },
     holdDistance, contactOffset, centerClearance,
   };
+  moving.detachedPropMove.poseSourceEntityID = Number(options.sourceEntityID) || moving.itemID;
   moving.detachedPropMove.fxModuleID = moduleID;
   moving.detachedPropMove.fxModuleTypeID = PHYSICS_GUN_TYPE_ID;
   moving.detachedPropMove.lastGotoPoint = { ...destination };
@@ -330,6 +337,7 @@ function startDetachedPropTether(scene, session, worldEntityID, moduleID, direct
       { stamp, payload: buildGotoPointPayload(moving.itemID, destination) },
     ]);
     broadcastMoveFx(scene, moving, ship.itemID, ship.typeID, true, nowMs, ship);
+    emitPhysicsGunPoseSafely(scene, moving, moving.detachedPropMove, "start", nowMs);
   } catch (_error) {
     settleDetachedPropMove(scene, moving, { store, nowMs, reason: "presentation-failed" });
     return { success: false, errorMsg: "DETACHED_PROP_PRESENTATION_FAILED" };
@@ -462,6 +470,7 @@ function settleDetachedPropMove(scene, entity, options: Record<string, any> = {}
   } catch (_error) {
     scene.requestFinalSceneVisibilityReconciliation?.();
   }
+  if (state.tether) emitPhysicsGunPoseSafely(scene, world, state, "stop", nowMs);
   return {
     success: true,
     data: { worldEntityID: entity.itemID, position: world.position, reason: options.reason || "arrived" },
@@ -537,6 +546,7 @@ function tickDetachedPropMove(scene, entity, deltaSeconds, nowMs, options: Recor
     if (state.tether) {
       state.speed = 0;
       entity.velocity = { x: 0, y: 0, z: 0 };
+      emitPhysicsGunPoseSafely(scene, entity, state, "update", nowMs);
       return { success: true, data: { moving: true, held: true } };
     }
     return settleDetachedPropMove(scene, entity, { ...options, nowMs });
@@ -626,6 +636,7 @@ function tickDetachedPropMove(scene, entity, deltaSeconds, nowMs, options: Recor
       ...options, nowMs, reason: collision ? "collision" : "arrived",
     });
   }
+  if (state.tether) emitPhysicsGunPoseSafely(scene, entity, state, "update", nowMs);
   // AddBalls refreshes the authoritative position for observers without
   // publishing one teleport per physics step. The GotoPoint command animates
   // motion between these corrections.

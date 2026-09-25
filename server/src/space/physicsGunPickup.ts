@@ -104,7 +104,8 @@ function pickupPhysicsGunTarget(scene, session, target, moduleID, direction,
       }
     }
   }
-  return startDetachedPropTether(scene, session, worldEntityID, moduleID, direction, options);
+  return startDetachedPropTether(scene, session, worldEntityID, moduleID, direction,
+    { ...options, sourceEntityID: source.itemID });
 }
 
 module.exports = { movableSource, pickupPhysicsGunTarget };

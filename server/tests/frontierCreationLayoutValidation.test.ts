@@ -76,7 +76,7 @@ test("build 3502403 Creation SDE and imported tables are present", () => {
 
   const importedTables = [
     ["creationHardpointTypes", "hardpointTypes", 3],
-    ["creationModules", "modules", 39],
+    ["creationModules", "modules", 40],
     ["creationParts", "parts", 15],
     ["creationTemplates", "templates", 3],
   ];
@@ -91,6 +91,10 @@ test("build 3502403 Creation SDE and imported tables are present", () => {
     const table = JSON.parse(fs.readFileSync(tablePath, "utf8"));
     assert.equal(table.count, expectedCount);
     assert.equal(table[collectionName].length, expectedCount);
+    if (tableName === "creationModules") {
+      assert.equal(modulesByID.has(99999), false, "Physics Gun is a local overlay");
+      assert.ok(table.modules.some((module) => Number(module._key) === 99999));
+    }
   }
 });
 

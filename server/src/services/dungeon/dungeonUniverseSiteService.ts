@@ -5656,6 +5656,39 @@ function resolveEnvironmentStaticVisibilityScope(candidate) {
   return candidate && candidate.exact === true ? "site" : "bubble";
 }
 
+function separateMiningSiteAsteroids(entities, sitePosition) {
+  const anchor = clonePosition(sitePosition);
+  // Leave a 50 km clear approach around the warp beacon. Authored mining
+  // rooms often put 100+ km rocks within a few kilometres of that beacon;
+  // reducing their radii alone still leaves the camera inside the models.
+  const clearanceMeters = 10_000;
+  const occupied = [{ position: anchor, radius: 40_000 }];
+  for (const entity of entities) {
+    if (!entity || entity.frontierDungeonResource !== true) {
+      continue;
+    }
+    const radius = Math.max(0, toFiniteNumber(entity.radius, 0));
+    if (radius <= 0) {
+      continue;
+    }
+    const position = buildSeparatedSpawnPosition(entity.position, occupied, {
+      candidateRadius: radius,
+      minimumSeparationMeters: clearanceMeters,
+      seed: `mining-site:${entity.dungeonSiteID}:${entity.dunObjectID || entity.itemID}`,
+    });
+    entity.position = position;
+    if (Array.isArray(entity.dunPosition)) {
+      entity.dunPosition = [
+        position.x - anchor.x,
+        position.y - anchor.y,
+        position.z - anchor.z,
+      ];
+    }
+    occupied.push({ position, radius });
+  }
+  return entities;
+}
+
 function buildEnvironmentEntities(instance, siteEntity, template, populationHints) {
   const isMiningAsteroidSite =
     resolveFrontierDungeonTemplateGroupID(template) === FRONTIER_DUNGEON_MINING_SITE_GROUP_ID ||
@@ -5869,7 +5902,7 @@ function buildEnvironmentEntities(instance, siteEntity, template, populationHint
     return [];
   }
 
-  return selected.map((candidate, index) => {
+  const entities = selected.map((candidate, index) => {
     const authoredResourceTypeID =
       toInt(candidate.typeRecord && candidate.typeRecord.typeID, candidate.typeID) || candidate.typeID;
     const frontierDungeonResource = candidate.frontierDungeonResource === true;
@@ -5996,6 +6029,9 @@ function buildEnvironmentEntities(instance, siteEntity, template, populationHint
       velocity: { x: 0, y: 0, z: 0 },
       direction: { x: 1, y: 0, z: 0 },
       radius: authoredRadius,
+      // Frontier's Asteroid renderer reads crData.dunRadius for modelScale.
+      // Keep the visible shell tied to the bounded Destiny ball radius.
+      dunRadius: frontierDungeonResource ? authoredRadius : undefined,
       collisionScale: frontierDungeonResource
         ? authoredRadius / Math.max(
             1,
@@ -6030,6 +6066,9 @@ function buildEnvironmentEntities(instance, siteEntity, template, populationHint
       ...destinyPresentation,
     };
   });
+  return isMiningAsteroidSite
+    ? separateMiningSiteAsteroids(entities, siteEntity && siteEntity.position)
+    : entities;
 }
 
 function buildObjectiveEntities(instance, siteEntity, template, populationHints = null) {

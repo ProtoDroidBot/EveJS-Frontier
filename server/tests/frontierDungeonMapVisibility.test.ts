@@ -21,6 +21,10 @@ const miningRuntimeState = require(
   "../src/services/mining/miningRuntimeState",
 );
 const itemTypeRegistry = require("../src/services/inventory/itemTypeRegistry");
+const destiny = require("../src/space/destiny");
+const { normalizeCrDataDictionaryForProfile } = require(
+  "../src/space/destiny/stream/statePayloadCompatibility",
+);
 const {
   resolveMiningResourceIdentity,
 } = require("../src/services/mining/miningVisuals");
@@ -701,8 +705,14 @@ test("Metal-Rich Cluster Slag uses bounded radius and matching yield through sit
       roomID: 29_411,
       objects: [
         { objectID: 1_236_542, typeID: 83_739, role: "scenery" },
-        { objectID: 1_178_662, typeID: 91_375, role: "scenery", radius: 125_000 },
-        { objectID: 1_261_141, typeID: 91_375, role: "scenery", radius: 125_000 },
+        {
+          objectID: 1_178_662, typeID: 91_375, role: "scenery", radius: 125_000,
+          position: { x: -365.4, y: 4_135.3, z: -12_601.2 },
+        },
+        {
+          objectID: 1_261_141, typeID: 91_375, role: "scenery", radius: 125_000,
+          position: { x: -5_930.3, y: 2_754.1, z: -13_629.5 },
+        },
       ],
     }],
   };
@@ -716,6 +726,22 @@ test("Metal-Rich Cluster Slag uses bounded radius and matching yield through sit
   assert.deepEqual(entities.map((entity) => entity.radius), [30_000, 50_000]);
   assert.deepEqual(entities.map((entity) => entity.resourceQuantity), [1_080_000, 3_000_000]);
   assert.ok(entities.every((entity) => entity.frontierDungeonResource === true));
+  const distance = (left, right) => Math.hypot(
+    left.x - right.x, left.y - right.y, left.z - right.z,
+  );
+  for (const entity of entities) {
+    assert.ok(distance(entity.position, siteEntity.position) >= entity.radius + 50_000);
+    assert.deepEqual(entity.dunPosition, [
+      entity.position.x, entity.position.y, entity.position.z,
+    ]);
+    assert.equal(entity.dunRadius, entity.radius);
+    const crData = normalizeCrDataDictionaryForProfile(
+      destiny.buildSlimItemDict(entity), entity, "frontier",
+    );
+    assert.equal(new Map(crData.entries).get("dunRadius"), entity.radius);
+  }
+  assert.ok(distance(entities[0].position, entities[1].position) >=
+    entities[0].radius + entities[1].radius + 10_000);
 });
 
 test("Frontier mining dungeon sizing bounds small rocks and accounts for ore unit volume", () => {
@@ -771,6 +797,12 @@ test("Frontier mining dungeon resources preserve their derived size during minin
 
   assert.equal(environmentEntities.length, 1);
   assert.equal(environmentEntities[0].radius, 50_000);
+  assert.equal(environmentEntities[0].dunRadius, 50_000);
+  assert.ok(Math.hypot(
+    environmentEntities[0].position.x - siteEntity.position.x,
+    environmentEntities[0].position.y - siteEntity.position.y,
+    environmentEntities[0].position.z - siteEntity.position.z,
+  ) >= 100_000);
   assert.notEqual(environmentEntities[0].typeID, 34);
   assert.equal(environmentEntities[0].graphicID, 26_271);
   assert.equal(environmentEntities[0].slimTypeID, 34);

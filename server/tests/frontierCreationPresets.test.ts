@@ -4,6 +4,7 @@ import test = require("node:test");
 const database = require("../src/gameStore");
 const sqliteStore = require("../src/gameStore/sqliteStore");
 const itemStore = require("../src/services/inventory/itemStore");
+const liveFittingState = require("../src/services/fitting/liveFittingState");
 const creationRuntime = require("../src/services/frontier/creationRuntime");
 const presetRuntime = require("../src/services/frontier/creationPresetRuntime");
 const presetStore = require("../src/services/frontier/creationPresetStore");
@@ -153,6 +154,13 @@ test("preview resolves cargo modules and apply atomically restores the saved lay
     itemStore.ITEM_FLAGS.CARGO_HOLD,
   );
   assert.equal(move.success, true, move.errorMsg);
+  assert.equal(liveFittingState.getTypeDogmaEffects(
+    itemStore.findItemById(exteriorItemID).typeID,
+  ).has(16), true);
+  assert.equal(itemStore.updateInventoryItem(exteriorItemID, (item) => ({
+    ...item,
+    moduleState: { ...(item.moduleState || {}), online: true },
+  })).success, true);
   const damagedState = JSON.parse(JSON.stringify(original));
   damagedState.modules = damagedState.modules.filter(
     (entry) => Number(entry.itemID) !== exteriorItemID,
@@ -187,6 +195,11 @@ test("preview resolves cargo modules and apply atomically restores the saved lay
   const restoredItem = itemStore.findItemById(exteriorItemID);
   assert.equal(restoredItem.locationID, fixture.ship.itemID);
   assert.equal(restoredItem.flagID, creationRuntime.CREATION_FITTING_FLAG_ID);
+  assert.equal(
+    creationRuntime.isCreationModuleOnline(restoredItem),
+    false,
+    "applying a preset leaves an incoming component offline",
+  );
   const restoredState = creationRuntime.readCreationState(
     itemStore.findShipItemById(fixture.ship.itemID),
   );

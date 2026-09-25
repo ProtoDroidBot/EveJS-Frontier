@@ -123,8 +123,8 @@ by the phase 1–3 tests. The SQLite/scene integration test checks static
 visibility and scan FX delivery for an observer in the prop's bubble.
 The FX's appearance still requires a live client visual check.
 
-## Proposed player module
+## Player module
 
-`docs/DUNGEON_PROP_PHYSICS_TURRET.md` plans a fitted physics turret that can
-grab and reposition eligible props using this durable movement path. Its SDE
-entry has not been implemented, so the player module is not active yet.
+`docs/PHYSICS_GUN_PLAN.md` tracks the full player interaction. The local
+type 99999 and basic held-beam grab/tether are implemented. Distance, rotation,
+drop/freeze/launch distinctions, and live-client validation remain planned.

@@ -653,6 +653,8 @@ function ensureCreationState(item, characterID) {
   }
 
   const plan = buildCreationSeedPlan(template);
+  // Only effect-16 components have a manual online action. Passive parts keep
+  // their authored behavior, while power-controlled template parts start off.
   const grantResult = grantItemsToCharacterLocation(
     characterID,
     canonicalItem.itemID,
@@ -660,7 +662,13 @@ function ensureCreationState(item, characterID) {
     plan.map((entry) => ({
       itemType: entry.typeID,
       quantity: 1,
-      options: { individualItems: true, singleton: 1 },
+      options: {
+        individualItems: true,
+        singleton: 1,
+        ...(getTypeDogmaEffects(entry.typeID).has(CREATION_ONLINE_EFFECT_ID)
+          ? { moduleState: { online: false } }
+          : {}),
+      },
     })),
   );
   if (!grantResult.success) {
@@ -790,9 +798,12 @@ function validateCreationModuleRemoval(item, change) {
   return null;
 }
 
-function resolveCreationFuelCapacity(shipItem, state, characterID) {
+function resolveCreationFuelCapacity(shipItem, state, characterID, options: Record<string, any> = {}) {
   const ownerID = toInt(characterID, 0);
   const poweredOff = state && state.poweredOff === true;
+  const onlineOverrides = options.onlineOverrides instanceof Map
+    ? options.onlineOverrides
+    : new Map();
   const moduleItems = (state && Array.isArray(state.modules) ? state.modules : [])
     .map((module) => {
       const source = findItemById(toInt(module && module.itemID, 0));
@@ -803,14 +814,15 @@ function resolveCreationFuelCapacity(shipItem, state, characterID) {
       ) {
         return null;
       }
+      const authoredOnline = onlineOverrides.has(source.itemID)
+        ? onlineOverrides.get(source.itemID) === true
+        : isCreationModuleOnline(source);
       return {
         ...source,
         moduleState: {
           ...(source.moduleState || {}),
-          online:
-            toInt(source.typeID, 0) === TYPE_BLACKSTART_CELL
-              ? isCreationModuleOnline(source)
-              : !poweredOff && isCreationModuleOnline(source),
+          online: authoredOnline &&
+            (toInt(source.typeID, 0) === TYPE_BLACKSTART_CELL || !poweredOff),
         },
       };
     })
@@ -1364,6 +1376,16 @@ function commitCreationStateTransition(
     nextState,
     capacityItemIDMap,
   ) || nextState;
+  const installOnlineOverrides = new Map<number, boolean>();
+  for (const action of Array.isArray(inventoryActions) ? inventoryActions : []) {
+    if (
+      action.fitToCreation === true &&
+      (toInt(action.item && action.item.locationID, 0) !== toInt(action.locationID, 0) ||
+        toInt(action.item && action.item.flagID, -1) !== CREATION_FITTING_FLAG_ID)
+    ) {
+      installOnlineOverrides.set(toInt(action.item && action.item.itemID, 0), false);
+    }
+  }
   const previousFuelCapacity = resolveCreationFuelCapacity(
     ensured.data.item,
     ensured.data.state,
@@ -1373,6 +1395,7 @@ function commitCreationStateTransition(
     ensured.data.item,
     nextCapacityState,
     characterID,
+    { onlineOverrides: installOnlineOverrides },
   );
   const previousCapacitorCapacity = resolveCreationCapacitorCapacity(
     ensured.data.state,
@@ -1381,6 +1404,7 @@ function commitCreationStateTransition(
   const nextCapacitorCapacity = resolveCreationCapacitorCapacity(
     nextCapacityState,
     characterID,
+    { onlineOverrides: installOnlineOverrides },
   );
   const fuelCapacityDecreased = nextFuelCapacity < previousFuelCapacity;
   let voidedFuel = 0;
@@ -1436,7 +1460,9 @@ function commitCreationStateTransition(
               ...movedItem,
               moduleState: {
                 ...(movedItem.moduleState || {}),
-                online: true,
+                online: repairingLegacyFittedStack
+                  ? isCreationModuleOnline(currentSource)
+                  : false,
               },
             };
           },

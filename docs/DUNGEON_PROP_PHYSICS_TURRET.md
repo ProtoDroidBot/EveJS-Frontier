@@ -1,5 +1,9 @@
 # Physics turret for dungeon props
 
+For the full Garry's Mod-style interaction plan, including distance, rotation,
+freeze, drop, launch, and client work, see `docs/PHYSICS_GUN_PLAN.md`. This file
+records the earlier turret design and its initial implementation sequence.
+
 ## Status and dependency
 
 The base item is Physics Gun (99999), a local copy of Cutting Laser (95317);

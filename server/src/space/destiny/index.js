@@ -292,6 +292,10 @@ function buildSlimItemDict(entity) {
     if (hasEntityField("dunObjectNameID")) {
         entries.push(["dunObjectNameID", entity.dunObjectNameID ?? null]);
     }
+    const dunRadius = toFiniteNumber(entity && entity.dunRadius, 0);
+    if (dunRadius > 0) {
+        entries.push(["dunRadius", dunRadius]);
+    }
     if (hasEntityField("objectiveTargetGroup")) {
         entries.push(["objectiveTargetGroup", normalizeSlimNullableValue(entity.objectiveTargetGroup)]);
     }
