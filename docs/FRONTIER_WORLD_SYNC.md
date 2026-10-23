@@ -105,7 +105,8 @@ After `efctl env up` succeeds, the tool validates all of the following:
 - `deployments\localnet\extracted-object-ids.json` is a localnet deployment;
 - the world package, ObjectRegistry, and AdminACL IDs are canonical Sui IDs;
 - `contracts\world\Pub.localnet.toml` names the same package;
-- its chain ID matches `sui_getChainIdentifier` at `127.0.0.1:9000`;
+- its chain ID matches `sui client --client.env localnet chain-identifier --format hex`
+  in `sui-playground`, using the CLI's gRPC connection to localnet;
 - `.env` contains exactly one checksum-valid, Ed25519
   `suiprivkey` `ADMIN_PRIVATE_KEY`.
 - when `deployments\localnet\world-features.v1.json` exists, its versioned
@@ -120,6 +121,20 @@ atomically publish a `ready` private config. The native
 Frontier launcher passes this stable config path to EveJS, which reads it when
 provisioning a character. Explicit `EVEJS_SUI_*` overrides still take
 precedence.
+
+Before starting the server, `StartFrontierServer.ps1` verifies the synchronized
+artifact hashes and checks the live chain through the same bounded Sui CLI
+command. This works with localnets that return HTTP 404 for the retired
+JSON-RPC endpoint. A mismatched chain still requires a fresh sync; an unavailable
+node requires restoring `sui-playground` before retrying the launcher.
+
+World scripts, the server's assembly and Industry workers, both control dApps,
+and builder scripts use the SDK's native gRPC client. Keep the fullnode URL
+(localnet defaults to `http://127.0.0.1:9000`); the client selects the gRPC service
+paths. Transaction recovery preserves signed bytes and waits for confirmed
+effects, and Move events and view results are decoded from BCS. The wallet bridge
+still uses its existing JSON-RPC message envelope to communicate with the wallet;
+this is separate from the fullnode transport.
 
 Each capability is independent. A missing or explicitly unavailable capability
 does not block other valid feature records. The package/origin/registry remains

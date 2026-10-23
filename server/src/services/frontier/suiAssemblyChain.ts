@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import { bcs } from "@mysten/sui/bcs";
-import type { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
+import { ObjectError } from "@mysten/sui/client";
+import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Transaction, type TransactionArgument } from "@mysten/sui/transactions";
-import { deriveObjectID, normalizeSuiAddress } from "@mysten/sui/utils";
+import { deriveObjectID, normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
+import { assemblyDynamicFieldName, assertUnclaimedAssemblyObject, isMissingSuiObject, readAssemblyDynamicField, readAssemblyMoveObject } from "./suiAssemblyGrpc";
 import type { AssemblySnapshot } from "./suiAssemblySnapshot";
 
 export type SuiAssemblyKind = AssemblySnapshot["kind"];
@@ -32,7 +34,7 @@ export type SuiAssemblyChainObject = SuiAssemblyCapRef & {
   locationHash: number[];
 };
 export type SuiAssemblyChainOptions = {
-  client: SuiJsonRpcClient;
+  client: SuiGrpcClient;
   world: SuiAssemblyWorld;
   tenant: string;
   execute: (label: string, tx: Transaction, ownerId?: number, assertSnapshotCurrent?: () => void,
@@ -77,7 +79,7 @@ function localFuelInteger(value: unknown, label: string): number {
   return Number(integer);
 }
 
-/** Move JSON-RPC nests struct values in `fields`; options contain a single vec. */
+/** Accept raw Move JSON and persisted snapshots using the older struct envelope. */
 export function suiAssemblyFields(value: any): any {
   return value && typeof value === "object" && "fields" in value && !value.variant
     ? value.fields : value;
@@ -99,7 +101,7 @@ function objectId(value: any): string | null {
 }
 function kindForType(type: string, world: SuiAssemblyWorld): SuiAssemblyKind | null {
   for (const [kind, name] of Object.entries(STRUCT_NAMES)) {
-    if (kind !== "character" && type === `${normalizeSuiAddress(world.packageId)}::${kind}::${name}`) {
+    if (kind !== "character" && normalizeStructTag(type) === normalizeStructTag(`${world.packageId}::${kind}::${name}`)) {
       return kind as SuiAssemblyKind;
     }
   }
@@ -107,7 +109,7 @@ function kindForType(type: string, world: SuiAssemblyWorld): SuiAssemblyKind | n
 }
 function statusOnline(value: any): boolean {
   const status = suiAssemblyFields(suiAssemblyFields(value)?.status ?? value);
-  const variant = typeof status === "string" ? status : status?.variant;
+  const variant = typeof status === "string" ? status : status?.["@variant"] ?? status?.$kind ?? status?.variant;
   if (variant === "ONLINE") return true;
   if (variant === "OFFLINE") return false;
   throw new Error(`Unsupported chain assembly status: ${JSON.stringify(status)}`);
@@ -115,7 +117,7 @@ function statusOnline(value: any): boolean {
 function readHash(value: any): number[] {
   const hash = suiAssemblyFields(value)?.location_hash;
   if (Array.isArray(hash)) return hash.map(Number);
-  // Some JSON-RPC providers encode vector<u8> as base64.
+  // Native Move JSON encodes vector<u8> as base64.
   if (typeof hash === "string") return [...Buffer.from(hash, "base64")];
   throw new Error("Chain assembly location hash is missing");
 }
@@ -134,7 +136,7 @@ export function assemblyLocationHash(assembly: Pick<AssemblySnapshot, "solarSyst
 /** Borrow Character-owned caps with explicit Receiving references and return every receipt. */
 export async function withOwnerCaps(
   tx: Transaction,
-  client: Pick<SuiJsonRpcClient, "getObject">,
+  client: Pick<SuiGrpcClient, "getObject">,
   world: SuiAssemblyWorld,
   characterId: string,
   refs: SuiAssemblyCapRef[],
@@ -142,14 +144,12 @@ export async function withOwnerCaps(
 ): Promise<void> {
   const borrowed: Array<{ cap: TransactionArgument; receipt: TransactionArgument; type: string }> = [];
   for (const ref of refs) {
-    const response = await client.getObject({ id: ref.ownerCapId, options: { showOwner: true, showContent: true } });
-    if (response.error || !response.data) throw new Error(`Cannot read OwnerCap ${ref.ownerCapId}`);
-    const owner = response.data.owner as any;
+    const object = await readAssemblyMoveObject(client, ref.ownerCapId);
+    const owner = object!.owner;
     if (!sameId(owner?.AddressOwner ?? owner?.ObjectOwner, characterId)) {
       throw new Error(`OwnerCap for ${ref.id} belongs to a different character`);
     }
-    const content = response.data.content;
-    const fields = content?.dataType === "moveObject" ? content.fields as any : null;
+    const fields = object!.json;
     if (!sameId(objectId(fields?.authorized_object_id), ref.id)) {
       throw new Error(`OwnerCap ${ref.ownerCapId} is not authorized for ${ref.id}`);
     }
@@ -157,7 +157,7 @@ export async function withOwnerCaps(
     const [cap, receipt] = tx.moveCall({
       target: `${world.packageId}::character::borrow_owner_cap`, typeArguments: [type],
       arguments: [tx.object(characterId), tx.receivingRef({
-        objectId: response.data.objectId, version: response.data.version, digest: response.data.digest,
+        objectId: object!.objectId, version: object!.version, digest: object!.digest,
       })],
     });
     borrowed.push({ cap, receipt, type });
@@ -180,27 +180,31 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
     withOwnerCaps(tx, client, world, deriveId(String(ownerId)), refs, callback);
 
   async function readObject(id: string): Promise<SuiAssemblyChainObject | null> {
-    const response = await client.getObject({ id, options: { showContent: true, showType: true } });
-    if (response.error) {
-      if (response.error.code === "notExists") return null;
-      if (response.error.code === "deleted") {
-        throw Object.assign(new Error(`Assembly ${id} was previously unanchored; its derived item ID cannot be reused`),
-          { code: "CHAIN_ASSEMBLY_TOMBSTONE" });
-      }
-      throw new Error(`Cannot read assembly ${id}: ${JSON.stringify(response.error)}`);
+    const tombstone = () => Object.assign(new Error(`Assembly ${id} was previously unanchored; its derived item ID cannot be reused`),
+      { code: "CHAIN_ASSEMBLY_TOMBSTONE" });
+    let object;
+    try { object = await readAssemblyMoveObject(client, id, true); }
+    catch (error) {
+      if (error instanceof ObjectError && error.reason === "deleted") throw tombstone();
+      throw error;
     }
-    if (!response.data) throw new Error(`No object result for assembly ${id}`);
-    const kind = kindForType(response.data.type ?? "", world);
-    if (!kind || response.data.content?.dataType !== "moveObject") {
-      throw new Error(`Object ${id} has incompatible type ${response.data.type}`);
+    if (!object) {
+      // gRPC reports a deleted object's current version as NOT_FOUND. The parent
+      // retains this framework marker forever, so a claimed UID cannot be reused.
+      await assertUnclaimedAssemblyObject(client, world.objectRegistryId, id);
+      return null;
     }
-    const fields = response.data.content.fields as Record<string, any>;
+    const kind = kindForType(object.type ?? "", world);
+    if (!kind) {
+      throw new Error(`Object ${id} has incompatible type ${object.type}`);
+    }
+    const fields = object.json;
     const ownerCapId = objectId(fields.owner_cap_id);
     if (!ownerCapId) throw new Error(`Assembly ${id} is missing its OwnerCap`);
-    const version = String(response.data.version ?? "");
-    const digest = String(response.data.digest ?? "");
+    const version = String(object.version ?? "");
+    const digest = String(object.digest ?? "");
     return {
-      id: response.data.objectId, kind, fields, ownerCapId,
+      id: object.objectId, kind, fields, ownerCapId,
       version, digest,
       online: statusOnline(fields.status),
       networkNodeId: objectId(suiAssemblyOption(fields.energy_source_id)),
@@ -231,9 +235,8 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
       assertIntegerEqual(fuel?.burn_rate_in_ms, assembly.burnRateMs, `Network node ${assembly.itemId} burn rate`);
       assertIntegerEqual(energy?.max_energy_production, assembly.maxEnergy, `Network node ${assembly.itemId} max energy`);
     }
-    const capResponse = await client.getObject({ id: state.ownerCapId, options: { showOwner: true } });
-    if (capResponse.error || !capResponse.data) throw new Error(`Cannot read owner of assembly ${assembly.itemId}`);
-    const capOwner = capResponse.data.owner as any;
+    const capResponse = await client.getObject({ objectId: state.ownerCapId });
+    const capOwner = capResponse.object.owner;
     if (!sameId(capOwner?.AddressOwner ?? capOwner?.ObjectOwner, deriveId(String(assembly.ownerId)))) {
       throw new Error(`Assembly ${assembly.itemId} chain owner differs from local owner ${assembly.ownerId}`);
     }
@@ -245,12 +248,8 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
   }
 
   async function readInventory(storageId: string, key: string): Promise<Record<string, any>> {
-    const response = await client.getDynamicFieldObject({ parentId: storageId,
-      name: { type: "0x2::object::ID", value: key } });
-    if (response.error || response.data?.content?.dataType !== "moveObject") {
-      throw new Error(`Cannot read storage inventory ${storageId}/${key}`);
-    }
-    return suiAssemblyFields((response.data.content.fields as any).value);
+    const object = await readAssemblyDynamicField(client, storageId, assemblyDynamicFieldName("0x2::object::ID", key));
+    return suiAssemblyFields(object!.json.value);
   }
 
   async function syncMetadata(assembly: AssemblySnapshot, existing?: SuiAssemblyChainObject): Promise<void> {
@@ -266,21 +265,13 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
       await execute(`assembly:${assembly.itemId}:name`, tx, assembly.ownerId);
     }
     if (world.locationRegistryId) {
-      const registry = await client.getObject({ id: world.locationRegistryId, options: { showContent: true } });
-      if (registry.error || registry.data?.content?.dataType !== "moveObject") {
-        throw new Error("Cannot read the location registry");
-      }
-      const registryFields = registry.data.content.fields as any;
+      const registry = await readAssemblyMoveObject(client, world.locationRegistryId);
+      const registryFields = registry!.json;
       const locations = suiAssemblyFields(registryFields.locations);
       const tableId = objectId(locations?.id);
       if (!tableId) throw new Error("Location registry table ID is missing");
-      const old = await client.getDynamicFieldObject({ parentId: tableId,
-        name: { type: "0x2::object::ID", value: state.id } });
-      if (old.error && old.error.code !== "dynamicFieldNotFound" && old.error.code !== "notExists") {
-        throw new Error(`Cannot read location for ${assembly.itemId}: ${JSON.stringify(old.error)}`);
-      }
-      const oldFields = old.data?.content?.dataType === "moveObject" ? old.data.content.fields as any : null;
-      const coordinates = suiAssemblyFields(oldFields?.value);
+      const old = await readAssemblyDynamicField(client, tableId, assemblyDynamicFieldName("0x2::object::ID", state.id), true);
+      const coordinates = suiAssemblyFields(old?.json.value);
       const p = assembly.position;
       if (!coordinates || String(coordinates.solarsystem) !== String(assembly.solarSystemId) ||
           String(coordinates.x) !== String(p.x) || String(coordinates.y) !== String(p.y) || String(coordinates.z) !== String(p.z)) {
@@ -370,19 +361,16 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
     const typeID = fuelU64(suiAssemblyOption(fuel.type_id) ?? 0, "Chain fuel type");
     if (typeID === 0n || burnRate === 0n) throw new Error("Chain burning fuel has an invalid type or burn rate");
 
-    const clockResponse = await client.getObject({ id: "0x6", options: { showContent: true } });
-    if (clockResponse.error || clockResponse.data?.content?.dataType !== "moveObject") throw new Error("Cannot read Sui Clock for fuel settlement");
-    const clockFields = clockResponse.data.content.fields as any;
+    const clockResponse = await readAssemblyMoveObject(client, "0x6");
+    const clockFields = clockResponse!.json;
     const now = fuelU64(clockFields.timestamp_ms, "Sui Clock timestamp");
     if (fuelU64(fuel.last_updated, "Chain fuel last updated time") === now) return false;
-    const configResponse = await client.getObject({ id: world.fuelConfigId, options: { showContent: true } });
-    if (configResponse.error || configResponse.data?.content?.dataType !== "moveObject") throw new Error("Cannot read FuelConfig for fuel settlement");
-    const table = suiAssemblyFields((configResponse.data.content.fields as any).fuel_efficiency);
+    const configResponse = await readAssemblyMoveObject(client, world.fuelConfigId);
+    const table = suiAssemblyFields(configResponse!.json.fuel_efficiency);
     const tableID = objectId(table?.id);
     if (!tableID) throw new Error("FuelConfig efficiency table ID is missing");
-    const entry = await client.getDynamicFieldObject({ parentId: tableID, name: { type: "u64", value: String(typeID) } });
-    if (entry.error || entry.data?.content?.dataType !== "moveObject") throw new Error(`Cannot read efficiency for fuel ${typeID}`);
-    const efficiencyFields = entry.data.content.fields as any;
+    const entry = await readAssemblyDynamicField(client, tableID, assemblyDynamicFieldName("u64", String(typeID)));
+    const efficiencyFields = entry!.json;
     if (efficiencyFields.name !== undefined && fuelU64(efficiencyFields.name, "Fuel efficiency type") !== typeID) {
       throw new Error("Fuel efficiency entry belongs to another type");
     }
@@ -514,17 +502,13 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
     if (!Number.isSafeInteger(typeId) || typeId <= 0 || !Number.isInteger(contractEfficiency) || contractEfficiency < 10 || contractEfficiency > 100) {
       throw new Error(`Fuel ${typeId} efficiency ${efficiency} cannot be represented by the deployed contract (10–100 percent)`);
     }
-    const response = await client.getObject({ id: world.fuelConfigId, options: { showContent: true } });
-    if (response.error || response.data?.content?.dataType !== "moveObject") throw new Error("Cannot read FuelConfig");
-    const config = response.data.content.fields as any;
+    const response = await readAssemblyMoveObject(client, world.fuelConfigId);
+    const config = response!.json;
     const table = suiAssemblyFields(config.fuel_efficiency);
     const tableId = objectId(table?.id);
     if (!tableId) throw new Error("FuelConfig efficiency table ID is missing");
-    const entry = await client.getDynamicFieldObject({ parentId: tableId, name: { type: "u64", value: String(typeId) } });
-    if (entry.error && entry.error.code !== "dynamicFieldNotFound" && entry.error.code !== "notExists") {
-      throw new Error(`Cannot read efficiency for fuel ${typeId}`);
-    }
-    const fields = entry.data?.content?.dataType === "moveObject" ? entry.data.content.fields as any : null;
+    const entry = await readAssemblyDynamicField(client, tableId, assemblyDynamicFieldName("u64", String(typeId)), true);
+    const fields = entry?.json;
     if (options.fuelAuthority && fields) {
       const current = fuelU64(fields.value, `Fuel ${typeId} efficiency`);
       if (current === 0n || current > 100n) throw new Error(`Fuel ${typeId} chain efficiency is outside the valid range`);
@@ -540,9 +524,8 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
 
   /** Read the authoritative energy table without modifying deployed game balance. */
   async function readEnergyRequirements(): Promise<Array<{ typeID: number; energyRequired: number }>> {
-    const response = await client.getObject({ id: world.energyConfigId, options: { showContent: true } });
-    if (response.error || response.data?.content?.dataType !== "moveObject") throw new Error("Cannot read EnergyConfig");
-    const config = response.data.content.fields as any;
+    const response = await readAssemblyMoveObject(client, world.energyConfigId);
+    const config = response!.json;
     const table = suiAssemblyFields(config.assembly_energy);
     const tableId = objectId(table?.id);
     if (!tableId) throw new Error("EnergyConfig assembly energy table ID is missing");
@@ -550,15 +533,16 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
     const cursors = new Set<string>();
     let cursor: string | null = null;
     do {
-      const page = await client.getDynamicFields({ parentId: tableId, cursor, limit: 50 });
-      const values = await Promise.all(page.data.map(async entry => {
+      const page = await client.listDynamicFields({ parentId: tableId, cursor, limit: 50 });
+      const values = await Promise.all(page.dynamicFields.map(async entry => {
         if (entry.name.type !== "u64") throw new Error("EnergyConfig contains a non-u64 assembly type");
-        const typeID = Number(entry.name.value);
+        const name = bcs.u64().parse(entry.name.bcs);
+        const typeID = Number(name);
         if (!Number.isSafeInteger(typeID) || typeID <= 0) throw new Error("EnergyConfig contains an invalid assembly type");
-        const result = await client.getDynamicFieldObject({ parentId: tableId, name: entry.name });
-        const fields = result.data?.content?.dataType === "moveObject" ? result.data.content.fields as any : null;
+        const result = await readAssemblyDynamicField(client, tableId, entry.name);
+        const fields = result!.json;
         const energyRequired = fields && Number(fields.value);
-        if (result.error || !fields || String(fields.name) !== String(entry.name.value) ||
+        if (!fields || String(fields.name) !== String(name) ||
             !Number.isSafeInteger(energyRequired) || energyRequired < 0) {
           throw new Error(`Cannot read energy requirement for assembly type ${typeID}`);
         }
@@ -568,16 +552,16 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
         if (requirements.has(entry.typeID)) throw new Error("EnergyConfig contains duplicate assembly types");
         requirements.set(entry.typeID, entry.energyRequired);
       }
-      cursor = page.hasNextPage ? page.nextCursor : null;
+      cursor = page.hasNextPage ? page.cursor : null;
       if (page.hasNextPage && (!cursor || cursors.has(cursor))) throw new Error("EnergyConfig pagination did not advance");
       if (cursor) cursors.add(cursor);
     } while (cursor);
     if (table.size !== undefined && BigInt(table.size) !== BigInt(requirements.size)) {
       throw new Error("EnergyConfig changed during reading; retry the current table");
     }
-    if (response.data.version) {
-      const latest = await client.getObject({ id: world.energyConfigId });
-      if (latest.error || latest.data?.version !== response.data.version) {
+    if (response!.version) {
+      const latest = await client.getObject({ objectId: world.energyConfigId });
+      if (latest.object.version !== response!.version) {
         throw new Error("EnergyConfig changed during reading; retry the current table");
       }
     }
@@ -673,8 +657,11 @@ export function createSuiAssemblyChain(options: SuiAssemblyChainOptions) {
   async function removeAssembly(assembly: AssemblySnapshot): Promise<void> {
     const id = deriveId(assembly.itemId);
     // An already-deleted UID is a successful removal, never a reason to reanchor.
-    const probe = await client.getObject({ id });
-    if (probe.error?.code === "deleted" || probe.error?.code === "notExists") return;
+    try { await client.getObject({ objectId: id }); }
+    catch (error) {
+      if (isMissingSuiObject(error) || error instanceof ObjectError && error.reason === "deleted") return;
+      throw error;
+    }
     const state = await readAssembly(assembly);
     if (!state) return;
     if (state.online) throw new Error(`Assembly ${assembly.itemId} must be offline before removal`);

@@ -1,3 +1,4 @@
+import { createAssemblyGrpcFixture } from "./suiAssemblyGrpcFixture";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
@@ -35,8 +36,8 @@ function fixture(fieldOverrides: Record<string, unknown> = {}) {
       },
     },
     assertCurrent: async () => {},
-    client: {
-      async getObject({ id: objectID }: { id: string }) {
+    client: createAssemblyGrpcFixture({
+      async objectRecord({ id: objectID }: { id: string }) {
         return {
           data: {
             objectId: objectID,
@@ -67,7 +68,7 @@ function fixture(fieldOverrides: Record<string, unknown> = {}) {
           },
         };
       },
-    },
+    }),
     executor: {
       async execute() {
         executions++;
@@ -160,12 +161,12 @@ test("assembly reconciliation initializes only missing canonical queue roots", a
     },
     world: { serverAddressRegistryId: id("54") },
     assertCurrent: async () => {},
-    client: {
-      async multiGetObjects({ ids }: { ids: string[] }) {
+    client: createAssemblyGrpcFixture({
+      async objectRecords({ ids }: { ids: string[] }) {
         requested = ids;
         return ids.map(() => ({ error: { code: "notExists" } }));
       },
-    },
+    }),
     executor: {
       async execute(label: string) {
         executions++;

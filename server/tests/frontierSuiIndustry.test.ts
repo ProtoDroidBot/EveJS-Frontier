@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
+import { ObjectError } from "@mysten/sui/client";
 import { buildSuiIndustrySnapshot, industryU64, industryFingerprint, parseIndustryProduction, type IndustryFacilitySnapshot } from "../src/services/frontier/suiIndustrySnapshot";
 import { createSuiIndustryChain, deriveSuiIndustryId, deriveSuiIndustryProductionId, deriveSuiIndustryLaneProductionId, deriveSuiIndustryLaneStateId } from "../src/services/frontier/suiIndustryChain";
 import { createSuiIndustrySyncWorkerBridge, reconcileSuiIndustryFacilities, registerSuiIndustrySyncBridge, readSuiIndustrySyncStatus } from "../src/services/frontier/suiIndustrySync";
@@ -131,21 +132,28 @@ function chainFixture(industryPackageId?: string, industryTypeOrigin?: string, i
     industryTypeOrigin || industryPackageId || world.packageId,
     industryRegistryId || world.objectRegistryId,
   );
-  const objects = { getObject: async ({ id }: any) => id === deriveSuiIndustryLaneStateId(industryId)
-    ? current.laneStateField ? { data: { owner: { ObjectOwner: industryId }, content: { dataType: "moveObject",
-      type: `0x2::dynamic_field::Field<u8, ${industryPackageId || world.packageId}::smart_industry::LaneStateRecord>`, fields: current.laneStateField } } }
-      : { error: { code: "notExists" } }
-    : id === deriveSuiIndustryLaneProductionId(industryId)
-    ? current.laneProductionField ? { data: { owner: { ObjectOwner: industryId }, content: { dataType: "moveObject",
-      type: `0x2::dynamic_field::Field<u8, ${industryPackageId || world.packageId}::smart_industry::LaneProductionRecord>`, fields: current.laneProductionField } } }
-      : { error: { code: "notExists" } }
-    : id === deriveSuiIndustryProductionId(industryId)
-    ? current.productionField ? { data: { owner: { ObjectOwner: industryId }, content: { dataType: "moveObject",
-      type: `0x2::dynamic_field::Field<u8, ${industryPackageId || world.packageId}::smart_industry::ProductionRecord>`, fields: current.productionField } } }
-      : { error: { code: "notExists" } }
-    : current.fields ? { data: {
-    type: `${industryTypeOrigin || industryPackageId || world.packageId}::smart_industry::SmartIndustry`, content: { dataType: "moveObject", fields: current.fields },
-  } } : { error: { code: "notExists" } } };
+  const nativeJson = (value: any): any => Array.isArray(value) ? value.map(nativeJson)
+    : value && typeof value === "object" ? value.fields ? nativeJson(value.fields)
+      : Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, nativeJson(entry)])) : value;
+  const objects = { getObject: async ({ objectId, include }: any): Promise<any> => {
+    assert.deepEqual(include, { json: true });
+    const field = objectId === deriveSuiIndustryLaneStateId(industryId)
+      ? ["LaneStateRecord", current.laneStateField]
+      : objectId === deriveSuiIndustryLaneProductionId(industryId)
+        ? ["LaneProductionRecord", current.laneProductionField]
+        : objectId === deriveSuiIndustryProductionId(industryId)
+          ? ["ProductionRecord", current.productionField] : null;
+    const json = field ? field[1] : current.fields;
+    if (!json) throw new ObjectError("NOT_FOUND", "Object not found", { reason: "notFound", objectId });
+    return { object: {
+      objectId, json: nativeJson(json),
+      owner: field ? { $kind: "ObjectOwner", ObjectOwner: industryId }
+        : { $kind: "Shared", Shared: { initialSharedVersion: "1" } },
+      type: normalizeStructTag(field
+        ? `0x2::dynamic_field::Field<u8,${industryPackageId || world.packageId}::smart_industry::${field[0]}>`
+        : `${industryTypeOrigin || industryPackageId || world.packageId}::smart_industry::SmartIndustry`),
+    } };
+  } };
   const chain = { deriveId: () => assemblyID, readAssembly: async () => ({ online: current.online }) };
   const adapter = () => createSuiIndustryChain({ client: objects as any, world, chain, tenant: "dev", industryPackageId, industryTypeOrigin, industryRegistryId, now: () => 1700000000000,
     assertSnapshotCurrent(expected) { current.checks++; assert.deepEqual(expected, current.facility, "stale snapshot"); },
@@ -187,8 +195,32 @@ function chainFixture(industryPackageId?: string, industryTypeOrigin?: string, i
       }
     },
   });
-  return { world, current, assembly, assemblyID, adapter };
+  return { world, current, assembly, assemblyID, adapter, objects };
 }
+
+test("Smart Industry native reads distinguish absence from deleted, unavailable, and malformed objects", async () => {
+  const f = chainFixture();
+  for (const error of [new Error("gRPC unavailable"),
+    new ObjectError("NOT_FOUND", "Object deleted", { reason: "deleted" })]) {
+    f.objects.getObject = async () => { throw error; };
+    await assert.rejects(f.adapter().status(f.current.facility, f.assembly), (actual) => actual === error);
+  }
+  f.objects.getObject = async () => ({ object: { json: null } });
+  await assert.rejects(f.adapter().status(f.current.facility, f.assembly), /Missing Move object/);
+  assert.equal(f.current.executions.length, 0);
+});
+
+test("Smart Industry cannot recreate a missing sidecar whose derived ID is permanently claimed", async () => {
+  const f = chainFixture();
+  const industryId = deriveSuiIndustryId(f.world, f.assemblyID);
+  f.objects.getObject = async ({ objectId }: any) => {
+    if (objectId === industryId) throw new ObjectError("NOT_FOUND", "Object not found", { reason: "notFound", objectId });
+    return { object: { objectId, json: { value: { "@variant": "Reserved" } } } };
+  };
+  await assert.rejects(f.adapter().sync(f.current.facility, f.assembly),
+    (error: any) => error.code === "CHAIN_ASSEMBLY_TOMBSTONE");
+  assert.equal(f.current.executions.length, 0);
+});
 
 test("Smart Industry creates a sidecar, verifies it and deduplicates across adapter restarts", async () => {
   const f = chainFixture();

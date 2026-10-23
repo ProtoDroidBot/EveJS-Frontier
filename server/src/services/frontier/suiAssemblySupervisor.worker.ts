@@ -120,37 +120,35 @@ function saveJournal(payload: Record<string, any>) {
   return { revision: record.revision };
 }
 
-async function jsonRpc(payload: Record<string, any>) {
+const grpcRequests = new Map<number, AbortController>();
+
+async function grpc(requestId: number, payload: Record<string, any>) {
   requireLease(payload.token);
   const url = new URL(String(payload.url || ""));
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw coded("Assembly RPC URL must use HTTP or HTTPS", "ASSEMBLY_RPC_INVALID_URL");
   }
   const timeoutMs = positiveInteger(payload.timeoutMs, 10_000);
-  const response = await fetch(url, {
-    method: "POST",
-    signal: AbortSignal.timeout(timeoutMs),
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: requestSequence++,
-      method: String(payload.method || ""),
-      params: Array.isArray(payload.params) ? payload.params : [],
-    }),
-  });
-  if (!response.ok) {
-    throw coded(`Assembly RPC returned HTTP ${response.status}`, "ASSEMBLY_RPC_HTTP_ERROR");
+  if (payload.method !== "POST") throw coded("Assembly gRPC requires POST", "ASSEMBLY_RPC_INVALID_METHOD");
+  const controller = new AbortController();
+  grpcRequests.set(requestId, controller);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)]),
+      headers: payload.headers,
+      body: Buffer.from(String(payload.body || ""), "base64"),
+    });
+    const headers: [string, string][] = [];
+    response.headers.forEach((value, name) => headers.push([name, value]));
+    return {
+      status: response.status, statusText: response.statusText,
+      headers, body: Buffer.from(await response.arrayBuffer()).toString("base64"),
+    };
+  } finally {
+    grpcRequests.delete(requestId);
   }
-  const body: any = await response.json();
-  if (body?.error) {
-    const error: Error & Record<string, any> = new Error(body.error.message || "Assembly RPC failed");
-    error.code = body.error.code;
-    throw error;
-  }
-  return body?.result;
 }
-
-let requestSequence = 1;
 
 async function handle(request: Request) {
   const payload = request.payload || {};
@@ -191,7 +189,8 @@ async function handle(request: Request) {
     case "assertLease": reply(request.id, { expiresAt: requireLease(payload.token).expiresAt }); return;
     case "openJournal": reply(request.id, openJournal(payload)); return;
     case "saveJournal": reply(request.id, saveJournal(payload)); return;
-    case "jsonRpc": reply(request.id, await jsonRpc(payload)); return;
+    case "grpc": reply(request.id, await grpc(request.id, payload)); return;
+    case "cancelGrpc": grpcRequests.get(Number(payload.requestId))?.abort(); reply(request.id, true); return;
     case "shutdown": reply(request.id, true); setImmediate(() => process.exit(0)); return;
     default: throw coded(`Unknown assembly supervisor operation: ${request.op}`, "ASSEMBLY_SUPERVISOR_BAD_REQUEST");
   }

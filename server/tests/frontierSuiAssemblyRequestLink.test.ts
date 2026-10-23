@@ -1,3 +1,4 @@
+import { createAssemblyGrpcFixture } from "./suiAssemblyGrpcFixture";
 "use strict";
 
 const assert = require("node:assert/strict");
@@ -140,19 +141,19 @@ test("the worker bridge requires current signer membership in the on-chain regis
     world: { serverAddressRegistryId: SERVER_REGISTRY_ID },
     adminSigner: signer,
     async assertCurrent() {},
-    client: {
-      async getObject() {
+    client: createAssemblyGrpcFixture({
+      async objectRecord() {
         return { data: { content: { dataType: "moveObject", fields: {
           authorized_address: { fields: { id: { id: tableID } } },
         } } } };
       },
-      async getDynamicFieldObject(input) {
+      async dynamicRecord(input) {
         checkedAddress = input.name.value;
         return authorized
           ? { data: { content: { dataType: "moveObject", fields: { value: true } } } }
           : { error: { code: "dynamicFieldNotFound" } };
       },
-    },
+    }),
     chain: {
       async readAssembly(assembly) {
         return assembly.itemId === String(request().sourceAssemblyID)
@@ -176,5 +177,120 @@ test("the worker bridge requires current signer membership in the on-chain regis
 
   authorized = false;
   await assert.rejects(() => bridge.verifyCreation(request(), proof), error =>
+    error.code === "ASSEMBLY_REQUEST_CHAIN_SIGNER_UNAUTHORIZED");
+});
+
+test("creation commitments bind the logistics actor and server-derived attestation mode", async () => {
+  const signer = Ed25519Keypair.fromSecretKey(Uint8Array.from({ length: 32 }, () => 12));
+  const original = { ...request(), logistics: {
+    version: 1, actor: { kind: "player", actorID: 140000003 }, requestAttestation: "sui",
+  } };
+  const proof = await createSuiAssemblyRequestAttestation(proofOptions(signer, "created", { request: original }));
+  assert.equal(await verifySuiAssemblyRequestAttestation(verifyOptions(proof, "created", { request: original })), true);
+  const alterations = [
+    { ...original, logistics: { ...original.logistics, actor: { kind: "player", actorID: 140000004 } } },
+    { ...original, logistics: { ...original.logistics, actor: { kind: "npc", actorID: 140000003 } } },
+    { ...original, logistics: { ...original.logistics, requestAttestation: "local" } },
+    { ...original, logistics: { ...original.logistics, version: 2 } },
+    request(),
+  ];
+  for (const changed of alterations) {
+    assert.equal(await verifySuiAssemblyRequestAttestation(verifyOptions(proof, "created", { request: changed })), false,
+      "A different executor or attestation policy must not reuse the creation proof");
+  }
+});
+
+test("committed creation recovery ignores only expiry, retaining actor, signature, signer and world checks", async () => {
+  const signer = Ed25519Keypair.fromSecretKey(Uint8Array.from({ length: 32 }, () => 13));
+  const stranger = Ed25519Keypair.fromSecretKey(Uint8Array.from({ length: 32 }, () => 14));
+  const tableID = `0x${"77".repeat(32)}`;
+  let at = NOW;
+  const authorizedSigners = new Set([signer.toSuiAddress()]);
+  const original = { ...request(), logistics: {
+    version: 1, actor: { kind: "player", actorID: 140000003 }, requestAttestation: "sui",
+  } };
+  const context = {
+    synced: { chainId: CHAIN_ID, packageId: PACKAGE_ID, objectRegistryId: OBJECT_REGISTRY_ID },
+    world: { serverAddressRegistryId: SERVER_REGISTRY_ID },
+    adminSigner: signer,
+    async assertCurrent() {},
+    client: createAssemblyGrpcFixture({
+      async objectRecord() {
+        return { data: { content: { dataType: "moveObject", fields: {
+          authorized_address: { fields: { id: { id: tableID } } },
+        } } } };
+      },
+      async dynamicRecord(input) {
+        return authorizedSigners.has(input.name.value)
+          ? { data: { content: { dataType: "moveObject", fields: { value: true } } } }
+          : { error: { code: "dynamicFieldNotFound" } };
+      },
+    }),
+    chain: {
+      async readAssembly(assembly) {
+        return assembly.itemId === String(original.sourceAssemblyID)
+          ? { id: SOURCE_ID, version: "7", digest: "source-digest" }
+          : { id: TARGET_ID, version: "11", digest: "target-digest" };
+      },
+    },
+  };
+  const bridge = createSuiAssemblyRequestLinkBridge({
+    runExclusive: operation => operation(),
+    getContext: () => context,
+    getSnapshot: () => ({ assemblies: [
+      { itemId: String(original.sourceAssemblyID) }, { itemId: String(original.targetAssemblyID) },
+    ] }),
+    now: () => at,
+  });
+  const proof = await bridge.attestCreation(original);
+  assert.equal(await bridge.verifyCreation(original, proof), true);
+  at = original.expiresAtMs + 1;
+  assert.equal(await bridge.verifyCreation(original, proof), false,
+    "Expired authorization cannot authorize a new item move");
+  assert.equal(await bridge.verifyCommittedCreation(original, proof), true,
+    "The creation identity remains auditable after a durable inventory commit");
+
+  const changedActor = { ...original, logistics: { ...original.logistics,
+    actor: { kind: "player", actorID: 140000004 } } };
+  assert.equal(await bridge.verifyCommittedCreation(changedActor, proof), false);
+  const changedMode = { ...original, logistics: { ...original.logistics, requestAttestation: "local" } };
+  assert.equal(await bridge.verifyCommittedCreation(changedMode, proof), false);
+  const forgedSignature = Buffer.from(proof.signature, "base64");
+  forgedSignature[10] ^= 0xff;
+  assert.equal(await bridge.verifyCommittedCreation(original, {
+    ...proof, signature: forgedSignature.toString("base64"),
+  }), false);
+  assert.equal(await bridge.verifyCommittedCreation(original, {
+    ...proof, source: { ...proof.source, version: "8" },
+  }), false, "Recovery still binds the historical exact object reference");
+
+  // These proofs have valid signatures and commitments, so the failure must
+  // come from world isolation or registry membership rather than bad crypto.
+  const wrongWorld = await createSuiAssemblyRequestAttestation(proofOptions(signer, "created", {
+    request: original, packageID: `0x${"88".repeat(32)}`,
+  }));
+  assert.equal(await bridge.verifyCommittedCreation(original, wrongWorld), false);
+  const wrongSigner = await createSuiAssemblyRequestAttestation(proofOptions(stranger, "created", {
+    request: original,
+  }));
+  const rejectedSigner = await bridge.verifyCommittedCreation(original, wrongSigner).catch(error => {
+    assert.equal(error.code, "ASSEMBLY_REQUEST_CHAIN_SIGNER_UNAUTHORIZED");
+    return false;
+  });
+  assert.equal(rejectedSigner, false, "An unregistered signer cannot attest a committed request");
+
+  // Rotating the active server key must not invalidate historical proofs from
+  // an old key that remains independently authorized by the same world.
+  authorizedSigners.add(stranger.toSuiAddress());
+  context.adminSigner = stranger;
+  assert.equal(await bridge.verifyCommittedCreation(original, proof), true);
+  authorizedSigners.delete(signer.toSuiAddress());
+  await assert.rejects(() => bridge.verifyCommittedCreation(original, proof), error =>
+    error.code === "ASSEMBLY_REQUEST_CHAIN_SIGNER_UNAUTHORIZED");
+
+  // The currently running server must remain authorized as well.
+  authorizedSigners.add(signer.toSuiAddress());
+  authorizedSigners.delete(stranger.toSuiAddress());
+  await assert.rejects(() => bridge.verifyCommittedCreation(original, proof), error =>
     error.code === "ASSEMBLY_REQUEST_CHAIN_SIGNER_UNAUTHORIZED");
 });

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { bcs } from "@mysten/sui/bcs";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
 import {
   createSuiTurretPriorityResolver,
   evaluateDefaultSuiTurretPriority,
@@ -30,6 +31,31 @@ function candidate(overrides: Partial<SuiTurretTargetCandidate> = {}): SuiTurret
     ...overrides,
   };
 }
+
+function simulation(outputs: Uint8Array[][]) {
+  return {
+    $kind: "Transaction",
+    Transaction: { status: { success: true } },
+    commandResults: outputs.map((values) => ({
+      returnValues: values.map((value) => ({ bcs: value })),
+      mutatedReferences: [],
+    })),
+  };
+}
+
+function resolverFor(client: unknown) {
+  return createSuiTurretPriorityResolver({
+    client,
+    world: { packageId: "0x1", objectRegistryId: "0x2", tenant: "dev" },
+    sender: "0x3",
+  });
+}
+
+const priorityRequest = {
+  turretItemID: 9_001,
+  ownerCharacterID: 140_000_001,
+  candidates: [candidate({ item_id: 77n })],
+};
 
 test("Sui turret default policy excludes owner/allies and weights hostiles and aggressors", () => {
   const result = evaluateDefaultSuiTurretPriority([
@@ -85,44 +111,67 @@ test("Sui turret resolver verifies the deployed turret and filters its priority 
     { target_item_id: 88n, priority_weight: 99_000n },
     { target_item_id: 77n, priority_weight: 1n },
   ]).toBytes();
-  const priorityBytes = Array.from(bcs.vector(bcs.u8()).serialize(inner).toBytes());
+  const priorityBytes = bcs.vector(bcs.u8()).serialize(inner).toBytes();
   const calls: any[] = [];
   const client = {
-    async devInspectTransactionBlock(input: any) {
+    async simulateTransaction(input: any) {
       calls.push(input);
       if (calls.length === 1) {
-        return {
-          effects: { status: { status: "success" } },
-          results: [{ returnValues: [[[0], "bool"]] }],
-        };
+        return simulation([[bcs.bool().serialize(false).toBytes()]]);
       }
-      return {
-        effects: { status: { status: "success" } },
-        results: [
-          { returnValues: [] },
-          { returnValues: [[priorityBytes, "vector<u8>"]] },
-        ],
-      };
+      return simulation([[], [priorityBytes]]);
     },
   };
-  const resolver = createSuiTurretPriorityResolver({
-    client,
-    world: {
-      packageId: "0x1",
-      objectRegistryId: "0x2",
-      tenant: "dev",
-    },
-    sender: "0x3",
-  });
+  const result = await resolverFor(client).resolve(priorityRequest);
 
-  const result = await resolver.resolve({
-    turretItemID: 9_001,
-    ownerCharacterID: 140_000_001,
-    candidates: [candidate({ item_id: 77n })],
-  });
-
-  assert.equal(calls.length, 2, "extension lookup and priority evaluation both use dev-inspect");
+  assert.equal(calls.length, 2, "extension lookup and priority evaluation both use native simulation");
+  for (const call of calls) {
+    assert.deepEqual(call.include, { commandResults: true });
+    assert.equal(call.checksEnabled, false);
+    assert.equal(call.transaction.getData().sender, normalizeSuiAddress("0x3"));
+    assert.ok(call.signal instanceof AbortSignal);
+  }
   assert.deepEqual(result, [{ target_item_id: 77n, priority_weight: 12_000n }]);
+});
+
+test("Sui turret native simulation resolves the configured extension and decodes an empty priority list", async () => {
+  const calls: any[] = [];
+  const client = { async simulateTransaction(input: any) {
+    calls.push(input.transaction.getData());
+    if (calls.length === 1) return simulation([[bcs.bool().serialize(true).toBytes()]]);
+    if (calls.length === 2) return simulation([[
+      bcs.vector(bcs.u8()).serialize(new TextEncoder().encode("abc::turret::Auth")).toBytes(),
+    ]]);
+    return simulation([[], [bcs.vector(bcs.u8()).serialize(new Uint8Array([0])).toBytes()]]);
+  } };
+  assert.deepEqual(await resolverFor(client).resolve(priorityRequest), []);
+  assert.equal(calls.length, 3);
+  assert.equal(calls[1].commands[0].MoveCall.function, "extension_type");
+  assert.equal(calls[2].commands[0].MoveCall.function, "verify_online");
+  assert.equal(calls[2].commands[1].MoveCall.package, normalizeSuiAddress("0xabc"));
+});
+
+test("Sui turret simulation failures and missing or malformed BCS are never treated as no targets", async () => {
+  for (const response of [
+    { $kind: "FailedTransaction", FailedTransaction: { status: { success: false, error: { message: "MoveAbort: turret offline" } } } },
+    { $kind: "Transaction", Transaction: { status: { success: false, error: { message: "execution rejected" } } } },
+    {},
+  ]) {
+    await assert.rejects(resolverFor({ simulateTransaction: async () => response }).resolve(priorityRequest),
+      /simulation failed/);
+  }
+  const error = new Error("gRPC transport unavailable");
+  await assert.rejects(resolverFor({ simulateTransaction: async () => { throw error; } }).resolve(priorityRequest),
+    (actual) => actual === error);
+  for (const response of [simulation([]), simulation([[]]), simulation([[new Uint8Array()]]),
+    simulation([[new Uint8Array([2])]])]) {
+    await assert.rejects(resolverFor({ simulateTransaction: async () => response }).resolve(priorityRequest),
+      /BCS/);
+  }
+  let call = 0;
+  await assert.rejects(resolverFor({ simulateTransaction: async () => ++call === 1
+    ? simulation([[new Uint8Array([0])]]) : simulation([[], [new Uint8Array([3, 0])]])
+  }).resolve(priorityRequest));
 });
 
 test("Smart Turret selects its fitted weapon type before the assembly default", () => {

@@ -1,7 +1,8 @@
 import { bcs } from "@mysten/sui/bcs";
 import { Transaction } from "@mysten/sui/transactions";
 import { deriveObjectID, deriveDynamicFieldID, normalizeSuiAddress, isValidSuiAddress, SUI_CLOCK_OBJECT_ID } from "@mysten/sui/utils";
-import type { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
+import type { SuiGrpcClient } from "@mysten/sui/grpc";
+import { assertUnclaimedAssemblyObject, readAssemblyMoveObject } from "./suiAssemblyGrpc";
 import { suiAssemblyFields, type SuiAssemblyWorld } from "./suiAssemblyChain";
 import type { AssemblySnapshot } from "./suiAssemblySnapshot";
 import { industryU64, parseIndustryProduction, type IndustryFacilitySnapshot, type IndustrySnapshot, type IndustryProduction, type IndustryLaneProduction, type IndustryLaneState } from "./suiIndustrySnapshot";
@@ -106,17 +107,15 @@ export function appendIndustryLaneStates(
   return tx.makeMoveVec({ elements });
 }
 /** The typed dynamic field is owned by this sidecar. Revision binds both RPC reads. */
-async function readProduction(client: Pick<SuiJsonRpcClient, "getObject">, industryId: string, revision: string, allowStaleRevision = false) {
-  const response = await client.getObject({ id: deriveSuiIndustryProductionId(industryId), options: { showContent: true, showOwner: true } });
-  if (response.error?.code === "notExists") return { production: null, productionMirrored: false };
-  const content = response.data?.content;
-  const owner = response.data?.owner;
-  if (response.error || content?.dataType !== "moveObject" || !owner || typeof owner !== "object" ||
-      !("ObjectOwner" in owner) || !sameID(owner.ObjectOwner, industryId) ||
-      !/^0x0*2::dynamic_field::Field<u8, 0x[0-9a-f]+::smart_industry::ProductionRecord>$/.test(content.type)) {
+async function readProduction(client: Pick<SuiGrpcClient, "getObject">, industryId: string, revision: string, allowStaleRevision = false) {
+  const object = await readAssemblyMoveObject(client, deriveSuiIndustryProductionId(industryId), true);
+  if (!object) return { production: null, productionMirrored: false };
+  const owner = object.owner;
+  if (owner?.$kind !== "ObjectOwner" || !sameID(owner.ObjectOwner, industryId) ||
+      !/^0x0*2::dynamic_field::Field<u8,0x[0-9a-f]+::smart_industry::ProductionRecord>$/.test(object.type)) {
     throw new Error("Cannot verify Smart Industry production field");
   }
-  const fields = content.fields as any;
+  const fields = object.json;
   const record = suiAssemblyFields(fields.value);
   if (Number(fields.name) !== 0) throw new Error("Cannot verify Smart Industry production field name");
   const productionMirrored = industryU64(record?.revision, "Production revision") === revision;
@@ -139,16 +138,13 @@ async function readProduction(client: Pick<SuiJsonRpcClient, "getObject">, indus
 }
 
 async function readLaneProductions(
-  client: Pick<SuiJsonRpcClient, "getObject">,
+  client: Pick<SuiGrpcClient, "getObject">,
   industryId: string,
   revision: string,
   allowStaleRevision = false,
 ) {
-  const response = await client.getObject({
-    id: deriveSuiIndustryLaneProductionId(industryId),
-    options: { showContent: true, showOwner: true },
-  });
-  if (response.error?.code === "notExists") {
+  const object = await readAssemblyMoveObject(client, deriveSuiIndustryLaneProductionId(industryId), true);
+  if (!object) {
     const legacy = await readProduction(client, industryId, revision, allowStaleRevision);
     return {
       productions: [{ lane_id: "1", production: legacy.production }],
@@ -156,14 +152,12 @@ async function readLaneProductions(
       legacyProjection: true,
     };
   }
-  const content = response.data?.content;
-  const owner = response.data?.owner;
-  if (response.error || content?.dataType !== "moveObject" || !owner || typeof owner !== "object" ||
-      !("ObjectOwner" in owner) || !sameID(owner.ObjectOwner, industryId) ||
-      !/^0x0*2::dynamic_field::Field<u8, 0x[0-9a-f]+::smart_industry::LaneProductionRecord>$/.test(content.type)) {
+  const owner = object.owner;
+  if (owner?.$kind !== "ObjectOwner" || !sameID(owner.ObjectOwner, industryId) ||
+      !/^0x0*2::dynamic_field::Field<u8,0x[0-9a-f]+::smart_industry::LaneProductionRecord>$/.test(object.type)) {
     throw new Error("Cannot verify Smart Industry lane production field");
   }
-  const fields = content.fields as any;
+  const fields = object.json;
   const record = suiAssemblyFields(fields.value);
   if (Number(fields.name) !== 1 || !Array.isArray(record?.lanes) ||
       record.lanes.length === 0 || record.lanes.length > 16) {
@@ -202,17 +196,14 @@ async function readLaneProductions(
 }
 
 async function readLaneStates(
-  client: Pick<SuiJsonRpcClient, "getObject">,
+  client: Pick<SuiGrpcClient, "getObject">,
   industryId: string,
   revision: string,
   rootSnapshot: IndustrySnapshot,
   allowStaleRevision = false,
 ) {
-  const response = await client.getObject({
-    id: deriveSuiIndustryLaneStateId(industryId),
-    options: { showContent: true, showOwner: true },
-  });
-  if (response.error?.code === "notExists") {
+  const object = await readAssemblyMoveObject(client, deriveSuiIndustryLaneStateId(industryId), true);
+  if (!object) {
     const legacy = await readLaneProductions(client, industryId, revision, allowStaleRevision);
     return {
       ...legacy,
@@ -225,14 +216,12 @@ async function readLaneStates(
       legacyProjection: true,
     };
   }
-  const content = response.data?.content;
-  const owner = response.data?.owner;
-  if (response.error || content?.dataType !== "moveObject" || !owner || typeof owner !== "object" ||
-      !("ObjectOwner" in owner) || !sameID(owner.ObjectOwner, industryId) ||
-      !/^0x0*2::dynamic_field::Field<u8, 0x[0-9a-f]+::smart_industry::LaneStateRecord>$/.test(content.type)) {
+  const owner = object.owner;
+  if (owner?.$kind !== "ObjectOwner" || !sameID(owner.ObjectOwner, industryId) ||
+      !/^0x0*2::dynamic_field::Field<u8,0x[0-9a-f]+::smart_industry::LaneStateRecord>$/.test(object.type)) {
     throw new Error("Cannot verify Smart Industry lane state field");
   }
-  const fields = content.fields as any;
+  const fields = object.json;
   const record = suiAssemblyFields(fields.value);
   if (Number(fields.name) !== 2 || !Array.isArray(record?.lanes) ||
       record.lanes.length === 0 || record.lanes.length > 16) {
@@ -331,7 +320,7 @@ function readSnapshot(raw: any): IndustrySnapshot {
 }
 
 export function createSuiIndustryChain(options: {
-  client: Pick<SuiJsonRpcClient, "getObject">; world: SuiAssemblyWorld; tenant: string;
+  client: Pick<SuiGrpcClient, "getObject">; world: SuiAssemblyWorld; tenant: string;
   chain: { deriveId(itemId: string): string; readAssembly(assembly: AssemblySnapshot): Promise<any> };
   execute(label: string, tx: Transaction, ownerId?: number, assertCurrent?: () => void,
     gasPayerOwnerId?: number): Promise<unknown>;
@@ -357,11 +346,15 @@ export function createSuiIndustryChain(options: {
     if (underlying.online !== (facility.status === 2)) throw new Error("Industry Assembly status changed; retry current snapshot");
     const assemblyId = chain.deriveId(facility.itemId);
     const industryObjectID = deriveSuiIndustryId(world, assemblyId, typeOrigin, registryId);
-    const response = await client.getObject({ id: industryObjectID, options: { showContent: true, showType: true } });
-    if (response.error?.code === "notExists") return { industryObjectID, assemblyObjectID: assemblyId, state: null };
-    if (response.error || !response.data || response.data.type !== `${typeOrigin}::smart_industry::SmartIndustry` ||
-        response.data.content?.dataType !== "moveObject") throw new Error("Cannot verify Smart Industry object");
-    const fields = response.data.content.fields as any;
+    const object = await readAssemblyMoveObject(client, industryObjectID, true);
+    if (!object) {
+      await assertUnclaimedAssemblyObject(client, registryId, industryObjectID);
+      return { industryObjectID, assemblyObjectID: assemblyId, state: null };
+    }
+    if (object.type !== `${typeOrigin}::smart_industry::SmartIndustry` || object.owner?.$kind !== "Shared") {
+      throw new Error("Cannot verify Smart Industry object");
+    }
+    const fields = object.json;
     const key = suiAssemblyFields(fields.assembly_key);
     if (!sameID(objectID(fields.assembly_id), assemblyId) || String(key?.id ?? key?.item_id) !== facility.itemId || key?.tenant !== options.tenant ||
         industryU64(fields.type_id, "Chain facility type") !== String(facility.typeId)) throw new Error("Smart Industry object belongs to a different Assembly");

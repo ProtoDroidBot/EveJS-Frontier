@@ -1,3 +1,4 @@
+import { createAssemblyGrpcFixture } from "./suiAssemblyGrpcFixture";
 import assert = require("node:assert/strict");
 import { test } from "node:test";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
@@ -8,24 +9,24 @@ import { createAssemblySyncWorker, createSuiAssemblyEnergyMutationRunner, runSui
 function fixture(options: { invalidValue?: string; missing?: boolean; repeatedCursor?: boolean; size?: string } = {}) {
   let executions = 0;
   const pages: any[] = [];
-  const client: any = {
-    async getObject() {
+  const client: any = createAssemblyGrpcFixture({
+    async objectRecord() {
       return { data: { content: { dataType: "moveObject", fields: {
         assembly_energy: { fields: { id: { id: "0x99" }, size: options.size ?? "2" } },
       } } } };
     },
-    async getDynamicFields(request: any) {
+    async dynamicPage(request: any) {
       pages.push(request);
       return { data: [{ name: { type: "u64", value: request.cursor ? "77917" : "90184" } }],
         hasNextPage: !request.cursor || !!options.repeatedCursor, nextCursor: "cursor-1" };
     },
-    async getDynamicFieldObject({ name }: any) {
+    async dynamicRecord({ name }: any) {
       if (options.missing) return { error: { code: "dynamicFieldNotFound" } };
       return { data: { content: { dataType: "moveObject", fields: {
         name: name.value, value: options.invalidValue ?? (name.value === "77917" ? "500" : "1"),
       } } } };
     },
-  };
+  });
   const chain = createSuiAssemblyChain({ client, tenant: "dev",
     world: { packageId: "0x1", objectRegistryId: "0x2", adminAclId: "0x3", energyConfigId: "0x4", fuelConfigId: "0x5" },
     async execute() { executions++; },
@@ -43,7 +44,7 @@ test("reads every deployed energy table page without submitting balance changes"
 });
 
 test("incomplete, unsafe or changing energy tables fail before returning a replacement", async () => {
-  await assert.rejects(fixture({ missing: true }).chain.readEnergyRequirements(), /Cannot read energy requirement/);
+  await assert.rejects(fixture({ missing: true }).chain.readEnergyRequirements(), /dynamicFieldNotFound/);
   await assert.rejects(fixture({ invalidValue: "9007199254740992" }).chain.readEnergyRequirements(), /Cannot read energy requirement/);
   await assert.rejects(fixture({ size: "3" }).chain.readEnergyRequirements(), /changed during reading/);
   await assert.rejects(fixture({ repeatedCursor: true }).chain.readEnergyRequirements(), /pagination did not advance/);
@@ -72,13 +73,13 @@ function nodeEnergyFixture() {
   let executions = 0;
   let missing = false;
   const chain = createSuiAssemblyChain({
-    client: { async getObject({ id }: any) {
+    client: createAssemblyGrpcFixture({ async objectRecord({ id }: any) {
       reads++;
       if (id === "0x70") return { data: { owner: { AddressOwner: address(String(assembly.ownerId)) } } };
       if (missing) return { error: { code: "notExists" } };
       return { data: { objectId: address(assembly.itemId), type: `${normalizeSuiAddress("0x1")}::network_node::NetworkNode`,
         content: { dataType: "moveObject", fields } } };
-    } } as any,
+    } }) as any,
     tenant: "dev", deriveId: address,
     world: { packageId: "0x1", objectRegistryId: "0x2", adminAclId: "0x3", energyConfigId: "0x4", fuelConfigId: "0x5" },
     async execute() { executions++; },
@@ -96,7 +97,7 @@ test("reads confirmed Network Node reservations and production without writing c
   assert.ok(energy.observedAtMs >= startedAt && energy.observedAtMs <= Date.now());
   const state = await f.chain.readAssembly(f.assembly);
   const reads = f.reads();
-  f.energy.current_energy_production = "0";
+  state!.fields.energy_source.current_energy_production = "0";
   const offline = await f.chain.readEnergyState(f.assembly, state!);
   assert.equal(offline.currentEnergyProduction, 0);
   assert.equal(offline.energyUsed, 275, "Preserve confirmed reservations even when production is zero");
@@ -107,21 +108,22 @@ test("reads confirmed Network Node reservations and production without writing c
 test("Network Node energy rejects missing, unsafe and impossible values", async () => {
   const f = nodeEnergyFixture();
   const state = (await f.chain.readAssembly(f.assembly))!;
+  const energy = state.fields.energy_source;
   for (const field of ["max_energy_production", "current_energy_production", "total_reserved_energy"]) {
-    const original = f.energy[field];
+    const original = energy[field];
     for (const invalid of [undefined, null, "", "-1", "1.5", "9007199254740992", "18446744073709551616", Infinity, true]) {
-      f.energy[field] = invalid;
+      energy[field] = invalid;
       await assert.rejects(f.chain.readEnergyState(f.assembly, state), /valid u64|outside the local integer range/);
     }
-    f.energy[field] = original;
+    energy[field] = original;
   }
-  f.energy.max_energy_production = "0";
+  energy.max_energy_production = "0";
   await assert.rejects(f.chain.readEnergyState(f.assembly, state), /invalid chain energy/);
-  f.energy.max_energy_production = "1000";
-  f.energy.current_energy_production = "1001";
+  energy.max_energy_production = "1000";
+  energy.current_energy_production = "1001";
   await assert.rejects(f.chain.readEnergyState(f.assembly, state), /invalid chain energy/);
-  f.energy.current_energy_production = "1000";
-  f.energy.total_reserved_energy = "1001";
+  energy.current_energy_production = "1000";
+  energy.total_reserved_energy = "1001";
   await assert.rejects(f.chain.readEnergyState(f.assembly, state), /invalid chain energy/);
   assert.equal(f.executions(), 0);
 });

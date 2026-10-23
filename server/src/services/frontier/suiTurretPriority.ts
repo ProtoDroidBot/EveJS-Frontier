@@ -1,6 +1,7 @@
 import path from "node:path";
 import { bcs } from "@mysten/sui/bcs";
-import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
+import { SuiGrpcClient } from "@mysten/sui/grpc";
+import type { SuiClientTypes } from "@mysten/sui/client";
 import { Transaction } from "@mysten/sui/transactions";
 import { deriveObjectID, normalizeSuiAddress } from "@mysten/sui/utils";
 import {
@@ -173,16 +174,22 @@ function deriveTenantObjectID(
   );
 }
 
-function firstReturnBytes(result: any, commandIndex: number): Uint8Array {
-  const raw = result?.results?.[commandIndex]?.returnValues?.[0]?.[0];
-  if (!raw) return new Uint8Array();
-  return raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+type TurretSimulation = SuiClientTypes.SimulateTransactionResult<{ commandResults: true }>;
+
+function firstReturnBytes(result: TurretSimulation, commandIndex: number): Uint8Array {
+  const raw = result.commandResults?.[commandIndex]?.returnValues?.[0]?.bcs;
+  if (!(raw instanceof Uint8Array) || raw.length === 0) {
+    throw new Error(`Sui turret simulation is missing BCS return bytes for command ${commandIndex}`);
+  }
+  return raw;
 }
 
-function assertDevInspectSuccess(result: any): void {
-  if (result?.effects?.status?.status !== "success") {
-    const detail = result?.effects?.status?.error ?? result?.effects?.status ?? "unknown failure";
-    throw new Error(`Sui turret priority inspection failed: ${JSON.stringify(detail)}`);
+function assertSimulationSuccess(result: TurretSimulation): void {
+  const executed = result?.$kind === "Transaction" ? result.Transaction :
+    result?.$kind === "FailedTransaction" ? result.FailedTransaction : undefined;
+  if (result?.$kind !== "Transaction" || executed?.status?.success !== true) {
+    const detail = executed?.status?.error?.message ?? "missing or unsuccessful execution status";
+    throw new Error(`Sui turret priority simulation failed: ${detail}`);
   }
 }
 
@@ -204,10 +211,18 @@ type ExtensionInfo = {
   moduleName: string | null;
 };
 
-export function createSuiTurretPriorityResolver(options: Record<string, any> = {}): SuiTurretPriorityResolver {
-  let cachedContext: any = null;
+type TurretContext = {
+  client: Pick<SuiGrpcClient, "simulateTransaction">;
+  packageId: string;
+  objectRegistryId: string;
+  tenant: string;
+  sender: string;
+};
 
-  function context() {
+export function createSuiTurretPriorityResolver(options: Record<string, any> = {}): SuiTurretPriorityResolver {
+  let cachedContext: (TurretContext & { key: string }) | null = null;
+
+  function context(): TurretContext {
     if (options.client && options.world) {
       return {
         client: options.client,
@@ -234,8 +249,8 @@ export function createSuiTurretPriorityResolver(options: Record<string, any> = {
     if (cachedContext?.key === key) return cachedContext;
     cachedContext = {
       key,
-      client: new SuiJsonRpcClient({
-        url: String(env.EVEJS_SUI_RPC_URL || DEFAULT_RPC_URL),
+      client: new SuiGrpcClient({
+        baseUrl: String(env.EVEJS_SUI_RPC_URL || DEFAULT_RPC_URL),
         network: "localnet",
       }),
       packageId: world.packageId,
@@ -253,15 +268,18 @@ export function createSuiTurretPriorityResolver(options: Record<string, any> = {
       Number(options.timeoutMs || process.env.EVEJS_SUI_TURRET_RPC_TIMEOUT_MS) ||
         DEFAULT_REQUEST_TIMEOUT_MS,
     );
+    tx.setSender(current.sender);
     const result = await withTimeout(
-      current.client.devInspectTransactionBlock({
-        sender: current.sender,
-        transactionBlock: tx,
+      current.client.simulateTransaction({
+        transaction: tx,
+        include: { commandResults: true },
+        checksEnabled: false,
+        signal: AbortSignal.timeout(timeoutMs),
       }),
       timeoutMs,
       label,
     );
-    assertDevInspectSuccess(result);
+    assertSimulationSuccess(result);
     return result;
   }
 
@@ -273,7 +291,11 @@ export function createSuiTurretPriorityResolver(options: Record<string, any> = {
       arguments: [configuredTx.object(turretObjectID)],
     });
     const configuredResult = await inspect(configuredTx, "Sui turret extension lookup");
-    const configured = firstReturnBytes(configuredResult, 0)[0] === 1;
+    const configuredBytes = firstReturnBytes(configuredResult, 0);
+    if (configuredBytes.length !== 1 || configuredBytes[0] > 1) {
+      throw new Error("Sui turret extension lookup returned an invalid BCS boolean");
+    }
+    const configured = configuredBytes[0] === 1;
     let info: ExtensionInfo = {
       packageId: null,
       moduleName: null,

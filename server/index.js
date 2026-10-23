@@ -238,6 +238,14 @@ catch (err) {
     log.err(`[SuiAssemblySync] Failed to start: ${err.message}`);
 }
 try {
+    const logistics = require("./src/services/frontier/assemblyLogisticsWorker");
+    logistics.startAssemblyLogisticsWorker();
+    database.registerShutdownHook(() => logistics.stopAssemblyLogisticsWorker(), { priority: 200 });
+}
+catch (err) {
+    log.err(`[AssemblyLogistics] Failed to start: ${err.message}`);
+}
+try {
     require("./src/services/frontier/suiNpcIdentitySync").startSuiNpcIdentitySync();
 }
 catch (err) {

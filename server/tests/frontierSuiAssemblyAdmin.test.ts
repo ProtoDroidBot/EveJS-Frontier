@@ -29,6 +29,8 @@ function fixture(t: any) {
     return tx;
   };
   const results = new Map<string, any>();
+  const nativeResult = (result: any) => result.status.success
+    ? { $kind: "Transaction", Transaction: result } : { $kind: "FailedTransaction", FailedTransaction: result };
   const executorOptions: any = {
     journalPath: path.join(root, "transactions.json"), chainId: "abcd", packageId: normalizeSuiAddress("0x1"),
     getSigner() { assert.fail("A wallet operation must never use the server's derived player signer"); },
@@ -39,7 +41,7 @@ function fixture(t: any) {
     async reconcileSponsored(metadata: any, digest: string) {
       state.sequence.push("reconcile");
       if (state.commitFails) throw new Error("disk unavailable");
-      assert.equal(results.get(digest).effects.status.status, "success");
+      assert.equal(results.get(digest).status.success, true);
       state.metadata = metadata;
       state.assembly.status = metadata.affected[0].targetStatus;
       state.commits++;
@@ -47,23 +49,24 @@ function fixture(t: any) {
     onCommitted() { state.sequence.push("unlocked"); },
     client: {
       async getObject() { throw new Error("not indexed"); },
-      async getTransactionBlock({ digest }: any) {
+      async getTransaction({ digest }: any) {
         const result = results.get(digest);
         if (!result || state.lost) throw new Error("offline");
-        return result;
+        return nativeResult(result);
       },
-      async executeTransactionBlock(input: any) {
+      async executeTransaction(input: any) {
         state.submits++;
         state.sequence.push("submit");
-        const digest = TransactionDataBuilder.getDigestFromBytes(input.transactionBlock);
-        assert.equal(await verifySponsoredAssemblySignature(Buffer.from(input.transactionBlock).toString("base64"), input.signature[0], owner.toSuiAddress()), true);
-        assert.equal(await verifySponsoredAssemblySignature(Buffer.from(input.transactionBlock).toString("base64"), input.signature[1], sponsor.toSuiAddress()), true);
-        const result = { digest, effects: { transactionDigest: digest, status: { status: state.failed ? "failure" : "success", error: "Move failed" } } };
+        const digest = TransactionDataBuilder.getDigestFromBytes(input.transaction);
+        assert.equal(await verifySponsoredAssemblySignature(Buffer.from(input.transaction).toString("base64"), input.signatures[0], owner.toSuiAddress()), true);
+        assert.equal(await verifySponsoredAssemblySignature(Buffer.from(input.transaction).toString("base64"), input.signatures[1], sponsor.toSuiAddress()), true);
+        const status = { success: !state.failed, error: state.failed ? { message: "Move failed" } : null };
+        const result = { digest, status, events: [], effects: { transactionDigest: digest, status, changedObjects: [], gasObject: null } };
         results.set(digest, result);
         if (state.lost) throw new Error("lost response");
-        return result;
+        return nativeResult(result);
       },
-      async waitForTransaction({ digest }: any) { return results.get(digest); },
+      async waitForTransaction({ digest }: any) { return nativeResult(results.get(digest)); },
     },
   };
   let tail = Promise.resolve();

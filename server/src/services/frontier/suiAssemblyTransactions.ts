@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { TransactionDataBuilder } from "@mysten/sui/transactions";
-import type { SuiJsonRpcClient, SuiObjectRef, SuiTransactionBlockResponse } from "@mysten/sui/jsonRpc";
+import type { SuiGrpcClient } from "@mysten/sui/grpc";
+import { ObjectError, type SuiClientTypes } from "@mysten/sui/client";
 import { isNpcCharacterID } from "../_shared/npcIdentityConstants";
 
 type PendingTransaction = {
@@ -33,10 +34,24 @@ type AssemblyJournalStore = {
   save: (expectedRevision: number, journal: Journal) => Promise<{ revision: number }>;
 };
 
-type AssemblyRpcClient = Pick<SuiJsonRpcClient,
-  "getTransactionBlock" | "executeTransactionBlock" | "waitForTransaction" | "getObject">;
-const resultOptions = { showEffects: true, showEvents: true };
+type SuiObjectRef = { objectId: string; version: string; digest: string };
+type AssemblyRpcClient = Pick<SuiGrpcClient,
+  "getTransaction" | "executeTransaction" | "waitForTransaction" | "getObject">;
+type AssemblyTransaction = SuiClientTypes.Transaction<{ effects: true; events: true }>;
+const resultInclude = { effects: true, events: true } as const;
 const GAS_BUDGET = 100_000_000;
+
+function transactionResult<Include extends SuiClientTypes.TransactionInclude>(
+  result: SuiClientTypes.TransactionResult<Include>,
+): SuiClientTypes.Transaction<Include> {
+  const transaction = result?.Transaction ?? result?.FailedTransaction;
+  if (!transaction || !["Transaction", "FailedTransaction"].includes(result.$kind) ||
+      typeof transaction.status?.success !== "boolean" ||
+      (result.$kind === "Transaction") !== transaction.status.success) {
+    throw new Error("Assembly transaction returned an invalid native gRPC result");
+  }
+  return transaction;
+}
 
 function sameReference(a: SuiObjectRef, b: SuiObjectRef) {
   return a.objectId === b.objectId && String(a.version) === String(b.version) && a.digest === b.digest;
@@ -100,22 +115,20 @@ export function createAssemblyTransactionExecutor(options: {
     // A failed disk write must not unlock another submission in this process.
     journal = next;
   }
-  function confirmedGas(result: SuiTransactionBlockResponse): SuiObjectRef | undefined {
+  function confirmedGas(result: AssemblyTransaction): SuiObjectRef | undefined {
     const gas = result.effects?.gasObject;
-    if (gas?.owner && typeof gas.owner === "object" &&
-        "AddressOwner" in gas.owner && gas.owner.AddressOwner === options.adminSigner.toSuiAddress()) {
-      return { ...gas.reference, version: String(gas.reference.version) };
+    if (gas?.outputOwner?.AddressOwner === options.adminSigner.toSuiAddress() &&
+        gas.outputState === "ObjectWrite" && gas.outputVersion && gas.outputDigest) {
+      return { objectId: gas.objectId, version: gas.outputVersion, digest: gas.outputDigest };
     }
   }
-  async function finish(result: SuiTransactionBlockResponse, pending: PendingTransaction) {
-    if (result?.digest !== pending.digest || !result?.effects?.status?.status ||
-        (result.effects.transactionDigest && result.effects.transactionDigest !== pending.digest)) {
+  async function finish(result: AssemblyTransaction, pending: PendingTransaction) {
+    if (result?.digest !== pending.digest || typeof result?.effects?.status?.success !== "boolean" ||
+        result.effects.transactionDigest !== pending.digest ||
+        result.effects.status.success !== result.status.success) {
       throw new Error(`Assembly transaction ${pending.digest} has no definitive effects; retry pending`);
     }
-    const status = result.effects.status.status;
-    if (status !== "success" && status !== "failure") {
-      throw new Error(`Assembly transaction ${pending.digest} returned an unknown status`);
-    }
+    const status = result.status.success ? "success" : "failure";
     if (status === "success" && pending.sponsored) {
       if (!options.reconcileSponsored) throw new Error("Sponsored transaction reconciliation is unavailable");
       await options.reconcileSponsored(pending.sponsored, pending.digest);
@@ -130,7 +143,7 @@ export function createAssemblyTransactionExecutor(options: {
       }] : journal.sponsoredReceipts,
     });
     if (status === "failure") {
-      throw new Error(`${pending.label}: ${result.effects.status.error || "Move transaction failed"}`);
+      throw new Error(`${pending.label}: ${result.status.error?.message || "Move transaction failed"}`);
     }
     options.onCommitted?.(pending.digest, pending.label);
     return result;
@@ -139,15 +152,20 @@ export function createAssemblyTransactionExecutor(options: {
   async function gasForBuild(): Promise<SuiObjectRef | undefined> {
     const cached = journal.confirmedGas;
     if (!cached) return;
-    const response = await options.client.getObject({
-      id: cached.objectId, options: { showOwner: true, showContent: true },
-    });
-    if (response.error) {
-      if (response.error.code === "notExists") throw new Error("Assembly gas is not yet visible at its confirmed version; retry after indexing");
-      if (response.error.code === "deleted") return;
-      throw new Error(`Cannot refresh assembly gas: ${JSON.stringify(response.error)}`);
+    let current: SuiClientTypes.Object<{ json: true }>;
+    try {
+      ({ object: current } = await options.client.getObject({ objectId: cached.objectId, include: { json: true } }));
+    } catch (error) {
+      if (error instanceof ObjectError && error.reason === "notFound") {
+        // gRPC also reports a merged/deleted coin as NOT_FOUND. This path only
+        // builds new transactions; pending signed bytes are recovered unchanged.
+        // Leave payment selection to the SDK, whose native resolver simulates
+        // the transaction with current gas references before it can be signed.
+        return;
+      }
+      if (error instanceof ObjectError && error.reason === "deleted") return;
+      throw error;
     }
-    const current = response.data;
     if (!current || current.objectId !== cached.objectId) throw new Error("Cannot refresh assembly gas reference");
     // An older balance cannot establish that the confirmed coin still covers
     // the budget. Defer before signing/journaling instead of consuming stale data.
@@ -159,7 +177,7 @@ export function createAssemblyTransactionExecutor(options: {
     }
     if (typeof current.owner !== "object" || !current.owner ||
         !("AddressOwner" in current.owner) || current.owner.AddressOwner !== options.adminSigner.toSuiAddress()) return;
-    const fields = current.content?.dataType === "moveObject" ? current.content.fields : null;
+    const fields = current.json;
     const balance = fields && "balance" in fields ? fields.balance : null;
     if (typeof balance !== "string" || !/^\d+$/.test(balance)) throw new Error("Cannot read assembly gas balance");
     // Let the SDK select other coins when the previously used coin is depleted.
@@ -173,32 +191,33 @@ export function createAssemblyTransactionExecutor(options: {
     if (journal.lastTransaction) candidates.add(journal.lastTransaction.digest);
     // Other admin users may have consumed an input since our last transaction.
     const objects = await Promise.allSettled(refs.map(ref => options.client.getObject({
-      id: ref.objectId, options: { showPreviousTransaction: true },
+      objectId: ref.objectId, include: { previousTransaction: true },
     })));
     for (const object of objects) {
-      if (object.status === "fulfilled" && object.value.data?.previousTransaction) {
-        candidates.add(object.value.data.previousTransaction);
+      if (object.status === "fulfilled" && object.value.object?.previousTransaction) {
+        candidates.add(object.value.object.previousTransaction);
       }
     }
     candidates.delete(pending.digest);
     for (const digest of candidates) {
-      let result: SuiTransactionBlockResponse;
+      let result: SuiClientTypes.Transaction<{ effects: true; transaction: true }>;
       try {
-        result = await options.client.getTransactionBlock({ digest, options: { showEffects: true, showInput: true } });
+        result = transactionResult(await options.client.getTransaction({ digest, include: { effects: true, transaction: true } }));
       } catch { continue; }
       const effects = result.effects;
       if (result.digest !== digest || effects?.transactionDigest !== digest ||
-          !["success", "failure"].includes(effects.status.status)) continue;
-      const data = result.transaction?.data;
-      const inputs: SuiObjectRef[] = [...(data?.gasData.payment ?? [])];
-      if (data?.transaction?.kind === "ProgrammableTransaction") {
-        for (const input of data.transaction.inputs) {
-          if (input.type === "object" && input.objectType !== "sharedObject") inputs.push(input);
-        }
+          effects.status.success !== result.status.success) continue;
+      const data = result.transaction;
+      const inputs: SuiObjectRef[] = (data?.gasData.payment ?? []).map(ref => ({ ...ref, version: String(ref.version) }));
+      for (const input of data?.inputs ?? []) {
+        if (!("Object" in input)) continue;
+        const ref = "ImmOrOwnedObject" in input.Object ? input.Object.ImmOrOwnedObject
+          : "Receiving" in input.Object ? input.Object.Receiving : null;
+        if (ref) inputs.push({ ...ref, version: String(ref.version) });
       }
       const consumed = refs.find(ref => inputs.some(input => sameReference(ref, input)) &&
-        effects.modifiedAtVersions?.some(change => change.objectId === ref.objectId &&
-          String(change.sequenceNumber) === ref.version));
+        effects.changedObjects?.some(change => change.objectId === ref.objectId &&
+          change.inputState === "Exists" && change.inputVersion === ref.version && change.inputDigest === ref.digest));
       if (consumed) return { result, consumed };
     }
     return null;
@@ -228,28 +247,28 @@ export function createAssemblyTransactionExecutor(options: {
       throw new Error("Assembly transaction journal is corrupt; refusing to submit");
     }
     await options.assertCurrent();
-    let result: SuiTransactionBlockResponse;
+    let result: AssemblyTransaction;
     try {
-      result = await options.client.getTransactionBlock({
-        digest: pending.digest, options: resultOptions,
-      });
+      result = transactionResult(await options.client.getTransaction({
+        digest: pending.digest, include: resultInclude,
+      }));
     } catch {
       // Replaying identical bytes/signatures is idempotent even after a lost response.
       await options.assertCurrent();
       await options.journalStore?.assertLease();
       try {
-        result = await options.client.executeTransactionBlock({
-          transactionBlock: bytes, signature: pending.signatures, options: resultOptions,
-        });
+        result = transactionResult(await options.client.executeTransaction({
+          transaction: bytes, signatures: pending.signatures, include: resultInclude,
+        }));
       } catch (error) {
         await retireIfSuperseded(pending, bytes);
         throw error;
       }
     }
     if (result?.digest !== pending.digest) throw new Error("Assembly transaction returned a different digest; retry pending");
-    // SDK 2.x ignores requestType. Keep the journal pending until the read API
-    // observes execution, including failed Move calls which also consume gas.
-    result = await options.client.waitForTransaction({ digest: pending.digest, options: resultOptions });
+    // Query by digest even after execution: keep the journal pending until the
+    // read API observes execution, including failed Move calls which consume gas.
+    result = transactionResult(await options.client.waitForTransaction({ digest: pending.digest, include: resultInclude }));
     await options.assertCurrent();
     return finish(result, pending);
   }

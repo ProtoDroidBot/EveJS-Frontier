@@ -1,6 +1,7 @@
 import assert = require("node:assert/strict");
 import { test } from "node:test";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { bcs } from "@mysten/sui/bcs";
 
 import {
   createSuiAssemblyAccessCharacterDelegationTransaction,
@@ -34,7 +35,7 @@ const grantId = "11111111-1111-4111-8111-111111111111";
 const operationId = "22222222-2222-4222-8222-222222222222";
 
 function sharedObject(objectId: string, type: string, fields: Record<string, any>) {
-  return { data: { objectId, type, owner: { $kind: "Shared" }, content: { type, fields } } };
+  return { object: { objectId, type, owner: { $kind: "Shared", Shared: { initialSharedVersion: "1" } }, json: fields } };
 }
 
 function policyObject() {
@@ -59,7 +60,7 @@ function grantObject(overrides: Record<string, any> = {}) {
     capabilities: "13",
     grantor_kind: 1,
     grantor_id: "140000001",
-    parent_grant_id: { vec: [] },
+    parent_grant_id: null,
     expires_at_ms: "2000000",
     delegable: false,
     delegation_depth: 0,
@@ -94,7 +95,7 @@ test("policy and grant parsing rejects look-alike types and mismatched derived I
   assert.throws(() => parseSuiAssemblyAccessGrantObject(
     grantObject({ assembly_id: addr(99) }), world, itemId, grantId));
   assert.throws(() => parseSuiAssemblyAccessPolicyObject({
-    ...policyObject(), data: { ...policyObject().data, owner: { AddressOwner: addr(1) } },
+    ...policyObject(), object: { ...policyObject().object, owner: { $kind: "AddressOwner", AddressOwner: addr(1) } },
   }, world, itemId));
 });
 
@@ -106,7 +107,10 @@ test("grant verifier reads derived shared objects and rejects stale or mismatche
   const verifier = createSuiAssemblyAccessGrantVerifier({
     world,
     now: () => 1_000_000,
-    client: { async getObject({ id }) { return objects.get(id); } } as any,
+    client: { async getObject({ objectId, include }) {
+      assert.deepEqual(include, { json: true });
+      return objects.get(objectId);
+    } } as any,
   });
   const local = {
     assemblyID: itemId,
@@ -123,6 +127,13 @@ test("grant verifier reads derived shared objects and rejects stale or mismatche
   assert.equal(await verifier({ ...local, capabilities: ["gui.view"] }, {}), false);
   objects.set(deriveSuiAssemblyAccessGrantId(world, itemId, grantId), grantObject({ revoked: true }));
   assert.equal(await verifier(local, {}), false);
+  for (const client of [
+    { getObject: async () => { throw new Error("gRPC unavailable"); } },
+    { getObject: async () => ({ object: { json: null } }) },
+  ]) {
+    const unavailable = createSuiAssemblyAccessGrantVerifier({ client: client as any, world, now: () => 1_000_000 });
+    assert.equal(await unavailable(local, {}), false);
+  }
 });
 
 test("transaction builders forbid delegated custody and include operation-bound cross-owner calls", () => {
@@ -177,9 +188,14 @@ test("custody proof is bound to finalized event operation, direction, actors and
   const source = 5_100_000_001;
   const destination = 5_100_000_002;
   const actor = 140000002;
+  const eventBcs = bcs.struct("AssemblyCustodyTransferred", {
+    operation_id: bcs.vector(bcs.u8()), custody_kind: bcs.u8(),
+    source_assembly_id: bcs.Address, destination_assembly_id: bcs.Address,
+    actor_character_id: bcs.Address, type_id: bcs.u64(), quantity: bcs.u32(),
+  });
   const event = {
-    type: `${world.typeOrigin}::assembly_access::AssemblyCustodyTransferred`,
-    parsedJson: {
+    eventType: `${world.typeOrigin}::assembly_access::AssemblyCustodyTransferred`,
+    bcs: eventBcs.serialize({
       operation_id: [...Buffer.from(operationId.replaceAll("-", ""), "hex")],
       custody_kind: 3,
       source_assembly_id: deriveSuiAssemblyObjectId(world, source),
@@ -187,10 +203,12 @@ test("custody proof is bound to finalized event operation, direction, actors and
       actor_character_id: deriveSuiAssemblyObjectId(world, actor),
       type_id: "77818",
       quantity: 9,
-    },
+    }).toBytes(),
   };
-  const client = { async getTransactionBlock() {
-    return { effects: { status: { status: "success" } }, events: [event] };
+  const response: any = { $kind: "Transaction", Transaction: { status: { success: true }, events: [event] } };
+  const client = { async getTransaction(input: any) {
+    assert.deepEqual(input.include, { events: true });
+    return response;
   } };
   const proof = {
     digest: "4".repeat(44), operationId, custodyKind: 3 as const,
@@ -201,4 +219,9 @@ test("custody proof is bound to finalized event operation, direction, actors and
   assert.equal(await verifySuiAssemblyCustodyProof({
     client, world, proof: { ...proof, quantity: 10 },
   }), false);
+  event.bcs = new Uint8Array([255]);
+  assert.equal(await verifySuiAssemblyCustodyProof({ client, world, proof }), false);
+  response.$kind = "FailedTransaction";
+  response.FailedTransaction = { status: { success: false, error: { message: "MoveAbort" } } };
+  assert.equal(await verifySuiAssemblyCustodyProof({ client, world, proof }), false);
 });

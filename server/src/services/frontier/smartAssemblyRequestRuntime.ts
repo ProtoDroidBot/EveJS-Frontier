@@ -17,6 +17,7 @@ const MAX_SIGNALS = 10_000;
 const MAX_PAYLOAD_BYTES = 16 * 1024;
 const MAX_RESULT_BYTES = 16 * 1024;
 const MAX_LIST_LIMIT = 250;
+const logisticsAttestationKey = Symbol("server-derived logistics attestation mode");
 
 /**
  * Urgency is deliberately separate from flags. A request has exactly one
@@ -184,6 +185,18 @@ function hasAnyPriorityFlags(value, anyMask) {
   return flags !== null && any !== null && (any === 0 || (flags & any) !== 0);
 }
 
+function isLocalLogisticsRequest(request) {
+  return request?.requestType === "logistics.transfer" && request.logistics?.version === 1 &&
+    request.logistics.requestAttestation === "local";
+}
+
+function hasLocalLogisticsEndpoint(sourceAssemblyID, targetAssemblyID) {
+  const deployment = require("./deploymentRuntime");
+  const records = [sourceAssemblyID, targetAssemblyID].map(id => deployment.getAssemblyRecord(id));
+  return records.every(record => record && typeof record.createOnChain === "boolean") &&
+    records.some(record => record.createOnChain === false);
+}
+
 function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
   const now = typeof options.now === "function" ? options.now : Date.now;
   const randomUUID = typeof options.randomUUID === "function"
@@ -207,23 +220,53 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
     };
   const handlers = new Map();
   const signalListeners = new Map();
+  const workerCapabilities = new Map();
+  const workerCapabilityKey = Symbol("assembly request worker capability");
   let transitionHooks: Record<string, any> | null = null;
+  let pendingPersistenceRollback: { snapshot: any } | null = null;
+
+  function restoreFailedWrite() {
+    if (!pendingPersistenceRollback) return true;
+    try {
+      const restored = repository.write(REQUEST_TABLE, "/", cloneValue(pendingPersistenceRollback.snapshot));
+      if (restored?.success && (typeof repository.flushTablesSync !== "function" ||
+          repository.flushTablesSync([REQUEST_TABLE])?.success === true)) {
+        pendingPersistenceRollback = null;
+        return true;
+      }
+    } catch (_) { /* Keep the pre-transition snapshot authoritative until recovery. */ }
+    return false;
+  }
 
   function readState() {
     repository.ensureTable(REQUEST_TABLE);
+    if (!restoreFailedWrite()) return normalizeStoredState(pendingPersistenceRollback.snapshot);
     const result = repository.read(REQUEST_TABLE, "/");
     return normalizeStoredState(result && result.success ? result.data : null);
   }
 
   function writeState(state) {
+    if (!restoreFailedWrite()) {
+      return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_PERSIST_FAILED" };
+    }
     state.version = STATE_VERSION;
     if (state.signals.length > MAX_SIGNALS) {
       state.signals.splice(0, state.signals.length - MAX_SIGNALS);
     }
-    const result = repository.write(REQUEST_TABLE, "/", state);
-    return result && result.success
-      ? { success: true as const }
-      : { success: false as const, errorMsg: "ASSEMBLY_REQUEST_PERSIST_FAILED" };
+    const previous = repository.read(REQUEST_TABLE, "/");
+    const snapshot = cloneValue(previous?.success ? previous.data : emptyState());
+    try {
+      const result = repository.write(REQUEST_TABLE, "/", state);
+      if (result?.success && (typeof repository.flushTablesSync !== "function" ||
+          repository.flushTablesSync([REQUEST_TABLE])?.success === true)) {
+        return { success: true as const };
+      }
+    } catch (_) { /* A buffered write is not a durable queue transition. */ }
+    // Restore the shared cache before any later claim/read can observe the
+    // failed transition. Also try to restore disk after an ambiguous flush.
+    pendingPersistenceRollback = { snapshot };
+    restoreFailedWrite();
+    return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_PERSIST_FAILED" };
   }
 
   function publishSignals(state, fromSequence) {
@@ -405,7 +448,8 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
     }
 
     const removable = Object.values<any>(state.requests)
-      .filter((request) => request && TERMINAL_STATES.has(request.status))
+      .filter((request) => request && TERMINAL_STATES.has(request.status) &&
+        (!request.logistics || request.logisticsReconciledAtMs))
       .sort((left, right) => toInt(left.completedAtMs, 0) - toInt(right.completedAtMs, 0));
     for (const request of removable) {
       if (toInt(request.completedAtMs, 0) + TERMINAL_RETENTION_MS <= currentTime) {
@@ -416,7 +460,8 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
     const ordered = Object.values<any>(state.requests)
       .sort((left, right) => toInt(left.createdSequence, 0) - toInt(right.createdSequence, 0));
     while (ordered.length > MAX_REQUESTS) {
-      const index = ordered.findIndex((request) => TERMINAL_STATES.has(request.status));
+      const index = ordered.findIndex((request) => TERMINAL_STATES.has(request.status) &&
+        (!request.logistics || request.logisticsReconciledAtMs));
       if (index < 0) break;
       const [request] = ordered.splice(index, 1);
       delete state.requests[request.requestID];
@@ -431,6 +476,7 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
     if (reconcileState(state)) {
       const persisted = writeState(state);
       if (persisted.success) publishSignals(state, fromSequence);
+      else return readState();
     }
     return state;
   }
@@ -482,6 +528,20 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
     }
     const payload = normalizeJson(requestOptions.payload, MAX_PAYLOAD_BYTES);
     if (!payload.success) return payload;
+    let logistics;
+    if (normalizedType === "logistics.transfer" && requestOptions._logisticsActor !== undefined) {
+      const actor = requestOptions._logisticsActor;
+      if (!actor || typeof actor !== "object" || Array.isArray(actor) ||
+          Object.keys(actor).some(key => key !== "kind" && key !== "actorID") ||
+          !["player", "npc"].includes(actor.kind) || !normalizeID(actor.actorID) ||
+          typeof actor.actorID !== "number") {
+        return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_LOGISTICS_ACTOR_INVALID" };
+      }
+      logistics = { version: 1, actor: { kind: actor.kind, actorID: actor.actorID } };
+      if ((requestOptions as any)[logisticsAttestationKey]) {
+        logistics.requestAttestation = (requestOptions as any)[logisticsAttestationKey];
+      }
+    }
     const createdAtMs = now();
     const requestedTTL = requestOptions.expiresInMs === undefined
       ? DEFAULT_REQUEST_TTL_MS
@@ -505,6 +565,7 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
       requestType: normalizedType,
       sourceAssemblyID: source.assemblyID,
       targetAssemblyID: target.assemblyID,
+      ...(logistics ? { logistics } : {}),
     };
 
     return mutate((state) => {
@@ -519,6 +580,7 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
           requestType: existing.requestType,
           sourceAssemblyID: existing.sourceAssemblyID,
           targetAssemblyID: existing.targetAssemblyID,
+          ...(existing.logistics ? { logistics: existing.logistics } : {}),
         };
         const requestedComparable = { ...immutable };
         delete requestedComparable.expiresAtMs;
@@ -616,6 +678,13 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
       : { success: false as const, errorMsg: "ASSEMBLY_REQUEST_NOT_FOUND" };
   }
 
+  function requireWorkerAccess(request, settings) {
+    const capability = workerCapabilities.get(request.requestType);
+    return !capability || settings?.[workerCapabilityKey] === capability
+      ? { success: true as const }
+      : { success: false as const, errorMsg: "ASSEMBLY_REQUEST_SERVER_WORKER_REQUIRED" };
+  }
+
   function validateActorForRequest(request, assemblyID, role, actorOptions) {
     const actor = getAssembly(assemblyID, {
       ownerID: actorOptions && actorOptions.ownerID,
@@ -644,6 +713,12 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
     return mutate((state) => {
       const request = state.requests[normalizedID];
       if (!request) return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_NOT_FOUND" };
+      const workerAccess = requireWorkerAccess(request, claimOptions);
+      if (!workerAccess.success) return workerAccess;
+      if (isLocalLogisticsRequest(request) &&
+          !hasLocalLogisticsEndpoint(request.sourceAssemblyID, request.targetAssemblyID)) {
+        return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_ENDPOINT_CHANGED" };
+      }
       const actor = validateActorForRequest(request, targetAssemblyID, "target", {
         ownerID: claimOptions.ownerID,
         requireOnline: true,
@@ -693,6 +768,8 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
     return mutate((state) => {
       const request = state.requests[normalizedID];
       if (!request) return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_NOT_FOUND" };
+      const workerAccess = requireWorkerAccess(request, renewOptions);
+      if (!workerAccess.success) return workerAccess;
       const actor = validateActorForRequest(request, targetAssemblyID, "target", {
         ownerID: renewOptions.ownerID,
         requireOnline: true,
@@ -714,6 +791,8 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
     return mutate((state) => {
       const request = state.requests[normalizedID];
       if (!request) return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_NOT_FOUND" };
+      const workerAccess = requireWorkerAccess(request, releaseOptions);
+      if (!workerAccess.success) return workerAccess;
       const actor = validateActorForRequest(request, targetAssemblyID, "target", {
         ownerID: releaseOptions.ownerID,
       });
@@ -739,6 +818,8 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
     return mutate((state) => {
       const request = state.requests[normalizedID];
       if (!request) return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_NOT_FOUND" };
+      const workerAccess = requireWorkerAccess(request, completeOptions);
+      if (!workerAccess.success) return workerAccess;
       const actor = validateActorForRequest(request, targetAssemblyID, "target", {
         ownerID: completeOptions.ownerID,
       });
@@ -972,6 +1053,123 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
     };
   }
 
+  // Server-only capability, deliberately absent from the MachoNet service's
+  // exported methods. A player-supplied options object cannot reproduce its
+  // private Symbol. A worker owns claim/completion for its reserved type.
+  function createWorkerAccess(requestType) {
+    const normalizedType = normalizeRequestType(requestType);
+    if (!normalizedType) throw new Error("Worker request type is invalid");
+    let capability = workerCapabilities.get(normalizedType);
+    if (!capability) {
+      capability = Object.freeze({});
+      workerCapabilities.set(normalizedType, capability);
+    }
+    const authorized = (settings = {}) => ({ ...settings, [workerCapabilityKey]: capability });
+    return {
+      // No player list limit and no dependency on a currently online assembly:
+      // receipt recovery must also see expired/cancelled work after restart.
+      listRequests() {
+        return Object.values<any>(readReconciledState().requests)
+          .filter(request => request.requestType === normalizedType)
+          .sort((left, right) => Number(right.priority) - Number(left.priority) ||
+            Number(left.createdSequence) - Number(right.createdSequence))
+          .map(cloneValue);
+      },
+      claimRequest(request, settings = {}) {
+        return (transitionHooks?.claimRequest ?? claimRequest)(
+          request.targetAssemblyID, request.requestID, authorized(settings));
+      },
+      validateClaim(requestID, claimToken) {
+        const normalizedID = normalizeRequestID(requestID);
+        return mutate(state => {
+          const request = state.requests[normalizedID];
+          if (!request || request.requestType !== normalizedType) {
+            return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_NOT_FOUND" };
+          }
+          const claim = requireClaim(request, claimToken);
+          if (!claim.success) return claim;
+          if (isLocalLogisticsRequest(request) &&
+              !hasLocalLogisticsEndpoint(request.sourceAssemblyID, request.targetAssemblyID)) {
+            return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_ENDPOINT_CHANGED" };
+          }
+          const source = getAssembly(request.sourceAssemblyID, { requireOnline: true });
+          if (!source.success) return source;
+          const target = getAssembly(request.targetAssemblyID, { requireOnline: true });
+          if (!target.success) return target;
+          return { success: true as const, data: cloneValue(request) };
+        });
+      },
+      releaseClaim(request) {
+        return releaseClaim(request.targetAssemblyID, request.requestID,
+          request.claimToken, authorized());
+      },
+      failRequest(request, failure) {
+        return (transitionHooks?.failRequest ?? failRequest)(request.targetAssemblyID,
+          request.requestID, request.claimToken, failure, authorized());
+      },
+      finalizeCommittedRequest(requestID, result) {
+        return (transitionHooks?.finalizeCommittedRequest ?? finalizeCommittedRequest)(
+          requestID, normalizedType, result, authorized());
+      },
+      markTerminalReconciled(requestID) {
+        return mutate(state => {
+          const request = state.requests[normalizeRequestID(requestID)];
+          if (!request || request.requestType !== normalizedType || !TERMINAL_STATES.has(request.status)) {
+            return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_NOT_TERMINAL" };
+          }
+          request.logisticsReconciledAtMs = now();
+          return { success: true as const };
+        });
+      },
+    };
+  }
+
+  function finalizeCommittedRequest(requestID, requestType, result,
+    completeOptions: Record<string | symbol, any> = {}) {
+    const normalizedID = normalizeRequestID(requestID);
+    const normalizedValue = normalizeJson(result, MAX_RESULT_BYTES);
+    if (!normalizedValue.success) return normalizedValue;
+    return mutate(state => {
+      const request = state.requests[normalizedID];
+      if (!request || request.requestType !== requestType) {
+        return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_NOT_FOUND" };
+      }
+      if (!workerCapabilities.has(requestType) ||
+          !requireWorkerAccess(request, completeOptions).success) {
+        return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_SERVER_WORKER_REQUIRED" };
+      }
+      if (request.status === "fulfilled") {
+        return stableJson(request.result) === stableJson(normalizedValue.data)
+          ? { success: true as const, completed: false, data: cloneValue(request) }
+          : { success: false as const, errorMsg: "ASSEMBLY_REQUEST_COMPLETION_CONFLICT" };
+      }
+      if (request.chainLink?.required === true &&
+          (completeOptions._chainVerified !== true || !completeOptions._completionProof)) {
+        return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_CHAIN_PROOF_REQUIRED" };
+      }
+      // The receipt is read from the executor's durable store before entering
+      // this capability. A cancellation/TTL/offline change after the item commit
+      // cannot undo that commit or cause it to be executed a second time.
+      const previousStatus = request.status;
+      request.status = "fulfilled";
+      request.result = normalizedValue.data;
+      request.failure = null;
+      request.claimToken = null;
+      request.claimExpiresAtMs = null;
+      request.completedAtMs = now();
+      request.logisticsReconciledAtMs = request.completedAtMs;
+      request.updatedAtMs = request.completedAtMs;
+      request.revision += 1;
+      if (request.chainLink?.required === true) {
+        request.chainLink.completion = cloneValue(completeOptions._completionProof);
+        request.chainLink.status = "completed";
+      }
+      appendSignal(state, request, "fulfilled", request.targetAssemblyID,
+        { committed: true, previousStatus });
+      return { success: true as const, completed: true, data: cloneValue(request) };
+    });
+  }
+
   function subscribeToSignals(assemblyID, listener) {
     const numericID = normalizeID(assemblyID);
     if (!numericID || typeof listener !== "function") {
@@ -996,7 +1194,7 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
     if (!queue.success) return queue;
     const candidate = (queue as any).data.find((request) => {
       const registration = handlers.get(request.requestType);
-      return registration &&
+      return !workerCapabilities.has(request.requestType) && registration &&
         hasAllPriorityFlags(registration.acceptedPriorityFlags, request.priorityFlags);
     });
     if (!candidate) return { success: true as const, processed: false, data: null };
@@ -1062,6 +1260,8 @@ function createSmartAssemblyRequestRuntime(options: Record<string, any> = {}) {
     listSignals,
     subscribeToSignals,
     registerHandler,
+    createWorkerAccess,
+    _finalizeCommittedRequest: finalizeCommittedRequest,
     processNextRequest,
     _setTransitionHooks(value) { transitionHooks = value; },
     _testing: { readState, reconcileState },
@@ -1083,6 +1283,11 @@ function chainFailure(error) {
 
 function createLinkedRequest(sourceAssemblyID, targetAssemblyID, requestType,
   requestOptions: Record<string, any> = {}) {
+  if (normalizeRequestType(requestType) === "logistics.transfer" && requestOptions._logisticsActor) {
+    const local = hasLocalLogisticsEndpoint(sourceAssemblyID, targetAssemblyID);
+    requestOptions = { ...requestOptions, [logisticsAttestationKey]: local ? "local" : "sui" };
+    if (local) return runtime.createRequest(sourceAssemblyID, targetAssemblyID, requestType, requestOptions);
+  }
   const bridge = requestLinkBridge();
   if (!bridge) return runtime.createRequest(sourceAssemblyID, targetAssemblyID, requestType, requestOptions);
   const created = runtime.createRequest(sourceAssemblyID, targetAssemblyID, requestType, {
@@ -1118,6 +1323,9 @@ function claimLinkedRequest(targetAssemblyID, requestID, claimOptions: Record<st
       const found = runtime.getRequest(requestID);
       if (!found.success) return found;
       const request = found.data;
+      if (isLocalLogisticsRequest(request)) {
+        return runtime.claimRequest(targetAssemblyID, requestID, claimOptions);
+      }
       if (request.chainLink?.required !== true || !request.chainLink.creation) {
         return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_CHAIN_PROOF_REQUIRED" };
       }
@@ -1144,6 +1352,9 @@ function completeLinkedRequest(targetAssemblyID, requestID, claimToken, phase, o
       const found = runtime.getRequest(requestID);
       if (!found.success) return found;
       const request = found.data;
+      if (isLocalLogisticsRequest(request)) {
+        return localComplete(targetAssemblyID, requestID, claimToken, outcome, completeOptions);
+      }
       const creation = request.chainLink?.creation;
       if (request.chainLink?.required !== true || !creation) {
         return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_CHAIN_PROOF_REQUIRED" };
@@ -1176,6 +1387,36 @@ function completeLinkedRequest(targetAssemblyID, requestID, claimToken, phase, o
   })();
 }
 
+async function finalizeLinkedCommittedRequest(requestID, requestType, outcome, completeOptions = {}) {
+  try {
+    const found = runtime.getRequest(requestID);
+    if (!found.success) return found;
+    const request = found.data;
+    if (request.chainLink?.required !== true) {
+      return runtime._finalizeCommittedRequest(requestID, requestType, outcome, completeOptions);
+    }
+    const bridge = requestLinkBridge();
+    const creation = request.chainLink.creation;
+    if (!bridge || !creation || !await (bridge.verifyCommittedCreation ||
+        bridge.verifyCreation)(request, creation)) {
+      return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_CHAIN_PROOF_REQUIRED" };
+    }
+    // A durable transfer can win the race against cancellation/expiry. Attest
+    // its actual outcome rather than replaying a now-inaccurate terminal proof.
+    const proof = await bridge.attestTerminal(request, "fulfilled", outcome);
+    if (!await bridge.verifyTerminal(request, "fulfilled", outcome, proof)) {
+      return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_CHAIN_PROOF_INVALID" };
+    }
+    return runtime._finalizeCommittedRequest(requestID, requestType, outcome, {
+      ...completeOptions,
+      _chainVerified: true,
+      _completionProof: proof,
+    });
+  } catch (error) {
+    return chainFailure(error);
+  }
+}
+
 function cancelLinkedRequest(sourceAssemblyID, requestID, cancelOptions: Record<string, any> = {}) {
   const bridge = requestLinkBridge();
   if (!bridge) return runtime.cancelRequest(sourceAssemblyID, requestID, cancelOptions);
@@ -1184,6 +1425,9 @@ function cancelLinkedRequest(sourceAssemblyID, requestID, cancelOptions: Record<
       const found = runtime.getRequest(requestID);
       if (!found.success) return found;
       const request = found.data;
+      if (isLocalLogisticsRequest(request)) {
+        return runtime.cancelRequest(sourceAssemblyID, requestID, cancelOptions);
+      }
       const creation = request.chainLink?.creation;
       if (request.chainLink?.required !== true || !creation) {
         return { success: false as const, errorMsg: "ASSEMBLY_REQUEST_CHAIN_PROOF_REQUIRED" };
@@ -1218,6 +1462,7 @@ function cancelLinkedRequest(sourceAssemblyID, requestID, cancelOptions: Record<
 
 const linkedTransitions = {
   claimRequest: claimLinkedRequest,
+  finalizeCommittedRequest: finalizeLinkedCommittedRequest,
   fulfillRequest: (targetAssemblyID, requestID, claimToken, result, options) =>
     completeLinkedRequest(targetAssemblyID, requestID, claimToken, "fulfilled", result, options),
   failRequest: (targetAssemblyID, requestID, claimToken, failure, options) =>

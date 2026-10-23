@@ -3,6 +3,8 @@ import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { Transaction } from "@mysten/sui/transactions";
 import { deriveObjectID, normalizeSuiAddress } from "@mysten/sui/utils";
 import type { SuiAssemblyChain } from "./suiAssemblyChain";
+import { type AssemblyReadClient, assemblyDynamicFieldName, readAssemblyDynamicField, readAssemblyMoveObject } from "./suiAssemblyGrpc";
+import { normalizeStructTag } from "@mysten/sui/utils";
 import type { AssemblySnapshot } from "./suiAssemblySnapshot";
 
 export type SuiContentsCharacter = {
@@ -12,10 +14,7 @@ export type SuiContentsCharacter = {
 };
 
 type ContentsOptions = {
-  client: {
-    getObject(options: any): Promise<any>;
-    getDynamicFieldObject(options: any): Promise<any>;
-  };
+  client: AssemblyReadClient;
   world: {
     packageId: string;
     objectRegistryId?: string;
@@ -125,15 +124,6 @@ function optionalId(value: any): string | null {
   }
   if (typeof raw === "string") return objectId(raw, "linked gate ID");
   throw new Error("Invalid linked gate option in Sui assembly state");
-}
-
-function moveObject(result: any, label: string, allowMissing = false): any | null {
-  if (result?.error) {
-    if (allowMissing && ["notExists", "dynamicFieldNotFound", "deleted"].includes(result.error.code)) return null;
-    throw new Error(`Cannot read ${label}: ${result.error.code || "Sui RPC error"}`);
-  }
-  if (result?.data?.content?.dataType !== "moveObject") throw new Error(`Missing Move object content for ${label}`);
-  return result.data.content;
 }
 
 /** Match the world's raw PersonalMessage intent, which intentionally omits an extra BCS byte-vector envelope. */
@@ -262,9 +252,8 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
       const key = objectId(rawKey, "inventory key");
       if (seenKeys.has(key)) throw new Error(`Duplicate storage inventory key ${key}`);
       seenKeys.add(key);
-      const result = await client.getDynamicFieldObject({ parentId: assembly.id, name: { type: "0x2::object::ID", value: key } });
-      const content = moveObject(result, `storage inventory ${key}`);
-      const inventory = fields(content.fields.value);
+      const content = await readAssemblyDynamicField(client, assembly.id, assemblyDynamicFieldName("0x2::object::ID", key));
+      const inventory = fields(content!.json.value);
       const current = inventoryItems(inventory);
       const maxCapacity = uint(inventory.max_capacity, 64, "inventory capacity");
       let character = owner;
@@ -275,16 +264,16 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
         ownerCapacity = maxCapacity;
       } else {
         // Empty open inventory has no OwnerCap. It carries no game-owned items to mirror.
-        const cap = moveObject(await client.getObject({ id: key, options: { showContent: true } }), `inventory capability ${key}`, true);
+        const cap = await readAssemblyMoveObject(client, key, true);
         if (!cap) {
           if (current.size > 0) throw new Error(`Storage ${snapshot.itemId} contains open inventory without a local ownership mapping`);
           continue;
         }
         const expectedType = `${world.packageId}::access::OwnerCap<${world.packageId}::character::Character>`;
-        if (cap.type !== expectedType) throw new Error(`Unsupported inventory capability type for ${key}`);
-        const characterId = objectId(cap.fields.authorized_object_id, "inventory character");
-        const characterContent = moveObject(await client.getObject({ id: characterId, options: { showContent: true } }), `inventory character ${characterId}`);
-        const characterKey = fields(characterContent.fields.key);
+        if (normalizeStructTag(cap.type) !== normalizeStructTag(expectedType)) throw new Error(`Unsupported inventory capability type for ${key}`);
+        const characterId = objectId(cap!.json.authorized_object_id, "inventory character");
+        const characterContent = await readAssemblyMoveObject(client, characterId);
+        const characterKey = fields(characterContent!.json.key);
         ownerId = Number(uint(characterKey.item_id ?? characterKey.id, 64, "inventory character ID"));
         if (!Number.isSafeInteger(ownerId) || ownerId <= 0) throw new Error("Inventory character ID is outside EveJS range");
         character = await getCharacter(ownerId);
@@ -387,10 +376,10 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
   }
 
   async function readGateRange(typeId: number): Promise<bigint | null> {
-    const config = moveObject(await client.getObject({ id: world.gateConfigId, options: { showContent: true } }), "gate configuration");
-    const tableId = objectId(fields(config.fields.max_distance_by_type).id, "gate distance table");
-    const current = moveObject(await client.getDynamicFieldObject({ parentId: tableId, name: { type: "u64", value: String(typeId) } }), "gate type distance", true);
-    return current ? uint(current.fields.value, 64, "gate type distance") : null;
+    const config = await readAssemblyMoveObject(client, world.gateConfigId);
+    const tableId = objectId(fields(config!.json.max_distance_by_type).id, "gate distance table");
+    const current = await readAssemblyDynamicField(client, tableId, assemblyDynamicFieldName("u64", String(typeId)), true);
+    return current ? uint(current!.json.value, 64, "gate type distance") : null;
   }
 
   function assertGateCurrent(snapshots: AssemblySnapshot[]): void {
@@ -422,16 +411,12 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
 
   async function readCatapult(snapshot: AssemblySnapshot, gateId: string): Promise<any | null> {
     const id = catapultObjectId(gateId);
-    const content = moveObject(
-      await client.getObject({ id, options: { showContent: true } }),
-      `catapult route ${snapshot.itemId}`,
-      true,
-    );
+    const content = await readAssemblyMoveObject(client, id, true);
     if (!content) return null;
-    if (content.type !== `${world.catapultTypeOrigin}::catapult::Catapult`) {
+    if (normalizeStructTag(content.type) !== normalizeStructTag(`${world.catapultTypeOrigin}::catapult::Catapult`)) {
       throw new Error(`Catapult ${snapshot.itemId} has incompatible type ${content.type}`);
     }
-    const value = fields(content.fields);
+    const value = fields(content!.json);
     if (objectId(value.gate_id, "catapult gate ID") !== objectId(gateId, "gate ID") ||
         uint(value.type_id, 64, "catapult type") !== BigInt(snapshot.typeId) ||
         uint(value.source_solar_system_id, 64, "catapult source system") !== BigInt(snapshot.solarSystemId)) {
@@ -453,8 +438,8 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
     if (!gate) throw new Error(`Catapult ${snapshot.itemId} has not been anchored on Sui`);
     const linked = optionalId(gate.fields.linked_gate_id);
     if (linked) {
-      const other = moveObject(await client.getObject({ id: linked, options: { showContent: true } }), "linked destination gate");
-      if (other.type !== target("gate", "Gate") || optionalId(other.fields.linked_gate_id) !== gate.id) {
+      const other = await readAssemblyMoveObject(client, linked);
+      if (normalizeStructTag(other!.type) !== normalizeStructTag(target("gate", "Gate")) || optionalId(other!.json.linked_gate_id) !== gate.id) {
         throw new Error(`Catapult ${snapshot.itemId} has an inconsistent on-chain gate link`);
       }
       const unlink = new Transaction();
@@ -523,11 +508,11 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
     if (gate && linkedGateObjectID) {
       const linked = destinationSnapshot && linkedGateObjectID === expected
         ? await chain.readAssembly(destinationSnapshot) : null;
-      const content = linked ? { type: target("gate", "Gate"), fields: linked.fields }
-        : moveObject(await client.getObject({ id: linkedGateObjectID, options: { showContent: true } }), "linked destination gate", true);
-      reciprocal = !!content && content.type === target("gate", "Gate") &&
-        uint(content.fields.type_id, 64, "linked gate type") === BigInt(snapshot.typeId) &&
-        optionalId(content.fields.linked_gate_id) === objectId(gate.id, "gate ID");
+      const content = linked ? { type: target("gate", "Gate"), json: linked.fields }
+        : await readAssemblyMoveObject(client, linkedGateObjectID, true);
+      reciprocal = !!content && normalizeStructTag(content.type) === normalizeStructTag(target("gate", "Gate")) &&
+        uint(content!.json.type_id, 64, "linked gate type") === BigInt(snapshot.typeId) &&
+        optionalId(content!.json.linked_gate_id) === objectId(gate.id, "gate ID");
     }
     const localReciprocal = !expected || !!destinationSnapshot && destinationSnapshot.kind === "gate" &&
       destinationSnapshot.itemId === snapshot.destinationGateId && destinationSnapshot.destinationGateId === snapshot.itemId &&
@@ -567,8 +552,8 @@ export function createSuiAssemblyContents(options: ContentsOptions) {
       const actual = optionalId(gate.fields.linked_gate_id);
       const desired = snapshot.destinationGateId ? chain.deriveId(snapshot.destinationGateId) : null;
       if (!actual || actual === desired) continue;
-      const other = moveObject(await client.getObject({ id: actual, options: { showContent: true } }), "linked destination gate");
-      if (other.type !== target("gate", "Gate") || optionalId(other.fields.linked_gate_id) !== gate.id) throw new Error(`Gate ${snapshot.itemId} has an inconsistent on-chain link`);
+      const other = await readAssemblyMoveObject(client, actual);
+      if (normalizeStructTag(other!.type) !== normalizeStructTag(target("gate", "Gate")) || optionalId(other!.json.linked_gate_id) !== gate.id) throw new Error(`Gate ${snapshot.itemId} has an inconsistent on-chain link`);
       const tx = new Transaction();
       tx.moveCall({ target: target("gate", "unlink_gates_by_admin"), arguments: [tx.object(gate.id), tx.object(actual), tx.object(world.adminAclId)] });
       const assertCurrent = () => assertGateCurrent(pairedGates);

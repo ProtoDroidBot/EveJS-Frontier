@@ -1,3 +1,4 @@
+import { createAssemblyGrpcFixture } from "./suiAssemblyGrpcFixture";
 import assert = require("node:assert/strict");
 import { test } from "node:test";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
@@ -53,13 +54,13 @@ function fixture(assembly = snapshot(), options: {
   objects.set(world.fuelConfigId, { content: { dataType: "moveObject", fields: {
     fuel_efficiency: { fields: { id: { id: address(85) } } },
   } } });
-  const client: any = {
-    getObject: async ({ id }: any) => objects.has(id)
+  const client: any = createAssemblyGrpcFixture({
+    objectRecord: async ({ id }: any) => objects.has(id)
       ? { data: objects.get(id) } : { error: { code: "notExists" } },
-    getDynamicFieldObject: async ({ name }: any) => efficiencies.has(name.value)
+    dynamicRecord: async ({ name }: any) => efficiencies.has(name.value)
       ? { data: { content: { dataType: "moveObject", fields: { value: String(efficiencies.get(name.value)) } } } }
       : { error: { code: "dynamicFieldNotFound" } },
-  };
+  });
   const chain = createSuiAssemblyChain({ client, world, tenant: "dev", deriveId: address,
     fuelAuthority: options.fuelAuthority,
     assertFuelSnapshotCurrent: options.assertFuelSnapshotCurrent,

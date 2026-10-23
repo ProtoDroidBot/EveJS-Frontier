@@ -1,3 +1,4 @@
+import { createAssemblyGrpcFixture } from "./suiAssemblyGrpcFixture";
 import assert = require("node:assert/strict");
 import { test } from "node:test";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
@@ -42,17 +43,17 @@ function fixture() {
   const requests: any[] = [];
   const childFields: any[] = [];
   const chain = createSuiAssemblyChain({ world, tenant: "dev", deriveId: address, fuelAuthority: true,
-    client: {
-      async getObject(request: any) {
+    client: createAssemblyGrpcFixture({
+      async objectRecord(request: any) {
         requests.push(request);
         return objects.has(request.id) ? { data: objects.get(request.id) } : { error: { code: "notExists" } };
       },
-      async getDynamicFieldObject(request: any) {
+      async dynamicRecord(request: any) {
         requests.push(request);
         return efficiency.value === undefined ? { error: { code: "dynamicFieldNotFound" } }
           : { data: { content: { dataType: "moveObject", fields: efficiency } } };
       },
-    } as any,
+    }) as any,
     async execute(label, tx, ownerId, guard, gasPayerOwnerId) {
       guard?.();
       executions.push({ label, data: tx.getData(), ownerId, gasPayerOwnerId });

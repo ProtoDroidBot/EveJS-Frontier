@@ -3,9 +3,10 @@
 import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fork, type ChildProcess } from "node:child_process";
+import { SuiGrpcClient } from "@mysten/sui/grpc";
 
 type LeaseContext = { token: string; generation: number };
-type PendingRpc = { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; op: string };
+type PendingRpc = { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; op: string; cleanup: () => void };
 
 function positiveInteger(value: unknown, fallback: number) {
   const numeric = Number(value);
@@ -36,6 +37,7 @@ export function createSuiAssemblySupervisor(options: Record<string, any> = {}) {
   function rejectPending(error: Error) {
     for (const entry of pending.values()) {
       clearTimeout(entry.timer);
+      entry.cleanup();
       entry.reject(error);
     }
     pending.clear();
@@ -51,6 +53,7 @@ export function createSuiAssemblySupervisor(options: Record<string, any> = {}) {
       if (!entry) return;
       pending.delete(message.id);
       clearTimeout(entry.timer);
+      entry.cleanup();
       if (message.ok) entry.resolve(message.result);
       else entry.reject(remoteError(message.error));
     });
@@ -71,14 +74,26 @@ export function createSuiAssemblySupervisor(options: Record<string, any> = {}) {
     return spawned;
   }
 
-  function request(op: string, payload: Record<string, any> = {}, timeoutMs = rpcTimeoutMs) {
+  function request(op: string, payload: Record<string, any> = {}, timeoutMs = rpcTimeoutMs, signal?: AbortSignal) {
+    if (signal?.aborted) return Promise.reject(signal.reason);
     if (closed) return Promise.reject(new Error("Assembly supervisor is closed"));
     const target = spawn();
     if (!target?.connected) return Promise.reject(new Error("Assembly supervisor is unavailable"));
     const id = nextId++;
     return new Promise<any>((resolve, reject) => {
+      const cleanup = () => signal?.removeEventListener("abort", abort);
+      const abort = () => {
+        if (!pending.delete(id)) return;
+        clearTimeout(timer);
+        cleanup();
+        reject(signal?.reason ?? new Error("Assembly gRPC request aborted"));
+        if (op === "grpc" && target.connected) {
+          target.send({ id: nextId++, op: "cancelGrpc", payload: { requestId: id } });
+        }
+      };
       const timer = setTimeout(() => {
         pending.delete(id);
+        cleanup();
         const error: Error & Record<string, any> = new Error(`Assembly supervisor ${op} timed out after ${timeoutMs}ms`);
         error.code = op === "acquire" ? "ASSEMBLY_SYNC_BUSY" : "ASSEMBLY_SUPERVISOR_TIMEOUT";
         reject(error);
@@ -92,11 +107,13 @@ export function createSuiAssemblySupervisor(options: Record<string, any> = {}) {
         }
       }, timeoutMs);
       timer.unref?.();
-      pending.set(id, { resolve, reject, timer, op });
+      pending.set(id, { resolve, reject, timer, op, cleanup });
+      signal?.addEventListener("abort", abort, { once: true });
       target.send({ id, op, payload }, error => {
         if (!error || !pending.has(id)) return;
         pending.delete(id);
         clearTimeout(timer);
+        cleanup();
         reject(error);
       });
     });
@@ -165,17 +182,27 @@ export function createSuiAssemblySupervisor(options: Record<string, any> = {}) {
     };
   }
 
-  function requestSuiRpc(
-    url: string,
-    method: string,
-    params: unknown[],
-    timeoutMs = rpcTimeoutMs,
-  ) {
-    const lease = currentLease();
+  function createSuiGrpcClient(url: string, timeoutMs = rpcTimeoutMs) {
     const deadline = positiveInteger(timeoutMs, rpcTimeoutMs);
-    return request("jsonRpc", {
-      token: lease.token, url, method, params, timeoutMs: deadline,
-    }, deadline + 1_000);
+    return new SuiGrpcClient({
+      network: "localnet", baseUrl: url,
+      fetch: async (input, init) => {
+        const lease = currentLease();
+        const outgoing = new Request(input, init);
+        const body = Buffer.from(await outgoing.arrayBuffer()).toString("base64");
+        const headers: [string, string][] = [];
+        outgoing.headers.forEach((value, name) => headers.push([name, value]));
+        const response = await request("grpc", {
+          token: lease.token, url: outgoing.url, method: outgoing.method,
+          headers, body, timeoutMs: deadline,
+        }, deadline + 1_000, outgoing.signal);
+        // Preserve the binary gRPC-Web frames and trailers; the SDK decodes
+        // native protobuf responses and typed errors in the caller process.
+        return new Response(Buffer.from(response.body, "base64"), {
+          status: response.status, statusText: response.statusText, headers: response.headers,
+        });
+      },
+    });
   }
 
   async function close() {
@@ -194,7 +221,7 @@ export function createSuiAssemblySupervisor(options: Record<string, any> = {}) {
   return {
     runExclusive,
     openJournal,
-    requestSuiRpc,
+    createSuiGrpcClient,
     close,
     getGeneration: () => generation,
   };

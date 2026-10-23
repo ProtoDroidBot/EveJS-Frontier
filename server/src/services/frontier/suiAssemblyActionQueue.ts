@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import { bcs } from "@mysten/sui/bcs";
 import { Transaction } from "@mysten/sui/transactions";
+import { assemblyMoveBytes, isMissingSuiObject, readAssemblyMoveObject } from "./suiAssemblyGrpc";
 import {
   deriveObjectID,
   normalizeSuiAddress,
+  normalizeStructTag,
   SUI_CLOCK_OBJECT_ID,
 } from "@mysten/sui/utils";
 
@@ -107,7 +109,7 @@ function uuidBytes(value: unknown): Uint8Array {
 }
 
 function bytesUuid(value: unknown): string {
-  const raw = Buffer.from(Array.isArray(value) ? value : []);
+  const raw = Buffer.from(assemblyMoveBytes(value));
   if (raw.length !== 16) throw new Error("On-chain assembly action ID is invalid");
   const hex = raw.toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
@@ -196,17 +198,18 @@ export async function ensureSuiAssemblyActionQueues(
   for (let offset = 0; offset < entries.length; offset += 50) {
     const batch = entries.slice(offset, offset + 50);
     await context.assertCurrent();
-    const responses = await context.client.multiGetObjects({
-      ids: batch.map(entry => entry.queueID),
-      options: { showContent: true, showType: true },
+    const responses = await context.client.getObjects({
+      objectIds: batch.map(entry => entry.queueID),
+      include: { json: true },
     });
     const missing: typeof batch = [];
     for (let index = 0; index < batch.length; index++) {
-      const response = responses[index];
-      const content = response?.data?.content;
-      if (response?.error?.code === "notExists") {
+      const object = responses.objects[index];
+      if (isMissingSuiObject(object)) {
         missing.push(batch[index]);
-      } else if (response?.error || content?.dataType !== "moveObject" || content.type !== expectedType) {
+      } else if (object instanceof Error) {
+        throw object;
+      } else if (!object?.json || normalizeStructTag(object.type) !== normalizeStructTag(expectedType)) {
         throw new Error(`Action queue root ${batch[index].queueID} conflicts with this deployment`);
       }
     }
@@ -291,23 +294,17 @@ export function createSuiAssemblyActionQueueBridge(options: {
 
   async function read(context: any, objectID: string): Promise<SuiAssemblyAction> {
     const id = normalizeSuiAddress(objectID);
-    const response = await context.client.getObject({
-      id,
-      options: { showContent: true, showOwner: true, showType: true },
-    });
-    const content = response.data?.content;
+    const object = await readAssemblyMoveObject(context.client, id, true);
     const binding = actionBinding(context);
     const expectedType = `${normalizeSuiAddress(context.accessDeployment.actionTypeOrigin)}::${binding.module}::${binding.objectType}`;
-    if (response.error || content?.dataType !== "moveObject" || content.type !== expectedType) {
+    if (!object || normalizeStructTag(object.type) !== normalizeStructTag(expectedType)) {
       throw Object.assign(new Error("Assembly action is not present in this Sui deployment"), {
         code: "ASSEMBLY_ACTION_NOT_FOUND",
       });
     }
-    const fields = record(content.fields);
-    const payloadBytes = Uint8Array.from(Array.isArray(fields.payload) ? fields.payload : []);
-    const commitment = Uint8Array.from(
-      Array.isArray(fields.payload_commitment) ? fields.payload_commitment : [],
-    );
+    const fields = record(object.json);
+    const payloadBytes = assemblyMoveBytes(fields.payload);
+    const commitment = assemblyMoveBytes(fields.payload_commitment);
     if (commitment.length !== 32 || !Buffer.from(commitment).equals(Buffer.from(hash(payloadBytes)))) {
       throw Object.assign(new Error("Assembly action payload commitment does not match"), {
         code: "ASSEMBLY_ACTION_COMMITMENT_INVALID",
@@ -316,10 +313,8 @@ export function createSuiAssemblyActionQueueBridge(options: {
     const sourceAssemblyObjectID = addressField(fields.source_assembly_id, "Action source");
     const targetAssemblyObjectID = addressField(fields.target_assembly_id, "Action target");
     const claimedBy = normalizeSuiAddress(String(fields.claimed_by || "0x0"));
-    const outcomeBytes = Uint8Array.from(Array.isArray(fields.outcome) ? fields.outcome : []);
-    const receiptCommitment = Uint8Array.from(
-      Array.isArray(fields.receipt_commitment) ? fields.receipt_commitment : [],
-    );
+    const outcomeBytes = assemblyMoveBytes(fields.outcome ?? []);
+    const receiptCommitment = assemblyMoveBytes(fields.receipt_commitment ?? []);
     if (receiptCommitment.length !== 0 && receiptCommitment.length !== 32) {
       throw Object.assign(new Error("Assembly action receipt commitment is invalid"), {
         code: "ASSEMBLY_ACTION_COMMITMENT_INVALID",
@@ -339,7 +334,7 @@ export function createSuiAssemblyActionQueueBridge(options: {
       sourceAssemblyID: localID(context, sourceAssemblyObjectID),
       targetAssemblyID: localID(context, targetAssemblyObjectID),
       creator: normalizeSuiAddress(String(fields.creator)),
-      actionType: Buffer.from(Array.isArray(fields.action_type) ? fields.action_type : []).toString("utf8"),
+      actionType: Buffer.from(assemblyMoveBytes(fields.action_type)).toString("utf8"),
       payload: decodeJsonOrBytes(payloadBytes),
       payloadBytes,
       payloadCommitment: Buffer.from(commitment).toString("hex"),

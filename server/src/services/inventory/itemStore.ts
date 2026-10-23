@@ -221,6 +221,7 @@ const PACKAGED_VOLUME_OVERRIDES_BY_TYPE_ID = Object.freeze({
 let migrationComplete = false;
 let itemMutationVersion = 1;
 let itemsTableCache = null;
+let pendingLogisticsPersistenceRollback: { snapshot: any } | null = null;
 let itemIndexesDirty = true;
 let itemIndexesCache = null;
 // itemID -> { locationID, ownerID } the item is currently filed under, so an
@@ -305,6 +306,11 @@ function readCharacters() {
 }
 
 function readItems() {
+  if (!restorePendingLogisticsRollback()) {
+    // Some callers stage mutations in the returned table before writeItems.
+    // Never let those mutations alter the authoritative rollback snapshot.
+    return cloneValue(pendingLogisticsPersistenceRollback.snapshot);
+  }
   if (itemsTableCache) {
     return itemsTableCache;
   }
@@ -315,6 +321,37 @@ function readItems() {
 
   itemsTableCache = result.data;
   return itemsTableCache;
+}
+
+function useLogisticsRollbackSnapshot(snapshot) {
+  itemsTableCache = snapshot;
+  itemIndexesDirty = true;
+  itemIndexesCache = null;
+  itemIndexKeys = new Map();
+  itemMutationVersion += 1;
+}
+
+function restorePendingLogisticsRollback() {
+  if (!pendingLogisticsPersistenceRollback) return true;
+  try {
+    const snapshot = cloneValue(pendingLogisticsPersistenceRollback.snapshot);
+    if (repo.write(ITEMS_TABLE, "/", snapshot)?.success) {
+      useLogisticsRollbackSnapshot(snapshot);
+      if (repo.flushTablesSync([ITEMS_TABLE])?.success === true) {
+        pendingLogisticsPersistenceRollback = null;
+        return true;
+      }
+    }
+  } catch (_) { /* Keep the pre-transfer state authoritative until durable restore. */ }
+  return false;
+}
+
+function rollbackLogisticsWrite(snapshot) {
+  pendingLogisticsPersistenceRollback = { snapshot: cloneValue(snapshot) };
+  // Invalidate even when the repository refuses the restoring write: a failed
+  // flush must never leave a speculative receipt visible through item indexes.
+  useLogisticsRollbackSnapshot(cloneValue(snapshot));
+  restorePendingLogisticsRollback();
 }
 
 // Derive an index delta from a mutation's existing `changes` record (the same
@@ -340,6 +377,7 @@ function indexDeltaFromChanges(changes) {
 }
 
 function writeItems(data, options: Record<string, any> = {}) {
+  if (!restorePendingLogisticsRollback()) return false;
   const { indexDelta, ...dbOptions } = options;
   const writeResult = repo.write(ITEMS_TABLE, "/", data, dbOptions);
   if (writeResult && writeResult.success) {
@@ -1480,6 +1518,7 @@ function buildInventoryItem({
   stackOriginID = null,
   fighterState = null,
   assemblyCustodyReceipts = null,
+  assemblyLogisticsReceipts = null,
 }: Record<string, any>) {
   const metadata = getItemMetadata(typeID, itemName);
   const defaultSingleton = shouldItemDefaultToSingleton(metadata) ? 1 : 0;
@@ -1552,6 +1591,12 @@ function buildInventoryItem({
   }
   if (Array.isArray(assemblyCustodyReceipts) && assemblyCustodyReceipts.length > 0) {
     item.assemblyCustodyReceipts = cloneValue(assemblyCustodyReceipts.slice(-16));
+  }
+  // Logistics receipts belong to the destination endpoint, not its consumable
+  // inventory stacks. Preserve every receipt across ordinary endpoint updates.
+  if (assemblyLogisticsReceipts && typeof assemblyLogisticsReceipts === "object" &&
+      !Array.isArray(assemblyLogisticsReceipts)) {
+    item.assemblyLogisticsReceipts = cloneValue(assemblyLogisticsReceipts);
   }
 
   if (item.categoryID === SHIP_CATEGORY_ID) {
@@ -1680,6 +1725,9 @@ function normalizeInventoryItem(rawItem, defaults: Record<string, any> = {}) {
     assemblyCustodyReceipts: Object.prototype.hasOwnProperty.call(rawItem, "assemblyCustodyReceipts")
       ? rawItem.assemblyCustodyReceipts
       : defaults.assemblyCustodyReceipts ?? null,
+    assemblyLogisticsReceipts: Object.prototype.hasOwnProperty.call(rawItem, "assemblyLogisticsReceipts")
+      ? rawItem.assemblyLogisticsReceipts
+      : defaults.assemblyLogisticsReceipts ?? null,
   });
 }
 
@@ -5527,6 +5575,208 @@ function moveItemsAndSetShipPackagingState(
   };
 }
 
+/**
+ * Transfer an exact type quantity and its durable request receipt in one item
+ * table transaction. Callers authorize assembly access; this boundary validates
+ * inventory identity, quantity and capacity again immediately before mutation.
+ */
+function transferAssemblyItemType(request: Record<string, any> = {}) {
+  ensureMigrated();
+  if (!restorePendingLogisticsRollback()) {
+    return { success: false as const, errorMsg: "PERSISTENCE_FLUSH_ERROR" };
+  }
+  const integer = (value) => ["number", "string", "bigint"].includes(typeof value) &&
+    Number.isSafeInteger(Number(value)) ? Number(value) : -1;
+  const operationID = String(request.operationID || "").trim().toLowerCase();
+  const operationFingerprint = String(request.operationFingerprint || "").trim().toLowerCase();
+  const operation = {
+    sourceOwnerID: integer(request.sourceOwnerID),
+    sourceLocationID: integer(request.sourceLocationID),
+    sourceFlagID: integer(request.sourceFlagID),
+    destinationOwnerID: integer(request.destinationOwnerID),
+    destinationLocationID: integer(request.destinationLocationID),
+    destinationFlagID: integer(request.destinationFlagID),
+    typeID: integer(request.typeID),
+    quantity: integer(request.quantity),
+  };
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(operationID) ||
+      !/^[0-9a-f]{64}$/.test(operationFingerprint) ||
+      Object.entries(operation).some(([key, value]) => value < (key.endsWith("FlagID") ? 0 : 1)) ||
+      operation.sourceLocationID === operation.destinationLocationID) {
+    return { success: false as const, errorMsg: "INVALID_LOGISTICS_TRANSFER" };
+  }
+
+  // Recovery must precede all live stock, owner and capacity checks: the stock
+  // may already have been consumed and access may have changed after commit.
+  const replay = findAssemblyLogisticsReceipt(operationID);
+  if (replay) {
+    const sameOperation = Object.entries(operation).every(([key, value]) => replay.operation?.[key] === value);
+    return replay.operationFingerprint === operationFingerprint && sameOperation
+      ? { success: true as const, replayed: true, data: { ...cloneValue(replay.result), changes: [] } }
+      : { success: false as const, errorMsg: "LOGISTICS_IDEMPOTENCY_CONFLICT" };
+  }
+
+  let context = null;
+  if (request.receiptContext !== undefined) {
+    try {
+      const serialized = JSON.stringify(request.receiptContext, (_key, value) => {
+        if (["undefined", "function", "symbol", "bigint"].includes(typeof value) ||
+            (typeof value === "number" && !Number.isFinite(value))) throw new Error("Invalid receipt context");
+        return value;
+      });
+      if (Buffer.byteLength(serialized, "utf8") > 16 * 1024) throw new Error("Receipt context too large");
+      context = JSON.parse(serialized);
+    } catch (_) {
+      return { success: false as const, errorMsg: "INVALID_LOGISTICS_RECEIPT_CONTEXT" };
+    }
+  }
+
+  const previousItems = readItems();
+  const sourceEndpoint = previousItems[String(operation.sourceLocationID)];
+  const destinationEndpoint = previousItems[String(operation.destinationLocationID)];
+  if (!sourceEndpoint || !destinationEndpoint ||
+      Number(sourceEndpoint.ownerID) !== operation.sourceOwnerID ||
+      Number(destinationEndpoint.ownerID) !== operation.destinationOwnerID) {
+    return { success: false as const, errorMsg: "LOGISTICS_ENDPOINT_MISMATCH" };
+  }
+  const hasCapacity = request.destinationCapacity !== undefined;
+  const capacity = Number(request.destinationCapacity);
+  const hasMaxTypeQuantity = request.maxTypeQuantity !== undefined;
+  const maxTypeQuantity = integer(request.maxTypeQuantity);
+  if ((hasCapacity && (!Number.isFinite(capacity) || capacity < 0)) ||
+      (hasMaxTypeQuantity && (maxTypeQuantity <= 0 || maxTypeQuantity > 0xffffffff))) {
+    return { success: false as const, errorMsg: "INVALID_LOGISTICS_TRANSFER" };
+  }
+  if (hasMaxTypeQuantity && operation.quantity > maxTypeQuantity) {
+    return { success: false as const, errorMsg: "STORAGE_TYPE_QUANTITY_EXCEEDED" };
+  }
+
+  const sourceRows = Object.values<any>(previousItems).filter(item =>
+    Number(item?.ownerID) === operation.sourceOwnerID &&
+    Number(item?.locationID) === operation.sourceLocationID &&
+    Number(item?.flagID) === operation.sourceFlagID &&
+    Number(item?.typeID) === operation.typeID && Number(item?.singleton) === 0)
+    .sort((left, right) => Number(left.itemID) - Number(right.itemID));
+  const selected: { item: any; quantity: number }[] = [];
+  let remaining = operation.quantity;
+  let incomingVolume = 0;
+  for (const raw of sourceRows) {
+    const available = integer(raw.stacksize ?? raw.quantity);
+    const volume = getInventoryItemUnitVolume(raw);
+    if (integer(raw.itemID) <= 0 || available <= 0 ||
+        (raw.quantity != null && integer(raw.quantity) !== available) ||
+        !Number.isFinite(volume) || volume <= 0 || isFreeStationFuelSupplyItem(raw) ||
+        (raw.assemblyLogisticsReceipts && Object.keys(raw.assemblyLogisticsReceipts).length > 0)) {
+      return { success: false as const, errorMsg: "INVALID_LOGISTICS_SOURCE" };
+    }
+    const quantity = Math.min(available, remaining);
+    if (quantity > 0) {
+      selected.push({ item: raw, quantity });
+      incomingVolume += quantity * volume;
+      remaining -= quantity;
+    }
+  }
+  if (remaining > 0) return { success: false as const, errorMsg: "INSUFFICIENT_ITEMS" };
+  if (!Number.isFinite(incomingVolume)) {
+    return { success: false as const, errorMsg: "INVALID_LOGISTICS_SOURCE" };
+  }
+
+  let usedVolume = 0;
+  let storedTypeQuantity = 0;
+  for (const item of Object.values<any>(previousItems)) {
+    if (Number(item?.ownerID) !== operation.destinationOwnerID ||
+        Number(item?.locationID) !== operation.destinationLocationID ||
+        Number(item?.flagID) !== operation.destinationFlagID) continue;
+    const quantity = Number(item.singleton) > 0 ? 1 : integer(item.stacksize ?? item.quantity);
+    if (quantity <= 0) return { success: false as const, errorMsg: "INVALID_LOGISTICS_DESTINATION" };
+    if (Number(item.typeID) === operation.typeID) storedTypeQuantity += quantity;
+    if (hasCapacity) {
+      const volume = getInventoryItemUnitVolume(item);
+      if (!Number.isFinite(volume) || volume <= 0) {
+        return { success: false as const, errorMsg: "INVALID_LOGISTICS_DESTINATION" };
+      }
+      usedVolume += quantity * volume;
+    }
+  }
+  if (hasMaxTypeQuantity && storedTypeQuantity + operation.quantity > maxTypeQuantity) {
+    return { success: false as const, errorMsg: "STORAGE_TYPE_QUANTITY_EXCEEDED" };
+  }
+  if (hasCapacity && (!Number.isFinite(usedVolume) || usedVolume + incomingVolume > capacity + 1e-6)) {
+    return { success: false as const, errorMsg: "STORAGE_CAPACITY_EXCEEDED" };
+  }
+
+  const items = cloneValue(previousItems);
+  const characters = readCharacters();
+  const changes: any[] = [];
+  const moves: { sourceItemID: number; movedItemID: number; quantity: number }[] = [];
+  for (const { item: raw, quantity } of selected) {
+    const current = normalizeInventoryItem(raw);
+    if (!current || current.singleton !== 0 || current.stacksize !== Number(raw.stacksize ?? raw.quantity)) {
+      return { success: false as const, errorMsg: "INVALID_LOGISTICS_SOURCE" };
+    }
+    const wholeStack = quantity === current.stacksize;
+    const movedItemID = wholeStack ? current.itemID : nextItemID(
+      operation.destinationOwnerID, items, characters[String(operation.destinationOwnerID)] || null,
+    );
+    if (!wholeStack) {
+      const remainder = buildInventoryItem({ ...current,
+        quantity: current.stacksize - quantity, stacksize: current.stacksize - quantity });
+      items[String(current.itemID)] = remainder;
+      changes.push({ removed: false, previousData: cloneValue(current), item: cloneValue(remainder) });
+    }
+    const moved = buildInventoryItem({
+      ...buildMovedItemState(current, operation.destinationLocationID, operation.destinationFlagID),
+      itemID: movedItemID,
+      ownerID: operation.destinationOwnerID,
+      quantity,
+      stacksize: quantity,
+      singleton: 0,
+      assemblyLogisticsReceipts: null,
+      ...(!wholeStack ? { stackOriginID: Number(current.stackOriginID) || current.itemID } : {}),
+    });
+    items[String(movedItemID)] = moved;
+    changes.push({ removed: false, created: !wholeStack,
+      previousData: wholeStack ? cloneValue(current) : buildCreatedItemNotificationPreviousState(
+        moved, current.flagID, current.ownerID,
+      ), item: cloneValue(moved) });
+    moves.push({ sourceItemID: current.itemID, movedItemID, quantity });
+  }
+  const result = {
+    operationID,
+    ...operation,
+    movedItemIDs: moves.map(move => move.movedItemID),
+    moves,
+    context,
+    committedAtMs: Number.isSafeInteger(request.committedAtMs) && request.committedAtMs >= 0
+      ? request.committedAtMs : Date.now(),
+    gameCommitted: true,
+  };
+  const receipt = { operationID, operationFingerprint, operation, result };
+  items[String(operation.destinationLocationID)] = {
+    ...items[String(operation.destinationLocationID)],
+    assemblyLogisticsReceipts: {
+      ...(destinationEndpoint.assemblyLogisticsReceipts || {}),
+      [operationID]: cloneValue(receipt),
+    },
+  };
+  const indexDelta = indexDeltaFromChanges(changes);
+  indexDelta.upsertedIDs.push(operation.destinationLocationID);
+  let written = false;
+  try { written = writeItems(items, { indexDelta }); } catch (_) { /* Restore an ambiguous write below. */ }
+  if (!written) {
+    rollbackLogisticsWrite(previousItems);
+    return { success: false as const, errorMsg: "WRITE_ERROR" };
+  }
+  let durable = false;
+  try { durable = repo.flushTablesSync([ITEMS_TABLE])?.success === true; } catch (_) { /* Restore below. */ }
+  if (!durable) {
+    rollbackLogisticsWrite(previousItems);
+    return { success: false as const, errorMsg: "PERSISTENCE_FLUSH_ERROR" };
+  }
+  notifyInsuranceInventoryMutationChanges(changes, "transferAssemblyItemType");
+  return { success: true as const, replayed: false, data: { ...result, changes } };
+}
+
 function transferItemToOwnerLocation(
   itemId,
   destinationOwnerId,
@@ -6262,6 +6512,7 @@ function getShipConditionState(shipItem) {
 function resetInventoryStoreForTests() {
   migrationComplete = false;
   itemsTableCache = null;
+  pendingLogisticsPersistenceRollback = null;
   itemIndexesDirty = true;
   itemIndexesCache = null;
   itemIndexKeys = new Map();
@@ -6318,11 +6569,28 @@ function findAssemblyCustodyReceipt(operationKey) {
   return null;
 }
 
+function findAssemblyLogisticsReceipt(operationID, destinationLocationID = undefined) {
+  ensureMigrated();
+  const normalized = String(operationID || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalized)) return null;
+  const items = readItems();
+  const endpoints = destinationLocationID === undefined
+    ? Object.values<any>(items) : [items[String(destinationLocationID)]];
+  for (const item of endpoints) {
+    const receipt = item?.assemblyLogisticsReceipts?.[normalized];
+    if (receipt?.operationID === normalized) return cloneValue(receipt);
+  }
+  return null;
+}
+
 // Owner API: write an item's customInfo metadata sub-path. Metadata only — it
 // does not change item identity/location/owner, so the derived index is
 // unaffected. Lets the dogma domain persist dynamic-item metadata without
 // writing the items table directly.
 function writeItemCustomInfo(itemID, customInfo, options: Record<string, any> = {}) {
+  if (!restorePendingLogisticsRollback()) {
+    return { success: false as const, errorMsg: "PERSISTENCE_FLUSH_ERROR" };
+  }
   return repo.write(ITEMS_TABLE, `/${String(itemID)}/customInfo`, customInfo, options);
 }
 
@@ -6388,6 +6656,8 @@ module.exports = {
   moveItemsAndSetShipPackagingState,
   transferItemToOwnerLocation,
   findAssemblyCustodyReceipt,
+  transferAssemblyItemType,
+  findAssemblyLogisticsReceipt,
   moveItemTypeFromCharacterLocation,
   mergeItemStacks,
   updateShipItem,

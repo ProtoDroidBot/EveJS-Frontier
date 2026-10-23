@@ -4,17 +4,239 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { createHash } = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const POWERSHELL = "pwsh";
 const WORLD_SCRIPT = path.join(REPO_ROOT, "FrontierWorld.ps1");
+const START_SCRIPT = path.join(REPO_ROOT, "StartFrontierServer.ps1");
 const probe = process.platform === "win32"
   ? spawnSync(POWERSHELL, ["-NoLogo", "-NoProfile", "-Command", "exit 0"])
   : { status: 1 };
 const canRunPowerShell = process.platform === "win32" &&
   !probe.error && probe.status === 0;
+
+function runLiveChainIdentifier(scriptPath, environment = {}) {
+  return spawnSync(POWERSHELL, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `
+    $ErrorActionPreference = 'Stop'
+    $PSNativeCommandUseErrorActionPreference = $false
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+      $env:EVEJS_TEST_WORLD_SCRIPT, [ref]$null, [ref]$null)
+    $function = $ast.Find({ param($node)
+      $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -eq 'Get-LiveChainIdentifier'
+    }, $true)
+    Invoke-Expression $function.Extent.Text
+    function Invoke-RestMethod { throw 'Unexpected deprecated JSON-RPC request' }
+    function Get-Command {
+      if ($env:EVEJS_TEST_DOCKER_MISSING -eq '1') { return $null }
+      return [pscustomobject]@{ Source = {
+        $script:dockerArguments = @($args | ForEach-Object { [string]$_ })
+        $global:LASTEXITCODE = [int]$env:EVEJS_TEST_DOCKER_EXIT
+        Write-Output $env:EVEJS_TEST_CHAIN_ID
+      } }
+    }
+    try {
+      $identifier = Get-LiveChainIdentifier
+      @{ identifier = $identifier; arguments = $script:dockerArguments } | ConvertTo-Json -Compress
+    } catch {
+      [Console]::Error.WriteLine($_.Exception.Message)
+      exit 1
+    }
+  `], {
+    encoding: "utf8",
+    env: { ...process.env, EVEJS_TEST_WORLD_SCRIPT: scriptPath,
+      EVEJS_TEST_CHAIN_ID: "4F22E976", EVEJS_TEST_DOCKER_EXIT: "0", ...environment },
+    timeout: 15000,
+  });
+}
+
+for (const scriptPath of [WORLD_SCRIPT, START_SCRIPT]) {
+  test(`Live chain validation in ${path.basename(scriptPath)} queries the localnet Sui CLI using its gRPC-capable path`,
+    { skip: !canRunPowerShell }, () => {
+      const result = runLiveChainIdentifier(scriptPath);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const actual = JSON.parse(result.stdout);
+      assert.equal(actual.identifier, "4f22e976");
+      assert.deepEqual(actual.arguments, ["exec", "sui-playground", "timeout", "5", "sui",
+        "client", "--client.env", "localnet", "chain-identifier", "--format", "hex"]);
+    });
+
+  test(`Live chain validation in ${path.basename(scriptPath)} rejects failed or malformed CLI responses`,
+    { skip: !canRunPowerShell }, () => {
+      for (const [environment, expected] of [
+        [{ EVEJS_TEST_DOCKER_MISSING: "1" }, /docker.exe is not available/],
+        [{ EVEJS_TEST_DOCKER_EXIT: "124" }, /not ready; refusing to (publish world IDs|start the server)/],
+        [{ EVEJS_TEST_CHAIN_ID: "" }, /invalid hex chain identifier/],
+        [{ EVEJS_TEST_CHAIN_ID: "4f22e97" }, /invalid hex chain identifier/],
+        [{ EVEJS_TEST_CHAIN_ID: "4f22e9760" }, /invalid hex chain identifier/],
+        [{ EVEJS_TEST_CHAIN_ID: "6Kv5u5X94TGL2a2cgavjXHNspwTV1FoteHBoVZof2uaC" }, /invalid hex chain identifier/],
+        [{ EVEJS_TEST_CHAIN_ID: "4f22e976\ndeadbeef" }, /invalid hex chain identifier/],
+      ] as const) {
+        const result = runLiveChainIdentifier(scriptPath, environment);
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, expected);
+      }
+    });
+}
+
+function startupWorldFixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "evejs startup world guard "));
+  t.after(() => {
+    assert.equal(path.dirname(root), path.resolve(os.tmpdir()));
+    fs.rmSync(root, { force: true, recursive: true });
+  });
+  const sourceWorkspace = path.join(root, "source");
+  const deploymentPath = path.join(sourceWorkspace, "world-contracts", "deployments",
+    "localnet", "extracted-object-ids.json");
+  const publicationPath = path.join(sourceWorkspace, "world-contracts", "contracts",
+    "world", "Pub.localnet.toml");
+  fs.mkdirSync(path.dirname(deploymentPath), { recursive: true });
+  fs.mkdirSync(path.dirname(publicationPath), { recursive: true });
+  fs.writeFileSync(deploymentPath, JSON.stringify({ network: "localnet", fixture: "deployment" }));
+  fs.writeFileSync(publicationPath, 'chain-id = "a1b2c3d4"\n');
+  const hash = (file) => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  const config = {
+    format: "evejs-frontier-world-sync-v1",
+    schemaVersion: 1,
+    state: "ready",
+    build: 3502403,
+    network: "localnet",
+    chainId: "A1B2C3D4",
+    sourceWorkspace,
+    artifacts: {
+      deploymentSha256: hash(deploymentPath),
+      publicationSha256: hash(publicationPath),
+    },
+  };
+  const configPath = path.join(root, "world.private.json");
+  const writeConfig = () => fs.writeFileSync(configPath, JSON.stringify(config));
+  writeConfig();
+  return { root, configPath, deploymentPath, publicationPath, config, writeConfig };
+}
+
+function runStartupWorldAssertion(fixture, environment = {}) {
+  return spawnSync(POWERSHELL, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `
+    $ErrorActionPreference = 'Stop'
+    $PSNativeCommandUseErrorActionPreference = $false
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+      $env:EVEJS_TEST_START_SCRIPT, [ref]$null, [ref]$null)
+    foreach ($name in @('Get-LiveChainIdentifier', 'Assert-SuiWorldSyncCurrent')) {
+      $function = $ast.Find({ param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+      }, $true)
+      if ($null -eq $function) { throw "Missing tested function $name" }
+      Invoke-Expression $function.Extent.Text
+    }
+    $Build = '3502403'
+    $SuiWorldConfigPath = $env:EVEJS_TEST_CONFIG_PATH
+    $script:dockerCalls = 0
+    function Test-SuiWorldSyncRequired { return $true }
+    function Invoke-RestMethod { throw 'Unexpected deprecated JSON-RPC request' }
+    function Get-Command {
+      if ($env:EVEJS_TEST_DOCKER_MISSING -eq '1') { return $null }
+      return [pscustomobject]@{ Source = {
+        $script:dockerCalls++
+        $script:dockerArguments = @($args | ForEach-Object { [string]$_ })
+        $global:LASTEXITCODE = [int]$env:EVEJS_TEST_DOCKER_EXIT
+        Write-Output $env:EVEJS_TEST_CHAIN_ID
+      } }
+    }
+    try {
+      Assert-SuiWorldSyncCurrent
+      @{ checked = $true; dockerCalls = $script:dockerCalls;
+         arguments = $script:dockerArguments } | ConvertTo-Json -Compress
+    } catch {
+      @{ checked = $false; dockerCalls = $script:dockerCalls } | ConvertTo-Json -Compress
+      [Console]::Error.WriteLine($_.Exception.Message)
+      exit 1
+    }
+  `], {
+    encoding: "utf8",
+    env: { ...process.env, EVEJS_TEST_START_SCRIPT: START_SCRIPT,
+      EVEJS_TEST_CONFIG_PATH: fixture.configPath, EVEJS_TEST_CHAIN_ID: "a1b2c3d4",
+      EVEJS_TEST_DOCKER_EXIT: "0", ...environment },
+    timeout: 15000,
+  });
+}
+
+test("Server startup world guard accepts matching artifacts and a normalized live gRPC chain",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = startupWorldFixture(t);
+    const result = runStartupWorldAssertion(f);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const actual = JSON.parse(result.stdout);
+    assert.equal(actual.checked, true);
+    assert.equal(actual.dockerCalls, 1);
+    assert.deepEqual(actual.arguments, ["exec", "sui-playground", "timeout", "5", "sui",
+      "client", "--client.env", "localnet", "chain-identifier", "--format", "hex"]);
+  });
+
+test("Server startup world guard rejects a stale chain and preserves the sync remedy",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = startupWorldFixture(t);
+    const result = runStartupWorldAssertion(f, { EVEJS_TEST_CHAIN_ID: "deadbeef" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /stale: config chain 'a1b2c3d4'.*chain 'deadbeef'/s);
+    assert.match(result.stderr, /FrontierWorld\.ps1 sync -Build 3502403/);
+    assert.equal(JSON.parse(result.stdout).dockerCalls, 1);
+  });
+
+test("Server startup world guard rejects malformed synchronized chain identifiers",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = startupWorldFixture(t);
+    f.config.chainId = "a1b2c3d";
+    f.writeConfig();
+    const result = runStartupWorldAssertion(f);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /stale: config chain 'a1b2c3d'/);
+    assert.match(result.stderr, /FrontierWorld\.ps1 sync -Build 3502403/);
+  });
+
+test("Server startup world guard rejects unavailable or malformed live chain responses",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = startupWorldFixture(t);
+    for (const environment of [
+      { EVEJS_TEST_DOCKER_MISSING: "1" },
+      { EVEJS_TEST_DOCKER_EXIT: "124" },
+      { EVEJS_TEST_CHAIN_ID: "" },
+      { EVEJS_TEST_CHAIN_ID: "a1b2c3d" },
+      { EVEJS_TEST_CHAIN_ID: "a1b2c3d4\ndeadbeef" },
+    ]) {
+      const result = runStartupWorldAssertion(f, environment);
+      assert.notEqual(result.status, 0);
+      assert.equal(JSON.parse(result.stdout).checked, false);
+      assert.match(result.stderr, /local Sui gRPC service/);
+      assert.match(result.stderr, /Check that sui-playground is running/);
+    }
+  });
+
+test("Server startup world guard retains deployment and publication hash checks before chain lookup",
+  { skip: !canRunPowerShell }, (t) => {
+    for (const fileKey of ["deploymentPath", "publicationPath"] as const) {
+      const f = startupWorldFixture(t);
+      fs.appendFileSync(f[fileKey], "changed since synchronization\n");
+      const result = runStartupWorldAssertion(f);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /stale relative to its deployment artifacts/);
+      assert.match(result.stderr, /FrontierWorld\.ps1 sync -Build 3502403/);
+      assert.equal(JSON.parse(result.stdout).dockerCalls, 0);
+    }
+  });
+
+test("Server startup world guard rejects missing deployment artifacts before chain lookup",
+  { skip: !canRunPowerShell }, (t) => {
+    const f = startupWorldFixture(t);
+    fs.unlinkSync(f.deploymentPath);
+    const result = runStartupWorldAssertion(f);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /artifacts are unavailable/);
+    assert.match(result.stderr, /FrontierWorld\.ps1 sync -Build 3502403/);
+    assert.equal(JSON.parse(result.stdout).dockerCalls, 0);
+  });
 
 const PACKAGE_ID =
   "0x1111111111111111111111111111111111111111111111111111111111111111";

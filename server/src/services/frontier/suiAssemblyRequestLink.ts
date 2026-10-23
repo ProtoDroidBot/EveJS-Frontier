@@ -6,6 +6,7 @@ import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { publicKeyFromRawBytes } from "@mysten/sui/verify";
 import type { AssemblySnapshot } from "./suiAssemblySnapshot";
 import type { SuiAssemblyChainObject } from "./suiAssemblyChain";
+import { assemblyDynamicFieldName, readAssemblyDynamicField, readAssemblyMoveObject } from "./suiAssemblyGrpc";
 
 const LINK_VERSION = 1;
 const DOMAIN = Buffer.from("EVEJS_SMART_ASSEMBLY_REQUEST_V1", "utf8");
@@ -69,6 +70,8 @@ export type SuiAssemblyRequestAttestation = {
 export type SuiAssemblyRequestLinkBridge = {
   attestCreation(request: any): Promise<SuiAssemblyRequestAttestation>;
   verifyCreation(request: any, proof: SuiAssemblyRequestAttestation): Promise<boolean>;
+  /** Receipt recovery only: an expired deadline must never authorize new work. */
+  verifyCommittedCreation?(request: any, proof: SuiAssemblyRequestAttestation): Promise<boolean>;
   attestTerminal(request: any, phase: Exclude<AssemblyRequestPhase, "created">,
     outcome: any): Promise<SuiAssemblyRequestAttestation>;
   verifyTerminal(request: any, phase: Exclude<AssemblyRequestPhase, "created">,
@@ -107,6 +110,7 @@ function requestCommitment(request: any): string {
     createdAtMs: request.createdAtMs,
     expiresAtMs: request.expiresAtMs,
     ownerID: request.ownerID,
+    ...(request.logistics ? { logistics: request.logistics } : {}),
     payload: request.payload,
     priority: request.priority,
     priorityFlags: request.priorityFlags,
@@ -303,21 +307,13 @@ export function createSuiAssemblyRequestLinkBridge(options: {
     });
   }
 
-  async function assertAuthorized(context: any): Promise<void> {
-    const response = await context.client.getObject({
-      id: context.world.serverAddressRegistryId,
-      options: { showContent: true, showType: true },
-    });
-    const content = response.data?.content;
-    if (response.error || content?.dataType !== "moveObject") throw new Error("Cannot read the server address registry");
-    const fields: any = content.fields;
+  async function assertAuthorized(context: any, address?: string): Promise<void> {
+    const object = await readAssemblyMoveObject(context.client, context.world.serverAddressRegistryId);
+    const fields = object!.json;
     const authorizedTable = tableId(fields.authorized_address);
-    const signer = normalizeSuiAddress(context.adminSigner.toSuiAddress());
-    const entry = await context.client.getDynamicFieldObject({
-      parentId: authorizedTable,
-      name: { type: "address", value: signer },
-    });
-    if (entry.error || entry.data?.content?.dataType !== "moveObject") {
+    const signer = normalizeSuiAddress(address ?? context.adminSigner.toSuiAddress());
+    const entry = await readAssemblyDynamicField(context.client, authorizedTable, assemblyDynamicFieldName("address", signer), true);
+    if (!entry) {
       throw Object.assign(new Error("Queue signer is not authorized by the deployed Sui world"), {
         code: "ASSEMBLY_REQUEST_CHAIN_SIGNER_UNAUTHORIZED",
       });
@@ -366,17 +362,26 @@ export function createSuiAssemblyRequestLinkBridge(options: {
   }
 
   async function verify(request: any, proof: SuiAssemblyRequestAttestation,
-    phase: AssemblyRequestPhase, outcome?: any) {
-    return withContext(async context => verifySuiAssemblyRequestAttestation({
-      request, proof, phase, outcome,
-      previousAttestationHash: phase === "created" ? undefined : request.chainLink?.creation?.attestationHash,
-      expected: expected(context), now: now(), enforceDeadline: phase === "created",
-    }));
+    phase: AssemblyRequestPhase, outcome?: any, committed = false) {
+    return withContext(async context => {
+      if (!await verifySuiAssemblyRequestAttestation({
+        request, proof, phase, outcome,
+        previousAttestationHash: phase === "created" ? undefined : request.chainLink?.creation?.attestationHash,
+        expected: expected(context), now: now(), enforceDeadline: phase === "created" && !committed,
+      })) return false;
+      // Checking the running server's membership alone does not authenticate
+      // the proof signer. Historical proofs survive key rotation only while
+      // their own signing address remains authorized in this world's registry.
+      await assertAuthorized(context, proof.serverAddress);
+      await context.assertCurrent();
+      return true;
+    });
   }
 
   return {
     attestCreation: request => attest(request, "created"),
     verifyCreation: (request, proof) => verify(request, proof, "created"),
+    verifyCommittedCreation: (request, proof) => verify(request, proof, "created", undefined, true),
     attestTerminal: (request, phase, outcome) => attest(request, phase, outcome),
     verifyTerminal: (request, phase, outcome, proof) => verify(request, proof, phase, outcome),
   };

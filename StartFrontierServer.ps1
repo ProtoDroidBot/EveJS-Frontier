@@ -653,6 +653,32 @@ function Test-SuiWorldSyncRequired {
     return -not ($hasExplicitWorld -and $hasExplicitSigner)
 }
 
+function Get-LiveChainIdentifier {
+    $docker = Get-Command docker.exe -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $docker) {
+        throw 'docker.exe is not available in PATH; cannot validate the local Sui chain.'
+    }
+
+    # Use the same gRPC-capable CLI as world synchronization. Pin localnet and
+    # request the short hex ID recorded in Pub.localnet.toml and world.private.json.
+    try {
+        $response = @(& $docker.Source exec sui-playground timeout 5 sui client `
+            --client.env localnet chain-identifier --format hex 2>$null)
+        if ($LASTEXITCODE -ne 0) {
+            throw 'The Sui chain-identifier command failed.'
+        }
+    }
+    catch {
+        throw 'The local Sui gRPC service in sui-playground is not ready; refusing to start the server.'
+    }
+    $identifier = [string]::Join("`n", $response).Trim()
+    if ($identifier -notmatch '^[0-9a-fA-F]{8}$') {
+        throw 'The local Sui CLI returned an invalid hex chain identifier.'
+    }
+    return $identifier.ToLowerInvariant()
+}
+
 function Assert-SuiWorldSyncCurrent {
     if (-not (Test-SuiWorldSyncRequired) -or
         -not (Test-Path -LiteralPath $SuiWorldConfigPath -PathType Leaf)) {
@@ -712,20 +738,16 @@ function Assert-SuiWorldSyncCurrent {
     }
 
     try {
-        $response = Invoke-RestMethod `
-            -Uri 'http://127.0.0.1:9000' `
-            -Method Post `
-            -ContentType 'application/json' `
-            -TimeoutSec 5 `
-            -Body '{"jsonrpc":"2.0","id":1,"method":"sui_getChainIdentifier","params":[]}'
+        $liveChainId = Get-LiveChainIdentifier
     }
     catch {
-        throw "The local Sui RPC could not be checked against the synchronized world. Run: $remedy"
+        throw (
+            'The local Sui gRPC service could not be checked against the synchronized world. ' +
+            "Check that sui-playground is running. $($_.Exception.Message)"
+        )
     }
     $configuredChainId = ([string]$config.chainId).Trim().ToLowerInvariant()
-    $liveChainId = ([string]$response.result).Trim().ToLowerInvariant()
-    if ($configuredChainId -notmatch '^[0-9a-f]+$' -or
-        $liveChainId -notmatch '^[0-9a-f]+$' -or
+    if ($configuredChainId -notmatch '^[0-9a-f]{8}$' -or
         $configuredChainId -cne $liveChainId) {
         throw (
             "Synchronized Sui world is stale: config chain '$configuredChainId', " +

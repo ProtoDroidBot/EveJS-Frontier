@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { SuiJsonRpcClient, type JsonRpcTransport } from "@mysten/sui/jsonRpc";
+import { readAssemblyMoveObject } from "./suiAssemblyGrpc";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
-import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { buildSuiAssemblySnapshot, type SuiAssemblySnapshotInput } from "./suiAssemblySnapshot";
 import { createSuiAssemblyChain, suiAssemblyFields, suiAssemblyOption } from "./suiAssemblyChain";
 import { createSuiAssemblyContents } from "./suiAssemblyContents";
@@ -33,7 +33,7 @@ import {
   registerSuiAssemblyActionQueueBridge,
 } from "./suiAssemblyActionQueue";
 import {
-  readSyncedSuiWorldConfig, prepareSuiCharacterIdentity, createSuiCharacterTransaction,
+  readSyncedSuiWorldConfig, prepareSuiCharacterIdentity, createSuiCharacterTransaction, readLiveSuiChainIdentifier,
 } from "./suiCharacterProvisioning";
 import {
   prepareSuiNpcCharacterIdentity,
@@ -601,24 +601,9 @@ export function startSuiAssemblySync() {
     };
     const rpcUrl = "http://127.0.0.1:9000";
     const rpcDeadlineMs = Math.max(1_000, Number(process.env.EVEJS_SUI_ASSEMBLY_RPC_TIMEOUT_MS) || 10_000);
-    const transport: JsonRpcTransport = {
-      request(input) {
-        const rpc = supervisor.requestSuiRpc(rpcUrl, input.method, input.params, rpcDeadlineMs);
-        if (!input.signal) return rpc;
-        if (input.signal.aborted) return Promise.reject(input.signal.reason);
-        return Promise.race([
-          rpc,
-          new Promise((_, reject) => input.signal!.addEventListener(
-            "abort",
-            () => reject(input.signal!.reason),
-            { once: true },
-          )),
-        ]);
-      },
-    };
-    const client = new SuiJsonRpcClient({ transport, network: "localnet" });
-    const locationRegistry = await client.getObject({ id: locationRegistryId, options: { showType: true } });
-    if (locationRegistry.data?.type !== `${synced.packageId}::location::LocationRegistry`) {
+    const client = supervisor.createSuiGrpcClient(rpcUrl, rpcDeadlineMs);
+    const locationRegistry = await client.getObject({ objectId: locationRegistryId });
+    if (normalizeStructTag(locationRegistry.object.type) !== normalizeStructTag(`${synced.packageId}::location::LocationRegistry`)) {
       throw new Error("The deployed LocationRegistry does not exist on the current chain");
     }
     const adminSigner = Ed25519Keypair.fromSecretKey(synced.adminPrivateKey);
@@ -629,7 +614,7 @@ export function startSuiAssemblySync() {
       const current = readSyncedSuiWorldConfig(env);
       if (!current || current.chainId !== synced.chainId || current.packageId !== synced.packageId ||
           current.objectRegistryId !== synced.objectRegistryId || current.adminAclId !== synced.adminAclId ||
-          (await client.getChainIdentifier()).toLowerCase() !== synced.chainId) {
+          (await readLiveSuiChainIdentifier(client)).toLowerCase() !== synced.chainId) {
         throw new Error("Sui deployment changed; run FrontierWorld.ps1 sync before retrying assemblies");
       }
       assertSuiIndustryDeploymentCurrent(industryDeployment, current, industryEnv());
@@ -738,31 +723,26 @@ export function startSuiAssemblySync() {
             normalizeSuiAddress(identity.walletAddress) !== normalizeSuiAddress(confirmedWallet)) {
           throw new Error(`NPC Character ${ownerId} identity differs from its confirmed profile`);
         }
-        const response = await client.getObject({
-          id: identity.characterObjectId,
-          options: { showContent: true, showOwner: true },
-        });
-        const content: any = response.data?.content;
-        const fields = content?.fields;
-        if (content?.type !== `${world.packageId}::character::Character` ||
+        const object = await readAssemblyMoveObject(client, identity.characterObjectId);
+        const fields = object!.json;
+        if (normalizeStructTag(object!.type) !== normalizeStructTag(`${world.packageId}::character::Character`) ||
             normalizeSuiAddress(fields?.character_address) !== normalizeSuiAddress(identity.walletAddress) ||
-            String(fields?.key?.fields?.id ?? fields?.key?.fields?.item_id) !== String(ownerId) ||
-            fields?.key?.fields?.tenant !== "dev") {
+            String(suiAssemblyFields(fields?.key)?.id ?? suiAssemblyFields(fields?.key)?.item_id) !== String(ownerId) ||
+            suiAssemblyFields(fields?.key)?.tenant !== "dev") {
           throw new Error(`On-chain NPC Character ${ownerId} does not match its confirmed profile`);
         }
         return { id: identity.characterObjectId, address: identity.walletAddress, ownerCapId: fields.owner_cap_id };
       }
       const identity = prepareSuiCharacterIdentity(local, { world: { ...world, tenant: "dev", tribeId: 100 } });
-      let response = await client.getObject({ id: identity.characterObjectId, options: { showContent: true, showOwner: true } });
-      if (allowCreate && response.error?.code === "notExists") {
+      let object = await readAssemblyMoveObject(client, identity.characterObjectId, true);
+      if (allowCreate && !object) {
         await executor.execute(`create Character ${ownerId}`, createSuiCharacterTransaction(identity));
-        response = await client.getObject({ id: identity.characterObjectId, options: { showContent: true, showOwner: true } });
+        object = await readAssemblyMoveObject(client, identity.characterObjectId);
       }
-      const content: any = response.data?.content;
-      const fields = content?.fields;
-      if (content?.type !== `${world.packageId}::character::Character` ||
-          fields?.character_address !== identity.walletAddress ||
-          String(fields?.key?.fields?.id ?? fields?.key?.fields?.item_id) !== String(ownerId) || fields?.key?.fields?.tenant !== "dev") {
+      const fields = object?.json;
+      if (!object || normalizeStructTag(object.type) !== normalizeStructTag(`${world.packageId}::character::Character`) ||
+          normalizeSuiAddress(fields?.character_address) !== normalizeSuiAddress(identity.walletAddress) ||
+          String(suiAssemblyFields(fields?.key)?.id ?? suiAssemblyFields(fields?.key)?.item_id) !== String(ownerId) || suiAssemblyFields(fields?.key)?.tenant !== "dev") {
         throw new Error(`On-chain Character ${ownerId} does not match its local account`);
       }
       return { id: identity.characterObjectId, address: identity.walletAddress, ownerCapId: fields.owner_cap_id };
@@ -859,8 +839,8 @@ export function startSuiAssemblySync() {
         return applied;
       },
       async simulateSponsored(bytes: string) {
-        const result = await client.dryRunTransactionBlock({ transactionBlock: Buffer.from(bytes, "base64") });
-        if (result.effects?.status?.status !== "success") {
+        const result = await client.simulateTransaction({ transaction: Buffer.from(bytes, "base64") });
+        if (result.$kind !== "Transaction" || !result.Transaction.status.success) {
           throw Object.assign(new Error("Assembly state changed or the sponsored transaction cannot execute"), { code: "ASSEMBLY_STATE_CHANGED" });
         }
       },
@@ -1078,7 +1058,7 @@ export function startSuiAssemblySync() {
     }
     // Inventory validation and mutation run without yielding after the fresh read.
     return operation();
-  }));
+  }), () => context);
   energyMutationRunner = createSuiAssemblyEnergyMutationRunner({
     runExclusive: worker.runExclusive, getContext: () => context,
     hasPrepared: () => sponsoredAdmin.hasPrepared(),

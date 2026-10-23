@@ -31,6 +31,11 @@ Server assembly runtimes can register a named handler and call
 request in one worker flow. The native `smartAssemblyService` exposes matching
 create/list/signal/claim/renew/release/fulfil/fail/cancel RPC handlers.
 
+`logistics.transfer` is reserved for the autonomous server consumer described
+below. Clients can create, inspect, and cancel these requests; they cannot
+claim, renew, release, fail, or fulfil them. A generic registered handler cannot
+consume this reserved type while the logistics worker owns it.
+
 ## Operational status signals
 
 The same monotonic signal journal also carries idempotent `status_changed`
@@ -131,3 +136,104 @@ hiding data or strengthening that authorization. The BCS message and Sui
 intent signature are directly compatible with the world's existing Move
 signature-verification convention if a future contract consumes these receipts
 on chain.
+
+## Autonomous item logistics
+
+The server starts `assemblyLogisticsWorker.ts` after assembly synchronization
+starts. It polls every second, serializes passes, and retries transient failures
+after five seconds. No player login, ship, bound inventory RPC, or open assembly
+window is required. Shutdown stops new passes and prevents delayed chain
+callbacks from starting an inventory commit. Already committed work remains
+recoverable from its receipt. The worker does not discover suppliers or create replenishment
+policies: assembly/NPC logic chooses the supplier and calls the trusted helper:
+
+```js
+const { requestAssemblyItems } = require("./assemblyLogisticsRuntime");
+const request = await requestAssemblyItems(
+  requesterAssemblyID, supplierAssemblyID, typeID, quantity,
+  { requestID: durableJobUUID, expiresInMs: 300_000 },
+);
+```
+
+Persist one UUID per intended transfer in the calling job and reuse it on
+retry. Request **source** means requester/receiver; request **target** means
+supplier. The inventory move goes from target to source. A successful create
+acknowledges durable queueing, not a completed transfer; inspect the terminal
+request or its `fulfilled` signal for completion.
+
+The native `smartAssemblyService.create_request` accepts the same type with
+`payload: { typeID, quantity, supplierLaneID?, requesterLaneID? }`. Quantities
+must be positive integers within uint32. Lanes default to 1. No other payload
+keys are accepted. The authenticated session supplies the actor; callers cannot
+override owners, inventory flags, access grants, or chain mode. The trusted
+helper defaults to the requester owner's player/NPC identity and can take an
+explicit trusted `actor`. Only its kind and ID are persisted; access resolution
+reloads current memberships and grants when executing. Existing generic
+logistics records without this actor metadata are rejected, not upgraded into
+authorized transfers.
+
+The first implementation supports these same-owner inventory routes:
+
+| Endpoint | Supplies from | Receives into | Capacity rule |
+| --- | --- | --- | --- |
+| Smart Storage Unit | Owner partition, flag 66 | Owner partition, flag 66 | Authored storage volume |
+| Smart Turret | Cargo, flag 0 | Cargo, flag 0 | Authored cargo volume |
+| Field Storage | Cargo, flag 0 | Cargo, flag 0 | Authored cargo volume and add/take component permissions |
+| Industry | Selected lane's output escrow | Selected lane's input escrow | Selected blueprint's per-type maximum |
+
+Both endpoints must be completed, online, owned by the request owner, located
+in the same solar system, and within 5,000 metres center-to-center. Field
+Storage's authored access range can further restrict that distance. The actor
+needs `inventory.withdraw` on the supplier and both `operate` and
+`inventory.deposit` on the requester. Industry currently requires the actor to
+be the facility owner; generic inventory grants cannot bypass its lane policy.
+All checks, including lease validity and capacity, run again after asynchronous
+chain refresh and immediately before the synchronous inventory commit.
+
+Network Node virtual fuel, ships, arbitrary space objects, singleton items,
+shared SSU partitions, and cross-owner custody are outside this consumer's
+scope. Cross-owner delivery on the generic request bus does not authorize
+cross-owner inventory movement; that still requires the separate custody flow.
+
+### Durability and recovery
+
+Queue transitions are flushed before acknowledgment or signal publication.
+The item store selects stacks deterministically and commits all source changes,
+destination changes, and the operation receipt in one item-table write and
+flush. Insufficient stock or destination capacity moves nothing. Failed writes
+or flushes restore the previous snapshot; failed rollback keeps the store from
+acknowledging speculative state until persistence recovers.
+
+The durable receipt lives on the receiving assembly, independently of moved
+cargo. It binds the request UUID, actor, endpoint IDs, owners, flags, item type,
+quantity, lanes, and synchronization context. Reusing the UUID with different
+work fails. Consuming or moving received cargo does not remove this evidence.
+Before checking current queue status, access, leases, or stock, the worker
+looks for this receipt. If a crash occurred after items moved but before queue
+completion, it reconciles the receipt and completes the existing request
+without moving items again. Cancellation or expiry after the commit does not
+reverse it. Terminal logistics requests are retained until this reconciliation
+has run; committed receipts remain beyond queue-history retention.
+
+Sui-backed endpoints use the existing shared assembly authority worker and
+inventory mirrors. Both mirror confirmations must match the same deployment;
+the request remains pending while chain synchronization is unavailable. This
+is a durable game-store commit followed by chain reconciliation, not a single
+atomic transaction spanning SQLite and Sui. Turret inventory remains local,
+with chain lifecycle validation. Mixed local/Sui routes still validate the
+Sui-backed endpoint; their queue attestation mode is classified by the server
+because a local Field Storage has no Sui object reference to sign.
+
+For all-Sui requests, actor and attestation mode are part of the signed
+creation commitment. Recovery of an already committed receipt can verify an
+expired creation proof; new work still requires an unexpired proof. World,
+signature, and currently authorized signer checks remain in force, including
+after server-key rotation. If an endpoint is removed, changes ownership, or
+cannot supply the required chain confirmation after the game commit, recovery
+stays pending for reconciliation. It never repeats or silently reverses the
+inventory move. Local receipt recovery does not require endpoints to remain
+online or access grants to remain active.
+
+Inventory and assembly UI notices are best-effort after commit. Notification
+failure cannot turn a durable move into a retry; reconnecting clients reload
+the authoritative inventories.

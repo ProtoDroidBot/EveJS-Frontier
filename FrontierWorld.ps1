@@ -629,20 +629,28 @@ function Assert-SuiAddress {
 }
 
 function Get-LiveChainIdentifier {
+    $docker = Get-Command docker.exe -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $docker) {
+        throw 'docker.exe is not available in PATH; cannot validate the local Sui chain.'
+    }
+
+    # Sui 1.82 serves gRPC at port 9000; its former JSON-RPC route returns 404.
+    # Use the same Sui CLI as deployment, pinning localnet instead of relying on
+    # its active environment. The hex form matches Move's Pub.localnet.toml.
     try {
-        $response = Invoke-RestMethod `
-            -Uri 'http://127.0.0.1:9000' `
-            -Method Post `
-            -ContentType 'application/json' `
-            -TimeoutSec 5 `
-            -Body '{"jsonrpc":"2.0","id":1,"method":"sui_getChainIdentifier","params":[]}'
+        $response = @(& $docker.Source exec sui-playground timeout 5 sui client `
+            --client.env localnet chain-identifier --format hex 2>$null)
+        if ($LASTEXITCODE -ne 0) {
+            throw 'The Sui chain-identifier command failed.'
+        }
     }
     catch {
-        throw 'The local Sui RPC at http://127.0.0.1:9000 is not ready; refusing to publish world IDs.'
+        throw 'The local Sui gRPC service in sui-playground is not ready; refusing to publish world IDs.'
     }
-    $identifier = [string]$response.result
-    if ($identifier -notmatch '^[0-9a-fA-F]+$') {
-        throw 'The local Sui RPC returned an invalid chain identifier.'
+    $identifier = [string]::Join("`n", $response).Trim()
+    if ($identifier -notmatch '^[0-9a-fA-F]{8}$') {
+        throw 'The local Sui CLI returned an invalid hex chain identifier.'
     }
     return $identifier.ToLowerInvariant()
 }

@@ -110,6 +110,13 @@ const ERROR_MESSAGES = Object.freeze({
     ASSEMBLY_REQUEST_SELF_TARGET: "A smart assembly cannot request work from itself.",
     ASSEMBLY_REQUEST_STATE_INVALID: "The request state filter is invalid.",
     ASSEMBLY_REQUEST_TYPE_INVALID: "The assembly request type is invalid.",
+    ASSEMBLY_REQUEST_WORKER_MANAGED: "The server processes logistics requests automatically. You can inspect or cancel the request.",
+    LOGISTICS_REQUEST_INVALID: "Specify a valid item type and positive quantity for this logistics request.",
+    LOGISTICS_OWNER_MISMATCH: "Automatic logistics requires both assemblies to have the same owner.",
+    LOGISTICS_INVENTORY_UNSUPPORTED: "This assembly does not have a supported logistics inventory.",
+    LOGISTICS_IDEMPOTENCY_CONFLICT: "That logistics request ID is already bound to a different transfer.",
+    LOGISTICS_POSITION_UNAVAILABLE: "The assemblies' positions are not available for a logistics range check.",
+    ASSEMBLY_OUT_OF_RANGE: "The assemblies are too far apart for this transfer.",
     SMART_GATE_ALREADY_LINKED: "One of those Heavy Gates is already linked.",
     SMART_GATE_DESTINATION_OFFLINE: "The destination Heavy Gate must be online before jumping.",
     SMART_GATE_DESTINATION_REQUIRED: "Link this Heavy Gate to a destination before bringing it online.",
@@ -191,6 +198,12 @@ function authorizedRequestOptions(session, assemblyID, capability, value = {}) {
 }
 function buildRequestRecord(record) {
     return buildDict(Object.entries(record || {}));
+}
+function assertClientManagedRequest(requestID) {
+    const found = getRequestRuntime().getRequest(requestID);
+    if (found.success && found.data.requestType === "logistics.transfer") {
+        throwAssemblyError({ errorMsg: "ASSEMBLY_REQUEST_WORKER_MANAGED" });
+    }
 }
 function buildAccessValue(value) {
     if (Array.isArray(value))
@@ -342,6 +355,12 @@ class SmartAssemblyService extends BaseService {
             ["priorities", buildDict(Object.entries(runtime.ASSEMBLY_REQUEST_PRIORITY))],
             ["priority_flags", buildDict(Object.entries(runtime.ASSEMBLY_REQUEST_PRIORITY_FLAG))],
             ["priority_flag_mask", runtime.ASSEMBLY_REQUEST_PRIORITY_FLAG_MASK],
+            ["logistics", buildAccessValue({
+                    request_type: "logistics.transfer", worker_managed: true,
+                    source_role: "requester", target_role: "supplier",
+                    payload_fields: ["typeID", "quantity", "supplierLaneID", "requesterLaneID"],
+                    max_distance_meters: 5000, same_owner_only: true,
+                })],
         ]);
     }
     Handle_get_access_protocol() {
@@ -521,6 +540,20 @@ class SmartAssemblyService extends BaseService {
     Handle_create_request(args, session) {
         const sourceAssemblyID = Number(args && args[0]) || 0;
         const options = authorizedRequestOptions(session, sourceAssemblyID, getAccessRuntime().ASSEMBLY_ACCESS_CAPABILITY.OPERATE, args && args[3]);
+        if (String(args && args[2] || "").trim().toLowerCase() === "logistics.transfer") {
+            const payload = options.payload;
+            if (!payload || typeof payload !== "object" || Array.isArray(payload) ||
+                Object.keys(payload).some(key => !["typeID", "quantity", "supplierLaneID", "requesterLaneID"].includes(key))) {
+                throwAssemblyError({ errorMsg: "LOGISTICS_REQUEST_INVALID" });
+            }
+            const result = require("./assemblyLogisticsRuntime").requestAssemblyItems(sourceAssemblyID, Number(args && args[1]) || 0, payload.typeID, payload.quantity, {
+                requestID: options.requestID, priority: options.priority,
+                priorityFlags: options.priorityFlags, expiresInMs: options.expiresInMs,
+                supplierLaneID: payload.supplierLaneID, requesterLaneID: payload.requesterLaneID,
+                actor: playerAccessActor(session),
+            });
+            return mapRequestResult(result, value => buildRequestRecord(value.data));
+        }
         const result = getRequestRuntime().createRequest(sourceAssemblyID, Number(args && args[1]) || 0, args && args[2], options);
         return mapRequestResult(result, value => buildRequestRecord(value.data));
     }
@@ -540,21 +573,25 @@ class SmartAssemblyService extends BaseService {
         ]);
     }
     Handle_claim_request(args, session) {
+        assertClientManagedRequest(args && args[1]);
         const assemblyID = Number(args && args[0]) || 0;
         const result = getRequestRuntime().claimRequest(assemblyID, args && args[1], authorizedRequestOptions(session, assemblyID, getAccessRuntime().ASSEMBLY_ACCESS_CAPABILITY.OPERATE, args && args[2]));
         return mapRequestResult(result, value => buildRequestRecord(value.data));
     }
     Handle_renew_request_claim(args, session) {
+        assertClientManagedRequest(args && args[1]);
         const assemblyID = Number(args && args[0]) || 0;
         const result = requireRequestResult(getRequestRuntime().renewClaim(assemblyID, args && args[1], args && args[2], authorizedRequestOptions(session, assemblyID, getAccessRuntime().ASSEMBLY_ACCESS_CAPABILITY.OPERATE, args && args[3])));
         return buildRequestRecord(result.data);
     }
     Handle_release_request(args, session) {
+        assertClientManagedRequest(args && args[1]);
         const assemblyID = Number(args && args[0]) || 0;
         const result = requireRequestResult(getRequestRuntime().releaseClaim(assemblyID, args && args[1], args && args[2], authorizedRequestOptions(session, assemblyID, getAccessRuntime().ASSEMBLY_ACCESS_CAPABILITY.OPERATE)));
         return buildRequestRecord(result.data);
     }
     _fulfillRequest(args, session) {
+        assertClientManagedRequest(args && args[1]);
         const assemblyID = Number(args && args[0]) || 0;
         const result = getRequestRuntime().fulfillRequest(assemblyID, args && args[1], args && args[2], args && args[3], authorizedRequestOptions(session, assemblyID, getAccessRuntime().ASSEMBLY_ACCESS_CAPABILITY.OPERATE));
         return mapRequestResult(result, value => buildRequestRecord(value.data));
@@ -566,6 +603,7 @@ class SmartAssemblyService extends BaseService {
         return this._fulfillRequest(args, session);
     }
     Handle_fail_request(args, session) {
+        assertClientManagedRequest(args && args[1]);
         const assemblyID = Number(args && args[0]) || 0;
         const result = getRequestRuntime().failRequest(assemblyID, args && args[1], args && args[2], args && args[3], authorizedRequestOptions(session, assemblyID, getAccessRuntime().ASSEMBLY_ACCESS_CAPABILITY.OPERATE));
         return mapRequestResult(result, value => buildRequestRecord(value.data));

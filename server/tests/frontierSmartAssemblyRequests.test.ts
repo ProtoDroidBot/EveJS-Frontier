@@ -440,11 +440,14 @@ test("native assembly RPC publishes the shared protocol and cannot enable cross-
   assert.equal(protocol.priorities.CRITICAL, ASSEMBLY_REQUEST_PRIORITY.CRITICAL);
   assert.equal(protocol.priority_flags.LOGISTICS, ASSEMBLY_REQUEST_PRIORITY_FLAG.LOGISTICS);
   assert.equal(protocol.priority_flag_mask, ASSEMBLY_REQUEST_PRIORITY_FLAG_MASK);
+  assert.equal(protocol.logistics.worker_managed, true);
+  assert.equal(protocol.logistics.source_role, "requester");
+  assert.equal(protocol.logistics.target_role, "supplier");
 
   const result = unpack(service.Handle_create_request([
     SOURCE,
     TURRET,
-    "logistics.transfer",
+    "production.run",
     {
       allowCrossOwner: true,
       ownerID: OTHER_OWNER,
@@ -456,9 +459,47 @@ test("native assembly RPC publishes the shared protocol and cannot enable cross-
   assert.equal(result.requestID, REQUEST_A);
   assert.equal(captured[0], SOURCE);
   assert.equal(captured[1], TURRET);
-  assert.equal(captured[2], "logistics.transfer");
+  assert.equal(captured[2], "production.run");
   assert.equal(captured[3].ownerID, OWNER);
   assert.equal(captured[3].allowCrossOwner, false);
+});
+
+test("logistics RPC binds the authenticated actor and prevents client-managed completion", (t) => {
+  const SmartAssemblyService = require("../src/services/frontier/smartAssemblyService");
+  const logistics = require("../src/services/frontier/assemblyLogisticsRuntime");
+  let captured;
+  t.mock.method(logistics, "requestAssemblyItems", (...args) => {
+    captured = args;
+    return { success: true, data: { requestID: REQUEST_A, requestType: "logistics.transfer", status: "queued" } };
+  });
+  const service = new SmartAssemblyService();
+  const session = { characterID: OWNER };
+  const result = unpack(service.Handle_create_request([
+    SOURCE, TURRET, "logistics.transfer", {
+      requestID: REQUEST_A, ownerID: OTHER_OWNER, allowCrossOwner: true,
+      actor: { kind: "npc", actorID: OTHER_OWNER },
+      _logisticsActor: { kind: "player", actorID: OTHER_OWNER },
+      logistics: { requestAttestation: "local" },
+      payload: { typeID: 34, quantity: 25, supplierLaneID: 2, requesterLaneID: 3 },
+    },
+  ], session));
+  assert.equal(result.requestID, REQUEST_A);
+  assert.deepEqual(captured.slice(0, 4), [SOURCE, TURRET, 34, 25]);
+  assert.deepEqual(captured[4].actor, { kind: "player", actorID: OWNER, tribeID: 0 });
+  assert.equal(captured[4].supplierLaneID, 2);
+  assert.equal(captured[4].requesterLaneID, 3);
+  for (const field of ["ownerID", "allowCrossOwner", "_logisticsActor", "logistics"]) {
+    assert.equal(Object.hasOwn(captured[4], field), false);
+  }
+  assert.throws(() => service.Handle_create_request([
+    SOURCE, TURRET, "logistics.transfer", { payload: { typeID: 34, quantity: 1, sourceOwnerID: OTHER_OWNER } },
+  ], session));
+  t.mock.method(requestRuntimeModule, "getRequest", () => ({ success: true,
+    data: { requestID: REQUEST_A, requestType: "logistics.transfer" } }));
+  for (const method of ["Handle_claim_request", "Handle_renew_request_claim", "Handle_release_request",
+    "Handle_fulfill_request", "Handle_fulfil_request", "Handle_fail_request"]) {
+    assert.throws(() => service[method]([TURRET, REQUEST_A, "forged-claim", { gameCommitted: true }], session));
+  }
 });
 
 test("native RPC lifecycle persists through the real gameStore and generic construction state", (t) => {

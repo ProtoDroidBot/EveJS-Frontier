@@ -1,7 +1,8 @@
 import { bcs } from "@mysten/sui/bcs";
-import type { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
+import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Transaction, type TransactionArgument } from "@mysten/sui/transactions";
 import { deriveObjectID, normalizeSuiAddress, SUI_CLOCK_OBJECT_ID } from "@mysten/sui/utils";
+import { readAssemblyMoveObject } from "./suiAssemblyGrpc";
 
 export const SUI_ASSEMBLY_ACCESS_PRINCIPAL = Object.freeze({
   OWNER: 0,
@@ -28,6 +29,15 @@ const PolicyKey = bcs.struct("AssemblyAccessPolicyKey", { assembly_id: bcs.Addre
 const GrantKey = bcs.struct("AssemblyAccessGrantKey", {
   policy_id: bcs.Address,
   grant_id: bcs.vector(bcs.u8()),
+});
+const CustodyTransferred = bcs.struct("AssemblyCustodyTransferred", {
+  operation_id: bcs.vector(bcs.u8()),
+  custody_kind: bcs.u8(),
+  source_assembly_id: bcs.Address,
+  destination_assembly_id: bcs.Address,
+  actor_character_id: bcs.Address,
+  type_id: bcs.u64(),
+  quantity: bcs.u32(),
 });
 
 export type SuiAssemblyAccessWorld = {
@@ -134,15 +144,14 @@ function optionId(value: any): string | null {
 }
 
 function moveObject(value: any, expectedType: string, label: string): { objectId: string; fields: any } {
-  const data = value?.data ?? value;
-  const content = data?.content ?? data;
-  const type = data?.type ?? content?.type;
-  const fields = content?.fields ?? data?.fields ?? data?.json;
+  const data = value?.object ?? value;
+  const type = data?.type;
+  const fields = data?.json;
   if (type !== expectedType || !fields || typeof fields !== "object") {
     throw new Error(`${label} has an unexpected Move type or content`);
   }
   const owner = data?.owner ?? value?.owner;
-  const shared = owner && typeof owner === "object" && (owner.$kind === "Shared" || "Shared" in owner);
+  const shared = owner?.$kind === "Shared";
   if (!shared) throw new Error(`${label} is not a shared object`);
   return { objectId: address(data?.objectId ?? data?.object_id ?? data?.id, label), fields };
 }
@@ -317,12 +326,6 @@ export function parseSuiAssemblyAccessGrantObject(
   return state;
 }
 
-async function getObject(client: Pick<SuiJsonRpcClient, "getObject">, id: string): Promise<any> {
-  const response = await client.getObject({ id, options: { showContent: true, showOwner: true, showType: true } });
-  if (response?.error || !response?.data) throw new Error(`Sui object ${id} is unavailable`);
-  return response;
-}
-
 /**
  * Build the verifier injected into assemblyAccessRuntime.
  *
@@ -331,7 +334,7 @@ async function getObject(client: Pick<SuiJsonRpcClient, "getObject">, id: string
  * ancestor is fetched from current shared-object state.
  */
 export function createSuiAssemblyAccessGrantVerifier(options: {
-  client: Pick<SuiJsonRpcClient, "getObject">;
+  client: Pick<SuiGrpcClient, "getObject">;
   world: SuiAssemblyAccessWorld;
   now?: () => number;
 }) {
@@ -344,8 +347,8 @@ export function createSuiAssemblyAccessGrantVerifier(options: {
       if (proof?.policyObjectId && address(proof.policyObjectId, "Proof policy") !== expectedPolicyId) return false;
       if (proof?.grantObjectId && address(proof.grantObjectId, "Proof grant") !== expectedGrantId) return false;
       const [policyObject, grantObject] = await Promise.all([
-        getObject(options.client, expectedPolicyId),
-        getObject(options.client, expectedGrantId),
+        readAssemblyMoveObject(options.client, expectedPolicyId),
+        readAssemblyMoveObject(options.client, expectedGrantId),
       ]);
       const policy = parseSuiAssemblyAccessPolicyObject(policyObject, options.world, itemId);
       const grant = parseSuiAssemblyAccessGrantObject(grantObject, options.world, itemId, localGrant.grantID);
@@ -370,7 +373,7 @@ export function createSuiAssemblyAccessGrantVerifier(options: {
       while (child.parentGrantId) {
         if (seen.has(child.parentGrantId) || seen.size >= 8) return false;
         seen.add(child.parentGrantId);
-        const parentObject = await getObject(options.client, child.parentGrantId);
+        const parentObject = await readAssemblyMoveObject(options.client, child.parentGrantId);
         const parent = parseSuiAssemblyAccessGrantObject(parentObject, options.world, itemId);
         const childMask = BigInt(child.capabilityMask);
         const parentMask = BigInt(parent.capabilityMask);
@@ -742,7 +745,7 @@ export type SuiAssemblyCustodyProof = {
 
 /** Verify the finalized custody event before committing the matching game item move. */
 export async function verifySuiAssemblyCustodyProof(input: {
-  client: { getTransactionBlock(request: any): Promise<any> };
+  client: Pick<SuiGrpcClient, "getTransaction">;
   world: SuiAssemblyAccessWorld;
   proof: SuiAssemblyCustodyProof;
 }): Promise<boolean> {
@@ -752,20 +755,20 @@ export async function verifySuiAssemblyCustodyProof(input: {
         ![1, 2, 3].includes(input.proof.custodyKind) ||
         !Number.isInteger(input.proof.quantity) || input.proof.quantity <= 0 ||
         input.proof.quantity > 0xffff_ffff) return false;
-    const response = await input.client.getTransactionBlock({
+    const response = await input.client.getTransaction({
       digest: input.proof.digest,
-      options: { showEffects: true, showEvents: true },
+      include: { events: true },
     });
-    if (response?.effects?.status?.status !== "success") return false;
+    if (response?.$kind !== "Transaction" || response.Transaction?.status?.success !== true) return false;
     const eventType = `${address(input.world.typeOrigin, "Assembly access type origin")}::assembly_access::AssemblyCustodyTransferred`;
     const operationId = bytesUuid(Array.from(uuidBytes(input.proof.operationId)));
     const expectedSource = deriveSuiAssemblyObjectId(input.world, input.proof.sourceAssemblyItemId);
     const expectedDestination = deriveSuiAssemblyObjectId(input.world, input.proof.destinationAssemblyItemId);
     const expectedActor = deriveSuiAssemblyObjectId(input.world, input.proof.actorCharacterId);
-    return (response.events || []).some((event: any) => {
-      if (event?.type !== eventType) return false;
-      const fields = event.parsedJson ?? event.parsed_json ?? {};
+    return (response.Transaction.events || []).some((event) => {
+      if (event?.eventType !== eventType) return false;
       try {
+        const fields = CustodyTransferred.parse(event.bcs);
         return bytesUuid(fields.operation_id) === operationId &&
           Number(fields.custody_kind) === input.proof.custodyKind &&
           objectId(fields.source_assembly_id, "Custody source") === expectedSource &&

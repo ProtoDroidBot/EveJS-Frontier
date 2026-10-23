@@ -1,3 +1,4 @@
+import { createAssemblyGrpcFixture } from "./suiAssemblyGrpcFixture";
 import assert = require("node:assert/strict");
 import { test } from "node:test";
 import { bcs } from "@mysten/sui/bcs";
@@ -77,15 +78,15 @@ function fixture(assemblies: AssemblySnapshot[] = [snapshot()], assertInventoryS
     });
     dynamic.set(capId, inventory());
   }
-  const client = {
-    async getObject({ id: objectId }: any) {
+  const client = createAssemblyGrpcFixture({
+    async objectRecord({ id: objectId }: any) {
       return objects.get(objectId) || { error: { code: "notExists" } };
     },
-    async getDynamicFieldObject({ name }: any) {
+    async dynamicRecord({ name }: any) {
       onRead();
       return dynamic.get(String(name.value)) || { error: { code: "dynamicFieldNotFound" } };
     },
-  };
+  });
   const chain: any = {
     deriveId: id,
     async readAssembly(assembly: AssemblySnapshot) { return chainObjects.get(assembly.itemId) || null; },
@@ -493,7 +494,7 @@ test("inventory status rejects unreadable or inconsistent chain contents instead
   const local = snapshot();
   const f = fixture([local]);
   f.dynamic.set(id(1100), { error: { code: "unavailable" } });
-  await assert.rejects(f.contents.getInventoryStatus(local, 1), /Cannot read storage inventory/);
+  await assert.rejects(f.contents.getInventoryStatus(local, 1), /unavailable/);
   const malformed = inventory([{ typeId: 10, quantity: 3, volume: 2 }]);
   malformed.data.content.fields.value.fields.used_capacity = "0";
   f.dynamic.set(id(1100), malformed);
