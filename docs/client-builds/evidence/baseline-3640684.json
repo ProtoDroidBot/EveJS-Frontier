@@ -1,0 +1,3035 @@
+{
+  "format": "evejs-store-baseline-v1",
+  "fullLocalInventory": {
+    "bytes": 18663613,
+    "path": "_local/store-build-audit/_baseline-3640684/stillness/inventory.json",
+    "sha256": "0515ac04b6f5fd2087e9783531ecf8cb24f37aa20764ab2bb54c80b10a567eb7"
+  },
+  "inventory": {
+    "appIndexCount": 259,
+    "appIndexPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/index_stillness.txt",
+    "appInstalledMismatches": [],
+    "appVerificationCounts": {
+      "content-hashed": 12,
+      "size-only": 247
+    },
+    "archive": {
+      "badCrcMember": null,
+      "bytes": 119398148,
+      "duplicates": {
+        "const.pyc": 2,
+        "eveLocalization/__init__.pyc": 2,
+        "more_itertools/__init__.pyc": 2,
+        "more_itertools/more.pyc": 2,
+        "more_itertools/recipes.pyc": 2
+      },
+      "extensions": {
+        ".pyc": 11679
+      },
+      "md5": "03bc031a16f75de6aab1a513c5fec6de",
+      "samples": [
+        {
+          "first16": "cb0d0d0a00000000969ed86a66860100",
+          "name": "MPI.pyc"
+        },
+        {
+          "first16": "cb0d0d0a00000000969ed86ad6020000",
+          "name": "MPU.pyc"
+        },
+        {
+          "first16": "cb0d0d0a00000000969ed86a10020000",
+          "name": "OpenSSL/__init__.pyc"
+        }
+      ],
+      "sha256": "2f43f4b8d34632b5d5fdc7b58af93364f606bd9ba67fcada588565ee0628122c",
+      "uniqueNames": 11679,
+      "zipEntries": 11684
+    },
+    "carbonLibraries": {
+      "carbon_audio": "github.com/carbonengine/audio/v9.1.0-0-g214099b",
+      "carbon_components": "github.com/ccpgames/carbon-port/v1.2.1-0-gb94c4b2",
+      "carbon_controls": "github.com/ccpgames/carbon-controls/wip",
+      "carbon_d3dinfo": "github.com/ccpgames/carbon-d3dinfo/v2.0.1-0-gc85ed0e",
+      "carbon_destiny": "github.com/ccpgames/frontier-destiny/v3.0.2-0-g01b25da",
+      "carbon_fsd": "github.com/ccpgames/carbon-fsd/v2.0.1-0-g5930ead",
+      "carbon_imagetools": "github.com/ccpgames/carbon-imagetools/v2.0.1-0-g3116627",
+      "carbon_ime": "github.com/carbonengine/ime/v2.0.1-0-g99ed08d",
+      "carbon_mesh": "github.com/carbonengine/mesh/v1.0.1-0-g55062e5",
+      "carbon_spacemouse": "github.com/ccpgames/carbon-spacemouse/v2.0.0-0-g16c0b55",
+      "carbon_tools_watchman": "github.com/carbonengine/tools-watchman/v1.0.0-1-gf3a7090",
+      "carbon_trinity": "github.com/carbonengine/trinity/v6.0.1-0-g5f6c64bd",
+      "carbon_trinityaudioapi": "github.com/ccpgames/carbon-trinityaudioapi/v1.0.5-0-g762af6f",
+      "carbon_videoplayer": "github.com/carbonengine/videoplayer/v2.0.2-0-g555e09a",
+      "carbon_webbrowser": "github.com/ccpgames/carbon-webbrowser/v1.3.2-0-g05e56d5",
+      "tracy_path": "github.com/wolfpld/tracy/v0.13.1"
+    },
+    "errors": [],
+    "files": {
+      "carbon.json": {
+        "bytes": 1364,
+        "md5": "77fb56b48724383a9d049f06aa2548c4",
+        "sha256": "10f283bc0a54b05090bf746da5b626acec47e64d7d725b355f78c1e1664ef00e"
+      },
+      "manifest.dat": {
+        "bytes": 20364,
+        "md5": "911905923c581637d2985ea613911a38",
+        "sha256": "25e8247c682cc17a72a035aa1335de68d4ac0f50d2316545e2b1aefb8fb6b58a"
+      },
+      "resfileindex.txt": {
+        "bytes": 7955443,
+        "md5": "27bbb87df292d598838c2436385d86b2",
+        "sha256": "dc353848fe7d81d66d239c685bcc7445d3fb1783edf5ce783be329aa9a5fb066"
+      },
+      "start.ini": {
+        "bytes": 310,
+        "md5": "787a556767e3a76efad3aca4c5c74422",
+        "sha256": "b47835ce279cf278c25ace889419b47a37d04e9acf92c8f4d0846d52a2227f93"
+      }
+    },
+    "folder": "_baseline-3640684",
+    "identity": {
+      "aid": "0",
+      "appname": "FRONTIER",
+      "branch": "//frontier/cycle-7",
+      "build": "3640684",
+      "codename": "cycle-7",
+      "cryptopack": "CryptoAPI",
+      "edition": "premium",
+      "port": "26000",
+      "region": "ccp",
+      "resfromstuffonly": "0",
+      "role": "client",
+      "server": "Tranquility",
+      "socketio": "iocp",
+      "sync": "3640684",
+      "usescriptindexfiles": "1",
+      "version": "20.04"
+    },
+    "installRoot": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier",
+    "method": "Read-only manifests, installed file sizes plus selected native fingerprints, ZIP CRC/member inventory and verified static payload headers; no client logic executed. Large unrelated native files receive size checks, not content verification.",
+    "native": {
+      "bin64/CarbonMesh.dll": {
+        "bytes": 543744,
+        "verification": "size-only"
+      },
+      "bin64/CcpCore.dll": {
+        "bytes": 150192,
+        "verification": "size-only"
+      },
+      "bin64/GFSDK_Aftermath_Lib.x64.dll": {
+        "bytes": 1535152,
+        "verification": "size-only"
+      },
+      "bin64/TracyClient.dll": {
+        "bytes": 114864,
+        "verification": "size-only"
+      },
+      "bin64/_audio2.pyd": {
+        "bytes": 5164032,
+        "verification": "size-only"
+      },
+      "bin64/_carbon_controls.pyd": {
+        "bytes": 965808,
+        "verification": "size-only"
+      },
+      "bin64/_carbonsocket.pyd": {
+        "bytes": 163504,
+        "verification": "size-only"
+      },
+      "bin64/_carbonssl.pyd": {
+        "bytes": 2503856,
+        "verification": "size-only"
+      },
+      "bin64/_ctypes.pyd": {
+        "bytes": 124592,
+        "verification": "size-only"
+      },
+      "bin64/_d3dinfo.pyd": {
+        "bytes": 245424,
+        "verification": "size-only"
+      },
+      "bin64/_destiny.pyd": {
+        "bytes": 2131632,
+        "md5": "680f274b6a287a9d6b51982b749dd53e",
+        "sha256": "a3411bb1bc544203bcb2a65197a29d0f1379e71a83e4cf861fa0d523e6741bc1",
+        "verification": "content-md5-sha256"
+      },
+      "bin64/_elementtree.pyd": {
+        "bytes": 138416,
+        "verification": "size-only"
+      },
+      "bin64/_evelocalization.pyd": {
+        "bytes": 151728,
+        "verification": "size-only"
+      },
+      "bin64/_geo2.pyd": {
+        "bytes": 179376,
+        "verification": "size-only"
+      },
+      "bin64/_greenlet.pyd": {
+        "bytes": 87216,
+        "verification": "size-only"
+      },
+      "bin64/_ime.pyd": {
+        "bytes": 110592,
+        "verification": "size-only"
+      },
+      "bin64/_multiprocessing.pyd": {
+        "bytes": 32944,
+        "verification": "size-only"
+      },
+      "bin64/_overlapped.pyd": {
+        "bytes": 53424,
+        "verification": "size-only"
+      },
+      "bin64/_pyevepathfinder.pyd": {
+        "bytes": 349872,
+        "verification": "size-only"
+      },
+      "bin64/_pyfsd.pyd": {
+        "bytes": 334512,
+        "verification": "size-only"
+      },
+      "bin64/_scheduler.pyd": {
+        "bytes": 98992,
+        "verification": "size-only"
+      },
+      "bin64/_spacemouse.pyd": {
+        "bytes": 69296,
+        "verification": "size-only"
+      },
+      "bin64/_sqlite3.pyd": {
+        "bytes": 112816,
+        "verification": "size-only"
+      },
+      "bin64/_trinity_dx11.pyd": {
+        "bytes": 30104576,
+        "verification": "size-only"
+      },
+      "bin64/_trinity_dx12.pyd": {
+        "bytes": 30575104,
+        "verification": "size-only"
+      },
+      "bin64/_videoplayer.pyd": {
+        "bytes": 1969664,
+        "verification": "size-only"
+      },
+      "bin64/_webbrowser.pyd": {
+        "bytes": 726192,
+        "verification": "size-only"
+      },
+      "bin64/_yaml.pyd": {
+        "bytes": 262832,
+        "verification": "size-only"
+      },
+      "bin64/accountingEntryTypesLoader.pyd": {
+        "bytes": 62128,
+        "verification": "size-only"
+      },
+      "bin64/accountingKeysLoader.pyd": {
+        "bytes": 61616,
+        "verification": "size-only"
+      },
+      "bin64/agentTypesLoader.pyd": {
+        "bytes": 59056,
+        "verification": "size-only"
+      },
+      "bin64/agentsInSpaceLoader.pyd": {
+        "bytes": 60592,
+        "verification": "size-only"
+      },
+      "bin64/amd_fidelityfx_dx12.dll": {
+        "bytes": 6675664,
+        "verification": "size-only"
+      },
+      "bin64/ancestriesLoader.pyd": {
+        "bytes": 62128,
+        "verification": "size-only"
+      },
+      "bin64/atomsLoader.pyd": {
+        "bytes": 88752,
+        "verification": "size-only"
+      },
+      "bin64/audioMetadataLoader.pyd": {
+        "bytes": 116400,
+        "verification": "size-only"
+      },
+      "bin64/billTypesLoader.pyd": {
+        "bytes": 61616,
+        "verification": "size-only"
+      },
+      "bin64/billboardsLoader.pyd": {
+        "bytes": 108208,
+        "verification": "size-only"
+      },
+      "bin64/bloodlinesLoader.pyd": {
+        "bytes": 61104,
+        "verification": "size-only"
+      },
+      "bin64/blue.pyd": {
+        "bytes": 6120624,
+        "md5": "d8de3217e4023e9c4df5aceb0d3e1f80",
+        "sha256": "32a5a3bc837cd477a4e92369a62fc2064f299446cf37a77889bc20cd0230f729",
+        "verification": "content-md5-sha256"
+      },
+      "bin64/bracketFramesLoader.pyd": {
+        "bytes": 75952,
+        "verification": "size-only"
+      },
+      "bin64/bracketIconsLoader.pyd": {
+        "bytes": 85680,
+        "verification": "size-only"
+      },
+      "bin64/bracketsByCategoryLoader.pyd": {
+        "bytes": 60592,
+        "verification": "size-only"
+      },
+      "bin64/bracketsByGroupLoader.pyd": {
+        "bytes": 60592,
+        "verification": "size-only"
+      },
+      "bin64/bracketsByTypeLoader.pyd": {
+        "bytes": 60592,
+        "verification": "size-only"
+      },
+      "bin64/bundle.collision": {
+        "bytes": 53638500,
+        "verification": "size-only"
+      },
+      "bin64/cacert.pem": {
+        "bytes": 288740,
+        "verification": "size-only"
+      },
+      "bin64/carbonselect.pyd": {
+        "bytes": 26288,
+        "verification": "size-only"
+      },
+      "bin64/categoriesLoader.pyd": {
+        "bytes": 62128,
+        "verification": "size-only"
+      },
+      "bin64/cef/ccpcef.exe": {
+        "bytes": 539312,
+        "verification": "size-only"
+      },
+      "bin64/cef/chrome_100_percent.pak": {
+        "bytes": 691071,
+        "verification": "size-only"
+      },
+      "bin64/cef/chrome_200_percent.pak": {
+        "bytes": 1084545,
+        "verification": "size-only"
+      },
+      "bin64/cef/chrome_elf.dll": {
+        "bytes": 1376768,
+        "verification": "size-only"
+      },
+      "bin64/cef/d3dcompiler_47.dll": {
+        "bytes": 4916712,
+        "verification": "size-only"
+      },
+      "bin64/cef/dxcompiler.dll": {
+        "bytes": 21792256,
+        "verification": "size-only"
+      },
+      "bin64/cef/dxil.dll": {
+        "bytes": 1508320,
+        "verification": "size-only"
+      },
+      "bin64/cef/icudtl.dat": {
+        "bytes": 10717392,
+        "verification": "size-only"
+      },
+      "bin64/cef/libEGL.dll": {
+        "bytes": 470528,
+        "verification": "size-only"
+      },
+      "bin64/cef/libGLESv2.dll": {
+        "bytes": 7488000,
+        "verification": "size-only"
+      },
+      "bin64/cef/libcef.dll": {
+        "bytes": 212294656,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/af.pak": {
+        "bytes": 503037,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/am.pak": {
+        "bytes": 813861,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/ar.pak": {
+        "bytes": 897441,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/bg.pak": {
+        "bytes": 928261,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/bn.pak": {
+        "bytes": 1194053,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/ca.pak": {
+        "bytes": 573972,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/cs.pak": {
+        "bytes": 583612,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/da.pak": {
+        "bytes": 530801,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/de.pak": {
+        "bytes": 571692,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/el.pak": {
+        "bytes": 1017083,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/en-GB.pak": {
+        "bytes": 460087,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/en-US.pak": {
+        "bytes": 464780,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/es-419.pak": {
+        "bytes": 560480,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/es.pak": {
+        "bytes": 559370,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/et.pak": {
+        "bytes": 509590,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/fa.pak": {
+        "bytes": 825674,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/fi.pak": {
+        "bytes": 517625,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/fil.pak": {
+        "bytes": 585159,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/fr.pak": {
+        "bytes": 606557,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/gu.pak": {
+        "bytes": 1178276,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/he.pak": {
+        "bytes": 728884,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/hi.pak": {
+        "bytes": 1250639,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/hr.pak": {
+        "bytes": 563102,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/hu.pak": {
+        "bytes": 606128,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/id.pak": {
+        "bytes": 500530,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/it.pak": {
+        "bytes": 558463,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/ja.pak": {
+        "bytes": 677537,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/kn.pak": {
+        "bytes": 1342243,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/ko.pak": {
+        "bytes": 569614,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/lt.pak": {
+        "bytes": 611655,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/lv.pak": {
+        "bytes": 610955,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/ml.pak": {
+        "bytes": 1394845,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/mr.pak": {
+        "bytes": 1148314,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/ms.pak": {
+        "bytes": 524213,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/nb.pak": {
+        "bytes": 508702,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/nl.pak": {
+        "bytes": 525511,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/pl.pak": {
+        "bytes": 588103,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/pt-BR.pak": {
+        "bytes": 551719,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/pt-PT.pak": {
+        "bytes": 555534,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/ro.pak": {
+        "bytes": 574626,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/ru.pak": {
+        "bytes": 941965,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/sk.pak": {
+        "bytes": 592612,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/sl.pak": {
+        "bytes": 568919,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/sr.pak": {
+        "bytes": 873003,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/sv.pak": {
+        "bytes": 512807,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/sw.pak": {
+        "bytes": 539618,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/ta.pak": {
+        "bytes": 1388146,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/te.pak": {
+        "bytes": 1281979,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/th.pak": {
+        "bytes": 1076935,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/tr.pak": {
+        "bytes": 550817,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/uk.pak": {
+        "bytes": 938833,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/ur.pak": {
+        "bytes": 817940,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/vi.pak": {
+        "bytes": 651619,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/zh-CN.pak": {
+        "bytes": 472236,
+        "verification": "size-only"
+      },
+      "bin64/cef/locales/zh-TW.pak": {
+        "bytes": 469181,
+        "verification": "size-only"
+      },
+      "bin64/cef/resources.pak": {
+        "bytes": 8212569,
+        "verification": "size-only"
+      },
+      "bin64/cef/snapshot_blob.bin": {
+        "bytes": 311746,
+        "verification": "size-only"
+      },
+      "bin64/cef/v8_context_snapshot.bin": {
+        "bytes": 686805,
+        "verification": "size-only"
+      },
+      "bin64/cef/vk_swiftshader.dll": {
+        "bytes": 5084672,
+        "verification": "size-only"
+      },
+      "bin64/cef/vk_swiftshader_icd.json": {
+        "bytes": 106,
+        "verification": "size-only"
+      },
+      "bin64/cef/vulkan-1.dll": {
+        "bytes": 945664,
+        "verification": "size-only"
+      },
+      "bin64/chrome_elf.dll": {
+        "bytes": 1376768,
+        "verification": "size-only"
+      },
+      "bin64/concrt140.dll": {
+        "bytes": 322672,
+        "verification": "size-only"
+      },
+      "bin64/corporationActivitiesLoader.pyd": {
+        "bytes": 60592,
+        "verification": "size-only"
+      },
+      "bin64/corporationRoleGroupsLoader.pyd": {
+        "bytes": 62128,
+        "verification": "size-only"
+      },
+      "bin64/corporationRolesLoader.pyd": {
+        "bytes": 61104,
+        "verification": "size-only"
+      },
+      "bin64/creation_hardpoint_typesLoader.pyd": {
+        "bytes": 61616,
+        "verification": "size-only"
+      },
+      "bin64/creation_modulesLoader.pyd": {
+        "bytes": 74928,
+        "verification": "size-only"
+      },
+      "bin64/creation_partsLoader.pyd": {
+        "bytes": 87728,
+        "verification": "size-only"
+      },
+      "bin64/creation_templatesLoader.pyd": {
+        "bytes": 113328,
+        "verification": "size-only"
+      },
+      "bin64/dbghelp.dll": {
+        "bytes": 1369936,
+        "verification": "size-only"
+      },
+      "bin64/dogmaAttributeCategoriesLoader.pyd": {
+        "bytes": 61104,
+        "verification": "size-only"
+      },
+      "bin64/dogmaAttributesLoader.pyd": {
+        "bytes": 63664,
+        "verification": "size-only"
+      },
+      "bin64/dogmaEffectsLoader.pyd": {
+        "bytes": 75952,
+        "verification": "size-only"
+      },
+      "bin64/dogmaUnitsLoader.pyd": {
+        "bytes": 61616,
+        "verification": "size-only"
+      },
+      "bin64/dungeonAssetManipulationsLoader.pyd": {
+        "bytes": 75440,
+        "verification": "size-only"
+      },
+      "bin64/dungeonEnvironmentTemplatesLoader.pyd": {
+        "bytes": 76464,
+        "verification": "size-only"
+      },
+      "bin64/dungeonsLoader.pyd": {
+        "bytes": 173232,
+        "verification": "size-only"
+      },
+      "bin64/dynamicItemAttributesLoader.pyd": {
+        "bytes": 79536,
+        "verification": "size-only"
+      },
+      "bin64/ecosystemLoader.pyd": {
+        "bytes": 72368,
+        "verification": "size-only"
+      },
+      "bin64/effectSequencesLoader.pyd": {
+        "bytes": 82096,
+        "verification": "size-only"
+      },
+      "bin64/effectsLoader.pyd": {
+        "bytes": 83120,
+        "verification": "size-only"
+      },
+      "bin64/environmentTemplateAnchorCategoryIDsLoader.pyd": {
+        "bytes": 70320,
+        "verification": "size-only"
+      },
+      "bin64/environmentTemplateAnchorGroupIDsLoader.pyd": {
+        "bytes": 70320,
+        "verification": "size-only"
+      },
+      "bin64/environmentTemplateAnchorTypeIDsLoader.pyd": {
+        "bytes": 70320,
+        "verification": "size-only"
+      },
+      "bin64/environmentTemplatesLoader.pyd": {
+        "bytes": 105136,
+        "verification": "size-only"
+      },
+      "bin64/epoch_fieldsLoader.pyd": {
+        "bytes": 79024,
+        "verification": "size-only"
+      },
+      "bin64/eve_crashmon.exe": {
+        "bytes": 859312,
+        "verification": "size-only"
+      },
+      "bin64/eve_public_grpc_client.pyd": {
+        "bytes": 16548016,
+        "verification": "size-only"
+      },
+      "bin64/exefile.exe": {
+        "bytes": 744624,
+        "md5": "9e49e734e7723124b1573696391304a0",
+        "sha256": "01a65cd8cb15c50daca0d17494580748bfc2eed2199d9bee9c0a051ae5290ef7",
+        "verification": "content-md5-sha256"
+      },
+      "bin64/explosionBucketIDsLoader.pyd": {
+        "bytes": 83120,
+        "verification": "size-only"
+      },
+      "bin64/explosionIDsLoader.pyd": {
+        "bytes": 61616,
+        "verification": "size-only"
+      },
+      "bin64/factionsLoader.pyd": {
+        "bytes": 65200,
+        "verification": "size-only"
+      },
+      "bin64/ffi-8.dll": {
+        "bytes": 38064,
+        "verification": "size-only"
+      },
+      "bin64/graphicIDsLoader.pyd": {
+        "bytes": 87728,
+        "verification": "size-only"
+      },
+      "bin64/graphicLocationsLoader.pyd": {
+        "bytes": 73904,
+        "verification": "size-only"
+      },
+      "bin64/graphicMaterialSetsLoader.pyd": {
+        "bytes": 65712,
+        "verification": "size-only"
+      },
+      "bin64/groupGraphicsLoader.pyd": {
+        "bytes": 79024,
+        "verification": "size-only"
+      },
+      "bin64/groupsLoader.pyd": {
+        "bytes": 61104,
+        "verification": "size-only"
+      },
+      "bin64/hudEffectSlotsLoader.pyd": {
+        "bytes": 62128,
+        "verification": "size-only"
+      },
+      "bin64/iconIDsLoader.pyd": {
+        "bytes": 61616,
+        "verification": "size-only"
+      },
+      "bin64/icudtl.dat": {
+        "bytes": 10717392,
+        "verification": "size-only"
+      },
+      "bin64/industry_blueprintsLoader.pyd": {
+        "bytes": 66224,
+        "verification": "size-only"
+      },
+      "bin64/industry_facilitiesLoader.pyd": {
+        "bytes": 65200,
+        "verification": "size-only"
+      },
+      "bin64/landscapeLoader.pyd": {
+        "bytes": 134832,
+        "verification": "size-only"
+      },
+      "bin64/libcef.dll": {
+        "bytes": 212294656,
+        "verification": "size-only"
+      },
+      "bin64/libexpat.dll": {
+        "bytes": 164528,
+        "verification": "size-only"
+      },
+      "bin64/libxess.dll": {
+        "bytes": 77771112,
+        "verification": "size-only"
+      },
+      "bin64/marketGroupsLoader.pyd": {
+        "bytes": 60592,
+        "verification": "size-only"
+      },
+      "bin64/menuHighlightsLoader.pyd": {
+        "bytes": 64176,
+        "verification": "size-only"
+      },
+      "bin64/metaGroupsLoader.pyd": {
+        "bytes": 61616,
+        "verification": "size-only"
+      },
+      "bin64/msvcp140.dll": {
+        "bytes": 575568,
+        "verification": "size-only"
+      },
+      "bin64/msvcp140_1.dll": {
+        "bytes": 35920,
+        "verification": "size-only"
+      },
+      "bin64/msvcp140_2.dll": {
+        "bytes": 267888,
+        "verification": "size-only"
+      },
+      "bin64/msvcp140_atomic_wait.dll": {
+        "bytes": 50288,
+        "verification": "size-only"
+      },
+      "bin64/msvcp140_codecvt_ids.dll": {
+        "bytes": 31856,
+        "verification": "size-only"
+      },
+      "bin64/musicTriggersLoader.pyd": {
+        "bytes": 61616,
+        "verification": "size-only"
+      },
+      "bin64/neoTypePropertyLoader.pyd": {
+        "bytes": 65200,
+        "verification": "size-only"
+      },
+      "bin64/neoTypeTraitLoader.pyd": {
+        "bytes": 64688,
+        "verification": "size-only"
+      },
+      "bin64/newFeaturesLoader.pyd": {
+        "bytes": 65712,
+        "verification": "size-only"
+      },
+      "bin64/nodeGraphsLoader.pyd": {
+        "bytes": 120496,
+        "verification": "size-only"
+      },
+      "bin64/nodeTypesLoader.pyd": {
+        "bytes": 91312,
+        "verification": "size-only"
+      },
+      "bin64/npcCharactersLoader.pyd": {
+        "bytes": 69296,
+        "verification": "size-only"
+      },
+      "bin64/npcCorporationDivisionsLoader.pyd": {
+        "bytes": 62128,
+        "verification": "size-only"
+      },
+      "bin64/npcCorporationsLoader.pyd": {
+        "bytes": 96944,
+        "verification": "size-only"
+      },
+      "bin64/nvngx_dlss.dll": {
+        "bytes": 49012784,
+        "verification": "size-only"
+      },
+      "bin64/nvngx_dlssg.dll": {
+        "bytes": 7602720,
+        "verification": "size-only"
+      },
+      "bin64/objectiveChainsLoader.pyd": {
+        "bytes": 153776,
+        "verification": "size-only"
+      },
+      "bin64/objectiveTaskTypesLoader.pyd": {
+        "bytes": 71344,
+        "verification": "size-only"
+      },
+      "bin64/objectiveTypesLoader.pyd": {
+        "bytes": 102064,
+        "verification": "size-only"
+      },
+      "bin64/packages/XInput_Python-0.4.0.dist-info/METADATA": {
+        "bytes": 8007,
+        "verification": "size-only"
+      },
+      "bin64/packages/certifi/cacert.pem": {
+        "bytes": 288740,
+        "verification": "size-only"
+      },
+      "bin64/packages/dnspython-2.8.0.dist-info/METADATA": {
+        "bytes": 5829,
+        "verification": "size-only"
+      },
+      "bin64/packages/monolithgeoip2/data/GeoLite2-ASN.mmdb": {
+        "bytes": 7736838,
+        "verification": "size-only"
+      },
+      "bin64/packages/monolithgeoip2/data/GeoLite2-Country.mmdb": {
+        "bytes": 5470083,
+        "verification": "size-only"
+      },
+      "bin64/propertyLoader.pyd": {
+        "bytes": 62128,
+        "verification": "size-only"
+      },
+      "bin64/pyexpat.pyd": {
+        "bytes": 64176,
+        "verification": "size-only"
+      },
+      "bin64/python3.dll": {
+        "bytes": 66736,
+        "verification": "size-only"
+      },
+      "bin64/python312.dll": {
+        "bytes": 7415472,
+        "md5": "77160b52f32f58ad731c007daeccef12",
+        "sha256": "be10849fdf03aa296d4bbc4136db82df6eb1d28c519ff55f856cc7777cf96a83",
+        "verification": "content-md5-sha256"
+      },
+      "bin64/racesLoader.pyd": {
+        "bytes": 70832,
+        "verification": "size-only"
+      },
+      "bin64/recipeInputLoader.pyd": {
+        "bytes": 65200,
+        "verification": "size-only"
+      },
+      "bin64/recipeInputTraitLoader.pyd": {
+        "bytes": 65200,
+        "verification": "size-only"
+      },
+      "bin64/recipeLoader.pyd": {
+        "bytes": 61616,
+        "verification": "size-only"
+      },
+      "bin64/recipeOutputLoader.pyd": {
+        "bytes": 65200,
+        "verification": "size-only"
+      },
+      "bin64/recipeOutputTransformBreakpointLoader.pyd": {
+        "bytes": 65200,
+        "verification": "size-only"
+      },
+      "bin64/recipeOutputTransformLoader.pyd": {
+        "bytes": 66736,
+        "verification": "size-only"
+      },
+      "bin64/recipeOutputTransformSourceLoader.pyd": {
+        "bytes": 65712,
+        "verification": "size-only"
+      },
+      "bin64/recruitmentGroupsLoader.pyd": {
+        "bytes": 60592,
+        "verification": "size-only"
+      },
+      "bin64/recruitmentTypesLoader.pyd": {
+        "bytes": 60592,
+        "verification": "size-only"
+      },
+      "bin64/requiredSkillsForTypesLoader.pyd": {
+        "bytes": 68784,
+        "verification": "size-only"
+      },
+      "bin64/requiredSkillsIndexLoader.pyd": {
+        "bytes": 103088,
+        "verification": "size-only"
+      },
+      "bin64/schoolsLoader.pyd": {
+        "bytes": 64176,
+        "verification": "size-only"
+      },
+      "bin64/skyBoxEffectsLoader.pyd": {
+        "bytes": 65712,
+        "verification": "size-only"
+      },
+      "bin64/sl.common.dll": {
+        "bytes": 678360,
+        "verification": "size-only"
+      },
+      "bin64/sl.dlss.dll": {
+        "bytes": 237016,
+        "verification": "size-only"
+      },
+      "bin64/sl.dlss_g.dll": {
+        "bytes": 452568,
+        "verification": "size-only"
+      },
+      "bin64/sl.interposer.dll": {
+        "bytes": 545752,
+        "verification": "size-only"
+      },
+      "bin64/sl.nis.dll": {
+        "bytes": 966104,
+        "verification": "size-only"
+      },
+      "bin64/sl.pcl.dll": {
+        "bytes": 175064,
+        "verification": "size-only"
+      },
+      "bin64/sl.reflex.dll": {
+        "bytes": 199136,
+        "verification": "size-only"
+      },
+      "bin64/soundIDsLoader.pyd": {
+        "bytes": 61104,
+        "verification": "size-only"
+      },
+      "bin64/spaceComponentsByTypeLoader.pyd": {
+        "bytes": 246448,
+        "verification": "size-only"
+      },
+      "bin64/spaceObjectHighlightsLoader.pyd": {
+        "bytes": 62640,
+        "verification": "size-only"
+      },
+      "bin64/sqlite3.dll": {
+        "bytes": 1013936,
+        "verification": "size-only"
+      },
+      "bin64/stationOperationsLoader.pyd": {
+        "bytes": 74928,
+        "verification": "size-only"
+      },
+      "bin64/stationServicesLoader.pyd": {
+        "bytes": 60592,
+        "verification": "size-only"
+      },
+      "bin64/stationStandingsRestrictionsLoader.pyd": {
+        "bytes": 70320,
+        "verification": "size-only"
+      },
+      "bin64/systemStateLoader.pyd": {
+        "bytes": 61104,
+        "verification": "size-only"
+      },
+      "bin64/tagsLoader.pyd": {
+        "bytes": 62128,
+        "verification": "size-only"
+      },
+      "bin64/tbb12.dll": {
+        "bytes": 231600,
+        "verification": "size-only"
+      },
+      "bin64/tracy-capture.exe": {
+        "bytes": 10681856,
+        "verification": "size-only"
+      },
+      "bin64/traitLoader.pyd": {
+        "bytes": 61104,
+        "verification": "size-only"
+      },
+      "bin64/traitPropertyLoader.pyd": {
+        "bytes": 65200,
+        "verification": "size-only"
+      },
+      "bin64/travelEffectsLoader.pyd": {
+        "bytes": 64176,
+        "verification": "size-only"
+      },
+      "bin64/typeDogmaLoader.pyd": {
+        "bytes": 68784,
+        "verification": "size-only"
+      },
+      "bin64/typeListLoader.pyd": {
+        "bytes": 65712,
+        "verification": "size-only"
+      },
+      "bin64/typeMaterialsLoader.pyd": {
+        "bytes": 65200,
+        "verification": "size-only"
+      },
+      "bin64/typesLoader.pyd": {
+        "bytes": 67248,
+        "verification": "size-only"
+      },
+      "bin64/uiBlinksLoader.pyd": {
+        "bytes": 62128,
+        "verification": "size-only"
+      },
+      "bin64/uiElementTypesLoader.pyd": {
+        "bytes": 62128,
+        "verification": "size-only"
+      },
+      "bin64/uiHidingTemplatesLoader.pyd": {
+        "bytes": 73392,
+        "verification": "size-only"
+      },
+      "bin64/uiHighlightsLoader.pyd": {
+        "bytes": 68272,
+        "verification": "size-only"
+      },
+      "bin64/unicodedata.pyd": {
+        "bytes": 1133744,
+        "verification": "size-only"
+      },
+      "bin64/universe_distancesLoader.pyd": {
+        "bytes": 66224,
+        "verification": "size-only"
+      },
+      "bin64/uv.dll": {
+        "bytes": 218288,
+        "verification": "size-only"
+      },
+      "bin64/vccorlib140.dll": {
+        "bytes": 351824,
+        "verification": "size-only"
+      },
+      "bin64/vcomp140.dll": {
+        "bytes": 192112,
+        "verification": "size-only"
+      },
+      "bin64/vcruntime140.dll": {
+        "bytes": 120400,
+        "verification": "size-only"
+      },
+      "bin64/vcruntime140_1.dll": {
+        "bytes": 49776,
+        "verification": "size-only"
+      },
+      "bin64/vcruntime140_threads.dll": {
+        "bytes": 38480,
+        "verification": "size-only"
+      },
+      "bin64/zk_signer.exe": {
+        "bytes": 96221872,
+        "verification": "size-only"
+      }
+    },
+    "profileRoot": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/stillness",
+    "resourceCount": 47405,
+    "static": {
+      "res:/staticdata/accountingentrytypes.fsdbinary": {
+        "actual": {
+          "bytes": 20789,
+          "md5": "63ec7faf32b1eedbf0457d129474bc19",
+          "sha256": "239f815dd7bca170887621fd6a87ffcb7817f291776a78ff4dc2d65a5f494169"
+        },
+        "bytes": 20789,
+        "cachePath": "72/7262b56fef44400b_63ec7faf32b1eedbf0457d129474bc19",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/72/7262b56fef44400b_63ec7faf32b1eedbf0457d129474bc19",
+        "md5": "63ec7faf32b1eedbf0457d129474bc19",
+        "optimizedRootRows": 178,
+        "packedBytes": 7048,
+        "path": "res:/staticdata/accountingentrytypes.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "bff331c0206fa2f5d734cbff0a12dc34",
+        "verified": true
+      },
+      "res:/staticdata/accountingkeys.fsdbinary": {
+        "actual": {
+          "bytes": 2016,
+          "md5": "6195face9aa40f4c3d253ddf5df0bcc8",
+          "sha256": "354bbf705ac39dddaacb2e417744e109a83f764dea456cb59c5096421bf1fc6c"
+        },
+        "bytes": 2016,
+        "cachePath": "74/74f7c925c31d6124_6195face9aa40f4c3d253ddf5df0bcc8",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/74/74f7c925c31d6124_6195face9aa40f4c3d253ddf5df0bcc8",
+        "md5": "6195face9aa40f4c3d253ddf5df0bcc8",
+        "optimizedRootRows": 19,
+        "packedBytes": 684,
+        "path": "res:/staticdata/accountingkeys.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "c1647aa579e37fd4d40f552c64ff53fd",
+        "verified": true
+      },
+      "res:/staticdata/agentsinspace.fsdbinary": {
+        "actual": {
+          "bytes": 56,
+          "md5": "7e8ef50f69e637c81d9576bf42f50d60",
+          "sha256": "4cca5ded76d94e1e059cc78b43e5e9394f9fcd7e670de4986bf61f7b909515aa"
+        },
+        "bytes": 56,
+        "cachePath": "3d/3d93b749493a88de_7e8ef50f69e637c81d9576bf42f50d60",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/3d/3d93b749493a88de_7e8ef50f69e637c81d9576bf42f50d60",
+        "md5": "7e8ef50f69e637c81d9576bf42f50d60",
+        "optimizedRootRows": 0,
+        "packedBytes": 102,
+        "path": "res:/staticdata/agentsinspace.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "e988f3b0c8940ca01fb730e9ff6c2618",
+        "verified": true
+      },
+      "res:/staticdata/agenttypes.fsdbinary": {
+        "actual": {
+          "bytes": 618,
+          "md5": "2831ea02a17cddda6e269c54a26ba199",
+          "sha256": "caadcf1b1b494f0b9e32c425fbc253d040bbe19583a1a318e278ba22fc20ea32"
+        },
+        "bytes": 618,
+        "cachePath": "1a/1ade14fc5eae270d_2831ea02a17cddda6e269c54a26ba199",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/1a/1ade14fc5eae270d_2831ea02a17cddda6e269c54a26ba199",
+        "md5": "2831ea02a17cddda6e269c54a26ba199",
+        "optimizedRootRows": 12,
+        "packedBytes": 330,
+        "path": "res:/staticdata/agenttypes.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "887f6fefedee7215c178f4db09731a3d",
+        "verified": true
+      },
+      "res:/staticdata/ancestries.fsdbinary": {
+        "actual": {
+          "bytes": 5190,
+          "md5": "574d0d1bd084e00bc6ce198c41aff395",
+          "sha256": "859edad2b9fd0a1384fcd26e35f324a496bb4e4ed174e805f6f45a2c98fa050b"
+        },
+        "bytes": 5190,
+        "cachePath": "8e/8e990c238d3b86fc_574d0d1bd084e00bc6ce198c41aff395",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/8e/8e990c238d3b86fc_574d0d1bd084e00bc6ce198c41aff395",
+        "md5": "574d0d1bd084e00bc6ce198c41aff395",
+        "optimizedRootRows": 43,
+        "packedBytes": 2222,
+        "path": "res:/staticdata/ancestries.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "b6567424ddf32c2146f126dd23e0bb99",
+        "verified": true
+      },
+      "res:/staticdata/atoms.fsdbinary": {
+        "actual": {
+          "bytes": 160072,
+          "md5": "a509ad00bd6ceb9f52cf18606ebee357",
+          "sha256": "46579a67c6e6727a6e5f02b9a0992c1148b194f907a6d0ec491a570697e9b3d6"
+        },
+        "bytes": 160072,
+        "cachePath": "fb/fbb84fe028009f1b_a509ad00bd6ceb9f52cf18606ebee357",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/fb/fbb84fe028009f1b_a509ad00bd6ceb9f52cf18606ebee357",
+        "md5": "a509ad00bd6ceb9f52cf18606ebee357",
+        "optimizedRootRows": 376,
+        "packedBytes": 36139,
+        "path": "res:/staticdata/atoms.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "d4dbdc59841ec55ddbb6349ad87bd1fd",
+        "verified": true
+      },
+      "res:/staticdata/audiometadata.fsdbinary": {
+        "actual": {
+          "bytes": 770864,
+          "md5": "8d7e0a84378a374a5effc9c0b54fa7b4",
+          "sha256": "e42a68dc74e5ab6f35dd18a04299713360a9a76c5b3d6c5c56fa5e5d5de56df4"
+        },
+        "bytes": 770864,
+        "cachePath": "7a/7a5727bdc2e00558_8d7e0a84378a374a5effc9c0b54fa7b4",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/7a/7a5727bdc2e00558_8d7e0a84378a374a5effc9c0b54fa7b4",
+        "md5": "8d7e0a84378a374a5effc9c0b54fa7b4",
+        "packedBytes": 233967,
+        "path": "res:/staticdata/audiometadata.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "10cb1e192427e8d69923c821a4a3bf03",
+        "verified": true
+      },
+      "res:/staticdata/billboards.fsdbinary": {
+        "actual": {
+          "bytes": 1536,
+          "md5": "38be185dda62c4cf7b0dce6102846e04",
+          "sha256": "2da543544af8752274b7ab7d327743823f8b883cc7fb6d51dc4e1001cef73cf6"
+        },
+        "bytes": 1536,
+        "cachePath": "45/451e0183c79136af_38be185dda62c4cf7b0dce6102846e04",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/45/451e0183c79136af_38be185dda62c4cf7b0dce6102846e04",
+        "md5": "38be185dda62c4cf7b0dce6102846e04",
+        "optimizedRootRows": 2,
+        "packedBytes": 541,
+        "path": "res:/staticdata/billboards.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "872d51615d63e67ee54c1426074d92d9",
+        "verified": true
+      },
+      "res:/staticdata/billtypes.fsdbinary": {
+        "actual": {
+          "bytes": 394,
+          "md5": "5c8a38f56c44f457ee39ff6473552680",
+          "sha256": "7259cee5717725a0c3e62261af3cd1260bbfb30d0ac966b1915a3fc2afb10adf"
+        },
+        "bytes": 394,
+        "cachePath": "9d/9d909d2cf02edd07_5c8a38f56c44f457ee39ff6473552680",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/9d/9d909d2cf02edd07_5c8a38f56c44f457ee39ff6473552680",
+        "md5": "5c8a38f56c44f457ee39ff6473552680",
+        "optimizedRootRows": 5,
+        "packedBytes": 231,
+        "path": "res:/staticdata/billtypes.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "63f915497b2757461b91ca7f290b6d6f",
+        "verified": true
+      },
+      "res:/staticdata/bloodlines.fsdbinary": {
+        "actual": {
+          "bytes": 1000,
+          "md5": "c11f065ae1b2c63d89516d418fe5745e",
+          "sha256": "f1a56931d9cb0c7bf7a14f35b798323629d4bd0642e32f702826863a3ea721bd"
+        },
+        "bytes": 1000,
+        "cachePath": "c8/c837c62b07cd0c5e_c11f065ae1b2c63d89516d418fe5745e",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/c8/c837c62b07cd0c5e_c11f065ae1b2c63d89516d418fe5745e",
+        "md5": "c11f065ae1b2c63d89516d418fe5745e",
+        "optimizedRootRows": 18,
+        "packedBytes": 454,
+        "path": "res:/staticdata/bloodlines.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "add33c4a6919aea07d486fd9042a3312",
+        "verified": true
+      },
+      "res:/staticdata/bracketframes.fsdbinary": {
+        "actual": {
+          "bytes": 5240,
+          "md5": "43129ae37e759ce54febce5a5eba4a4c",
+          "sha256": "c9ee7f16833b766b60769142d51b4f3875756b55004aa011e42cd4bb1f06a291"
+        },
+        "bytes": 5240,
+        "cachePath": "70/7007e6eae57db637_43129ae37e759ce54febce5a5eba4a4c",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/70/7007e6eae57db637_43129ae37e759ce54febce5a5eba4a4c",
+        "md5": "43129ae37e759ce54febce5a5eba4a4c",
+        "optimizedRootRows": 5,
+        "packedBytes": 804,
+        "path": "res:/staticdata/bracketframes.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "708c793955723c1ad24ba9f170ca6c8d",
+        "verified": true
+      },
+      "res:/staticdata/bracketicons.fsdbinary": {
+        "actual": {
+          "bytes": 10664,
+          "md5": "00e11b6c51f031e147807022ac4a5aa6",
+          "sha256": "469bfbc3c5831f32ecfcfdeb4e01786cabbf6bd1cc8161c8026b1a6aab66e50d"
+        },
+        "bytes": 10664,
+        "cachePath": "9b/9b46097485f926fd_00e11b6c51f031e147807022ac4a5aa6",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/9b/9b46097485f926fd_00e11b6c51f031e147807022ac4a5aa6",
+        "md5": "00e11b6c51f031e147807022ac4a5aa6",
+        "optimizedRootRows": 41,
+        "packedBytes": 1987,
+        "path": "res:/staticdata/bracketicons.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "32544a0417c657f7eb3f6af9596eaf0b",
+        "verified": true
+      },
+      "res:/staticdata/bracketsbycategory.fsdbinary": {
+        "actual": {
+          "bytes": 128,
+          "md5": "fd6395a6492ef976117edee847e5c881",
+          "sha256": "b72d9eec8ce93347338df2d97884697cfeabfcebdc13176c4016cf310166d0fc"
+        },
+        "bytes": 128,
+        "cachePath": "93/937a559d35c575c7_fd6395a6492ef976117edee847e5c881",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/93/937a559d35c575c7_fd6395a6492ef976117edee847e5c881",
+        "md5": "fd6395a6492ef976117edee847e5c881",
+        "optimizedRootRows": 5,
+        "packedBytes": 88,
+        "path": "res:/staticdata/bracketsbycategory.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "80bafd8ff7a3cb9db87bf3966011ddeb",
+        "verified": true
+      },
+      "res:/staticdata/bracketsbygroup.fsdbinary": {
+        "actual": {
+          "bytes": 472,
+          "md5": "2565c3eac87e45225c1aaa5638bc8492",
+          "sha256": "7c980393bd60c3f2fee90a61b767c375db56ea27b40fc907c3c28ccc38261af5"
+        },
+        "bytes": 472,
+        "cachePath": "97/97edbe08dd74cb30_2565c3eac87e45225c1aaa5638bc8492",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/97/97edbe08dd74cb30_2565c3eac87e45225c1aaa5638bc8492",
+        "md5": "2565c3eac87e45225c1aaa5638bc8492",
+        "optimizedRootRows": 26,
+        "packedBytes": 235,
+        "path": "res:/staticdata/bracketsbygroup.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "510eaf1772e06c414b7b5555014da4e5",
+        "verified": true
+      },
+      "res:/staticdata/bracketsbytype.fsdbinary": {
+        "actual": {
+          "bytes": 640,
+          "md5": "745dd2aa7103d63bc27a6fb7b1128d58",
+          "sha256": "9991a445f40c7e7bcbd8fccc650d1b6a19819590d7014e92b0bf43958be8fb9b"
+        },
+        "bytes": 640,
+        "cachePath": "ff/ff2aeeec95580d23_745dd2aa7103d63bc27a6fb7b1128d58",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/ff/ff2aeeec95580d23_745dd2aa7103d63bc27a6fb7b1128d58",
+        "md5": "745dd2aa7103d63bc27a6fb7b1128d58",
+        "optimizedRootRows": 41,
+        "packedBytes": 285,
+        "path": "res:/staticdata/bracketsbytype.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "84b1bacce66724e799cd43ad04c875ec",
+        "verified": true
+      },
+      "res:/staticdata/categories.fsdbinary": {
+        "actual": {
+          "bytes": 2392,
+          "md5": "a9b9edc5845c22f233a859286bd54c07",
+          "sha256": "c57675bda8c413f0559dd04b864eb2ae1b810a8303c2e2349cba13777d63bd68"
+        },
+        "bytes": 2392,
+        "cachePath": "81/81883d3b3f883f8f_a9b9edc5845c22f233a859286bd54c07",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/81/81883d3b3f883f8f_a9b9edc5845c22f233a859286bd54c07",
+        "md5": "a9b9edc5845c22f233a859286bd54c07",
+        "optimizedRootRows": 48,
+        "packedBytes": 597,
+        "path": "res:/staticdata/categories.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "c5de77dba3d9503eb69b6378c15dd47a",
+        "verified": true
+      },
+      "res:/staticdata/corporationactivities.fsdbinary": {
+        "actual": {
+          "bytes": 296,
+          "md5": "5c40c3ba3f7875dc257a1eda6ab43721",
+          "sha256": "d66ac4290ec45ff41001308309af3a9a6729cbd941d6e3c751e277b1d4a13419"
+        },
+        "bytes": 296,
+        "cachePath": "3f/3ff8264743354ee4_5c40c3ba3f7875dc257a1eda6ab43721",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/3f/3ff8264743354ee4_5c40c3ba3f7875dc257a1eda6ab43721",
+        "md5": "5c40c3ba3f7875dc257a1eda6ab43721",
+        "optimizedRootRows": 20,
+        "packedBytes": 229,
+        "path": "res:/staticdata/corporationactivities.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "682b3a00388dd009443aa1c2e32e89c6",
+        "verified": true
+      },
+      "res:/staticdata/corporationrolegroups.fsdbinary": {
+        "actual": {
+          "bytes": 1025,
+          "md5": "61f82ad500c2b483919bd10325ed219a",
+          "sha256": "30afd8fe30d5ae7bab41d46ac9670dede9f452499851e914f56fc6ca6ed01ae5"
+        },
+        "bytes": 1025,
+        "cachePath": "31/31e4d72b60442d3b_61f82ad500c2b483919bd10325ed219a",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/31/31e4d72b60442d3b_61f82ad500c2b483919bd10325ed219a",
+        "md5": "61f82ad500c2b483919bd10325ed219a",
+        "optimizedRootRows": 9,
+        "packedBytes": 453,
+        "path": "res:/staticdata/corporationrolegroups.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "88a96e3e9f22800c4f0c9f3f33c9dc9a",
+        "verified": true
+      },
+      "res:/staticdata/corporationroles.fsdbinary": {
+        "actual": {
+          "bytes": 3558,
+          "md5": "eadd4058bd1ab77b6255c0c8226ab090",
+          "sha256": "42ad8d108cf75bf7fcc8d36310fbcece400101bb47b0c521608e86bdbc24d009"
+        },
+        "bytes": 3558,
+        "cachePath": "0e/0e1c9d171b58bf5a_eadd4058bd1ab77b6255c0c8226ab090",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/0e/0e1c9d171b58bf5a_eadd4058bd1ab77b6255c0c8226ab090",
+        "md5": "eadd4058bd1ab77b6255c0c8226ab090",
+        "optimizedRootRows": 51,
+        "packedBytes": 1158,
+        "path": "res:/staticdata/corporationroles.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "e944e0001a0f8eeefc5f5762fbdefee3",
+        "verified": true
+      },
+      "res:/staticdata/creation_hardpoint_types.fsdbinary": {
+        "actual": {
+          "bytes": 488,
+          "md5": "accf001d55c738fd5936730db1aca7e9",
+          "sha256": "b28328d4a86994132cb45d35c57bcf515beb16e057b4f097736e621b7c2cbef7"
+        },
+        "bytes": 488,
+        "cachePath": "2c/2cb4dc280ecfdb0c_accf001d55c738fd5936730db1aca7e9",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/2c/2cb4dc280ecfdb0c_accf001d55c738fd5936730db1aca7e9",
+        "md5": "accf001d55c738fd5936730db1aca7e9",
+        "optimizedRootRows": 3,
+        "packedBytes": 219,
+        "path": "res:/staticdata/creation_hardpoint_types.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "e3cd54fcb2f8d105f65d5ec4d94a6dcd",
+        "verified": true
+      },
+      "res:/staticdata/creation_modules.fsdbinary": {
+        "actual": {
+          "bytes": 8408,
+          "md5": "6830ad1453bcb13dfb28a4d0e8514f94",
+          "sha256": "b2fc22abbb39f1d11fc12d65c1aff5282e5f9204ef6a57298a19c22eba53f6bf"
+        },
+        "bytes": 8408,
+        "cachePath": "20/20e76b9c6b00fc02_6830ad1453bcb13dfb28a4d0e8514f94",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/20/20e76b9c6b00fc02_6830ad1453bcb13dfb28a4d0e8514f94",
+        "md5": "6830ad1453bcb13dfb28a4d0e8514f94",
+        "optimizedRootRows": 45,
+        "packedBytes": 1516,
+        "path": "res:/staticdata/creation_modules.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "317a02dd2b552b22d784878829b4c2e1",
+        "verified": true
+      },
+      "res:/staticdata/creation_parts.fsdbinary": {
+        "actual": {
+          "bytes": 12592,
+          "md5": "63f3eee99db638271dd03e44e4b632ce",
+          "sha256": "ff2c646c9570b9cde4476bc4aded55d2b3db5bdc47267d9f44fed382bd12ceaa"
+        },
+        "bytes": 12592,
+        "cachePath": "43/43e8327a8e46ac13_63f3eee99db638271dd03e44e4b632ce",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/43/43e8327a8e46ac13_63f3eee99db638271dd03e44e4b632ce",
+        "md5": "63f3eee99db638271dd03e44e4b632ce",
+        "optimizedRootRows": 24,
+        "packedBytes": 2049,
+        "path": "res:/staticdata/creation_parts.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "6703cbb2a04755f7e1199605fd8d160f",
+        "verified": true
+      },
+      "res:/staticdata/creation_templates.fsdbinary": {
+        "actual": {
+          "bytes": 10648,
+          "md5": "06b3dd889dc353a16657642ba28f1638",
+          "sha256": "0444e683b2ad1b120ffae070d6ce0389478d7a8a4792d95b89d7c125d60a011a"
+        },
+        "bytes": 10648,
+        "cachePath": "13/138743cae8640198_06b3dd889dc353a16657642ba28f1638",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/13/138743cae8640198_06b3dd889dc353a16657642ba28f1638",
+        "md5": "06b3dd889dc353a16657642ba28f1638",
+        "optimizedRootRows": 5,
+        "packedBytes": 1937,
+        "path": "res:/staticdata/creation_templates.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "a77d1eea7ef84577197f9bdcd5b87705",
+        "verified": true
+      },
+      "res:/staticdata/dbuffcollections.static": {
+        "actual": {
+          "bytes": 77824,
+          "md5": "ae1bcea29b4593dab8b953fd1806d680",
+          "sha256": "4b6508deafa37befef17cecb279d18641c1a503d1d382933ea8a31d44c67c32c"
+        },
+        "bytes": 77824,
+        "cachePath": "f9/f9f241d8c3a11761_ae1bcea29b4593dab8b953fd1806d680",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/f9/f9f241d8c3a11761_ae1bcea29b4593dab8b953fd1806d680",
+        "md5": "ae1bcea29b4593dab8b953fd1806d680",
+        "packedBytes": 7059,
+        "path": "res:/staticdata/dbuffcollections.static",
+        "present": true,
+        "verified": true
+      },
+      "res:/staticdata/dialogs.schema": {
+        "actual": {
+          "bytes": 1715,
+          "md5": "5eaf5b115421d74d08d9e0e537f7ee51",
+          "sha256": "b4df8e612263b09bdb222d9ffc0c831064db2963753712b7f046a9b67828d0e0"
+        },
+        "bytes": 1715,
+        "cachePath": "d5/d5253e6ff4a2df5b_5eaf5b115421d74d08d9e0e537f7ee51",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/d5/d5253e6ff4a2df5b_5eaf5b115421d74d08d9e0e537f7ee51",
+        "md5": "5eaf5b115421d74d08d9e0e537f7ee51",
+        "packedBytes": 582,
+        "path": "res:/staticdata/dialogs.schema",
+        "present": true,
+        "verified": true
+      },
+      "res:/staticdata/dialogs.static": {
+        "actual": {
+          "bytes": 299068,
+          "md5": "a8508ce601e018431be0e638cdeac6d4",
+          "sha256": "4fb0cf2ba1d850ee0d1413667cbec58557b89fb00511cf3f439f1d2af2506f87"
+        },
+        "bytes": 299068,
+        "cachePath": "e9/e9bad7ecd80e0d2c_a8508ce601e018431be0e638cdeac6d4",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/e9/e9bad7ecd80e0d2c_a8508ce601e018431be0e638cdeac6d4",
+        "md5": "a8508ce601e018431be0e638cdeac6d4",
+        "packedBytes": 86842,
+        "path": "res:/staticdata/dialogs.static",
+        "present": true,
+        "verified": true
+      },
+      "res:/staticdata/dogmaattributecategories.fsdbinary": {
+        "actual": {
+          "bytes": 4433,
+          "md5": "83679942e8bddd4a57d3bc869544bc0b",
+          "sha256": "edd87e49ce491cdef5c2665d7e7935095a3ae00fc19d03f72cf381c3bca590a4"
+        },
+        "bytes": 4433,
+        "cachePath": "e4/e4c8d78736c67bef_83679942e8bddd4a57d3bc869544bc0b",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/e4/e4c8d78736c67bef_83679942e8bddd4a57d3bc869544bc0b",
+        "md5": "83679942e8bddd4a57d3bc869544bc0b",
+        "optimizedRootRows": 42,
+        "packedBytes": 1481,
+        "path": "res:/staticdata/dogmaattributecategories.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "9f72a07713f5a7ef7cd664b64a8b601f",
+        "verified": true
+      },
+      "res:/staticdata/dogmaattributes.fsdbinary": {
+        "actual": {
+          "bytes": 459277,
+          "md5": "e030861f54622584a6dadff2c09696af",
+          "sha256": "8c48f55dca12b655cc292589ce5136f2d11f7da870f417b377314fe6807c4184"
+        },
+        "bytes": 459277,
+        "cachePath": "c9/c951789095f4c052_e030861f54622584a6dadff2c09696af",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/c9/c951789095f4c052_e030861f54622584a6dadff2c09696af",
+        "md5": "e030861f54622584a6dadff2c09696af",
+        "optimizedRootRows": 2799,
+        "packedBytes": 110345,
+        "path": "res:/staticdata/dogmaattributes.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "87afbf0d68128c7708e5e30b4d9176e9",
+        "verified": true
+      },
+      "res:/staticdata/dogmaeffects.fsdbinary": {
+        "actual": {
+          "bytes": 881888,
+          "md5": "416f7cd0fa5d4ed8d3a83c6b704eaa74",
+          "sha256": "d762baa091004d0b2f518557e55bdf38d2474cb263f3442182ddea480cbb10ef"
+        },
+        "bytes": 881888,
+        "cachePath": "5c/5c1c739beec2a6c5_416f7cd0fa5d4ed8d3a83c6b704eaa74",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/5c/5c1c739beec2a6c5_416f7cd0fa5d4ed8d3a83c6b704eaa74",
+        "md5": "416f7cd0fa5d4ed8d3a83c6b704eaa74",
+        "optimizedRootRows": 3049,
+        "packedBytes": 134743,
+        "path": "res:/staticdata/dogmaeffects.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "846bd9aee37391b3a2fdae9c2a75121a",
+        "verified": true
+      },
+      "res:/staticdata/dogmaunits.fsdbinary": {
+        "actual": {
+          "bytes": 4264,
+          "md5": "134c755f690adb2fa74ac543833ccb53",
+          "sha256": "c68bea7b76d5c9cf4d41284fd1a260bc46f5b7f7bdb20bc5c56423f78cd73c6f"
+        },
+        "bytes": 4264,
+        "cachePath": "71/7121c5f61413f212_134c755f690adb2fa74ac543833ccb53",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/71/7121c5f61413f212_134c755f690adb2fa74ac543833ccb53",
+        "md5": "134c755f690adb2fa74ac543833ccb53",
+        "optimizedRootRows": 65,
+        "packedBytes": 1546,
+        "path": "res:/staticdata/dogmaunits.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "503dc5a2fb596cdfcbef8a8c3a6209f2",
+        "verified": true
+      },
+      "res:/staticdata/dungeonassetmanipulations.fsdbinary": {
+        "actual": {
+          "bytes": 20352,
+          "md5": "a85a40db715a85aa817f92088e3f6123",
+          "sha256": "b13d958aa7e7577cb2d381af0459364fb29fb7d980095e17c9b1a41087a84f30"
+        },
+        "bytes": 20352,
+        "cachePath": "5f/5feabe86817c5175_a85a40db715a85aa817f92088e3f6123",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/5f/5feabe86817c5175_a85a40db715a85aa817f92088e3f6123",
+        "md5": "a85a40db715a85aa817f92088e3f6123",
+        "optimizedRootRows": 199,
+        "packedBytes": 3559,
+        "path": "res:/staticdata/dungeonassetmanipulations.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "d804772c79ef16931e9efaa1059356a7",
+        "verified": true
+      },
+      "res:/staticdata/dungeonenvironmenttemplates.fsdbinary": {
+        "actual": {
+          "bytes": 264,
+          "md5": "740b033dfd4cdd89cb1a6c0596b5a8b6",
+          "sha256": "2e2d3346375599f8ccb65b53e0a362d0ad0d20cb46afaf0e0e0cf32919dedcc5"
+        },
+        "bytes": 264,
+        "cachePath": "6a/6a5d71136831ab3b_740b033dfd4cdd89cb1a6c0596b5a8b6",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/6a/6a5d71136831ab3b_740b033dfd4cdd89cb1a6c0596b5a8b6",
+        "md5": "740b033dfd4cdd89cb1a6c0596b5a8b6",
+        "optimizedRootRows": 2,
+        "packedBytes": 155,
+        "path": "res:/staticdata/dungeonenvironmenttemplates.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "8d415c94344a98591346a32fd956a7e1",
+        "verified": true
+      },
+      "res:/staticdata/dungeons.fsdbinary": {
+        "actual": {
+          "bytes": 10838544,
+          "md5": "7766b9e294c99c0fe4687e53d8a21bf8",
+          "sha256": "d92a283c531ab725ff4c928dd90ee72fc8dd82718bf09da87af580ac08acc3d6"
+        },
+        "bytes": 10838544,
+        "cachePath": "f4/f4992887a8a2937e_7766b9e294c99c0fe4687e53d8a21bf8",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/f4/f4992887a8a2937e_7766b9e294c99c0fe4687e53d8a21bf8",
+        "md5": "7766b9e294c99c0fe4687e53d8a21bf8",
+        "optimizedRootRows": 393,
+        "packedBytes": 2537670,
+        "path": "res:/staticdata/dungeons.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "544a23942315f2165465483ca0ef60df",
+        "verified": true
+      },
+      "res:/staticdata/dynamicitemattributes.fsdbinary": {
+        "actual": {
+          "bytes": 46812,
+          "md5": "2a865d232e32af7794e79ddcf567a077",
+          "sha256": "be2f2e40feb778ae34a710ab595bb5907b0025a3cf0952d6657cdfe6116e11fe"
+        },
+        "bytes": 46812,
+        "cachePath": "36/36bf573da8505390_2a865d232e32af7794e79ddcf567a077",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/36/36bf573da8505390_2a865d232e32af7794e79ddcf567a077",
+        "md5": "2a865d232e32af7794e79ddcf567a077",
+        "optimizedRootRows": 167,
+        "packedBytes": 7898,
+        "path": "res:/staticdata/dynamicitemattributes.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "b88a13882e0ee24851d44cba54c404ca",
+        "verified": true
+      },
+      "res:/staticdata/ecosystem.fsdbinary": {
+        "actual": {
+          "bytes": 15312,
+          "md5": "e277ad90f57c1b8392b612a0637b38e8",
+          "sha256": "5434f782769e8d8faaabd6e276eda75a29f7659c42cf064ac5e0d3f651f5980d"
+        },
+        "bytes": 15312,
+        "cachePath": "14/1491b012e145b6b1_e277ad90f57c1b8392b612a0637b38e8",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/14/1491b012e145b6b1_e277ad90f57c1b8392b612a0637b38e8",
+        "md5": "e277ad90f57c1b8392b612a0637b38e8",
+        "optimizedRootRows": 35,
+        "packedBytes": 3960,
+        "path": "res:/staticdata/ecosystem.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "182f93f9a5c4fd59ab5f3bdc3a5283db",
+        "verified": true
+      },
+      "res:/staticdata/effects.fsdbinary": {
+        "actual": {
+          "bytes": 41192,
+          "md5": "560e30931787c59ea7d6c8131195b3a0",
+          "sha256": "db68122c90994ac8627286f48c55822b58a38ceec1537a1994b9bb0f04fbdb4d"
+        },
+        "bytes": 41192,
+        "cachePath": "2b/2b63be355bddf90f_560e30931787c59ea7d6c8131195b3a0",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/2b/2b63be355bddf90f_560e30931787c59ea7d6c8131195b3a0",
+        "md5": "560e30931787c59ea7d6c8131195b3a0",
+        "optimizedRootRows": 182,
+        "packedBytes": 7419,
+        "path": "res:/staticdata/effects.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "43b24800cbdcfa57890bc82fd762ccbc",
+        "verified": true
+      },
+      "res:/staticdata/effectsequences.fsdbinary": {
+        "actual": {
+          "bytes": 56,
+          "md5": "a258a06c05b3a08280e4eef4876bfae4",
+          "sha256": "bbdc752ef8f200ab3f4edae791c56c07ea6f937c1864d0adf3828b000a71cbe9"
+        },
+        "bytes": 56,
+        "cachePath": "f3/f33f85701cc45096_a258a06c05b3a08280e4eef4876bfae4",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/f3/f33f85701cc45096_a258a06c05b3a08280e4eef4876bfae4",
+        "md5": "a258a06c05b3a08280e4eef4876bfae4",
+        "optimizedRootRows": 0,
+        "packedBytes": 102,
+        "path": "res:/staticdata/effectsequences.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "2df63d44e96cb94ddfdbfe4492dfbbdb",
+        "verified": true
+      },
+      "res:/staticdata/environmenttemplateanchorcategoryids.fsdbinary": {
+        "actual": {
+          "bytes": 56,
+          "md5": "8801fc5fe79ad4fbf9dadc9a51b0df3b",
+          "sha256": "5a054ad146d3bcfb2ccc9e61ec47aada5368bac165c3e0a0555a84b0e2ac4e36"
+        },
+        "bytes": 56,
+        "cachePath": "1e/1ea364382ff1adcf_8801fc5fe79ad4fbf9dadc9a51b0df3b",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/1e/1ea364382ff1adcf_8801fc5fe79ad4fbf9dadc9a51b0df3b",
+        "md5": "8801fc5fe79ad4fbf9dadc9a51b0df3b",
+        "optimizedRootRows": 0,
+        "packedBytes": 102,
+        "path": "res:/staticdata/environmenttemplateanchorcategoryids.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "eef3ed304ac745476460c90c05bf62d5",
+        "verified": true
+      },
+      "res:/staticdata/environmenttemplateanchorgroupids.fsdbinary": {
+        "actual": {
+          "bytes": 168,
+          "md5": "67a3b33ab819cd631827d3b6fa14d1e1",
+          "sha256": "b441d7c98b6b3889ea56434a3d62218df99c56a507428274a2c47dd1c132da8a"
+        },
+        "bytes": 168,
+        "cachePath": "d6/d68a98c080992b12_67a3b33ab819cd631827d3b6fa14d1e1",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/d6/d68a98c080992b12_67a3b33ab819cd631827d3b6fa14d1e1",
+        "md5": "67a3b33ab819cd631827d3b6fa14d1e1",
+        "optimizedRootRows": 2,
+        "packedBytes": 135,
+        "path": "res:/staticdata/environmenttemplateanchorgroupids.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "c0dc901de104baed622b9299ac7967ee",
+        "verified": true
+      },
+      "res:/staticdata/environmenttemplateanchortypeids.fsdbinary": {
+        "actual": {
+          "bytes": 8864,
+          "md5": "32396ebdcfecc43c822885ae8ec4865e",
+          "sha256": "b2deb5939634546ba74d1bce3e8a7f53bec8af80f5c20b2367830cd286cbfbc9"
+        },
+        "bytes": 8864,
+        "cachePath": "37/3772d0ba3abbd56b_32396ebdcfecc43c822885ae8ec4865e",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/37/3772d0ba3abbd56b_32396ebdcfecc43c822885ae8ec4865e",
+        "md5": "32396ebdcfecc43c822885ae8ec4865e",
+        "packedBytes": 1812,
+        "path": "res:/staticdata/environmenttemplateanchortypeids.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "478477e9b07f6ed1b39d177f14ebfd1c",
+        "verified": true
+      },
+      "res:/staticdata/environmenttemplates.fsdbinary": {
+        "actual": {
+          "bytes": 104248,
+          "md5": "2fa75bc56a0e25a511a3889332bfb7cc",
+          "sha256": "07d692b522b226947e1900003fb60293b7bfbc658fdc90478bd585790e089632"
+        },
+        "bytes": 104248,
+        "cachePath": "79/7947a7855716b69f_2fa75bc56a0e25a511a3889332bfb7cc",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/79/7947a7855716b69f_2fa75bc56a0e25a511a3889332bfb7cc",
+        "md5": "2fa75bc56a0e25a511a3889332bfb7cc",
+        "optimizedRootRows": 150,
+        "packedBytes": 13720,
+        "path": "res:/staticdata/environmenttemplates.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "39f0633353d2a5d0369391939735e68e",
+        "verified": true
+      },
+      "res:/staticdata/epoch_fields.fsdbinary": {
+        "actual": {
+          "bytes": 15106328,
+          "md5": "46577e3bd22b83b869ddb4902108faa4",
+          "sha256": "1d35bd920a9b2137f40efe5a48d5caec76cd2d918f7d7afca3b9ffc044a50d19"
+        },
+        "bytes": 15106328,
+        "cachePath": "b1/b1fb7157355b7b6e_46577e3bd22b83b869ddb4902108faa4",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/b1/b1fb7157355b7b6e_46577e3bd22b83b869ddb4902108faa4",
+        "md5": "46577e3bd22b83b869ddb4902108faa4",
+        "packedBytes": 4011585,
+        "path": "res:/staticdata/epoch_fields.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "c7c0875ac8900c3c29962a36dab75194",
+        "verified": true
+      },
+      "res:/staticdata/eventtypes.static": {
+        "actual": {
+          "bytes": 3197,
+          "md5": "ece4fbfee0251227ce308600c1376733",
+          "sha256": "7b36c4015d590a808e5b6a1a27e3f643929ee185d12fbdf083ccbbe96944a61f"
+        },
+        "bytes": 3197,
+        "cachePath": "3c/3c57682eb33ab10a_ece4fbfee0251227ce308600c1376733",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/3c/3c57682eb33ab10a_ece4fbfee0251227ce308600c1376733",
+        "md5": "ece4fbfee0251227ce308600c1376733",
+        "packedBytes": 1403,
+        "path": "res:/staticdata/eventtypes.static",
+        "present": true,
+        "verified": true
+      },
+      "res:/staticdata/explosionbucketids.fsdbinary": {
+        "actual": {
+          "bytes": 1640,
+          "md5": "ee22dfe6a04121658bda407b4205a4d0",
+          "sha256": "4c81a9840eb6f89d93e6dc2a999092d715eee80345c520fa18816d5048fe22b8"
+        },
+        "bytes": 1640,
+        "cachePath": "94/94d493514e49d904_ee22dfe6a04121658bda407b4205a4d0",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/94/94d493514e49d904_ee22dfe6a04121658bda407b4205a4d0",
+        "md5": "ee22dfe6a04121658bda407b4205a4d0",
+        "optimizedRootRows": 7,
+        "packedBytes": 419,
+        "path": "res:/staticdata/explosionbucketids.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "32b8eea436bb4e4ff76397b00554479f",
+        "verified": true
+      },
+      "res:/staticdata/explosionids.fsdbinary": {
+        "actual": {
+          "bytes": 927,
+          "md5": "ab2823c35cca8d50351cf9fbe65d4585",
+          "sha256": "f9febb1b9e76424f87d3221df054c60f5f4b8f231d089149a682614dcd4315b0"
+        },
+        "bytes": 927,
+        "cachePath": "ec/ec453bb82cde4926_ab2823c35cca8d50351cf9fbe65d4585",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/ec/ec453bb82cde4926_ab2823c35cca8d50351cf9fbe65d4585",
+        "md5": "ab2823c35cca8d50351cf9fbe65d4585",
+        "optimizedRootRows": 6,
+        "packedBytes": 278,
+        "path": "res:/staticdata/explosionids.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "efe176046710b0fee110e8e4dc506978",
+        "verified": true
+      },
+      "res:/staticdata/factions.fsdbinary": {
+        "actual": {
+          "bytes": 4068,
+          "md5": "853087e374a4ed785f4b6c2ddde34f85",
+          "sha256": "327ca12f4952f7f1766fd2866cdffc7b1b1860f18cc6a2aa6d39818305a4cd2a"
+        },
+        "bytes": 4068,
+        "cachePath": "69/6904f1e28f68a598_853087e374a4ed785f4b6c2ddde34f85",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/69/6904f1e28f68a598_853087e374a4ed785f4b6c2ddde34f85",
+        "md5": "853087e374a4ed785f4b6c2ddde34f85",
+        "optimizedRootRows": 47,
+        "packedBytes": 1117,
+        "path": "res:/staticdata/factions.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "65c9ba29a5e9800c332fd6d9c392b296",
+        "verified": true
+      },
+      "res:/staticdata/graphicids.fsdbinary": {
+        "actual": {
+          "bytes": 874288,
+          "md5": "a05d6c5a8112123c7c2fbbeac30b8eef",
+          "sha256": "e3392dcb1317112e78c781a4cdfab61ba5c956686c7088bf3e3d86b2b8f162a4"
+        },
+        "bytes": 874288,
+        "cachePath": "93/93b769c4ef6215a9_a05d6c5a8112123c7c2fbbeac30b8eef",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/93/93b769c4ef6215a9_a05d6c5a8112123c7c2fbbeac30b8eef",
+        "md5": "a05d6c5a8112123c7c2fbbeac30b8eef",
+        "optimizedRootRows": 3330,
+        "packedBytes": 102147,
+        "path": "res:/staticdata/graphicids.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "2bdea664c47b290277ceb9741651e981",
+        "verified": true
+      },
+      "res:/staticdata/graphiclocations.fsdbinary": {
+        "actual": {
+          "bytes": 14272,
+          "md5": "32d1fb15c3cd4d7a634db2dd782748f6",
+          "sha256": "8b9d940bde5b0473791b51ff51af12d4cd088f4449491d29decfe8ce2ccfd380"
+        },
+        "bytes": 14272,
+        "cachePath": "16/16f7d36694208563_32d1fb15c3cd4d7a634db2dd782748f6",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/16/16f7d36694208563_32d1fb15c3cd4d7a634db2dd782748f6",
+        "md5": "32d1fb15c3cd4d7a634db2dd782748f6",
+        "optimizedRootRows": 67,
+        "packedBytes": 5028,
+        "path": "res:/staticdata/graphiclocations.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "6976bfc543f0fb05fbc2b3c2d7eca184",
+        "verified": true
+      },
+      "res:/staticdata/graphicmaterialsets.fsdbinary": {
+        "actual": {
+          "bytes": 648,
+          "md5": "c10839be7a7aafce32aa7965719dcbd6",
+          "sha256": "5d101aa7ad33df98b7b6f042a8671b636825e72e6b76ce4c3b3ad339cef7512b"
+        },
+        "bytes": 648,
+        "cachePath": "92/92b370a7f73925e9_c10839be7a7aafce32aa7965719dcbd6",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/92/92b370a7f73925e9_c10839be7a7aafce32aa7965719dcbd6",
+        "md5": "c10839be7a7aafce32aa7965719dcbd6",
+        "optimizedRootRows": 2,
+        "packedBytes": 375,
+        "path": "res:/staticdata/graphicmaterialsets.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "d4be14e0ea29849f11770cb17b9f4166",
+        "verified": true
+      },
+      "res:/staticdata/groupgraphics.fsdbinary": {
+        "actual": {
+          "bytes": 13288,
+          "md5": "e01c5f4099754504ca5342608c72c214",
+          "sha256": "bca21131edf053e8f22cd380c52816c535b373a9c8092f3cd286e9252742aca6"
+        },
+        "bytes": 13288,
+        "cachePath": "62/62fd919954944a1f_e01c5f4099754504ca5342608c72c214",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/62/62fd919954944a1f_e01c5f4099754504ca5342608c72c214",
+        "md5": "e01c5f4099754504ca5342608c72c214",
+        "optimizedRootRows": 89,
+        "packedBytes": 2489,
+        "path": "res:/staticdata/groupgraphics.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "89bde4f0e07178760fcf3ce0bd18d475",
+        "verified": true
+      },
+      "res:/staticdata/groups.fsdbinary": {
+        "actual": {
+          "bytes": 64024,
+          "md5": "642f6fbf758def36527ba178c327bf93",
+          "sha256": "b6156c059bb0778460516630df57d34a8f35809e68e4a92babc7af609e7e8867"
+        },
+        "bytes": 64024,
+        "cachePath": "b1/b198644fdc5397f3_642f6fbf758def36527ba178c327bf93",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/b1/b198644fdc5397f3_642f6fbf758def36527ba178c327bf93",
+        "md5": "642f6fbf758def36527ba178c327bf93",
+        "optimizedRootRows": 1454,
+        "packedBytes": 13855,
+        "path": "res:/staticdata/groups.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "122e735a97700cf0466ace3d16063643",
+        "verified": true
+      },
+      "res:/staticdata/hudeffectslots.fsdbinary": {
+        "actual": {
+          "bytes": 1566,
+          "md5": "7bb987e45a159cc80ef596dffc3e656a",
+          "sha256": "4f0f4a0a6262da0a6cd1c56836f2e4a8dd0960f6cbe0251fe386f4ea19964d52"
+        },
+        "bytes": 1566,
+        "cachePath": "c6/c6dd4135a8a53320_7bb987e45a159cc80ef596dffc3e656a",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/c6/c6dd4135a8a53320_7bb987e45a159cc80ef596dffc3e656a",
+        "md5": "7bb987e45a159cc80ef596dffc3e656a",
+        "optimizedRootRows": 7,
+        "packedBytes": 672,
+        "path": "res:/staticdata/hudeffectslots.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "0ac8c3d65063849d3b4d20c3057f6984",
+        "verified": true
+      },
+      "res:/staticdata/iconids.fsdbinary": {
+        "actual": {
+          "bytes": 484280,
+          "md5": "4f2491b3ebaa1616fd96c4cc540833f9",
+          "sha256": "7e99e8610305d6f1534cba7a0db04a99a033586185cc1aa1f974e17dea768af5"
+        },
+        "bytes": 484280,
+        "cachePath": "ee/ee9645c859e4670e_4f2491b3ebaa1616fd96c4cc540833f9",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/ee/ee9645c859e4670e_4f2491b3ebaa1616fd96c4cc540833f9",
+        "md5": "4f2491b3ebaa1616fd96c4cc540833f9",
+        "optimizedRootRows": 4131,
+        "packedBytes": 71111,
+        "path": "res:/staticdata/iconids.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "e62746ff0dc540cc73e06fca63926f29",
+        "verified": true
+      },
+      "res:/staticdata/industry_blueprints.fsdbinary": {
+        "actual": {
+          "bytes": 32272,
+          "md5": "1b3d4d02bd1d4249b087c7e3689616d9",
+          "sha256": "4cfa83e83cc14acdb68fc414b359a52c8a03ef9d55ee2a816fa112128224725b"
+        },
+        "bytes": 32272,
+        "cachePath": "c4/c41a791d1ef13a50_1b3d4d02bd1d4249b087c7e3689616d9",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/c4/c41a791d1ef13a50_1b3d4d02bd1d4249b087c7e3689616d9",
+        "md5": "1b3d4d02bd1d4249b087c7e3689616d9",
+        "optimizedRootRows": 299,
+        "packedBytes": 7799,
+        "path": "res:/staticdata/industry_blueprints.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "0aa81b163074cece6fa4dcdb71d4ca2d",
+        "verified": true
+      },
+      "res:/staticdata/industry_facilities.fsdbinary": {
+        "actual": {
+          "bytes": 6352,
+          "md5": "eef9fefa75b7be61c058f71843a0ae89",
+          "sha256": "32eb73b86fc51f132b97253d33a3ad5502e7b5f687f6ad80e4266050e0c779e5"
+        },
+        "bytes": 6352,
+        "cachePath": "af/affb67cc07f15c0f_eef9fefa75b7be61c058f71843a0ae89",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/af/affb67cc07f15c0f_eef9fefa75b7be61c058f71843a0ae89",
+        "md5": "eef9fefa75b7be61c058f71843a0ae89",
+        "optimizedRootRows": 16,
+        "packedBytes": 1998,
+        "path": "res:/staticdata/industry_facilities.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "428046b32c3ed16b280d94b6e5cc4314",
+        "verified": true
+      },
+      "res:/staticdata/landmarks.static": {
+        "actual": {
+          "bytes": 689,
+          "md5": "ee46ae6ae64b3b9aaf8b2da877bdcd13",
+          "sha256": "06edea37f1e946b8a9f444d72ffb94fc2f8a4ed98b272dfbb1f721d2a6cf8028"
+        },
+        "bytes": 689,
+        "cachePath": "7b/7b0ffe28ecdd847c_ee46ae6ae64b3b9aaf8b2da877bdcd13",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/7b/7b0ffe28ecdd847c_ee46ae6ae64b3b9aaf8b2da877bdcd13",
+        "md5": "ee46ae6ae64b3b9aaf8b2da877bdcd13",
+        "packedBytes": 495,
+        "path": "res:/staticdata/landmarks.static",
+        "present": true,
+        "verified": true
+      },
+      "res:/staticdata/landscape.fsdbinary": {
+        "actual": {
+          "bytes": 29213672,
+          "md5": "9649e50fcc50e676bdb8c45a52bf6426",
+          "sha256": "6cf052f8ff7fed9562c797b18e8a1138b29d90dcd253b5e54d88a94be2f81759"
+        },
+        "bytes": 29213672,
+        "cachePath": "39/39d10bff4aa7aff2_9649e50fcc50e676bdb8c45a52bf6426",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/39/39d10bff4aa7aff2_9649e50fcc50e676bdb8c45a52bf6426",
+        "md5": "9649e50fcc50e676bdb8c45a52bf6426",
+        "optimizedRootRows": 23846,
+        "packedBytes": 11893876,
+        "path": "res:/staticdata/landscape.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "96294eb01a11a06fdb1c5a7c12a25c58",
+        "verified": true
+      },
+      "res:/staticdata/locationcache.static": {
+        "actual": {
+          "bytes": 2322057,
+          "md5": "8526be3a0e16b623464ea10e1db2c19b",
+          "sha256": "385439a5d62df107f1419606494b4405473d09c7e3070f5a170178c7e4c8e3d4"
+        },
+        "bytes": 2322057,
+        "cachePath": "77/7720ad06644c124a_8526be3a0e16b623464ea10e1db2c19b",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/77/7720ad06644c124a_8526be3a0e16b623464ea10e1db2c19b",
+        "md5": "8526be3a0e16b623464ea10e1db2c19b",
+        "packedBytes": 729044,
+        "path": "res:/staticdata/locationcache.static",
+        "present": true,
+        "verified": true
+      },
+      "res:/staticdata/marketgroups.fsdbinary": {
+        "actual": {
+          "bytes": 69444,
+          "md5": "53b3cffe28c8faf78bf8617536d60501",
+          "sha256": "0b307de2223ee95f7f4694687a2cf3278bbec1a78c0dcccaf505443e0fe785cb"
+        },
+        "bytes": 69444,
+        "cachePath": "5b/5be8d79bd5183137_53b3cffe28c8faf78bf8617536d60501",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/5b/5be8d79bd5183137_53b3cffe28c8faf78bf8617536d60501",
+        "md5": "53b3cffe28c8faf78bf8617536d60501",
+        "optimizedRootRows": 1941,
+        "packedBytes": 21942,
+        "path": "res:/staticdata/marketgroups.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "e50723b09fdf57a379271705604d57d4",
+        "verified": true
+      },
+      "res:/staticdata/menuhighlights.fsdbinary": {
+        "actual": {
+          "bytes": 316,
+          "md5": "e6e288cc52ced05a965cc07db38d0d75",
+          "sha256": "9cc7de0d82dc13b836f9b1ab2fcaba97cc21128d36e80bc45395a977159fb1ed"
+        },
+        "bytes": 316,
+        "cachePath": "c6/c6de7a38440e7841_e6e288cc52ced05a965cc07db38d0d75",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/c6/c6de7a38440e7841_e6e288cc52ced05a965cc07db38d0d75",
+        "md5": "e6e288cc52ced05a965cc07db38d0d75",
+        "optimizedRootRows": 3,
+        "packedBytes": 213,
+        "path": "res:/staticdata/menuhighlights.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "3c50879baba60145e4bcb74280ea99be",
+        "verified": true
+      },
+      "res:/staticdata/metagroups.fsdbinary": {
+        "actual": {
+          "bytes": 1736,
+          "md5": "1fc883738408002ba2bd49cffacb5b87",
+          "sha256": "264a6a01e58bcdc78b7cbf48c3b8b5cf77d61e65856f9fca0e5d621b6f6da0e5"
+        },
+        "bytes": 1736,
+        "cachePath": "d7/d7393f79f4b57234_1fc883738408002ba2bd49cffacb5b87",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/d7/d7393f79f4b57234_1fc883738408002ba2bd49cffacb5b87",
+        "md5": "1fc883738408002ba2bd49cffacb5b87",
+        "optimizedRootRows": 38,
+        "packedBytes": 667,
+        "path": "res:/staticdata/metagroups.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "c8f10a5bbe37c9e0204e490daecfcc7e",
+        "verified": true
+      },
+      "res:/staticdata/musictriggers.fsdbinary": {
+        "actual": {
+          "bytes": 5354,
+          "md5": "24dec204988af15f7827b027b08adc29",
+          "sha256": "312eed29cbb618da4e177ea71250733fce8e7ee89b4f38284ef05177825f05c7"
+        },
+        "bytes": 5354,
+        "cachePath": "e9/e9c1f719d53eea7f_24dec204988af15f7827b027b08adc29",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/e9/e9c1f719d53eea7f_24dec204988af15f7827b027b08adc29",
+        "md5": "24dec204988af15f7827b027b08adc29",
+        "optimizedRootRows": 77,
+        "packedBytes": 1535,
+        "path": "res:/staticdata/musictriggers.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "443bfde463c54fb3b3c037e1848c4e95",
+        "verified": true
+      },
+      "res:/staticdata/neotypeproperty.fsdbinary": {
+        "actual": {
+          "bytes": 9432,
+          "md5": "11cc427b837c2a0ce863e033bee5e6c7",
+          "sha256": "133a2ab1eaea074e4f52b862bd26aa9ddd9a951ce8aa5d43fa587de1efb17bcb"
+        },
+        "bytes": 9432,
+        "cachePath": "e8/e8e5e8f6505a3b20_11cc427b837c2a0ce863e033bee5e6c7",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/e8/e8e5e8f6505a3b20_11cc427b837c2a0ce863e033bee5e6c7",
+        "md5": "11cc427b837c2a0ce863e033bee5e6c7",
+        "optimizedRootRows": 22,
+        "packedBytes": 3182,
+        "path": "res:/staticdata/neotypeproperty.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "ec3323d546b9a8b5e3762e20569340bc",
+        "verified": true
+      },
+      "res:/staticdata/neotypetrait.fsdbinary": {
+        "actual": {
+          "bytes": 100,
+          "md5": "8dfd1d2bf4b893f8f1a0618f5a2b6e19",
+          "sha256": "e361da29263c98dd193e53de59993dd748cbc770058842a571d59d601cb7622b"
+        },
+        "bytes": 100,
+        "cachePath": "c1/c108dc9ab872ed4d_8dfd1d2bf4b893f8f1a0618f5a2b6e19",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/c1/c108dc9ab872ed4d_8dfd1d2bf4b893f8f1a0618f5a2b6e19",
+        "md5": "8dfd1d2bf4b893f8f1a0618f5a2b6e19",
+        "optimizedRootRows": 1,
+        "packedBytes": 63,
+        "path": "res:/staticdata/neotypetrait.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "7374f7c1c78b2c1075572db742496a27",
+        "verified": true
+      },
+      "res:/staticdata/newfeatures.fsdbinary": {
+        "actual": {
+          "bytes": 56,
+          "md5": "b223996d063cef4b7d08da653fc03483",
+          "sha256": "a6b1f6a9e93b03a63098c1faa8c00dcb5ef61d4fa3c43c3f647b1b07f3b1a260"
+        },
+        "bytes": 56,
+        "cachePath": "17/17f40eeed2d111a6_b223996d063cef4b7d08da653fc03483",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/17/17f40eeed2d111a6_b223996d063cef4b7d08da653fc03483",
+        "md5": "b223996d063cef4b7d08da653fc03483",
+        "optimizedRootRows": 0,
+        "packedBytes": 52,
+        "path": "res:/staticdata/newfeatures.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "8b1646fcfadfa93eef3c405e05d25860",
+        "verified": true
+      },
+      "res:/staticdata/nodegraphs.fsdbinary": {
+        "actual": {
+          "bytes": 530752,
+          "md5": "105b52a951143f1a940c29e8f6920a23",
+          "sha256": "afd911381a951042abf7377ef633d77331bf5b68ee5f3927b3d8449a7f56dbf0"
+        },
+        "bytes": 530752,
+        "cachePath": "44/4459db12c57cef74_105b52a951143f1a940c29e8f6920a23",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/44/4459db12c57cef74_105b52a951143f1a940c29e8f6920a23",
+        "md5": "105b52a951143f1a940c29e8f6920a23",
+        "optimizedRootRows": 66,
+        "packedBytes": 119075,
+        "path": "res:/staticdata/nodegraphs.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "fd14511782833374c9c1d3ba943dfac6",
+        "verified": true
+      },
+      "res:/staticdata/nodetypes.fsdbinary": {
+        "actual": {
+          "bytes": 23976,
+          "md5": "7898cf48c4fe2dfc5dd86e3e37c3fb2e",
+          "sha256": "5ac22cd63fea15044c894eb0692658f504e5a75685f0f81c180248ecef08a01b"
+        },
+        "bytes": 23976,
+        "cachePath": "e2/e2ea60fefdb03b0a_7898cf48c4fe2dfc5dd86e3e37c3fb2e",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/e2/e2ea60fefdb03b0a_7898cf48c4fe2dfc5dd86e3e37c3fb2e",
+        "md5": "7898cf48c4fe2dfc5dd86e3e37c3fb2e",
+        "optimizedRootRows": 47,
+        "packedBytes": 5920,
+        "path": "res:/staticdata/nodetypes.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "80e45bbe9de43fcc717f20ffc882758d",
+        "verified": true
+      },
+      "res:/staticdata/npccharacters.fsdbinary": {
+        "actual": {
+          "bytes": 4232,
+          "md5": "d491fcad333c4ef5c3a0f22d6f33823e",
+          "sha256": "a223877e12036afcc1b3aa97209bfa1c451a5dddb8036fab4af46156682472e6"
+        },
+        "bytes": 4232,
+        "cachePath": "11/1173a5d23f0b6098_d491fcad333c4ef5c3a0f22d6f33823e",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/11/1173a5d23f0b6098_d491fcad333c4ef5c3a0f22d6f33823e",
+        "md5": "d491fcad333c4ef5c3a0f22d6f33823e",
+        "optimizedRootRows": 27,
+        "packedBytes": 1027,
+        "path": "res:/staticdata/npccharacters.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "2f22583e614e60c39e6c2798f53dbcb7",
+        "verified": true
+      },
+      "res:/staticdata/npccorporationdivisions.fsdbinary": {
+        "actual": {
+          "bytes": 979,
+          "md5": "4b5075474e3e68d17bcafa0390ae2830",
+          "sha256": "e5e8373c17d05cb9e62063f1bd1db68b5ed09bd6cbf77e2de7be42751004e1fb"
+        },
+        "bytes": 979,
+        "cachePath": "4d/4d27ec7dbfe8a8ea_4b5075474e3e68d17bcafa0390ae2830",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/4d/4d27ec7dbfe8a8ea_4b5075474e3e68d17bcafa0390ae2830",
+        "md5": "4b5075474e3e68d17bcafa0390ae2830",
+        "optimizedRootRows": 9,
+        "packedBytes": 491,
+        "path": "res:/staticdata/npccorporationdivisions.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "c3a40dc4a42d5ccbbc8e252e9e8ef38f",
+        "verified": true
+      },
+      "res:/staticdata/npccorporations.fsdbinary": {
+        "actual": {
+          "bytes": 17773,
+          "md5": "d96eddadd63e821bfae99d1d33cac1bc",
+          "sha256": "2b8c42229a0b1830fa95eab4412ba5a7e8765e6cfe492348245e2ffe3e303851"
+        },
+        "bytes": 17773,
+        "cachePath": "71/714922d2bf762025_d96eddadd63e821bfae99d1d33cac1bc",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/71/714922d2bf762025_d96eddadd63e821bfae99d1d33cac1bc",
+        "md5": "d96eddadd63e821bfae99d1d33cac1bc",
+        "optimizedRootRows": 69,
+        "packedBytes": 2992,
+        "path": "res:/staticdata/npccorporations.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "41bccf2a322726f940a7f7b8baf5d5ca",
+        "verified": true
+      },
+      "res:/staticdata/objectivechains.fsdbinary": {
+        "actual": {
+          "bytes": 21792,
+          "md5": "1ee469124e8da932ba728cdc4c4d7a21",
+          "sha256": "dc47fbb7892aaaa80963ef9cfc16a7d5c87fdcda69541cd1a32dbb1f4a8997d1"
+        },
+        "bytes": 21792,
+        "cachePath": "97/977c5f990677327a_1ee469124e8da932ba728cdc4c4d7a21",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/97/977c5f990677327a_1ee469124e8da932ba728cdc4c4d7a21",
+        "md5": "1ee469124e8da932ba728cdc4c4d7a21",
+        "optimizedRootRows": 2,
+        "packedBytes": 4741,
+        "path": "res:/staticdata/objectivechains.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "b23a56a972cca7b882ef1a425a2c4b26",
+        "verified": true
+      },
+      "res:/staticdata/objectivetasktypes.fsdbinary": {
+        "actual": {
+          "bytes": 9832,
+          "md5": "d276d23e5319fd79d0243d35eca67b1c",
+          "sha256": "276aa060c8c51c1d43b5328357cc5c37020f5d1cc3894f73e50e68e5b29825d6"
+        },
+        "bytes": 9832,
+        "cachePath": "0e/0e526559e37ba14a_d276d23e5319fd79d0243d35eca67b1c",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/0e/0e526559e37ba14a_d276d23e5319fd79d0243d35eca67b1c",
+        "md5": "d276d23e5319fd79d0243d35eca67b1c",
+        "optimizedRootRows": 57,
+        "packedBytes": 2403,
+        "path": "res:/staticdata/objectivetasktypes.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "0a25565c02e98bf9220279d16d29ccec",
+        "verified": true
+      },
+      "res:/staticdata/objectivetypes.fsdbinary": {
+        "actual": {
+          "bytes": 40736,
+          "md5": "e6010717b13a212498f3a025701bce19",
+          "sha256": "af808da29db56cbc8cc596c53268088ed75587fac26e941746f8965b31a6157f"
+        },
+        "bytes": 40736,
+        "cachePath": "00/009809553b5bd417_e6010717b13a212498f3a025701bce19",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/00/009809553b5bd417_e6010717b13a212498f3a025701bce19",
+        "md5": "e6010717b13a212498f3a025701bce19",
+        "optimizedRootRows": 67,
+        "packedBytes": 8536,
+        "path": "res:/staticdata/objectivetypes.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "bb2982574bc5cab490bb39074364d9e6",
+        "verified": true
+      },
+      "res:/staticdata/property.fsdbinary": {
+        "actual": {
+          "bytes": 2214,
+          "md5": "2c081919e2b0d9601c3a06f644a25fae",
+          "sha256": "eb0070feb1a2d32bc53cb6e2afc305be113f8cacd3bc77c1b3512b4141bcbf22"
+        },
+        "bytes": 2214,
+        "cachePath": "70/70254343f14b8c00_2c081919e2b0d9601c3a06f644a25fae",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/70/70254343f14b8c00_2c081919e2b0d9601c3a06f644a25fae",
+        "md5": "2c081919e2b0d9601c3a06f644a25fae",
+        "optimizedRootRows": 29,
+        "packedBytes": 833,
+        "path": "res:/staticdata/property.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "846890cdfd7ee2e5917e924ceda70c72",
+        "verified": true
+      },
+      "res:/staticdata/races.fsdbinary": {
+        "actual": {
+          "bytes": 7408,
+          "md5": "4123776cc6b7b96c48fa535f9cc6fc28",
+          "sha256": "b9dafba7d03b634ed5af89b51ecdc7fa48a21efdd6e4f873897ca0416ec98714"
+        },
+        "bytes": 7408,
+        "cachePath": "2a/2aa9ff92e77dfb77_4123776cc6b7b96c48fa535f9cc6fc28",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/2a/2aa9ff92e77dfb77_4123776cc6b7b96c48fa535f9cc6fc28",
+        "md5": "4123776cc6b7b96c48fa535f9cc6fc28",
+        "optimizedRootRows": 14,
+        "packedBytes": 1250,
+        "path": "res:/staticdata/races.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "e34c304c76d48541af0967a885eeb554",
+        "verified": true
+      },
+      "res:/staticdata/recipe.fsdbinary": {
+        "actual": {
+          "bytes": 115,
+          "md5": "a56b3c69d3e46155df7eec19587578ad",
+          "sha256": "150793b15049f578d81d57bca9528fcbaedc9fbcbabec40901cd13843325164e"
+        },
+        "bytes": 115,
+        "cachePath": "4d/4d000eb7b61e3181_a56b3c69d3e46155df7eec19587578ad",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/4d/4d000eb7b61e3181_a56b3c69d3e46155df7eec19587578ad",
+        "md5": "a56b3c69d3e46155df7eec19587578ad",
+        "optimizedRootRows": 1,
+        "packedBytes": 76,
+        "path": "res:/staticdata/recipe.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "2395d8e0fe59db850896e58e28bbd66f",
+        "verified": true
+      },
+      "res:/staticdata/recipeinput.fsdbinary": {
+        "actual": {
+          "bytes": 128,
+          "md5": "eff67ebb52cb745a65f01cbb0a545dc8",
+          "sha256": "cb23762c808f52377e566106c6d8762c82965c02459c720aa12331c7e813d6b5"
+        },
+        "bytes": 128,
+        "cachePath": "c4/c42d15e104cc1e8b_eff67ebb52cb745a65f01cbb0a545dc8",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/c4/c42d15e104cc1e8b_eff67ebb52cb745a65f01cbb0a545dc8",
+        "md5": "eff67ebb52cb745a65f01cbb0a545dc8",
+        "optimizedRootRows": 1,
+        "packedBytes": 77,
+        "path": "res:/staticdata/recipeinput.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "33dd4f7bf54ad013f4eccf094ac5cd6f",
+        "verified": true
+      },
+      "res:/staticdata/recipeinputtrait.fsdbinary": {
+        "actual": {
+          "bytes": 96,
+          "md5": "2f974937b0276946d22f1233229c64ca",
+          "sha256": "5b3842bc9628ed26b9e7e0b209e51dc597f109e00d511aab4a1521e3529eef55"
+        },
+        "bytes": 96,
+        "cachePath": "d2/d228a743fe75886d_2f974937b0276946d22f1233229c64ca",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/d2/d228a743fe75886d_2f974937b0276946d22f1233229c64ca",
+        "md5": "2f974937b0276946d22f1233229c64ca",
+        "optimizedRootRows": 1,
+        "packedBytes": 63,
+        "path": "res:/staticdata/recipeinputtrait.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "28e8eefd0c214c6d2e31d154b83ee2c9",
+        "verified": true
+      },
+      "res:/staticdata/recipeoutput.fsdbinary": {
+        "actual": {
+          "bytes": 108,
+          "md5": "754cdf193df6a7a21722483f6314a742",
+          "sha256": "a932c527f752402b0e6c808db3ba9f314e25dbb5e4ddb7e4f4530e219f10210b"
+        },
+        "bytes": 108,
+        "cachePath": "ac/ac303fe5e442ad46_754cdf193df6a7a21722483f6314a742",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/ac/ac303fe5e442ad46_754cdf193df6a7a21722483f6314a742",
+        "md5": "754cdf193df6a7a21722483f6314a742",
+        "optimizedRootRows": 1,
+        "packedBytes": 69,
+        "path": "res:/staticdata/recipeoutput.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "1e568ccf832fa153382e457e59196445",
+        "verified": true
+      },
+      "res:/staticdata/recipeoutputtransform.fsdbinary": {
+        "actual": {
+          "bytes": 154,
+          "md5": "14dcf1b35ae7d517540cc8068ae0c842",
+          "sha256": "f34db899bf20e54eb015e752462240ad21c5b55fff1880fb5c8de21a79901ec3"
+        },
+        "bytes": 154,
+        "cachePath": "20/20403c334c3f43fa_14dcf1b35ae7d517540cc8068ae0c842",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/20/20403c334c3f43fa_14dcf1b35ae7d517540cc8068ae0c842",
+        "md5": "14dcf1b35ae7d517540cc8068ae0c842",
+        "optimizedRootRows": 1,
+        "packedBytes": 90,
+        "path": "res:/staticdata/recipeoutputtransform.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "10c136bfe25d943a5c0dd229802e67dd",
+        "verified": true
+      },
+      "res:/staticdata/recipeoutputtransformbreakpoint.fsdbinary": {
+        "actual": {
+          "bytes": 96,
+          "md5": "4ea58ad3a33e87aa4de3ba9ffb7b47f9",
+          "sha256": "18bc3a65061035e14ae5ed38d1e86c9ac44ea3447e71edacf48013c84485779d"
+        },
+        "bytes": 96,
+        "cachePath": "fd/fd09b87c2507bfbf_4ea58ad3a33e87aa4de3ba9ffb7b47f9",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/fd/fd09b87c2507bfbf_4ea58ad3a33e87aa4de3ba9ffb7b47f9",
+        "md5": "4ea58ad3a33e87aa4de3ba9ffb7b47f9",
+        "optimizedRootRows": 1,
+        "packedBytes": 63,
+        "path": "res:/staticdata/recipeoutputtransformbreakpoint.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "7efb45434a5bd95d20623de20eef1d25",
+        "verified": true
+      },
+      "res:/staticdata/recipeoutputtransformsource.fsdbinary": {
+        "actual": {
+          "bytes": 144,
+          "md5": "9e730105523a5aab742676c61635ba84",
+          "sha256": "c7b12078c19049720e2503226c313a7414cca2f6ca14d7eaca681fec702fa2db"
+        },
+        "bytes": 144,
+        "cachePath": "67/67ad98f115cf9271_9e730105523a5aab742676c61635ba84",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/67/67ad98f115cf9271_9e730105523a5aab742676c61635ba84",
+        "md5": "9e730105523a5aab742676c61635ba84",
+        "optimizedRootRows": 1,
+        "packedBytes": 80,
+        "path": "res:/staticdata/recipeoutputtransformsource.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "f0fe60331d5c7ef1abf49b0d55574549",
+        "verified": true
+      },
+      "res:/staticdata/recruitmentgroups.fsdbinary": {
+        "actual": {
+          "bytes": 232,
+          "md5": "a5cb6cfcb010f29410d145df72ebaab4",
+          "sha256": "bcea597cb1ecd9e37dcecb5b9d286740acc86490ba550cbc4232398a8fa8bf98"
+        },
+        "bytes": 232,
+        "cachePath": "1c/1c5444725fe41473_a5cb6cfcb010f29410d145df72ebaab4",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/1c/1c5444725fe41473_a5cb6cfcb010f29410d145df72ebaab4",
+        "md5": "a5cb6cfcb010f29410d145df72ebaab4",
+        "optimizedRootRows": 8,
+        "packedBytes": 189,
+        "path": "res:/staticdata/recruitmentgroups.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "eecbf4a107e48173d3bb11f0b4d52552",
+        "verified": true
+      },
+      "res:/staticdata/recruitmenttypes.fsdbinary": {
+        "actual": {
+          "bytes": 1148,
+          "md5": "a3442baee9c5b611914259b0ec7c7b76",
+          "sha256": "195dfdc8aa3c9a009b25fbb77ab9b4559dcc25c4e87d83dbc448b72d7d19585f"
+        },
+        "bytes": 1148,
+        "cachePath": "a7/a79b082b67cb5b1a_a3442baee9c5b611914259b0ec7c7b76",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/a7/a79b082b67cb5b1a_a3442baee9c5b611914259b0ec7c7b76",
+        "md5": "a3442baee9c5b611914259b0ec7c7b76",
+        "optimizedRootRows": 45,
+        "packedBytes": 465,
+        "path": "res:/staticdata/recruitmenttypes.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "1b7b9aae9c2d72c7adae26555e849fda",
+        "verified": true
+      },
+      "res:/staticdata/requiredskillsfortypes.fsdbinary": {
+        "actual": {
+          "bytes": 327192,
+          "md5": "bdcd78b8228613a986d4ba298261dc25",
+          "sha256": "9f0cfcff46102f4e7c5d18216038c314fda6ffbc6c072943ff18d9091f35054a"
+        },
+        "bytes": 327192,
+        "cachePath": "4f/4ffb0ff003a82e5a_bdcd78b8228613a986d4ba298261dc25",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/4f/4ffb0ff003a82e5a_bdcd78b8228613a986d4ba298261dc25",
+        "md5": "bdcd78b8228613a986d4ba298261dc25",
+        "packedBytes": 53955,
+        "path": "res:/staticdata/requiredskillsfortypes.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "3c9734f16d5daed7dcac978954601dc7",
+        "verified": true
+      },
+      "res:/staticdata/requiredskillsindex.fsdbinary": {
+        "actual": {
+          "bytes": 56,
+          "md5": "e57a52ce57c770b4dc9c7ccd4c3b95c8",
+          "sha256": "04fc1ae005a5c63629335456f97ce13397064b61973029d30501226423380374"
+        },
+        "bytes": 56,
+        "cachePath": "09/09aa87b13429bd4a_e57a52ce57c770b4dc9c7ccd4c3b95c8",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/09/09aa87b13429bd4a_e57a52ce57c770b4dc9c7ccd4c3b95c8",
+        "md5": "e57a52ce57c770b4dc9c7ccd4c3b95c8",
+        "optimizedRootRows": 0,
+        "packedBytes": 102,
+        "path": "res:/staticdata/requiredskillsindex.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "ce5b40eed78cc50a7a60f8232921a6a6",
+        "verified": true
+      },
+      "res:/staticdata/schools.fsdbinary": {
+        "actual": {
+          "bytes": 1140,
+          "md5": "e17a1a15136d00c0ffd2a70b7dc8ddbd",
+          "sha256": "6aeaa5a6ec443db4f7665244ee896bad980c59ddc501ae889b606e608a8f9c6c"
+        },
+        "bytes": 1140,
+        "cachePath": "e6/e6c8e57a9ad17e76_e17a1a15136d00c0ffd2a70b7dc8ddbd",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/e6/e6c8e57a9ad17e76_e17a1a15136d00c0ffd2a70b7dc8ddbd",
+        "md5": "e17a1a15136d00c0ffd2a70b7dc8ddbd",
+        "optimizedRootRows": 15,
+        "packedBytes": 519,
+        "path": "res:/staticdata/schools.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "f5d3c55163072bc620fdb383bb4d51ac",
+        "verified": true
+      },
+      "res:/staticdata/selectiongroups.static": {
+        "actual": {
+          "bytes": 3861,
+          "md5": "51921508276d842018bd70a7af86b002",
+          "sha256": "b1213b869fae82cac151de59361bafe4a3cde66d8e2b06c205b98c392b71842d"
+        },
+        "bytes": 3861,
+        "cachePath": "24/24474807f98fc1b3_51921508276d842018bd70a7af86b002",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/24/24474807f98fc1b3_51921508276d842018bd70a7af86b002",
+        "md5": "51921508276d842018bd70a7af86b002",
+        "packedBytes": 965,
+        "path": "res:/staticdata/selectiongroups.static",
+        "present": true,
+        "verified": true
+      },
+      "res:/staticdata/skilltags.static": {
+        "actual": {
+          "bytes": 407,
+          "md5": "d36db743c5c71d9c94ba95874e81ff73",
+          "sha256": "fd81914d73f14e229e9669d489fbaf4abd5cac60d819c3edb4a296a43c3cb1fb"
+        },
+        "bytes": 407,
+        "cachePath": "e5/e5b0e5113c1cbb71_d36db743c5c71d9c94ba95874e81ff73",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/e5/e5b0e5113c1cbb71_d36db743c5c71d9c94ba95874e81ff73",
+        "md5": "d36db743c5c71d9c94ba95874e81ff73",
+        "packedBytes": 338,
+        "path": "res:/staticdata/skilltags.static",
+        "present": true,
+        "verified": true
+      },
+      "res:/staticdata/skinlicenses.static": {
+        "actual": {
+          "bytes": 24576,
+          "md5": "fff63dcb813ce931abedd5b18e170153",
+          "sha256": "43fa2034bc9d1830e650f5feb9ed174af3e64d474ea9ebd89919c84920ec584c"
+        },
+        "bytes": 24576,
+        "cachePath": "dd/ddec335c5166e1ce_fff63dcb813ce931abedd5b18e170153",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/dd/ddec335c5166e1ce_fff63dcb813ce931abedd5b18e170153",
+        "md5": "fff63dcb813ce931abedd5b18e170153",
+        "packedBytes": 510,
+        "path": "res:/staticdata/skinlicenses.static",
+        "present": true,
+        "verified": true
+      },
+      "res:/staticdata/skinmaterials.static": {
+        "actual": {
+          "bytes": 24576,
+          "md5": "3a16f990a9bbe719d417ae5097e1a4af",
+          "sha256": "112df58d0ac0a78f28bccdb2b46cb44abaff70c29c11fde87e75743d51b7de33"
+        },
+        "bytes": 24576,
+        "cachePath": "04/04fe8caf2896e754_3a16f990a9bbe719d417ae5097e1a4af",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/04/04fe8caf2896e754_3a16f990a9bbe719d417ae5097e1a4af",
+        "md5": "3a16f990a9bbe719d417ae5097e1a4af",
+        "packedBytes": 510,
+        "path": "res:/staticdata/skinmaterials.static",
+        "present": true,
+        "verified": true
+      },
+      "res:/staticdata/skins.static": {
+        "actual": {
+          "bytes": 24576,
+          "md5": "fbf269626e165184185f9189f2900764",
+          "sha256": "cd278b5c8df06605bd0091f060dcdf21d9e8075958041c100ab7d7331287c35c"
+        },
+        "bytes": 24576,
+        "cachePath": "cb/cb291acd32af7f27_fbf269626e165184185f9189f2900764",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/cb/cb291acd32af7f27_fbf269626e165184185f9189f2900764",
+        "md5": "fbf269626e165184185f9189f2900764",
+        "packedBytes": 731,
+        "path": "res:/staticdata/skins.static",
+        "present": true,
+        "verified": true
+      },
+      "res:/staticdata/skyboxeffects.fsdbinary": {
+        "actual": {
+          "bytes": 514,
+          "md5": "dc27e0a230c2eb46ece3b0937102196d",
+          "sha256": "4e8be5bfca6f1caa62fc3af95df1502ab65223d6950606cc5cbb2ad1c4567868"
+        },
+        "bytes": 514,
+        "cachePath": "15/154b1b7cee72a43d_dc27e0a230c2eb46ece3b0937102196d",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/15/154b1b7cee72a43d_dc27e0a230c2eb46ece3b0937102196d",
+        "md5": "dc27e0a230c2eb46ece3b0937102196d",
+        "optimizedRootRows": 3,
+        "packedBytes": 272,
+        "path": "res:/staticdata/skyboxeffects.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "bc411bcdc213bf0f51ed10dc13690aef",
+        "verified": true
+      },
+      "res:/staticdata/soundids.fsdbinary": {
+        "actual": {
+          "bytes": 352,
+          "md5": "f6bde803718b05276e5989c3aed23bcb",
+          "sha256": "5cdec3b85bfe66f88f1c177f4715968550764ff89bec2ee16c1083e66b795c32"
+        },
+        "bytes": 352,
+        "cachePath": "97/971b7df9729eb54e_f6bde803718b05276e5989c3aed23bcb",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/97/971b7df9729eb54e_f6bde803718b05276e5989c3aed23bcb",
+        "md5": "f6bde803718b05276e5989c3aed23bcb",
+        "optimizedRootRows": 5,
+        "packedBytes": 217,
+        "path": "res:/staticdata/soundids.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "282691af0281f49506d6a0588f5ee653",
+        "verified": true
+      },
+      "res:/staticdata/spacecomponentsbytype.fsdbinary": {
+        "actual": {
+          "bytes": 13227944,
+          "md5": "978c3aa04c4bca312f82340480293cc2",
+          "sha256": "03411b7a95d14be2c226db2a64654cadf39d9f004b7100c8ea71da4f3e0a0d9d"
+        },
+        "bytes": 13227944,
+        "cachePath": "f2/f26def0295b69084_978c3aa04c4bca312f82340480293cc2",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/f2/f26def0295b69084_978c3aa04c4bca312f82340480293cc2",
+        "md5": "978c3aa04c4bca312f82340480293cc2",
+        "packedBytes": 919980,
+        "path": "res:/staticdata/spacecomponentsbytype.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "b00a1f82972b05f7c0ff27a06ba36e49",
+        "verified": true
+      },
+      "res:/staticdata/spaceobjecthighlights.fsdbinary": {
+        "actual": {
+          "bytes": 280,
+          "md5": "78e0ae5668b163bad8945e1f25dd507e",
+          "sha256": "ff49f6e06c0e5f1a7f5151f4a266bdcb0421407f3b6ab384bfb407775d75a5d1"
+        },
+        "bytes": 280,
+        "cachePath": "e7/e76010a69088fd99_78e0ae5668b163bad8945e1f25dd507e",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/e7/e76010a69088fd99_78e0ae5668b163bad8945e1f25dd507e",
+        "md5": "78e0ae5668b163bad8945e1f25dd507e",
+        "optimizedRootRows": 2,
+        "packedBytes": 215,
+        "path": "res:/staticdata/spaceobjecthighlights.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "3d3bfa2edf3d8496dfba81fc9b9617fc",
+        "verified": true
+      },
+      "res:/staticdata/stationoperations.fsdbinary": {
+        "actual": {
+          "bytes": 13608,
+          "md5": "6c206f7b35e9f380a50a2cdf493b86c1",
+          "sha256": "cc97150a15f6fb149904e5e3d49bd8531011bd89a2093c8b15e14e3284f74723"
+        },
+        "bytes": 13608,
+        "cachePath": "1d/1d852c36f59d1b53_6c206f7b35e9f380a50a2cdf493b86c1",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/1d/1d852c36f59d1b53_6c206f7b35e9f380a50a2cdf493b86c1",
+        "md5": "6c206f7b35e9f380a50a2cdf493b86c1",
+        "optimizedRootRows": 62,
+        "packedBytes": 2461,
+        "path": "res:/staticdata/stationoperations.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "8d1167a29fb37cd42de4f7440206f63e",
+        "verified": true
+      },
+      "res:/staticdata/stationservices.fsdbinary": {
+        "actual": {
+          "bytes": 600,
+          "md5": "5690e27b8afb56de929a46b8b2dee3a4",
+          "sha256": "171061d4f76717154711cb174d892308389b79daf650ff1a22f4905bb22b5840"
+        },
+        "bytes": 600,
+        "cachePath": "0f/0fda039136bea3ad_5690e27b8afb56de929a46b8b2dee3a4",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/0f/0fda039136bea3ad_5690e27b8afb56de929a46b8b2dee3a4",
+        "md5": "5690e27b8afb56de929a46b8b2dee3a4",
+        "optimizedRootRows": 27,
+        "packedBytes": 287,
+        "path": "res:/staticdata/stationservices.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "883e4ac257a8407999d885bd984b30b1",
+        "verified": true
+      },
+      "res:/staticdata/stationstandingsrestrictions.fsdbinary": {
+        "actual": {
+          "bytes": 248,
+          "md5": "9668894fbbcce124dcd1af54a53f8e33",
+          "sha256": "1688efc74d20134075a925b5b693010d108bdf6cb85270298772eca0b5cb0198"
+        },
+        "bytes": 248,
+        "cachePath": "83/8388b71e3fa803bd_9668894fbbcce124dcd1af54a53f8e33",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/83/8388b71e3fa803bd_9668894fbbcce124dcd1af54a53f8e33",
+        "md5": "9668894fbbcce124dcd1af54a53f8e33",
+        "optimizedRootRows": 1,
+        "packedBytes": 166,
+        "path": "res:/staticdata/stationstandingsrestrictions.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "d4f2080bfe6974355fca6d17d8114fee",
+        "verified": true
+      },
+      "res:/staticdata/systemstate.fsdbinary": {
+        "actual": {
+          "bytes": 94480,
+          "md5": "ec715c7a10794c7fd913c9e92f079382",
+          "sha256": "1228f2a6a94882e39671ba0da16967d6c4cbac799f473c1693772ee6b443cd91"
+        },
+        "bytes": 94480,
+        "cachePath": "ad/add2717bcc42e31f_ec715c7a10794c7fd913c9e92f079382",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/ad/add2717bcc42e31f_ec715c7a10794c7fd913c9e92f079382",
+        "md5": "ec715c7a10794c7fd913c9e92f079382",
+        "optimizedRootRows": 3371,
+        "packedBytes": 13371,
+        "path": "res:/staticdata/systemstate.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "b0f0ac730036ae9402396d3ea9d11526",
+        "verified": true
+      },
+      "res:/staticdata/tags.fsdbinary": {
+        "actual": {
+          "bytes": 9120,
+          "md5": "dfe81c81a38aa740b6227e8b47532b31",
+          "sha256": "eec8e8c5720f90d9f6341ffc734bd159cb29b0e1fabe1f2d81ec74f20fe4501e"
+        },
+        "bytes": 9120,
+        "cachePath": "61/6131d178036165e4_dfe81c81a38aa740b6227e8b47532b31",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/61/6131d178036165e4_dfe81c81a38aa740b6227e8b47532b31",
+        "md5": "dfe81c81a38aa740b6227e8b47532b31",
+        "optimizedRootRows": 126,
+        "packedBytes": 2751,
+        "path": "res:/staticdata/tags.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "c457a6c89c5f0f17fc19dce47397a847",
+        "verified": true
+      },
+      "res:/staticdata/trait.fsdbinary": {
+        "actual": {
+          "bytes": 103,
+          "md5": "0105228462356b0009d2435c4dec1ad3",
+          "sha256": "e94aa0be2f7bf9d96c7e1a3eaab0d36708e233c21ac8da2b3db5fd88521294e4"
+        },
+        "bytes": 103,
+        "cachePath": "b7/b70bb039c18128ad_0105228462356b0009d2435c4dec1ad3",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/b7/b70bb039c18128ad_0105228462356b0009d2435c4dec1ad3",
+        "md5": "0105228462356b0009d2435c4dec1ad3",
+        "optimizedRootRows": 1,
+        "packedBytes": 69,
+        "path": "res:/staticdata/trait.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "074c44e570f24ef51f8cdf1febe1e852",
+        "verified": true
+      },
+      "res:/staticdata/traitproperty.fsdbinary": {
+        "actual": {
+          "bytes": 128,
+          "md5": "d8b3274cf89710499505059428702da7",
+          "sha256": "c615027e530246b86abbbfc8dde074c66f06450dfddb4ff91c37de146ccf6d2f"
+        },
+        "bytes": 128,
+        "cachePath": "b4/b45c372b85c18266_d8b3274cf89710499505059428702da7",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/b4/b45c372b85c18266_d8b3274cf89710499505059428702da7",
+        "md5": "d8b3274cf89710499505059428702da7",
+        "optimizedRootRows": 1,
+        "packedBytes": 79,
+        "path": "res:/staticdata/traitproperty.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "af3bf21033026295291a1348d07a6ff7",
+        "verified": true
+      },
+      "res:/staticdata/traveleffects.fsdbinary": {
+        "actual": {
+          "bytes": 2015,
+          "md5": "1de769dca42925caff654878c3075fa9",
+          "sha256": "54dfc607c9b9b5658777abac73271d8ac4f6371a27a654f44a9e2ed1db27d4b2"
+        },
+        "bytes": 2015,
+        "cachePath": "51/51ad8ffe61902bab_1de769dca42925caff654878c3075fa9",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/51/51ad8ffe61902bab_1de769dca42925caff654878c3075fa9",
+        "md5": "1de769dca42925caff654878c3075fa9",
+        "optimizedRootRows": 7,
+        "packedBytes": 593,
+        "path": "res:/staticdata/traveleffects.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "ed31b9822db0c0762e328f8a77a177e0",
+        "verified": true
+      },
+      "res:/staticdata/triggertypes.static": {
+        "actual": {
+          "bytes": 2530,
+          "md5": "0fd75a2e0bd918d8d02dc27edaee9532",
+          "sha256": "dc7768f6546b54f76ff3fb63f4ef9e63420f80c279e399a323e68f3087eaac92"
+        },
+        "bytes": 2530,
+        "cachePath": "a7/a7048f8eb5a56a96_0fd75a2e0bd918d8d02dc27edaee9532",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/a7/a7048f8eb5a56a96_0fd75a2e0bd918d8d02dc27edaee9532",
+        "md5": "0fd75a2e0bd918d8d02dc27edaee9532",
+        "packedBytes": 1165,
+        "path": "res:/staticdata/triggertypes.static",
+        "present": true,
+        "verified": true
+      },
+      "res:/staticdata/typedogma.fsdbinary": {
+        "actual": {
+          "bytes": 8305176,
+          "md5": "149f773b2d8863d43fce7a10e018938e",
+          "sha256": "1567062c1bf934e653f10c29e425dbe1aeff436686a11d25cec003144fb001cc"
+        },
+        "bytes": 8305176,
+        "cachePath": "a5/a5dc877f4620b63d_149f773b2d8863d43fce7a10e018938e",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/a5/a5dc877f4620b63d_149f773b2d8863d43fce7a10e018938e",
+        "md5": "149f773b2d8863d43fce7a10e018938e",
+        "packedBytes": 863687,
+        "path": "res:/staticdata/typedogma.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "817d560b9962768e1a4b18598e9a1761",
+        "verified": true
+      },
+      "res:/staticdata/typelist.fsdbinary": {
+        "actual": {
+          "bytes": 142991,
+          "md5": "19f2e4e8b4cd4efb8abfdb22574ca8c3",
+          "sha256": "c25a77aa46f8c889268d2d157f55fb32b8d6bb37ea85f67a355db073004a2594"
+        },
+        "bytes": 142991,
+        "cachePath": "60/6037055f6c367f5b_19f2e4e8b4cd4efb8abfdb22574ca8c3",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/60/6037055f6c367f5b_19f2e4e8b4cd4efb8abfdb22574ca8c3",
+        "md5": "19f2e4e8b4cd4efb8abfdb22574ca8c3",
+        "optimizedRootRows": 433,
+        "packedBytes": 32271,
+        "path": "res:/staticdata/typelist.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "82d4842ea45f89b04992f8233cf742b4",
+        "verified": true
+      },
+      "res:/staticdata/typematerials.fsdbinary": {
+        "actual": {
+          "bytes": 328,
+          "md5": "30f6802a610d81046499d5885732ff73",
+          "sha256": "539ea2a0a2049fe6a297d56b64ae1b97a6d39fdca901bf0683fe1be2c0debc4b"
+        },
+        "bytes": 328,
+        "cachePath": "66/66c8b3f32a0b893b_30f6802a610d81046499d5885732ff73",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/66/66c8b3f32a0b893b_30f6802a610d81046499d5885732ff73",
+        "md5": "30f6802a610d81046499d5885732ff73",
+        "optimizedRootRows": 5,
+        "packedBytes": 206,
+        "path": "res:/staticdata/typematerials.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "3bc152cbb9d7f40cf7750ed928c37b21",
+        "verified": true
+      },
+      "res:/staticdata/types.fsdbinary": {
+        "actual": {
+          "bytes": 5406592,
+          "md5": "917d04d6594426aa9a9efec2ffab311b",
+          "sha256": "824e2dd950067fc90679dafa9b6c1e421c0ff38f7ca36ed302e686ddd34456fc"
+        },
+        "bytes": 5406592,
+        "cachePath": "3c/3cc5bf8ff5e9099a_917d04d6594426aa9a9efec2ffab311b",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/3c/3cc5bf8ff5e9099a_917d04d6594426aa9a9efec2ffab311b",
+        "md5": "917d04d6594426aa9a9efec2ffab311b",
+        "optimizedRootRows": 32925,
+        "packedBytes": 688122,
+        "path": "res:/staticdata/types.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "8d7a099712d997ddc7b0f218c5c8a396",
+        "verified": true
+      },
+      "res:/staticdata/uiblinks.fsdbinary": {
+        "actual": {
+          "bytes": 206,
+          "md5": "e7f80cf8a8fc3d56e1f234cbd5530ec6",
+          "sha256": "cb9f1a21845daf45fad0e72edc0803471660bce189abe2465cbc0ae5e19c0196"
+        },
+        "bytes": 206,
+        "cachePath": "ae/aea7d76ab9ceca70_e7f80cf8a8fc3d56e1f234cbd5530ec6",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/ae/aea7d76ab9ceca70_e7f80cf8a8fc3d56e1f234cbd5530ec6",
+        "md5": "e7f80cf8a8fc3d56e1f234cbd5530ec6",
+        "optimizedRootRows": 1,
+        "packedBytes": 170,
+        "path": "res:/staticdata/uiblinks.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "3cc25a921f0746cd119c4d00c42d2727",
+        "verified": true
+      },
+      "res:/staticdata/uielementtypes.fsdbinary": {
+        "actual": {
+          "bytes": 1516,
+          "md5": "efc91cbd34cd3c87a26c546bdff17301",
+          "sha256": "bc6da6a0008c03fac0700fb980df504026f751ddb1660ae47c382f3d5e65ec31"
+        },
+        "bytes": 1516,
+        "cachePath": "79/79f4a5026185f63a_efc91cbd34cd3c87a26c546bdff17301",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/79/79f4a5026185f63a_efc91cbd34cd3c87a26c546bdff17301",
+        "md5": "efc91cbd34cd3c87a26c546bdff17301",
+        "optimizedRootRows": 9,
+        "packedBytes": 665,
+        "path": "res:/staticdata/uielementtypes.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "48ebc1e9942d744e3bf99542b400ef44",
+        "verified": true
+      },
+      "res:/staticdata/uihidingtemplates.fsdbinary": {
+        "actual": {
+          "bytes": 392,
+          "md5": "1a5638cda65c56111edaf18189837938",
+          "sha256": "a41619696a6a40c071bedeecf793df37305a746321152e7c02490fc01f0ca8db"
+        },
+        "bytes": 392,
+        "cachePath": "a9/a923fd3700062bd1_1a5638cda65c56111edaf18189837938",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/a9/a923fd3700062bd1_1a5638cda65c56111edaf18189837938",
+        "md5": "1a5638cda65c56111edaf18189837938",
+        "optimizedRootRows": 1,
+        "packedBytes": 205,
+        "path": "res:/staticdata/uihidingtemplates.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "549675093469ec268c4a0aa6ddc7e596",
+        "verified": true
+      },
+      "res:/staticdata/uihighlights.fsdbinary": {
+        "actual": {
+          "bytes": 447,
+          "md5": "1c62eb57ee086b409a1da4079afc05b0",
+          "sha256": "74cb406f97f070daee851aee4a3ea46ba47320dfea5b9dcf026be7af553ac978"
+        },
+        "bytes": 447,
+        "cachePath": "b9/b9f0e6d9bda24cea_1c62eb57ee086b409a1da4079afc05b0",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/b9/b9f0e6d9bda24cea_1c62eb57ee086b409a1da4079afc05b0",
+        "md5": "1c62eb57ee086b409a1da4079afc05b0",
+        "optimizedRootRows": 2,
+        "packedBytes": 236,
+        "path": "res:/staticdata/uihighlights.fsdbinary",
+        "present": true,
+        "schemaFingerprint": "e091c9424bfb8222b371d687190f0a8a",
+        "verified": true
+      },
+      "res:/staticdata/wrecks.static": {
+        "actual": {
+          "bytes": 15349,
+          "md5": "5c5ff4333ddefa62984d01d7db171d9d",
+          "sha256": "5260df5b4db6651b95704f775c70a37a6d0f20ce687f9ec5186a24c7499019a7"
+        },
+        "bytes": 15349,
+        "cachePath": "3e/3ea8ef56a0e4ccc0_5c5ff4333ddefa62984d01d7db171d9d",
+        "localPath": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/3e/3ea8ef56a0e4ccc0_5c5ff4333ddefa62984d01d7db171d9d",
+        "md5": "5c5ff4333ddefa62984d01d7db171d9d",
+        "packedBytes": 2726,
+        "path": "res:/staticdata/wrecks.static",
+        "present": true,
+        "verified": true
+      }
+    }
+  }
+}

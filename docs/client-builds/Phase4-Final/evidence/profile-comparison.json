@@ -1,0 +1,430 @@
+{
+  "archives": {
+    "Nova": {
+      "bytes": 88700340,
+      "sha256": "72d2521ca936b6e888c47548a5f98ae1f7a9392c02552ad0794a84b50c78655b"
+    },
+    "nebula": {
+      "bytes": 88664607,
+      "sha256": "c31d2d4ba8edbd1e15297623dbb6856b6f515376e20b2286da98c20ecda271a9"
+    }
+  },
+  "direction": "Nova2702949 -> nebula2703993",
+  "format": "evejs-phase4-final-profile-comparison-v1",
+  "limits": "Resource payload changes here are indexed MD5/length observations. Static resource payload integrity is covered separately by each profile inventory; this does not decode their field semantics or establish live gameplay behavior.",
+  "method": "Fresh read-only index parse. Logical path membership and content equality compare lowercased path, indexed MD5 and uncompressed length. Protocol dictionary and normalized-code comparison use prior parsed data with current complete archive SHA verified.",
+  "normalizedCodeChanged": [
+    "dogma/const",
+    "eve/client/script/environment/spaceObject/corpse",
+    "eve/client/script/ui/login/intromovie/ui/introvideo",
+    "eve/client/script/ui/shared/neocom/wallet/walletWnd"
+  ],
+  "protocolDictionariesEqual": true,
+  "resourceIndexes": {
+    "Nova": {
+      "bytes": 8158734,
+      "md5": "f220c1e855248acf206ff5a12b0024e1",
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Final/EVE Frontier P4/Nova/resfileindex.txt",
+      "sha256": "6844b03f97be60e32a6bd9836ce293efb5eddbbd1a691916debe82a5150c6f4d"
+    },
+    "nebula": {
+      "bytes": 8158734,
+      "md5": "7a2ef5b96ab322abe72976fe901a44bd",
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Final/EVE Frontier P4/nebula/resfileindex.txt",
+      "sha256": "7206e372c7c34a4323672a24bb4ab76c81b99158c3e995d821d941aebace2aaf"
+    }
+  },
+  "resources": {
+    "added": {},
+    "baselineCount": 48831,
+    "changed": {
+      "res:/audio/soundbanksinfo.json": {
+        "Nova": {
+          "bytes": 3804387,
+          "cachePath": "a2/a20c7962e357cfe9_269111eb2ae484563b4a1450ee2c711f",
+          "md5": "269111eb2ae484563b4a1450ee2c711f"
+        },
+        "nebula": {
+          "bytes": 3804387,
+          "cachePath": "a2/a20c7962e357cfe9_9680f5b2ea6be4967f092d90cac5ac69",
+          "md5": "9680f5b2ea6be4967f092d90cac5ac69"
+        }
+      },
+      "res:/audio/soundbanksinfo.xml": {
+        "Nova": {
+          "bytes": 3150573,
+          "cachePath": "4b/4ba32af50b80bf9a_0948793621f4623ca94172abc53efc75",
+          "md5": "0948793621f4623ca94172abc53efc75"
+        },
+        "nebula": {
+          "bytes": 3150573,
+          "cachePath": "4b/4ba32af50b80bf9a_034a0f5145e80d6bdd174f22aa2eec08",
+          "md5": "034a0f5145e80d6bdd174f22aa2eec08"
+        }
+      },
+      "res:/audio/turrets.bnk": {
+        "Nova": {
+          "bytes": 366610711,
+          "cachePath": "d2/d218fb784d254413_b13d3e74a16943fb0a55dfa725225d72",
+          "md5": "b13d3e74a16943fb0a55dfa725225d72"
+        },
+        "nebula": {
+          "bytes": 366610695,
+          "cachePath": "d2/d218fb784d254413_d14aae7de846e0e62fd856ade7ea2b59",
+          "md5": "d14aae7de846e0e62fd856ade7ea2b59"
+        }
+      },
+      "res:/localizationfsd/localization_fsd_de.pickle": {
+        "Nova": {
+          "bytes": 30893498,
+          "cachePath": "f7/f781e479bccfd00e_3b46d6bfc5a4ca7e9af24825388cb3e7",
+          "md5": "3b46d6bfc5a4ca7e9af24825388cb3e7"
+        },
+        "nebula": {
+          "bytes": 30893462,
+          "cachePath": "f7/f781e479bccfd00e_8f422d127f73107b8e15de5fa7e695b2",
+          "md5": "8f422d127f73107b8e15de5fa7e695b2"
+        }
+      },
+      "res:/localizationfsd/localization_fsd_en-us.pickle": {
+        "Nova": {
+          "bytes": 27591952,
+          "cachePath": "2c/2c3038b3c38e91a1_b9c9e0625d73b7390ac4ca0c73d61100",
+          "md5": "b9c9e0625d73b7390ac4ca0c73d61100"
+        },
+        "nebula": {
+          "bytes": 27591607,
+          "cachePath": "2c/2c3038b3c38e91a1_b696afd07783221bff6486825221d562",
+          "md5": "b696afd07783221bff6486825221d562"
+        }
+      },
+      "res:/localizationfsd/localization_fsd_es.pickle": {
+        "Nova": {
+          "bytes": 286655,
+          "cachePath": "68/68766cf9c7eb3001_148e03e5ab14a2fa5f210ff2b56b901b",
+          "md5": "148e03e5ab14a2fa5f210ff2b56b901b"
+        },
+        "nebula": {
+          "bytes": 286655,
+          "cachePath": "68/68766cf9c7eb3001_f68e1f273c5aa6546cc75bc2192478fe",
+          "md5": "f68e1f273c5aa6546cc75bc2192478fe"
+        }
+      },
+      "res:/localizationfsd/localization_fsd_fr.pickle": {
+        "Nova": {
+          "bytes": 32337340,
+          "cachePath": "4a/4a0f5fe70b667169_4de659e162eb17d99b019757d94b7cd9",
+          "md5": "4de659e162eb17d99b019757d94b7cd9"
+        },
+        "nebula": {
+          "bytes": 32337334,
+          "cachePath": "4a/4a0f5fe70b667169_ecbf6fb7a333480b73cf8e82de72f25f",
+          "md5": "ecbf6fb7a333480b73cf8e82de72f25f"
+        }
+      },
+      "res:/localizationfsd/localization_fsd_it.pickle": {
+        "Nova": {
+          "bytes": 237384,
+          "cachePath": "9f/9f056f7130bc9bf8_7226f2655dee9da3a0f2f44c2a42a973",
+          "md5": "7226f2655dee9da3a0f2f44c2a42a973"
+        },
+        "nebula": {
+          "bytes": 237366,
+          "cachePath": "9f/9f056f7130bc9bf8_7f5636eb8a813803ede0d36ff5ef5866",
+          "md5": "7f5636eb8a813803ede0d36ff5ef5866"
+        }
+      },
+      "res:/localizationfsd/localization_fsd_ja.pickle": {
+        "Nova": {
+          "bytes": 33852128,
+          "cachePath": "82/82afc4ce93a0dc14_1a5d7c4796e7c55ce70ee6ffdf089abf",
+          "md5": "1a5d7c4796e7c55ce70ee6ffdf089abf"
+        },
+        "nebula": {
+          "bytes": 33852083,
+          "cachePath": "82/82afc4ce93a0dc14_7c0f1cd1e5ff43c1a849cb733e0ac224",
+          "md5": "7c0f1cd1e5ff43c1a849cb733e0ac224"
+        }
+      },
+      "res:/localizationfsd/localization_fsd_ko.pickle": {
+        "Nova": {
+          "bytes": 29771576,
+          "cachePath": "f5/f5467fdb71de5d33_34e146bd53ddd464a2faf15f59e6c06e",
+          "md5": "34e146bd53ddd464a2faf15f59e6c06e"
+        },
+        "nebula": {
+          "bytes": 29771540,
+          "cachePath": "f5/f5467fdb71de5d33_ff64981b2bfcca5acd3802578249e942",
+          "md5": "ff64981b2bfcca5acd3802578249e942"
+        }
+      },
+      "res:/localizationfsd/localization_fsd_main.pickle": {
+        "Nova": {
+          "bytes": 1469791,
+          "cachePath": "79/79a473897ae5f3b0_19cf7946eb1e950f02d0b565909cf8c8",
+          "md5": "19cf7946eb1e950f02d0b565909cf8c8"
+        },
+        "nebula": {
+          "bytes": 1469605,
+          "cachePath": "79/79a473897ae5f3b0_b7e5c943c241cc820b4511c70bb67b5f",
+          "md5": "b7e5c943c241cc820b4511c70bb67b5f"
+        }
+      },
+      "res:/localizationfsd/localization_fsd_ru.pickle": {
+        "Nova": {
+          "bytes": 45325658,
+          "cachePath": "4c/4c56e191aaa0e618_aaaad22a05b6a469ae7652eabcc7f95e",
+          "md5": "aaaad22a05b6a469ae7652eabcc7f95e"
+        },
+        "nebula": {
+          "bytes": 45325640,
+          "cachePath": "4c/4c56e191aaa0e618_6bc802657d1423b51c97348bc90478ac",
+          "md5": "6bc802657d1423b51c97348bc90478ac"
+        }
+      },
+      "res:/localizationfsd/localization_fsd_zh.pickle": {
+        "Nova": {
+          "bytes": 23556650,
+          "cachePath": "87/87bfc3b6eab5e5d3_ad9eeb00f032889ba3c4b6705705ea9a",
+          "md5": "ad9eeb00f032889ba3c4b6705705ea9a"
+        },
+        "nebula": {
+          "bytes": 23556632,
+          "cachePath": "87/87bfc3b6eab5e5d3_9de62ce2e8fea378e88e3fdc528d6809",
+          "md5": "9de62ce2e8fea378e88e3fdc528d6809"
+        }
+      },
+      "res:/staticdata/blueprints.static": {
+        "Nova": {
+          "bytes": 4636672,
+          "cachePath": "f0/f016514b481ba503_18c57e5e87e0874e8b0c9ac609755dab",
+          "md5": "18c57e5e87e0874e8b0c9ac609755dab"
+        },
+        "nebula": {
+          "bytes": 4653056,
+          "cachePath": "f0/f016514b481ba503_24895323b9533018f0b63ce2199e5c0f",
+          "md5": "24895323b9533018f0b63ce2199e5c0f"
+        }
+      },
+      "res:/staticdata/clonegrades.static": {
+        "Nova": {
+          "bytes": 49152,
+          "cachePath": "d6/d650a8ea71b2f13c_82d6b37246ea0af0ceaeedcde9af9d6f",
+          "md5": "82d6b37246ea0af0ceaeedcde9af9d6f"
+        },
+        "nebula": {
+          "bytes": 49152,
+          "cachePath": "d6/d650a8ea71b2f13c_b2eca990a707c04bc368662def902a0f",
+          "md5": "b2eca990a707c04bc368662def902a0f"
+        }
+      },
+      "res:/staticdata/dbuffcollections.static": {
+        "Nova": {
+          "bytes": 73728,
+          "cachePath": "f9/f9f241d8c3a11761_1ea0a21a3ba76dbe236c218588763465",
+          "md5": "1ea0a21a3ba76dbe236c218588763465"
+        },
+        "nebula": {
+          "bytes": 73728,
+          "cachePath": "f9/f9f241d8c3a11761_c92db3665c07d481095efd73fbc4970d",
+          "md5": "c92db3665c07d481095efd73fbc4970d"
+        }
+      },
+      "res:/staticdata/fighterabilities.static": {
+        "Nova": {
+          "bytes": 32768,
+          "cachePath": "4a/4a2d3f8fdea01bca_67e01334f91d5ecbe2ff82dd76eae557",
+          "md5": "67e01334f91d5ecbe2ff82dd76eae557"
+        },
+        "nebula": {
+          "bytes": 32768,
+          "cachePath": "4a/4a2d3f8fdea01bca_23d0658e78210b52fa19b588e52ef3f3",
+          "md5": "23d0658e78210b52fa19b588e52ef3f3"
+        }
+      },
+      "res:/staticdata/fighterabilitiesbytype.static": {
+        "Nova": {
+          "bytes": 40960,
+          "cachePath": "61/61e4f3091016e61b_d2e9ea03500360347f09bdeba824eace",
+          "md5": "d2e9ea03500360347f09bdeba824eace"
+        },
+        "nebula": {
+          "bytes": 40960,
+          "cachePath": "61/61e4f3091016e61b_8b7dc75e5c1a6ff197cb14680ab6f72f",
+          "md5": "8b7dc75e5c1a6ff197cb14680ab6f72f"
+        }
+      },
+      "res:/staticdata/graphicids.fsdbinary": {
+        "Nova": {
+          "bytes": 712293,
+          "cachePath": "93/93b769c4ef6215a9_6bb151eea81d4278414919deb829bb54",
+          "md5": "6bb151eea81d4278414919deb829bb54"
+        },
+        "nebula": {
+          "bytes": 712293,
+          "cachePath": "93/93b769c4ef6215a9_f1bfc8380e4f1588b2b466d88702249d",
+          "md5": "f1bfc8380e4f1588b2b466d88702249d"
+        }
+      },
+      "res:/staticdata/industry_activities.static": {
+        "Nova": {
+          "bytes": 24576,
+          "cachePath": "cf/cf39879e8576d0bb_839e529dcd09c75e7aa626c7146a95b5",
+          "md5": "839e529dcd09c75e7aa626c7146a95b5"
+        },
+        "nebula": {
+          "bytes": 24576,
+          "cachePath": "cf/cf39879e8576d0bb_70738774c1e38e5d3a713afaf102e00a",
+          "md5": "70738774c1e38e5d3a713afaf102e00a"
+        }
+      },
+      "res:/staticdata/industry_activity_modifier_sources.static": {
+        "Nova": {
+          "bytes": 77824,
+          "cachePath": "8d/8d0a225a112080f4_c32b37c589f89d39cf319c645faf2ca6",
+          "md5": "c32b37c589f89d39cf319c645faf2ca6"
+        },
+        "nebula": {
+          "bytes": 77824,
+          "cachePath": "8d/8d0a225a112080f4_c90771a33de7ad4e69ec95bb3c5ad7d3",
+          "md5": "c90771a33de7ad4e69ec95bb3c5ad7d3"
+        }
+      },
+      "res:/staticdata/industry_activity_target_filters.static": {
+        "Nova": {
+          "bytes": 24576,
+          "cachePath": "92/9299cb77f6cae635_7c8a5a252a3c8ef747ab6fee9fe28487",
+          "md5": "7c8a5a252a3c8ef747ab6fee9fe28487"
+        },
+        "nebula": {
+          "bytes": 24576,
+          "cachePath": "92/9299cb77f6cae635_87f3eaddc6a9cc0bfacb8520d6ced1fc",
+          "md5": "87f3eaddc6a9cc0bfacb8520d6ced1fc"
+        }
+      },
+      "res:/staticdata/industry_assembly_lines.static": {
+        "Nova": {
+          "bytes": 376832,
+          "cachePath": "25/2551232a8388c69e_2547c97a94315c79604de66740332874",
+          "md5": "2547c97a94315c79604de66740332874"
+        },
+        "nebula": {
+          "bytes": 368640,
+          "cachePath": "25/2551232a8388c69e_2ce6305ca27c8a8be4af8ae8bc9d402f",
+          "md5": "2ce6305ca27c8a8be4af8ae8bc9d402f"
+        }
+      },
+      "res:/staticdata/industry_installation_types.static": {
+        "Nova": {
+          "bytes": 40960,
+          "cachePath": "24/24cbb4648f9cff2c_1f44915d3d37be3aa223bdff13e1456b",
+          "md5": "1f44915d3d37be3aa223bdff13e1456b"
+        },
+        "nebula": {
+          "bytes": 40960,
+          "cachePath": "24/24cbb4648f9cff2c_36d0b9567db08591c3d4a9f87e09a188",
+          "md5": "36d0b9567db08591c3d4a9f87e09a188"
+        }
+      },
+      "res:/staticdata/infobubbles.static": {
+        "Nova": {
+          "bytes": 331776,
+          "cachePath": "07/07df8a3489660b9e_1a11abe0652e4d230506c2b700e6600f",
+          "md5": "1a11abe0652e4d230506c2b700e6600f"
+        },
+        "nebula": {
+          "bytes": 331776,
+          "cachePath": "07/07df8a3489660b9e_a7774a07983c39d3f3866a413b8d30c6",
+          "md5": "a7774a07983c39d3f3866a413b8d30c6"
+        }
+      },
+      "res:/staticdata/jumps.static": {
+        "Nova": {
+          "bytes": 5789,
+          "cachePath": "cf/cf4829ec2741484c_b0ec5d35e85016613eb53a4c16dea8eb",
+          "md5": "b0ec5d35e85016613eb53a4c16dea8eb"
+        },
+        "nebula": {
+          "bytes": 5789,
+          "cachePath": "cf/cf4829ec2741484c_2294b9635304c7bcf301bf2324581c44",
+          "md5": "2294b9635304c7bcf301bf2324581c44"
+        }
+      },
+      "res:/staticdata/nodegraphs.fsdbinary": {
+        "Nova": {
+          "bytes": 628810,
+          "cachePath": "44/4459db12c57cef74_1ffbaff2703bb6243583bfcb19dd97c2",
+          "md5": "1ffbaff2703bb6243583bfcb19dd97c2"
+        },
+        "nebula": {
+          "bytes": 628098,
+          "cachePath": "44/4459db12c57cef74_860f8b3c99348e4e4dc36d19c414d893",
+          "md5": "860f8b3c99348e4e4dc36d19c414d893"
+        }
+      },
+      "res:/staticdata/skinlicenses.static": {
+        "Nova": {
+          "bytes": 1736704,
+          "cachePath": "dd/ddec335c5166e1ce_940b3ffa26635211c05c230f0a706643",
+          "md5": "940b3ffa26635211c05c230f0a706643"
+        },
+        "nebula": {
+          "bytes": 1732608,
+          "cachePath": "dd/ddec335c5166e1ce_3d802ad9d0b8a3fd5cc238e69176a2b7",
+          "md5": "3d802ad9d0b8a3fd5cc238e69176a2b7"
+        }
+      },
+      "res:/staticdata/skinmaterials.static": {
+        "Nova": {
+          "bytes": 143360,
+          "cachePath": "04/04fe8caf2896e754_d14e75fef4351bba46d72b06fe87481b",
+          "md5": "d14e75fef4351bba46d72b06fe87481b"
+        },
+        "nebula": {
+          "bytes": 143360,
+          "cachePath": "04/04fe8caf2896e754_e7f7bf3c6c0d3f2537b820012ccef130",
+          "md5": "e7f7bf3c6c0d3f2537b820012ccef130"
+        }
+      },
+      "res:/staticdata/skins.static": {
+        "Nova": {
+          "bytes": 3330048,
+          "cachePath": "cb/cb291acd32af7f27_1577a12f8ba384eb4aa1700aef791a7e",
+          "md5": "1577a12f8ba384eb4aa1700aef791a7e"
+        },
+        "nebula": {
+          "bytes": 3330048,
+          "cachePath": "cb/cb291acd32af7f27_5be3680267e74f0037cdf284283be600",
+          "md5": "5be3680267e74f0037cdf284283be600"
+        }
+      },
+      "res:/staticdata/starmapcache.pickle": {
+        "Nova": {
+          "bytes": 71037,
+          "cachePath": "2e/2edadfca55978bdf_6a9aefd3b3063bd8a1bb7b4b2d269a6c",
+          "md5": "6a9aefd3b3063bd8a1bb7b4b2d269a6c"
+        },
+        "nebula": {
+          "bytes": 71037,
+          "cachePath": "2e/2edadfca55978bdf_7e565c2b6e33e96ab7f0b8ee66f1b4e1",
+          "md5": "7e565c2b6e33e96ab7f0b8ee66f1b4e1"
+        }
+      },
+      "res:/staticdata/wwiseevents.fsdbinary": {
+        "Nova": {
+          "bytes": 1939840,
+          "cachePath": "fc/fc38a474e37bf549_c1c67be09534daba7c0b1ac82e6e29cb",
+          "md5": "c1c67be09534daba7c0b1ac82e6e29cb"
+        },
+        "nebula": {
+          "bytes": 1939840,
+          "cachePath": "fc/fc38a474e37bf549_125aeee4a1cd5351f663cc5325cfea5b",
+          "md5": "125aeee4a1cd5351f663cc5325cfea5b"
+        }
+      }
+    },
+    "removed": {},
+    "sameCount": 48799,
+    "targetCount": 48831
+  }
+}
