@@ -60,6 +60,8 @@ function applySkillShotUtilityHit({
   chargeItem,
   nowMs = Date.now(),
   rampMultiplier = 1,
+  contactPoint = null,
+  rayDirection = null,
   miningRuntime = null,
 }: Record<string, any> = {}) {
   const profile = getHeldBeamUtilityProfile(moduleItem && moduleItem.typeID);
@@ -86,6 +88,8 @@ function applySkillShotUtilityHit({
           nowMs,
           {
             rampMultiplier: Math.max(0, toFiniteNumber(rampMultiplier, 1)),
+            contactPoint,
+            rayDirection,
           },
         )
       : { matched: false };

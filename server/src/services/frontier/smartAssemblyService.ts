@@ -263,6 +263,22 @@ class SmartAssemblyService extends BaseService {
     super("smartAssemblyService");
   }
 
+  Handle_publish_location(args, session) {
+    const result = require("./structurePublicationRuntime").publishLocation(session, args?.[0], true);
+    if (!result?.success) throwAssemblyError(result);
+    return null;
+  }
+
+  Handle_unpublish_location(args, session) {
+    const result = require("./structurePublicationRuntime").publishLocation(session, args?.[0], false);
+    if (!result?.success) throwAssemblyError(result);
+    return null;
+  }
+
+  Handle_get_published_assemblies(_args, session) {
+    return buildList(require("./structurePublicationRuntime").listPublished(session).map(row => buildDict(Object.entries(row))));
+  }
+
   Handle_get_my_assemblies(_args, session) {
     return buildList(
       getDeploymentRuntime().listMyAssemblies(session).map((record) => (

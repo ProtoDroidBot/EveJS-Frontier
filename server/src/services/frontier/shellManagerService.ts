@@ -17,6 +17,12 @@ const {
 } = require("../inventory/itemStore");
 const environmentalEffects = require("./environmentalEffectsService");
 const shellEquipment = require("./shellEquipmentRuntime");
+const progression = require("./progressionRuntime");
+
+function progressionResult(result, returnItemID = false) {
+  if (!result || result.success !== true) throwShellNotify(`Shell action refused: ${result?.errorMsg || "FAILED"}.`);
+  return returnItemID ? Number(result.data?.grantedItems?.[0]?.itemID) : true;
+}
 
 const { DEFAULT_SHELL_TYPE_ID, SHELL_CATEGORY_ID } = shellEquipment;
 // frontier/character/client/shell/integration.pyc, _change_shell_name().
@@ -46,7 +52,7 @@ function buildShellDbData(item) {
     ["shellID", Number(item.itemID)],
     ["shellUniqueID", String(item.itemID)],
     ["shellName", String(item.itemName || "Blank Shell")],
-    ["shellCrownID", null],
+    ["shellCrownID", Object.values<any>(progression.getRuntime().getState(Number(item.ownerID)).crowns).find(crown => crown.shellID === Number(item.itemID))?.crownID || null],
     ["implants", buildList(implantTypeIDs)],
   ]);
 }
@@ -197,7 +203,7 @@ function renameOwnedShell(session, shellID, rawName) {
 
 function ensureActiveShell(session) {
   const characterID = getSessionCharacterID(session);
-  const existing = listOwnedShells(characterID)[0] || null;
+  const existing = shellEquipment.getActiveShell(characterID);
   if (existing) {
     return existing;
   }
@@ -266,12 +272,14 @@ class ShellManagerService extends BaseService {
     ];
   }
 
-  Handle_get_medical_trait_breakdown() {
-    return buildList([]);
+  Handle_get_medical_trait_breakdown(_args, session) {
+    const id = getSessionCharacterID(session);
+    return buildList(id ? progression.medicalBreakdown(progression.getRuntime().medical(id)) : []);
   }
 
-  Handle_get_last_crown_created_time() {
-    return null;
+  Handle_get_last_crown_created_time(_args, session) {
+    const id = getSessionCharacterID(session), time = id ? progression.getRuntime().getState(id).lastCrownAtMs : null;
+    return time == null ? null : progression.filetime(time);
   }
 
   Handle_get_shells_db_data_basic(args, session) {
@@ -338,16 +346,16 @@ class ShellManagerService extends BaseService {
     throwShellNotify(UNSUPPORTED_SHELL_MUTATION_NOTIFY);
   }
 
-  Handle_create_crown() {
-    return this._rejectUnsupportedMutation("create_crown");
+  Handle_create_crown(args, session) {
+    return progressionResult(progression.getRuntime().createCrown(session, unwrapMarshalValue(args)?.[0]), true);
   }
 
-  Handle_implant_crown() {
-    return this._rejectUnsupportedMutation("implant_crown");
+  Handle_implant_crown(args, session) {
+    return progressionResult(progression.getRuntime().crownMutation(session, unwrapMarshalValue(args)?.[0]));
   }
 
-  Handle_delete_active_crown() {
-    return this._rejectUnsupportedMutation("delete_active_crown");
+  Handle_delete_active_crown(_args, session) {
+    return progressionResult(progression.getRuntime().crownMutation(session, null, true));
   }
 
   Handle_implant_implant(args, session) {
@@ -374,20 +382,24 @@ class ShellManagerService extends BaseService {
     return this._rejectUnsupportedMutation("admin_create_crown_without_cooldown");
   }
 
-  Handle_clear_medical_trait_implants() {
-    return this._rejectUnsupportedMutation("clear_medical_trait_implants");
+  Handle_clear_medical_trait_implants(_args, session) {
+    // This ordinary client action must consume the same authored kit as Use.
+    const id = getSessionCharacterID(session);
+    const locationIDs = [id, Number(session?.stationid || session?.stationID), Number(session?.shipid || session?.shipID)];
+    const kit = require("../inventory/itemStore").listCharacterItems(id).find(item => item.typeID === progression.catalog.constants.medicalKitTypeID && locationIDs.includes(item.locationID) && [4, 5].includes(item.flagID));
+    return progressionResult(kit ? progression.getRuntime().treat(session, kit.itemID, false) : { success: false, errorMsg: "MEDICAL_KIT_REQUIRED" });
   }
 
   Handle_admin_grant_medical_trait_implant() {
     return this._rejectUnsupportedMutation("admin_grant_medical_trait_implant");
   }
 
-  Handle_use_medical_kit() {
-    return this._rejectUnsupportedMutation("use_medical_kit");
+  Handle_use_medical_kit(args, session) {
+    return progressionResult(progression.getRuntime().treat(session, unwrapMarshalValue(args)?.[0], false));
   }
 
-  Handle_use_status_effect_remedy() {
-    return this._rejectUnsupportedMutation("use_status_effect_remedy");
+  Handle_use_status_effect_remedy(args, session) {
+    return progressionResult(progression.getRuntime().treat(session, unwrapMarshalValue(args)?.[0], true));
   }
 
   Handle_admin_add_reignment_to_inventory() {
@@ -398,12 +410,13 @@ class ShellManagerService extends BaseService {
     return this._rejectUnsupportedMutation("admin_add_medical_kit_to_inventory");
   }
 
-  Handle_create_and_activate_shell() {
-    return this._rejectUnsupportedMutation("create_and_activate_shell");
+  Handle_create_and_activate_shell(args, session) {
+    return progressionResult(progression.getRuntime().createShell(session, unwrapMarshalValue(args)?.[0]), true);
   }
 
-  Handle_activate_shell() {
-    return this._rejectUnsupportedMutation("activate_shell");
+  Handle_activate_shell(args, session) {
+    const values = unwrapMarshalValue(args);
+    return progressionResult(progression.getRuntime().activateShell(session, values?.[0], values?.[1]));
   }
 }
 

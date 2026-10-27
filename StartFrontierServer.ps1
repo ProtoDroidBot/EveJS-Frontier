@@ -31,6 +31,11 @@ param(
     [switch]$DryRun
 )
 
+# Explicit target-build selection must use its native handshake codename.
+if ($Build -eq '3640684' -and -not $PSBoundParameters.ContainsKey('Codename')) {
+    $Codename = 'cycle-7'
+}
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 

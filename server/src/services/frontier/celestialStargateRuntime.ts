@@ -32,6 +32,11 @@ const STARGATE_RESOURCE_KIND = Object.freeze({
   FUEL: "fuel",
 });
 
+const TARGET_REBUILD_COST = Object.freeze({ 84180: 86, 84210: 1204, 84182: 920 });
+const TARGET_FUEL_ENERGY = Object.freeze({ 78516: 444, 84868: 444, 78437: 1008, 78515: 888 });
+const TARGET_JUMP_ENERGY_COST = 22176;
+const TARGET_MAX_ENERGY = TARGET_JUMP_ENERGY_COST * 1000;
+
 function cloneValue(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
@@ -187,6 +192,9 @@ function publicGateState(record) {
       fuel: (record.requirements?.fuel || []).map(project),
     },
     updatedAtMs: nonNegativeInt(record.updatedAtMs, 0),
+    target3640684: record.target3640684 === true,
+    fuelEnergy: nonNegativeInt(record.fuelEnergy, 0),
+    targetActivationState: record.status !== STARGATE_MAINTENANCE_STATUS.ACTIVE ? 0 : nonNegativeInt(record.fuelEnergy, 0) >= TARGET_JUMP_ENERGY_COST ? 2 : 1,
   };
 }
 
@@ -234,6 +242,13 @@ function createCelestialStargateRuntime(options: Record<string, any> = {}) {
     if (state.signals.length > MAX_SIGNALS) {
       state.signals.splice(0, state.signals.length - MAX_SIGNALS);
     }
+    if (typeof repository.prepareAtomicRowWrite === "function" && typeof repository.commitAtomicRowWrites === "function") {
+      try {
+        const result = repository.commitAtomicRowWrites(Object.entries(state).map(([key, value]) =>
+          repository.prepareAtomicRowWrite(TABLE, key, value)));
+        return result?.success ? { success: true as const } : { success: false as const, errorMsg: "STARGATE_STATE_WRITE_FAILED" };
+      } catch (_) { return { success: false as const, errorMsg: "STARGATE_STATE_WRITE_FAILED" }; }
+    }
     const result = repository.write(TABLE, "/", state, { force: true });
     if (!result || result.success !== true) {
       return { success: false as const, errorMsg: "STARGATE_STATE_WRITE_FAILED" };
@@ -264,6 +279,13 @@ function createCelestialStargateRuntime(options: Record<string, any> = {}) {
 
   function publishSignals(signals) {
     for (const signal of signals) {
+      if (typeof options.notifyDepot === "function") options.notifyDepot(signal.solarSystemID, signal.stargateID);
+      else {
+        for (const session of require("../chat/sessionRegistry").getSessions()) {
+          if (Number(session.solarsystemid2 || session.solarsystemid || session._space?.systemID) === signal.solarSystemID)
+            session.sendNotification?.("OnStargateDepotChanged", "clientID", [signal.stargateID]);
+        }
+      }
       for (const listener of listeners) {
         try { listener(cloneValue(signal)); } catch (_) { /* advisory observer */ }
       }
@@ -492,6 +514,121 @@ function createCelestialStargateRuntime(options: Record<string, any> = {}) {
     });
   }
 
+  function ensureTargetGate(stargateID) {
+    const gateID = positiveInt(stargateID, 0);
+    const gate = gateID && findStargate(gateID);
+    if (!gate) return { success: false as const, errorMsg: "STARGATE_NOT_FOUND" };
+    const existing = getRecord(gateID);
+    if (existing?.target3640684) return { success: true as const, data: publicGateState(existing) };
+    return mutate(state => {
+      let record = state.gates[String(gateID)];
+      if (!record) {
+        record = { schemaVersion: SCHEMA_VERSION, stargateID: gateID, typeID: gate.typeID,
+          solarSystemID: gate.solarSystemID, destinationID: gate.destinationID,
+          destinationSolarSystemID: gate.destinationSolarSystemID, status: STARGATE_MAINTENANCE_STATUS.ACTIVE,
+          requirements: normalizeRequirements({ materials: TARGET_REBUILD_COST }),
+          deposited: Object.fromEntries(Object.entries(TARGET_REBUILD_COST).map(([id, qty]) => [`material:${id}`, qty])),
+          pendingDeposits: {}, receipts: [], maintenanceRequestKeys: [], reactivationDurationMs: 3000,
+          activationCompleteAtMs: 0, revision: 1, createdAtMs: now(), updatedAtMs: now() };
+        state.gates[String(gateID)] = record;
+      }
+      record.target3640684 = true;
+      // Preserve old active links; deterministic 12..25-jump starter reserves
+      // use the exact target bounds, then all subsequent fuel is player-funded.
+      record.fuelEnergy = record.status === STARGATE_MAINTENANCE_STATUS.ACTIVE
+        ? TARGET_JUMP_ENERGY_COST * (12 + gateID % 14) : 0;
+      record.jumpReceipts = [];
+      setImmediate(() => refreshActivation(gateID));
+      return { success: true as const, data: publicGateState(record) };
+    });
+  }
+
+  function depositResourcesWithInventory(stargateID, entries, inventoryRequest, depositOptions: Record<string, any> = {}) {
+    const operationKey = String(depositOptions.operationKey || "").trim();
+    if (!operationKey || operationKey.length > 256) return { success: false as const, errorMsg: "STARGATE_DEPOSIT_OPERATION_INVALID" };
+    loadConfiguredGates();
+    const state = readRawState();
+    const record = state.gates[String(positiveInt(stargateID, 0))];
+    if (!record) return { success: false as const, errorMsg: "STARGATE_NOT_MANAGED" };
+    const receipt = (record.receipts || []).find(row => row.operationKey === operationKey);
+    if (receipt) return { success: true as const, committed: false, data: cloneValue(receipt), state: publicGateState(record), changes: [] };
+    let normalized;
+    let energy = 0;
+    if (depositOptions.targetFuel === true) {
+      if (!record.target3640684 || record.status !== STARGATE_MAINTENANCE_STATUS.ACTIVE) return { success: false as const, errorMsg: "STARGATE_NOT_REBUILT" };
+      if (!Array.isArray(entries) || !entries.length) return { success: false as const, errorMsg: "STARGATE_RESOURCES_REQUIRED" };
+      for (const entry of entries) {
+        const multiplier = TARGET_FUEL_ENERGY[Number(entry.typeID)];
+        if (!multiplier || !Number.isSafeInteger(entry.quantity) || entry.quantity <= 0) return { success: false as const, errorMsg: "STARGATE_FUEL_INVALID" };
+        energy += multiplier * entry.quantity;
+      }
+      if (!Number.isSafeInteger(energy) || Number(record.fuelEnergy || 0) + energy > TARGET_MAX_ENERGY) return { success: false as const, errorMsg: "STARGATE_RESOURCE_CAPACITY_EXCEEDED" };
+      normalized = entries.map(entry => ({ kind: "fuel-energy", typeID: Number(entry.typeID), quantity: entry.quantity }));
+      record.fuelEnergy = Number(record.fuelEnergy || 0) + energy;
+    } else {
+      if ([STARGATE_MAINTENANCE_STATUS.ACTIVE, STARGATE_MAINTENANCE_STATUS.REACTIVATING].includes(record.status)) return { success: false as const, errorMsg: "STARGATE_NOT_ACCEPTING_RESOURCES" };
+      const checked = normalizeDepositEntries(record, entries);
+      if (!checked.success) return checked;
+      normalized = checked.data;
+      for (const entry of normalized) {
+        const requirement = checked.requirements.get(requirementKey(entry.kind, entry.typeID));
+        const available = requirement.quantity - depositedQuantity(record, entry.kind, entry.typeID) - reservedQuantity(record, entry.kind, entry.typeID);
+        if (entry.quantity > available) return { success: false as const, errorMsg: "STARGATE_RESOURCE_CAPACITY_EXCEEDED" };
+        record.deposited[requirementKey(entry.kind, entry.typeID)] = depositedQuantity(record, entry.kind, entry.typeID) + entry.quantity;
+      }
+      record.status = resourcesReady(record) ? STARGATE_MAINTENANCE_STATUS.READY : STARGATE_MAINTENANCE_STATUS.DORMANT;
+      if (depositOptions.targetRebuild === true && resourcesReady(record)) record.status = STARGATE_MAINTENANCE_STATUS.ACTIVE;
+    }
+    const expected = new Map<number, number>();
+    for (const entry of normalized) expected.set(Number(entry.typeID), (expected.get(Number(entry.typeID)) || 0) + entry.quantity);
+    const actual = new Map<number, number>();
+    for (const entry of inventoryRequest.consumptions || []) actual.set(Number(entry.typeID), (actual.get(Number(entry.typeID)) || 0) + entry.quantity);
+    if (expected.size !== actual.size || [...expected].some(([id, qty]) => actual.get(id) !== qty)) return { success: false as const, errorMsg: "STARGATE_INVENTORY_PLAN_MISMATCH" };
+    record.revision++; record.updatedAtMs = now();
+    const committed = { operationKey, status: "committed", entries: cloneValue(normalized), actor: cloneValue(depositOptions.actor || null), committedAtMs: now(), gateRevision: record.revision };
+    record.receipts = [...(record.receipts || []), committed].slice(-MAX_RECEIPTS_PER_GATE);
+    const signal = appendSignal(state, record, energy > 0 ? "stargate.fuel_deposited" : "stargate.resources_deposited", { operationKey, energy, entries: cloneValue(normalized) });
+    state.revision++;
+    state.signals = state.signals.slice(-MAX_SIGNALS);
+    const proposals = Object.entries(state).map(([key, value]) => repository.prepareAtomicRowWrite(TABLE, key, value));
+    const transact = options.inventoryTransaction || require("../inventory/itemStore").applyInventoryTransactionWithAtomicRows;
+    const result = transact(inventoryRequest, proposals);
+    if (!result?.success) return result || { success: false as const, errorMsg: "STARGATE_ATOMIC_DEPOSIT_FAILED" };
+    publishSignals([signal]); refreshActivation(record.stargateID);
+    return { success: true as const, committed: true, data: committed, state: publicGateState(record), changes: result.data?.changes || [] };
+  }
+
+  function reserveJumpEnergy(stargateID, operationKey, actor = null) {
+    const record = getRecord(stargateID);
+    if (!record?.target3640684) return { success: true as const, managed: false };
+    const key = String(operationKey || "");
+    if (!key || key.length > 256) return { success: false as const, errorMsg: "STARGATE_JUMP_OPERATION_INVALID" };
+    return mutate(state => {
+      const gate = state.gates[String(stargateID)];
+      const old = (gate.jumpReceipts || []).find(row => row.operationKey === key);
+      if (old) return old.status === "refunded" ? { success: false as const, errorMsg: "STARGATE_JUMP_ALREADY_CANCELLED" } : { success: true as const, managed: true, replay: true };
+      if (gate.status !== STARGATE_MAINTENANCE_STATUS.ACTIVE || Number(gate.fuelEnergy || 0) < TARGET_JUMP_ENERGY_COST) return { success: false as const, errorMsg: "STARGATE_INSUFFICIENT_FUEL" };
+      gate.fuelEnergy -= TARGET_JUMP_ENERGY_COST; gate.revision++; gate.updatedAtMs = now();
+      gate.jumpReceipts = [...(gate.jumpReceipts || []), { operationKey: key, actor, status: "consumed", atMs: now() }].slice(-MAX_RECEIPTS_PER_GATE);
+      appendSignal(state, gate, "stargate.fuel_consumed", { operationKey: key, energy: TARGET_JUMP_ENERGY_COST });
+      setImmediate(() => refreshActivation(gate.stargateID));
+      return { success: true as const, managed: true };
+    });
+  }
+  function refundJumpEnergy(stargateID, operationKey) {
+    return mutate(state => {
+      const gate = state.gates[String(stargateID)];
+      const receipt = gate?.jumpReceipts?.find(row => row.operationKey === operationKey);
+      if (!receipt || receipt.status === "refunded") return { success: true as const, refunded: false };
+      receipt.status = "refunded";
+      gate.fuelEnergy = Math.min(TARGET_MAX_ENERGY, Number(gate.fuelEnergy || 0) + TARGET_JUMP_ENERGY_COST);
+      gate.revision++; gate.updatedAtMs = now();
+      appendSignal(state, gate, "stargate.fuel_refunded", { operationKey });
+      setImmediate(() => refreshActivation(gate.stargateID));
+      return { success: true as const, refunded: true };
+    });
+  }
+
   function cancelStargateResourceDeposit(stargateID, operationKey) {
     loadConfiguredGates();
     const numericID = positiveInt(stargateID, 0);
@@ -641,6 +778,10 @@ function createCelestialStargateRuntime(options: Record<string, any> = {}) {
 
   return {
     configureDormantStargate,
+    ensureTargetGate,
+    depositResourcesWithInventory,
+    reserveJumpEnergy,
+    refundJumpEnergy,
     getStargateState,
     listManagedStargates,
     prepareStargateResourceDeposit,
@@ -661,6 +802,7 @@ const runtime = createCelestialStargateRuntime({ autoConfigure: true });
 
 module.exports = {
   TABLE,
+  TARGET_REBUILD_COST, TARGET_FUEL_ENERGY, TARGET_JUMP_ENERGY_COST, TARGET_MAX_ENERGY,
   SCHEMA_VERSION,
   STARGATE_MAINTENANCE_STATUS,
   STARGATE_RESOURCE_KIND,

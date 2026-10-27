@@ -18,6 +18,8 @@ const {
 } = require(path.join(__dirname, "../../config/productionMissionPolicy"));
 
 let cache = null;
+let cacheProfileRevision = "";
+const contentProfile = require("./dungeonContentProfile");
 const BANNED_DUNGEON_TEMPLATE_IDS = new Set<any>(
   productionMissionPolicy.disabledMissions
     .flatMap(({ templateIDs }: Record<string, any>) => templateIDs)
@@ -353,7 +355,7 @@ function mergeFrontierDungeonSpawnTemplates(
 function buildCache() {
   const payload = mergeFrontierDungeonSpawnTemplates(
     sanitizePayload(
-      normalizePayload(readStaticTable(TABLE.DUNGEON_AUTHORITY)),
+      contentProfile.selectAuthorityPayload(normalizePayload(readStaticTable(TABLE.DUNGEON_AUTHORITY)), contentProfile.getContentProfileRevision()),
     ),
   );
   const templatesByID = new Map();
@@ -512,8 +514,10 @@ function buildCache() {
 }
 
 function ensureCache() {
-  if (!cache) {
+  const revision = contentProfile.getContentProfileRevision();
+  if (!cache || cacheProfileRevision !== revision) {
     cache = buildCache();
+    cacheProfileRevision = revision;
   }
   return cache;
 }

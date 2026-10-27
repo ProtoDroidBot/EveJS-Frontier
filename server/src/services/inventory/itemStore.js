@@ -1,5 +1,3 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const { isDeepStrictEqual } = require("util");
 const { performance } = require("perf_hooks");
@@ -4029,6 +4027,292 @@ function grantStackableItemsToCharacterLocationAndUpdateItem(charId, locationId,
         data: { item: cloneValue(updatedTarget), grantedItems, changes },
     };
 }
+/** Commit a domain-authorized inventory transaction with owner-scoped receipts.
+ * Callers must resolve reachable locations and capacity from server state, never
+ * copy those authorization fields from a client payload. Row factories see the
+ * staged item IDs so job/crown receipts can refer to outputs in the same commit.
+ */
+function applyInventoryTransactionWithAtomicRows(request, additionalRows = []) {
+    ensureMigrated();
+    const fail = errorMsg => ({ success: false, errorMsg });
+    if (!restorePendingLogisticsRollback())
+        return fail("PERSISTENCE_FLUSH_ERROR");
+    const ownerID = Number(request && request.characterID);
+    const characterRecord = readCharacters()[String(ownerID)];
+    if (!Number.isSafeInteger(ownerID) || ownerID <= 0 || !characterRecord)
+        return fail("CHARACTER_NOT_FOUND");
+    const consumptions = request.consumptions || [];
+    const moves = request.moves || [];
+    const updates = request.itemUpdates || [];
+    const grants = (request.grants || []).map(entry => ({ ...entry, itemType: entry.itemType ?? entry.typeID }));
+    if (![consumptions, moves, updates, grants].every(Array.isArray))
+        return fail("INVALID_INVENTORY_TRANSACTION");
+    const invalid = validateGrantEntries(grants);
+    if (invalid)
+        return invalid;
+    const previousItems = readItems();
+    const expectedVersion = itemMutationVersion;
+    const items = cloneValue(previousItems);
+    const changes = [], consumed = [], grantedItems = [];
+    const changedIDs = new Set(), touched = new Set();
+    const sourceLocations = new Set((request.sourceLocationIDs || []).map(Number));
+    const sourceFlags = new Set((request.sourceFlagIDs || []).map(Number));
+    const sourceOwners = new Set([ownerID, ...(request.sourceOwnerIDs || []).map(Number)]);
+    const accessible = new Set([ownerID, ...[characterRecord.stationID, characterRecord.stationid, characterRecord.structureID].map(Number), ...(request.accessibleLocationIDs || []).map(Number)]);
+    const validDestination = (locationID, flagID) => {
+        if (!Number.isSafeInteger(locationID) || locationID <= 0 || !Number.isSafeInteger(flagID) || flagID < 0)
+            return false;
+        const location = items[String(locationID)];
+        return location ? (Number(location.ownerID) === ownerID || (accessible.has(locationID) && (request.destinationOwnerIDs || []).map(Number).includes(Number(location.ownerID)))) : accessible.has(locationID);
+    };
+    const authorizedSource = source => source && sourceOwners.has(Number(source.ownerID)) &&
+        sourceLocations.has(Number(source.locationID)) && sourceFlags.has(Number(source.flagID)) && !isFreeStationFuelSupplyItem(source);
+    for (const entry of consumptions) {
+        const itemID = Number(entry.itemID), quantity = Number(entry.quantity);
+        if (!Number.isSafeInteger(itemID) || itemID <= 0 || touched.has(itemID) || !Number.isSafeInteger(quantity) || quantity <= 0)
+            return fail("INVALID_CONSUME_REQUEST");
+        const source = normalizeInventoryItem(items[String(itemID)]);
+        if (!authorizedSource(source))
+            return fail("SOURCE_ITEM_NOT_ACCESSIBLE");
+        if (Number(source.singleton) !== 0 && !(entry.allowSingleton === true && quantity === 1 && Number(entry.typeID) === Number(source.typeID)))
+            return fail("SINGLETON_CONSUMPTION_DENIED");
+        const expected = { ...(entry.expected || {}), ...(entry.typeID != null ? { typeID: entry.typeID } : {}) };
+        for (const field of ["ownerID", "locationID", "flagID", "typeID"]) {
+            if (expected[field] != null && Number(expected[field]) !== Number(source[field]))
+                return fail("SOURCE_ITEM_CHANGED");
+        }
+        const available = Number(source.stacksize ?? source.quantity);
+        if (!Number.isSafeInteger(available) || quantity > available)
+            return fail("INSUFFICIENT_ITEMS");
+        touched.add(itemID);
+        changedIDs.add(String(itemID));
+        consumed.push({ itemID, typeID: source.typeID, quantity, ownerID: source.ownerID, locationID: source.locationID, flagID: source.flagID });
+        if (quantity === available) {
+            delete items[String(itemID)];
+            changes.push({ removed: true, previousData: cloneValue(source), item: null });
+        }
+        else {
+            const next = buildInventoryItem({ ...source, quantity: available - quantity, stacksize: available - quantity });
+            items[String(itemID)] = next;
+            changes.push({ removed: false, previousData: cloneValue(source), previousState: captureItemState(source), item: cloneValue(next) });
+        }
+    }
+    for (const entry of moves) {
+        const itemID = Number(entry.itemID), source = normalizeInventoryItem(items[String(itemID)]);
+        const locationID = Number(entry.locationID ?? entry.destinationLocationID), flagID = Number(entry.flagID ?? entry.destinationFlagID);
+        if (!Number.isSafeInteger(itemID) || touched.has(itemID) || !authorizedSource(source) || Number(source.ownerID) !== ownerID)
+            return fail("SOURCE_ITEM_NOT_ACCESSIBLE");
+        if (!validDestination(locationID, flagID))
+            return fail("INVALID_DESTINATION");
+        const available = Number(source.singleton) > 0 ? 1 : Number(source.quantity ?? source.stacksize);
+        if (entry.quantity != null && Number(entry.quantity) !== available)
+            return fail("PARTIAL_MOVE_NOT_SUPPORTED");
+        const next = buildInventoryItem({ ...source, locationID, flagID });
+        items[String(itemID)] = next;
+        touched.add(itemID);
+        changedIDs.add(String(itemID));
+        changes.push({ removed: false, previousData: cloneValue(source), previousState: captureItemState(source), item: cloneValue(next) });
+    }
+    for (const entry of updates) {
+        const itemID = Number(entry.itemID), source = normalizeInventoryItem(items[String(itemID)]);
+        if (!Number.isSafeInteger(itemID) || touched.has(itemID) || !source || Number(source.ownerID) !== ownerID ||
+            (entry.expectedOwnerID != null && Number(entry.expectedOwnerID) !== ownerID))
+            return fail("SOURCE_ITEM_NOT_ACCESSIBLE");
+        const patch = entry.changes || {};
+        // Physical inventory identity is only changed through the checked paths above.
+        if (["itemID", "ownerID", "locationID", "flagID", "typeID", "quantity", "stacksize", "singleton"].some(key => Object.prototype.hasOwnProperty.call(patch, key)))
+            return fail("INVALID_ITEM_UPDATE");
+        const next = normalizeInventoryItem({ ...source, ...cloneValue(patch) }, source);
+        if (!next)
+            return fail("INVALID_ITEM_STATE");
+        items[String(itemID)] = next;
+        touched.add(itemID);
+        changedIDs.add(String(itemID));
+        changes.push({ removed: false, previousData: cloneValue(source), previousState: captureItemState(source), item: cloneValue(next) });
+    }
+    if (grants.length) {
+        const locationID = Number(request.destinationLocationID), flagID = Number(request.destinationFlagID);
+        if (!validDestination(locationID, flagID))
+            return fail("INVALID_DESTINATION");
+        const stackIndex = buildStackIndex(items);
+        for (const entry of grants) {
+            const metadata = resolveItemTypeReference(entry.itemType), options = { ...(entry.options || {}), ...entry };
+            if (entry.singleton || entry.individualItems) {
+                if (entry.quantity > 10000)
+                    return fail("ITEM_QUANTITY_OUT_OF_RANGE");
+                for (let count = 0; count < entry.quantity; count++) {
+                    const item = buildInventoryItem({ ...options, itemID: nextItemID(ownerID, items, characterRecord), typeID: metadata.typeID,
+                        ownerID, locationID, flagID, itemName: entry.itemName || metadata.name, quantity: 1, stacksize: 1, singleton: entry.singleton ? 1 : 0 });
+                    items[String(item.itemID)] = item;
+                    grantedItems.push(cloneValue(item));
+                    changes.push({ created: true, item: cloneValue(item), previousState: { locationID: 0, flagID: 0 } });
+                    changedIDs.add(String(item.itemID));
+                }
+            }
+            else {
+                const before = changes.length;
+                applyStackableGrant({ ownerID, locationID, flagID, items, stackIndex, changes, metadata, quantity: Number(entry.quantity),
+                    options, createdItems: grantedItems, transientCreatedItemIDs: [], characterRecord });
+                for (const change of changes.slice(before))
+                    changedIDs.add(String(change.item.itemID));
+            }
+        }
+    }
+    // Check the complete post-transaction stock, so consumed inputs release cargo.
+    const destinations = new Map();
+    for (const change of changes)
+        if (change.item && (change.created || change.previousData &&
+            (change.previousData.locationID !== change.item.locationID || change.previousData.flagID !== change.item.flagID))) {
+            const locationID = Number(change.item.locationID), flagID = Number(change.item.flagID);
+            destinations.set(`${locationID}:${flagID}`, { locationID, flagID });
+        }
+    // Stack merges have no `created` marker but still increase destination volume.
+    if (grants.length)
+        destinations.set(`${request.destinationLocationID}:${request.destinationFlagID}`, { locationID: Number(request.destinationLocationID), flagID: Number(request.destinationFlagID) });
+    for (const destination of destinations.values()) {
+        const container = items[String(destination.locationID)];
+        if (!container)
+            continue; // server-resolved station/character locations have no finite cargo container.
+        if (typeof request.getDestinationCapacity !== "function")
+            return fail("INVALID_CAPACITY");
+        let capacity;
+        try {
+            capacity = Number(request.getDestinationCapacity({ characterID: ownerID, shipID: destination.locationID, ...destination }));
+        }
+        catch (_) {
+            return fail("INVALID_CAPACITY");
+        }
+        if (!Number.isFinite(capacity) || capacity < 0)
+            return fail("INVALID_CAPACITY");
+        let used = 0;
+        for (const item of Object.values(items))
+            if (Number(item.locationID) === destination.locationID && Number(item.flagID) === destination.flagID) {
+                const volume = getInventoryItemUnitVolume(item), quantity = Number(item.singleton) > 0 ? 1 : Number(item.quantity ?? item.stacksize);
+                if (!Number.isFinite(volume) || volume < 0 || !Number.isSafeInteger(quantity) || quantity <= 0)
+                    return fail("INVALID_DESTINATION_STOCK");
+                used += volume * quantity;
+            }
+        if (!Number.isFinite(used) || used > capacity + 1e-6)
+            return fail("NOT_ENOUGH_CARGO_SPACE");
+    }
+    const result = { items: grantedItems, grantedItems, consumed, changes };
+    let rows;
+    try {
+        rows = typeof additionalRows === "function" ? additionalRows(cloneValue(result)) : additionalRows;
+    }
+    catch (error) {
+        return fail(String(error && error.code || error && error.message || "ROW_PREPARATION_FAILED"));
+    }
+    if (!Array.isArray(rows))
+        return fail("INVALID_ATOMIC_ROWS");
+    if (itemMutationVersion !== expectedVersion)
+        return fail("INVENTORY_STATE_CHANGED");
+    const itemRows = [...changedIDs].map(id => repo.prepareAtomicRowWrite(ITEMS_TABLE, id, items[id]));
+    if (!rows.length && !itemRows.length)
+        return fail("EMPTY_INVENTORY_TRANSACTION");
+    const commit = repo.commitAtomicRowWrites([...rows, ...itemRows]);
+    if (!commit || !commit.success)
+        return fail(commit && commit.errorMsg || "ATOMIC_WRITE_ERROR");
+    itemsTableCache = repo.read(ITEMS_TABLE, "/").data;
+    itemIndexesDirty = true;
+    itemIndexesCache = null;
+    itemMutationVersion += 1;
+    notifyInsuranceInventoryMutationChanges(changes, "applyInventoryTransactionWithAtomicRows");
+    return { success: true, data: result };
+}
+/**
+ * Materialize claimed world loot and consume its owning domain's receipt in
+ * one SQLite transaction. Ownership-approved row proposals are opaque tokens;
+ * inventory never gains permission to mutate the mining table directly.
+ */
+function grantStackableItemsWithAtomicRows(request, additionalRows) {
+    ensureMigrated();
+    if (!restorePendingLogisticsRollback()) {
+        return { success: false, errorMsg: "PERSISTENCE_FLUSH_ERROR" };
+    }
+    const ownerID = Number(request && request.characterID);
+    const locationID = Number(request && request.shipID);
+    const flagID = Number(request && request.flagID);
+    const entries = request && request.entries;
+    if (![ownerID, locationID, flagID].every(Number.isSafeInteger) ||
+        ownerID <= 0 || locationID <= 0 || flagID < 0 ||
+        !Array.isArray(entries) || entries.length === 0 ||
+        !Array.isArray(additionalRows) || additionalRows.length === 0 ||
+        typeof request.getDestinationCapacity !== "function") {
+        return { success: false, errorMsg: "INVALID_GRANT_REQUEST" };
+    }
+    const invalidEntry = validateGrantEntries(entries);
+    if (invalidEntry)
+        return invalidEntry;
+    const characterRecord = readCharacters()[String(ownerID)];
+    if (!characterRecord)
+        return { success: false, errorMsg: "CHARACTER_NOT_FOUND" };
+    const previousItems = readItems();
+    const destination = normalizeInventoryItem(previousItems[String(locationID)]);
+    if (!destination || destination.ownerID !== ownerID || destination.categoryID !== SHIP_CATEGORY_ID) {
+        return { success: false, errorMsg: "INVALID_DESTINATION" };
+    }
+    let capacity;
+    const expectedMutationVersion = itemMutationVersion;
+    try {
+        capacity = Number(request.getDestinationCapacity({ characterID: ownerID, shipID: locationID, flagID }));
+    }
+    catch (_) {
+        return { success: false, errorMsg: "INVALID_CAPACITY" };
+    }
+    if (!Number.isFinite(capacity) || capacity < 0) {
+        return { success: false, errorMsg: "INVALID_CAPACITY" };
+    }
+    if (itemMutationVersion !== expectedMutationVersion) {
+        return { success: false, errorMsg: "INVENTORY_STATE_CHANGED" };
+    }
+    let usedVolume = 0;
+    for (const raw of Object.values(previousItems)) {
+        if (Number(raw.locationID) !== locationID || Number(raw.flagID) !== flagID)
+            continue;
+        const volume = getInventoryItemUnitVolume(raw);
+        const quantity = Number(raw.singleton) > 0 ? 1 : Number(raw.quantity ?? raw.stacksize);
+        if (!Number.isFinite(volume) || volume < 0 || !Number.isSafeInteger(quantity) || quantity <= 0) {
+            return { success: false, errorMsg: "INVALID_DESTINATION_STOCK" };
+        }
+        usedVolume += volume * quantity;
+    }
+    let incomingVolume = 0;
+    for (const entry of entries) {
+        const metadata = resolveItemTypeReference(entry.itemType);
+        const volume = getUnitVolumeForPackagingState(metadata, 0);
+        if (!Number.isFinite(volume) || volume <= 0) {
+            return { success: false, errorMsg: "INVALID_ITEM_VOLUME" };
+        }
+        incomingVolume += volume * Number(entry.quantity);
+    }
+    if (!Number.isFinite(usedVolume + incomingVolume) || usedVolume + incomingVolume > capacity + 1e-6) {
+        return { success: false, errorMsg: "NOT_ENOUGH_CARGO_SPACE" };
+    }
+    const items = cloneValue(previousItems);
+    const changes = [];
+    const grantedItems = [];
+    const stackIndex = buildStackIndex(items);
+    for (const entry of entries) {
+        applyStackableGrant({ ownerID, locationID, flagID, items, stackIndex, changes,
+            metadata: resolveItemTypeReference(entry.itemType), quantity: Number(entry.quantity),
+            options: { individualItems: false, singleton: 0 },
+            createdItems: grantedItems, transientCreatedItemIDs: [], characterRecord });
+    }
+    const changedIDs = [...new Set(changes.map(change => String(change.item.itemID)))];
+    const itemRows = changedIDs.map(id => repo.prepareAtomicRowWrite(ITEMS_TABLE, id, items[id]));
+    const commit = repo.commitAtomicRowWrites([...additionalRows, ...itemRows]);
+    if (!commit || commit.success !== true) {
+        return { success: false, errorMsg: commit && commit.errorMsg || "ATOMIC_WRITE_ERROR" };
+    }
+    itemsTableCache = repo.read(ITEMS_TABLE, "/").data;
+    itemIndexesDirty = true;
+    itemIndexesCache = null;
+    itemMutationVersion += 1;
+    notifyInsuranceInventoryMutationChanges(changes, "grantStackableItemsWithAtomicRows");
+    return { success: true, data: { items: grantedItems, grantedItems, changes,
+            quantity: entries.reduce((sum, entry) => sum + Number(entry.quantity), 0) } };
+}
 /**
  * Atomically stage inventory moves and an update to one existing item against
  * the same private item-table snapshot. Creation management uses this so the
@@ -5342,6 +5626,8 @@ module.exports = {
     ensureFreeStationFuelSupply,
     getActiveShipItem,
     grantItemsToCharacterLocation,
+    grantStackableItemsWithAtomicRows,
+    applyInventoryTransactionWithAtomicRows,
     grantItemToCharacterLocation,
     grantItemsToOwnerLocation,
     grantItemToOwnerLocation,

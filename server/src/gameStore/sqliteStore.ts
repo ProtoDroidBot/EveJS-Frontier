@@ -723,6 +723,19 @@ function applyChanges(table, upserts: any[] = [], deletes: any[] = []) {
   return txn();
 }
 
+/** Commit related owner-approved rows together; never journal these separately. */
+function applyAtomicChanges(batches) {
+  for (const batch of batches) ensureSqlTable(batch.table);
+  const txn = requireDb().transaction(() => {
+    let changed = 0;
+    for (const batch of batches) {
+      changed += applyChangeStatements(batch.table, batch.upserts, batch.deletes);
+    }
+    return changed;
+  });
+  return txn.immediate();
+}
+
 /**
  * Replace the full contents of a table from a plain object (used by the
  * one-shot JSON → SQLite importer).
@@ -782,6 +795,7 @@ module.exports = {
   reconcilePersistenceOperation,
   recoverPersistenceOperations,
   applyChanges,
+  applyAtomicChanges,
   replaceAll,
   rowCount,
   getDatabasePath,

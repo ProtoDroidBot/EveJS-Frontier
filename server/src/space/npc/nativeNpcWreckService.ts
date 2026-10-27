@@ -76,6 +76,7 @@ function resolveNativeWreckLootTableID(wreckTypeID, npcLootTableID = null) {
 }
 
 function buildNativeWreckRuntimeEntity(wreckRecord, options: Record<string, any> = {}) {
+  if (!require("../../services/frontier/temporaryLandscapeNpcs").isTemporaryLandscapeRevisionActive(wreckRecord)) return null;
   const scopeResolution = nativeNpcStore.validateStoredEntityScopeMetadata(
     wreckRecord,
     { projectAirInstanceToDungeonSite: true },
@@ -136,6 +137,9 @@ function buildNativeWreckRuntimeEntity(wreckRecord, options: Record<string, any>
       ? cloneValue(wreckRecord.dunRotation)
       : null;
   entity.nativeNpcWreck = true;
+  for (const key of ["temporaryLandscapeRevision", "temporaryLandscapePolicyRevision", "landscapeSiteID", "landscapePolicyKey", "landscapePolicyGeneration"]) {
+    if (entityScopeMetadata[key] != null) entity[key] = entityScopeMetadata[key];
+  }
   if (typeof spaceRuntime.applyRuntimeEntityScopeMetadata === "function") {
     spaceRuntime.applyRuntimeEntityScopeMetadata(entity, entityScopeMetadata);
   }
@@ -544,7 +548,7 @@ function destroyNativeNpcEntityWithWreck(systemID, shipEntity, options: Record<s
     return wreckIDResult;
   }
   const entityScopeMetadata = scopeResolution.data.metadata;
-  const lootTableID = resolveNativeWreckLootTableID(
+  const lootTableID = nativeEntityRecord?.temporaryLandscapeRevision ? null : resolveNativeWreckLootTableID(
     wreckType.typeID,
     nativeEntityRecord && nativeEntityRecord.lootTableID,
   );

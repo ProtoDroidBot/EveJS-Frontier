@@ -12,7 +12,8 @@ const {
 const {
   isRetiredOrdinaryEncounterMissionForAgent,
 } = require(path.join(__dirname, "../agent/missionAuthority"));
-const repo = createTableRepository("service:dungeon", { strict: true });
+const contentProfile = require("./dungeonContentProfile");
+const repo = contentProfile.createProfileRepository(createTableRepository("service:dungeon", { strict: true }));
 
 const DUNGEON_RUNTIME_TABLE = "dungeonRuntimeState";
 const DUNGEON_RUNTIME_VERSION = 1;
@@ -26,6 +27,7 @@ const VALID_LIFECYCLE_STATES = new Set([
 ]);
 
 let cache = null;
+let cacheProfileRevision = "";
 
 function toInt(value, fallback = 0) {
   const numeric = Number(value);
@@ -335,7 +337,7 @@ function normalizeInstanceRecord(record: Record<string, any> = {}) {
     environmentState: normalizeJsonObject(record.environmentState),
     spawnState: normalizeJsonObject(record.spawnState),
     runtimeFlags: normalizeJsonObject(record.runtimeFlags),
-    metadata: normalizeJsonObject(record.metadata),
+    metadata: normalizeJsonObject(contentProfile.stampInstance(record).metadata),
   };
 }
 
@@ -545,8 +547,10 @@ function buildCache(sourceState = null) {
 }
 
 function ensureCache() {
-  if (!cache) {
+  const revision = contentProfile.getContentProfileRevision();
+  if (!cache || cacheProfileRevision !== revision) {
     cache = buildCache();
+    cacheProfileRevision = revision;
   }
   return cache;
 }
@@ -955,6 +959,10 @@ function mutateState(mutator) {
       skippedWrite: true,
       data: cloneValue(loadState()),
     };
+  }
+  if (!result.success) {
+    cache = null;
+    return { success: false, skippedWrite: false, data: cloneValue(loadState()) };
   }
   cache = buildCache(normalizedNext);
   return {

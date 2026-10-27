@@ -556,6 +556,27 @@ function resolveDestinationFlagForPlayer(entity, yieldTypeID, yieldKind) {
   };
 }
 
+function getVoxelPickupCapacity(entity, flagID) {
+  const snapshot = getPlayerShipStorageSnapshot(entity);
+  return flagID === ITEM_FLAGS.CARGO_HOLD
+    ? Math.max(0, Number(snapshot?.resourceState?.cargoCapacity) || 0)
+    : getShipHoldCapacityByFlag(snapshot?.resourceState, flagID);
+}
+
+function resolveVoxelPickupDestination(entity, fragment) {
+  if (!fragment) return null;
+  const snapshot = getPlayerShipStorageSnapshot(entity);
+  const preferred = resolveDestinationFlagForPlayer(entity, fragment.yieldTypeID, "ore");
+  const required = fragment.quantity * fragment.unitVolume;
+  const flags = [preferred.flagID, MINING_HOLD_FLAGS.SPECIALIZED_ASTEROID_HOLD,
+    MINING_HOLD_FLAGS.GENERAL_MINING_HOLD, ITEM_FLAGS.CARGO_HOLD];
+  for (const flagID of [...new Set(flags)]) {
+    const availableVolume = getAvailableVolumeForFlag(snapshot, flagID);
+    if (availableVolume + 1e-8 >= required) return { flagID, availableVolume };
+  }
+  return preferred;
+}
+
 function resolveLedgerObserverContext(scene, targetEntity) {
   const candidateIDs = [
     targetEntity && targetEntity.observerItemID,
@@ -1127,9 +1148,11 @@ function executeMiningCycle(
   }
 
   effectState.chargeTypeID = snapshot.chargeTypeID;
+  const voxelRuntime = lazyRequire("./voxelMiningRuntime");
+  const composite = voxelRuntime.isComposite(scene, targetEntity, mineableState);
   let destinationFlagID = ITEM_FLAGS.CARGO_HOLD;
   let availableVolume = Number.POSITIVE_INFINITY;
-  if (!isNativeNpcEntity(entity)) {
+  if (!composite && !isNativeNpcEntity(entity)) {
     const destination = resolveDestinationFlagForPlayer(
       entity,
       mineableState.yieldTypeID,
@@ -1196,12 +1219,24 @@ function executeMiningCycle(
   );
   miningResult.criticalHitVolume = miningResult.criticalHitQuantity * mineableState.unitVolume;
 
-  const transferredQuantity = miningResult.getTotalTransferredQuantity();
+  let transferredQuantity = miningResult.getTotalTransferredQuantity();
   if (transferredQuantity <= 0 && miningResult.wastedQuantity <= 0) {
     return { success: false as const, stopReason: "cargo" };
   }
 
-  if (isNativeNpcEntity(entity)) {
+  let voxelResult = null;
+  if (composite) {
+    voxelResult = voxelRuntime.mine(scene, entity, targetEntity, mineableState, miningResult, {
+      nowMs: cycleBoundaryMs, moduleTypeID: moduleItem.typeID, contactPoint: options.contactPoint,
+      rayOrigin: options.rayOrigin, rayDirection: options.rayDirection,
+      maxRangeMeters: snapshot.maxRangeMeters,
+    });
+    if (!voxelResult.success) return { success: false as const, stopReason: "target", errorMsg: voxelResult.errorMsg };
+    miningResult.normalQuantity = voxelResult.data.normalQuantity;
+    miningResult.wastedQuantity = voxelResult.data.wastedQuantity;
+    miningResult.criticalHitQuantity = voxelResult.data.criticalHitQuantity;
+    transferredQuantity = voxelResult.data.extractedQuantity;
+  } else if (isNativeNpcEntity(entity)) {
     const cargoResult = appendNpcCargo(entity, mineableState.yieldTypeID, transferredQuantity);
     if (!cargoResult || cargoResult.success !== true) {
       return { success: false as const, stopReason: "cargo" };
@@ -1228,7 +1263,7 @@ function executeMiningCycle(
     }
   }
 
-  const deltaResult = applyMiningDelta(
+  const deltaResult = composite ? voxelResult : applyMiningDelta(
     scene,
     targetEntity,
     miningResult.normalQuantity,
@@ -1246,6 +1281,18 @@ function executeMiningCycle(
   );
   if (!deltaResult.success) {
     return { success: false as const, stopReason: "target" };
+  }
+
+  // Notify only after the authoritative extraction committed. The policy
+  // runtime also reconciles persistent stock, so a failed notification can be
+  // retried without granting ore or spawning a second encounter.
+  if (targetEntity.temporaryLandscapePolicyRevision &&
+      miningResult.normalQuantity + miningResult.wastedQuantity > 0) {
+    const landscape = lazyRequire("../../space/temporaryLandscapeRuntime");
+    landscape.notifyTemporaryLandscapeEvent(scene, "mined", { entity: targetEntity });
+    if (mineableState.remainingQuantity <= 0) {
+      landscape.notifyTemporaryLandscapeEvent(scene, "resource-depleted", { entity: targetEntity });
+    }
   }
 
   if (!isNativeNpcEntity(entity)) {
@@ -1301,6 +1348,8 @@ function executeMiningCycle(
       targetID,
       yieldTypeID: mineableState.yieldTypeID,
       transferredQuantity,
+      inventoryCreditedQuantity: composite ? 0 : transferredQuantity,
+      regolithFragments: composite ? voxelResult.data.fragments.map(fragment => fragment.itemID) : [],
       normalQuantity: miningResult.normalQuantity,
       criticalHitQuantity: miningResult.criticalHitQuantity,
       wastedQuantity: miningResult.wastedQuantity,
@@ -1430,6 +1479,9 @@ function executeSkillShotMiningCycle(
       chargeItem,
       amountMultiplier,
       isChargeValidForYield: validateChargeYield,
+      contactPoint: options.contactPoint,
+      rayOrigin: options.rayOrigin,
+      rayDirection: options.rayDirection,
       // Player SkillShotRuntime applies lens volatility while consuming its
       // authoritative resources. Session-free NPC held beams opt in here.
       applyCrystalVolatility: options.applyCrystalVolatility === true,
@@ -1608,6 +1660,7 @@ function handleSceneCreated(scene) {
     miningResourceSiteService.handleSceneCreated(scene);
   }
   ensureSceneMiningState(scene);
+  lazyRequire("./voxelMiningRuntime").restoreScene(scene);
   const miningNpcOperations = require("./miningNpcOperations");
   if (typeof miningNpcOperations.handleSceneCreated === "function") {
     miningNpcOperations.handleSceneCreated(scene);
@@ -1626,6 +1679,7 @@ async function handleSceneCreatedAsync(scene, options: Record<string, any> = {})
   await ensureSceneMiningStateAsync(scene, {
     batchSize: options.batchSize,
   });
+  lazyRequire("./voxelMiningRuntime").restoreScene(scene);
   const miningNpcOperations = require("./miningNpcOperations");
   if (typeof miningNpcOperations.handleSceneCreated === "function") {
     miningNpcOperations.handleSceneCreated(scene);
@@ -1634,6 +1688,7 @@ async function handleSceneCreatedAsync(scene, options: Record<string, any> = {})
 
 function tickScene(scene, now) {
   ensureSceneMiningState(scene);
+  lazyRequire("./voxelMiningRuntime").tickScene(scene, now);
   respawnDepletedMineables(scene, Date.now());
   try {
     const frontierRiftSceneService = lazyRequire("../../space/frontierRiftSceneService");
@@ -1675,6 +1730,9 @@ module.exports = {
   resolveMiningActivation,
   executeMiningCycle,
   executeSkillShotMiningCycle,
+  resolveVoxelPickupDestination,
+  getVoxelPickupCapacity,
+  syncMinedOreChangesToSession,
   miningModuleUsesCrystals,
   buildScanResultsForSession,
   findMiningEffectRecordForModule,

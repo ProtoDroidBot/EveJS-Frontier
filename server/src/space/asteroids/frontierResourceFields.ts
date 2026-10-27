@@ -116,6 +116,9 @@ function normalizePosition(position) {
 }
 
 function buildFrontierResourceFieldDefinition(site) {
+  // Cycle-7 ecosystem IDs are not the old procedural resource policy's IDs.
+  // Imported sites use their authored templates and locators, not that policy.
+  if (site?.temporaryLandscapeProfile === true || site?.temporaryLandscapeRevision) return null;
   const itemID = toPositiveInt(site && site.itemID, 0);
   const solarSystemID = toPositiveInt(site && site.solarSystemID, 0);
   const position = normalizePosition(site && site.position);

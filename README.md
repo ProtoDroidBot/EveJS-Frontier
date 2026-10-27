@@ -52,6 +52,39 @@ types and strictness can be introduced incrementally.
 
 ## EVE Frontier compatibility fork
 
+The [3640684 port plan](docs/FRONTIER_BUILD_3640684_PORT_PLAN.md) selects
+`3502403-MOD4-STUFF1` galaxy and solar-system data for delivery to the
+cycle-7 client through the new exploration API. The
+[galaxy-data investigation](docs/FRONTIER_BUILD_3640684_GALAXY_DATA.md) records
+the client capability. The [exploration API](docs/EXPLORATION_API.md) now
+provides versioned galaxy pages, visited-system detail and reveal notices from
+an explicit legacy-world export. It includes setup and verification commands.
+Cross-cycle catalog compatibility and live client acceptance remain pending;
+existing build defaults remain unchanged.
+The [3640684 feature audit](docs/FRONTIER_BUILD_3640684_FEATURE_AUDIT.md)
+records the original service, workflow and gateway gaps. The
+[implementation record](docs/FRONTIER_3640684_IMPLEMENTATION.md) covers the
+completed server pass across F01–F21, configuration and regression checks,
+including the remaining native acceptance and external provider boundaries.
+The [3640684 voxel mining implementation](docs/VOXEL_MINING_3640684.md) adds
+cell depletion, collectible ore and timed scoop pickup with atomic inventory
+credit. It documents supported mappings, isolated tests and native acceptance gaps.
+The [temporary landscape integration](docs/FRONTIER_3640684_TEMPORARY_LANDSCAPE.md)
+loads decoded 3640684 landscapes, ecosystems and dungeons on the selected
+3502403 galaxy, preserving authored positions and omitting unresolved map
+parents until the full era 6 cycle 7 files are available.
+Its [allocation policies](docs/FRONTIER_3640684_LANDSCAPE_POLICIES.md) add finite
+voxel resources, persistent NPC encounters and proximity/mining triggers.
+The [3572727 comparison](docs/FRONTIER_BUILD_3572727_COMPARISON.md) documents
+the supplied demo-tool branch against that temporary profile, including
+galaxy sources, content changes, client contracts and remaining compatibility work.
+The [galaxy replacement investigation](docs/FRONTIER_3572727_GALAXY_REPLACEMENT.md)
+explains the conflicting physical snapshots and the validated path to use
+3572727 geography while retaining the 3640684 client and compatible content catalogs.
+The [implementation record](docs/FRONTIER_3572727_IMPLEMENTATION.md) now covers
+the built canonical candidate, compatible catalogs, isolated runtime commands and
+full decoder, persistence and server validation. The current world remains selected.
+
 This checkout contains an experimental, isolated EVE Frontier compatibility
 profile. The Windows port now targets build `3502403` as an exact-build
 candidate, not a gameplay-accepted release. The last live-accepted macOS target

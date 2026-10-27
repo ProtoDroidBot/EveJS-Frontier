@@ -504,6 +504,92 @@
 
   "miningEnabled": true,
 
+  // Local economy prices and exchange rates, with signed native wallet intents and local ledger receipts.
+  // Valid values: Object; defaults are emulator policy: 1 EVE per LUX/lens and 1 LUX per feral-data unit.
+  // Default: {"mode":"local","denomination":"EVE","luxCentsPerToken":100,"lensPriceAtoms":"1000000000","feralDataLuxCents":100,"prepareExpiryMs":300000}.
+
+  "frontierEconomyPolicy": {
+                             "mode": "local",
+                             "denomination": "EVE",
+                             "luxCentsPerToken": 100,
+                             "lensPriceAtoms": "1000000000",
+                             "feralDataLuxCents": 100,
+                             "prepareExpiryMs": 300000
+                           },
+
+  // Local pack entitlements, per-building pack requirements, and kill-report backend profile.
+  // Valid values: Object. Pack IDs are target enum values 1 through 11; local reports are not chain submissions.
+  // Default: {"packEntitlements":{},"buildingPackRequirements":{},"killReportingProfile":"local"}.
+
+  "frontierClaimsPolicy": {
+                            "packEntitlements": {},
+                            "buildingPackRequirements": {},
+                            "killReportingProfile": "local"
+                          },
+
+  // Local progression policy: activity weights, shell costs, founder entitlements, and CycleHub objectives.
+  // Valid values: Object. Activity defaults are emulator choices; empty entitlement lists grant nothing.
+  // Default: {"activityWeights":{"extraction":{"memoryCategoryID":9,"skillWeights":{"10":1},"xpPerUnit":1},"piloting":{"memoryCategoryID":2,"skillWeights":{"1":1},"xpPerUnit":1}},"shellCreation":{},"founderCharacterIDs":[],"cycleObjectives":[],"nestInteractionRangeMeters":5000}.
+
+  "frontierProgressionPolicy": {
+                                 "activityWeights": {
+                                   "extraction": {
+                                     "memoryCategoryID": 9,
+                                     "skillWeights": {
+                                       "10": 1
+                                     },
+                                     "xpPerUnit": 1
+                                   },
+                                   "piloting": {
+                                     "memoryCategoryID": 2,
+                                     "skillWeights": {
+                                       "1": 1
+                                     },
+                                     "xpPerUnit": 1
+                                   }
+                                 },
+                                 "shellCreation": {},
+                                 "founderCharacterIDs": [],
+                                 "cycleObjectives": []
+                               },
+
+  // Optional integrity-checked 3640684 landscape/ecosystem/dungeon overlay for the selected 3502403-MOD4-STUFF1 galaxy. Temporary until full era 6 cycle 7 data is supplied.
+  // Valid values: Path to a temporary landscape profile; empty disables the overlay. Only applies to client build 3640684.
+  // Default: "".
+
+  "temporaryLandscapePath": "",
+
+  // Enables composite asteroid mining and channeled regolith pickup when clientBuild is 3640684.
+  // Valid values: true or false; older client builds retain legacy mining.
+  // Default: true.
+
+  "voxelMiningEnabled": true,
+
+  // Voxel lifecycle and substrate policy. Zero expiry/respawn preserves existing stock; limits pause extraction before consuming ore.
+  // Valid values: Nonnegative millisecond timers and fragment caps; explicit substrate/material and miner-tier mappings by verified type ID.
+  // Default: {"fragmentExpiryMs":0,"respawnDelayMs":0,"maxFragmentsPerSystem":10000,"maxFragmentsPerAsteroid":1000,"materialsByTypeID":{},"minerTierByTypeID":{}}.
+
+  "voxelMiningPolicy": {
+                         "fragmentExpiryMs": 0,
+                         "respawnDelayMs": 0,
+                         "maxFragmentsPerSystem": 10000,
+                         "maxFragmentsPerAsteroid": 1000,
+                         "materialsByTypeID": {},
+                         "minerTierByTypeID": {}
+                       },
+
+  // Persistent world identity for composite depletion and loose ore. Change only when intentionally replacing the world.
+  // Valid values: Nonempty world revision string.
+  // Default: "3502403-MOD4-STUFF1/3640684-voxel-v1".
+
+  "voxelMiningWorldRevision": "3502403-MOD4-STUFF1/3640684-voxel-v1",
+
+  // Maximum regolith pickup surface distance; 2500 matches the 3640684 client public scoop action.
+  // Valid values: 800 through 2500 metres.
+  // Default: 2500.
+
+  "voxelScoopRangeMeters": 2500,
+
   // Maximum range used when the mining scan manager returns asteroid scan tuples to the client.
   // Valid values: Positive distance in meters.
   // Default: 250000.

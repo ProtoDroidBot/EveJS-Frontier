@@ -30,11 +30,14 @@ class DeploymentMgrService extends BaseService {
     constructor() {
         super("deploymentMgr");
     }
-    Handle_get_claimed_packs() {
-        return buildList([]);
+    Handle_get_claimed_packs(args, session) {
+        return buildList(require("./frontierClaimsRuntime").getFrontierClaimsRuntime().getClaimedPacks(session));
     }
     Handle_build_deployable(args, session) {
         const typeID = Number(args && args[0]) || 0;
+        if (!require("./frontierClaimsRuntime").getFrontierClaimsRuntime().canBuild(session, typeID)) {
+            throwDeploymentError({ errorMsg: "BUILDING_PACK_REQUIRED" });
+        }
         const result = getDeploymentRuntime().buildDeployable(session, typeID, args && args[1], args && args[2]);
         if (!result || result.success !== true) {
             const details = result && result.data && typeof result.data === "object"

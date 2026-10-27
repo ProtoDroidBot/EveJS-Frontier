@@ -1,5 +1,4 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const { bufferFromBytes, encodePayload, getActiveCharacterID, } = require("./gatewayServiceHelpers");
 const { getFrontierCoreProtoTypes, } = require("./frontierCoreProto");
@@ -14,6 +13,7 @@ function formatTokenValue(value) {
     return String(numericValue);
 }
 function createFrontierWalletGatewayService(context = {}) {
+    const targetEconomy = require("./frontierEconomyGatewayService").createFrontierEconomyGatewayService(context);
     const types = getFrontierCoreProtoTypes();
     const getCharacterWallet = context.getFrontierCharacterWallet || require(path.join(__dirname, "../../../services/account/walletState")).getCharacterWallet;
     return {
@@ -25,6 +25,9 @@ function createFrontierWalletGatewayService(context = {}) {
                 : null;
         },
         handleRequest(requestTypeName, requestEnvelope) {
+            const targetResult = targetEconomy.handleRequest(requestTypeName, requestEnvelope);
+            if (targetResult !== null)
+                return targetResult;
             if (requestTypeName !== GET_BALANCE_REQUEST) {
                 return null;
             }

@@ -6,6 +6,8 @@ const dungeonSpawnEligibility = require(path.join(__dirname, "./dungeonSpawnElig
 const frontierDungeonSpawns = require(path.join(__dirname, "../../config/frontierDungeonSpawns"));
 const { isDisabledMissionIdentifier, isDisabledMissionSourceURL, isDisabledMissionTemplateIdentifier, productionMissionPolicy, } = require(path.join(__dirname, "../../config/productionMissionPolicy"));
 let cache = null;
+let cacheProfileRevision = "";
+const contentProfile = require("./dungeonContentProfile");
 const BANNED_DUNGEON_TEMPLATE_IDS = new Set(productionMissionPolicy.disabledMissions
     .flatMap(({ templateIDs }) => templateIDs)
     .map((templateID) => templateID.toLowerCase()));
@@ -241,7 +243,7 @@ function mergeFrontierDungeonSpawnTemplates(payload, frontierDungeonTemplates = 
     };
 }
 function buildCache() {
-    const payload = mergeFrontierDungeonSpawnTemplates(sanitizePayload(normalizePayload(readStaticTable(TABLE.DUNGEON_AUTHORITY))));
+    const payload = mergeFrontierDungeonSpawnTemplates(sanitizePayload(contentProfile.selectAuthorityPayload(normalizePayload(readStaticTable(TABLE.DUNGEON_AUTHORITY)), contentProfile.getContentProfileRevision())));
     const templatesByID = new Map();
     const templatesBySourceDungeonID = new Map();
     const templatesBySource = new Map();
@@ -376,8 +378,10 @@ function buildCache() {
     };
 }
 function ensureCache() {
-    if (!cache) {
+    const revision = contentProfile.getContentProfileRevision();
+    if (!cache || cacheProfileRevision !== revision) {
         cache = buildCache();
+        cacheProfileRevision = revision;
     }
     return cache;
 }

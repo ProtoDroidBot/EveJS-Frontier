@@ -148,6 +148,14 @@ function loadRegistry() {
   }
 
   const dbRegistry = loadDbRegistry();
+  if (Number(require("../../config").clientBuild) === 3640684) {
+    const registry = dbRegistry || buildFallbackRegistry();
+    for (const catalog of [require("../frontier/progressionCatalog3640684.json"), require("../frontier/data/economy3640684.json"), require("../../space/compositeMiningCatalog3640684.json")]) {
+      for (const entry of catalog.types || []) addEntry(registry, entry);
+    }
+    cachedRegistry = registry;
+    return cachedRegistry;
+  }
   if (dbRegistry) {
     cachedRegistry = dbRegistry;
     return cachedRegistry;

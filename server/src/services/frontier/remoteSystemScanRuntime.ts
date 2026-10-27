@@ -848,6 +848,7 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
           truncated: result.truncated,
         });
         writeState(state);
+        if (!options.scanIndex) require("./explorationDiscovery").recordRemoteScan(job.actorSessionSnapshot, result);
         for (const contribution of after.data.contributions.filter((entry) =>
           entry.kind === "transient_travel" && entry.bloomMetadata && entry.bloomMetadata.observationID)) {
           const cell = aggregateHeatMap({ ...after.data, contributions: [contribution] }, job, source.data).cells[0];
@@ -939,6 +940,7 @@ function createRemoteSystemScanRuntime(options: Record<string, any> = {}) {
       actorCharacterID: positiveInt(characterID),
       actorSessionSnapshot: {
         characterID: positiveInt(characterID),
+        userid: positiveInt(actorSession && (actorSession.userid || actorSession.userID || actorSession.accountId), 0) || null,
         corporationID: positiveInt(actorSession && (actorSession.corporationID || actorSession.corpid), 0) || null,
       },
       scannerSourceID: source.data.scannerSourceID,

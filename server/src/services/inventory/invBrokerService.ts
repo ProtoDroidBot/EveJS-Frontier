@@ -2730,6 +2730,10 @@ class InvBrokerService extends BaseService {
   }
 
   _getSpaceContainerScopeAccessError(session, containerID) {
+    const dockingAccessError = require("../frontier/dockingPointRuntime")
+      .getCargoAccessError(session, containerID);
+    if (dockingAccessError) return dockingAccessError;
+
     const systemID = this._normalizeInventoryId(
       session && session._space && session._space.systemID,
       0,

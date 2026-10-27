@@ -11,8 +11,11 @@ const path = require("path");
 let nextBoundId = 1;
 
 const rootDir = path.resolve(__dirname, "../../..");
-const localConfigPath = path.join(rootDir, "evejs.config.local.json");
-const sharedConfigPath = path.join(rootDir, "evejs.config.json");
+// An explicitly selected runtime keeps both configuration persistence and
+// data under its own ownership boundary. Existing launches retain repo config.
+const configDir = process.env.EVEJS_CONFIG_DIR ? path.resolve(process.env.EVEJS_CONFIG_DIR) : rootDir;
+const localConfigPath = path.join(configDir, "evejs.config.local.json");
+const sharedConfigPath = path.join(configDir, "evejs.config.json");
 const REMOVED_CONFIG_KEYS = new Set([
   "clientPath",
   "autoLaunch",
@@ -821,6 +824,70 @@ const CONFIG_ENTRY_DEFINITIONS: any[] = [
     description:
       "Enables the mining runtime, asteroid depletion state, and mining scan service.",
     validValues: "true or false.",
+  },
+  {
+    key: "frontierEconomyPolicy",
+    defaultValue: { mode: "local", denomination: "EVE", luxCentsPerToken: 100, lensPriceAtoms: "1000000000", feralDataLuxCents: 100, prepareExpiryMs: 300000 },
+    description: "Local economy prices and exchange rates, with signed native wallet intents and local ledger receipts.",
+    validValues: "Object; defaults are emulator policy: 1 EVE per LUX/lens and 1 LUX per feral-data unit.",
+  },
+  {
+    key: "frontierClaimsPolicy",
+    defaultValue: { packEntitlements: {}, buildingPackRequirements: {}, killReportingProfile: "local" },
+    description: "Local pack entitlements, per-building pack requirements, and kill-report backend profile.",
+    validValues: "Object. Pack IDs are target enum values 1 through 11; local reports are not chain submissions.",
+  },
+  {
+    key: "frontierProgressionPolicy",
+    defaultValue: {
+      activityWeights: {
+        extraction: { memoryCategoryID: 9, skillWeights: { "10": 1 }, xpPerUnit: 1 },
+        piloting: { memoryCategoryID: 2, skillWeights: { "1": 1 }, xpPerUnit: 1 },
+      },
+      shellCreation: {}, founderCharacterIDs: [], cycleObjectives: [], nestInteractionRangeMeters: 5000,
+    },
+    description: "Local progression policy: activity weights, shell costs, founder entitlements, and CycleHub objectives.",
+    validValues: "Object. Activity defaults are emulator choices; empty entitlement lists grant nothing.",
+  },
+  {
+    key: "temporaryLandscapePath",
+    defaultValue: "",
+    envVar: "EVEJS_TEMPORARY_LANDSCAPE_PATH",
+    envType: "string",
+    description: "Optional integrity-checked 3640684 landscape/ecosystem/dungeon overlay for the selected 3502403-MOD4-STUFF1 galaxy. Temporary until full era 6 cycle 7 data is supplied.",
+    validValues: "Path to a temporary landscape profile; empty disables the overlay. Only applies to client build 3640684.",
+  },
+  {
+    key: "voxelMiningEnabled",
+    defaultValue: true,
+    envVar: "EVEJS_VOXEL_MINING_ENABLED",
+    envType: "boolean",
+    description: "Enables composite asteroid mining and channeled regolith pickup when clientBuild is 3640684.",
+    validValues: "true or false; older client builds retain legacy mining.",
+  },
+  {
+    key: "voxelMiningPolicy",
+    defaultValue: { fragmentExpiryMs: 0, respawnDelayMs: 0, maxFragmentsPerSystem: 10000, maxFragmentsPerAsteroid: 1000, materialsByTypeID: {}, minerTierByTypeID: {} },
+    description: "Voxel lifecycle and substrate policy. Zero expiry/respawn preserves existing stock; limits pause extraction before consuming ore.",
+    validValues: "Nonnegative millisecond timers and fragment caps; explicit substrate/material and miner-tier mappings by verified type ID.",
+  },
+  {
+    key: "voxelMiningWorldRevision",
+    defaultValue: "3502403-MOD4-STUFF1/3640684-voxel-v1",
+    envVar: "EVEJS_VOXEL_MINING_WORLD_REVISION",
+    envType: "string",
+    description: "Persistent world identity for composite depletion and loose ore. Change only when intentionally replacing the world.",
+    validValues: "Nonempty world revision string.",
+  },
+  {
+    key: "voxelScoopRangeMeters",
+    defaultValue: 2500,
+    envVar: "EVEJS_VOXEL_SCOOP_RANGE_METERS",
+    envType: "number",
+    minValue: 800,
+    maxValue: 2500,
+    description: "Maximum regolith pickup surface distance; 2500 matches the 3640684 client public scoop action.",
+    validValues: "800 through 2500 metres.",
   },
   {
     key: "miningSurveyScanDistanceMeters",

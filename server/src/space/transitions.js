@@ -2748,9 +2748,27 @@ function jumpSessionViaStargate(session, fromStargateID, toStargateID) {
             };
         }
     }
+    let gateFuelReservation = null;
+    const gateFuelAuthority = require("../services/frontier/celestialStargateRuntime");
+    if (Number(config.clientBuild) === 3640684) {
+        const ensured = gateFuelAuthority.ensureTargetGate(sourceGate.itemID);
+        if (!ensured.success) {
+            endTransition(session, "stargate-jump");
+            return ensured;
+        }
+        const operationKey = `gate-jump:${session.characterID}:${require("crypto").randomUUID()}`;
+        const fuelResult = gateFuelAuthority.reserveJumpEnergy(sourceGate.itemID, operationKey, { characterID: session.characterID, shipID: activeShip.itemID, sourceSystemID: sourceGate.solarSystemID, destinationSystemID: destinationGate.solarSystemID });
+        if (!fuelResult.success) {
+            endTransition(session, "stargate-jump");
+            return fuelResult;
+        }
+        gateFuelReservation = operationKey;
+    }
     const contrabandInspection = inspectContrabandForTransition(session, activeShip.itemID, destinationGate.solarSystemID, "stargate-jump");
     const startResult = spaceRuntime.startStargateJump(session, sourceGate.itemID);
     if (!startResult.success) {
+        if (gateFuelReservation)
+            gateFuelAuthority.refundJumpEnergy(sourceGate.itemID, gateFuelReservation);
         endTransition(session, "stargate-jump");
         return startResult;
     }
@@ -2763,6 +2781,9 @@ function jumpSessionViaStargate(session, fromStargateID, toStargateID) {
     setTimeout(() => {
         const completionResult = completeStargateJump(session, sourceGate, destinationGate, activeShip);
         if (!completionResult.success) {
+            if (gateFuelReservation && Number(findItemById(activeShip.itemID)?.locationID) === Number(sourceGate.solarSystemID)) {
+                gateFuelAuthority.refundJumpEnergy(sourceGate.itemID, gateFuelReservation);
+            }
             log.warn(`[SpaceTransition] Delayed stargate jump failed for ${session.characterName || session.characterID}: ${completionResult.errorMsg}`);
         }
     }, scaledDelay);

@@ -341,6 +341,15 @@ function buildSlimItemDict(entity) {
     ["typeID", slimTypeID],
     ["ownerID", entity.ownerID || 0],
   ];
+  // Build 3640684 chooses CRRegolith from the type's group. Its oreUnits
+  // property is an integer, and drives RegolithBlock's visual growth.
+  if (entity && entity.kind === "regolith") {
+    const oreUnits = Number(entity.oreUnits);
+    if (!Number.isSafeInteger(oreUnits) || oreUnits <= 0) {
+      throw new TypeError("regolith oreUnits must be a positive safe integer");
+    }
+    entries.push(["oreUnits", oreUnits]);
+  }
   const slimNameID = buildSlimNameIDValue(entity && entity.nameID);
 
   if (slimName && !slimNameID) {

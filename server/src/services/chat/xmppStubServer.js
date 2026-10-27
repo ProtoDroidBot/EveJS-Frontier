@@ -18,9 +18,9 @@ let server = null;
 let messageSequence = 0;
 const connectedClients = new Set();
 const roomMembers = new Map();
-const transcriptDir = path.join(__dirname, "../../../logs");
+const transcriptDir = process.env.EVEJS_LOG_DIR ? path.resolve(process.env.EVEJS_LOG_DIR) : path.join(__dirname, "../../../logs");
 const transcriptPath = path.join(transcriptDir, "xmpp-stub.log");
-const certDir = path.join(__dirname, "../../../certs");
+const certDir = process.env.EVEJS_RUNTIME_CERT_DIR ? path.resolve(process.env.EVEJS_RUNTIME_CERT_DIR) : path.join(__dirname, "../../../certs");
 const certPath = path.join(certDir, "xmpp-dev-cert.pem");
 const keyPath = path.join(certDir, "xmpp-dev-key.pem");
 function ensureTranscriptDir() {

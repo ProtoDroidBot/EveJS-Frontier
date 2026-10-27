@@ -1,11 +1,9 @@
-"use strict";
 /**
  * Inventory Broker Service (invbroker)
  *
  * Handles inventory/item queries from the client.
  * Called after character selection to load inventory data.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
@@ -1869,6 +1867,10 @@ class InvBrokerService extends BaseService {
             : accessResult.errorMsg || "ACCESS_DENIED";
     }
     _getSpaceContainerScopeAccessError(session, containerID) {
+        const dockingAccessError = require("../frontier/dockingPointRuntime")
+            .getCargoAccessError(session, containerID);
+        if (dockingAccessError)
+            return dockingAccessError;
         const systemID = this._normalizeInventoryId(session && session._space && session._space.systemID, 0);
         const shipID = this._normalizeInventoryId(session && session._space && session._space.shipID, 0);
         const numericContainerID = this._normalizeInventoryId(containerID, 0);

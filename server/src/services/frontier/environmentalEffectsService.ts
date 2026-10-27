@@ -368,10 +368,15 @@ function ensureCharacterState(characterID, entity = null, nowMs = Date.now()) {
     return null;
   }
   if (!characterStates.has(numericCharacterID)) {
-    characterStates.set(
-      numericCharacterID,
-      createCharacterState(numericCharacterID, entity, nowMs),
-    );
+    const initial = createCharacterState(numericCharacterID, entity, nowMs);
+    if (Number(serverConfig.clientBuild) === 3640684) {
+      const saved = require("./progressionRuntime").getRuntime().medical(numericCharacterID);
+      if (saved) {
+        for (const key of ["vitality", "vitalityCapacity", "feralization", "temporalDrift", "cloneDeathTriggered"]) if (saved[key] != null) initial[key] = saved[key];
+        for (const key of Object.keys(initial.effects)) if (saved.effects?.[key]) Object.assign(initial.effects[key], saved.effects[key]);
+      }
+    }
+    characterStates.set(numericCharacterID, initial);
   }
   return characterStates.get(numericCharacterID);
 }
@@ -632,7 +637,9 @@ function collectClientNotifications(
           args: [
             vitalityDamage,
             Math.round(state.vitalityCapacity),
-            buildList([]),
+            buildList(Number(serverConfig.clientBuild) === 3640684
+              ? require("./progressionRuntime").medicalBreakdown(require("./progressionRuntime").getRuntime().medical(state.characterID))
+              : []),
           ],
         }
       : null;
@@ -927,12 +934,22 @@ function advanceEntityEnvironmentalEffects(
   }
   state.lastUpdatedAtMs = currentTimeMs;
 
+  let implantedMedicalEffects = [];
+  if (Number(serverConfig.clientBuild) === 3640684) {
+    const damages = Object.fromEntries(damagingEffects.filter(effect => effect.damageSeconds > 0).map(effect =>
+      [effect.statusEffectKey, damagingEffectSeconds > 0 ? vitalityDamageApplied * effect.damageSeconds / damagingEffectSeconds : 0]));
+    const persisted = require("./progressionRuntime").getRuntime().saveEnvironment(characterID, snapshotCharacterState(characterID), damages);
+    if (persisted.success !== true && persisted.errorMsg !== "SHELL_NOT_FOUND") throw new Error(`Environmental persistence failed: ${persisted.errorMsg}`);
+    implantedMedicalEffects = persisted.implantedEffects || [];
+  }
+
   const notifications = collectClientNotifications(
     state,
     entity,
     currentTimeMs,
     options,
   );
+  if (options.notify !== false) for (const effect of implantedMedicalEffects) notifications.effectNotifications.push({ eventName: "OnMedicalTraitImplanted", args: [effect] });
   return {
     supported: true,
     activeEffectCount,
@@ -1129,6 +1146,16 @@ function resetCharacterState(characterID = null) {
   return true;
 }
 
+/** Apply a treatment only after its inventory/state transaction has committed. */
+function applyMedicalState(characterID, value, session) {
+  const state = ensureCharacterState(characterID);
+  if (!state) return;
+  for (const key of ["vitality", "vitalityCapacity", "feralization", "temporalDrift", "cloneDeathTriggered"]) if (value[key] != null) state[key] = value[key];
+  for (const key of Object.keys(state.effects)) if (value.effects?.[key]) Object.assign(state.effects[key], value.effects[key]);
+  const notifications = collectClientNotifications(state, null, Date.now(), { forceNotify: true });
+  for (const notice of notifications.effectNotifications) if (typeof session?.sendNotification === "function") session.sendNotification(notice.eventName, "charid", notice.args);
+}
+
 function buildServiceState(characterID) {
   const snapshot = snapshotCharacterState(characterID, { create: false });
   if (!snapshot) {
@@ -1200,4 +1227,5 @@ module.exports.resolveCharacterID = resolveCharacterID;
 module.exports.resolveHeatGrace = resolveHeatGrace;
 module.exports.resolveRiftTemporalization = resolveRiftTemporalization;
 module.exports.snapshotCharacterState = snapshotCharacterState;
+module.exports.applyMedicalState = applyMedicalState;
 module.exports.tickScene = tickScene;

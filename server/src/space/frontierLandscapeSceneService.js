@@ -196,6 +196,64 @@ function destroyConfiguredLandscapeNpcs(scene, siteEntity, options = {}) {
     }
     return removedEntityIDs;
 }
+function attachTemporaryLandscapePolicy(scene, siteEntity, plan, dependencies, options) {
+    if (!plan.temporaryPolicy)
+        return null;
+    const policyRuntime = require("./temporaryLandscapeRuntime");
+    const mining = dependencies.miningRuntimeState || require("../services/mining/miningRuntimeState");
+    const npcs = options.temporaryNpcAdapter || require("../services/frontier/temporaryLandscapeNpcs");
+    const find = id => scene.getEntityByID?.(id) || scene.staticEntitiesByID?.get(id) || scene.dynamicEntities?.get(id);
+    return (options.temporaryPolicyRuntime || policyRuntime).attach(scene, siteEntity, plan.temporaryPolicy, {
+        broadcast: options.broadcast === true, excludedSession: options.excludedSession || null,
+        spawnNpc: npcs.spawnTemporaryLandscapeNpc,
+        removeNpc: npcs.dematerializeTemporaryLandscapeNpc,
+        readResource: (currentScene, entityID) => mining.getMineableState?.(currentScene, entityID),
+        removeResource(currentScene, entity, removalOptions) {
+            const result = currentScene.removeStaticEntity(entity.itemID, removalOptions);
+            if (result?.success)
+                mining.clearMineableState?.(currentScene, entity.itemID, { removePersisted: false });
+            return result;
+        },
+        spawnResource(currentScene, site, spec, spawnOptions) {
+            const prior = find(spawnOptions.entityID);
+            if (prior) {
+                if (prior.landscapePolicyKey !== spec.key || prior.temporaryLandscapePolicyRevision !== spawnOptions.identity.policyRevision) {
+                    return { success: false, errorMsg: "LANDSCAPE_RESOURCE_ID_COLLISION" };
+                }
+                return { success: true, data: { entity: prior, entityID: prior.itemID } };
+            }
+            const props = dependencies.dungeonService.buildEnvironmentEntities({ instanceID: site.itemID }, site, {}, { temporaryLandscapeProfile: true,
+                environmentProps: [{ ...spec, exact: true, dunObjectID: spec.sourceObjectID || 1, key: spec.key,
+                        frontierDungeonResource: spec.miningYieldKind !== "salvage" }], exactContentCaps: { environmentProps: 1 } });
+            const entity = props[0];
+            if (!entity)
+                return { success: false, errorMsg: "LANDSCAPE_RESOURCE_BUILD_FAILED" };
+            clearDungeonVisibilityMarkers(entity);
+            Object.assign(entity, { itemID: spawnOptions.entityID, kind: spec.miningYieldKind === "salvage" ? "landscapeSalvageResource" : "landscapeResource",
+                landscapeMaterializedSiteContent: true, landscapeEcosystemID: site.ecosystemID,
+                frontierDungeonResource: spec.miningYieldKind !== "salvage", landscapeSalvageResource: spec.miningYieldKind === "salvage",
+                miningYieldTypeID: spec.miningYieldTypeID, resourceQuantity: spec.resourceQuantity,
+                miningYieldKind: spec.miningYieldKind || "ore", skipMiningTemplateResolution: true,
+                preserveMiningVisualPresentation: spec.preserveMiningVisualPresentation === true,
+                beltID: site.itemID, nonPhysicalDecloakExempt: true, staticVisibilityScope: "bubble" });
+            if (Number.isFinite(spec.radius) && spec.radius > 0)
+                entity.radius = spec.radius;
+            policyRuntime.stamp(entity, spawnOptions.identity, spec.key, spawnOptions.generation);
+            if (!currentScene.addStaticEntity(entity))
+                return { success: false, errorMsg: "LANDSCAPE_RESOURCE_ADD_FAILED" };
+            const mineable = mining.registerMineableEntity?.(currentScene, entity, { broadcast: false });
+            if (!mineable) {
+                currentScene.removeStaticEntity(entity.itemID, { broadcast: false });
+                return { success: false, errorMsg: "LANDSCAPE_RESOURCE_NOT_MINEABLE" };
+            }
+            if (mineable.remainingQuantity <= 0 || !find(entity.itemID))
+                return { success: true, data: { depleted: true } };
+            if (spawnOptions.broadcast === true)
+                currentScene.broadcastAddBalls?.([entity], spawnOptions.excludedSession);
+            return { success: true, data: { entity, entityID: entity.itemID } };
+        },
+    });
+}
 function ensureSceneState(scene) {
     if (!(scene._frontierLandscapeMaterializedSiteIDs instanceof Set)) {
         scene._frontierLandscapeMaterializedSiteIDs = new Set();
@@ -260,6 +318,9 @@ function materializeLandscapeSite(scene, siteEntity, options = {}) {
             siteID,
         };
     }
+    if (ecosystem.temporaryLandscapeProfile === true && (ecosystem.spawnEnabled === false || ecosystem.spawnEnabled === 0)) {
+        return { success: false, errorMsg: "LANDSCAPE_ECOSYSTEM_DISABLED", siteID };
+    }
     if (!dungeonService || typeof dungeonService.buildEnvironmentEntities !== "function") {
         return {
             success: false,
@@ -274,17 +335,25 @@ function materializeLandscapeSite(scene, siteEntity, options = {}) {
         maxResourceProps,
         maxSceneryProps,
     });
-    const spawnPlan = frontierLandscapeSpawns.buildSpawnPlan(siteEntity, ecosystem, plan.selectedPatterns);
+    // Legacy spawn overrides key by ecosystem/dungeon ID. IDs may be reused by
+    // a later cycle, so they cannot add old NPCs or loot to imported target data.
+    const spawnPlan = ecosystem.temporaryLandscapeProfile === true
+        ? { activated: false, npcs: [], wrecks: [] }
+        : frontierLandscapeSpawns.buildSpawnPlan(siteEntity, ecosystem, plan.selectedPatterns);
     const configuredWreckProps = buildConfiguredLandscapeWreckProps(spawnPlan);
     const configuredWreckObjectIDs = new Set(configuredWreckProps.map((entry) => entry.dunObjectID));
     const exactProps = [
         ...configuredWreckProps,
-        ...(Array.isArray(plan.resourceProps) ? plan.resourceProps : []),
+        ...(plan.temporaryPolicy ? [] : Array.isArray(plan.resourceProps) ? plan.resourceProps : []),
         ...(Array.isArray(plan.environmentProps) ? plan.environmentProps : []),
     ].slice(0, MAX_EXACT_LANDSCAPE_PROPS);
-    const entities = dungeonService.buildEnvironmentEntities({ instanceID: siteID }, siteEntity, {}, {
+    const runtimeSiteID = ecosystem.temporaryLandscapeProfile === true
+        ? require("../services/frontier/temporaryLandscapeProfile").getTemporaryLandscapeRuntimeSiteID(siteEntity.temporaryLandscapeRevision || options.temporaryLandscapeRevision, siteID)
+        : siteID;
+    const entities = dungeonService.buildEnvironmentEntities({ instanceID: runtimeSiteID }, runtimeSiteID === siteID ? siteEntity : { ...siteEntity, itemID: runtimeSiteID }, {}, {
         environmentProps: exactProps,
         exactContentCaps: { environmentProps: exactProps.length },
+        temporaryLandscapeProfile: ecosystem.temporaryLandscapeProfile === true,
     });
     const addedEntities = [];
     const resourceEntities = [];
@@ -358,6 +427,11 @@ function materializeLandscapeSite(scene, siteEntity, options = {}) {
         : null;
     siteEntity.landscapeSpawnTableID = spawnPlan.spawnTableID || null;
     siteEntity.landscapeSpawnFamilyTags = spawnPlan.familyTags || [];
+    const temporaryPolicyResult = attachTemporaryLandscapePolicy(scene, siteEntity, plan, dependencies, options);
+    if (temporaryPolicyResult && !temporaryPolicyResult.success) {
+        siteEntity.landscapeTemporaryPolicyFailures = temporaryPolicyResult.data?.failures || [];
+        return temporaryPolicyResult;
+    }
     materializedSiteIDs.add(siteID);
     if (options.broadcast === true &&
         addedEntities.length > 0 &&
@@ -380,6 +454,7 @@ function materializeLandscapeSite(scene, siteEntity, options = {}) {
             propsSpawned: addedEntities.length,
             resourcesSpawned: resourceEntities.length,
             spawnPlan,
+            temporaryPolicy: temporaryPolicyResult?.data || null,
             siteID,
             wrecksSpawned: siteEntity.landscapeConfiguredWreckEntityIDs.length,
         },
@@ -397,6 +472,11 @@ function dematerializeLandscapeSite(scene, siteID, options = {}) {
         .find((entity) => (entity &&
         String(entity.kind || "") === "landscapeSite" &&
         toInt(entity.itemID, 0) === numericSiteID)) || null;
+    if (siteEntity?.temporaryLandscapeRevision) {
+        const detached = (options.temporaryPolicyRuntime || require("./temporaryLandscapeRuntime")).detach(scene, numericSiteID);
+        if (detached?.success === false)
+            return detached;
+    }
     const removedNpcEntityIDs = destroyConfiguredLandscapeNpcs(scene, siteEntity, options);
     const entities = (Array.isArray(scene.staticEntities) ? scene.staticEntities : [])
         .filter((entity) => (entity &&
@@ -455,6 +535,7 @@ module.exports = {
     materializeNearbyLandscapeSite,
     materializeNearbyLandscapeSites,
     _testing: {
+        attachTemporaryLandscapePolicy,
         buildConfiguredLandscapeWreckProps,
         destroyConfiguredLandscapeNpcs,
         spawnConfiguredLandscapeNpcs,

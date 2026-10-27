@@ -65,7 +65,18 @@ class IffMapService extends CairnService {
      * empty marshalled list when the pilot has no active space scene.
      */
     Handle_get_visible_structures(args, session) {
-        return super.Handle_get_visible_cairns(args, session);
+        if (Number(this.options.clientBuild ?? require("../../config").clientBuild) !== 3640684)
+            return super.Handle_get_visible_cairns(args, session);
+        const publication = require("./structurePublicationRuntime");
+        const rows = CairnService._testing.listVisibleCairns(session, {
+            ...this.options,
+            isSupportedType: this.options.isTransponderStructureType || publication.isTransponderStructureType,
+            isPublished: this.options.isPublished || publication.isPublished,
+        });
+        const seen = new Set(rows.map(row => Number(row.itemID)));
+        const published = (this.options.listPublished || publication.listPublished)(session)
+            .filter(row => !seen.has(Number(row.item_id))).map(row => buildDict(Object.entries(row)));
+        return buildList([...rows.map(CairnService._testing.buildCairnRow), ...published]);
     }
     /**
      * set_transponder(item_id, channel, code): channel None turns the
@@ -74,6 +85,32 @@ class IffMapService extends CairnService {
      * this surface for cairn transponders). The client discards the return
      * value and refetches after OnIffMapChanged.
      */
+    Handle_set_structure_transponder(args, session) {
+        const values = unwrapMarshalValue(args);
+        const itemID = toInt(values && values[0], 0);
+        const item = (this.options.findItemById || findItemById)(itemID);
+        const supported = this.options.isTransponderStructureType || require("./structurePublicationRuntime").isTransponderStructureType;
+        if (!item || !supported(Number(item.typeID)) || Number(item.ownerID) !== resolveSessionCharacterID(session)) {
+            require("../../common/machoErrors").throwWrappedUserError("CustomNotify", { notify: "You do not own a transponder-capable structure with that ID." });
+        }
+        if (!CairnService.CAIRN_TYPE_IDS.has(Number(item.typeID))) {
+            const deployment = this.options.deployment || require("./deploymentRuntime");
+            const state = deployment.readConstructionState(item);
+            if (!state || state.assemblyStatus === deployment.ASSEMBLY_STATUS_UNDER_CONSTRUCTION ||
+                deployment.isAssemblyActivationPending(item) || Number(item.flagID) !== 0 ||
+                Number(state.solarSystemID) !== resolveSessionSolarSystemID(session)) {
+                require("../../common/machoErrors").throwWrappedUserError("CustomNotify", { notify: "This assembly must be deployed in the current system." });
+            }
+        }
+        const configuration = iffRuntime.normalizeIffConfiguration(values?.[1], values?.[2], iffRuntime.IFF_TRANSPONDER_CHANNELS);
+        if (configuration.errorMsg)
+            require("../../common/machoErrors").throwWrappedUserError("CustomNotify", { notify: configuration.errorMsg });
+        const result = (this.options.writeTransponderState || iffRuntime.writeTransponderState)(itemID, configuration);
+        if (!result?.success)
+            require("../../common/machoErrors").throwWrappedUserError("CustomNotify", { notify: "Failed to save the structure transponder." });
+        (this.options.notifyIffStateChanged || notifyIffStateChanged)(resolveSessionSolarSystemID(session), "structure-transponder");
+        return null;
+    }
     Handle_set_transponder(args, session) {
         const values = unwrapMarshalValue(args);
         const list = Array.isArray(values) ? values : [values];

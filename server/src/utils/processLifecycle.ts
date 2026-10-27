@@ -5,11 +5,9 @@ const log = require("./logger");
 const rotatingLog = require("./rotatingLog");
 
 const INSTALL_MARK = Symbol.for("evejs.processLifecycle.installed");
-const DEFAULT_PROCESS_LIFECYCLE_LOG_PATH = path.join(
-  __dirname,
-  "../../logs/process-lifecycle.log",
-);
-const DEFAULT_NODE_REPORT_DIR = path.join(__dirname, "../../logs/node-reports");
+const LIFECYCLE_LOG_DIR = process.env.EVEJS_LOG_DIR ? path.resolve(process.env.EVEJS_LOG_DIR) : path.join(__dirname, "../../logs");
+const DEFAULT_PROCESS_LIFECYCLE_LOG_PATH = path.join(LIFECYCLE_LOG_DIR, "process-lifecycle.log");
+const DEFAULT_NODE_REPORT_DIR = path.join(LIFECYCLE_LOG_DIR, "node-reports");
 
 function appendLifecycleLog(
   level,

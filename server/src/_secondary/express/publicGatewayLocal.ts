@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const path = require("path");
 const protobuf = require("protobufjs");
+const { applyFrontier3640684ContractProfile, validateFrontierNoticeTarget, shouldDeliverFrontierNotice } = require("./gatewayServices/frontierContractProfile");
 
 const config = require(path.join(__dirname, "../../config"));
 const log = require(path.join(__dirname, "../../utils/logger"));
@@ -32,6 +33,12 @@ const sessionRegistry = require(path.join(
   __dirname,
   "../../services/chat/sessionRegistry",
 ));
+const {
+  resolveExplorationIdentity,
+  resolveExplorationNoticeIdentity,
+  isExplorationNotice,
+  shouldDeliverExplorationNotice,
+} = require("./gatewayServices/explorationIdentity");
 const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
 const {
   getLicenseForStructure,
@@ -50,6 +57,7 @@ const GATEWAY_INSTANCE_UUID = Buffer.from(
   "hex",
 );
 const ACTIVE_NOTICE_STREAMS = new Map();
+const EXPLORATION_REQUEST_IDENTITIES = new WeakMap();
 const UNKNOWN_REQUEST_COUNTS = new Map();
 const GRPC_TRAILERS_PROPERTY = Symbol.for(
   "evejs.publicGateway.grpcTrailers",
@@ -1071,6 +1079,7 @@ const PROTO_ROOT = protobuf.Root.fromJSON({
     },
   },
 });
+applyFrontier3640684ContractProfile(PROTO_ROOT);
 const RequestEnvelope = PROTO_ROOT.lookupType("eve_public.Request");
 const ResponseEnvelope = PROTO_ROOT.lookupType("eve_public.Response");
 const NoticeEnvelope = PROTO_ROOT.lookupType("eve_public.Notice");
@@ -1121,7 +1130,11 @@ const gatewayServiceRegistry = createGatewayServiceRegistry({
   emptyPayload: EMPTY_PAYLOAD,
   plexGatewayCentsPerPlex: PLEX_GATEWAY_CENTS_PER_PLEX,
   publishGatewayNotice,
+  resolveExplorationIdentity: (envelope) => EXPLORATION_REQUEST_IDENTITIES.get(envelope) || null,
+  resolveGatewayIdentity: (envelope) => EXPLORATION_REQUEST_IDENTITIES.get(envelope) || null,
 });
+
+require("./gatewayServices/progressionGatewayNotices").installProgressionNoticePublisher(publishGatewayNotice);
 
 function timestampNow() {
   const now = Date.now();
@@ -1194,6 +1207,9 @@ function getNoticeStreamState(stream) {
     ACTIVE_NOTICE_STREAMS.set(stream, {
       activeCharacterID: 0,
       applicationInstanceHex: "",
+      explorationTransport: getGatewayTransportContext(stream),
+      explorationRequestEnvelope: null,
+      explorationUserID: null,
     });
   }
   return ACTIVE_NOTICE_STREAMS.get(stream);
@@ -1235,6 +1251,17 @@ function updateNoticeStreamState(stream, requestEnvelope) {
   state.applicationInstanceHex = bytesToHex(
     requestEnvelope && requestEnvelope.application_instance_uuid,
   );
+  state.explorationRequestEnvelope = requestEnvelope;
+  const explorationIdentity = resolveExplorationIdentity(
+    requestEnvelope, state.explorationTransport, sessionRegistry.getSessions(),
+  );
+  if (explorationIdentity && !state.explorationUserID) {
+    state.explorationUserID = explorationIdentity.userID;
+  }
+  if (Number(config.clientBuild) === 3640684) {
+    const trusted = resolveExplorationNoticeIdentity(state, sessionRegistry.getSessions());
+    state.activeCharacterID = trusted && trusted.characterID || 0;
+  }
   const nextCharacterID = Number(state.activeCharacterID || 0) || 0;
   if (nextCharacterID > 0 && nextCharacterID !== previousCharacterID) {
     pushLocalMembershipSnapshotForCharacter(nextCharacterID);
@@ -1253,6 +1280,13 @@ function resolveNoticeRoutingState(streamState) {
     solarSystemID: 0,
   };
 
+  if (Number(config.clientBuild) === 3640684) {
+    const trusted = resolveExplorationNoticeIdentity(state, sessionRegistry.getSessions());
+    routingState.authenticated = Boolean(trusted);
+    routingState.activeCharacterID = trusted && trusted.characterID || 0;
+    routingState.userID = trusted && trusted.userID || 0;
+    routingState.solarSystemID = trusted && trusted.currentSystemID || 0;
+  }
   const session = routingState.activeCharacterID
     ? sessionRegistry.findSessionByCharacterID(routingState.activeCharacterID)
     : null;
@@ -1264,13 +1298,14 @@ function resolveNoticeRoutingState(streamState) {
     routingState.allianceID = Number(
       session.allianceID || session.allianceid || 0,
     ) || 0;
-    routingState.solarSystemID = Number(session.solarsystemid2 || 0) || 0;
+    if (Number(config.clientBuild) !== 3640684) routingState.solarSystemID = Number(session.solarsystemid2 || 0) || 0;
   }
 
   return routingState;
 }
 
 function shouldDeliverNoticeToState(routingState, noticeEnvelope) {
+  if (Number(config.clientBuild) === 3640684) return shouldDeliverFrontierNotice(routingState, noticeEnvelope);
   const targetGroup =
     noticeEnvelope && noticeEnvelope.target_group
       ? noticeEnvelope.target_group
@@ -1754,6 +1789,9 @@ function publishPlexBalanceChangedNotice(
 }
 
 function encodeNoticeEnvelope(noticeTypeName, noticePayloadBuffer, targetGroup) {
+  if (Number(config.clientBuild) === 3640684 && !validateFrontierNoticeTarget(targetGroup)) {
+    throw new Error("3640684 notices require exactly one supported, bounded target");
+  }
   const noticeEnvelope = NoticeEnvelope.create({
     dispatched: timestampNow(),
     uuid: uuidBuffer(),
@@ -1784,6 +1822,13 @@ function broadcastNoticeEnvelope(noticeBuffer) {
     }
 
     try {
+      if (!noticeEnvelope) continue;
+      if (noticeEnvelope && isExplorationNotice(noticeEnvelope)) {
+        const identity = resolveExplorationNoticeIdentity(streamState, sessionRegistry.getSessions());
+        if (!shouldDeliverExplorationNotice(identity, noticeEnvelope)) continue;
+        stream.write(grpcFrame);
+        continue;
+      }
       if (
         noticeEnvelope &&
         !shouldDeliverNoticeToState(
@@ -2105,7 +2150,7 @@ function logUnknownRequest(context) {
   );
 }
 
-function buildGatewayResponseForRequest(frameBuffer) {
+function buildGatewayResponseForRequest(frameBuffer, transportContext: Record<string, any> = {}) {
   const startedAt = process.hrtime.bigint();
   const requestEnvelope = RequestEnvelope.decode(frameBuffer);
   const requestTypeName = normalizeGatewayRequestTypeName(
@@ -2117,6 +2162,16 @@ function buildGatewayResponseForRequest(frameBuffer) {
         : "",
     ),
   );
+  if (Number(config.clientBuild) === 3640684 || requestTypeName.startsWith("eve_public.exploration.")) {
+    const identity = resolveExplorationIdentity(requestEnvelope, transportContext, sessionRegistry.getSessions());
+    if (identity) {
+      identity.session = identity.characterID ? sessionRegistry.findSessionByCharacterID(identity.characterID) : null;
+      EXPLORATION_REQUEST_IDENTITIES.set(requestEnvelope, identity);
+    }
+    if (Number(config.clientBuild) === 3640684 && !identity) {
+      return encodeResponseEnvelope(requestEnvelope, 401, "A matching authenticated local game session is required", null, null);
+    }
+  }
   const context = buildRequestContext(
     requestEnvelope,
     requestTypeName,
@@ -2178,7 +2233,7 @@ function buildGatewayResponseForRequest(frameBuffer) {
 
   function recoverFailedRequest(error) {
     const emptySuccessResponseType = getEmptySuccessResponseType(requestTypeName);
-    if (emptySuccessResponseType) {
+    if (emptySuccessResponseType && Number(config.clientBuild) !== 3640684) {
       log.warn(
         `[PublicGatewayLocal] Degraded failed gateway request type=${requestTypeName || "<unknown>"} ` +
           `to empty success responseType=${emptySuccessResponseType} ` +
@@ -2265,13 +2320,14 @@ function handleUnaryPing(stream, label) {
 
 function handleRequestsSendStream(stream) {
   initializeGrpcStream(stream);
+  const transportContext = getGatewayTransportContext(stream);
   let pendingResponses = Promise.resolve();
   const parseChunk = createGrpcFrameParser((payload) => {
     // Serialize requests and keep a half-closed stream open while chain reads
     // finish, so every prepared/committed transfer receives its actual result.
     pendingResponses = pendingResponses.then(async () => {
       if (stream.destroyed || stream.closed) return;
-      const responseBuffer = await buildGatewayResponseForRequest(payload);
+      const responseBuffer = await buildGatewayResponseForRequest(payload, transportContext);
       if (!stream.destroyed && !stream.closed) {
         stream.write(createGrpcFrame(responseBuffer));
       }
@@ -2287,6 +2343,16 @@ function handleRequestsSendStream(stream) {
   stream.on("error", (error) => {
     log.warn(`[PublicGatewayLocal] Requests.Send error: ${error.message}`);
   });
+}
+
+function getGatewayTransportContext(stream) {
+  try {
+    // HTTP/2 socket peer is transport-owned. Forwarded headers and request
+    // envelope authority fields are deliberately not accepted as credentials.
+    return { remoteAddress: stream && stream.session && stream.session.socket && stream.session.socket.remoteAddress };
+  } catch (_) {
+    return {};
+  }
 }
 
 function handleNoticesConsumeStream(stream) {
@@ -2323,15 +2389,34 @@ function handleNoticesConsumeStream(stream) {
 
 function handleEventsPublishStream(stream) {
   initializeGrpcStream(stream);
-  const parseChunk = createGrpcFrameParser(() => {
-    stream.write(createGrpcFrame(EMPTY_PAYLOAD));
+  const transport = getGatewayTransportContext(stream);
+  let pending = Promise.resolve();
+  const parseChunk = createGrpcFrameParser(payload => {
+    pending = pending.then(async () => {
+      if (stream.destroyed || stream.closed) return;
+      if (Number(config.clientBuild) !== 3640684) {
+        stream.write(createGrpcFrame(EMPTY_PAYLOAD));
+        return;
+      }
+      let envelope;
+      try { envelope = PROTO_ROOT.lookupType("eve_public.Event").decode(payload); }
+      catch (_) { throw Object.assign(new Error("INVALID_EVENT_ENVELOPE"), { grpcStatus: "3" }); }
+      const identity = resolveExplorationIdentity(envelope, transport, sessionRegistry.getSessions());
+      if (!identity) throw Object.assign(new Error("AUTHENTICATION_REQUIRED"), { grpcStatus: "16" });
+      identity.session = identity.characterID ? sessionRegistry.findSessionByCharacterID(identity.characterID) : null;
+      const result = await require("./gatewayServices/frontierEconomyGatewayService").routeGatewayEvent(envelope, identity);
+      if (!result) throw Object.assign(new Error("EVENT_NOT_SUPPORTED"), { grpcStatus: "12" });
+      if (!result.success) throw Object.assign(new Error(result.errorMsg || "EVENT_REJECTED"), { grpcStatus: result.statusCode === 403 ? "7" : "3" });
+      if (!stream.destroyed && !stream.closed) stream.write(createGrpcFrame(EMPTY_PAYLOAD));
+    }).catch(error => {
+      log.warn(`[PublicGatewayLocal] Events.Publish rejected: ${error.message}`);
+      stream[GRPC_TRAILERS_PROPERTY] = { "grpc-status": error.grpcStatus || "13", "grpc-message": encodeURIComponent(error.message) };
+      finalizeGrpcStream(stream);
+    });
   });
-
   stream.on("data", parseChunk);
-  stream.on("end", () => finalizeGrpcStream(stream));
-  stream.on("error", (error) => {
-    log.warn(`[PublicGatewayLocal] Events.Publish error: ${error.message}`);
-  });
+  stream.on("end", () => { void pending.then(() => finalizeGrpcStream(stream)); });
+  stream.on("error", error => log.warn(`[PublicGatewayLocal] Events.Publish error: ${error.message}`));
 }
 
 function handleGatewayStream(stream, headers) {
@@ -2391,6 +2476,11 @@ module.exports._testing = {
   PROTO_ROOT,
   RequestEnvelope,
   ResponseEnvelope,
+  NoticeEnvelope,
+  encodeNoticeEnvelope,
+  resolveNoticeRoutingState,
+  shouldDeliverNoticeToState,
+  updateNoticeStreamState,
   resetGatewayState() {
     ACTIVE_NOTICE_STREAMS.clear();
     UNKNOWN_REQUEST_COUNTS.clear();

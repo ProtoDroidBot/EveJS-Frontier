@@ -365,12 +365,16 @@ function getFrontierBallOrientation(entity) {
   // the client even when the persisted server heading points elsewhere;
   // subsequent pitch/yaw/speed inputs then move the two simulations in
   // different world-space directions.
-  return {
-    w: cosineYaw * cosinePitch,
-    x: -cosineYaw * sinePitch,
-    y: sineYaw * cosinePitch,
-    z: sineYaw * sinePitch,
-  };
+  const roll = toFiniteNumber(entity && entity.manualRoll, 0) / 2;
+  const cr = Math.cos(roll);
+  const sr = Math.sin(roll);
+  const w = cosineYaw * cosinePitch;
+  const x = -cosineYaw * sinePitch;
+  const y = sineYaw * cosinePitch;
+  const z = sineYaw * sinePitch;
+  // Compose body-forward roll after yaw/pitch, including reconnect snapshots.
+  return { w: w * cr - z * sr, x: x * cr + y * sr,
+    y: y * cr - x * sr, z: w * sr + z * cr };
 }
 
 function getFrontierRigidCollisionOrientation(entity) {

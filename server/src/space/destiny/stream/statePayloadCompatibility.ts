@@ -87,6 +87,7 @@ const KIND_CR_DATA_KEYS = {
     "beaconItemID",
   ],
   orbital: [],
+  regolith: ["oreUnits"],
   planet: OWNED_CR_DATA_KEYS,
   ship: [
     ...OWNED_CR_DATA_KEYS,

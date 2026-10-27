@@ -280,6 +280,13 @@ function createDestinyPayloadSummary(deps = {}) {
                     roundNumber(unwrapMarshalNumber(args[2], 0)),
                     roundNumber(unwrapMarshalNumber(args[3], 0)),
                 ];
+            case "SetHeading":
+                if (getPrimaryEntityID(payload) === null || !Array.isArray(args[1]))
+                    return null;
+                return [summarizeEntityID(args[0]), args[1].map(value => roundNumber(unwrapMarshalNumber(value, 0), 3))];
+            case "SetPitchRate":
+            case "SetRollRate":
+            case "SetBrakeFraction":
             case "SetPitch":
             case "SetSpeedFraction":
             case "SetYawRate":

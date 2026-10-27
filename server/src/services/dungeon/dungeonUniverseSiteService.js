@@ -1789,6 +1789,7 @@ function buildFrontierDungeonDerivedPopulationHints(template, instance = null) {
         containers,
         environmentProps,
         frontierDungeonScene: true,
+        ...(template.temporaryLandscapeProfile === true ? { temporaryLandscapeProfile: true } : {}),
         roomCount: rooms.length,
         source: "frontier_dungeon_runtime_derived",
     };
@@ -4470,6 +4471,8 @@ function separateMiningSiteAsteroids(entities, sitePosition) {
     return entities;
 }
 function buildEnvironmentEntities(instance, siteEntity, template, populationHints) {
+    const temporaryLandscapeContent = template?.temporaryLandscapeProfile === true ||
+        populationHints?.temporaryLandscapeProfile === true;
     const isMiningAsteroidSite = resolveFrontierDungeonTemplateGroupID(template) === FRONTIER_DUNGEON_MINING_SITE_GROUP_ID ||
         toInt(siteEntity && siteEntity.groupID, 0) === FRONTIER_DUNGEON_MINING_SITE_GROUP_ID;
     const sceneProfile = resolveSiteSceneProfile(template);
@@ -4703,7 +4706,10 @@ function buildEnvironmentEntities(instance, siteEntity, template, populationHint
             : suppressSlimName
                 ? ""
                 : normalizeText(candidate.explicitLabel, "") || resolveTypeRecordName(candidate.typeRecord, "Environment Feature");
-        const hiveSpawnConfiguration = frontierDungeonSpawns.resolveHiveSpawnConfiguration(authoredResourceTypeID);
+        // These allocations belong to the legacy server profile. A reused native
+        // type ID does not establish the target cycle's NPC composition.
+        const hiveSpawnConfiguration = temporaryLandscapeContent ? null :
+            frontierDungeonSpawns.resolveHiveSpawnConfiguration(authoredResourceTypeID);
         return {
             kind: "siteEnvironmentProp",
             dungeonMaterializedSiteContent: true,

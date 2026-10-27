@@ -216,6 +216,7 @@ function tickSession(scene, session, nowMs) {
   });
 
   generation[PASSIVE_SCAN_IDS_KEY] = scan.scanIds;
+  require("./explorationDiscovery").recordDirectionalScan(session, scan);
   generation[PASSIVE_SCAN_RESOLVED_IDS_KEY] = scan.resolvedIds;
   if (
     (

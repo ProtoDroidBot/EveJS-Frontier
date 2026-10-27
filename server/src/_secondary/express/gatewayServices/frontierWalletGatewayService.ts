@@ -23,6 +23,7 @@ function formatTokenValue(value) {
 }
 
 function createFrontierWalletGatewayService(context: Record<string, any> = {}) {
+  const targetEconomy = require("./frontierEconomyGatewayService").createFrontierEconomyGatewayService(context);
   const types = getFrontierCoreProtoTypes();
   const getCharacterWallet =
     context.getFrontierCharacterWallet || require(path.join(
@@ -39,6 +40,8 @@ function createFrontierWalletGatewayService(context: Record<string, any> = {}) {
         : null;
     },
     handleRequest(requestTypeName, requestEnvelope) {
+      const targetResult = targetEconomy.handleRequest(requestTypeName, requestEnvelope);
+      if (targetResult !== null) return targetResult;
       if (requestTypeName !== GET_BALANCE_REQUEST) {
         return null;
       }

@@ -428,6 +428,44 @@ function createSystemScanIndex(options: Record<string, any> = {}) {
     }
   }
 
+  function buildVoxelResourceLayer(systemID, scene, contributions) {
+    if (!scene || Number(config.clientBuild) !== 3640684 || config.voxelMiningEnabled !== true) return;
+    const store = options.voxelStore || require("../mining/voxelMiningStore");
+    const mineableState = options.getMineableState || require("../mining/miningRuntimeState").getMineableState;
+    const entities = new Map<number, any>((Array.isArray(scene.staticEntities) ? scene.staticEntities : []).map(entity => [entity.itemID, entity]));
+    for (const entity of scene.dynamicEntities?.values?.() || []) entities.set(entity.itemID, entity);
+    const groups = new Map();
+    for (const entity of entities.values()) {
+      if (!entity || !entity.position || entity.kind === "regolith" || entity.compositeAsteroid !== true) continue;
+      const scope = require("../../space/destiny/identity/interactionScope").resolveEntityInteractionScope(entity);
+      if (!scope.valid) continue;
+      const visibilityInstance = scope.dungeonInstanceID != null ? dungeonRuntime.getInstance?.(scope.dungeonInstanceID) : null;
+      if (scope.scoped && !visibilityInstance) continue;
+      const persisted = store.getAsteroid({ worldRevision: require("../mining/voxelMiningWorld").getVoxelMiningWorldRevision(config), systemID, asteroidID: entity.itemID });
+      const mineable = mineableState(scene, entity.itemID);
+      if (!mineable) continue;
+      // Per-asteroid observations supplement field-level discovery; a partially
+      // materialized field must never overwrite its complete member aggregate.
+      const key = `resource:voxel:${entity.itemID}`;
+      let group = groups.get(key);
+      if (!group) { group = { entity, visibilityInstance, original: 0, remaining: 0, types: new Set(), activeTypes: new Set(), members: 0, active: 0 }; groups.set(key, group); }
+      const original = Number(persisted?.originalQuantity ?? mineable.originalQuantity ?? mineable.remainingQuantity);
+      const remaining = Number(persisted?.remainingQuantity ?? mineable.remainingQuantity);
+      if (!Number.isFinite(original) || !Number.isFinite(remaining) || remaining < 0 || original < remaining) continue;
+      group.original += original; group.remaining += remaining; group.members++;
+      group.types.add(mineable.yieldTypeID);
+      if (remaining > 0) { group.active++; group.activeTypes.add(mineable.yieldTypeID); }
+    }
+    for (const [key, group] of groups) contributions.set(key, {
+      contributorKey: key, sourceDomain: "mining", systemID, position: positionFrom(group.entity.position), kind: "resource_field",
+      ...(group.visibilityInstance ? { visibilityInstance: clone(group.visibilityInstance) } : {}),
+      ...signatureProfile(group.entity, { baseSignature: 20, gravimetric: 2, thermal: 0.3 }), observedAtMs: now(),
+      resourceSummary: { family: "ore", potentialTypeIDs: normalizeTypeIDs([...group.types]), remainingTypeIDs: normalizeTypeIDs([...group.activeTypes]),
+        originalQuantityBand: quantityBand(group.original), remainingQuantityBand: quantityBand(group.remaining), originalMemberCountBand: countBand(group.members),
+        activeMemberCountBand: countBand(group.active), depleted: group.remaining === 0 },
+    });
+  }
+
   function rebuild(systemID, rebuildOptions: Record<string, any> = {}) {
     const dungeon = buildDungeonLayer(systemID);
     const resourceKeys = new Set(dungeon.filter((row) => row.kind === "resource_field")
@@ -438,8 +476,9 @@ function createSystemScanIndex(options: Record<string, any> = {}) {
     buildStructureLayer(systemID, entities);
     buildNpcLayer(systemID, entities);
     buildLiveLayer(systemID, rebuildOptions.liveScene, entities);
+    buildVoxelResourceLayer(systemID, rebuildOptions.liveScene, entities);
     const blooms = buildBloomLayer(systemID);
-    const contributions = [...dungeon, ...generatedResources, ...celestials, ...entities.values(), ...blooms]
+    const contributions = [...new Map([...dungeon, ...generatedResources, ...celestials, ...entities.values(), ...blooms].map(row => [row.contributorKey, row])).values()]
       .sort((left, right) => left.contributorKey.localeCompare(right.contributorKey));
     for (const contribution of contributions) {
       try {

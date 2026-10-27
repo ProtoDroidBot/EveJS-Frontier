@@ -3,7 +3,7 @@ const pc = require("picocolors");
 const config = require(path.join(__dirname, "../../config"));
 const rotatingLog = require(path.join(__dirname, "../rotatingLog"));
 
-const LOG_DIR = path.join(__dirname, "../../../logs");
+const LOG_DIR = process.env.EVEJS_LOG_DIR ? path.resolve(process.env.EVEJS_LOG_DIR) : path.join(__dirname, "../../../logs");
 const SERVER_LOG_PATH = path.join(LOG_DIR, "server.log");
 const DIVIDER =
   "================================================================";

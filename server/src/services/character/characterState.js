@@ -1,5 +1,3 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 // Phase 0 / 0.C: characterState owns the `characters` table; access flows
 // through a strict ownership-scoped repository.
@@ -795,6 +793,29 @@ function updateCharacterRecord(charId, updater) {
     const updatedRecord = typeof updater === "function" ? updater(cloneValue(currentRecord)) : updater;
     const normalizedRecord = normalizeCharacterRecord(charId, updatedRecord);
     return writeCharacterRecord(charId, normalizedRecord);
+}
+/** Prepare a finite cent-exact balance mutation for an owner-scoped atomic commit. */
+function prepareCharacterBalanceAtomicWrite(charId, delta, expectedBalance = undefined) {
+    const record = getCharacterRecord(charId);
+    const amount = Number(delta), current = Number(record && record.balance);
+    if (!record)
+        throw Object.assign(new Error("CHARACTER_NOT_FOUND"), { code: "CHARACTER_NOT_FOUND" });
+    if (!Number.isFinite(amount) || !Number.isSafeInteger(Math.round(amount * 100)) ||
+        Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-6 || !Number.isFinite(current)) {
+        throw Object.assign(new Error("INVALID_CURRENCY_AMOUNT"), { code: "INVALID_CURRENCY_AMOUNT" });
+    }
+    if (expectedBalance !== undefined && Number(expectedBalance) !== current) {
+        throw Object.assign(new Error("BALANCE_CHANGED"), { code: "BALANCE_CHANGED" });
+    }
+    const nextCents = Math.round(current * 100) + Math.round(amount * 100);
+    if (!Number.isSafeInteger(nextCents) || nextCents < 0)
+        throw Object.assign(new Error("INSUFFICIENT_FUNDS"), { code: "INSUFFICIENT_FUNDS" });
+    // Keep the authoritative stored row intact; normalization above has already
+    // persisted any migrations before the optimistic proposal captures its version.
+    const raw = readCharacters()[String(charId)];
+    const next = { ...cloneValue(raw), balance: nextCents / 100 };
+    return { row: repo.prepareAtomicRowWrite(CHARACTERS_TABLE, String(charId), next),
+        previousBalance: current, balance: next.balance };
 }
 function clearCharacterActiveShipForCloneSelection(charId) {
     ensureMigrated();
@@ -3359,6 +3380,7 @@ module.exports = {
     writeCharacterRecord,
     removeCharacterRecord,
     updateCharacterRecord,
+    prepareCharacterBalanceAtomicWrite,
     clearCharacterActiveShipForCloneSelection,
     resolveHomeStationInfo,
     getCharacterShips,

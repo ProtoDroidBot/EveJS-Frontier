@@ -124,6 +124,10 @@ BUILD_PROFILES = {
 }
 
 
+# Narrow flags independently checked in the 3640684 native modules.
+BUILD_MODULE_PATCHES[3640684] = {'frontier/beta.pyc': ('FRONTIER_BETA_HIDE_SKILLS', 'FRONTIER_BETA_HIDE_MAPVIEW_MARKERS', 'FRONTIER_BETA_DISABLE_SAFE_LOGOFF', 'FRONTIER_BETA_HIDE_HUD_SYSTEM_INFO_PANEL', 'FRONTIER_BETA_HIDE_HUD_ROUTE_PANEL', 'FRONTIER_BETA_HIDE_HUD_SEARCH_PANEL'), 'frontier/shell/common/const.pyc': ('HIDE_SHELL_IMPLANT_SYSTEM',)}
+BUILD_PROFILES[3640684] = {'frontier/beta.pyc': {'source_member_sha256': 'c4dbeb47b26881be5e06ada78cef0b34e2a423f70b6ea6f6b359e974893d2f5f', 'source_code_sha256': '8d6ccfa4f6f15e795fac44e11db399cc9dc6ce7463d92858589dab381055d171', 'patched_member_sha256': '66c0108bfde2eb96bc3fab05d5d7150418ddcb7672b8e7160a3ebe6b577ba365', 'patched_code_sha256': 'a14020750c30758316c406bbdba98df895c6751435235ca85e365a166e9f3b03'}, 'frontier/shell/common/const.pyc': {'source_member_sha256': '1fe75176908d8c60286efc23a17cce6d5c2f19ae66bedb156ff89b7c193e45f0', 'source_code_sha256': '52baee32738aafe7305592af0a412d030a8654a4c441e7122097722642a3e648', 'patched_member_sha256': 'de30e65f74b0e4ed392494d7ad847f2cb9736f4f4a77651034014c4b9746a7d1', 'patched_code_sha256': 'be285e84e2b59c471e66bb6b675ce5755415fd8bcf055b86d69fef3c97575e22'}}
+
 class FeaturePatchError(RuntimeError):
     pass
 

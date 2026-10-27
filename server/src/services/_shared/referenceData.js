@@ -319,7 +319,7 @@ function normalizePayload(tableName, payload) {
     }
     return payload;
 }
-function readStaticTable(tableName) {
+function readBaseStaticTable(tableName) {
     if (cache.has(tableName)) {
         return cache.get(tableName);
     }
@@ -341,6 +341,11 @@ function readStaticTable(tableName) {
     cache.set(tableName, payload);
     return payload;
 }
+function readStaticTable(tableName) {
+    const readBaseline = () => readBaseStaticTable(tableName);
+    return require("../frontier/temporaryLandscapeProfile").getTemporaryLandscapeTable(tableName, readBaseline) ||
+        require("../frontier/explorationReferenceData").getExplorationReferenceTable(tableName, readBaseline) || readBaseline();
+}
 function readStaticRows(tableName) {
     const payload = readStaticTable(tableName);
     const rowKey = ROW_KEY[tableName];
@@ -359,6 +364,8 @@ function readStaticRows(tableName) {
     return [];
 }
 function clearReferenceCache(tableNames = null) {
+    require("../frontier/explorationReferenceData").clearCache();
+    require("../frontier/temporaryLandscapeProfile").clearTemporaryLandscapeCache();
     if (!tableNames) {
         cache.clear();
         return;

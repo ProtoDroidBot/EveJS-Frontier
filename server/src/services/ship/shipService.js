@@ -860,6 +860,22 @@ class ShipService extends BaseService {
         void kwargs;
         return scoopDrone(session, args && args.length > 0 ? args[0] : []);
     }
+    Handle_BeginScoop(args, session) {
+        const itemID = this._extractShipId(args?.[0]);
+        const result = require("../mining/voxelMiningRuntime").beginScoop(session, itemID);
+        if (!result.success) {
+            if (result.errorMsg === "TARGET_TOO_FAR")
+                throwWrappedUserError("TargetTooFar", {});
+            if (result.errorMsg === "NOT_ENOUGH_CARGO_SPACE")
+                throwWrappedUserError("NotEnoughCargoSpace", {});
+            throwWrappedUserError("CustomNotify", { notify: "This ore fragment cannot be picked up right now." });
+        }
+        return result.data.durations;
+    }
+    Handle_CancelScoop(args, session) {
+        require("../mining/voxelMiningRuntime").cancelScoop(session, this._extractShipId(args?.[0]));
+        return null;
+    }
     Handle_Scoop(args, session, kwargs) {
         void kwargs;
         const objectID = this._extractShipId(args && args.length > 0 ? args[0] : null);

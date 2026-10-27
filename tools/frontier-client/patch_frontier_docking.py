@@ -64,6 +64,9 @@ BUILD_PROFILES = {
 }
 
 
+# Independently derived from the supplied 3640684 module; only DOCKING_DISABLED changes.
+BUILD_PROFILES[3640684] = {'source_member_sha256': '646bd0470cee781c05c2d33c39d8480e32679f8ef7549668ba7f5466ae8a783e', 'source_code_sha256': '92e465215bf814686ac51194b2fd52328aa875f993f0dfab4a9049a8eb20643d', 'patched_member_sha256': '309580295967af0648ccc9e3c802e531882e2db2c5f2bd4958e19c972f50c74f', 'patched_code_sha256': 'c3128b99284963cf18edb987e439047626cb059d93f735bf6e8f2624b884bf1b'}
+
 class DockingPatchError(RuntimeError):
     pass
 

@@ -659,7 +659,8 @@ function createDestinyMovementSimulator(deps: Record<string, any> = {}) {
   function advanceGotoMovement(entity, deltaSeconds) {
     const desiredDirection = getCommandDirection(entity, entity.direction);
     const desiredSpeed =
-      entity.maxVelocity * clamp(entity.speedFraction, 0, MAX_SUBWARP_SPEED_FRACTION);
+      entity.maxVelocity * clamp(entity.speedFraction, 0, MAX_SUBWARP_SPEED_FRACTION) *
+      (1 - (entity.manualFlightActive ? clamp(toFiniteNumber(entity.manualBrakeFraction, 0), 0, 1) : 0));
     const result = applyDesiredVelocity(
       entity,
       desiredDirection,
@@ -693,14 +694,19 @@ function createDestinyMovementSimulator(deps: Record<string, any> = {}) {
     }
     const thrust = cloneVector(entity.manualStrafingThrust);
     const forwardDirection = normalizeVector(entity.direction, DEFAULT_RIGHT);
-    const horizontalDirection = normalizeVector(
+    const unrolledHorizontal = normalizeVector(
       buildPerpendicular(forwardDirection),
       DEFAULT_RIGHT,
     );
-    const verticalDirection = normalizeVector(
-      crossProduct(horizontalDirection, forwardDirection),
+    const unrolledVertical = normalizeVector(
+      crossProduct(unrolledHorizontal, forwardDirection),
       DEFAULT_WORLD_UP,
     );
+    const roll = toFiniteNumber(entity.manualRoll, 0);
+    const horizontalDirection = addVectors(scaleVector(unrolledHorizontal, Math.cos(roll)),
+      scaleVector(unrolledVertical, Math.sin(roll)));
+    const verticalDirection = addVectors(scaleVector(unrolledVertical, Math.cos(roll)),
+      scaleVector(unrolledHorizontal, -Math.sin(roll)));
     const massAccelerationMultiplier = resolveMassAccelerationMultiplier(
       entity.mass,
       entity.baseMass,
@@ -745,6 +751,44 @@ function createDestinyMovementSimulator(deps: Record<string, any> = {}) {
       entity.baseMass,
       entity.angularAgility,
     );
+    if (entity.manualPitchRate != null && !entity.manualHeading) {
+      // New rate commands rotate about the hull axes. Reconstruct its full
+      // orientation from direction+roll and integrate one quaternion step;
+      // unlike the legacy absolute-pitch control, this crosses both poles.
+      const yaw = Math.atan2(currentDirection.x, currentDirection.z);
+      const pitch = Math.asin(clamp(currentDirection.y, -1, 1));
+      const roll = toFiniteNumber(entity.manualRoll, 0);
+      const cy = Math.cos(yaw / 2), sy = Math.sin(yaw / 2);
+      const cp = Math.cos(pitch / 2), sp = Math.sin(pitch / 2);
+      const cr = Math.cos(roll / 2), sr = Math.sin(roll / 2);
+      const q = { w: cy * cp * cr - sy * sp * sr,
+        x: -cy * sp * cr + sy * cp * sr,
+        y: sy * cp * cr + cy * sp * sr,
+        z: cy * cp * sr + sy * sp * cr };
+      const pitchRate = clamp(toFiniteNumber(entity.manualPitchRate, 0), -1, 1) * maxAngularSpeed;
+      const yawRate = clamp(toFiniteNumber(entity.manualYawRate, 0), -1, 1) * maxAngularSpeed;
+      const rollRate = clamp(toFiniteNumber(entity.manualRollRate, 0), -1, 1) * maxAngularSpeed;
+      const angularSpeed = Math.hypot(pitchRate, yawRate, rollRate);
+      const sine = angularSpeed > 0 ? Math.sin(angularSpeed * delta / 2) / angularSpeed : 0;
+      const d = { w: Math.cos(angularSpeed * delta / 2), x: -pitchRate * sine, y: yawRate * sine, z: rollRate * sine };
+      const next = { w: q.w*d.w-q.x*d.x-q.y*d.y-q.z*d.z,
+        x: q.w*d.x+q.x*d.w+q.y*d.z-q.z*d.y,
+        y: q.w*d.y-q.x*d.z+q.y*d.w+q.z*d.x,
+        z: q.w*d.z+q.x*d.y-q.y*d.x+q.z*d.w };
+      const direction = normalizeVector({ x: 2*(next.x*next.z+next.w*next.y),
+        y: 2*(next.y*next.z-next.w*next.x), z: 1-2*(next.x*next.x+next.y*next.y) }, currentDirection);
+      const nextYaw = Math.atan2(direction.x, direction.z), nextPitch = Math.asin(clamp(direction.y, -1, 1));
+      const base = { w: Math.cos(nextYaw/2)*Math.cos(nextPitch/2), x: -Math.cos(nextYaw/2)*Math.sin(nextPitch/2),
+        y: Math.sin(nextYaw/2)*Math.cos(nextPitch/2), z: Math.sin(nextYaw/2)*Math.sin(nextPitch/2) };
+      const relativeW = base.w*next.w+base.x*next.x+base.y*next.y+base.z*next.z;
+      const relativeZ = base.w*next.z-base.x*next.y+base.y*next.x-base.z*next.w;
+      entity.manualRoll = 2*Math.atan2(relativeZ, relativeW);
+      entity.manualPitchVelocity = pitchRate; entity.manualYawVelocity = yawRate;
+      entity.angularVelocity = { x: pitchRate, y: yawRate, z: rollRate };
+      entity.direction = direction;
+      entity.targetPoint = addVectors(cloneVector(entity.position), scaleVector(direction, 1.0e16));
+      return true;
+    }
     const pitchTarget = clamp(
       toFiniteNumber(entity.manualPitch, 0),
       -1,
@@ -752,7 +796,9 @@ function createDestinyMovementSimulator(deps: Record<string, any> = {}) {
     ) * (Math.PI / 2);
     const currentPitch = Math.asin(clamp(currentDirection.y, -1, 1));
     const maximumPitchStep = maxAngularSpeed * delta;
-    const pitchError = pitchTarget - currentPitch;
+    const pitchError = entity.manualPitchRate != null
+      ? clamp(toFiniteNumber(entity.manualPitchRate, 0), -1, 1) * maximumPitchStep
+      : pitchTarget - currentPitch;
     const pitchStep = clamp(
       pitchError,
       -maximumPitchStep,
@@ -771,18 +817,21 @@ function createDestinyMovementSimulator(deps: Record<string, any> = {}) {
     ) * maxAngularSpeed;
     const nextYaw = currentYaw + (yawVelocity * delta);
     const pitchCosine = Math.cos(nextPitch);
-    const commandDirection = normalizeVector({
+    let commandDirection = normalizeVector({
       x: Math.sin(nextYaw) * pitchCosine,
       y: Math.sin(nextPitch),
       z: Math.cos(nextYaw) * pitchCosine,
     }, currentDirection);
 
+    const rollVelocity = clamp(toFiniteNumber(entity.manualRollRate, 0), -1, 1) * maxAngularSpeed;
+    entity.manualRoll = (toFiniteNumber(entity.manualRoll, 0) + rollVelocity * delta) % (2 * Math.PI);
+    if (entity.manualHeading) commandDirection = normalizeVector(entity.manualHeading, currentDirection);
     entity.manualPitchVelocity = delta > 0 ? pitchStep / delta : 0;
     entity.manualYawVelocity = yawVelocity;
     entity.angularVelocity = {
       x: entity.manualPitchVelocity,
       y: entity.manualYawVelocity,
-      z: 0,
+      z: rollVelocity,
     };
     entity.targetPoint = addVectors(
       cloneVector(entity.position),

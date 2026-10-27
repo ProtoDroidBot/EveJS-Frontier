@@ -1288,6 +1288,9 @@ class BeyonceService extends BaseService {
                     info: [USER_ERROR_LOCALIZATION_LABEL, STARGATE_CLOSED_LABEL],
                 });
                 break;
+            case "STARGATE_INSUFFICIENT_FUEL":
+                throwWrappedUserError("CustomNotify", { notify: "This stargate needs more fuel before another jump." });
+                break;
             case "STARGATE_JUMP_IN_PROGRESS":
                 throwWrappedUserError("CustomInfo", {
                     info: "Stargate jump already in progress.",
@@ -1926,6 +1929,22 @@ class BeyonceService extends BaseService {
         const pitch = normalizeNumber(args && args[0], 0);
         log.info(`[Beyonce] CmdSetPitch char=${session && session.characterID} pitch=${pitch}`);
         spaceRuntime.setPitch(session, pitch);
+        return null;
+    }
+    Handle_CmdSetPitchRate(args, session) {
+        this._spaceRuntime.setPitchRate(session, unwrapMarshalValue(args && args[0]));
+        return null;
+    }
+    Handle_CmdSetRollRate(args, session) {
+        this._spaceRuntime.setRollRate(session, unwrapMarshalValue(args && args[0]));
+        return null;
+    }
+    Handle_CmdSetBrakeFraction(args, session) {
+        this._spaceRuntime.setBrakeFraction(session, unwrapMarshalValue(args && args[0]));
+        return null;
+    }
+    Handle_CmdSetHeading(args, session) {
+        this._spaceRuntime.setHeading(session, unwrapMarshalValue(args && args[0]));
         return null;
     }
     Handle_CmdSetStrafingThrust(args, session) {

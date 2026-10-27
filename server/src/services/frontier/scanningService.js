@@ -150,6 +150,7 @@ class ScanningService extends BaseService {
                 scan.resolvedDelayMsById = resolution.delayMsByEntityID;
             }
         }
+        require("./explorationDiscovery").recordDirectionalScan(session, scan);
         log.info(`[scanningService] directional_scan ship=${shipID} ` +
             `angle=${request.angleDegrees} results=${scan.updatedScans.length} ` +
             `resolved=${scan.resolvedIds.length} durationMs=${scan.durationMs}`);

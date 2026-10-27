@@ -312,6 +312,7 @@ function registerScanningAbilityHandlers() {
           scan.resolvedDelayMsById = resolution.delayMsByEntityID;
         }
       }
+      require("./explorationDiscovery").recordDirectionalScan(session, scan);
       log.info(
         `[scanning] directional_scan ship=${shipID} module=${context.moduleItemID} ` +
         `angle=${context.scanRequest.angleDegrees} results=${scan.updatedScans.length} ` +

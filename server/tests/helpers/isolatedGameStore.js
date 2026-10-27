@@ -135,6 +135,15 @@ async function createIsolatedGameStore(options = {}) {
             cloneTree(baselineManifest, path.join(storeRoot, "manifest.json"));
         }
         const attestationPath = path.join(storeRoot, ATTESTATION_FILE);
+        const configDir = path.join(storeRoot, "config");
+        fs.mkdirSync(configDir);
+        // Loading config normalizes its files. Keep that write inside the test
+        // root as well as the database, while retaining the same input settings.
+        for (const name of ["evejs.config.json", "evejs.config.local.json"]) {
+            const source = path.join(REPO_ROOT, name);
+            if (fs.existsSync(source))
+                fs.copyFileSync(source, path.join(configDir, name));
+        }
         fs.writeFileSync(attestationPath, `${JSON.stringify({
             schemaVersion: 1,
             kind: "evejs-test-store",
@@ -150,6 +159,9 @@ async function createIsolatedGameStore(options = {}) {
             EVEJS_TEST_STORE_ATTESTATION: attestationPath,
             EVEJS_TEST_STORE_BASELINE_ROOT: baselineRoot,
             EVEJS_GAMESTORE_DATA_DIR: dataDir,
+            EVEJS_CONFIG_DIR: configDir,
+            EVEJS_LOG_DIR: path.join(storeRoot, "logs"),
+            EVEJS_RUNTIME_CERT_DIR: path.join(storeRoot, "certs"),
         };
         if (options.seedFrontierFixtures === true) {
             seedFrontierTestFixtures(environment);

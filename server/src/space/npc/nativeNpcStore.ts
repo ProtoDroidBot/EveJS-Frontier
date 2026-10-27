@@ -88,6 +88,7 @@ const NATIVE_SCOPE_ID_FIELDS = Object.freeze([
   "airNpeInstanceID",
   "dungeonSiteID",
   "dungeonSiteInstanceID",
+  "landscapeSiteID",
 ]);
 const NATIVE_SCOPE_BOOLEAN_FIELDS = Object.freeze([
   "airNpeBoardingShipPresentation",
@@ -100,6 +101,10 @@ const NATIVE_SCOPE_BOOLEAN_FIELDS = Object.freeze([
   "dungeonSiteContentPersistsAfterResponse",
 ]);
 const NATIVE_SCOPE_TEXT_FIELDS = Object.freeze([
+  "temporaryLandscapeRevision",
+  "temporaryLandscapePolicyRevision",
+  "landscapePolicyKey",
+  "landscapePolicyGeneration",
   "airNpeHostileWave",
   "dungeonEncounterKey",
   "dungeonFactionKey",
@@ -238,6 +243,19 @@ function resolveStoredEntityScopeMetadata(sources: any[] = [], options: Record<s
     normalizePersistentEntityID(metadata.airNpeInstanceID) === null
   ) {
     missingRequiredIdentityFields.push("airNpeInstanceID");
+  }
+
+  const hasLandscapeScope = metadata.landscapeSiteID != null || metadata.temporaryLandscapeRevision ||
+    metadata.temporaryLandscapePolicyRevision || metadata.landscapePolicyKey || metadata.landscapePolicyGeneration;
+  if (hasLandscapeScope) {
+    if (normalizePersistentEntityID(metadata.landscapeSiteID) === null) missingRequiredIdentityFields.push("landscapeSiteID");
+    for (const key of ["temporaryLandscapeRevision", "temporaryLandscapePolicyRevision"]) {
+      if (!/^[a-f0-9]{64}$/.test(metadata[key] || "")) invalidIdentityFields.add(key);
+    }
+    if (!metadata.landscapePolicyKey) missingRequiredIdentityFields.push("landscapePolicyKey");
+    if (!/^\d+$/.test(metadata.landscapePolicyGeneration || "") || !Number.isSafeInteger(Number(metadata.landscapePolicyGeneration))) {
+      invalidIdentityFields.add("landscapePolicyGeneration");
+    }
   }
 
   const success =

@@ -157,6 +157,7 @@ function flattenDungeonObjects(dungeon, source) {
                 roomID: toInt(object && object.roomID, toInt(room && room.roomID, 0)),
                 sourcePositionOffset: cloneVector(sourceTransform.positionOffset),
                 sourceYawDegrees: toFiniteNumber(sourceTransform.yawDegrees, 0),
+                temporaryLandscapeProfile: dungeon.temporaryLandscapeProfile === true,
             });
         }
     }
@@ -253,7 +254,15 @@ function buildExactEnvironmentProp(object, metadata = {}) {
             object.objectID,
         ].join(":"),
         positionOffset: cloneVector(object.positionOffset),
-        dunRotation: [toFiniteNumber(object.sourceYawDegrees, 0), 0, 0],
+        dunRotation: object.temporaryLandscapeProfile === true
+            ? [toFiniteNumber(object.sourceYawDegrees, 0) + toFiniteNumber(object.yaw, 0),
+                toFiniteNumber(object.pitch, 0), toFiniteNumber(object.roll, 0)]
+            : [toFiniteNumber(object.sourceYawDegrees, 0), 0, 0],
+        ...(object.temporaryLandscapeProfile === true ? {
+            authoredRadius: Math.max(0, toFiniteNumber(object.radius, 0)) || undefined,
+            dungeonObjectGroupTag: String(object.groupTag || "") || undefined,
+            dungeonObjectLocalName: String(object.localName || "") || undefined,
+        } : {}),
         suppressSlimGraphicID: true,
         suppressSlimName: true,
         typeID: Math.max(0, toInt(object.typeID, 0)),
@@ -275,6 +284,7 @@ function buildLandscapeScenePlan(site, ecosystem, getDungeonByID, options = {}) 
     }
     const natural = selectPatternOccurrences(ecosystem.naturalWorldPatterns, ecosystem.minNaturalWorldPatterns, ecosystem.maxNaturalWorldPatterns, `${siteID}:natural`).map((pattern) => ({ ...pattern, patternKind: "natural" }));
     const broken = selectPatternOccurrences(ecosystem.brokenWorldPatterns, ecosystem.minBrokenWorldPatterns, ecosystem.maxBrokenWorldPatterns, `${siteID}:broken`).map((pattern) => ({ ...pattern, patternKind: "broken" }));
+    const wild = ecosystem.temporaryLandscapeProfile === true ? selectPatternOccurrences(ecosystem.wildWorldPatterns, ecosystem.minWildWorldPatterns, ecosystem.maxWildWorldPatterns, `${siteID}:wild`).map((pattern) => ({ ...pattern, patternKind: "wild" })) : [];
     const entryDungeonID = Math.max(0, toInt(ecosystem.entryDungeonID, toInt(site && site.dungeonID, 0)));
     const sourceDefinitions = [
         ...(entryDungeonID > 0
@@ -282,6 +292,7 @@ function buildLandscapeScenePlan(site, ecosystem, getDungeonByID, options = {}) 
             : []),
         ...natural,
         ...broken,
+        ...wild,
     ];
     let patternIndex = 0;
     const sources = sourceDefinitions
@@ -306,16 +317,39 @@ function buildLandscapeScenePlan(site, ecosystem, getDungeonByID, options = {}) 
     const resourceObjects = selectResourceObjects(siteID, sources, maxResourceProps, options.classifyResourceObject);
     const locators = sources.flatMap((source) => (flattenDungeonObjects(source.dungeon, source)
         .filter((object) => object.role !== "scenery")));
-    const environmentProps = sceneryObjects.map((object) => buildExactEnvironmentProp(object));
+    const entryEnvironment = ecosystem.temporaryLandscapeProfile === true
+        ? ["baseCloudTypeID", "postProcessTypeID"].map((field, index) => ({
+            dunObjectID: index + 1,
+            exact: true,
+            key: `landscape:target-entry:${siteID}:${field}`,
+            typeID: toInt(ecosystem.entryPattern?.[field], 0),
+            positionOffset: { x: 0, y: 0, z: 0 },
+            dunRotation: [0, 0, 0],
+            suppressSlimGraphicID: true,
+            suppressSlimName: true,
+        })).filter(entry => entry.typeID > 0)
+        : [];
+    const profile = ecosystem.temporaryLandscapeProfile === true && site?.temporaryLandscapeRevision
+        ? require("../services/frontier/temporaryLandscapeProfile").getTemporaryLandscapeProfile() : null;
+    const resolveType = options.resolveType || (typeID => profile?.types.get(typeID) || null);
+    const environmentProps = [...entryEnvironment, ...sceneryObjects.filter(object => ecosystem.temporaryLandscapeProfile !== true || !require("../services/frontier/temporaryLandscapeNpcs")
+            .isTemporaryLandscapeNpcType(resolveType(object.typeID))).map((object) => buildExactEnvironmentProp(object))]
+        .slice(0, maxSceneryProps);
     const resourceProps = resourceObjects.map(({ object, profile }) => (buildExactEnvironmentProp(object, {
         landscapeResource: true,
         miningYieldTypeID: Math.max(0, toInt(profile && profile.yieldTypeID, 0)),
         resourceQuantity: Math.max(1, toInt(profile && profile.resourceQuantity, 1)),
     })));
+    const temporaryPolicy = ecosystem.temporaryLandscapeProfile === true && site?.temporaryLandscapeRevision
+        ? require("../services/frontier/temporaryLandscapePolicy").buildTemporaryLandscapePolicy({
+            site, ecosystem, sources, objects: sources.flatMap(source => flattenDungeonObjects(source.dungeon, source)),
+            locators, resolveType, resourceProps,
+        }) : null;
     return {
         environmentProps,
         locators,
         resourceProps,
+        ...(temporaryPolicy ? { temporaryPolicy } : {}),
         selectedPatterns: sources.map((source) => ({
             dungeonID: source.dungeonID,
             occurrenceIndex: source.occurrenceIndex,

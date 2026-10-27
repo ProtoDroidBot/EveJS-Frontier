@@ -4,6 +4,7 @@ const path = require("path");
 const log = require(path.join(__dirname, "../utils/logger"));
 const { TABLE, readStaticRows, } = require(path.join(__dirname, "../services/_shared/referenceData"));
 let cache = null;
+let cacheSelection = "";
 function getStructureState() {
     return require(path.join(__dirname, "../services/structure/structureState"));
 }
@@ -141,8 +142,11 @@ function buildMaps() {
     };
 }
 function ensureLoaded() {
-    if (!cache) {
+    const config = require("../config");
+    const selection = `${config.clientBuild}:${process.env.EVEJS_EXPLORATION_WORLD_PATH || ""}:${process.env.EVEJS_LANDSCAPE_CONTENT_PATH || process.env.EVEJS_TEMPORARY_LANDSCAPE_PATH || config.temporaryLandscapePath || ""}`;
+    if (!cache || cacheSelection !== selection) {
         cache = buildMaps();
+        cacheSelection = selection;
         log.info(`[SpaceWorld] Loaded ${cache.solarSystems.length} systems, ${cache.stations.length} stations, ${cache.stationTypes.length} station types, ${cache.celestials.length} celestials, ${cache.asteroidBelts.length} asteroid belts, ${cache.frontierDungeonTemplates.length} Frontier dungeons, ${cache.landscapeSites.length} landscape sites, ${cache.landscapeEcosystems.length} landscape ecosystems, ${cache.landscapeDungeonTemplates.length} landscape dungeons, ${cache.stargates.length} stargates`);
     }
     return cache;

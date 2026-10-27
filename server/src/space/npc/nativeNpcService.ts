@@ -926,6 +926,9 @@ function applyNativeRuntimeNpcPresentation(entity, entityRecord, definition = nu
   entity.nameID = toPositiveInt(entityRecord.nameID, 0) || null;
   entity.securityStatus = entityRecord.securityStatus;
   entity.bounty = entityRecord.bounty;
+  for (const key of ["temporaryLandscapeRevision", "temporaryLandscapePolicyRevision", "landscapeSiteID", "landscapePolicyKey", "landscapePolicyGeneration"]) {
+    if (entityRecord[key] != null) entity[key] = entityRecord[key];
+  }
   entity.npcEntityType = entityRecord.npcEntityType;
   entity.npcBehaviorRole = entityRecord.behaviorRole ||
     definition && definition.behaviorPolicy && definition.behaviorPolicy.role ||
@@ -1067,6 +1070,9 @@ function registerNativeRuntimeController(entityRecord, controllerRecord, definit
 
 function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, definition, options: Record<string, any> = {}) {
   definition = applyNpcBehaviorConfig(definition);
+  if (entityRecord?.temporaryLandscapeRevision && !require("../temporaryLandscapeRuntime").isNpcRecordActive(entityRecord)) {
+    return { success: false, errorMsg: "LANDSCAPE_NPC_PROFILE_INACTIVE" };
+  }
   if (entityRecord && entityRecord.transient !== true) {
     npcRuntimePersistence.initializeNpcRuntimePersistence();
     if (npcRuntimePersistence.isNpcEntityQuarantined(entityRecord.entityID)) {
@@ -1674,7 +1680,7 @@ function spawnNativeNpcEntityInContext(context, definition, options: Record<stri
       options.npcFuelRequirementsEnabled === true ||
       definition.profile.npcFuelRequirementsEnabled === true,
     securityStatus: identity.securityStatus,
-    bounty: identity.bounty,
+    bounty: definition.profile.temporaryLandscapePolicy === true && definition.profile.suppressBounty === true ? 0 : identity.bounty,
     npcEntityType: identity.npcEntityType,
     behaviorRole: String(definition.behaviorPolicy && definition.behaviorPolicy.role || "authored"),
     behaviorActivity: String(definition.behaviorPolicy && definition.behaviorPolicy.activity || "authored"),
@@ -1751,6 +1757,7 @@ function spawnNativeNpcEntityInContext(context, definition, options: Record<stri
       `spawn:${entityRecord.entityID}:${toPositiveInt(entityRecord.npcIncarnation, 1)}`,
       {
         entityID: entityRecord.entityID,
+        npcIdentitySlot: entityRecord.npcIdentitySlot,
         npcCharacterID: toPositiveInt(entityRecord.npcCharacterID, 0) || null,
         incarnation: toPositiveInt(entityRecord.npcIncarnation, 1),
         systemID: entityRecord.systemID,
@@ -2186,6 +2193,8 @@ function rehydrateStoredNativeControllers(scene, options: Record<string, any> = 
     if (!entityRecord || entityRecord.transient === true || controllerRecord.transient === true) {
       continue;
     }
+    if (entityRecord.temporaryLandscapeRevision &&
+        !require("../temporaryLandscapeRuntime").isNpcRecordActive(entityRecord)) continue;
     if (activeStartupRuleIDs && controllerRecord.startupRuleID &&
         !activeStartupRuleIDs.has(String(controllerRecord.startupRuleID))) {
       continue;
@@ -2277,6 +2286,7 @@ function destroyNativeNpcController(controller, options: Record<string, any> = {
       `destroy:${entityID}:${toPositiveInt(storedEntityRecord.npcIncarnation, 1)}`,
       {
         entityID,
+        npcIdentitySlot: storedEntityRecord.npcIdentitySlot,
         npcCharacterID: toPositiveInt(storedEntityRecord.npcCharacterID, 0) || null,
         incarnation: toPositiveInt(storedEntityRecord.npcIncarnation, 1),
         destroyed: options.destroyed === true,

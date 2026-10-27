@@ -1,5 +1,4 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
+const { createFrontierEconomyGatewayService } = require("./frontierEconomyGatewayService");
 const { createCompatibilityGatewayService } = require("./compatibilityGatewayService");
 const { createAssemblyGateGatewayService, } = require("./assemblyGateGatewayService");
 const { createAssemblyNetworkNodeGatewayService, } = require("./assemblyNetworkNodeGatewayService");
@@ -24,8 +23,10 @@ const { createCorpSkillPlanGatewayService, } = require("./corpSkillPlanGatewaySe
 const { createMapTagsGatewayService, } = require("./mapTagsGatewayService");
 const { createCampaignGatewayService, } = require("./campaignGatewayService");
 const { createDailyGoalsGatewayService, } = require("./dailyGoalsGatewayService");
+const { createExplorationGatewayService } = require("./explorationGatewayService");
 function createGatewayServiceRegistry(context) {
     const services = [
+        createFrontierEconomyGatewayService(context),
         createAssemblyGateGatewayService(context),
         createAssemblyNetworkNodeGatewayService(context),
         createAssemblyStorageUnitGatewayService(context),
@@ -49,6 +50,7 @@ function createGatewayServiceRegistry(context) {
         createMapTagsGatewayService(context),
         createCampaignGatewayService(context),
         createDailyGoalsGatewayService(context),
+        createExplorationGatewayService(context),
         createCompatibilityGatewayService(context),
     ];
     return {

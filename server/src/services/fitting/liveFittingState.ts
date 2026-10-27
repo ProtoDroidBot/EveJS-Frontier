@@ -28,6 +28,7 @@ const {
 const {
   buildActiveShellDogmaRecord,
 } = require(path.join(__dirname, "../frontier/shellEquipmentRuntime"));
+const { getProgressionDogma } = require("../frontier/progressionDogma");
 const {
   evaluateChargeCompatibility,
 } = require(path.join(__dirname, "chargeCompatibilityPolicy"));
@@ -2034,8 +2035,12 @@ function buildPassiveModuleAttributeMap(
   const additionalLocationModifierSources = Array.isArray(
     options.additionalLocationModifierSources,
   )
-    ? options.additionalLocationModifierSources
+    ? [...options.additionalLocationModifierSources]
     : [];
+  if (!isStructureDogmaHost(shipItem) && options.includeActiveImplantModifiers !== false &&
+      !additionalLocationModifierSources.some(source => source?.frontierProgression === true)) {
+    additionalLocationModifierSources.push(...getProgressionDogma(Number(shipItem?.ownerID)).sources);
+  }
   const additionalShipAttributeModifierEntries = Array.isArray(
     options.additionalShipAttributeModifierEntries,
   )
@@ -2759,16 +2764,20 @@ function buildShipResourceState(charID, shipItem, options: Record<string, any> =
   const shellEquipmentDogmaRecord = includeActiveImplantModifiers
     ? buildActiveShellDogmaRecord(numericCharID)
     : null;
+  const frontierSkillDogma = includeActiveImplantModifiers
+    ? getProgressionDogma(numericCharID) : { direct: [], sources: [] };
   const implantShipAttributeModifierEntries = includeActiveImplantModifiers
     ? [
         ...getActiveImplantShipModifierEntries(numericCharID),
         ...getActiveImplantShipModifierEntries(shellEquipmentDogmaRecord),
+        ...frontierSkillDogma.direct,
       ]
     : [];
   const implantLocationModifierSources = includeActiveImplantModifiers
     ? [
         ...getActiveImplantLocationModifierSources(numericCharID),
         ...getActiveImplantLocationModifierSources(shellEquipmentDogmaRecord),
+        ...frontierSkillDogma.sources,
       ]
     : [];
   const additionalLocationModifierSources = [

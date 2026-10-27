@@ -82,8 +82,12 @@ class StatusEffectMgrService extends BaseService {
     return effect ? effect.grace : 0.0;
   }
 
-  Handle_get_effect_config() {
-    return buildNeutralStatusEffectConfig();
+  Handle_get_effect_config(args, _session, kwargs) {
+    const result = buildNeutralStatusEffectConfig();
+    if (Number(require("../../config").clientBuild) === 3640684 && extractEffectKey(args, kwargs)) {
+      result.entries = result.entries.map(([key, value]) => [key, key === "has_medical_traits" ? true : value]);
+    }
+    return result;
   }
 }
 

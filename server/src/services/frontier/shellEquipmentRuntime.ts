@@ -86,7 +86,7 @@ function listOwnedShells(characterID) {
 }
 
 function getActiveShell(characterID) {
-  return listOwnedShells(characterID)[0] || null;
+  return listOwnedShells(characterID).find(item => Number(item.locationID) === Number(characterID)) || null;
 }
 
 function listShellEquipment(characterID, shellID) {

@@ -4404,7 +4404,9 @@ function tickDroneMining(scene, droneEntity, controllerEntity, now) {
     return;
   }
 
-  const destination = resolveDroneMiningDestination(
+  const voxelRuntime = lazyRequire("../mining/voxelMiningRuntime");
+  const composite = voxelRuntime.isComposite(scene, targetEntity, mineableState);
+  const destination: any = composite ? { availableVolume: Number.POSITIVE_INFINITY } : resolveDroneMiningDestination(
     controllerEntity,
     mineableState.yieldTypeID,
     mineableState.yieldKind,
@@ -4467,6 +4469,20 @@ function tickDroneMining(scene, droneEntity, controllerEntity, now) {
   const yieldTypeRecord = resolveItemByTypeID(toInt(mineableState.yieldTypeID, 0)) || null;
   if (!yieldTypeRecord || transferredQuantity <= 0) {
     beginDroneMiningCycle(miningState, snapshot, now);
+    return;
+  }
+
+  if (composite) {
+    const result = voxelRuntime.mine(scene, droneEntity, targetEntity, mineableState, miningResult, {
+      nowMs: now, moduleTypeID: droneEntity.typeID, maxRangeMeters: maxRange,
+    });
+    if (!result.success || result.data.depleted) {
+      resetDroneToIdle(droneEntity, controllerEntity, { scene, stopMovement: true });
+    } else {
+      beginDroneMiningCycle(miningState, snapshot, now);
+      emitDroneMiningCycleFx(scene, droneEntity, targetEntity, snapshot, miningState, now);
+      persistDroneEntityState(droneEntity);
+    }
     return;
   }
 

@@ -171,6 +171,10 @@ define(["identityState"], {
   tier: TIERS.RUNTIME, domain: "service:_shared", confidence: CONFIDENCE.SCANNER,
   note: "Identity allocator (services/_shared/identityAllocator.js).",
 });
+define(["temporaryLandscapeState"], {
+  tier: TIERS.RUNTIME, domain: "in-space", confidence: CONFIDENCE.INFERRED,
+  note: "Revision-scoped temporary landscape allocation and trigger receipts.",
+});
 define(["npcPilotIdentities"], {
   tier: TIERS.RUNTIME, domain: "in-space", confidence: CONFIDENCE.INFERRED,
   note: "Permanent NPC pilot identities, spawn-slot ownership, and faction Sui profiles. Retained across ship destruction and transient runtime cleanup.",
@@ -193,8 +197,20 @@ define(["mapTelemetry", "solarSystemInterferenceState"], {
 define(["marketEscrow", "marketRuntime"], {
   tier: TIERS.RUNTIME, domain: "service:market", confidence: CONFIDENCE.SCANNER,
 });
-define(["miningLedger", "miningRuntimeState"], {
+define(["miningLedger", "miningRuntimeState", "voxelMiningState"], {
   tier: TIERS.RUNTIME, domain: "service:mining", confidence: CONFIDENCE.SCANNER,
+});
+define(["frontierClaims", "frontierKillReports"], {
+  tier: TIERS.RUNTIME, domain: "service:frontier-claims", confidence: CONFIDENCE.SCANNER,
+});
+define(["frontierDockingPoints"], {
+  tier: TIERS.RUNTIME, domain: "service:docking-point", confidence: CONFIDENCE.SCANNER,
+});
+define(["frontierProgressionState"], {
+  tier: TIERS.RUNTIME, domain: "service:frontier-progression", confidence: CONFIDENCE.SCANNER,
+});
+define(["frontierEconomyState", "digitalChemistryState"], {
+  tier: TIERS.RUNTIME, domain: "service:frontier-economy", confidence: CONFIDENCE.SCANNER,
 });
 define(["missionRuntimeState"], {
   tier: TIERS.RUNTIME, domain: "service:agent", confidence: CONFIDENCE.SCANNER,

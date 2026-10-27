@@ -3214,7 +3214,9 @@ function tickDroneMining(scene, droneEntity, controllerEntity, now) {
     if (toNumber(miningState.nextCycleAtMs, 0) > now) {
         return;
     }
-    const destination = resolveDroneMiningDestination(controllerEntity, mineableState.yieldTypeID, mineableState.yieldKind);
+    const voxelRuntime = lazyRequire("../mining/voxelMiningRuntime");
+    const composite = voxelRuntime.isComposite(scene, targetEntity, mineableState);
+    const destination = composite ? { availableVolume: Number.POSITIVE_INFINITY } : resolveDroneMiningDestination(controllerEntity, mineableState.yieldTypeID, mineableState.yieldKind);
     const miningAmountM3 = Math.max(0, toNumber(snapshot.miningAmountM3, 0));
     const unitVolume = Math.max(0.000001, toNumber(mineableState.unitVolume, 1));
     // A mining drone can only deliver whole units of ore, so the destination hold
@@ -3263,6 +3265,20 @@ function tickDroneMining(scene, droneEntity, controllerEntity, now) {
     const yieldTypeRecord = resolveItemByTypeID(toInt(mineableState.yieldTypeID, 0)) || null;
     if (!yieldTypeRecord || transferredQuantity <= 0) {
         beginDroneMiningCycle(miningState, snapshot, now);
+        return;
+    }
+    if (composite) {
+        const result = voxelRuntime.mine(scene, droneEntity, targetEntity, mineableState, miningResult, {
+            nowMs: now, moduleTypeID: droneEntity.typeID, maxRangeMeters: maxRange,
+        });
+        if (!result.success || result.data.depleted) {
+            resetDroneToIdle(droneEntity, controllerEntity, { scene, stopMovement: true });
+        }
+        else {
+            beginDroneMiningCycle(miningState, snapshot, now);
+            emitDroneMiningCycleFx(scene, droneEntity, targetEntity, snapshot, miningState, now);
+            persistDroneEntityState(droneEntity);
+        }
         return;
     }
     const grantResult = grantItemToCharacterLocation(destination.storageSnapshot.characterID, destination.storageSnapshot.shipID, destination.flagID, yieldTypeRecord, transferredQuantity);

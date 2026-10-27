@@ -625,7 +625,7 @@ function shouldPersistMineableState(entity) {
 }
 
 function shouldRespawnDepletedMineable(entity) {
-  if (!entity) {
+  if (!entity || entity.temporaryLandscapePolicyRevision) {
     return false;
   }
   return (
@@ -935,6 +935,9 @@ function isMineableStaticEntity(entity) {
   if (!entity || toInt(entity.itemID, 0) <= 0) {
     return false;
   }
+  // A loose ore fragment is already extracted stock. Its ore category must not
+  // let a targeting/mining RPC manufacture a fresh asteroid from that receipt.
+  if (entity.kind === "regolith") return false;
   if (entity.generatedMiningSiteAnchor === true) {
     return false;
   }
@@ -1053,6 +1056,11 @@ function registerMineableEntityInCache(
   }
 
   applyYieldPresentationToEntity(entity, state, options.presentationSummary || null);
+  // Project the supported 3640684 ores before AddBalls. Voxel state owns its
+  // own durable depletion; legacy radius updates must not erase carved cells.
+  if (config.voxelMiningEnabled === true && Number(config.clientBuild) === 3640684) {
+    if (require("./voxelMiningRuntime").prepareEntity(scene, entity, state)) return state;
+  }
   if (persistState) {
     writePersistedState(scene, state, {
       existingPersistedState: rawPersistedState,

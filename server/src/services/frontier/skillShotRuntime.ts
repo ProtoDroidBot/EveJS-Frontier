@@ -689,6 +689,8 @@ class SkillShotRuntime {
             weaponSnapshot,
             nowMs,
             rampMultiplier: damageMultiplier,
+            contactPoint: trace.contactPoint || trace.endpoint,
+            rayDirection: options.heldState?.direction,
           })
         : null;
     if (
