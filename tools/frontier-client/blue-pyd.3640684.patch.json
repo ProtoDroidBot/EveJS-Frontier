@@ -1,0 +1,68 @@
+{
+  "format": "evejs-frontier-windows-pe-patch-v1",
+  "name": "blue.pyd",
+  "description": "Exact build 3640684 manifest verifier normalization. Current PE unwind bounds, verifier call/test/jns and UnpackManifest result-byte consumption independently checked; never use another build offsets.",
+  "build": 3640684,
+  "platform": "windows",
+  "architecture": {
+    "machine": "AMD64",
+    "machineHex": "0x8664",
+    "peFormat": "PE32+",
+    "imageBaseHex": "0x180000000"
+  },
+  "source": {
+    "size": 6120624,
+    "sha256": "32a5a3bc837cd477a4e92369a62fc2064f299446cf37a77889bc20cd0230f729",
+    "authenticode": {
+      "state": "present-not-trust-validated",
+      "securityDirectoryOffsetHex": "0x5d3c00",
+      "securityDirectorySizeHex": "0x28b0",
+      "certificateRevisionHex": "0x200",
+      "certificateTypeHex": "0x2",
+      "certificateOverlayEndsAtEof": true
+    }
+  },
+  "target": {
+    "size": 6110208,
+    "sha256": "a42c34b9f8f060441a524a25ecca29202bd9712573d8e03cbd081f65283aab67",
+    "peChecksumHex": "0x5d7a2c",
+    "authenticode": {
+      "state": "stripped-after-content-mutation",
+      "securityDirectoryOffset": 0,
+      "securityDirectorySize": 0
+    }
+  },
+  "patches": [
+    {
+      "fileOffset": 1673030,
+      "fileOffsetHex": "0x198746",
+      "rvaHex": "0x199346",
+      "description": "Normalize nonnegative signature-check result to true; leave verifier errors on original failure path.",
+      "beforeHex": "0f95c0",
+      "afterHex": "b00190",
+      "contextBeforeHex": "07ff15717e2600cce8238a2400904885f67409488bcee83da60e0090eb72",
+      "contextAfterHex": "41880424660f6f058b733500f30f7f45e8c645d800488d55d8488bcfe8b6"
+    }
+  ],
+  "verifierEvidence": {
+    "verifySignatureFunctionRva": "0x00199120-0x001993D6",
+    "unpackManifestFunctionRva": "0x0019D3D0-0x0019DFDF",
+    "unpackManifestCallRva": "0x0019DF19",
+    "invalidSignatureStringRva": "0x004E89F0",
+    "uniquePatchedInstructionSequence": "0f95c041880424",
+    "uniquePatchedInstructionSequenceOccurrences": 1,
+    "semantics": "Current build calls verifier at RVA0x1992a0, tests eax and branches jns to setne at0x199346. The UnpackManifest call0x19df19 checks both error string and result byte; failure text is loaded from0x4e89f0. Negative verifier errors retain their path."
+  },
+  "resourceCache": {
+    "logicalPath": "app:/bin64/blue.pyd",
+    "cachePath": "5b/5baa6098ac19f0c6_d8de3217e4023e9c4df5aceb0d3e1f80",
+    "sourceMd5": "d8de3217e4023e9c4df5aceb0d3e1f80"
+  },
+  "manifestTargets": [
+    "root:\\code.ccp",
+    "root:/bin64/packages/certifi\\cacert.pem",
+    "root:/bin64\\blue.pyd",
+    "root:/bin64\\cacert.pem",
+    "root:/bin64\\exefile.exe"
+  ]
+}

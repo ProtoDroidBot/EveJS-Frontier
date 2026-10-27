@@ -1,0 +1,586 @@
+{
+  "acceptanceLimits": [
+    "No native game session/player login or rendering/physics acceptance",
+    "No currentworld promotion or playerstate migration",
+    "No chain transaction/deployment",
+    "Nativeindustryrows retained as rawcatalogsidecars; existingbundledindustryruntime unchanged",
+    "Unproven oldlandscapeparents remain omitted with authoredsiteorigins retained"
+  ],
+  "artifactFingerprints": {
+    "_local/frontier-worlds/3572727-for-3640684/candidate/canonical-python-tests.log": {
+      "bytes": 115,
+      "sha256": "25d718152414a917d6eb4a014d599eff20a2b538451c2591d104ace11b9de0dd"
+    },
+    "_local/frontier-worlds/3572727-for-3640684/candidate/catalog-3640684/native-jsonl/manifest.json": {
+      "bytes": 18784,
+      "sha256": "6540d9fe61349adb1da7d2b03f4ed1bb7dd1f6e30fc4e9c285f49482a6d70fb3"
+    },
+    "_local/frontier-worlds/3572727-for-3640684/candidate/content.json": {
+      "bytes": 219768443,
+      "sha256": "156be84110fb7e9973d6bcb4f99b8a21e968fa9f378865aa5d5f20a151837fcb"
+    },
+    "_local/frontier-worlds/3572727-for-3640684/candidate/generated/manifest.json": {
+      "bytes": 32794,
+      "sha256": "e4d09b7b423c900f2cda4eb85be4409dcc1c645b9583281190d654005654ea38"
+    },
+    "_local/frontier-worlds/3572727-for-3640684/candidate/mapping-report.json": {
+      "bytes": 30178683,
+      "sha256": "19c75a440ce623e81ddc8f89b845b5cee77a8390ac3bbf95cd02b2d0494f6520"
+    },
+    "_local/frontier-worlds/3572727-for-3640684/candidate/port-regression-tests-final.log": {
+      "bytes": 38725,
+      "sha256": "a6b1b0bf2dd256bd04bf261533799005545f49ae0ed163394fa8eb748603e4af"
+    },
+    "_local/frontier-worlds/3572727-for-3640684/candidate/world.json": {
+      "bytes": 185895954,
+      "sha256": "ad6c29753fc36b176ac81fb8765283b3f7592ef3be4cc7521ea650f539e7f468"
+    },
+    "_local/frontier-worlds/3572727-for-3640684/runtimes/3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64-895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57/.evejs-canonical-runtime.json": {
+      "bytes": 2078,
+      "sha256": "e0a56f39a70e3c452d619bd3b5dd8b2d020c2a85c7a312dc8166f41ce0979f88"
+    },
+    "_local/frontier-worlds/3572727-for-3640684/runtimes/3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64-895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57/client-decoder-verification.json": {
+      "bytes": 744,
+      "sha256": "203747630e4e3394c31c4eae6942ea29b1bfb774cf03476d76fc4a49d77137a4"
+    },
+    "_local/frontier-worlds/3572727-for-3640684/runtimes/3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64-895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57/client-wire/manifest.json": {
+      "bytes": 14431,
+      "sha256": "90e912240971a257d206677b9fb0861fecc1243aa5a98e6de548509ff3d829ad"
+    },
+    "_local/frontier-worlds/3572727-for-3640684/runtimes/3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64-895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57/restart-verification.json": {
+      "bytes": 434,
+      "sha256": "b0054acb6b13358beb321c0e138c00febd3fd2349d81965d56f57c996dfbd957"
+    },
+    "_local/frontier-worlds/3572727-for-3640684/runtimes/3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64-895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57/runtime-verification.json": {
+      "bytes": 1779,
+      "sha256": "b26a89798b2e8a1f474e2d7996ca6350fb948444ced019818f2a9a84b568910e"
+    },
+    "_local/frontier-worlds/3572727-for-3640684/runtimes/3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64-895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57/server-smoke-verification.json": {
+      "bytes": 1205,
+      "sha256": "4a8c7ee53ad5bf089539441f901d3be088331a285bef09f2719c615d02887b0a"
+    }
+  },
+  "candidateRoot": "/home/ludus/EveJS-Frontier/_local/frontier-worlds/3572727-for-3640684/candidate",
+  "clientBuild": 3640684,
+  "format": "evejs-canonical3572727-for3640684-implementation-v1",
+  "geographySourceBuild": 3572727,
+  "preservation": {
+    "candidateListenerPortsClosed": true,
+    "candidateProcessLeaseAbsent": true,
+    "clientInputFingerprints": {
+      "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier": {
+        "stillness/bin64/blue.pyd": "32a5a3bc837cd477a4e92369a62fc2064f299446cf37a77889bc20cd0230f729",
+        "stillness/code.ccp": "2f43f4b8d34632b5d5fdc7b58af93364f606bd9ba67fcada588565ee0628122c",
+        "stillness/start.ini": "b47835ce279cf278c25ace889419b47a37d04e9acf92c8f4d0846d52a2227f93"
+      },
+      "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle7x-Lim-3572727/EVE Frontier": {
+        "stillness/bin64/blue.pyd": "5fc6885c0d97a6087658750730b6d3308eb6cd4270cd99ec5e4910867739efbc",
+        "stillness/code.ccp": "eee139e55d95d75e897eb944c8045fb9ee1ef1b86a8672c2f453e1fffcde9f89",
+        "stillness/start.ini": "e4163fdd1ad5ffce21d7a82ab29780e278fcbdad2ec15ca4750ffd7ab34f9a90"
+      }
+    },
+    "currentCertificateDirectoryInventoryUnchanged": true,
+    "currentCertificateFingerprints": {
+      "server/certs/.gitkeep": {
+        "bytes": 1,
+        "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      },
+      "server/src/_secondary/express/certs/openssl.cnf": {
+        "bytes": 421,
+        "sha256": "d0b8e7ebb3664a790bbccbdcb2bbf6264feb058dbc86a2995fbe48ef4033ddff"
+      }
+    },
+    "currentWorldAndConfig": {
+      "_local/exploration-world-3502403.json": {
+        "sha256": "7fc5f2e8389232c0419bde94226f54de235bece1e89bf8cee570b48e3062044a",
+        "size": 223252396,
+        "unchanged": true
+      },
+      "_local/temporary-landscape-3640684.json": {
+        "sha256": "4576b74c0e2df064ddb9c0610fc36f3d78bc323c8e08277be007d68ec7cefa0e",
+        "size": 210959490,
+        "unchanged": true
+      },
+      "evejs.config.local.json": {
+        "sha256": "2d1cce68efb4491f368221780cd3004870cb95160b392f6e3960936bf9a0a39d",
+        "size": 79527,
+        "unchanged": true
+      }
+    },
+    "fullWirePageHashesStillMatch": true
+  },
+  "recordedDate": "2026-10-27",
+  "reports": {
+    "certificate-isolation-fix.json": {
+      "existingCertificateFilesModified": false,
+      "fix": "gateway credential selection now honors EVEJS_RUNTIME_CERT_DIR, including explicitcertDir override",
+      "movedOnlyNewTestOutputs": [
+        {
+          "from": "server/src/_secondary/express/certs/gateway-dev-cert.pem",
+          "sha256": "b677290f492b92f5e97363fc9fa56065185047e567c0639bb73727877f2470da",
+          "to": "_local/frontier-worlds/3572727-for-3640684/runtimes/3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64-895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57/certs/gateway-dev-cert.pem"
+        },
+        {
+          "from": "server/src/_secondary/express/certs/gateway-dev-key.pem",
+          "sha256": "632a5eddff540b51aaeab027b93bc81146fcd819f3eb8a82de41d3ae9d6d79c3",
+          "to": "_local/frontier-worlds/3572727-for-3640684/runtimes/3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64-895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57/certs/gateway-dev-key.pem"
+        }
+      ]
+    },
+    "client-decoder-verification.json": {
+      "baseRevision": "3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64",
+      "clientArchiveSHA256": "2f43f4b8d34632b5d5fdc7b58af93364f606bd9ba67fcada588565ee0628122c",
+      "clientBuild": 3640684,
+      "contentRevision": "895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57",
+      "fieldChecks": 8235366,
+      "method": "Existing server encoder output compared field-by-field through exact unmodified3640684 generated readers; float slots reconstruct JavaScriptNumber Float64 values and security uses schemaFloat32. No native game, player login or rendering.",
+      "pages": 47,
+      "sourceBuild": 3572727,
+      "status": "pass",
+      "systems": 24026,
+      "worldRevision": "d7cf20b421bf79ac7e1f874f9ebb4876f48bc8c25b8407e5d78fe32f9d0748ea"
+    },
+    "content-build-summary.json": {
+      "contentRevision": "895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57",
+      "counts": {
+        "explorationBelts": 33735,
+        "explorationTrojans": 119,
+        "featuresWithUnmappedAnchors": 68607,
+        "fullyProvenReferencedBelts": 1012,
+        "fullyProvenTrojans": 119,
+        "mappedSites": 137368,
+        "mappedSystems": 24002,
+        "newCanonicalLandscapeSystems": 156,
+        "omittedExplorationBelts": 13698,
+        "omittedExplorationTrojans": 22234,
+        "omittedNonPlanetBoundaryLinks": 2069,
+        "sharedLandscapeSystems": 23846,
+        "sourceClusters": 137368,
+        "sourceDisabledSites": 6878,
+        "sourceFeatures": 69786,
+        "sourceSystems": 24002,
+        "strictSafeParentIDs": 2322,
+        "unreferencedBelts": 48
+      },
+      "output": "_local/frontier-worlds/3572727-for-3640684/candidate/content.json"
+    },
+    "content-verification.json": {
+      "allAuthoredSiteRecordsChecked": 137368,
+      "baseWorldRevision": "3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64",
+      "catalogIdentity": "Exact3640684 dungeon/ecosystem ID sets; no3572727 template imported",
+      "clientsAndRuntimeStateModified": false,
+      "compatibleDungeonCount": 393,
+      "compatibleEcosystemCount": 35,
+      "compatibleTypeCount": 1016,
+      "counts": {
+        "explorationBelts": 33735,
+        "explorationTrojans": 119,
+        "featuresWithUnmappedAnchors": 68607,
+        "fullyProvenReferencedBelts": 1012,
+        "fullyProvenTrojans": 119,
+        "mappedSites": 137368,
+        "mappedSystems": 24002,
+        "newCanonicalLandscapeSystems": 156,
+        "omittedExplorationBelts": 13698,
+        "omittedExplorationTrojans": 22234,
+        "omittedNonPlanetBoundaryLinks": 2069,
+        "sharedLandscapeSystems": 23846,
+        "sourceClusters": 137368,
+        "sourceDisabledSites": 6878,
+        "sourceFeatures": 69786,
+        "sourceSystems": 24002,
+        "strictSafeParentIDs": 2322,
+        "unreferencedBelts": 48
+      },
+      "exactAuthoredPositions": true,
+      "exactAuthoredSystemAndEcosystemIDs": true,
+      "profileRevision": "895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57",
+      "status": "pass"
+    },
+    "generated-integrity-verification.json": {
+      "baselineWorldBinding": {
+        "baseRevision": "3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64",
+        "sourceProfile": "3572727-canonical-fsd-v1",
+        "worldSHA256": "ad6c29753fc36b176ac81fb8765283b3f7592ef3be4cc7521ea650f539e7f468"
+      },
+      "bootstrap": {
+        "bloodlineID": 1,
+        "constellationID": 20000004,
+        "corporationID": 1000442,
+        "factionID": 0,
+        "raceID": 1,
+        "regionID": 10000004,
+        "schoolID": 0,
+        "shipName": "Capsule",
+        "shipTypeID": 670,
+        "solarSystemID": 30000004,
+        "stationID": 64000001
+      },
+      "catalogBinding": {
+        "build": 3640684,
+        "manifestSHA256": "6540d9fe61349adb1da7d2b03f4ed1bb7dd1f6e30fc4e9c285f49482a6d70fb3",
+        "nativeTableCount": 22,
+        "tableCount": 23
+      },
+      "compatibleCatalogFileHashes": 23,
+      "generatedDataFileHashes": 155,
+      "generatedValidation": {
+        "bootstrapCharacters": 4,
+        "bootstrapItems": 6,
+        "canonicalCelestials": 357072,
+        "canonicalGates": 11728,
+        "canonicalStations": 224
+      },
+      "originalTwentyCatalogOutputsUnchanged": true,
+      "rawIndustryBlueprintRows": 299,
+      "rawIndustryFacilityRows": 16,
+      "sourceDbuffRows": 122
+    },
+    "restart-verification.json": {
+      "baseRevision": "3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64",
+      "contentRevision": "895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57",
+      "duplicateRevealNotices": 0,
+      "elapsedMs": 25476,
+      "independentProcess": true,
+      "sqliteReceiptRetained": true,
+      "status": "pass",
+      "visitedDetailRetained": true,
+      "worldRevision": "d7cf20b421bf79ac7e1f874f9ebb4876f48bc8c25b8407e5d78fe32f9d0748ea"
+    },
+    "runtime-verification.json": {
+      "baseRevision": "3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64",
+      "clientBuild": 3640684,
+      "configDir": "/home/ludus/EveJS-Frontier/_local/frontier-worlds/3572727-for-3640684/runtimes/3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64-895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57/config",
+      "contentRevision": "895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57",
+      "counts": {
+        "authoredSites": 137368,
+        "celestials": 357072,
+        "dungeons": 393,
+        "ecosystems": 35,
+        "enabledSites": 130490,
+        "gates": 11728,
+        "stations": 224,
+        "systems": 24026
+      },
+      "elapsedMs": 28885,
+      "gatewayAuthorizedAndUnauthorizedChecked": true,
+      "geometryChecks": 393054,
+      "paginationPages": 47,
+      "persistedReceipt": true,
+      "status": "pass",
+      "storeRoot": "/home/ludus/EveJS-Frontier/_local/frontier-worlds/3572727-for-3640684/runtimes/3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64-895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57/gameStore",
+      "validationIdentity": {
+        "characterID": 199959820,
+        "currentSystemID": 30000004,
+        "userID": 991024
+      },
+      "voxelRevision": "frontier-3640684/canonical-world/3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64/content/895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57/policy/bfb14bbbe16fe6658af22b82bd6b4caf0a669612b83745c4b7d060f00c20f917",
+      "wireDir": "/home/ludus/EveJS-Frontier/_local/frontier-worlds/3572727-for-3640684/runtimes/3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64-895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57/client-wire",
+      "wirePages": 47,
+      "worldRevision": "d7cf20b421bf79ac7e1f874f9ebb4876f48bc8c25b8407e5d78fe32f9d0748ea"
+    },
+    "server-smoke-verification.json": {
+      "clientBuild": 3640684,
+      "elapsedMs": 37839,
+      "gatewayTLS": {
+        "authorized": true,
+        "protocol": "h2"
+      },
+      "handshakeBytes": 48,
+      "listeners": [
+        {
+          "host": "127.0.0.1",
+          "port": 27600
+        },
+        {
+          "host": "127.0.0.1",
+          "port": 27601
+        },
+        {
+          "host": "127.0.0.1",
+          "port": 27602
+        },
+        {
+          "host": "127.0.0.1",
+          "port": 27603
+        },
+        {
+          "host": "127.0.0.1",
+          "port": 27604
+        },
+        {
+          "host": "127.0.0.1",
+          "port": 27605
+        }
+      ],
+      "redshift": {
+        "bytes": 761,
+        "statusCode": 200
+      },
+      "runtimeRoot": "/home/ludus/EveJS-Frontier/_local/frontier-worlds/3572727-for-3640684/runtimes/3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64-895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57",
+      "scope": "Production server startup, six loopback listeners and a game handshake; no player login/native rendering/gameplay acceptance.",
+      "shutdown": {
+        "code": 0,
+        "signal": null
+      },
+      "sourceBuild": 3572727,
+      "status": "pass",
+      "worldRevision": "d7cf20b421bf79ac7e1f874f9ebb4876f48bc8c25b8407e5d78fe32f9d0748ea",
+      "xmppTLS": {
+        "authorized": true,
+        "protocol": ""
+      }
+    },
+    "world-adapter-validation.json": {
+      "baseRevision": "3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64",
+      "bundle": "1.0.0+canonical-3572727-for-3640684.compatible-3640684-content.d7cf20b421bf79ac7e1f874f9ebb4876f48bc8c25b8407e5d78fe32f9d0748ea",
+      "celestialCounts": {
+        "lagrangePoint": 211115,
+        "moon": 70884,
+        "planet": 42223,
+        "sun": 32850
+      },
+      "contentRevision": "895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57",
+      "elapsedMs": 20324,
+      "mergedRevision": "d7cf20b421bf79ac7e1f874f9ebb4876f48bc8c25b8407e5d78fe32f9d0748ea",
+      "scope": "Full canonical runtime source/profile validation, all-system schema14 encoding, compatible content merge and reference projection; no game process or live database.",
+      "sourceProfile": "3572727-canonical-fsd-v1",
+      "sourceTSHashes": {
+        "explorationReferenceData": "c24801d1e88d695e7d2e373bce6d9336352db10403da4af5d8672e7d7172bc8a",
+        "explorationWorld": "5f443a1f0abdf6b4f51d6d2a258d870a6520228fa36316fe999bacf259ed6663"
+      },
+      "stargates": 11728,
+      "stations": 224,
+      "status": "pass",
+      "systems": 24026
+    },
+    "world-build-manifest.json": {
+      "contentRevision": "3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64",
+      "conversionPolicyRevision": "3572727-canonical-fsd-to-3640684-v1",
+      "counts": {
+        "constellations": 2163,
+        "gates": 11728,
+        "lagrangePoints": 211115,
+        "moons": 70884,
+        "planets": 42223,
+        "regions": 274,
+        "stars": 32850,
+        "stations": 224,
+        "systems": 24026
+      },
+      "format": "evejs-canonical-world-build-v1",
+      "output": {
+        "md5": "91b5b618a255b10a2a4feed5af3ce0e6",
+        "path": "/home/ludus/EveJS-Frontier/_local/frontier-worlds/3572727-for-3640684/candidate/world.json",
+        "sha256": "ad6c29753fc36b176ac81fb8765283b3f7592ef3be4cc7521ea650f539e7f468",
+        "size": 185895954
+      },
+      "source": {
+        "branch": "//frontier/demo-tool-v2",
+        "build": 3572727,
+        "coordinateConvention": "Authored galaxy centers and system-local positions in metres; no axis transform",
+        "decodedOutputs": {
+          "constellations": {
+            "md5": "eeafa7d6b5218026cb3a681551649ede",
+            "rows": 2163,
+            "sha256": "d8d7f764ae802e45fc0bfa24bc60da27f96bc6f3d106d7c62b19859d5278b66d",
+            "size": 790378
+          },
+          "jumps": {
+            "md5": "61f86fde3a0a2a0551a7705cea864d50",
+            "rows": 5864,
+            "sha256": "9c9e00b7c26494ef03d83487575b6b58defbdf78f66db33de3894b898b8519b5",
+            "size": 1668547
+          },
+          "regions": {
+            "md5": "0ffb4c3bc79b3e4a8ddbab2aa4153b5a",
+            "rows": 274,
+            "sha256": "fb86580ad6d6e14a32a48cd74ee908f339766257a6e0a77ea6f122bb36500132",
+            "size": 361812
+          },
+          "solarsystemcontent": {
+            "md5": "dee0322b8ea57586a6d4f68c79300d19",
+            "rows": 24026,
+            "sha256": "a185f019a3b407b084817c5a4fcb6d95110cae0828d34ecf2568b770b26012e4",
+            "size": 213470898
+          },
+          "systems": {
+            "md5": "f81302fd8a38e2eba5cb221536ac0fd9",
+            "rows": 24026,
+            "sha256": "7c1d67faa3e8f77a99f635f2e5ef89362bf5384f6e854ec1b0816d7f43d2c61f",
+            "size": 13460203
+          }
+        },
+        "digests": {
+          "code.ccp": {
+            "md5": "31fa2dcdac0702942fe0b4f88763a981",
+            "sha256": "eee139e55d95d75e897eb944c8045fb9ee1ef1b86a8672c2f453e1fffcde9f89",
+            "size": 119330175
+          },
+          "res:/staticdata/constellations.schema": {
+            "md5": "84649555cdc070c4813145537e616b49",
+            "sha256": "4c36c5231f5809c92bc15eab6e455a1d96f8621437807a2e44b8067a40a4d56a",
+            "size": 1751
+          },
+          "res:/staticdata/constellations.static": {
+            "md5": "3383b4f3ebdad4057e0821fb7a982878",
+            "sha256": "e4e7d95d0d6fdd42ee5bf33c91bcf046bf03201374cae4833635f319e7d13250",
+            "size": 331126
+          },
+          "res:/staticdata/jumps.schema": {
+            "md5": "9071e9a31887111d671102adec23fa30",
+            "sha256": "8ea9a9afe9ef0e37a68a42038bf695c93386a8b1e49929334ab6582204f1d297",
+            "size": 1029
+          },
+          "res:/staticdata/jumps.static": {
+            "md5": "40e4dcc104f4a7e37598ea3dd4017e57",
+            "sha256": "91cfbf06955477ac40741c071bb7b390a5674632ad631ef980a6d12eca170e6c",
+            "size": 381164
+          },
+          "res:/staticdata/regions.schema": {
+            "md5": "f196b295b0dcfcb70e903f97f3c3218b",
+            "sha256": "ecd3e71624482283ef6fc7c2d49011d9c4995439672edb5945fb8c4b41da167d",
+            "size": 2474
+          },
+          "res:/staticdata/regions.static": {
+            "md5": "0fa9232430e53a8bdbeba0a226aa266f",
+            "sha256": "f5be931910cae18a30c1d18f28e43fc75a8ceab47cf3a43cbb973ee98dae09d5",
+            "size": 164635
+          },
+          "res:/staticdata/solarsystemcontent.static": {
+            "md5": "b1729419a6ef1e29b5a9b5c091048a84",
+            "sha256": "f1353309821c979619f5b24fcca8859994859486cbd7d3a24f7c9d632df5353a",
+            "size": 69146952
+          },
+          "res:/staticdata/systems.schema": {
+            "md5": "1fbf931945bc585fa6aec5147689e784",
+            "sha256": "05369416d8a66a416ca3aaf28c0184ffb01adc10e7bed54285d307dd842b3296",
+            "size": 4012
+          },
+          "res:/staticdata/systems.static": {
+            "md5": "1a757cf779c984c72fa2e899ba64504f",
+            "sha256": "8d1bf8e421e0a1888d66a8762281356068e94c630f1cc392ce253d9f3852205b",
+            "size": 4944022
+          },
+          "resfileindex.txt": {
+            "md5": "73d3f44c394df26473e9430a6676a244",
+            "sha256": "2d9e36aaf1ed08c6c7aa3e05362315eb205a9588c45c2469698b25392ca0a946",
+            "size": 8075342
+          },
+          "start.ini": {
+            "md5": "6dd5e2b36008c1ca0b1c093e34bdc338",
+            "sha256": "e4163fdd1ad5ffce21d7a82ab29780e278fcbdad2ec15ca4750ffd7ab34f9a90",
+            "size": 320
+          }
+        },
+        "kind": "canonical-client-geography",
+        "label": "3572727-CANONICAL-FSD",
+        "lagrangeIndexPolicy": "pointID=400000000+index*10000000+(planetID-40000000); index1..5,type88162+index",
+        "metadataPolicy": "Canonical FSD only; no mapObjects.db joins or inherited legacy metadata",
+        "moonOrdinalPolicy": "1-based sorted canonical moonID within each planet; display metadata only",
+        "profile": "3572727-canonical-fsd-v1",
+        "runtimeCatalogProof": {
+          "build": 3640684,
+          "codeSHA256": "2f43f4b8d34632b5d5fdc7b58af93364f606bd9ba67fcada588565ee0628122c",
+          "scope": "Exact catalog and graphic metadata presence; native rendering remains separate acceptance",
+          "typeIDs": [
+            11,
+            12,
+            13,
+            14,
+            2014,
+            2015,
+            2016,
+            2063,
+            45031,
+            79787,
+            79880,
+            79881,
+            85226,
+            88163,
+            88164,
+            88165,
+            88166,
+            88167
+          ],
+          "typesAndGraphicsInputHashes": {
+            "res:/staticdata/graphicids.fsdbinary": {
+              "bytes": 874288,
+              "cachePath": "93/93b769c4ef6215a9_a05d6c5a8112123c7c2fbbeac30b8eef",
+              "md5": "a05d6c5a8112123c7c2fbbeac30b8eef",
+              "sha256": "e3392dcb1317112e78c781a4cdfab61ba5c956686c7088bf3e3d86b2b8f162a4",
+              "verified": true
+            },
+            "res:/staticdata/types.fsdbinary": {
+              "bytes": 5406592,
+              "cachePath": "3c/3cc5bf8ff5e9099a_917d04d6594426aa9a9efec2ffab311b",
+              "md5": "917d04d6594426aa9a9efec2ffab311b",
+              "sha256": "824e2dd950067fc90679dafa9b6c1e421c0ff38f7ca36ed302e686ddd34456fc",
+              "verified": true
+            }
+          }
+        }
+      },
+      "sourceProfile": "3572727-canonical-fsd-v1",
+      "targetBuild": 3640684,
+      "validation": {
+        "allCelestialAndStationParents": true,
+        "allLagrangeGeometry": true,
+        "catalogMetadata3640684": true,
+        "nativeGameplayAcceptance": false,
+        "reciprocalGatesAndJumpRecords": true,
+        "sourceAndDecodedFingerprints": true,
+        "sqliteJoins": false
+      }
+    }
+  },
+  "runtimeRoot": "/home/ludus/EveJS-Frontier/_local/frontier-worlds/3572727-for-3640684/runtimes/3a17c982b0a6875d77dff336dcb79e8647b5b374ccd908434dac6d812618eb64-895d303f24d219c4f27287ad7b313068fab2fb4ca7e61ea167f2bdf41d1b2b57",
+  "sourceFingerprints": {
+    "scripts/FrontierWorld/canonical-runtime.ts": "77b9fb444f4e6f8cca21af550e8d96501ebe2bef3ca7f9ba76b858fabd5bdbae",
+    "scripts/FrontierWorld/validate-canonical-runtime.ts": "1926fc7bfc2a46a5e8f16e6880cb654f3691c639701251e69b3cba963a6a6329",
+    "scripts/Tests/run-port-3640684-tests.ts": "2aad430bed26746b6ff6dd5311680b98eddcbdc4b3f25d8cceaa7d34338d1e05",
+    "server/src/_secondary/express/localTlsCertificate.ts": "a1bd08a11334d0888ee7bb1bb93e727753141516ae7aa80f9f235c4a7e3ba8df",
+    "server/src/_secondary/express/playerConnectEndpoints.ts": "1c1930b9c6c045c6dadf48a8ce6f8c1dd10a92af5ef69a9231db5a4e8c46d3a2",
+    "server/src/_secondary/express/server.ts": "75cc2da3458abacac44b2a4acdbd1771260605155c3d480c535e920618525811",
+    "server/src/config/index.ts": "f7f219058d0276d2eaf3bd95bf976dd104028d5a48f0969bf3ec873d8c3ec06a",
+    "server/src/services/chat/xmppStubServer.ts": "5586bd274b904d02f2f8ad27d483c217e785ef6c749370b93d3d8b7952be8da1",
+    "server/src/services/dungeon/dungeonContentProfile.ts": "48a350200260792c727a538c9a0c8e62bc9f1e3d05608350fdb1663684c3d907",
+    "server/src/services/frontier/explorationReferenceData.ts": "c24801d1e88d695e7d2e373bce6d9336352db10403da4af5d8672e7d7172bc8a",
+    "server/src/services/frontier/explorationWorld.ts": "5f443a1f0abdf6b4f51d6d2a258d870a6520228fa36316fe999bacf259ed6663",
+    "server/src/services/frontier/temporaryLandscapeProfile.ts": "ad274823d65dba494e634e51caa93bfde15d570031a47673a56e4f274239cd81",
+    "server/src/services/mining/voxelMiningWorld.ts": "a51da03f1aa4c8316354316c43488905349793f521b50ae9b96497dd16d1639c",
+    "server/src/space/worldData.ts": "7282bf50aeaf1b1aa5402d9874c68dc85cd2aa67c6ee28818abe663553d62602",
+    "server/src/utils/logger/index.ts": "f5019017c601fb138b41f75bb8259600499e3ac586af8174342a5761cf8346e2",
+    "server/src/utils/processLifecycle.ts": "9b1294e5fd768c4eb5b29276b3a04d446fa5c77f62f5e3f9d0cb11a1a4eb337e",
+    "server/tests/frontierCanonicalLandscapeProfile.test.ts": "680f455c06735d912b64b26b7d61a89bdfa5ab32f1f9f000beb572427c22c56a",
+    "server/tests/frontierCanonicalRuntimeSelection.test.ts": "184af5c16dcf20e48bb1aa01547526d3c93b86ae8e0353e834bc932a125eac65",
+    "server/tests/frontierCanonicalWorld.test.ts": "8474289f6510c875dc35ef3fdd2e91e4e4d093c6e663a90709888eeef41b5b67",
+    "server/tests/helpers/isolatedGameStore.ts": "54498403787d04d3e9b98c2b42593b018debc4ddb50f5b889380120ad7e12eff",
+    "tools/frontier-static/build-canonical-landscape.py": "6c72736f80d6be0d6199d2fc44c256c44cdb3b70253b01c71451b2963fc4cdf0",
+    "tools/frontier-static/build-canonical-runtime-data.mts": "7c17d1486d89f3e30764f3f5f8fe31eb7aa7ff1354b8d6a6ac3684b6838e27d6",
+    "tools/frontier-static/export-canonical-world.py": "02121e437d631a6d203587191745afe08ef6263e8bea2c6969177165adf26cd3",
+    "tools/frontier-static/export-compatible-catalogs.py": "ae0fcf92ea8cedae245c753e018e395d05e2478c650cf2c58c72f5a13b0592ad",
+    "tools/frontier-static/test/test_canonical_landscape.py": "9a86cb3ffaa78e8ad1d8cf56bad1a897c46d0e610a246efb240025c58917c67c",
+    "tools/frontier-static/test/test_canonical_world_export.py": "db552408e4ccea3ef24b14e13db78fd7abc654ce9f34e35049a552bc76d8754f",
+    "tools/frontier-static/verify-canonical-client.py": "810da23cafd6081b9453e8cd09a58f8e805dfb5ce8cc09f4bb1d1ec63d1519bc"
+  },
+  "status": "Built and validated in isolated runtime; stopped after tests; currentworld not selected/migrated.",
+  "tests": {
+    "canonicalPython": {
+      "passed": 16,
+      "tests": 16
+    },
+    "focused3640684": {
+      "fail": 0,
+      "pass": 206,
+      "skipped": 0,
+      "suiteProcesses": 33,
+      "tests": 206
+    },
+    "typescript": [
+      "server build passed",
+      "tools build passed",
+      "tests build passed"
+    ]
+  }
+}

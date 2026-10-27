@@ -1,0 +1,5834 @@
+{
+  "format": "evejs-frontier-galaxy-source-evidence-v1",
+  "date": "2026-10-23",
+  "target_build": 3640684,
+  "method": "ZIP reads; Python 3.12 marshal/dis without importing or executing game modules; extracted descriptor constants parsed using host protobuf library. Static evidence, no live exchange or dataset acceptance.",
+  "target_root": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/stillness",
+  "target_start_ini": "[main]\nversion = 20.04\nbuild = 3640684\ncodename = cycle-7\nregion = ccp\ncryptoPack = CryptoAPI\nsync = 3640684\nbranch = //frontier/cycle-7\nappname = FRONTIER\nuseScriptIndexFiles = 1\nsocketIO = iocp\nrole = client\nresFromStuffOnly = 0\naid = 0\nserver = Tranquility\nport = 26000\nedition = premium\n\n",
+  "target_code_sha256": "2f43f4b8d34632b5d5fdc7b58af93364f606bd9ba67fcada588565ee0628122c",
+  "target_start_ini_sha256": "b47835ce279cf278c25ace889419b47a37d04e9acf92c8f4d0846d52a2227f93",
+  "prior_root": "/home/ludus/EveJS-Frontier/clientbuilds/3502403-MOD4-STUFF1/EVE Frontier/stillness",
+  "prior_start_ini": "[main]\nversion = 20.04\nbuild = 3502403\ncodename = cycle-6\nregion = ccp\ncryptoPack = CryptoAPI\nsync = 3502403\nbranch = //frontier/cycle-6\nappname = FRONTIER\nuseScriptIndexFiles = 1\nsocketIO = iocp\nrole = client\nresFromStuffOnly = 0\naid = 0\nserver = Tranquility\nport = 26000\nedition = premium\n\n",
+  "members": [
+    {
+      "member": "frontier/crdata/client/exploration_messenger.pyc",
+      "sha256": "1f6dfe938f4965201be5e2078938493e63151805b96e9db7e84e5c5e43435b6f",
+      "pyc_magic": "cb0d0d0a",
+      "symbols": [
+        {
+          "qualified_name": "ExplorationMessenger.get_known_universe",
+          "embedded_first_line": 82,
+          "referenced_names": [
+            "GetKnownUniverseRequest",
+            "page",
+            "token",
+            "size",
+            "AttributeError",
+            "ValueError",
+            "send_user_request",
+            "send_request",
+            "_public_gateway",
+            "GetKnownUniverseResponse",
+            "_timeout"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "ExplorationMessenger.get_system_detail",
+          "embedded_first_line": 123,
+          "referenced_names": [
+            "GetSystemDetailRequest",
+            "solar_system",
+            "sequential",
+            "send_request",
+            "_public_gateway",
+            "GetSystemDetailResponse",
+            "_timeout"
+          ],
+          "scalar_constants": [],
+          "instructions": [
+            {
+              "offset": 0,
+              "line": 123,
+              "opcode": "RESUME",
+              "argument": ""
+            },
+            {
+              "offset": 2,
+              "line": 128,
+              "opcode": "NOP",
+              "argument": ""
+            },
+            {
+              "offset": 4,
+              "line": 130,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "NULL + GetSystemDetailRequest"
+            },
+            {
+              "offset": 14,
+              "line": 130,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 22,
+              "line": 130,
+              "opcode": "STORE_FAST",
+              "argument": "request"
+            },
+            {
+              "offset": 24,
+              "line": 131,
+              "opcode": "LOAD_FAST",
+              "argument": "system_id"
+            },
+            {
+              "offset": 26,
+              "line": 131,
+              "opcode": "LOAD_FAST",
+              "argument": "request"
+            },
+            {
+              "offset": 28,
+              "line": 131,
+              "opcode": "LOAD_ATTR",
+              "argument": "solar_system"
+            },
+            {
+              "offset": 48,
+              "line": 131,
+              "opcode": "STORE_ATTR",
+              "argument": "sequential"
+            },
+            {
+              "offset": 58,
+              "line": 133,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "NULL + send_request"
+            },
+            {
+              "offset": 68,
+              "line": 134,
+              "opcode": "LOAD_FAST",
+              "argument": "self"
+            },
+            {
+              "offset": 70,
+              "line": 134,
+              "opcode": "LOAD_ATTR",
+              "argument": "_public_gateway"
+            },
+            {
+              "offset": 90,
+              "line": 135,
+              "opcode": "LOAD_FAST",
+              "argument": "request"
+            },
+            {
+              "offset": 92,
+              "line": 136,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "GetSystemDetailResponse"
+            },
+            {
+              "offset": 102,
+              "line": 137,
+              "opcode": "LOAD_FAST",
+              "argument": "timeout"
+            },
+            {
+              "offset": 104,
+              "line": 137,
+              "opcode": "COPY",
+              "argument": ""
+            },
+            {
+              "offset": 106,
+              "line": 137,
+              "opcode": "POP_JUMP_IF_TRUE",
+              "argument": "to 132"
+            },
+            {
+              "offset": 108,
+              "line": 137,
+              "opcode": "POP_TOP",
+              "argument": ""
+            },
+            {
+              "offset": 110,
+              "line": 137,
+              "opcode": "LOAD_FAST",
+              "argument": "self"
+            },
+            {
+              "offset": 112,
+              "line": 137,
+              "opcode": "LOAD_ATTR",
+              "argument": "_timeout"
+            },
+            {
+              "offset": 132,
+              "line": 133,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 140,
+              "line": 133,
+              "opcode": "RETURN_VALUE",
+              "argument": ""
+            }
+          ]
+        },
+        {
+          "qualified_name": "ExplorationMessenger.__init__",
+          "embedded_first_line": 59,
+          "referenced_names": [
+            "_public_gateway",
+            "_timeout",
+            "_on_universe_reveal",
+            "subscribe_to_notice",
+            "UniverseRevealNotice",
+            "_on_universe_reveal_notice"
+          ],
+          "scalar_constants": []
+        }
+      ]
+    },
+    {
+      "member": "frontier/proto_client/client/__init__.pyc",
+      "sha256": "f0a71276b17f0f81fc0f0f296b1a3640891db3c144c7fe7615519419389f82d9",
+      "pyc_magic": "cb0d0d0a",
+      "symbols": [
+        {
+          "qualified_name": "send_request",
+          "embedded_first_line": 8,
+          "referenced_names": [
+            "logger",
+            "info",
+            "tenant",
+            "type",
+            "send_character_request",
+            "warning",
+            "pc_utils",
+            "ProtoResponse",
+            "receive",
+            "is_success",
+            "status_code",
+            "status_message",
+            "TimeoutException"
+          ],
+          "scalar_constants": [
+            "<quasar client> Tenant %s is sending (%s) %s",
+            "<quasar client> Public gateway is not enabled!",
+            false,
+            0,
+            "Public gateway is not enabled",
+            "<quasar client> Received %s\n\nprimitive: %s\n\nres: %s",
+            "<quasar client> Timeout %s",
+            "Timeout"
+          ],
+          "instructions": [
+            {
+              "offset": 0,
+              "line": 8,
+              "opcode": "RESUME",
+              "argument": ""
+            },
+            {
+              "offset": 2,
+              "line": 9,
+              "opcode": "NOP",
+              "argument": ""
+            },
+            {
+              "offset": 4,
+              "line": 19,
+              "opcode": "NOP",
+              "argument": ""
+            },
+            {
+              "offset": 6,
+              "line": 20,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "logger"
+            },
+            {
+              "offset": 16,
+              "line": 20,
+              "opcode": "LOAD_ATTR",
+              "argument": "NULL|self + info"
+            },
+            {
+              "offset": 36,
+              "line": 20,
+              "opcode": "LOAD_CONST",
+              "argument": "'<quasar client> Tenant %s is sending (%s) %s'"
+            },
+            {
+              "offset": 38,
+              "line": 20,
+              "opcode": "LOAD_FAST",
+              "argument": "public_gateway"
+            },
+            {
+              "offset": 40,
+              "line": 20,
+              "opcode": "LOAD_ATTR",
+              "argument": "tenant"
+            },
+            {
+              "offset": 60,
+              "line": 20,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "NULL + type"
+            },
+            {
+              "offset": 70,
+              "line": 20,
+              "opcode": "LOAD_FAST",
+              "argument": "req"
+            },
+            {
+              "offset": 72,
+              "line": 20,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 80,
+              "line": 20,
+              "opcode": "LOAD_FAST",
+              "argument": "req"
+            },
+            {
+              "offset": 82,
+              "line": 20,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 90,
+              "line": 20,
+              "opcode": "POP_TOP",
+              "argument": ""
+            },
+            {
+              "offset": 92,
+              "line": 21,
+              "opcode": "LOAD_FAST",
+              "argument": "public_gateway"
+            },
+            {
+              "offset": 94,
+              "line": 21,
+              "opcode": "LOAD_ATTR",
+              "argument": "NULL|self + send_character_request"
+            },
+            {
+              "offset": 114,
+              "line": 21,
+              "opcode": "LOAD_FAST",
+              "argument": "req"
+            },
+            {
+              "offset": 116,
+              "line": 21,
+              "opcode": "LOAD_FAST",
+              "argument": "res_cls"
+            },
+            {
+              "offset": 118,
+              "line": 21,
+              "opcode": "LOAD_FAST",
+              "argument": "timeout"
+            },
+            {
+              "offset": 120,
+              "line": 21,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 128,
+              "line": 21,
+              "opcode": "STORE_FAST",
+              "argument": "res"
+            },
+            {
+              "offset": 130,
+              "line": 22,
+              "opcode": "LOAD_FAST",
+              "argument": "res"
+            },
+            {
+              "offset": 132,
+              "line": 22,
+              "opcode": "POP_JUMP_IF_NOT_NONE",
+              "argument": "to 226"
+            },
+            {
+              "offset": 134,
+              "line": 23,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "logger"
+            },
+            {
+              "offset": 144,
+              "line": 23,
+              "opcode": "LOAD_ATTR",
+              "argument": "NULL|self + warning"
+            },
+            {
+              "offset": 164,
+              "line": 23,
+              "opcode": "LOAD_CONST",
+              "argument": "'<quasar client> Public gateway is not enabled!'"
+            },
+            {
+              "offset": 166,
+              "line": 23,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 174,
+              "line": 23,
+              "opcode": "POP_TOP",
+              "argument": ""
+            },
+            {
+              "offset": 176,
+              "line": 24,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "NULL + pc_utils"
+            },
+            {
+              "offset": 186,
+              "line": 24,
+              "opcode": "LOAD_ATTR",
+              "argument": "ProtoResponse"
+            },
+            {
+              "offset": 206,
+              "line": 24,
+              "opcode": "LOAD_CONST",
+              "argument": "False"
+            },
+            {
+              "offset": 208,
+              "line": 24,
+              "opcode": "LOAD_CONST",
+              "argument": "None"
+            },
+            {
+              "offset": 210,
+              "line": 24,
+              "opcode": "LOAD_CONST",
+              "argument": "False"
+            },
+            {
+              "offset": 212,
+              "line": 24,
+              "opcode": "LOAD_CONST",
+              "argument": "0"
+            },
+            {
+              "offset": 214,
+              "line": 24,
+              "opcode": "LOAD_CONST",
+              "argument": "'Public gateway is not enabled'"
+            },
+            {
+              "offset": 216,
+              "line": 24,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 224,
+              "line": 24,
+              "opcode": "RETURN_VALUE",
+              "argument": ""
+            },
+            {
+              "offset": 226,
+              "line": 25,
+              "opcode": "LOAD_FAST",
+              "argument": "res"
+            },
+            {
+              "offset": 228,
+              "line": 25,
+              "opcode": "UNPACK_SEQUENCE",
+              "argument": ""
+            },
+            {
+              "offset": 232,
+              "line": 25,
+              "opcode": "STORE_FAST",
+              "argument": "request_primitive"
+            },
+            {
+              "offset": 234,
+              "line": 25,
+              "opcode": "STORE_FAST",
+              "argument": "response_channel"
+            },
+            {
+              "offset": 236,
+              "line": 26,
+              "opcode": "LOAD_FAST",
+              "argument": "response_channel"
+            },
+            {
+              "offset": 238,
+              "line": 26,
+              "opcode": "LOAD_ATTR",
+              "argument": "NULL|self + receive"
+            },
+            {
+              "offset": 258,
+              "line": 26,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 266,
+              "line": 26,
+              "opcode": "UNPACK_SEQUENCE",
+              "argument": ""
+            },
+            {
+              "offset": 270,
+              "line": 26,
+              "opcode": "STORE_FAST",
+              "argument": "response_primitive"
+            },
+            {
+              "offset": 272,
+              "line": 26,
+              "opcode": "STORE_FAST",
+              "argument": "res"
+            },
+            {
+              "offset": 274,
+              "line": 27,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "logger"
+            },
+            {
+              "offset": 284,
+              "line": 27,
+              "opcode": "LOAD_ATTR",
+              "argument": "NULL|self + info"
+            },
+            {
+              "offset": 304,
+              "line": 27,
+              "opcode": "LOAD_CONST",
+              "argument": "'<quasar client> Received %s\\n\\nprimitive: %s\\n\\nres: %s'"
+            },
+            {
+              "offset": 306,
+              "line": 27,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "NULL + type"
+            },
+            {
+              "offset": 316,
+              "line": 27,
+              "opcode": "LOAD_FAST",
+              "argument": "req"
+            },
+            {
+              "offset": 318,
+              "line": 27,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 326,
+              "line": 27,
+              "opcode": "LOAD_FAST",
+              "argument": "response_primitive"
+            },
+            {
+              "offset": 328,
+              "line": 27,
+              "opcode": "LOAD_FAST",
+              "argument": "res"
+            },
+            {
+              "offset": 330,
+              "line": 27,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 338,
+              "line": 27,
+              "opcode": "POP_TOP",
+              "argument": ""
+            },
+            {
+              "offset": 340,
+              "line": 28,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "NULL + pc_utils"
+            },
+            {
+              "offset": 350,
+              "line": 28,
+              "opcode": "LOAD_ATTR",
+              "argument": "ProtoResponse"
+            },
+            {
+              "offset": 370,
+              "line": 28,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "NULL + pc_utils"
+            },
+            {
+              "offset": 380,
+              "line": 28,
+              "opcode": "LOAD_ATTR",
+              "argument": "is_success"
+            },
+            {
+              "offset": 400,
+              "line": 28,
+              "opcode": "LOAD_FAST",
+              "argument": "response_primitive"
+            },
+            {
+              "offset": 402,
+              "line": 28,
+              "opcode": "LOAD_FAST",
+              "argument": "res"
+            },
+            {
+              "offset": 404,
+              "line": 28,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 412,
+              "line": 28,
+              "opcode": "LOAD_FAST",
+              "argument": "res"
+            },
+            {
+              "offset": 414,
+              "line": 28,
+              "opcode": "LOAD_CONST",
+              "argument": "False"
+            },
+            {
+              "offset": 416,
+              "line": 28,
+              "opcode": "LOAD_FAST",
+              "argument": "response_primitive"
+            },
+            {
+              "offset": 418,
+              "line": 28,
+              "opcode": "LOAD_ATTR",
+              "argument": "status_code"
+            },
+            {
+              "offset": 438,
+              "line": 28,
+              "opcode": "LOAD_FAST",
+              "argument": "response_primitive"
+            },
+            {
+              "offset": 440,
+              "line": 28,
+              "opcode": "LOAD_ATTR",
+              "argument": "status_message"
+            },
+            {
+              "offset": 460,
+              "line": 28,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 468,
+              "line": 28,
+              "opcode": "RETURN_VALUE",
+              "argument": ""
+            },
+            {
+              "offset": 470,
+              "line": null,
+              "opcode": "PUSH_EXC_INFO",
+              "argument": ""
+            },
+            {
+              "offset": 472,
+              "line": 29,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "TimeoutException"
+            },
+            {
+              "offset": 482,
+              "line": 29,
+              "opcode": "CHECK_EXC_MATCH",
+              "argument": ""
+            },
+            {
+              "offset": 484,
+              "line": 29,
+              "opcode": "POP_JUMP_IF_FALSE",
+              "argument": "to 604"
+            },
+            {
+              "offset": 486,
+              "line": 29,
+              "opcode": "POP_TOP",
+              "argument": ""
+            },
+            {
+              "offset": 488,
+              "line": 30,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "logger"
+            },
+            {
+              "offset": 498,
+              "line": 30,
+              "opcode": "LOAD_ATTR",
+              "argument": "NULL|self + info"
+            },
+            {
+              "offset": 518,
+              "line": 30,
+              "opcode": "LOAD_CONST",
+              "argument": "'<quasar client> Timeout %s'"
+            },
+            {
+              "offset": 520,
+              "line": 30,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "NULL + type"
+            },
+            {
+              "offset": 530,
+              "line": 30,
+              "opcode": "LOAD_FAST",
+              "argument": "req"
+            },
+            {
+              "offset": 532,
+              "line": 30,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 540,
+              "line": 30,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 548,
+              "line": 30,
+              "opcode": "POP_TOP",
+              "argument": ""
+            },
+            {
+              "offset": 550,
+              "line": 31,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "NULL + pc_utils"
+            },
+            {
+              "offset": 560,
+              "line": 31,
+              "opcode": "LOAD_ATTR",
+              "argument": "ProtoResponse"
+            },
+            {
+              "offset": 580,
+              "line": 31,
+              "opcode": "LOAD_CONST",
+              "argument": "False"
+            },
+            {
+              "offset": 582,
+              "line": 31,
+              "opcode": "LOAD_CONST",
+              "argument": "None"
+            },
+            {
+              "offset": 584,
+              "line": 31,
+              "opcode": "LOAD_CONST",
+              "argument": "False"
+            },
+            {
+              "offset": 586,
+              "line": 31,
+              "opcode": "LOAD_CONST",
+              "argument": "0"
+            },
+            {
+              "offset": 588,
+              "line": 31,
+              "opcode": "LOAD_CONST",
+              "argument": "'Timeout'"
+            },
+            {
+              "offset": 590,
+              "line": 31,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 598,
+              "line": 31,
+              "opcode": "SWAP",
+              "argument": ""
+            },
+            {
+              "offset": 600,
+              "line": 31,
+              "opcode": "POP_EXCEPT",
+              "argument": ""
+            },
+            {
+              "offset": 602,
+              "line": 31,
+              "opcode": "RETURN_VALUE",
+              "argument": ""
+            },
+            {
+              "offset": 604,
+              "line": 29,
+              "opcode": "RERAISE",
+              "argument": ""
+            },
+            {
+              "offset": 606,
+              "line": null,
+              "opcode": "COPY",
+              "argument": ""
+            },
+            {
+              "offset": 608,
+              "line": null,
+              "opcode": "POP_EXCEPT",
+              "argument": ""
+            },
+            {
+              "offset": 610,
+              "line": null,
+              "opcode": "RERAISE",
+              "argument": ""
+            }
+          ]
+        },
+        {
+          "qualified_name": "send_user_request",
+          "embedded_first_line": 34,
+          "referenced_names": [
+            "logger",
+            "info",
+            "tenant",
+            "type",
+            "send_user_request",
+            "warning",
+            "pc_utils",
+            "ProtoResponse",
+            "receive",
+            "is_success",
+            "status_code",
+            "status_message",
+            "TimeoutException"
+          ],
+          "scalar_constants": [
+            "<quasar client> Tenant %s is sending as user (%s) %s",
+            "<quasar client> Public gateway is not enabled!",
+            false,
+            0,
+            "Public gateway is not enabled",
+            "<quasar client> Received %s\n\nprimitive: %s\n\nres: %s",
+            "<quasar client> Timeout %s",
+            "Timeout"
+          ]
+        }
+      ]
+    },
+    {
+      "member": "frontier/crdata/client/resolved_system_svc.pyc",
+      "sha256": "e026df0ef2f5e022faead2b279843de2e2479294e64716cc85e931ccbf504148",
+      "pyc_magic": "cb0d0d0a",
+      "symbols": [
+        {
+          "qualified_name": "ResolvedSystemSvc.Run",
+          "embedded_first_line": 218,
+          "referenced_names": [
+            "Service",
+            "Run",
+            "ExplorationMessenger",
+            "public_gateway",
+            "_on_universe_reveal",
+            "_messenger",
+            "frontier.crdata.client.cfg_universe_shim",
+            "install_shims",
+            "frontier.crdata.client.discovery_ledger",
+            "get_discovery_ledger",
+            "Exception",
+            "logger",
+            "exception",
+            "getattr",
+            "session",
+            "uthread2",
+            "start_tasklet",
+            "_hydrate_scene_then_background",
+            "resolution_signals",
+            "on_known_set_changed",
+            "connect",
+            "_repopulate_evelocations_async"
+          ],
+          "scalar_constants": [
+            0,
+            "ResolvedSystemSvc: discovery ledger unavailable",
+            "solarsystemid2",
+            "solarsystemid",
+            "charid"
+          ]
+        },
+        {
+          "qualified_name": "ResolvedSystemSvc.hydrate_starter_systems",
+          "embedded_first_line": 864,
+          "referenced_names": [
+            "getattr",
+            "session",
+            "_messenger",
+            "logger",
+            "info",
+            "_epoch",
+            "get_known_universe",
+            "success",
+            "error",
+            "status_code",
+            "status_message",
+            "_ingest_page_header",
+            "data",
+            "_ingest_payload",
+            "payload",
+            "known_system_count"
+          ],
+          "scalar_constants": [
+            "charid",
+            true,
+            "ResolvedSystemSvc: starter hydration skipped, messenger not ready",
+            false,
+            "ResolvedSystemSvc: starter GetKnownUniverse failed (%s) %s",
+            "ResolvedSystemSvc: starter page dropped, identity changed mid-fetch",
+            "ResolvedSystemSvc: starter systems ingested (known=%d)"
+          ]
+        },
+        {
+          "qualified_name": "ResolvedSystemSvc.ensure_system_hydrated",
+          "embedded_first_line": 794,
+          "referenced_names": [
+            "_messenger",
+            "logger",
+            "info",
+            "is_visited",
+            "_detail_refused",
+            "is_known",
+            "getattr",
+            "session",
+            "_targeted_fetches_inflight",
+            "add",
+            "_epoch",
+            "get_system_detail",
+            "success",
+            "status_code",
+            "_REFUSED_DETAIL_CODES",
+            "_RETRYABLE_DETAIL_CODES",
+            "error",
+            "status_message",
+            "discard",
+            "_ingest_page_header",
+            "data",
+            "_ingest_payload",
+            "payload",
+            "known_system_count",
+            "_hydration_total"
+          ],
+          "scalar_constants": [
+            "ResolvedSystemSvc: fetch for sid=%s skipped, messenger not ready",
+            "solarsystemid2",
+            "ResolvedSystemSvc: detail for sid=%d refused (%s), awaiting a reveal",
+            "ResolvedSystemSvc: detail for sid=%d unavailable (%s), retrying",
+            "ResolvedSystemSvc: GetSystemDetail failed (%s) %s sid=%d",
+            "ResolvedSystemSvc: detail for sid=%d dropped, identity changed mid-fetch",
+            "ResolvedSystemSvc: detail for sid=%d ingested (known=%d/%d)"
+          ]
+        },
+        {
+          "qualified_name": "ResolvedSystemSvc._run_full_hydration",
+          "embedded_first_line": 1063,
+          "referenced_names": [
+            "_epoch",
+            "_messenger",
+            "get_known_universe",
+            "logger",
+            "info",
+            "_hydration_state",
+            "_show_hydration_progress",
+            "_hydration_total",
+            "success",
+            "error",
+            "status_code",
+            "status_message",
+            "data",
+            "_ingest_page_header",
+            "_ingest_payload",
+            "payload",
+            "getattr",
+            "token",
+            "resolution_signals",
+            "on_known_universe_page",
+            "uthread2",
+            "sleep",
+            "_known_bundle_version",
+            "len",
+            "_visited",
+            "known_system_count",
+            "_scan_range_m",
+            "on_known_set_changed"
+          ],
+          "scalar_constants": [
+            "",
+            0,
+            false,
+            true,
+            "ResolvedSystemSvc: hydration walk stopped after page %d, identity changed mid-fetch",
+            "complete",
+            "idle",
+            "ResolvedSystemSvc: GetKnownUniverse failed (%s) %s page=%d token=%r",
+            1,
+            "next_page",
+            "_hydration_show_progress",
+            "ResolvedSystemSvc: GetKnownUniverse cursor did not advance (token=%r) after page %d; stopping",
+            0.05,
+            "ResolvedSystemSvc: hydration walk stopped after page %d, identity changed mid-sleep",
+            "ResolvedSystemSvc: bundle=%s visited=%d charted=%d scan_range_m=%g pages=%d"
+          ]
+        },
+        {
+          "qualified_name": "ResolvedSystemSvc._ingest_page_header",
+          "embedded_first_line": 1046,
+          "referenced_names": [
+            "_format_bundle_version",
+            "bundle_version",
+            "_known_bundle_version",
+            "logger",
+            "info",
+            "clear",
+            "int",
+            "getattr",
+            "_hydration_total"
+          ],
+          "scalar_constants": [
+            "ResolvedSystemSvc: bundle changed %s -> %s; clearing cached state",
+            "total_systems",
+            0
+          ]
+        },
+        {
+          "qualified_name": "ResolvedSystemSvc._ingest_payload",
+          "embedded_first_line": 1214,
+          "referenced_names": [
+            "set",
+            "_fb_classes",
+            "logger",
+            "warning",
+            "_index",
+            "add_buffer",
+            "UniverseDelta",
+            "GetRootAsUniverseDelta",
+            "int",
+            "SchemaVersion",
+            "_schema_version",
+            "RevealLevel",
+            "Visited",
+            "systems",
+            "_tab",
+            "Offset",
+            "Vector",
+            "SolarSystem",
+            "range",
+            "SystemsLength",
+            "Indirect",
+            "Init",
+            "Id",
+            "position_of",
+            "_row_is_visited",
+            "append",
+            "RegionId",
+            "ConstellationId",
+            "add",
+            "sort",
+            "merge_systems",
+            "repoint_system",
+            "_visited",
+            "Region",
+            "regions",
+            "RegionsLength",
+            "contains",
+            "merge_regions",
+            "Constellation",
+            "constellations",
+            "ConstellationsLength",
+            "merge_constellations",
+            "finish_page",
+            "_data_revision",
+            "_resolved_systems",
+            "get",
+            "invalidate_bundle_celestials",
+            "frontier.crdata.client.cfg_universe_shim",
+            "seed_evelocations_celestial_rows",
+            "seed_evelocations_system_rows",
+            "Exception",
+            "exception",
+            "resolution_signals",
+            "on_system_detail_hydrated"
+          ],
+          "scalar_constants": [
+            false,
+            "ResolvedSystemSvc: flatbuffers Python bindings missing; skipping payload parse (no fog-of-war reveals).",
+            0,
+            16,
+            4,
+            true,
+            12,
+            14,
+            1,
+            "ResolvedSystemSvc: evelocations seed failed for page"
+          ]
+        },
+        {
+          "qualified_name": "ResolvedSystemSvc._on_universe_reveal",
+          "embedded_first_line": 1001,
+          "referenced_names": [
+            "_known_bundle_version",
+            "_format_bundle_version",
+            "bundle_version",
+            "logger",
+            "warning",
+            "_ingest_payload",
+            "payload",
+            "_detail_refused",
+            "resolution_signals",
+            "on_universe_revealed",
+            "on_known_universe_page",
+            "on_known_set_changed"
+          ],
+          "scalar_constants": [
+            "ResolvedSystemSvc: reveal for bundle %s while holding %s; dropping"
+          ]
+        },
+        {
+          "qualified_name": "get_resolved_system_svc",
+          "embedded_first_line": 1470,
+          "referenced_names": [
+            "sm",
+            "GetService"
+          ],
+          "scalar_constants": [
+            "resolvedSystem"
+          ]
+        }
+      ]
+    },
+    {
+      "member": "frontier/crdata/client/universe_index.pyc",
+      "sha256": "55c6fc9205126e38a04e6424f61594df5f880709e6ed7b9fb920066f956f4d60",
+      "pyc_magic": "cb0d0d0a",
+      "symbols": [
+        {
+          "qualified_name": "PackedTable.merge",
+          "embedded_first_line": 82,
+          "referenced_names": [
+            "range",
+            "len",
+            "ValueError",
+            "_ids",
+            "_append",
+            "_merge_slow"
+          ],
+          "scalar_constants": [
+            0,
+            1,
+            "merge rows must be strictly ascending by id (rows[%d]=%r >= rows[%d]=%r)",
+            -1
+          ]
+        }
+      ]
+    },
+    {
+      "member": "frontier/crdata/client/cfg_universe_shim.pyc",
+      "sha256": "312021f6c0f657c14bd612906aeaf1aea6acf219d2b3070eddae072fa5f08e6f",
+      "pyc_magic": "cb0d0d0a",
+      "symbols": [
+        {
+          "qualified_name": "install_shims",
+          "embedded_first_line": 1192,
+          "referenced_names": [
+            "_cfg",
+            "_originals",
+            "_CACHE_MAPPING",
+            "items",
+            "getattr",
+            "__class__",
+            "values",
+            "setattr",
+            "install_universe_location_guard"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SystemCacheShim._get",
+          "embedded_first_line": 991,
+          "referenced_names": [
+            "_svc",
+            "get_fb_system",
+            "_SystemContentWrapper"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "_SystemContentWrapper.center",
+          "embedded_first_line": 677,
+          "referenced_names": [
+            "_vec3",
+            "_fb",
+            "Center"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "seed_evelocations_system_rows",
+          "embedded_first_line": 1399,
+          "referenced_names": [
+            "_evelocations_recordset",
+            "blue",
+            "ImportError",
+            "_cfg",
+            "mapSystemCache",
+            "get",
+            "_resolve_location_name",
+            "solarSystemNameID",
+            "name",
+            "DBRow",
+            "center",
+            "data"
+          ],
+          "scalar_constants": [
+            0,
+            "Map/SolarSystems/solar_system_%s",
+            1,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "member": "eve/client/script/ui/shared/maps/starMapSvc.pyc",
+      "sha256": "bdb1634ed2c1320b6c0313b2e07b81270e6bbd730090619a230509860cc4b76e",
+      "pyc_magic": "cb0d0d0a",
+      "symbols": [
+        {
+          "qualified_name": "StarMapSvc.GetKnownUniverseSolarSystems",
+          "embedded_first_line": 154,
+          "referenced_names": [
+            "frontier.crdata.client.resolved_system_svc",
+            "get_resolved_system_svc",
+            "uthread2",
+            "start_tasklet",
+            "start_full_hydration",
+            "Exception",
+            "LogException",
+            "mapViewData",
+            "GetKnownUniverseSolarSystems"
+          ],
+          "scalar_constants": [
+            0,
+            true,
+            "GetKnownUniverseSolarSystems: failed to start universe hydration"
+          ]
+        }
+      ]
+    },
+    {
+      "member": "eve/client/script/ui/shared/mapView/mapViewData.pyc",
+      "sha256": "f52947f5ded1cc3b4cfbd22245e63e325f646e10558f7b26a38376eca046b2ab",
+      "pyc_magic": "cb0d0d0a",
+      "symbols": [
+        {
+          "qualified_name": "MapViewData.IterKnownSolarSystemMapPositions",
+          "embedded_first_line": 137,
+          "referenced_names": [
+            "GetEpoch",
+            "svc",
+            "enumerate",
+            "system_ids",
+            "mapViewUniverse",
+            "_be_nice",
+            "get_fb_system",
+            "_map_pos",
+            "Center"
+          ],
+          "scalar_constants": [
+            2000,
+            0
+          ],
+          "instructions": [
+            {
+              "offset": 0,
+              "line": 137,
+              "opcode": "RETURN_GENERATOR",
+              "argument": ""
+            },
+            {
+              "offset": 2,
+              "line": null,
+              "opcode": "POP_TOP",
+              "argument": ""
+            },
+            {
+              "offset": 4,
+              "line": 137,
+              "opcode": "RESUME",
+              "argument": ""
+            },
+            {
+              "offset": 6,
+              "line": 138,
+              "opcode": "NOP",
+              "argument": ""
+            },
+            {
+              "offset": 8,
+              "line": 140,
+              "opcode": "LOAD_FAST",
+              "argument": "self"
+            },
+            {
+              "offset": 10,
+              "line": 140,
+              "opcode": "LOAD_ATTR",
+              "argument": "NULL|self + GetEpoch"
+            },
+            {
+              "offset": 30,
+              "line": 140,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 38,
+              "line": 140,
+              "opcode": "STORE_FAST",
+              "argument": "epoch"
+            },
+            {
+              "offset": 40,
+              "line": 141,
+              "opcode": "LOAD_FAST",
+              "argument": "epoch"
+            },
+            {
+              "offset": 42,
+              "line": 141,
+              "opcode": "LOAD_ATTR",
+              "argument": "svc"
+            },
+            {
+              "offset": 62,
+              "line": 141,
+              "opcode": "STORE_FAST",
+              "argument": "svc"
+            },
+            {
+              "offset": 64,
+              "line": 142,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "NULL + enumerate"
+            },
+            {
+              "offset": 74,
+              "line": 142,
+              "opcode": "LOAD_FAST",
+              "argument": "epoch"
+            },
+            {
+              "offset": 76,
+              "line": 142,
+              "opcode": "LOAD_ATTR",
+              "argument": "system_ids"
+            },
+            {
+              "offset": 96,
+              "line": 142,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 104,
+              "line": 142,
+              "opcode": "GET_ITER",
+              "argument": ""
+            },
+            {
+              "offset": 106,
+              "line": 142,
+              "opcode": "FOR_ITER",
+              "argument": "to 310"
+            },
+            {
+              "offset": 110,
+              "line": 142,
+              "opcode": "UNPACK_SEQUENCE",
+              "argument": ""
+            },
+            {
+              "offset": 114,
+              "line": 142,
+              "opcode": "STORE_FAST",
+              "argument": "i"
+            },
+            {
+              "offset": 116,
+              "line": 142,
+              "opcode": "STORE_FAST",
+              "argument": "sid"
+            },
+            {
+              "offset": 118,
+              "line": 143,
+              "opcode": "LOAD_FAST",
+              "argument": "i"
+            },
+            {
+              "offset": 120,
+              "line": 143,
+              "opcode": "LOAD_CONST",
+              "argument": "2000"
+            },
+            {
+              "offset": 122,
+              "line": 143,
+              "opcode": "BINARY_OP",
+              "argument": "%"
+            },
+            {
+              "offset": 126,
+              "line": 143,
+              "opcode": "LOAD_CONST",
+              "argument": "0"
+            },
+            {
+              "offset": 128,
+              "line": 143,
+              "opcode": "COMPARE_OP",
+              "argument": "=="
+            },
+            {
+              "offset": 132,
+              "line": 143,
+              "opcode": "POP_JUMP_IF_FALSE",
+              "argument": "to 174"
+            },
+            {
+              "offset": 134,
+              "line": 144,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "NULL + mapViewUniverse"
+            },
+            {
+              "offset": 144,
+              "line": 144,
+              "opcode": "LOAD_ATTR",
+              "argument": "_be_nice"
+            },
+            {
+              "offset": 164,
+              "line": 144,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 172,
+              "line": 144,
+              "opcode": "POP_TOP",
+              "argument": ""
+            },
+            {
+              "offset": 174,
+              "line": 145,
+              "opcode": "LOAD_FAST",
+              "argument": "svc"
+            },
+            {
+              "offset": 176,
+              "line": 145,
+              "opcode": "LOAD_ATTR",
+              "argument": "NULL|self + get_fb_system"
+            },
+            {
+              "offset": 196,
+              "line": 145,
+              "opcode": "LOAD_FAST",
+              "argument": "sid"
+            },
+            {
+              "offset": 198,
+              "line": 145,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 206,
+              "line": 145,
+              "opcode": "STORE_FAST",
+              "argument": "fb"
+            },
+            {
+              "offset": 208,
+              "line": 146,
+              "opcode": "LOAD_FAST",
+              "argument": "fb"
+            },
+            {
+              "offset": 210,
+              "line": 146,
+              "opcode": "POP_JUMP_IF_NOT_NONE",
+              "argument": "to 214"
+            },
+            {
+              "offset": 212,
+              "line": 147,
+              "opcode": "JUMP_BACKWARD",
+              "argument": "to 106"
+            },
+            {
+              "offset": 214,
+              "line": 148,
+              "opcode": "LOAD_GLOBAL",
+              "argument": "NULL + mapViewUniverse"
+            },
+            {
+              "offset": 224,
+              "line": 148,
+              "opcode": "LOAD_ATTR",
+              "argument": "_map_pos"
+            },
+            {
+              "offset": 244,
+              "line": 148,
+              "opcode": "LOAD_FAST",
+              "argument": "fb"
+            },
+            {
+              "offset": 246,
+              "line": 148,
+              "opcode": "LOAD_ATTR",
+              "argument": "NULL|self + Center"
+            },
+            {
+              "offset": 266,
+              "line": 148,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 274,
+              "line": 148,
+              "opcode": "CALL",
+              "argument": ""
+            },
+            {
+              "offset": 282,
+              "line": 148,
+              "opcode": "UNPACK_SEQUENCE",
+              "argument": ""
+            },
+            {
+              "offset": 286,
+              "line": 148,
+              "opcode": "STORE_FAST",
+              "argument": "x"
+            },
+            {
+              "offset": 288,
+              "line": 148,
+              "opcode": "STORE_FAST",
+              "argument": "y"
+            },
+            {
+              "offset": 290,
+              "line": 148,
+              "opcode": "STORE_FAST",
+              "argument": "z"
+            },
+            {
+              "offset": 292,
+              "line": 149,
+              "opcode": "LOAD_FAST",
+              "argument": "sid"
+            },
+            {
+              "offset": 294,
+              "line": 149,
+              "opcode": "LOAD_FAST",
+              "argument": "x"
+            },
+            {
+              "offset": 296,
+              "line": 149,
+              "opcode": "LOAD_FAST",
+              "argument": "y"
+            },
+            {
+              "offset": 298,
+              "line": 149,
+              "opcode": "LOAD_FAST",
+              "argument": "z"
+            },
+            {
+              "offset": 300,
+              "line": 149,
+              "opcode": "BUILD_TUPLE",
+              "argument": ""
+            },
+            {
+              "offset": 302,
+              "line": 149,
+              "opcode": "YIELD_VALUE",
+              "argument": ""
+            },
+            {
+              "offset": 304,
+              "line": 149,
+              "opcode": "RESUME",
+              "argument": ""
+            },
+            {
+              "offset": 306,
+              "line": 149,
+              "opcode": "POP_TOP",
+              "argument": ""
+            },
+            {
+              "offset": 308,
+              "line": 149,
+              "opcode": "JUMP_BACKWARD",
+              "argument": "to 106"
+            },
+            {
+              "offset": 310,
+              "line": 142,
+              "opcode": "END_FOR",
+              "argument": ""
+            },
+            {
+              "offset": 312,
+              "line": 142,
+              "opcode": "RETURN_CONST",
+              "argument": "None"
+            },
+            {
+              "offset": 314,
+              "line": null,
+              "opcode": "CALL_INTRINSIC_1",
+              "argument": "INTRINSIC_STOPITERATION_ERROR"
+            },
+            {
+              "offset": 316,
+              "line": null,
+              "opcode": "RERAISE",
+              "argument": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "member": "eve/client/script/ui/shared/mapView/mapViewUniverse.pyc",
+      "sha256": "37bae18463f5e05df4a793de9255df49b6b5024b6044dc979b04808d1f5425c8",
+      "pyc_magic": "cb0d0d0a",
+      "symbols": [
+        {
+          "qualified_name": "_map_pos",
+          "embedded_first_line": 39,
+          "referenced_names": [
+            "X",
+            "UNIVERSE_SCALE",
+            "Y",
+            "Z"
+          ],
+          "scalar_constants": []
+        }
+      ]
+    },
+    {
+      "member": "eve/client/script/ui/shared/mapView/mapViewConst.pyc",
+      "sha256": "feaa8a7538aea888d7b683ad719b38834b9fc5f6f78675ce94e5db57efdd11da",
+      "pyc_magic": "cb0d0d0a",
+      "symbols": [
+        {
+          "qualified_name": "<module>",
+          "embedded_first_line": 1,
+          "referenced_names": [
+            "eve.client.script.ui.shared.maps.mapcommon",
+            "STARMODE_DETECTION",
+            "frontier.beta",
+            "FRONTIER_BETA_HIDE_MAPVIEW_MARKERS",
+            "FRONTIER_FOG_OF_WAR_MAP_LOOK",
+            "UNIVERSE_SCALE",
+            "SOLARSYSTEM_SCALE",
+            "SCAN_RANGE_SPHERE_MODEL",
+            "SCAN_RANGE_SPHERE_COLOR",
+            "SCAN_RANGE_FOG_RADIUS_MULTIPLIER",
+            "SCAN_RANGE_FOG_COLOR",
+            "STAR_SIZE_UNIMPORTANT",
+            "STAR_SIZE_STANDARD",
+            "STAR_SIZE_AFFECTED",
+            "SCALING_SOLARSYSTEMINWORLDMAP",
+            "MAX_MARKER_DISTANCE",
+            "OPACITY_MARKER_ACTIVE",
+            "OPACITY_MARKER_VISIBLE",
+            "OPACITY_MARKER_SELECTED",
+            "MIN_CAMERA_DISTANCE",
+            "MAX_CAMERA_DISTANCE",
+            "MIN_CAMERA_DISTANCE_SOLARSYSTEMVIEW",
+            "MAX_CAMERA_DISTANCE_SOLARSYSTEMVIEW",
+            "JUMPLINE_BASE_WIDTH",
+            "const",
+            "AU",
+            "AUTOPILOT_LINE_TICKSIZE",
+            "AUTOPILOT_LINE_ANIM_SPEED",
+            "AUTOPILOT_LINE_WIDTH",
+            "CONSTELLATION_LINE_TICKSIZE",
+            "REGION_LINE_TICKSIZE",
+            "AUDIO_SOLARSYSTEM_DISTANCE",
+            "AUDIO_CONSTELLATION_DISTANCE",
+            "SETTING_PREFIX",
+            "VIEWMODE_LAYOUT_SETTINGS",
+            "VIEWMODE_LAYOUT_SOLARSYSTEM",
+            "VIEWMODE_LAYOUT_CONSTELLATIONS",
+            "VIEWMODE_LAYOUT_REGIONS",
+            "VIEWMODE_LAYOUT_DEFAULT",
+            "VIEWMODE_SETTINGS",
+            "VIEWMODE_DEFAULT",
+            "VIEWMODE_LINES_SETTINGS",
+            "VIEWMODE_LINES_NONE",
+            "VIEWMODE_LINES_ALL",
+            "VIEWMODE_LINES_SELECTION",
+            "VIEWMODE_LINES_SELECTION_REGION",
+            "VIEWMODE_LINES_SELECTION_REGION_NEIGHBOURS",
+            "VIEWMODE_LINES_DEFAULT",
+            "VIEWMODE_LINES_SHOW_ALLIANCE_SETTINGS",
+            "VIEWMODE_LINES_SHOW_ALLIANCE_DEFAULT",
+            "VIEWMODE_LINES_SHOW_JUMP_BRIDGES_MY",
+            "VIEWMODE_LINES_SHOW_JUMP_BRIDGES_ALL",
+            "VIEWMODE_LINES_SHOW_JUMP_BRIDGES_SETTINGS",
+            "VIEWMODE_LINES_SHOW_JUMP_BRIDGES_DEFAULT",
+            "VIEWMODE_LAYOUT_SHOW_ABSTRACT_SETTINGS",
+            "VIEWMODE_LAYOUT_SHOW_ABSTRACT_DEFAULT",
+            "VIEWMODE_COLOR_SETTINGS",
+            "VIEWMODE_COLOR_DEFAULT",
+            "VIEWMODE_COLOR_RECENT",
+            "VIEWMODE_COLOR_RECENT_DEFAULT",
+            "VIEWMODE_COLOR_RECENT_MAX",
+            "VIEWMODE_MARKERS_SETTINGS",
+            "REVEAL_FOCUS_CAMERA_SETTINGS",
+            "REVEAL_FOCUS_CAMERA_DEFAULT",
+            "MARKERS_OPTION_PERSONAL_LOCATION",
+            "MARKERS_OPTION_SHARED_LOCATION",
+            "VIEWMODE_MARKERS_OPTIONS_CUSTOM",
+            "VIEWMODE_MARKERS_CUSTOM_LABELS",
+            "append",
+            "groupPlanet",
+            "groupMoon",
+            "groupStation",
+            "groupStargate",
+            "groupSun",
+            "VIEWMODE_MARKERS_OPTIONS",
+            "extend",
+            "groupScannerProbe",
+            "groupBeacon",
+            "groupCynosuralBeacon",
+            "groupStructureCitadel",
+            "groupStructureIndustrialArray",
+            "VIEWMODE_MARKERS_OPTIONS_DEFAULT",
+            "VIEWMODE_MARKERS_DEFAULT",
+            "VIEWMODE_MARKERS_OVERLAP_SORT_ORDER",
+            "DEFAULT_MAPVIEW_SETTINGS",
+            "VIEWMODE_FOCUS_SELF",
+            "MARKERID_MYPOS",
+            "MARKERID_ROUTE",
+            "MARKERID_SOLARSYSTEM_CELESTIAL",
+            "MARKER_TYPES",
+            "MARKER_POINT_LEFT",
+            "MARKER_POINT_TOP",
+            "MARKER_POINT_RIGHT",
+            "MARKER_POINT_BOTTOM",
+            "JUMPBRIDGE_COLOR",
+            "JUMPBRIDGE_COLOR_NO_ACCESS",
+            "JUMPBRIDGE_CURVE_SCALE",
+            "JUMPBRIDGE_TYPE",
+            "MAPVIEW_CAMERA_SETTINGS",
+            "MAPVIEW_PRIMARY_ID",
+            "MAPVIEW_PRIMARY_OVERLAY_ID",
+            "MAPVIEW_SOLARSYSTEM_ID",
+            "MARKER_INACTIVE",
+            "MARKER_ACTIVE",
+            "MARKER_SELECTED",
+            "TRIGLAVIAN_SUN_FLARE_COLOR",
+            "TIME_BENICE",
+            "TIME_BENICE_MEDIUM",
+            "TIME_BENICE_LONG",
+            "FOG_OF_WAR_MAP_LOOK",
+            "PARTICLE_EFFECT_FOG",
+            "PARTICLE_EFFECT_HALO",
+            "UNIT_PLANE_GEOMETRY",
+            "KNOWLEDGE_ELEMENT",
+            "KNOWLEDGE_HIDDEN",
+            "KNOWLEDGE_CHARTED",
+            "KNOWLEDGE_VISITED",
+            "RING_ELEMENT",
+            "STAR_MARKER_HOLD_DISTANCE",
+            "SOLARSYSTEM_EXPAND_ZOOM_DISTANCE"
+          ],
+          "scalar_constants": [
+            0,
+            1.5e-15,
+            1e-10,
+            "res:/dx9/model/ui/system_view/SystemViewZoneSphere.red",
+            5.0,
+            8.0,
+            30.0,
+            60.0,
+            0.05,
+            220000.0,
+            1.0,
+            0.65,
+            1.3,
+            160000.0,
+            0.5,
+            9000.0,
+            2.5,
+            10000,
+            2,
+            4000,
+            20000,
+            10.0,
+            50.0,
+            "mapview2",
+            "_majorlayout",
+            1,
+            "_show_solar_systems",
+            false,
+            "_lines",
+            3,
+            4,
+            5,
+            6,
+            7,
+            "_show_alliance_lines",
+            true,
+            "_showJumpBridges",
+            "_layout",
+            "_colormode",
+            "_recent_colormode",
+            "_systemmap_markers",
+            "_reveal_focus_camera",
+            "personal_location",
+            "shared_location",
+            "UI/PeopleAndPlaces/PersonalLocations",
+            "UI/PeopleAndPlaces/SharedLocations",
+            "focus_self",
+            "_camera",
+            "primary",
+            "primary_overlay",
+            "solarsystem",
+            15,
+            "res:/Graphics/Effect/Managed/Space/SpecialFX/Particles/StarmapFog.fx",
+            "res:/Graphics/Effect/Managed/Space/SpecialFX/Particles/StarmapKnownSpace.fx",
+            "res:/Graphics/Generic/UnitPlane/UnitPlane.cmf",
+            0.0,
+            12000.0
+          ]
+        }
+      ]
+    },
+    {
+      "member": "flatbuffers/generated/eve/universe/v1/UniverseDelta.pyc",
+      "sha256": "e1baf3512b214b3265d207ca5ec0ea0539c2ec34de4ad769e9d209b8e5ab9589",
+      "pyc_magic": "cb0d0d0a",
+      "symbols": [
+        {
+          "qualified_name": "<module>",
+          "embedded_first_line": 1,
+          "referenced_names": [
+            "flatbuffers",
+            "flatbuffers.compat",
+            "import_numpy",
+            "np",
+            "object",
+            "UniverseDelta",
+            "UniverseDeltaStart",
+            "Start",
+            "UniverseDeltaAddSchemaVersion",
+            "AddSchemaVersion",
+            "UniverseDeltaAddBundleVersion",
+            "AddBundleVersion",
+            "UniverseDeltaAddComplete",
+            "AddComplete",
+            "UniverseDeltaAddSequence",
+            "AddSequence",
+            "UniverseDeltaAddRegions",
+            "AddRegions",
+            "UniverseDeltaStartRegionsVector",
+            "StartRegionsVector",
+            "UniverseDeltaAddConstellations",
+            "AddConstellations",
+            "UniverseDeltaStartConstellationsVector",
+            "StartConstellationsVector",
+            "UniverseDeltaAddSystems",
+            "AddSystems",
+            "UniverseDeltaStartSystemsVector",
+            "StartSystemsVector",
+            "UniverseDeltaEnd",
+            "End"
+          ],
+          "scalar_constants": [
+            0,
+            "UniverseDelta"
+          ]
+        },
+        {
+          "qualified_name": "UniverseDelta",
+          "embedded_first_line": 9,
+          "referenced_names": [
+            "__name__",
+            "__module__",
+            "__qualname__",
+            "__slots__",
+            "classmethod",
+            "GetRootAs",
+            "GetRootAsUniverseDelta",
+            "Init",
+            "SchemaVersion",
+            "BundleVersion",
+            "Complete",
+            "Sequence",
+            "Regions",
+            "RegionsLength",
+            "RegionsIsNone",
+            "Constellations",
+            "ConstellationsLength",
+            "ConstellationsIsNone",
+            "Systems",
+            "SystemsLength",
+            "SystemsIsNone"
+          ],
+          "scalar_constants": [
+            "UniverseDelta",
+            "_tab"
+          ]
+        },
+        {
+          "qualified_name": "UniverseDelta.GetRootAs",
+          "embedded_first_line": 12,
+          "referenced_names": [
+            "flatbuffers",
+            "encode",
+            "Get",
+            "packer",
+            "uoffset",
+            "UniverseDelta",
+            "Init"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "UniverseDelta.GetRootAsUniverseDelta",
+          "embedded_first_line": 19,
+          "referenced_names": [
+            "GetRootAs"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "UniverseDelta.Init",
+          "embedded_first_line": 24,
+          "referenced_names": [
+            "flatbuffers",
+            "table",
+            "Table",
+            "_tab"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "UniverseDelta.SchemaVersion",
+          "embedded_first_line": 28,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint16Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            4,
+            0
+          ]
+        },
+        {
+          "qualified_name": "UniverseDelta.BundleVersion",
+          "embedded_first_line": 35,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "String",
+            "Pos"
+          ],
+          "scalar_constants": [
+            6,
+            0
+          ]
+        },
+        {
+          "qualified_name": "UniverseDelta.Complete",
+          "embedded_first_line": 42,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "bool",
+            "Get",
+            "BoolFlags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            8,
+            0,
+            false
+          ]
+        },
+        {
+          "qualified_name": "UniverseDelta.Sequence",
+          "embedded_first_line": 49,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint64Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            10,
+            0
+          ]
+        },
+        {
+          "qualified_name": "UniverseDelta.Regions",
+          "embedded_first_line": 56,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Vector",
+            "Indirect",
+            "flatbuffers.generated.eve.universe.v1.Region",
+            "Region",
+            "Init",
+            "Bytes"
+          ],
+          "scalar_constants": [
+            12,
+            0,
+            4
+          ]
+        },
+        {
+          "qualified_name": "UniverseDelta.RegionsLength",
+          "embedded_first_line": 69,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "VectorLen"
+          ],
+          "scalar_constants": [
+            12,
+            0
+          ]
+        },
+        {
+          "qualified_name": "UniverseDelta.RegionsIsNone",
+          "embedded_first_line": 76,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset"
+          ],
+          "scalar_constants": [
+            12,
+            0
+          ]
+        },
+        {
+          "qualified_name": "UniverseDelta.Constellations",
+          "embedded_first_line": 81,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Vector",
+            "Indirect",
+            "flatbuffers.generated.eve.universe.v1.Constellation",
+            "Constellation",
+            "Init",
+            "Bytes"
+          ],
+          "scalar_constants": [
+            14,
+            0,
+            4
+          ]
+        },
+        {
+          "qualified_name": "UniverseDelta.ConstellationsLength",
+          "embedded_first_line": 94,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "VectorLen"
+          ],
+          "scalar_constants": [
+            14,
+            0
+          ]
+        },
+        {
+          "qualified_name": "UniverseDelta.ConstellationsIsNone",
+          "embedded_first_line": 101,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset"
+          ],
+          "scalar_constants": [
+            14,
+            0
+          ]
+        },
+        {
+          "qualified_name": "UniverseDelta.Systems",
+          "embedded_first_line": 106,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Vector",
+            "Indirect",
+            "flatbuffers.generated.eve.universe.v1.SolarSystem",
+            "SolarSystem",
+            "Init",
+            "Bytes"
+          ],
+          "scalar_constants": [
+            16,
+            0,
+            4
+          ]
+        },
+        {
+          "qualified_name": "UniverseDelta.SystemsLength",
+          "embedded_first_line": 119,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "VectorLen"
+          ],
+          "scalar_constants": [
+            16,
+            0
+          ]
+        },
+        {
+          "qualified_name": "UniverseDelta.SystemsIsNone",
+          "embedded_first_line": 126,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset"
+          ],
+          "scalar_constants": [
+            16,
+            0
+          ]
+        },
+        {
+          "qualified_name": "UniverseDeltaStart",
+          "embedded_first_line": 130,
+          "referenced_names": [
+            "StartObject"
+          ],
+          "scalar_constants": [
+            7
+          ]
+        },
+        {
+          "qualified_name": "Start",
+          "embedded_first_line": 133,
+          "referenced_names": [
+            "UniverseDeltaStart"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "UniverseDeltaAddSchemaVersion",
+          "embedded_first_line": 136,
+          "referenced_names": [
+            "PrependUint16Slot"
+          ],
+          "scalar_constants": [
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddSchemaVersion",
+          "embedded_first_line": 139,
+          "referenced_names": [
+            "UniverseDeltaAddSchemaVersion"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "UniverseDeltaAddBundleVersion",
+          "embedded_first_line": 142,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            1,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddBundleVersion",
+          "embedded_first_line": 145,
+          "referenced_names": [
+            "UniverseDeltaAddBundleVersion"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "UniverseDeltaAddComplete",
+          "embedded_first_line": 148,
+          "referenced_names": [
+            "PrependBoolSlot"
+          ],
+          "scalar_constants": [
+            2,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddComplete",
+          "embedded_first_line": 151,
+          "referenced_names": [
+            "UniverseDeltaAddComplete"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "UniverseDeltaAddSequence",
+          "embedded_first_line": 154,
+          "referenced_names": [
+            "PrependUint64Slot"
+          ],
+          "scalar_constants": [
+            3,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddSequence",
+          "embedded_first_line": 157,
+          "referenced_names": [
+            "UniverseDeltaAddSequence"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "UniverseDeltaAddRegions",
+          "embedded_first_line": 160,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            4,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddRegions",
+          "embedded_first_line": 163,
+          "referenced_names": [
+            "UniverseDeltaAddRegions"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "UniverseDeltaStartRegionsVector",
+          "embedded_first_line": 166,
+          "referenced_names": [
+            "StartVector"
+          ],
+          "scalar_constants": [
+            4
+          ]
+        },
+        {
+          "qualified_name": "StartRegionsVector",
+          "embedded_first_line": 169,
+          "referenced_names": [
+            "UniverseDeltaStartRegionsVector"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "UniverseDeltaAddConstellations",
+          "embedded_first_line": 172,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            5,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddConstellations",
+          "embedded_first_line": 175,
+          "referenced_names": [
+            "UniverseDeltaAddConstellations"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "UniverseDeltaStartConstellationsVector",
+          "embedded_first_line": 178,
+          "referenced_names": [
+            "StartVector"
+          ],
+          "scalar_constants": [
+            4
+          ]
+        },
+        {
+          "qualified_name": "StartConstellationsVector",
+          "embedded_first_line": 181,
+          "referenced_names": [
+            "UniverseDeltaStartConstellationsVector"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "UniverseDeltaAddSystems",
+          "embedded_first_line": 184,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            6,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddSystems",
+          "embedded_first_line": 187,
+          "referenced_names": [
+            "UniverseDeltaAddSystems"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "UniverseDeltaStartSystemsVector",
+          "embedded_first_line": 190,
+          "referenced_names": [
+            "StartVector"
+          ],
+          "scalar_constants": [
+            4
+          ]
+        },
+        {
+          "qualified_name": "StartSystemsVector",
+          "embedded_first_line": 193,
+          "referenced_names": [
+            "UniverseDeltaStartSystemsVector"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "UniverseDeltaEnd",
+          "embedded_first_line": 196,
+          "referenced_names": [
+            "EndObject"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "End",
+          "embedded_first_line": 199,
+          "referenced_names": [
+            "UniverseDeltaEnd"
+          ],
+          "scalar_constants": []
+        }
+      ]
+    },
+    {
+      "member": "flatbuffers/generated/eve/universe/v1/SolarSystem.pyc",
+      "sha256": "4f923289c05c25f131d4d88b1b88360721bb13a473843c48f168d4e11d43edad",
+      "pyc_magic": "cb0d0d0a",
+      "symbols": [
+        {
+          "qualified_name": "<module>",
+          "embedded_first_line": 1,
+          "referenced_names": [
+            "flatbuffers",
+            "flatbuffers.compat",
+            "import_numpy",
+            "np",
+            "object",
+            "SolarSystem",
+            "SolarSystemStart",
+            "Start",
+            "SolarSystemAddId",
+            "AddId",
+            "SolarSystemAddNameId",
+            "AddNameId",
+            "SolarSystemAddRegionId",
+            "AddRegionId",
+            "SolarSystemAddConstellationId",
+            "AddConstellationId",
+            "SolarSystemAddCenter",
+            "AddCenter",
+            "SolarSystemAddSecurity",
+            "AddSecurity",
+            "SolarSystemAddSunTypeId",
+            "AddSunTypeId",
+            "SolarSystemAddRadiusM",
+            "AddRadiusM",
+            "SolarSystemAddRevealLevel",
+            "AddRevealLevel",
+            "SolarSystemAddSun",
+            "AddSun",
+            "SolarSystemAddPlanets",
+            "AddPlanets",
+            "SolarSystemStartPlanetsVector",
+            "StartPlanetsVector",
+            "SolarSystemAddAsteroidBelts",
+            "AddAsteroidBelts",
+            "SolarSystemStartAsteroidBeltsVector",
+            "StartAsteroidBeltsVector",
+            "SolarSystemAddFrostLineM",
+            "AddFrostLineM",
+            "SolarSystemAddHabitableZoneInnerM",
+            "AddHabitableZoneInnerM",
+            "SolarSystemAddHabitableZoneOuterM",
+            "AddHabitableZoneOuterM",
+            "SolarSystemAddLuminosity",
+            "AddLuminosity",
+            "SolarSystemAddFactionId",
+            "AddFactionId",
+            "SolarSystemAddDescriptionId",
+            "AddDescriptionId",
+            "SolarSystemAddSunFlareGraphicId",
+            "AddSunFlareGraphicId",
+            "SolarSystemAddWormholeClassId",
+            "AddWormholeClassId",
+            "SolarSystemAddVisualEffect",
+            "AddVisualEffect",
+            "SolarSystemAddSecurityClass",
+            "AddSecurityClass",
+            "SolarSystemAddFringe",
+            "AddFringe",
+            "SolarSystemAddHub",
+            "AddHub",
+            "SolarSystemAddInternational",
+            "AddInternational",
+            "SolarSystemAddRegional",
+            "AddRegional",
+            "SolarSystemAddBorder",
+            "AddBorder",
+            "SolarSystemAddCorridor",
+            "AddCorridor",
+            "SolarSystemAddSecondarySun",
+            "AddSecondarySun",
+            "SolarSystemAddCelestialScopeFull",
+            "AddCelestialScopeFull",
+            "SolarSystemAddLagrangeScopeFull",
+            "AddLagrangeScopeFull",
+            "SolarSystemAddOreScopeFull",
+            "AddOreScopeFull",
+            "SolarSystemAddExploredCelestialIds",
+            "AddExploredCelestialIds",
+            "SolarSystemStartExploredCelestialIdsVector",
+            "StartExploredCelestialIdsVector",
+            "SolarSystemAddExploredLagrangeIds",
+            "AddExploredLagrangeIds",
+            "SolarSystemStartExploredLagrangeIdsVector",
+            "StartExploredLagrangeIdsVector",
+            "SolarSystemAddExploredOreSiteIds",
+            "AddExploredOreSiteIds",
+            "SolarSystemStartExploredOreSiteIdsVector",
+            "StartExploredOreSiteIdsVector",
+            "SolarSystemAddNeighbours",
+            "AddNeighbours",
+            "SolarSystemStartNeighboursVector",
+            "StartNeighboursVector",
+            "SolarSystemAddStargates",
+            "AddStargates",
+            "SolarSystemStartStargatesVector",
+            "StartStargatesVector",
+            "SolarSystemAddGabrielNeighbours",
+            "AddGabrielNeighbours",
+            "SolarSystemStartGabrielNeighboursVector",
+            "StartGabrielNeighboursVector",
+            "SolarSystemAddStellarObjects",
+            "AddStellarObjects",
+            "SolarSystemStartStellarObjectsVector",
+            "StartStellarObjectsVector",
+            "SolarSystemAddInteracting",
+            "AddInteracting",
+            "SolarSystemAddName",
+            "AddName",
+            "SolarSystemAddCompanionSuns",
+            "AddCompanionSuns",
+            "SolarSystemStartCompanionSunsVector",
+            "StartCompanionSunsVector",
+            "SolarSystemAddSignalThermalW",
+            "AddSignalThermalW",
+            "SolarSystemAddSignalEmW",
+            "AddSignalEmW",
+            "SolarSystemAddThermalRung",
+            "AddThermalRung",
+            "SolarSystemAddEmRung",
+            "AddEmRung",
+            "SolarSystemAddSunTemperatureK",
+            "AddSunTemperatureK",
+            "SolarSystemEnd",
+            "End"
+          ],
+          "scalar_constants": [
+            0,
+            "SolarSystem"
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem",
+          "embedded_first_line": 9,
+          "referenced_names": [
+            "__name__",
+            "__module__",
+            "__qualname__",
+            "__slots__",
+            "classmethod",
+            "GetRootAs",
+            "GetRootAsSolarSystem",
+            "Init",
+            "Id",
+            "NameId",
+            "RegionId",
+            "ConstellationId",
+            "Center",
+            "Security",
+            "SunTypeId",
+            "RadiusM",
+            "RevealLevel",
+            "Sun",
+            "Planets",
+            "PlanetsLength",
+            "PlanetsIsNone",
+            "AsteroidBelts",
+            "AsteroidBeltsLength",
+            "AsteroidBeltsIsNone",
+            "FrostLineM",
+            "HabitableZoneInnerM",
+            "HabitableZoneOuterM",
+            "Luminosity",
+            "FactionId",
+            "DescriptionId",
+            "SunFlareGraphicId",
+            "WormholeClassId",
+            "VisualEffect",
+            "SecurityClass",
+            "Fringe",
+            "Hub",
+            "International",
+            "Regional",
+            "Border",
+            "Corridor",
+            "SecondarySun",
+            "CelestialScopeFull",
+            "LagrangeScopeFull",
+            "OreScopeFull",
+            "ExploredCelestialIds",
+            "ExploredCelestialIdsAsNumpy",
+            "ExploredCelestialIdsLength",
+            "ExploredCelestialIdsIsNone",
+            "ExploredLagrangeIds",
+            "ExploredLagrangeIdsAsNumpy",
+            "ExploredLagrangeIdsLength",
+            "ExploredLagrangeIdsIsNone",
+            "ExploredOreSiteIds",
+            "ExploredOreSiteIdsAsNumpy",
+            "ExploredOreSiteIdsLength",
+            "ExploredOreSiteIdsIsNone",
+            "Neighbours",
+            "NeighboursAsNumpy",
+            "NeighboursLength",
+            "NeighboursIsNone",
+            "Stargates",
+            "StargatesLength",
+            "StargatesIsNone",
+            "GabrielNeighbours",
+            "GabrielNeighboursLength",
+            "GabrielNeighboursIsNone",
+            "StellarObjects",
+            "StellarObjectsLength",
+            "StellarObjectsIsNone",
+            "Interacting",
+            "Name",
+            "CompanionSuns",
+            "CompanionSunsLength",
+            "CompanionSunsIsNone",
+            "SignalThermalW",
+            "SignalEmW",
+            "ThermalRung",
+            "EmRung",
+            "SunTemperatureK"
+          ],
+          "scalar_constants": [
+            "SolarSystem",
+            "_tab"
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.GetRootAs",
+          "embedded_first_line": 12,
+          "referenced_names": [
+            "flatbuffers",
+            "encode",
+            "Get",
+            "packer",
+            "uoffset",
+            "SolarSystem",
+            "Init"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystem.GetRootAsSolarSystem",
+          "embedded_first_line": 19,
+          "referenced_names": [
+            "GetRootAs"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystem.Init",
+          "embedded_first_line": 24,
+          "referenced_names": [
+            "flatbuffers",
+            "table",
+            "Table",
+            "_tab"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystem.Id",
+          "embedded_first_line": 28,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint64Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            4,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.NameId",
+          "embedded_first_line": 35,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint32Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            6,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.RegionId",
+          "embedded_first_line": 42,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint64Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            8,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.ConstellationId",
+          "embedded_first_line": 49,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint64Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            10,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.Center",
+          "embedded_first_line": 56,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Pos",
+            "flatbuffers.generated.eve.universe.v1.Vec3",
+            "Vec3",
+            "Init",
+            "Bytes"
+          ],
+          "scalar_constants": [
+            12,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.Security",
+          "embedded_first_line": 67,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Float32Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            14,
+            0,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.SunTypeId",
+          "embedded_first_line": 74,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint32Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            16,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.RadiusM",
+          "embedded_first_line": 81,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Float64Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            18,
+            0,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.RevealLevel",
+          "embedded_first_line": 88,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint8Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            20,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.Sun",
+          "embedded_first_line": 95,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Indirect",
+            "Pos",
+            "flatbuffers.generated.eve.universe.v1.Sun",
+            "Sun",
+            "Init",
+            "Bytes"
+          ],
+          "scalar_constants": [
+            22,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.Planets",
+          "embedded_first_line": 106,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Vector",
+            "Indirect",
+            "flatbuffers.generated.eve.universe.v1.Planet",
+            "Planet",
+            "Init",
+            "Bytes"
+          ],
+          "scalar_constants": [
+            24,
+            0,
+            4
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.PlanetsLength",
+          "embedded_first_line": 119,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "VectorLen"
+          ],
+          "scalar_constants": [
+            24,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.PlanetsIsNone",
+          "embedded_first_line": 126,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset"
+          ],
+          "scalar_constants": [
+            24,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.AsteroidBelts",
+          "embedded_first_line": 131,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Vector",
+            "Indirect",
+            "flatbuffers.generated.eve.universe.v1.AsteroidBelt",
+            "AsteroidBelt",
+            "Init",
+            "Bytes"
+          ],
+          "scalar_constants": [
+            26,
+            0,
+            4
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.AsteroidBeltsLength",
+          "embedded_first_line": 144,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "VectorLen"
+          ],
+          "scalar_constants": [
+            26,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.AsteroidBeltsIsNone",
+          "embedded_first_line": 151,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset"
+          ],
+          "scalar_constants": [
+            26,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.FrostLineM",
+          "embedded_first_line": 156,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Float64Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            28,
+            0,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.HabitableZoneInnerM",
+          "embedded_first_line": 163,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Float64Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            30,
+            0,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.HabitableZoneOuterM",
+          "embedded_first_line": 170,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Float64Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            32,
+            0,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.Luminosity",
+          "embedded_first_line": 177,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Float64Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            34,
+            0,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.FactionId",
+          "embedded_first_line": 184,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint32Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            36,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.DescriptionId",
+          "embedded_first_line": 191,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint32Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            38,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.SunFlareGraphicId",
+          "embedded_first_line": 198,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint32Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            40,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.WormholeClassId",
+          "embedded_first_line": 205,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint32Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            42,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.VisualEffect",
+          "embedded_first_line": 212,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint32Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            44,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.SecurityClass",
+          "embedded_first_line": 219,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "String",
+            "Pos"
+          ],
+          "scalar_constants": [
+            46,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.Fringe",
+          "embedded_first_line": 226,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "bool",
+            "Get",
+            "BoolFlags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            48,
+            0,
+            false
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.Hub",
+          "embedded_first_line": 233,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "bool",
+            "Get",
+            "BoolFlags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            50,
+            0,
+            false
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.International",
+          "embedded_first_line": 240,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "bool",
+            "Get",
+            "BoolFlags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            52,
+            0,
+            false
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.Regional",
+          "embedded_first_line": 247,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "bool",
+            "Get",
+            "BoolFlags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            54,
+            0,
+            false
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.Border",
+          "embedded_first_line": 254,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "bool",
+            "Get",
+            "BoolFlags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            56,
+            0,
+            false
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.Corridor",
+          "embedded_first_line": 261,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "bool",
+            "Get",
+            "BoolFlags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            58,
+            0,
+            false
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.SecondarySun",
+          "embedded_first_line": 268,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Indirect",
+            "Pos",
+            "flatbuffers.generated.eve.universe.v1.Sun",
+            "Sun",
+            "Init",
+            "Bytes"
+          ],
+          "scalar_constants": [
+            60,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.CelestialScopeFull",
+          "embedded_first_line": 279,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "bool",
+            "Get",
+            "BoolFlags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            62,
+            0,
+            false
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.LagrangeScopeFull",
+          "embedded_first_line": 286,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "bool",
+            "Get",
+            "BoolFlags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            64,
+            0,
+            false
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.OreScopeFull",
+          "embedded_first_line": 293,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "bool",
+            "Get",
+            "BoolFlags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            66,
+            0,
+            false
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.ExploredCelestialIds",
+          "embedded_first_line": 300,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Vector",
+            "Get",
+            "Uint64Flags"
+          ],
+          "scalar_constants": [
+            68,
+            0,
+            8
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.ExploredCelestialIdsAsNumpy",
+          "embedded_first_line": 308,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "GetVectorAsNumpy",
+            "Uint64Flags"
+          ],
+          "scalar_constants": [
+            68,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.ExploredCelestialIdsLength",
+          "embedded_first_line": 315,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "VectorLen"
+          ],
+          "scalar_constants": [
+            68,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.ExploredCelestialIdsIsNone",
+          "embedded_first_line": 322,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset"
+          ],
+          "scalar_constants": [
+            68,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.ExploredLagrangeIds",
+          "embedded_first_line": 327,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Vector",
+            "Get",
+            "Uint64Flags"
+          ],
+          "scalar_constants": [
+            70,
+            0,
+            8
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.ExploredLagrangeIdsAsNumpy",
+          "embedded_first_line": 335,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "GetVectorAsNumpy",
+            "Uint64Flags"
+          ],
+          "scalar_constants": [
+            70,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.ExploredLagrangeIdsLength",
+          "embedded_first_line": 342,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "VectorLen"
+          ],
+          "scalar_constants": [
+            70,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.ExploredLagrangeIdsIsNone",
+          "embedded_first_line": 349,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset"
+          ],
+          "scalar_constants": [
+            70,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.ExploredOreSiteIds",
+          "embedded_first_line": 354,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Vector",
+            "Get",
+            "Uint64Flags"
+          ],
+          "scalar_constants": [
+            72,
+            0,
+            8
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.ExploredOreSiteIdsAsNumpy",
+          "embedded_first_line": 362,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "GetVectorAsNumpy",
+            "Uint64Flags"
+          ],
+          "scalar_constants": [
+            72,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.ExploredOreSiteIdsLength",
+          "embedded_first_line": 369,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "VectorLen"
+          ],
+          "scalar_constants": [
+            72,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.ExploredOreSiteIdsIsNone",
+          "embedded_first_line": 376,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset"
+          ],
+          "scalar_constants": [
+            72,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.Neighbours",
+          "embedded_first_line": 381,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Vector",
+            "Get",
+            "Uint64Flags"
+          ],
+          "scalar_constants": [
+            74,
+            0,
+            8
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.NeighboursAsNumpy",
+          "embedded_first_line": 389,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "GetVectorAsNumpy",
+            "Uint64Flags"
+          ],
+          "scalar_constants": [
+            74,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.NeighboursLength",
+          "embedded_first_line": 396,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "VectorLen"
+          ],
+          "scalar_constants": [
+            74,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.NeighboursIsNone",
+          "embedded_first_line": 403,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset"
+          ],
+          "scalar_constants": [
+            74,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.Stargates",
+          "embedded_first_line": 408,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Vector",
+            "Indirect",
+            "flatbuffers.generated.eve.universe.v1.Stargate",
+            "Stargate",
+            "Init",
+            "Bytes"
+          ],
+          "scalar_constants": [
+            76,
+            0,
+            4
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.StargatesLength",
+          "embedded_first_line": 421,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "VectorLen"
+          ],
+          "scalar_constants": [
+            76,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.StargatesIsNone",
+          "embedded_first_line": 428,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset"
+          ],
+          "scalar_constants": [
+            76,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.GabrielNeighbours",
+          "embedded_first_line": 433,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Vector",
+            "flatbuffers.generated.eve.universe.v1.GabrielNeighbour",
+            "GabrielNeighbour",
+            "Init",
+            "Bytes"
+          ],
+          "scalar_constants": [
+            78,
+            0,
+            16
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.GabrielNeighboursLength",
+          "embedded_first_line": 445,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "VectorLen"
+          ],
+          "scalar_constants": [
+            78,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.GabrielNeighboursIsNone",
+          "embedded_first_line": 452,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset"
+          ],
+          "scalar_constants": [
+            78,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.StellarObjects",
+          "embedded_first_line": 457,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Vector",
+            "Indirect",
+            "flatbuffers.generated.eve.universe.v1.StellarObject",
+            "StellarObject",
+            "Init",
+            "Bytes"
+          ],
+          "scalar_constants": [
+            80,
+            0,
+            4
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.StellarObjectsLength",
+          "embedded_first_line": 470,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "VectorLen"
+          ],
+          "scalar_constants": [
+            80,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.StellarObjectsIsNone",
+          "embedded_first_line": 477,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset"
+          ],
+          "scalar_constants": [
+            80,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.Interacting",
+          "embedded_first_line": 482,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "String",
+            "Pos"
+          ],
+          "scalar_constants": [
+            82,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.Name",
+          "embedded_first_line": 489,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "String",
+            "Pos"
+          ],
+          "scalar_constants": [
+            84,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.CompanionSuns",
+          "embedded_first_line": 496,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Vector",
+            "Indirect",
+            "flatbuffers.generated.eve.universe.v1.Sun",
+            "Sun",
+            "Init",
+            "Bytes"
+          ],
+          "scalar_constants": [
+            86,
+            0,
+            4
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.CompanionSunsLength",
+          "embedded_first_line": 509,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "VectorLen"
+          ],
+          "scalar_constants": [
+            86,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.CompanionSunsIsNone",
+          "embedded_first_line": 516,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset"
+          ],
+          "scalar_constants": [
+            86,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.SignalThermalW",
+          "embedded_first_line": 521,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Float64Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            88,
+            0,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.SignalEmW",
+          "embedded_first_line": 528,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Float64Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            90,
+            0,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.ThermalRung",
+          "embedded_first_line": 535,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint8Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            92,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.EmRung",
+          "embedded_first_line": 542,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Uint8Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            94,
+            0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystem.SunTemperatureK",
+          "embedded_first_line": 549,
+          "referenced_names": [
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type",
+            "_tab",
+            "Offset",
+            "Get",
+            "Float64Flags",
+            "Pos"
+          ],
+          "scalar_constants": [
+            96,
+            0,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "SolarSystemStart",
+          "embedded_first_line": 555,
+          "referenced_names": [
+            "StartObject"
+          ],
+          "scalar_constants": [
+            47
+          ]
+        },
+        {
+          "qualified_name": "Start",
+          "embedded_first_line": 558,
+          "referenced_names": [
+            "SolarSystemStart"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddId",
+          "embedded_first_line": 561,
+          "referenced_names": [
+            "PrependUint64Slot"
+          ],
+          "scalar_constants": [
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddId",
+          "embedded_first_line": 564,
+          "referenced_names": [
+            "SolarSystemAddId"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddNameId",
+          "embedded_first_line": 567,
+          "referenced_names": [
+            "PrependUint32Slot"
+          ],
+          "scalar_constants": [
+            1,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddNameId",
+          "embedded_first_line": 570,
+          "referenced_names": [
+            "SolarSystemAddNameId"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddRegionId",
+          "embedded_first_line": 573,
+          "referenced_names": [
+            "PrependUint64Slot"
+          ],
+          "scalar_constants": [
+            2,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddRegionId",
+          "embedded_first_line": 576,
+          "referenced_names": [
+            "SolarSystemAddRegionId"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddConstellationId",
+          "embedded_first_line": 579,
+          "referenced_names": [
+            "PrependUint64Slot"
+          ],
+          "scalar_constants": [
+            3,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddConstellationId",
+          "embedded_first_line": 582,
+          "referenced_names": [
+            "SolarSystemAddConstellationId"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddCenter",
+          "embedded_first_line": 585,
+          "referenced_names": [
+            "PrependStructSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            4,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddCenter",
+          "embedded_first_line": 588,
+          "referenced_names": [
+            "SolarSystemAddCenter"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddSecurity",
+          "embedded_first_line": 591,
+          "referenced_names": [
+            "PrependFloat32Slot"
+          ],
+          "scalar_constants": [
+            5,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "AddSecurity",
+          "embedded_first_line": 594,
+          "referenced_names": [
+            "SolarSystemAddSecurity"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddSunTypeId",
+          "embedded_first_line": 597,
+          "referenced_names": [
+            "PrependUint32Slot"
+          ],
+          "scalar_constants": [
+            6,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddSunTypeId",
+          "embedded_first_line": 600,
+          "referenced_names": [
+            "SolarSystemAddSunTypeId"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddRadiusM",
+          "embedded_first_line": 603,
+          "referenced_names": [
+            "PrependFloat64Slot"
+          ],
+          "scalar_constants": [
+            7,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "AddRadiusM",
+          "embedded_first_line": 606,
+          "referenced_names": [
+            "SolarSystemAddRadiusM"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddRevealLevel",
+          "embedded_first_line": 609,
+          "referenced_names": [
+            "PrependUint8Slot"
+          ],
+          "scalar_constants": [
+            8,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddRevealLevel",
+          "embedded_first_line": 612,
+          "referenced_names": [
+            "SolarSystemAddRevealLevel"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddSun",
+          "embedded_first_line": 615,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            9,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddSun",
+          "embedded_first_line": 618,
+          "referenced_names": [
+            "SolarSystemAddSun"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddPlanets",
+          "embedded_first_line": 621,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            10,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddPlanets",
+          "embedded_first_line": 624,
+          "referenced_names": [
+            "SolarSystemAddPlanets"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemStartPlanetsVector",
+          "embedded_first_line": 627,
+          "referenced_names": [
+            "StartVector"
+          ],
+          "scalar_constants": [
+            4
+          ]
+        },
+        {
+          "qualified_name": "StartPlanetsVector",
+          "embedded_first_line": 630,
+          "referenced_names": [
+            "SolarSystemStartPlanetsVector"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddAsteroidBelts",
+          "embedded_first_line": 633,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            11,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddAsteroidBelts",
+          "embedded_first_line": 636,
+          "referenced_names": [
+            "SolarSystemAddAsteroidBelts"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemStartAsteroidBeltsVector",
+          "embedded_first_line": 639,
+          "referenced_names": [
+            "StartVector"
+          ],
+          "scalar_constants": [
+            4
+          ]
+        },
+        {
+          "qualified_name": "StartAsteroidBeltsVector",
+          "embedded_first_line": 642,
+          "referenced_names": [
+            "SolarSystemStartAsteroidBeltsVector"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddFrostLineM",
+          "embedded_first_line": 645,
+          "referenced_names": [
+            "PrependFloat64Slot"
+          ],
+          "scalar_constants": [
+            12,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "AddFrostLineM",
+          "embedded_first_line": 648,
+          "referenced_names": [
+            "SolarSystemAddFrostLineM"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddHabitableZoneInnerM",
+          "embedded_first_line": 651,
+          "referenced_names": [
+            "PrependFloat64Slot"
+          ],
+          "scalar_constants": [
+            13,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "AddHabitableZoneInnerM",
+          "embedded_first_line": 654,
+          "referenced_names": [
+            "SolarSystemAddHabitableZoneInnerM"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddHabitableZoneOuterM",
+          "embedded_first_line": 657,
+          "referenced_names": [
+            "PrependFloat64Slot"
+          ],
+          "scalar_constants": [
+            14,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "AddHabitableZoneOuterM",
+          "embedded_first_line": 660,
+          "referenced_names": [
+            "SolarSystemAddHabitableZoneOuterM"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddLuminosity",
+          "embedded_first_line": 663,
+          "referenced_names": [
+            "PrependFloat64Slot"
+          ],
+          "scalar_constants": [
+            15,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "AddLuminosity",
+          "embedded_first_line": 666,
+          "referenced_names": [
+            "SolarSystemAddLuminosity"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddFactionId",
+          "embedded_first_line": 669,
+          "referenced_names": [
+            "PrependUint32Slot"
+          ],
+          "scalar_constants": [
+            16,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddFactionId",
+          "embedded_first_line": 672,
+          "referenced_names": [
+            "SolarSystemAddFactionId"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddDescriptionId",
+          "embedded_first_line": 675,
+          "referenced_names": [
+            "PrependUint32Slot"
+          ],
+          "scalar_constants": [
+            17,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddDescriptionId",
+          "embedded_first_line": 678,
+          "referenced_names": [
+            "SolarSystemAddDescriptionId"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddSunFlareGraphicId",
+          "embedded_first_line": 681,
+          "referenced_names": [
+            "PrependUint32Slot"
+          ],
+          "scalar_constants": [
+            18,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddSunFlareGraphicId",
+          "embedded_first_line": 684,
+          "referenced_names": [
+            "SolarSystemAddSunFlareGraphicId"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddWormholeClassId",
+          "embedded_first_line": 687,
+          "referenced_names": [
+            "PrependUint32Slot"
+          ],
+          "scalar_constants": [
+            19,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddWormholeClassId",
+          "embedded_first_line": 690,
+          "referenced_names": [
+            "SolarSystemAddWormholeClassId"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddVisualEffect",
+          "embedded_first_line": 693,
+          "referenced_names": [
+            "PrependUint32Slot"
+          ],
+          "scalar_constants": [
+            20,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddVisualEffect",
+          "embedded_first_line": 696,
+          "referenced_names": [
+            "SolarSystemAddVisualEffect"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddSecurityClass",
+          "embedded_first_line": 699,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            21,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddSecurityClass",
+          "embedded_first_line": 702,
+          "referenced_names": [
+            "SolarSystemAddSecurityClass"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddFringe",
+          "embedded_first_line": 705,
+          "referenced_names": [
+            "PrependBoolSlot"
+          ],
+          "scalar_constants": [
+            22,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddFringe",
+          "embedded_first_line": 708,
+          "referenced_names": [
+            "SolarSystemAddFringe"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddHub",
+          "embedded_first_line": 711,
+          "referenced_names": [
+            "PrependBoolSlot"
+          ],
+          "scalar_constants": [
+            23,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddHub",
+          "embedded_first_line": 714,
+          "referenced_names": [
+            "SolarSystemAddHub"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddInternational",
+          "embedded_first_line": 717,
+          "referenced_names": [
+            "PrependBoolSlot"
+          ],
+          "scalar_constants": [
+            24,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddInternational",
+          "embedded_first_line": 720,
+          "referenced_names": [
+            "SolarSystemAddInternational"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddRegional",
+          "embedded_first_line": 723,
+          "referenced_names": [
+            "PrependBoolSlot"
+          ],
+          "scalar_constants": [
+            25,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddRegional",
+          "embedded_first_line": 726,
+          "referenced_names": [
+            "SolarSystemAddRegional"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddBorder",
+          "embedded_first_line": 729,
+          "referenced_names": [
+            "PrependBoolSlot"
+          ],
+          "scalar_constants": [
+            26,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddBorder",
+          "embedded_first_line": 732,
+          "referenced_names": [
+            "SolarSystemAddBorder"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddCorridor",
+          "embedded_first_line": 735,
+          "referenced_names": [
+            "PrependBoolSlot"
+          ],
+          "scalar_constants": [
+            27,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddCorridor",
+          "embedded_first_line": 738,
+          "referenced_names": [
+            "SolarSystemAddCorridor"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddSecondarySun",
+          "embedded_first_line": 741,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            28,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddSecondarySun",
+          "embedded_first_line": 744,
+          "referenced_names": [
+            "SolarSystemAddSecondarySun"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddCelestialScopeFull",
+          "embedded_first_line": 747,
+          "referenced_names": [
+            "PrependBoolSlot"
+          ],
+          "scalar_constants": [
+            29,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddCelestialScopeFull",
+          "embedded_first_line": 750,
+          "referenced_names": [
+            "SolarSystemAddCelestialScopeFull"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddLagrangeScopeFull",
+          "embedded_first_line": 753,
+          "referenced_names": [
+            "PrependBoolSlot"
+          ],
+          "scalar_constants": [
+            30,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddLagrangeScopeFull",
+          "embedded_first_line": 756,
+          "referenced_names": [
+            "SolarSystemAddLagrangeScopeFull"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddOreScopeFull",
+          "embedded_first_line": 759,
+          "referenced_names": [
+            "PrependBoolSlot"
+          ],
+          "scalar_constants": [
+            31,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddOreScopeFull",
+          "embedded_first_line": 762,
+          "referenced_names": [
+            "SolarSystemAddOreScopeFull"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddExploredCelestialIds",
+          "embedded_first_line": 765,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            32,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddExploredCelestialIds",
+          "embedded_first_line": 768,
+          "referenced_names": [
+            "SolarSystemAddExploredCelestialIds"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemStartExploredCelestialIdsVector",
+          "embedded_first_line": 771,
+          "referenced_names": [
+            "StartVector"
+          ],
+          "scalar_constants": [
+            8
+          ]
+        },
+        {
+          "qualified_name": "StartExploredCelestialIdsVector",
+          "embedded_first_line": 774,
+          "referenced_names": [
+            "SolarSystemStartExploredCelestialIdsVector"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddExploredLagrangeIds",
+          "embedded_first_line": 777,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            33,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddExploredLagrangeIds",
+          "embedded_first_line": 780,
+          "referenced_names": [
+            "SolarSystemAddExploredLagrangeIds"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemStartExploredLagrangeIdsVector",
+          "embedded_first_line": 783,
+          "referenced_names": [
+            "StartVector"
+          ],
+          "scalar_constants": [
+            8
+          ]
+        },
+        {
+          "qualified_name": "StartExploredLagrangeIdsVector",
+          "embedded_first_line": 786,
+          "referenced_names": [
+            "SolarSystemStartExploredLagrangeIdsVector"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddExploredOreSiteIds",
+          "embedded_first_line": 789,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            34,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddExploredOreSiteIds",
+          "embedded_first_line": 792,
+          "referenced_names": [
+            "SolarSystemAddExploredOreSiteIds"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemStartExploredOreSiteIdsVector",
+          "embedded_first_line": 795,
+          "referenced_names": [
+            "StartVector"
+          ],
+          "scalar_constants": [
+            8
+          ]
+        },
+        {
+          "qualified_name": "StartExploredOreSiteIdsVector",
+          "embedded_first_line": 798,
+          "referenced_names": [
+            "SolarSystemStartExploredOreSiteIdsVector"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddNeighbours",
+          "embedded_first_line": 801,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            35,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddNeighbours",
+          "embedded_first_line": 804,
+          "referenced_names": [
+            "SolarSystemAddNeighbours"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemStartNeighboursVector",
+          "embedded_first_line": 807,
+          "referenced_names": [
+            "StartVector"
+          ],
+          "scalar_constants": [
+            8
+          ]
+        },
+        {
+          "qualified_name": "StartNeighboursVector",
+          "embedded_first_line": 810,
+          "referenced_names": [
+            "SolarSystemStartNeighboursVector"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddStargates",
+          "embedded_first_line": 813,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            36,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddStargates",
+          "embedded_first_line": 816,
+          "referenced_names": [
+            "SolarSystemAddStargates"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemStartStargatesVector",
+          "embedded_first_line": 819,
+          "referenced_names": [
+            "StartVector"
+          ],
+          "scalar_constants": [
+            4
+          ]
+        },
+        {
+          "qualified_name": "StartStargatesVector",
+          "embedded_first_line": 822,
+          "referenced_names": [
+            "SolarSystemStartStargatesVector"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddGabrielNeighbours",
+          "embedded_first_line": 825,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            37,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddGabrielNeighbours",
+          "embedded_first_line": 828,
+          "referenced_names": [
+            "SolarSystemAddGabrielNeighbours"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemStartGabrielNeighboursVector",
+          "embedded_first_line": 831,
+          "referenced_names": [
+            "StartVector"
+          ],
+          "scalar_constants": [
+            16,
+            8
+          ]
+        },
+        {
+          "qualified_name": "StartGabrielNeighboursVector",
+          "embedded_first_line": 834,
+          "referenced_names": [
+            "SolarSystemStartGabrielNeighboursVector"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddStellarObjects",
+          "embedded_first_line": 837,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            38,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddStellarObjects",
+          "embedded_first_line": 840,
+          "referenced_names": [
+            "SolarSystemAddStellarObjects"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemStartStellarObjectsVector",
+          "embedded_first_line": 843,
+          "referenced_names": [
+            "StartVector"
+          ],
+          "scalar_constants": [
+            4
+          ]
+        },
+        {
+          "qualified_name": "StartStellarObjectsVector",
+          "embedded_first_line": 846,
+          "referenced_names": [
+            "SolarSystemStartStellarObjectsVector"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddInteracting",
+          "embedded_first_line": 849,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            39,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddInteracting",
+          "embedded_first_line": 852,
+          "referenced_names": [
+            "SolarSystemAddInteracting"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddName",
+          "embedded_first_line": 855,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            40,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddName",
+          "embedded_first_line": 858,
+          "referenced_names": [
+            "SolarSystemAddName"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddCompanionSuns",
+          "embedded_first_line": 861,
+          "referenced_names": [
+            "PrependUOffsetTRelativeSlot",
+            "flatbuffers",
+            "number_types",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            41,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddCompanionSuns",
+          "embedded_first_line": 864,
+          "referenced_names": [
+            "SolarSystemAddCompanionSuns"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemStartCompanionSunsVector",
+          "embedded_first_line": 867,
+          "referenced_names": [
+            "StartVector"
+          ],
+          "scalar_constants": [
+            4
+          ]
+        },
+        {
+          "qualified_name": "StartCompanionSunsVector",
+          "embedded_first_line": 870,
+          "referenced_names": [
+            "SolarSystemStartCompanionSunsVector"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddSignalThermalW",
+          "embedded_first_line": 873,
+          "referenced_names": [
+            "PrependFloat64Slot"
+          ],
+          "scalar_constants": [
+            42,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "AddSignalThermalW",
+          "embedded_first_line": 876,
+          "referenced_names": [
+            "SolarSystemAddSignalThermalW"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddSignalEmW",
+          "embedded_first_line": 879,
+          "referenced_names": [
+            "PrependFloat64Slot"
+          ],
+          "scalar_constants": [
+            43,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "AddSignalEmW",
+          "embedded_first_line": 882,
+          "referenced_names": [
+            "SolarSystemAddSignalEmW"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddThermalRung",
+          "embedded_first_line": 885,
+          "referenced_names": [
+            "PrependUint8Slot"
+          ],
+          "scalar_constants": [
+            44,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddThermalRung",
+          "embedded_first_line": 888,
+          "referenced_names": [
+            "SolarSystemAddThermalRung"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddEmRung",
+          "embedded_first_line": 891,
+          "referenced_names": [
+            "PrependUint8Slot"
+          ],
+          "scalar_constants": [
+            45,
+            0
+          ]
+        },
+        {
+          "qualified_name": "AddEmRung",
+          "embedded_first_line": 894,
+          "referenced_names": [
+            "SolarSystemAddEmRung"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemAddSunTemperatureK",
+          "embedded_first_line": 897,
+          "referenced_names": [
+            "PrependFloat64Slot"
+          ],
+          "scalar_constants": [
+            46,
+            0.0
+          ]
+        },
+        {
+          "qualified_name": "AddSunTemperatureK",
+          "embedded_first_line": 900,
+          "referenced_names": [
+            "SolarSystemAddSunTemperatureK"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "SolarSystemEnd",
+          "embedded_first_line": 903,
+          "referenced_names": [
+            "EndObject"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "End",
+          "embedded_first_line": 906,
+          "referenced_names": [
+            "SolarSystemEnd"
+          ],
+          "scalar_constants": []
+        }
+      ]
+    },
+    {
+      "member": "flatbuffers/generated/eve/universe/v1/Vec3.pyc",
+      "sha256": "9ed46b418c5985fdf32754023b21dcf8865b7c5a290f26be220a4e776eee1304",
+      "pyc_magic": "cb0d0d0a",
+      "symbols": [
+        {
+          "qualified_name": "<module>",
+          "embedded_first_line": 1,
+          "referenced_names": [
+            "flatbuffers",
+            "flatbuffers.compat",
+            "import_numpy",
+            "np",
+            "object",
+            "Vec3",
+            "CreateVec3"
+          ],
+          "scalar_constants": [
+            0,
+            "Vec3"
+          ]
+        },
+        {
+          "qualified_name": "Vec3",
+          "embedded_first_line": 9,
+          "referenced_names": [
+            "__name__",
+            "__module__",
+            "__qualname__",
+            "__slots__",
+            "classmethod",
+            "SizeOf",
+            "Init",
+            "X",
+            "Y",
+            "Z"
+          ],
+          "scalar_constants": [
+            "Vec3",
+            "_tab"
+          ]
+        },
+        {
+          "qualified_name": "Vec3.SizeOf",
+          "embedded_first_line": 12,
+          "referenced_names": [],
+          "scalar_constants": [
+            24
+          ]
+        },
+        {
+          "qualified_name": "Vec3.Init",
+          "embedded_first_line": 17,
+          "referenced_names": [
+            "flatbuffers",
+            "table",
+            "Table",
+            "_tab"
+          ],
+          "scalar_constants": []
+        },
+        {
+          "qualified_name": "Vec3.X",
+          "embedded_first_line": 21,
+          "referenced_names": [
+            "_tab",
+            "Get",
+            "flatbuffers",
+            "number_types",
+            "Float64Flags",
+            "Pos",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            0
+          ]
+        },
+        {
+          "qualified_name": "Vec3.Y",
+          "embedded_first_line": 23,
+          "referenced_names": [
+            "_tab",
+            "Get",
+            "flatbuffers",
+            "number_types",
+            "Float64Flags",
+            "Pos",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            8
+          ]
+        },
+        {
+          "qualified_name": "Vec3.Z",
+          "embedded_first_line": 25,
+          "referenced_names": [
+            "_tab",
+            "Get",
+            "flatbuffers",
+            "number_types",
+            "Float64Flags",
+            "Pos",
+            "UOffsetTFlags",
+            "py_type"
+          ],
+          "scalar_constants": [
+            16
+          ]
+        },
+        {
+          "qualified_name": "CreateVec3",
+          "embedded_first_line": 27,
+          "referenced_names": [
+            "Prep",
+            "PrependFloat64",
+            "Offset"
+          ],
+          "scalar_constants": [
+            8,
+            24
+          ]
+        }
+      ]
+    },
+    {
+      "member": "flatbuffers/generated/eve/universe/v1/schema_meta.pyc",
+      "sha256": "3decbeb041117235a73de44dad9069f50d4521917b0624890fa44e41e19aa1c8",
+      "pyc_magic": "cb0d0d0a",
+      "symbols": [
+        {
+          "qualified_name": "<module>",
+          "embedded_first_line": 1,
+          "referenced_names": [
+            "SCHEMA_VERSION",
+            "FLATC_VERSION",
+            "SOURCE_COMMIT",
+            "SOURCE_REF"
+          ],
+          "scalar_constants": [
+            14,
+            "25.1.24",
+            "1bee26b30dc0b472a25d02c0fd8a2339f4b34768",
+            "refs/heads/main"
+          ]
+        }
+      ]
+    },
+    {
+      "member": "flatbuffers/generated/eve/universe/v1/RevealLevel.pyc",
+      "sha256": "ab349bfcc4858c4de11860c0b3dcc2ad6667de141ac2b031813080af8e8b47b5",
+      "pyc_magic": "cb0d0d0a",
+      "symbols": [
+        {
+          "qualified_name": "<module>",
+          "embedded_first_line": 1,
+          "referenced_names": [
+            "object",
+            "RevealLevel"
+          ],
+          "scalar_constants": [
+            "RevealLevel"
+          ]
+        },
+        {
+          "qualified_name": "RevealLevel",
+          "embedded_first_line": 5,
+          "referenced_names": [
+            "__name__",
+            "__module__",
+            "__qualname__",
+            "Charted",
+            "Visited"
+          ],
+          "scalar_constants": [
+            "RevealLevel",
+            0,
+            1
+          ]
+        }
+      ]
+    }
+  ],
+  "protobuf_descriptors": [
+    {
+      "source": {
+        "member": "eveProto/generated/eve/universe/version/version_pb2.pyc",
+        "memberSha256": "e733c318cf61841d803ca704df7a5b4dac7c689ae5ef0d635b68ec9c9abf5f2d",
+        "blob": "eveProto__generated__eve__universe__version__version_pb2.pyc.0.pb"
+      },
+      "descriptor": {
+        "name": "eve/universe/version/version.proto",
+        "package": "eve.universe.version",
+        "dependency": [
+          "eve/semanticversion.proto",
+          "google/protobuf/timestamp.proto"
+        ],
+        "message_type": [
+          {
+            "name": "Identifier",
+            "field": [
+              {
+                "name": "version",
+                "number": 1,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_MESSAGE",
+                "type_name": ".eve.semanticversion.Specification"
+              }
+            ]
+          },
+          {
+            "name": "Attributes",
+            "field": [
+              {
+                "name": "schema_version",
+                "number": 1,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_UINT32"
+              },
+              {
+                "name": "system_count",
+                "number": 2,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_UINT64"
+              },
+              {
+                "name": "artifact_key",
+                "number": 3,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_STRING"
+              },
+              {
+                "name": "published",
+                "number": 4,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_MESSAGE",
+                "type_name": ".google.protobuf.Timestamp"
+              },
+              {
+                "name": "publisher",
+                "number": 5,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_STRING"
+              },
+              {
+                "name": "source_digest",
+                "number": 6,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_STRING"
+              }
+            ]
+          }
+        ],
+        "options": {
+          "go_package": "github.com/ccpgames/eve-frontier-proto-go/generated/eve/universe/version"
+        },
+        "syntax": "proto3"
+      }
+    },
+    {
+      "source": {
+        "member": "eveProto/generated/eve_public/exploration/api/admin/requests_pb2.pyc",
+        "memberSha256": "4ff2c3b3455dd820b5cd44bf43c4124ae673081c9a25b557f53ace1fc6639221",
+        "blob": "eveProto__generated__eve_public__exploration__api__admin__requests_pb2.pyc.0.pb"
+      },
+      "descriptor": {
+        "name": "eve_public/exploration/api/admin/requests.proto",
+        "package": "eve_public.exploration.api.admin",
+        "dependency": [
+          "eve_public/semanticversion.proto"
+        ],
+        "message_type": [
+          {
+            "name": "RevealAllRequest"
+          },
+          {
+            "name": "RevealAllResponse",
+            "field": [
+              {
+                "name": "revision",
+                "number": 1,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_UINT64"
+              },
+              {
+                "name": "known_count",
+                "number": 2,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_UINT64"
+              },
+              {
+                "name": "newly_charted",
+                "number": 3,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_UINT64"
+              },
+              {
+                "name": "universe_version",
+                "number": 4,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_MESSAGE",
+                "type_name": ".eve_public.semanticversion.Specification"
+              }
+            ]
+          },
+          {
+            "name": "ResetKnownRequest"
+          },
+          {
+            "name": "ResetKnownResponse",
+            "field": [
+              {
+                "name": "revision",
+                "number": 1,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_UINT64"
+              }
+            ]
+          }
+        ],
+        "options": {
+          "go_package": "github.com/ccpgames/eve-frontier-proto-go/generated/eve_public/exploration/api/admin"
+        },
+        "syntax": "proto3"
+      }
+    },
+    {
+      "source": {
+        "member": "eveProto/generated/eve_public/exploration/api/notices_pb2.pyc",
+        "memberSha256": "f10648f7e99fed86af178fbf60414913c2e485c2d956cb1e260af603d2a8414f",
+        "blob": "eveProto__generated__eve_public__exploration__api__notices_pb2.pyc.0.pb"
+      },
+      "descriptor": {
+        "name": "eve_public/exploration/api/notices.proto",
+        "package": "eve_public.exploration.api",
+        "dependency": [
+          "eve_public/exploration/exploration.proto",
+          "eve_public/semanticversion.proto"
+        ],
+        "message_type": [
+          {
+            "name": "UniverseRevealNotice",
+            "field": [
+              {
+                "name": "bundle_version",
+                "number": 1,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_MESSAGE",
+                "type_name": ".eve_public.semanticversion.Specification"
+              },
+              {
+                "name": "payload",
+                "number": 2,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_BYTES"
+              },
+              {
+                "name": "knowledge",
+                "number": 3,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_MESSAGE",
+                "type_name": ".eve_public.exploration.SystemKnowledge"
+              }
+            ]
+          }
+        ],
+        "options": {
+          "go_package": "github.com/ccpgames/eve-frontier-proto-go/generated/eve_public/exploration/api"
+        },
+        "syntax": "proto3"
+      }
+    },
+    {
+      "source": {
+        "member": "eveProto/generated/eve_public/exploration/api/requests_pb2.pyc",
+        "memberSha256": "d1e01020bd4a8cf0f22b2b0a9862b6f579d7bef98a365ab1934fdc4d80d45496",
+        "blob": "eveProto__generated__eve_public__exploration__api__requests_pb2.pyc.0.pb"
+      },
+      "descriptor": {
+        "name": "eve_public/exploration/api/requests.proto",
+        "package": "eve_public.exploration.api",
+        "dependency": [
+          "eve_public/exploration/exploration.proto",
+          "eve_public/public.proto",
+          "eve_public/semanticversion.proto",
+          "eve_public/solarsystem/solarsystem.proto"
+        ],
+        "message_type": [
+          {
+            "name": "GetKnownUniverseRequest",
+            "field": [
+              {
+                "name": "page",
+                "number": 1,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_MESSAGE",
+                "type_name": ".eve_public.Page"
+              }
+            ]
+          },
+          {
+            "name": "GetKnownUniverseResponse",
+            "field": [
+              {
+                "name": "bundle_version",
+                "number": 1,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_MESSAGE",
+                "type_name": ".eve_public.semanticversion.Specification"
+              },
+              {
+                "name": "payload",
+                "number": 2,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_BYTES"
+              },
+              {
+                "name": "next_page",
+                "number": 3,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_MESSAGE",
+                "type_name": ".eve_public.NextPage"
+              },
+              {
+                "name": "total_systems",
+                "number": 4,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_UINT64"
+              },
+              {
+                "name": "knowledge",
+                "number": 5,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_MESSAGE",
+                "type_name": ".eve_public.exploration.SystemKnowledge"
+              }
+            ]
+          },
+          {
+            "name": "GetSystemDetailRequest",
+            "field": [
+              {
+                "name": "solar_system",
+                "number": 1,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_MESSAGE",
+                "type_name": ".eve_public.solarsystem.Identifier"
+              }
+            ]
+          },
+          {
+            "name": "GetSystemDetailResponse",
+            "field": [
+              {
+                "name": "bundle_version",
+                "number": 1,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_MESSAGE",
+                "type_name": ".eve_public.semanticversion.Specification"
+              },
+              {
+                "name": "payload",
+                "number": 2,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_BYTES"
+              }
+            ]
+          }
+        ],
+        "options": {
+          "go_package": "github.com/ccpgames/eve-frontier-proto-go/generated/eve_public/exploration"
+        },
+        "syntax": "proto3"
+      }
+    },
+    {
+      "source": {
+        "member": "eveProto/generated/eve_public/exploration/exploration_pb2.pyc",
+        "memberSha256": "9504d8b30708985015bf4dafe99ba48ee097d550f8ba631436f2545d131b8c4d",
+        "blob": "eveProto__generated__eve_public__exploration__exploration_pb2.pyc.0.pb"
+      },
+      "descriptor": {
+        "name": "eve_public/exploration/exploration.proto",
+        "package": "eve_public.exploration",
+        "message_type": [
+          {
+            "name": "DetectionLadder",
+            "field": [
+              {
+                "name": "detected_system_ids",
+                "number": 1,
+                "label": "LABEL_REPEATED",
+                "type": "TYPE_UINT64"
+              },
+              {
+                "name": "resolved_system_ids",
+                "number": 2,
+                "label": "LABEL_REPEATED",
+                "type": "TYPE_UINT64"
+              }
+            ]
+          },
+          {
+            "name": "SystemKnowledge",
+            "field": [
+              {
+                "name": "revision",
+                "number": 1,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_UINT64"
+              },
+              {
+                "name": "complete",
+                "number": 2,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_BOOL"
+              },
+              {
+                "name": "visited_system_ids",
+                "number": 3,
+                "label": "LABEL_REPEATED",
+                "type": "TYPE_UINT64"
+              },
+              {
+                "name": "thermal",
+                "number": 4,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_MESSAGE",
+                "type_name": ".eve_public.exploration.DetectionLadder"
+              },
+              {
+                "name": "em",
+                "number": 5,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_MESSAGE",
+                "type_name": ".eve_public.exploration.DetectionLadder"
+              }
+            ]
+          }
+        ],
+        "options": {
+          "go_package": "github.com/ccpgames/eve-frontier-proto-go/generated/eve_public/exploration"
+        },
+        "syntax": "proto3"
+      }
+    },
+    {
+      "source": {
+        "member": "eveProto/generated/eve_public/solarsystem/solarsystem_pb2.pyc",
+        "memberSha256": "7d89f4df57c6f70a28663f71734bd3e7377d4ebc838d92d88a60a83709c54e33",
+        "blob": "eveProto__generated__eve_public__solarsystem__solarsystem_pb2.pyc.0.pb"
+      },
+      "descriptor": {
+        "name": "eve_public/solarsystem/solarsystem.proto",
+        "package": "eve_public.solarsystem",
+        "message_type": [
+          {
+            "name": "Identifier",
+            "field": [
+              {
+                "name": "sequential",
+                "number": 1,
+                "label": "LABEL_OPTIONAL",
+                "type": "TYPE_UINT64"
+              }
+            ]
+          }
+        ],
+        "options": {
+          "go_package": "github.com/ccpgames/eve-frontier-proto-go/generated/eve_public/solarsystem"
+        },
+        "syntax": "proto3"
+      }
+    }
+  ]
+}

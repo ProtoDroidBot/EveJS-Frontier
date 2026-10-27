@@ -1,0 +1,406 @@
+{
+  "build": 3640684,
+  "recorded": "2026-10-26",
+  "method": "Read resource indexes, resolve local cache, verify file length and MD5, record SHA-256, parse cFSD header/root index. No native loader execution.",
+  "clientRoot": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier",
+  "archiveSHA256": "2f43f4b8d34632b5d5fdc7b58af93364f606bd9ba67fcada588565ee0628122c",
+  "resources": [
+    {
+      "index": "index_stillness.txt",
+      "resource": "app:/bin64/dungeonAssetManipulationsLoader.pyd",
+      "cache": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/42/422c0106e7578739_ab0c3c5da9c72faecbbde6f28d70add2",
+      "present": true,
+      "expectedMD5": "ab0c3c5da9c72faecbbde6f28d70add2",
+      "expectedBytes": 75440,
+      "bytes": 75440,
+      "md5Match": true,
+      "sha256": "7f40c29f4a3edc201133b83b71543b356a7ed6ec69298ad1647ef9e128c75183"
+    },
+    {
+      "index": "index_stillness.txt",
+      "resource": "app:/bin64/dungeonEnvironmentTemplatesLoader.pyd",
+      "cache": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/30/30b28e193d80423f_d2709d844cd1be7358a2b123d8dd89a3",
+      "present": true,
+      "expectedMD5": "d2709d844cd1be7358a2b123d8dd89a3",
+      "expectedBytes": 76464,
+      "bytes": 76464,
+      "md5Match": true,
+      "sha256": "bf486de280153e5097a236037899204b230835f8c02bb8fc2a384d88817b6a81"
+    },
+    {
+      "index": "index_stillness.txt",
+      "resource": "app:/bin64/dungeonsLoader.pyd",
+      "cache": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/ba/ba964f70446091ce_8adc26e00af1b7d17657cba378c785ab",
+      "present": true,
+      "expectedMD5": "8adc26e00af1b7d17657cba378c785ab",
+      "expectedBytes": 173232,
+      "bytes": 173232,
+      "md5Match": true,
+      "sha256": "6638d8c9a7bbc36e28ebc7f9ca4e3eb8d9204eed66a3c15852b9c7c01f5242ef"
+    },
+    {
+      "index": "index_stillness.txt",
+      "resource": "app:/bin64/ecosystemLoader.pyd",
+      "cache": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/ff/ffc8b5df8b9be645_bd7933601ebba8591c44cd2b55a9daee",
+      "present": true,
+      "expectedMD5": "bd7933601ebba8591c44cd2b55a9daee",
+      "expectedBytes": 72368,
+      "bytes": 72368,
+      "md5Match": true,
+      "sha256": "f4962401654bb1830da105c716bb37625b0a7a6b51ae58c11b23c0597432255b"
+    },
+    {
+      "index": "index_stillness.txt",
+      "resource": "app:/bin64/landscapeLoader.pyd",
+      "cache": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/ab/ab54621062824f26_e198b79484366f1ad068e722c2bc38f5",
+      "present": true,
+      "expectedMD5": "e198b79484366f1ad068e722c2bc38f5",
+      "expectedBytes": 134832,
+      "bytes": 134832,
+      "md5Match": true,
+      "sha256": "cf6e5971279040553eee99c372fa6a494f4311f75c583efa0c8155381265b2b6"
+    },
+    {
+      "index": "stillness/resfileindex.txt",
+      "resource": "res:/staticdata/dungeonassetmanipulations.fsdbinary",
+      "cache": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/5f/5feabe86817c5175_a85a40db715a85aa817f92088e3f6123",
+      "present": true,
+      "expectedMD5": "a85a40db715a85aa817f92088e3f6123",
+      "expectedBytes": 20352,
+      "bytes": 20352,
+      "md5Match": true,
+      "sha256": "b13d958aa7e7577cb2d381af0459364fb29fb7d980095e17c9b1a41087a84f30",
+      "binaryHeader": {
+        "fileLength": 20352,
+        "headerLength": 32,
+        "bodyLength": 20320,
+        "schemaFingerprint": "d804772c79ef16931e9efaa1059356a7",
+        "dataHash": "09092c88bee12fb7",
+        "optimizedRoot": {
+          "bucketArrayOffset": 24,
+          "rowCount": 199,
+          "bucketCount": 199,
+          "nonEmptyBuckets": 199,
+          "firstBucketOffsets": [
+            1624,
+            1920,
+            2752,
+            2944,
+            3024,
+            3312,
+            3464,
+            3616,
+            3920,
+            4000,
+            4080,
+            4296,
+            4448,
+            4528,
+            4680,
+            4976
+          ]
+        }
+      }
+    },
+    {
+      "index": "stillness/resfileindex.txt",
+      "resource": "res:/staticdata/dungeonenvironmenttemplates.fsdbinary",
+      "cache": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/6a/6a5d71136831ab3b_740b033dfd4cdd89cb1a6c0596b5a8b6",
+      "present": true,
+      "expectedMD5": "740b033dfd4cdd89cb1a6c0596b5a8b6",
+      "expectedBytes": 264,
+      "bytes": 264,
+      "md5Match": true,
+      "sha256": "2e2d3346375599f8ccb65b53e0a362d0ad0d20cb46afaf0e0e0cf32919dedcc5",
+      "binaryHeader": {
+        "fileLength": 264,
+        "headerLength": 32,
+        "bodyLength": 232,
+        "schemaFingerprint": "8d415c94344a98591346a32fd956a7e1",
+        "dataHash": "0b7766b6cc68a64a",
+        "optimizedRoot": {
+          "bucketArrayOffset": 24,
+          "rowCount": 2,
+          "bucketCount": 2,
+          "nonEmptyBuckets": 2,
+          "firstBucketOffsets": [
+            48,
+            128
+          ]
+        }
+      }
+    },
+    {
+      "index": "stillness/resfileindex.txt",
+      "resource": "res:/staticdata/dungeons.fsdbinary",
+      "cache": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/f4/f4992887a8a2937e_7766b9e294c99c0fe4687e53d8a21bf8",
+      "present": true,
+      "expectedMD5": "7766b9e294c99c0fe4687e53d8a21bf8",
+      "expectedBytes": 10838544,
+      "bytes": 10838544,
+      "md5Match": true,
+      "sha256": "d92a283c531ab725ff4c928dd90ee72fc8dd82718bf09da87af580ac08acc3d6",
+      "binaryHeader": {
+        "fileLength": 10838544,
+        "headerLength": 32,
+        "bodyLength": 10838512,
+        "schemaFingerprint": "544a23942315f2165465483ca0ef60df",
+        "dataHash": "f63cfc871576e6d4",
+        "optimizedRoot": {
+          "bucketArrayOffset": 24,
+          "rowCount": 393,
+          "bucketCount": 393,
+          "nonEmptyBuckets": 393,
+          "firstBucketOffsets": [
+            3176,
+            10776,
+            131552,
+            131560,
+            404232,
+            404240,
+            673312,
+            673320,
+            673328,
+            698192,
+            698200,
+            698208,
+            790992,
+            791000,
+            791008,
+            791016
+          ]
+        }
+      }
+    },
+    {
+      "index": "stillness/resfileindex.txt",
+      "resource": "res:/staticdata/ecosystem.fsdbinary",
+      "cache": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/14/1491b012e145b6b1_e277ad90f57c1b8392b612a0637b38e8",
+      "present": true,
+      "expectedMD5": "e277ad90f57c1b8392b612a0637b38e8",
+      "expectedBytes": 15312,
+      "bytes": 15312,
+      "md5Match": true,
+      "sha256": "5434f782769e8d8faaabd6e276eda75a29f7659c42cf064ac5e0d3f651f5980d",
+      "binaryHeader": {
+        "fileLength": 15312,
+        "headerLength": 32,
+        "bodyLength": 15280,
+        "schemaFingerprint": "182f93f9a5c4fd59ab5f3bdc3a5283db",
+        "dataHash": "fac11bd7ed2cd3cc",
+        "optimizedRoot": {
+          "bucketArrayOffset": 24,
+          "rowCount": 35,
+          "bucketCount": 11,
+          "nonEmptyBuckets": 11,
+          "firstBucketOffsets": [
+            120,
+            2096,
+            3696,
+            5120,
+            6472,
+            7656,
+            8856,
+            9664,
+            10544,
+            11800,
+            13504
+          ]
+        }
+      }
+    },
+    {
+      "index": "stillness/resfileindex.txt",
+      "resource": "res:/staticdata/landscape.fsdbinary",
+      "cache": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/ResFiles/39/39d10bff4aa7aff2_9649e50fcc50e676bdb8c45a52bf6426",
+      "present": true,
+      "expectedMD5": "9649e50fcc50e676bdb8c45a52bf6426",
+      "expectedBytes": 29213672,
+      "bytes": 29213672,
+      "md5Match": true,
+      "sha256": "6cf052f8ff7fed9562c797b18e8a1138b29d90dcd253b5e54d88a94be2f81759",
+      "binaryHeader": {
+        "fileLength": 29213672,
+        "headerLength": 32,
+        "bodyLength": 29213640,
+        "schemaFingerprint": "96294eb01a11a06fdb1c5a7c12a25c58",
+        "dataHash": "e4c61ff2aa74aaac",
+        "optimizedRoot": {
+          "bucketArrayOffset": 24,
+          "rowCount": 23846,
+          "bucketCount": 7452,
+          "nonEmptyBuckets": 7452,
+          "firstBucketOffsets": [
+            59648,
+            64408,
+            68376,
+            72144,
+            75184,
+            78024,
+            81792,
+            86296,
+            90760,
+            94080,
+            96912,
+            100272,
+            104184,
+            108096,
+            112440,
+            114872
+          ]
+        }
+      }
+    }
+  ],
+  "selectedLegacyComparison": [
+    {
+      "resource": "res:/staticdata/dungeonassetmanipulations.fsdbinary",
+      "cache": "/home/ludus/EveJS-Frontier/clientbuilds/3502403-MOD4-STUFF1/EVE Frontier/ResFiles/5f/5feabe86817c5175_482983572ba7bae6cde16562bab60798",
+      "bytes": 10512,
+      "expectedMD5": "482983572ba7bae6cde16562bab60798",
+      "schemaFingerprint": "d804772c79ef16931e9efaa1059356a7",
+      "declaredBodyLength": 10480,
+      "rootRowCount": 93
+    },
+    {
+      "resource": "res:/staticdata/dungeonenvironmenttemplates.fsdbinary",
+      "cache": "/home/ludus/EveJS-Frontier/clientbuilds/3502403-MOD4-STUFF1/EVE Frontier/ResFiles/6a/6a5d71136831ab3b_740b033dfd4cdd89cb1a6c0596b5a8b6",
+      "bytes": 264,
+      "expectedMD5": "740b033dfd4cdd89cb1a6c0596b5a8b6",
+      "schemaFingerprint": "8d415c94344a98591346a32fd956a7e1",
+      "declaredBodyLength": 232,
+      "rootRowCount": 2
+    },
+    {
+      "resource": "res:/staticdata/dungeons.fsdbinary",
+      "cache": "/home/ludus/EveJS-Frontier/clientbuilds/3502403-MOD4-STUFF1/EVE Frontier/ResFiles/f4/f4992887a8a2937e_7b8797ffdb76d5ed70d46cfb383f13af",
+      "bytes": 341054616,
+      "expectedMD5": "7b8797ffdb76d5ed70d46cfb383f13af",
+      "schemaFingerprint": "c53c9a4018df7fc71f04989256c889d7",
+      "declaredBodyLength": 341054584,
+      "rootRowCount": 5055
+    },
+    {
+      "resource": "res:/staticdata/ecosystem.fsdbinary",
+      "cache": "/home/ludus/EveJS-Frontier/clientbuilds/3502403-MOD4-STUFF1/EVE Frontier/ResFiles/14/1491b012e145b6b1_eceec9dc980719ccaed9c3090f88813a",
+      "bytes": 5756,
+      "expectedMD5": "eceec9dc980719ccaed9c3090f88813a",
+      "schemaFingerprint": "d28a151faacd75dab994dd71ae2cdb6a",
+      "declaredBodyLength": 5724,
+      "rootRowCount": 20
+    },
+    {
+      "resource": "res:/staticdata/landscape.fsdbinary",
+      "cache": "/home/ludus/EveJS-Frontier/clientbuilds/3502403-MOD4-STUFF1/EVE Frontier/ResFiles/39/39d10bff4aa7aff2_582ba73f6f0ae981c1894dfb28817e64",
+      "bytes": 29518472,
+      "expectedMD5": "582ba73f6f0ae981c1894dfb28817e64",
+      "schemaFingerprint": "20f62f606d5201a145bad5b0ee3479f5",
+      "declaredBodyLength": 29518440,
+      "rootRowCount": 23736
+    }
+  ],
+  "archiveRelatedCodeMemberCount": 62,
+  "archiveRelatedNonCodeMembers": [],
+  "clientFieldSemantics": {
+    "archive": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/stillness/code.ccp",
+    "member": "frontier/landscape/common/data/__init__.pyc",
+    "memberSHA256": "f748b9e82caf70abd0b467dda1c8c150a0c273629c660c22ca2a400acd5a24ae",
+    "method": "Read Python marshal code objects and disassemble without executing client code or native loaders",
+    "classes": {
+      "Site": {
+        "line": 30,
+        "annotatedFields": [
+          "ecosystemID",
+          "position"
+        ]
+      },
+      "AsteroidBeltCluster": {
+        "line": 35,
+        "annotatedFields": [
+          "siteIDs",
+          "arcMin",
+          "arcMax"
+        ]
+      },
+      "TrojanCluster": {
+        "line": 41,
+        "annotatedFields": [
+          "siteIDs",
+          "midPoint"
+        ]
+      },
+      "AsteroidBelt": {
+        "line": 46,
+        "annotatedFields": [
+          "tags",
+          "innerCelestialID",
+          "outerCelestialID",
+          "centerCelestialID",
+          "innerRadius",
+          "outerRadius",
+          "sites",
+          "clusters",
+          "weight"
+        ]
+      },
+      "Trojan": {
+        "line": 58,
+        "annotatedFields": [
+          "tags",
+          "planetID",
+          "lagrangePointID",
+          "controlPoints",
+          "sites",
+          "clusters",
+          "weight"
+        ]
+      },
+      "Landscape": {
+        "line": 68,
+        "annotatedFields": [
+          "asteroidBelts",
+          "trojans"
+        ]
+      },
+      "EcosystemPattern": {
+        "line": 100,
+        "annotatedFields": [
+          "dungeonID",
+          "weight",
+          "minOccurrences",
+          "maxOccurrences"
+        ]
+      },
+      "EcosystemEntryPattern": {
+        "line": 107,
+        "annotatedFields": [
+          "beaconTypeID",
+          "baseCloudTypeID",
+          "postProcessTypeID",
+          "blocksModules"
+        ]
+      },
+      "Ecosystem": {
+        "line": 114,
+        "annotatedFields": [
+          "name",
+          "description",
+          "brokenWorldPatterns",
+          "naturalWorldPatterns",
+          "minBrokenWorldPatterns",
+          "minNaturalWorldPatterns",
+          "maxBrokenWorldPatterns",
+          "maxNaturalWorldPatterns",
+          "entryPattern"
+        ]
+      }
+    },
+    "rootKeyEvidence": {
+      "symbol": "get_landscape_for_system",
+      "line": 77,
+      "argument": "solar_system_id",
+      "disassembly": " 77           0 RESUME                   0\n\n 78           2 LOAD_GLOBAL              1 (NULL + get_landscapes)\n             12 CALL                     0\n             20 STORE_FAST               1 (landscapes)\n\n 79          22 LOAD_FAST                1 (landscapes)\n             24 LOAD_ATTR                3 (NULL|self + get)\n             44 LOAD_FAST                0 (solar_system_id)\n             46 CALL                     1\n             54 RETURN_VALUE\n"
+    },
+    "interpretation": "Client API looks up landscape by solar_system_id. Its site records expose ecosystemID and position; authored belt/trojan objects contain sites and cluster membership. These are placement-capable data contracts, not only definitions. Actual binary rows remain undecoded; hierarchy and selected legacy-world crosswalk are not verified."
+  }
+}

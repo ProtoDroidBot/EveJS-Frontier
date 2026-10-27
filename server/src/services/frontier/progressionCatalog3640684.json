@@ -1,0 +1,312 @@
+{
+  "clientBuild": 3640684,
+  "codeSha256": "2f43f4b8d34632b5d5fdc7b58af93364f606bd9ba67fcada588565ee0628122c",
+  "sources": {
+    "types": {
+      "resource": "3c/3cc5bf8ff5e9099a_917d04d6594426aa9a9efec2ffab311b",
+      "sha256": "824e2dd950067fc90679dafa9b6c1e421c0ff38f7ca36ed302e686ddd34456fc"
+    },
+    "components": {
+      "resource": "f2/f26def0295b69084_978c3aa04c4bca312f82340480293cc2",
+      "sha256": "03411b7a95d14be2c226db2a64654cadf39d9f004b7100c8ea71da4f3e0a0d9d"
+    },
+    "groups": {
+      "resource": "b1/b198644fdc5397f3_642f6fbf758def36527ba178c327bf93",
+      "sha256": "b6156c059bb0778460516630df57d34a8f35809e68e4a92babc7af609e7e8867"
+    },
+    "localization": {
+      "resource": "2c/2c3038b3c38e91a1_3e11e958dc0e166681f2f635e9227dfb",
+      "sha256": "2947deb02cac6894d237cb377556163fb6d450c712483cabdcd2368d10ebb691"
+    }
+  },
+  "skills": [
+    {
+      "skill_id": 1,
+      "key": "piloting",
+      "name": "Piloting",
+      "complexity_attribute_id": 6420,
+      "effect_id": 13028,
+      "effects": [
+        {
+          "key": "thrust",
+          "attribute_id": 6252,
+          "scale": 0.08,
+          "bonus_attribute_id": 6440,
+          "func": "LocationModifier",
+          "operation": "postPercent"
+        },
+        {
+          "key": "warp_speed",
+          "attribute_id": 600,
+          "scale": 0.2,
+          "bonus_attribute_id": 6441,
+          "func": "ItemModifier",
+          "operation": "postPercent"
+        },
+        {
+          "key": "agility",
+          "attribute_id": 70,
+          "scale": -0.08,
+          "bonus_attribute_id": 6442,
+          "func": "ItemModifier",
+          "operation": "postPercent"
+        },
+        {
+          "key": "angular_agility",
+          "attribute_id": 5203,
+          "scale": 0.08,
+          "bonus_attribute_id": 6443,
+          "func": "ItemModifier",
+          "operation": "postPercent"
+        }
+      ]
+    },
+    {
+      "skill_id": 10,
+      "key": "extraction",
+      "name": "Extraction",
+      "complexity_attribute_id": 6422,
+      "effect_id": 13029,
+      "effects": [
+        {
+          "key": "mining_efficiency",
+          "attribute_id": 5803,
+          "scale": 0.1,
+          "bonus_attribute_id": 6444,
+          "func": "LocationModifier",
+          "operation": "postPercent"
+        }
+      ]
+    },
+    {
+      "skill_id": 3,
+      "key": "gunnery",
+      "name": "Gunnery",
+      "complexity_attribute_id": 6433,
+      "effect_id": 13030,
+      "effects": [
+        {
+          "key": "damage",
+          "attribute_id": 64,
+          "scale": 0.15,
+          "bonus_attribute_id": 6445,
+          "func": "LocationModifier",
+          "operation": "postPercent"
+        }
+      ]
+    },
+    {
+      "skill_id": 4,
+      "key": "tracking",
+      "name": "Tracking",
+      "complexity_attribute_id": 6434,
+      "effect_id": 13031,
+      "effects": [
+        {
+          "key": "tracking_speed",
+          "attribute_id": 160,
+          "scale": 0.2,
+          "bonus_attribute_id": 6446,
+          "func": "LocationModifier",
+          "operation": "postPercent"
+        }
+      ]
+    },
+    {
+      "skill_id": 5,
+      "key": "scanning",
+      "name": "Scanning",
+      "complexity_attribute_id": 6435,
+      "effect_id": 13032,
+      "effects": [
+        {
+          "key": "scan_resolution",
+          "attribute_id": 564,
+          "scale": 0.1,
+          "bonus_attribute_id": 6447,
+          "func": "ItemModifier",
+          "operation": "postPercent"
+        },
+        {
+          "key": "target_range",
+          "attribute_id": 76,
+          "scale": 0.05,
+          "bonus_attribute_id": 6448,
+          "func": "ItemModifier",
+          "operation": "postPercent"
+        }
+      ]
+    },
+    {
+      "skill_id": 6,
+      "key": "hull_repair",
+      "name": "Hull Repair",
+      "complexity_attribute_id": 6436,
+      "effect_id": 13033,
+      "effects": [
+        {
+          "key": "repair_amount",
+          "attribute_id": 83,
+          "scale": 0.2,
+          "bonus_attribute_id": 6449,
+          "func": "LocationGroupModifier",
+          "group_id": 63,
+          "operation": "postPercent"
+        }
+      ]
+    },
+    {
+      "skill_id": 7,
+      "key": "capacitor_economy",
+      "name": "Capacitor Economy",
+      "complexity_attribute_id": 6437,
+      "effect_id": 13034,
+      "effects": [
+        {
+          "key": "capacitor_need",
+          "attribute_id": 6,
+          "scale": -0.1,
+          "bonus_attribute_id": 6450,
+          "func": "LocationModifier",
+          "operation": "postPercent"
+        }
+      ]
+    },
+    {
+      "skill_id": 8,
+      "key": "fuel_economy",
+      "name": "Fuel Economy",
+      "complexity_attribute_id": 6438,
+      "effect_id": 13035,
+      "effects": [
+        {
+          "key": "fuel_efficiency",
+          "attribute_id": 5607,
+          "scale": 0.1,
+          "bonus_attribute_id": 6451,
+          "func": "ItemModifier",
+          "operation": "postPercent"
+        },
+        {
+          "key": "fuel_rate",
+          "attribute_id": 5634,
+          "scale": -0.1,
+          "bonus_attribute_id": 6452,
+          "func": "ItemModifier",
+          "operation": "postPercent"
+        }
+      ]
+    },
+    {
+      "skill_id": 9,
+      "key": "signature_control",
+      "name": "Signature Control",
+      "complexity_attribute_id": 6439,
+      "effect_id": 13036,
+      "effects": [
+        {
+          "key": "em_signature",
+          "attribute_id": 6094,
+          "scale": -0.1,
+          "bonus_attribute_id": 6453,
+          "func": "ItemModifier",
+          "operation": "postPercent"
+        }
+      ]
+    }
+  ],
+  "types": [
+    {
+      "typeID": 91749,
+      "groupID": 5030,
+      "categoryID": 2153,
+      "name": "Reaping Shell"
+    },
+    {
+      "typeID": 91967,
+      "groupID": 5030,
+      "categoryID": 2153,
+      "name": "Aggressive Shell"
+    },
+    {
+      "typeID": 91968,
+      "groupID": 5030,
+      "categoryID": 2153,
+      "name": "Rugged Shell"
+    },
+    {
+      "typeID": 91969,
+      "groupID": 5030,
+      "categoryID": 2153,
+      "name": "Blank Shell"
+    },
+    {
+      "typeID": 91979,
+      "groupID": 5030,
+      "categoryID": 2153,
+      "name": "Ancient Shell"
+    },
+    {
+      "typeID": 92437,
+      "groupID": 5076,
+      "categoryID": 20,
+      "name": "Crown"
+    },
+    {
+      "typeID": 93596,
+      "groupID": 5105,
+      "categoryID": 20,
+      "name": "Heat"
+    },
+    {
+      "typeID": 95339,
+      "groupID": 5132,
+      "categoryID": 17,
+      "name": "Homeostatic Inoculation"
+    },
+    {
+      "typeID": 95340,
+      "groupID": 5132,
+      "categoryID": 17,
+      "name": "Thermal Salve"
+    },
+    {
+      "typeID": 95341,
+      "groupID": 5132,
+      "categoryID": 17,
+      "name": "Psyche Inoculation"
+    },
+    {
+      "typeID": 95342,
+      "groupID": 5105,
+      "categoryID": 20,
+      "name": "Corruption"
+    },
+    {
+      "typeID": 96034,
+      "groupID": 5105,
+      "categoryID": 20,
+      "name": "Strain"
+    },
+    {
+      "typeID": 96035,
+      "groupID": 5132,
+      "categoryID": 17,
+      "name": "Phase Reagent"
+    }
+  ],
+  "constants": {
+    "conversionRate": 1.5e-07,
+    "complexityH": 19,
+    "complexityReference": 100,
+    "crownInjectLimit": 6,
+    "crownCreationDelaySeconds": 1800,
+    "medicalKitTypeID": 95339,
+    "medicalKitTraitsHealed": 100,
+    "remedyTypeIDs": {
+      "heat": 95340,
+      "feralization": 95341,
+      "temporal_drift": 96035
+    }
+  }
+}

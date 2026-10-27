@@ -1,0 +1,410 @@
+{
+  "sourceBuild": 3640684,
+  "sourceCodeSha256": "2f43f4b8d34632b5d5fdc7b58af93364f606bd9ba67fcada588565ee0628122c",
+  "types": {
+    "eve_public.Request": {
+      "fields": {
+        "issued": {
+          "type": "google.protobuf.Timestamp",
+          "id": 1
+        },
+        "correlation_uuid": {
+          "type": "bytes",
+          "id": 2
+        },
+        "payload": {
+          "type": "google.protobuf.Any",
+          "id": 3
+        },
+        "external_origin": {
+          "type": "string",
+          "id": 4
+        },
+        "application_instance_uuid": {
+          "type": "bytes",
+          "id": 5
+        },
+        "authoritative_context": {
+          "type": "eve_public.AuthoritativeContext",
+          "id": 6
+        },
+        "trace_context": {
+          "type": "eve_public.tracecontext.TraceContext",
+          "id": 7
+        }
+      }
+    },
+    "eve_public.AuthoritativeContext": {
+      "fields": {
+        "received": {
+          "type": "google.protobuf.Timestamp",
+          "id": 1
+        },
+        "ip_address": {
+          "type": "eve_public.IPAddress",
+          "id": 2
+        },
+        "tenant": {
+          "type": "string",
+          "id": 3
+        },
+        "no_authenticated_user": {
+          "type": "bool",
+          "id": 4
+        },
+        "authenticated_user": {
+          "type": "eve_public.user.Identifier",
+          "id": 5
+        },
+        "no_active_character": {
+          "type": "bool",
+          "id": 6
+        },
+        "active_character": {
+          "type": "eve_public.character.Identifier",
+          "id": 7
+        },
+        "gateway_instance_uuid": {
+          "type": "bytes",
+          "id": 8
+        },
+        "no_active_identity": {
+          "type": "bool",
+          "id": 9
+        },
+        "identity": {
+          "type": "eve_public.ActiveIdentity",
+          "id": 10
+        }
+      },
+      "oneofs": {
+        "user": {
+          "oneof": [
+            "no_authenticated_user",
+            "authenticated_user"
+          ]
+        },
+        "character": {
+          "oneof": [
+            "no_active_character",
+            "active_character"
+          ]
+        },
+        "active_identity": {
+          "oneof": [
+            "no_active_identity",
+            "identity"
+          ]
+        }
+      }
+    },
+    "eve_public.IPAddress": {
+      "fields": {
+        "v4": {
+          "type": "fixed32",
+          "id": 1
+        },
+        "v6": {
+          "type": "bytes",
+          "id": 2
+        }
+      },
+      "oneofs": {
+        "version": {
+          "oneof": [
+            "v4",
+            "v6"
+          ]
+        }
+      }
+    },
+    "eve_public.user.Identifier": {
+      "fields": {
+        "sequential": {
+          "type": "sint32",
+          "id": 1
+        }
+      }
+    },
+    "eve_public.character.Identifier": {
+      "fields": {
+        "sequential": {
+          "type": "uint32",
+          "id": 1
+        }
+      }
+    },
+    "eve_public.ActiveIdentity": {
+      "fields": {
+        "character": {
+          "type": "eve_public.character.Identifier",
+          "id": 1
+        },
+        "corporation": {
+          "type": "eve_public.corporation.Identifier",
+          "id": 2
+        },
+        "roles": {
+          "type": "eve_public.corporation.role.Collection",
+          "id": 3
+        }
+      }
+    },
+    "eve_public.corporation.Identifier": {
+      "fields": {
+        "sequential": {
+          "type": "uint32",
+          "id": 1
+        }
+      }
+    },
+    "eve_public.corporation.role.Collection": {
+      "fields": {
+        "bitmask": {
+          "type": "uint64",
+          "id": 1
+        }
+      }
+    },
+    "eve_public.tracecontext.TraceContext": {
+      "fields": {
+        "trace_id": {
+          "type": "bytes",
+          "id": 1
+        },
+        "parent_id": {
+          "type": "bytes",
+          "id": 2
+        },
+        "flags": {
+          "type": "eve_public.tracecontext.TraceFlags",
+          "id": 3
+        },
+        "state": {
+          "type": "eve_public.tracecontext.TraceState",
+          "id": 4
+        }
+      }
+    },
+    "eve_public.tracecontext.TraceFlags": {
+      "fields": {
+        "sampled": {
+          "type": "bool",
+          "id": 1
+        }
+      }
+    },
+    "eve_public.tracecontext.TraceState": {
+      "fields": {
+        "sample_rate": {
+          "type": "uint32",
+          "id": 1
+        }
+      }
+    },
+    "eve_public.Response": {
+      "fields": {
+        "dispatched": {
+          "type": "google.protobuf.Timestamp",
+          "id": 1
+        },
+        "correlation_uuid": {
+          "type": "bytes",
+          "id": 2
+        },
+        "status_code": {
+          "type": "uint32",
+          "id": 3
+        },
+        "status_message": {
+          "type": "string",
+          "id": 4
+        },
+        "payload": {
+          "type": "google.protobuf.Any",
+          "id": 5
+        },
+        "internal_origin": {
+          "type": "string",
+          "id": 6
+        },
+        "application_instance_uuid": {
+          "type": "bytes",
+          "id": 7
+        },
+        "gateway_instance_uuid": {
+          "type": "bytes",
+          "id": 8
+        },
+        "trace_context": {
+          "type": "eve_public.tracecontext.TraceContext",
+          "id": 9
+        }
+      }
+    },
+    "eve_public.Notice": {
+      "fields": {
+        "dispatched": {
+          "type": "google.protobuf.Timestamp",
+          "id": 1
+        },
+        "uuid": {
+          "type": "bytes",
+          "id": 2
+        },
+        "internal_origin": {
+          "type": "string",
+          "id": 3
+        },
+        "tenant": {
+          "type": "string",
+          "id": 4
+        },
+        "payload": {
+          "type": "google.protobuf.Any",
+          "id": 5
+        },
+        "target_group": {
+          "type": "eve_public.Notice.TargetGroup",
+          "id": 6
+        },
+        "trace_context": {
+          "type": "eve_public.tracecontext.TraceContext",
+          "id": 7
+        }
+      }
+    },
+    "eve_public.Notice.TargetGroup": {
+      "fields": {
+        "application_instance_uuid": {
+          "type": "bytes",
+          "id": 1
+        },
+        "solar_system": {
+          "type": "uint32",
+          "id": 2
+        },
+        "user": {
+          "type": "sint32",
+          "id": 3
+        },
+        "character": {
+          "type": "uint32",
+          "id": 4
+        },
+        "corporation": {
+          "type": "uint32",
+          "id": 5
+        },
+        "alliance": {
+          "type": "int32",
+          "id": 6
+        }
+      },
+      "oneofs": {
+        "group": {
+          "oneof": [
+            "application_instance_uuid",
+            "solar_system",
+            "user",
+            "character",
+            "corporation",
+            "alliance"
+          ]
+        }
+      }
+    },
+    "eve_public.Event": {
+      "fields": {
+        "occurred": {
+          "type": "google.protobuf.Timestamp",
+          "id": 1
+        },
+        "uuid": {
+          "type": "bytes",
+          "id": 2
+        },
+        "payload": {
+          "type": "google.protobuf.Any",
+          "id": 3
+        },
+        "journey": {
+          "type": "bytes",
+          "id": 4
+        },
+        "external_origin": {
+          "type": "string",
+          "id": 5
+        },
+        "authoritative_context": {
+          "type": "eve_public.AuthoritativeContext",
+          "id": 6
+        },
+        "application_instance_uuid": {
+          "type": "bytes",
+          "id": 7
+        },
+        "trace_context": {
+          "type": "eve_public.tracecontext.TraceContext",
+          "id": 8
+        }
+      }
+    },
+    "eve_public.inventory.genericitemtype.Identifier": {
+      "fields": {
+        "sequential": {
+          "type": "uint64",
+          "id": 1
+        }
+      }
+    },
+    "eve_public.skilltype.Identifier": {
+      "fields": {
+        "sequential": {
+          "type": "uint64",
+          "id": 1
+        }
+      }
+    },
+    "eve_public.faction.Identifier": {
+      "fields": {
+        "sequential": {
+          "type": "uint64",
+          "id": 1
+        }
+      }
+    },
+    "eve_public.solarsystem.Identifier": {
+      "fields": {
+        "sequential": {
+          "type": "uint64",
+          "id": 1
+        }
+      }
+    },
+    "google.protobuf.Timestamp": {
+      "fields": {
+        "seconds": {
+          "type": "int64",
+          "id": 1
+        },
+        "nanos": {
+          "type": "int32",
+          "id": 2
+        }
+      }
+    },
+    "google.protobuf.Any": {
+      "fields": {
+        "type_url": {
+          "type": "string",
+          "id": 1
+        },
+        "value": {
+          "type": "bytes",
+          "id": 2
+        }
+      }
+    }
+  }
+}
