@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs = require("node:fs");
 import path = require("node:path");
+import { listLegacyEvmBuildAdapters } from "./legacyEvmBuildAdapters";
 
 import { bcs } from "@mysten/sui/bcs";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
@@ -116,6 +117,9 @@ type SuiCharacterProvisioningOptions<
   worldContractsDirectory?: string;
   reconciliationDelaysMs?: number[];
   transactionFactory?: (identity: TIdentity) => Transaction;
+  // Synchronous admission check immediately before every actual submission,
+  // including resubmission of persisted bytes after asynchronous reconciliation.
+  beforeTransactionSubmit?: () => unknown;
   onTransactionPrepared?: (details: {
     transactionDigest: string;
     transactionBytesBase64?: string;
@@ -292,12 +296,21 @@ function readSyncedSuiWorldConfig(
     return invalid(`does not match Frontier build ${expectedBuild}`);
   }
   let assemblyEnergy: Array<{ typeID: number; energyRequired: number }> | undefined;
+  let assemblyEnergySourceBuild: number | undefined;
   if (config.assemblyEnergy !== undefined) {
     const energy = config.assemblyEnergy;
     if (!energy || typeof energy !== "object" || Array.isArray(energy) ||
         energy.schemaVersion !== 1 || energy.clientBuild !== expectedBuild ||
         !Array.isArray(energy.entries) || energy.entries.length === 0) {
       return invalid("contains an invalid assembly energy manifest");
+    }
+    if (energy.sourceClientBuild !== undefined || energy.compatibilityMode !== undefined) {
+      if (!listLegacyEvmBuildAdapters().some(adapter => adapter.clientBuild === expectedBuild) ||
+          !Number.isSafeInteger(energy.sourceClientBuild) || energy.sourceClientBuild <= 0 ||
+          energy.sourceClientBuild === expectedBuild || energy.compatibilityMode !== "legacy-evm-to-sui") {
+        return invalid("contains invalid legacy assembly energy provenance");
+      }
+      assemblyEnergySourceBuild = energy.sourceClientBuild;
     }
     const seen = new Set<number>();
     let previousTypeID = 0;
@@ -396,8 +409,11 @@ function readSyncedSuiWorldConfig(
         "assembly-energy.json",
       );
       let currentAssemblyEnergySha256: string;
+      let sourceEnergy: any;
       try {
-        currentAssemblyEnergySha256 = readSha256(assemblyEnergyPath);
+        const sourceBytes = fs.readFileSync(assemblyEnergyPath);
+        currentAssemblyEnergySha256 = createHash("sha256").update(sourceBytes).digest("hex");
+        if (assemblyEnergySourceBuild !== undefined) sourceEnergy = JSON.parse(sourceBytes.toString("utf8"));
       } catch (cause) {
         throw new SuiCharacterProvisioningError(
           "INVALID_WORLD_CONFIGURATION",
@@ -407,6 +423,12 @@ function readSyncedSuiWorldConfig(
       }
       if (currentAssemblyEnergySha256 !== assemblyEnergySha256) {
         return invalid("is stale relative to its assembly energy manifest; run FrontierWorld.ps1 sync");
+      }
+      if (assemblyEnergySourceBuild !== undefined &&
+          (sourceEnergy?.schemaVersion !== 1 || sourceEnergy.clientBuild !== assemblyEnergySourceBuild ||
+            !Array.isArray(sourceEnergy.assemblies) || JSON.stringify(sourceEnergy.assemblies.map((entry: any) =>
+              ({ typeID: entry?.typeID, energyRequired: entry?.energyRequired }))) !== JSON.stringify(assemblyEnergy))) {
+        return invalid("does not match the deployed assembly energy source");
       }
     }
   }
@@ -1229,6 +1251,7 @@ async function executePreparedSuiCharacterTransaction<TIdentity extends SuiChara
   prepared: { transactionBytes: Uint8Array; signature: string },
   transactionDigest: string,
   reconciliationDelaysMs: number[],
+  beforeTransactionSubmit?: () => unknown,
 ): Promise<SuiCharacterProvisioningResult<TIdentity>> {
   if (typeof client.executeTransaction !== "function") {
     throw new SuiCharacterProvisioningError(
@@ -1238,6 +1261,13 @@ async function executePreparedSuiCharacterTransaction<TIdentity extends SuiChara
     );
   }
 
+  if (beforeTransactionSubmit) {
+    const authorization: any = beforeTransactionSubmit();
+    if (authorization === false || authorization && typeof authorization.then === "function") {
+      throw new SuiCharacterProvisioningError("TRANSACTION_NOT_SUBMITTED",
+        "The Sui Character submission requires a current synchronous authorization", { transactionDigest });
+    }
+  }
   let executionResult: any;
   try {
     executionResult = await client.executeTransaction({
@@ -1424,12 +1454,15 @@ async function provisionSuiCharacterWithIdentity<TIdentity extends SuiCharacterO
           );
         }
         assertSuiProvisioningSnapshotCurrent(snapshot);
+        await assertLiveSuiChain(client, snapshot, recordedChainId);
+        assertSuiProvisioningSnapshotCurrent(snapshot);
         return executePreparedSuiCharacterTransaction(
           client,
           identity,
           prepared,
           pendingTransactionDigest,
           reconciliationDelaysMs,
+          operationOptions.beforeTransactionSubmit,
         );
       }
       throw new SuiCharacterProvisioningError(
@@ -1517,9 +1550,14 @@ async function provisionSuiCharacterWithIdentity<TIdentity extends SuiCharacterO
         { transactionBytes, signature },
         preparedTransactionDigest,
         reconciliationDelaysMs,
+        operationOptions.beforeTransactionSubmit,
       );
     }
 
+    if (operationOptions.beforeTransactionSubmit) {
+      throw new SuiCharacterProvisioningError("TRANSACTION_PREPARATION_UNAVAILABLE",
+        "This authorized Sui Character operation requires a client that can durably prepare signed bytes before submission");
+    }
     let executionResult: any;
     try {
       executionResult = await client.signAndExecuteTransaction({

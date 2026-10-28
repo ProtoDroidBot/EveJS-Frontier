@@ -2,6 +2,7 @@
 
 const { randomUUID } = require("node:crypto");
 const geometry = require("./compositeAsteroidModel");
+const { hasServerBuildFeature } = require("../../config/clientBuildProfiles");
 const { canEntitiesInteractLocally, buildChildEntityScopeMetadata } = require("../../space/destiny/identity/interactionScope");
 
 // Durations returned by shipAccess are relative simulation times in 100ns ticks.
@@ -370,7 +371,7 @@ function productionRuntime() {
     const log = require("../../utils/logger");
     defaultRuntime = createVoxelMiningRuntime({
       store: require("./voxelMiningStore"), sceneAdapter: require("../../space/compositeMiningScene"),
-      enabled: () => config.miningEnabled === true && config.voxelMiningEnabled === true && Number(config.clientBuild) === 3640684,
+      enabled: () => config.miningEnabled === true && config.voxelMiningEnabled === true && hasServerBuildFeature(config.clientBuild, "voxelMining"),
       worldRevision: () => getVoxelMiningWorldRevision(config),
       maxScoopRange: () => config.voxelScoopRangeMeters || 2500,
       policy: () => config.voxelMiningPolicy || {},

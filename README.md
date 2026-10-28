@@ -52,6 +52,23 @@ types and strictness can be introduced incrementally.
 
 ## EVE Frontier compatibility fork
 
+Start with the [Frontier server, world, and client setup guide](docs/FRONTIER_SETUP.md)
+for the complete native Windows sequence from no running server or synchronized
+world through client launch, including dApp dependencies, HTTPS, and shutdown.
+
+The [server build-profile scaffold](docs/client-builds/server-profiles.md)
+adds exact selection for 19 audited builds, their observed client feature sets,
+and separate server-capability gates. The default `auto` setting preserves
+existing launch configuration; historical compatibility still needs validation.
+
+The [EVM-to-Sui bridge](docs/client-builds/evm-to-sui.md) provides wallet
+bootstrap, recovery, balance and assembly online/offline adapters for all 14
+catalogued EVM builds, backed by the existing Sui services. Runtime testing is
+deferred.
+Initial setup and `FrontierWorld.ps1 up`, `restart`, or `sync` prepare the private
+bridge configuration automatically for the selected build. The manual
+`frontier:convert-evm` command remains available for custom configurations.
+
 The [3640684 port plan](docs/FRONTIER_BUILD_3640684_PORT_PLAN.md) selects
 `3502403-MOD4-STUFF1` galaxy and solar-system data for delivery to the
 cycle-7 client through the new exploration API. The
@@ -112,6 +129,12 @@ and character-selection history.
 > and `StartServer.bat` target EVE Online build `3396210` and its `tq` layout.
 > Never use their `blue.dll` recipe against a Frontier installation.
 
+Native Linux backend and Wine/Bottles client helpers are documented in the
+[setup guide](docs/FRONTIER_SETUP.md#native-linux-backend-and-winebottles-client).
+Use `npm run frontier:doctor -- --build <exact-build>` for read-only host checks
+and `npm run test:frontier-host` for the host compatibility fixtures.
+Live Windows/Wine gameplay acceptance remains separate from these checks.
+
 ### Frontier Windows quickstart (build 3502403 candidate)
 
 The Windows workflow is native: the server and staged client run on the same
@@ -129,8 +152,11 @@ Requirements:
 
 Visual Studio 2022 C++ Build Tools and the Windows SDK are only needed if the
 external Python 3.12 probe cannot use the client loaders and the minimal
-embedded-Python runner must be compiled. Rust, Docker, OpenSSL, the SQLite CLI,
-and the market daemon are not part of the default Frontier Windows path.
+embedded-Python runner must be compiled. Rust, OpenSSL, the SQLite CLI,
+and the market daemon are not needed for client/server preparation. Docker and
+separately installed efctl are required for the local Sui world; pnpm and dApp
+HTTPS preparation are required before the Windows server launcher can start.
+Follow the complete setup guide above before the daily-use commands below.
 
 Open PowerShell 7 in the repository root. For a fresh source checkout, run
 `npm ci --include=dev` before the read-only status and dry-run commands so the
@@ -373,7 +399,10 @@ git submodule update --init --recursive
 npm run frontier:dapp:install
 ```
 
-Set up the trusted local HTTPS certificate once:
+Generate the local HTTPS certificate once, then configure hostname resolution
+and current-user trust as described in the
+[dApp setup steps](docs/FRONTIER_SETUP.md#3-prepare-the-smart-assembly-dapp).
+The certificate command itself does not install trust:
 
 ```powershell
 npm run frontier:dapp:setup:https

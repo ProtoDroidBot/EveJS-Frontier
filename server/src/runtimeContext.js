@@ -11,6 +11,7 @@ function createRuntimeContext(options = {}) {
     return Object.freeze({
         serviceManager,
         gatewayRuntime: options.gatewayRuntime || null,
+        clientBuildProfile: options.clientBuildProfile || null,
     });
 }
 module.exports = {

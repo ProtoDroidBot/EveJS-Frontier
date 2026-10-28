@@ -13,6 +13,11 @@ const {
 } = require(path.join(__dirname, "./src/utils/processLifecycle"));
 const config = require(path.join(__dirname, "./src/config"));
 const {
+  getServerBuildFeatures,
+  resolveClientBuildProfile,
+} = require(path.join(__dirname, "./src/config/clientBuildProfiles"));
+const clientBuildProfile = resolveClientBuildProfile(config);
+const {
   installSharedOverviewMotd,
 } = require(path.join(__dirname, "./src/services/overview/overviewMotdBootstrap"));
 const presenceReconciler = require(path.join(
@@ -65,6 +70,9 @@ log.debug(`Project: ${config.projectVersion}`);
 log.debug(`Client Version: ${config.clientVersion}`);
 log.debug(`Client Build: ${config.clientBuild}`);
 log.debug(`MachoNet Version: ${config.machoVersion}`);
+log.info(`Client build profile: ${clientBuildProfile?.id || "manual"} (selection=${config.clientBuildProfile})`);
+log.debug(`Server build features: ${Object.entries(getServerBuildFeatures(config.clientBuild))
+  .filter(([, enabled]) => enabled).map(([feature]) => feature).join(", ") || "none catalogued"}`);
 log.line();
 
 // Preload database into memory before services initialize
@@ -142,7 +150,7 @@ if (config.asteroidBeltStartupReset === true) {
 // create and populate service manager
 const serviceManager = new ServiceManager();
 const gatewayRuntime = createEvejsWebGatewayRuntime({ serviceManager });
-const runtimeContext = createRuntimeContext({ serviceManager, gatewayRuntime });
+const runtimeContext = createRuntimeContext({ serviceManager, gatewayRuntime, clientBuildProfile });
 database.registerShutdownHook((reason) => shutdownWorld(reason, {
   gatewayRuntime,
   sessionRegistry,
@@ -185,6 +193,23 @@ function loadServices(dir) {
 }
 
 loadServices(servicesDir);
+
+// The first EVM client uses a dedicated JSON-RPC listener at this fixed port.
+// Its staged host redirect reaches the same authenticated Sui bootstrap bridge.
+try {
+  const proxy = require("./src/_secondary/express/legacyBlockchainProxyEndpoints")
+    .startLegacyBlockchainProxyServer({ config });
+  if (proxy) {
+    proxy.on("error", error => log.err(`[LegacyBlockchainProxy] ${error.code || error.message}`));
+    proxy.on("listening", () => log.info("[LegacyBlockchainProxy] Listening on 127.0.0.1:32811/jsonrpc"));
+    database.registerShutdownHook(() => new Promise<void>(resolve => {
+      proxy.close(() => resolve());
+      proxy.closeIdleConnections?.();
+    }), { priority: 90 });
+  }
+} catch (error) {
+  log.err(`[LegacyBlockchainProxy] Startup failed: ${error.code || error.message}`);
+}
 
 if (serviceManager.lookup("trademgr") && !serviceManager.lookup("tradeMgr")) {
   serviceManager.registerAlias("tradeMgr", "trademgr");

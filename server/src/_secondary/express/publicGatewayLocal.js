@@ -12,7 +12,8 @@ const { resolveCharacterAccountID, resolveOmegaLicenseState, } = require(path.jo
 const { createGatewayServiceRegistry, } = require(path.join(__dirname, "./gatewayServices"));
 const { buildStructurePaintworkProtoRoot, } = require(path.join(__dirname, "./gatewayServices/structurePaintworkGatewayService"));
 const sessionRegistry = require(path.join(__dirname, "../../services/chat/sessionRegistry"));
-const { resolveExplorationIdentity, resolveExplorationNoticeIdentity, isExplorationNotice, shouldDeliverExplorationNotice, } = require("./gatewayServices/explorationIdentity");
+const { resolveExplorationIdentity, normalizeLoopbackAddress, resolveExplorationNoticeIdentity, isExplorationNotice, shouldDeliverExplorationNotice, } = require("./gatewayServices/explorationIdentity");
+const { LEGACY_EVM_GATEWAY_REQUESTS } = require("./gatewayServices/legacyEvmGatewayService");
 const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
 const { getLicenseForStructure, getPaintworksForSolarSystem, normalizePaintwork, } = require(path.join(__dirname, "../../services/structure/structurePaintworkState"));
 const { getStructureByID, } = require(path.join(__dirname, "../../services/structure/structureState"));
@@ -1803,8 +1804,24 @@ function buildGatewayResponseForRequest(frameBuffer, transportContext = {}) {
         requestEnvelope.payload.type_url
         ? requestEnvelope.payload.type_url
         : ""));
-    if (Number(config.clientBuild) === 3640684 || requestTypeName.startsWith("eve_public.exploration.")) {
-        const identity = resolveExplorationIdentity(requestEnvelope, transportContext, sessionRegistry.getSessions());
+    if (Number(config.clientBuild) === 3640684 || requestTypeName.startsWith("eve_public.exploration.") ||
+        LEGACY_EVM_GATEWAY_REQUESTS.includes(requestTypeName)) {
+        const sessions = sessionRegistry.getSessions();
+        let identity = resolveExplorationIdentity(requestEnvelope, transportContext, sessions);
+        // Some early bootstrap envelopes identify the account before setting an
+        // active character. Resolve only a unique live character on that same
+        // authenticated loopback account; a request payload never selects another.
+        if (identity && !identity.characterID && LEGACY_EVM_GATEWAY_REQUESTS.includes(requestTypeName)) {
+            const peer = normalizeLoopbackAddress(transportContext.remoteAddress);
+            const characters = [...new Set(sessions.filter(session => session?.socket && !session.socket.destroyed &&
+                    session._characterControlDisconnected !== true && Number(session.userid) === identity.userID &&
+                    normalizeLoopbackAddress(session.socket.remoteAddress) === peer)
+                    .map(session => Number(session.characterID || session.charid || 0)).filter(id => Number.isSafeInteger(id) && id > 0))];
+            if (characters.length === 1)
+                identity = resolveExplorationIdentity({ ...requestEnvelope,
+                    authoritative_context: { ...requestEnvelope.authoritative_context, active_character: { sequential: characters[0] } },
+                }, transportContext, sessions);
+        }
         if (identity) {
             identity.session = identity.characterID ? sessionRegistry.findSessionByCharacterID(identity.characterID) : null;
             EXPLORATION_REQUEST_IDENTITIES.set(requestEnvelope, identity);

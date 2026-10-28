@@ -1,4 +1,4 @@
-#requires -Version 7.0
+#requires -Version 7.2
 
 <#
 .SYNOPSIS
@@ -7,12 +7,12 @@ Synchronizes the live efctl world into EveJS and manages its Docker localnet.
 .DESCRIPTION
 The default efctl workspace is this repository. Its pinned world-contracts and
 builder-scaffold submodules use the directory names efctl expects. The tool
-always resolves efctl.exe from PATH unless -EfctlPath is provided. It never
+always resolves the native efctl executable from PATH unless -EfctlPath is provided. It never
 installs, copies, pins, or updates efctl.
 
 The synchronized EveJS file contains the current localnet world IDs and only
 the admin signer needed for character provisioning. It is stored under the
-gitignored _local directory with an ACL restricted to the current Windows user.
+gitignored _local directory with a current-user-only Windows ACL or Unix mode 0600.
 The versioned deployments/localnet/world-features.v1.json manifest is validated
 and synchronized separately without changing base IDs. Historical
 npc-deployment.json files are migrated deliberately during sync.
@@ -66,12 +66,12 @@ $PSNativeCommandUseErrorActionPreference = $false
 # Preserve it as the efctl global flag for lifecycle/status commands.
 $script:ForwardEfctlDebug = $PSBoundParameters.ContainsKey('Debug')
 
-if ($env:OS -ne 'Windows_NT') {
-    throw 'FrontierWorld.ps1 supports Windows only.'
+if (-not $IsWindows -and -not $IsLinux) {
+    throw 'FrontierWorld.ps1 supports native Windows and Linux hosts.'
 }
 
 $script:ConfigFormat = 'evejs-frontier-world-sync-v1'
-$script:PathComparison = [StringComparison]::OrdinalIgnoreCase
+$script:PathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
 $RepoRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
     $SourceRoot = $RepoRoot
@@ -82,30 +82,141 @@ if ([string]::IsNullOrWhiteSpace($DappRoot)) {
 }
 $DappRoot = [IO.Path]::GetFullPath($DappRoot)
 if ([string]::IsNullOrWhiteSpace($DestinationRoot)) {
-    $DestinationRoot = Join-Path $RepoRoot (Join-Path '_local\frontier-world' $Build)
+    $DestinationRoot = Join-Path $RepoRoot (Join-Path '_local/frontier-world' $Build)
 }
 $DestinationRoot = [IO.Path]::GetFullPath($DestinationRoot)
 $WorldConfigPath = Join-Path $DestinationRoot 'world.private.json'
+$LegacyEvmBridgeConfigPath = Join-Path $DestinationRoot 'legacy-evm-sui.private.json'
 $WorldFeaturesConfigPath = Join-Path $DestinationRoot 'world-features.v1.json'
 $LegacyNpcConfigPath = Join-Path $DestinationRoot 'npc-deployment.json'
 $ArchivedLegacyNpcConfigPath = Join-Path $DestinationRoot 'npc-deployment.legacy.json'
 $EfctlConfigPath = Join-Path $SourceRoot 'efctl.yaml'
 $WorldContractsRoot = Join-Path $SourceRoot 'world-contracts'
-$AssemblyEnergyConfigPath = Join-Path $WorldContractsRoot 'config\assembly-energy.json'
-$CommonModule = Join-Path $RepoRoot 'tools\frontier-client\FrontierWindows.Common.psm1'
+$AssemblyEnergyConfigPath = Join-Path $WorldContractsRoot 'config/assembly-energy.json'
+$CommonModule = Join-Path $RepoRoot 'tools/frontier-client/FrontierWindows.Common.psm1'
 if ([string]::IsNullOrWhiteSpace($NpcFactionConfigPath)) {
     $NpcFactionConfigPath = Join-Path $RepoRoot 'npc-factions.config.json'
 }
 $NpcFactionConfigPath = [IO.Path]::GetFullPath($NpcFactionConfigPath)
 if ([string]::IsNullOrWhiteSpace($NpcFactionSdePath)) {
-    $NpcFactionSdePath = Join-Path $SourceRoot (Join-Path '_local\frontier-sde' (Join-Path $Build 'factions.jsonl'))
+    $NpcFactionSdePath = Join-Path $SourceRoot (Join-Path '_local/frontier-sde' (Join-Path $Build 'factions.jsonl'))
 }
 $NpcFactionSdePath = [IO.Path]::GetFullPath($NpcFactionSdePath)
 
 if (-not (Test-Path -LiteralPath $CommonModule -PathType Leaf)) {
-    throw "Frontier Windows helper module is missing: $CommonModule"
+    throw "Frontier helper module is missing: $CommonModule"
 }
 Import-Module $CommonModule -Force
+
+function Set-WorldPrivateFilePermissions {
+    param([Parameter(Mandatory)] [string]$Path)
+    if ($IsWindows) {
+        FrontierWindows.Common\Set-FrontierPrivateFileAcl -Path $Path
+        return
+    }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Refusing a non-file or symlink credential path: $Path"
+    }
+    # PowerShell 7.2 uses .NET 6, before File.SetUnixFileMode was introduced.
+    # Use the native Linux tools so the documented minimum remains sufficient.
+    $chmod = Get-Command chmod -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $stat = Get-Command stat -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    & $chmod.Source 600 -- $item.FullName
+    if ($LASTEXITCODE -ne 0) { throw "Could not restrict private-file permissions: $Path" }
+    $mode = & $stat.Source -c '%a' -- $item.FullName
+    if ($LASTEXITCODE -ne 0 -or [string]$mode -cne '600') {
+        throw "Private-file permission verification failed: $Path"
+    }
+}
+
+function Write-WorldPrivateLinesAtomic {
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Lines
+    )
+    if ($IsWindows) {
+        FrontierWindows.Common\Write-FrontierPrivateLinesAtomic -Path $Path -Lines $Lines
+        return
+    }
+    foreach ($line in $Lines) {
+        if ($line -match '[\r\n]') { throw 'Private-file lines must not contain embedded line breaks.' }
+    }
+    $resolvedPath = [IO.Path]::GetFullPath($Path)
+    $parent = Split-Path -Parent $resolvedPath
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    $existing = Get-Item -LiteralPath $resolvedPath -Force -ErrorAction SilentlyContinue
+    if ($null -ne $existing -and ($existing.PSIsContainer -or
+        ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint))) {
+        throw "Refusing to replace a non-file or symlink credential path: $resolvedPath"
+    }
+    $temporary = Join-Path $parent ('.{0}.tmp-{1}-{2}' -f
+        [IO.Path]::GetFileName($resolvedPath), $PID, [guid]::NewGuid().ToString('N'))
+    try {
+        # As in the Windows writer, the file stays empty until its permissions
+        # have been restricted and verified. Then publish by an atomic rename.
+        $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            Set-WorldPrivateFilePermissions -Path $temporary
+            $payload = if ($Lines.Count -eq 0) { '' } else { [string]::Join("`n", $Lines) + "`n" }
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes($payload)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        }
+        finally { $stream.Dispose() }
+        if (-not [Linq.Enumerable]::SequenceEqual(
+            [byte[]][IO.File]::ReadAllBytes($temporary), [byte[]]$bytes)) {
+            throw "Private temporary-file verification failed: $temporary"
+        }
+        Set-WorldPrivateFilePermissions -Path $temporary
+        [IO.File]::Move($temporary, $resolvedPath, $true)
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+
+function Test-LegacyEvmClientBuild {
+    $catalogPath = Join-Path $RepoRoot 'server/src/config/clientBuildCatalog.json'
+    $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
+    $profile = @($catalog.profiles | Where-Object { [string]$_.clientBuild -eq $Build })
+    return $profile.Count -eq 1 -and
+        $null -ne $profile[0].PSObject.Properties['blockchain'] -and
+        [string]$profile[0].blockchain.protocol -eq 'evm'
+}
+
+$LegacyEvmClientBuild = Test-LegacyEvmClientBuild
+if ($LegacyEvmClientBuild) {
+    $configuredBridgePath = [string]$env:EVEJS_LEGACY_EVM_SUI_BRIDGE_PATH
+    if (Test-Path -LiteralPath $WorldConfigPath -PathType Leaf) {
+        try { $previousWorld = Get-Content -LiteralPath $WorldConfigPath -Raw | ConvertFrom-Json -AsHashtable }
+        catch { throw "Existing world configuration is unreadable; preserve it before syncing: $WorldConfigPath" }
+        if ($previousWorld -isnot [Collections.IDictionary] -or
+            $previousWorld.format -ne $script:ConfigFormat -or $previousWorld.schemaVersion -ne 1 -or
+            [string]$previousWorld.build -ne $Build -or $previousWorld.network -ne 'localnet') {
+            throw "Existing world configuration does not match build $Build; preserve it and select another destination."
+        }
+        if ([string]::IsNullOrWhiteSpace($configuredBridgePath) -and $previousWorld.Contains('legacyEvmBridgePath')) {
+            $configuredBridgePath = $previousWorld.legacyEvmBridgePath
+            if ($configuredBridgePath -isnot [string] -or [string]::IsNullOrWhiteSpace($configuredBridgePath)) {
+                throw 'Existing world configuration has an invalid EVM backend reference.'
+            }
+            if (-not [IO.Path]::IsPathFullyQualified($configuredBridgePath)) {
+                $configuredBridgePath = Join-Path $DestinationRoot $configuredBridgePath
+            }
+            if (-not (Test-Path -LiteralPath $configuredBridgePath -PathType Leaf)) {
+                throw "Referenced EVM backend secrets are missing; restore them before syncing: $configuredBridgePath"
+            }
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($configuredBridgePath)) {
+        if (-not [IO.Path]::IsPathFullyQualified($configuredBridgePath)) {
+            $configuredBridgePath = Join-Path $RepoRoot $configuredBridgePath
+        }
+        $LegacyEvmBridgeConfigPath = [IO.Path]::GetFullPath($configuredBridgePath)
+    }
+}
 
 function Test-SamePath {
     param(
@@ -223,10 +334,11 @@ function Resolve-Efctl {
         $resolved = $candidate
     }
     else {
-        $commandInfo = Get-Command efctl.exe -CommandType Application -ErrorAction SilentlyContinue |
+        $efctlName = if ($IsWindows) { 'efctl.exe' } else { 'efctl' }
+        $commandInfo = Get-Command $efctlName -CommandType Application -ErrorAction SilentlyContinue |
             Select-Object -First 1
         if ($null -eq $commandInfo) {
-            throw 'efctl.exe is not available in PATH. Install/update it manually, then open a fresh PowerShell.'
+            throw "$efctlName is not available in PATH. Install/update it manually, then open a fresh shell."
         }
         $resolved = [IO.Path]::GetFullPath($commandInfo.Source)
     }
@@ -253,9 +365,10 @@ function Resolve-Efctl {
 }
 
 function Enter-WorldOperationLock {
+    $mutexName = if ($IsWindows) { 'Global\EveJSFrontierWorldEnvironment' } else { 'EveJSFrontierWorldEnvironment' }
     $mutex = [Threading.Mutex]::new(
         $false,
-        'Global\EveJSFrontierWorldEnvironment'
+        $mutexName
     )
     $acquired = $false
     try {
@@ -282,10 +395,11 @@ function Assert-DockerWorkspaceOwnership {
     if ($SkipDockerOwnershipCheck) {
         return
     }
-    $docker = Get-Command docker.exe -CommandType Application -ErrorAction SilentlyContinue |
+    $dockerName = if ($IsWindows) { 'docker.exe' } else { 'docker' }
+    $docker = Get-Command $dockerName -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -eq $docker) {
-        throw 'docker.exe is not available in PATH; cannot verify efctl container ownership.'
+        throw "$dockerName is not available in PATH; cannot verify efctl container ownership."
     }
 
     $containerNames = @(& $docker.Source ps -a --format '{{.Names}}' 2>$null |
@@ -324,7 +438,7 @@ function Assert-DockerWorkspaceOwnership {
         throw 'An existing sui-playground container has no provable /workspace/world-contracts bind mount.'
     }
     $mountSource = [string]$worldMount.Source
-    if ($mountSource -match '^/(?:run/desktop/mnt/host|host_mnt)/([a-zA-Z])/(.+)$') {
+    if ($IsWindows -and $mountSource -match '^/(?:run/desktop/mnt/host|host_mnt)/([a-zA-Z])/(.+)$') {
         $mountSource = '{0}:\{1}' -f $matches[1].ToUpperInvariant(), $matches[2].Replace('/', '\')
     }
     if (-not (Test-SamePath -Left $mountSource -Right $WorldContractsRoot)) {
@@ -501,7 +615,8 @@ function Read-AssemblyEnergyManifest {
     }
     if ($manifest -isnot [Collections.IDictionary] -or
         $manifest.schemaVersion -isnot [long] -or $manifest.schemaVersion -ne 1 -or
-        $manifest.clientBuild -isnot [long] -or $manifest.clientBuild -ne [long]$Build -or
+        $manifest.clientBuild -isnot [long] -or $manifest.clientBuild -le 0 -or
+        ($manifest.clientBuild -ne [long]$Build -and -not $LegacyEvmClientBuild) -or
         $manifest.assemblies -isnot [array] -or $manifest.assemblies.Count -eq 0) {
         throw 'Assembly energy configuration has an unsupported schema, build, or empty catalog.'
     }
@@ -526,7 +641,8 @@ function Read-AssemblyEnergyManifest {
     }
     return [pscustomobject]@{
         SchemaVersion = 1
-        ClientBuild = [long]$manifest.clientBuild
+        ClientBuild = [long]$Build
+        SourceClientBuild = [long]$manifest.clientBuild
         Entries = $entries.ToArray()
         Sha256 = [string]$Snapshot.Sha256
     }
@@ -629,10 +745,11 @@ function Assert-SuiAddress {
 }
 
 function Get-LiveChainIdentifier {
-    $docker = Get-Command docker.exe -CommandType Application -ErrorAction SilentlyContinue |
+    $dockerName = if ($IsWindows) { 'docker.exe' } else { 'docker' }
+    $docker = Get-Command $dockerName -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -eq $docker) {
-        throw 'docker.exe is not available in PATH; cannot validate the local Sui chain.'
+        throw "$dockerName is not available in PATH; cannot validate the local Sui chain."
     }
 
     # Sui 1.82 serves gRPC at port 9000; its former JSON-RPC route returns 404.
@@ -657,11 +774,11 @@ function Get-LiveChainIdentifier {
 
 function Read-SourceWorld {
     Assert-SourceWorkspace
-    $deploymentPath = Join-Path $WorldContractsRoot 'deployments\localnet\extracted-object-ids.json'
-    $publicationPath = Join-Path $WorldContractsRoot 'contracts\world\Pub.localnet.toml'
+    $deploymentPath = Join-Path $WorldContractsRoot 'deployments/localnet/extracted-object-ids.json'
+    $publicationPath = Join-Path $WorldContractsRoot 'contracts/world/Pub.localnet.toml'
     $environmentPath = Join-Path $WorldContractsRoot '.env'
-    $worldFeaturesPath = Join-Path $WorldContractsRoot 'deployments\localnet\world-features.v1.json'
-    $legacyNpcDeploymentPath = Join-Path $WorldContractsRoot 'deployments\localnet\npc-deployment.json'
+    $worldFeaturesPath = Join-Path $WorldContractsRoot 'deployments/localnet/world-features.v1.json'
+    $legacyNpcDeploymentPath = Join-Path $WorldContractsRoot 'deployments/localnet/npc-deployment.json'
     $featureDeploymentPath = if (Test-Path -LiteralPath $worldFeaturesPath -PathType Leaf) {
         $worldFeaturesPath
     } else {
@@ -749,9 +866,9 @@ function Read-StableFactionFeatureFile {
     if ($RelativePath -isnot [string] -or $RelativePath -cne $ExpectedPath) {
         throw "$Label must use canonical path $ExpectedPath."
     }
-    $resolved = [IO.Path]::GetFullPath((Join-Path $ManifestDirectory ($ExpectedPath.Replace('/', '\'))))
+    $resolved = [IO.Path]::GetFullPath((Join-Path $ManifestDirectory $ExpectedPath))
     $factionRoot = [IO.Path]::GetFullPath((Join-Path $ManifestDirectory 'factions')) + [IO.Path]::DirectorySeparatorChar
-    if (-not $resolved.StartsWith($factionRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    if (-not $resolved.StartsWith($factionRoot, $script:PathComparison)) {
         throw "$Label escapes the faction config directory."
     }
     $item = Get-Item -LiteralPath $resolved -Force -ErrorAction SilentlyContinue
@@ -1550,7 +1667,7 @@ function Publish-WorldFeatureDeployment {
     }
     New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
     foreach ($relativePath in @($FactionFiles.Keys | Sort-Object)) {
-        $destinationPath = Join-Path $DestinationRoot ($relativePath.Replace('/', '\'))
+        $destinationPath = Join-Path $DestinationRoot $relativePath
         New-Item -ItemType Directory -Path (Split-Path -Parent $destinationPath) -Force | Out-Null
         Write-FrontierJsonAtomic -Path $destinationPath -Value $FactionFiles[$relativePath]
     }
@@ -1581,6 +1698,9 @@ function Write-WorldConfig {
         updatedAtUtc = [DateTime]::UtcNow.ToString('o')
         sourceWorkspace = $SourceRoot
     }
+    if ($LegacyEvmClientBuild -and (Test-Path -LiteralPath $LegacyEvmBridgeConfigPath -PathType Leaf)) {
+        $value.legacyEvmBridgePath = $LegacyEvmBridgeConfigPath
+    }
     if (-not [string]::IsNullOrWhiteSpace($LastAction)) {
         $value.lastAction = $LastAction
     }
@@ -1603,6 +1723,10 @@ function Write-WorldConfig {
             clientBuild = [long]$World.AssemblyEnergy.ClientBuild
             entries = @($World.AssemblyEnergy.Entries)
         }
+        if ($LegacyEvmClientBuild -and $World.AssemblyEnergy.SourceClientBuild -ne [long]$Build) {
+            $value.assemblyEnergy.sourceClientBuild = [long]$World.AssemblyEnergy.SourceClientBuild
+            $value.assemblyEnergy.compatibilityMode = 'legacy-evm-to-sui'
+        }
         $value.adminPrivateKey = [string]$World.AdminPrivateKey
         $value.artifacts = [ordered]@{
             deploymentSha256 = [string]$World.DeploymentSha256
@@ -1617,7 +1741,7 @@ function Write-WorldConfig {
     }
     New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
     $jsonLines = (($value | ConvertTo-Json -Depth 8) -split '\r?\n')
-    Write-FrontierPrivateLinesAtomic -Path $WorldConfigPath -Lines $jsonLines
+    Write-WorldPrivateLinesAtomic -Path $WorldConfigPath -Lines $jsonLines
 }
 
 function Publish-WorldSync {
@@ -1657,11 +1781,46 @@ function Publish-WorldSync {
     Write-Output "[evejs-frontier-world] Object registry: $($world.ObjectRegistryId)"
     Write-Output "[evejs-frontier-world] Admin ACL: $($world.AdminAclId)"
     Write-WorldConfig -State ready -World $world -Efctl $Efctl -LastAction $LastAction
+    Sync-LegacyEvmBackend
+    if ($LegacyEvmClientBuild) {
+        # Publish a new reference only after the private manifest exists.
+        # Failed first-time preparation must remain retryable without replacing
+        # secrets that an earlier successful synchronization already published.
+        Write-WorldConfig -State ready -World $world -Efctl $Efctl -LastAction $LastAction
+    }
     Invoke-NpcFactionFunding
     Sync-DappConfiguration
     if (-not $DryRun) {
         Write-Output "[evejs-frontier-world] Synced private EveJS config: $WorldConfigPath"
     }
+}
+
+function Sync-LegacyEvmBackend {
+    if (-not $LegacyEvmClientBuild) { return }
+    if ($DryRun) {
+        Write-Output "[evejs-frontier-world] Would synchronize EVM-to-Sui backend: $LegacyEvmBridgeConfigPath"
+        return
+    }
+    $syncScript = Join-Path $RepoRoot 'tools/frontier-contracts/sync-legacy-evm-sui.mjs'
+    if (-not (Test-Path -LiteralPath $syncScript -PathType Leaf)) {
+        throw "Legacy EVM backend synchronization tool is missing: $syncScript. Run npm run build:server and npm run build:tools in $RepoRoot."
+    }
+    $nodeName = if ($IsWindows) { 'node.exe' } else { 'node' }
+    $node = Get-Command $nodeName -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $node) {
+        $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+    if ($null -eq $node) { throw 'Node.js is required to synchronize the EVM-to-Sui backend.' }
+    $output = & $node.Source $syncScript --world-config $WorldConfigPath --build $Build --out $LegacyEvmBridgeConfigPath
+    if ($LASTEXITCODE -ne 0) { throw "EVM-to-Sui backend synchronization failed with exit code $LASTEXITCODE." }
+    try { $result = ($output -join [Environment]::NewLine) | ConvertFrom-Json }
+    catch { throw 'EVM-to-Sui backend synchronization returned invalid metadata.' }
+    if ($result.enabled -ne $true -or [string]$result.clientBuild -ne $Build -or
+        -not (Test-SamePath -Left ([string]$result.manifestPath) -Right $LegacyEvmBridgeConfigPath)) {
+        throw 'EVM-to-Sui backend synchronization did not match the selected build and destination.'
+    }
+    Set-WorldPrivateFilePermissions -Path $LegacyEvmBridgeConfigPath
+    Write-Output "[evejs-frontier-world] Synced EVM-to-Sui backend: $LegacyEvmBridgeConfigPath"
 }
 
 function Sync-DappConfiguration {
@@ -1670,7 +1829,7 @@ function Sync-DappConfiguration {
         return
     }
 
-    $configureScript = Join-Path $DappRoot 'scripts\configure-local.mjs'
+    $configureScript = Join-Path $DappRoot 'scripts/configure-local.mjs'
     if (-not (Test-Path -LiteralPath $DappRoot -PathType Container) -or
         -not (Test-Path -LiteralPath $configureScript -PathType Leaf)) {
         throw (
@@ -1686,7 +1845,8 @@ function Sync-DappConfiguration {
         return
     }
 
-    $node = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue |
+    $nodeName = if ($IsWindows) { 'node.exe' } else { 'node' }
+    $node = Get-Command $nodeName -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -eq $node) {
         $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue |
@@ -1717,8 +1877,8 @@ function Invoke-NpcFactionFunding {
         Write-Output '[evejs-frontier-world] NPC faction wallet funding skipped explicitly.'
         return
     }
-    $fundingSource = Join-Path $RepoRoot 'scripts\FrontierWorld\fund-npc-factions.ts'
-    $fundingScript = Join-Path $RepoRoot 'scripts\FrontierWorld\fund-npc-factions.js'
+    $fundingSource = Join-Path $RepoRoot 'scripts/FrontierWorld/fund-npc-factions.ts'
+    $fundingScript = Join-Path $RepoRoot 'scripts/FrontierWorld/fund-npc-factions.js'
     $factionsConfig = $NpcFactionConfigPath
     if (-not (Test-Path -LiteralPath $fundingSource -PathType Leaf) -or
         -not (Test-Path -LiteralPath $factionsConfig -PathType Leaf)) {
@@ -1728,13 +1888,15 @@ function Invoke-NpcFactionFunding {
         Write-Output "[evejs-frontier-world] Would top up configured NPC faction wallets after writing $WorldConfigPath"
         return
     }
-    $npm = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue |
+    $npmName = if ($IsWindows) { 'npm.cmd' } else { 'npm' }
+    $npm = Get-Command $npmName -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -eq $npm) {
         $npm = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue |
             Select-Object -First 1
     }
-    $node = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue |
+    $nodeName = if ($IsWindows) { 'node.exe' } else { 'node' }
+    $node = Get-Command $nodeName -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -eq $node) {
         $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue |
@@ -1753,6 +1915,7 @@ function Invoke-NpcFactionFunding {
             throw "NPC faction funding build did not produce: $fundingScript"
         }
         & $node.Source $fundingScript `
+            --build $Build `
             --world-config $WorldConfigPath `
             --factions-config $factionsConfig
         if ($LASTEXITCODE -ne 0) {

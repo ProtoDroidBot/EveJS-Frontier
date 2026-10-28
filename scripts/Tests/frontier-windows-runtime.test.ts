@@ -54,6 +54,9 @@ test("3502403 handshake metadata is scoped to Frontier environment overrides", (
   const configPath = path.join(fixtureRoot, "server", "src", "config", "index.js");
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.copyFileSync(path.join(REPO_ROOT, "server", "src", "config", "index.js"), configPath);
+  for (const file of ["clientBuildProfiles.js", "clientBuildCatalog.json"]) {
+    fs.copyFileSync(path.join(REPO_ROOT, "server", "src", "config", file), path.join(path.dirname(configPath), file));
+  }
   const environment = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith("EVEJS_")),
   );

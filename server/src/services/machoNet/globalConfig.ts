@@ -122,6 +122,7 @@ function buildGlobalConfigEntries(runtimeConfig = getRuntimeConfig()) {
     ...buildSuiClientGlobalConfigEntries(
       runtimeConfig.clientCompatibilityProfile,
     ),
+    ...require("../frontier/legacyEvmSuiBridge").buildLegacyEvmGlobalConfigEntries(runtimeConfig),
     ...buildClientGlobalConfigEntries(),
   ];
 

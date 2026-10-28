@@ -1,5 +1,6 @@
 "use strict";
 const catalog = require("./progressionCatalog3640684.json");
+const { hasServerBuildFeature } = require("../../config/clientBuildProfiles");
 
 // frontier/skills/common/factor.pyc: bonus_at = scale*100*log1p(C/H)/log1p(Cref/H).
 function buildProgressionDogma(split) {
@@ -24,7 +25,7 @@ function buildProgressionDogma(split) {
   return { direct, sources, attributes };
 }
 function getProgressionDogma(characterID) {
-  if (Number(require("../../config").clientBuild) !== 3640684 || !Number.isSafeInteger(Number(characterID)) || Number(characterID) <= 0) return { direct: [], sources: [], attributes: {} };
+  if (!hasServerBuildFeature(require("../../config").clientBuild, "progression") || !Number.isSafeInteger(Number(characterID)) || Number(characterID) <= 0) return { direct: [], sources: [], attributes: {} };
   if (!require("./shellEquipmentRuntime").getActiveShell(Number(characterID))) return { direct: [], sources: [], attributes: {} };
   return buildProgressionDogma(require("./progressionRuntime").getRuntime().complexity(Number(characterID)));
 }

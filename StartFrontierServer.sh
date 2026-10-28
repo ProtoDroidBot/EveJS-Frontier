@@ -3,6 +3,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$(uname -s)" == "Linux" ]]; then
+  exec bash "$REPO_ROOT/StartFrontierServerLinux.sh" "$@"
+fi
 BUILD="3467658"
 RESET_RUNTIME=false
 LOG_LEVEL="2"
@@ -55,6 +58,8 @@ fi
 
 PROJECT_CODENAME="cycle-6"
 if [[ "$BUILD" == "3640684" ]]; then PROJECT_CODENAME="cycle-7"; fi
+CLIENT_VERSION="20.04"
+MACHO_VERSION="489"
 
 GENERATED_ROOT="${REPO_ROOT}/_local/frontier-gameStore/${BUILD}"
 GENERATED_DATA="${GENERATED_ROOT}/data"
@@ -81,6 +86,60 @@ if [[ ! -f "${REPO_ROOT}/node_modules/typescript/bin/tsc" ]]; then
 fi
 echo "[evejs-frontier] Compiling TypeScript ..."
 npm --prefix "$REPO_ROOT" run build
+
+# Exact EVM profiles own their historical handshake fields. Their backend
+# configuration is prepared locally; a missing world never starts Docker.
+EVM_PROFILE_INFO="$(node -e '
+const fs = require("node:fs");
+const catalog = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const profile = catalog.profiles.find(entry => String(entry.clientBuild) === process.argv[2]);
+if (profile?.blockchain?.protocol === "evm") process.stdout.write([
+  profile.id, profile.clientCodename, Number(profile.clientVersion).toFixed(2), profile.machoVersion,
+].join("\t"));
+' "$REPO_ROOT/server/src/config/clientBuildCatalog.json" "$BUILD")"
+SUI_WORLD_CONFIG_PATH="${EVEJS_SUI_WORLD_CONFIG_PATH:-$REPO_ROOT/_local/frontier-world/$BUILD/world.private.json}"
+if [[ "$SUI_WORLD_CONFIG_PATH" != /* ]]; then SUI_WORLD_CONFIG_PATH="$REPO_ROOT/$SUI_WORLD_CONFIG_PATH"; fi
+LEGACY_EVM_ENV=()
+if [[ -n "$EVM_PROFILE_INFO" ]]; then
+  IFS=$'\t' read -r EVM_PROFILE PROJECT_CODENAME CLIENT_VERSION MACHO_VERSION <<< "$EVM_PROFILE_INFO"
+  if [[ -n "${EVEJS_CLIENT_BUILD_PROFILE:-}" && "$EVEJS_CLIENT_BUILD_PROFILE" != "auto" && "$EVEJS_CLIENT_BUILD_PROFILE" != "$EVM_PROFILE" ]]; then
+    echo "[evejs-frontier] EVEJS_CLIENT_BUILD_PROFILE does not match EVM build $BUILD." >&2
+    exit 1
+  fi
+  LEGACY_EVM_PATH="${EVEJS_LEGACY_EVM_SUI_BRIDGE_PATH:-}"
+  if [[ -z "$LEGACY_EVM_PATH" && -f "$SUI_WORLD_CONFIG_PATH" ]]; then
+    LEGACY_EVM_PATH="$(node -e '
+const fs = require("node:fs"), path = require("node:path");
+const file = process.argv[1], world = JSON.parse(fs.readFileSync(file, "utf8"));
+if (Object.hasOwn(world, "legacyEvmBridgePath")) {
+  if (typeof world.legacyEvmBridgePath !== "string" || !world.legacyEvmBridgePath.trim())
+    throw new Error("The world configuration has an invalid EVM backend reference");
+  const manifest = path.resolve(path.dirname(file), world.legacyEvmBridgePath);
+  if (!fs.existsSync(manifest)) throw new Error("Referenced EVM backend secrets are missing; restore them before starting");
+  process.stdout.write(manifest);
+}
+' "$SUI_WORLD_CONFIG_PATH")"
+  fi
+  if [[ -z "$LEGACY_EVM_PATH" ]]; then LEGACY_EVM_PATH="$(dirname -- "$SUI_WORLD_CONFIG_PATH")/legacy-evm-sui.private.json"; fi
+  if [[ "$LEGACY_EVM_PATH" != /* ]]; then LEGACY_EVM_PATH="$REPO_ROOT/$LEGACY_EVM_PATH"; fi
+  LEGACY_SYNC_ARGS=(--world-config "$SUI_WORLD_CONFIG_PATH" --build "$BUILD" --out "$LEGACY_EVM_PATH")
+  if [[ ! -f "$SUI_WORLD_CONFIG_PATH" ]]; then LEGACY_SYNC_ARGS+=(--prepare-only); fi
+  if [[ ! -f "$REPO_ROOT/tools/frontier-contracts/sync-legacy-evm-sui.mjs" ]]; then
+    echo "[evejs-frontier] EVM backend startup requires npm run build:server and npm run build:tools." >&2
+    exit 1
+  fi
+  LEGACY_SYNC_RESULT="$(node "$REPO_ROOT/tools/frontier-contracts/sync-legacy-evm-sui.mjs" "${LEGACY_SYNC_ARGS[@]}")"
+  LEGACY_EVM_PATH="$(printf '%s' "$LEGACY_SYNC_RESULT" | node -e '
+let input=""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => {
+  const result = JSON.parse(input);
+  if (!result.enabled || String(result.clientBuild) !== process.argv[1] || typeof result.manifestPath !== "string")
+    throw new Error("Automatic EVM backend selected a mismatched manifest");
+  process.stdout.write(result.manifestPath);
+});
+' "$BUILD")"
+  LEGACY_EVM_ENV=("EVEJS_CLIENT_BUILD_PROFILE=$EVM_PROFILE" "EVEJS_LEGACY_EVM_SUI_BRIDGE_PATH=$LEGACY_EVM_PATH")
+  echo "[evejs-frontier] EVM-to-Sui backend: $LEGACY_EVM_PATH"
+fi
 
 if [[ "$RESET_RUNTIME" == true && -e "$RUNTIME_ROOT" ]]; then
   if [[ ! -f "$RUNTIME_MARKER" ]]; then
@@ -110,21 +169,23 @@ fi
 
 echo "[evejs-frontier] Runtime: $RUNTIME_ROOT"
 echo "[evejs-frontier] Game TCP: 127.0.0.1:26000"
-echo "[evejs-frontier] Profile: Frontier 20.04 build $BUILD, MachoNet 489, Placebo"
+echo "[evejs-frontier] Profile: Frontier $CLIENT_VERSION build $BUILD, MachoNet $MACHO_VERSION, Placebo"
 
 cd "$REPO_ROOT"
 exec env \
+  "${LEGACY_EVM_ENV[@]}" \
   EVEJS_GAMESTORE_DATA_DIR="$RUNTIME_DATA" \
   EVEJS_COLLISION_BUNDLE_REQUIRED="1" \
   EVEJS_STATIC_JSONL_ROOT="$STATIC_ROOT" \
   EVEJS_CLIENT_COMPATIBILITY_PROFILE="frontier" \
-  EVEJS_CLIENT_VERSION="20.04" \
+  EVEJS_CLIENT_VERSION="$CLIENT_VERSION" \
   EVEJS_CLIENT_BUILD="$BUILD" \
   EVEJS_EVE_BIRTHDAY="170472" \
-  EVEJS_MACHO_VERSION="489" \
+  EVEJS_MACHO_VERSION="$MACHO_VERSION" \
   EVEJS_PROJECT_CODENAME="$PROJECT_CODENAME" \
   EVEJS_PROJECT_REGION="ccp" \
   EVEJS_PROJECT_VERSION="V20.04@ccp" \
+  EVEJS_SUI_WORLD_CONFIG_PATH="$SUI_WORLD_CONFIG_PATH" \
   EVEJS_GAME_SERVER_BIND_HOST="127.0.0.1" \
   EVEJS_GAME_SERVER_HOST="127.0.0.1" \
   EVEJS_SERVER_PORT="26000" \

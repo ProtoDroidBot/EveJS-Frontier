@@ -95,6 +95,31 @@ else {
     )
 }
 
+$ClientBuildCatalog = Get-Content -LiteralPath (Join-Path $RepoRoot 'server\src\config\clientBuildCatalog.json') -Raw | ConvertFrom-Json
+$CatalogBuildProfile = @($ClientBuildCatalog.profiles | Where-Object { [string]$_.clientBuild -eq $Build })
+$LegacyEvmClientBuild = $CatalogBuildProfile.Count -eq 1 -and
+    $null -ne $CatalogBuildProfile[0].PSObject.Properties['blockchain'] -and
+    [string]$CatalogBuildProfile[0].blockchain.protocol -eq 'evm'
+$LegacyEvmBridgeConfigPath = ''
+$LaunchClientBuildProfile = [string]$env:EVEJS_CLIENT_BUILD_PROFILE
+if ($LegacyEvmClientBuild) {
+    $exactProfile = $CatalogBuildProfile[0]
+    if (-not [string]::IsNullOrWhiteSpace($LaunchClientBuildProfile) -and
+        $LaunchClientBuildProfile -ne 'auto' -and $LaunchClientBuildProfile -ne [string]$exactProfile.id) {
+        throw "EVEJS_CLIENT_BUILD_PROFILE does not match requested EVM build $Build."
+    }
+    $LaunchClientBuildProfile = [string]$exactProfile.id
+    $exactVersion = ([double]$exactProfile.clientVersion).ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+    if (($PSBoundParameters.ContainsKey('Codename') -and $Codename -ne [string]$exactProfile.clientCodename) -or
+        ($PSBoundParameters.ContainsKey('ClientVersion') -and $ClientVersion -ne $exactVersion) -or
+        ($PSBoundParameters.ContainsKey('MachoVersion') -and $MachoVersion -ne [int]$exactProfile.machoVersion)) {
+        throw "Explicit handshake overrides do not match the audited identity for EVM build $Build."
+    }
+    $Codename = [string]$exactProfile.clientCodename
+    $ClientVersion = $exactVersion
+    $MachoVersion = [int]$exactProfile.machoVersion
+}
+
 function Test-SamePath {
     param(
         [Parameter(Mandatory)] [string]$Left,
@@ -742,6 +767,38 @@ function Assert-SuiWorldSyncCurrent {
         }
     }
 
+    $energy = if ($null -ne $config.PSObject.Properties['assemblyEnergy']) { $config.assemblyEnergy } else { $null }
+    if ($null -ne $energy -and ($null -ne $energy.PSObject.Properties['sourceClientBuild'] -or
+        $null -ne $energy.PSObject.Properties['compatibilityMode'])) {
+        if (-not $LegacyEvmClientBuild -or [string]$energy.clientBuild -ne $Build -or
+            $null -eq $energy.PSObject.Properties['sourceClientBuild'] -or
+            $energy.sourceClientBuild -isnot [long] -or $energy.sourceClientBuild -le 0 -or
+            [string]$energy.sourceClientBuild -eq $Build -or
+            $null -eq $energy.PSObject.Properties['compatibilityMode'] -or
+            [string]$energy.compatibilityMode -ne 'legacy-evm-to-sui' -or
+            [string]::IsNullOrWhiteSpace($sourceWorkspace) -or $null -eq $artifacts -or
+            $null -eq $artifacts.PSObject.Properties['assemblyEnergySha256']) {
+            throw "Synchronized Sui energy provenance does not match EVM build $Build. Run: $remedy"
+        }
+        $energyPath = Join-Path $sourceWorkspace 'world-contracts\config\assembly-energy.json'
+        try {
+            $sourceEnergy = Get-Content -LiteralPath $energyPath -Raw | ConvertFrom-Json
+            $sourceEnergyHash = (Get-FileHash -LiteralPath $energyPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        catch { throw "Synchronized Sui energy source is unavailable. Run: $remedy" }
+        if ($sourceEnergy.clientBuild -ne $energy.sourceClientBuild -or
+            $sourceEnergyHash -cne ([string]$artifacts.assemblyEnergySha256).ToLowerInvariant() -or
+            @($sourceEnergy.assemblies).Count -ne @($energy.entries).Count) {
+            throw "Synchronized Sui energy source is stale. Run: $remedy"
+        }
+        for ($index = 0; $index -lt @($energy.entries).Count; $index++) {
+            if ($sourceEnergy.assemblies[$index].typeID -ne $energy.entries[$index].typeID -or
+                $sourceEnergy.assemblies[$index].energyRequired -ne $energy.entries[$index].energyRequired) {
+                throw "Synchronized Sui energy entries differ from their source. Run: $remedy"
+            }
+        }
+    }
+
     try {
         $liveChainId = Get-LiveChainIdentifier
     }
@@ -773,6 +830,7 @@ function Assert-ServerDependencies {
 
 function Get-RequiredFrontierListeners {
     $requiredPorts = @(443, 26000, 26101, 26102, 26103, 5222, 26401)
+    if ($Build -eq '2455427') { $requiredPorts += 32811 }
     if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
         return @(
             Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
@@ -874,7 +932,7 @@ function Assert-ListenerPortsAvailable {
 
 function Get-ServerEnvironment {
     $logLevel = if ($Quiet) { '1' } else { '2' }
-    return [ordered]@{
+    $environment = [ordered]@{
         EVEJS_GAMESTORE_DATA_DIR = $RuntimeData
         EVEJS_PERSISTENCE_WORKER = '1'
         EVEJS_COLLISION_BUNDLE_REQUIRED = '1'
@@ -911,6 +969,51 @@ function Get-ServerEnvironment {
         EVEJS_SKIP_NPC_STARTUP = '1'
         EVEJS_LOG_LEVEL = $logLevel
     }
+    if ($LegacyEvmClientBuild) {
+        $environment.EVEJS_CLIENT_BUILD_PROFILE = $LaunchClientBuildProfile
+        $environment.EVEJS_LEGACY_EVM_SUI_BRIDGE_PATH = $LegacyEvmBridgeConfigPath
+    }
+    return $environment
+}
+
+function Initialize-LegacyEvmBackend {
+    param([Parameter(Mandatory)] [string]$NodePath)
+    if (-not $LegacyEvmClientBuild) { return }
+    $selectedPath = [string]$env:EVEJS_LEGACY_EVM_SUI_BRIDGE_PATH
+    if ([string]::IsNullOrWhiteSpace($selectedPath) -and (Test-Path -LiteralPath $SuiWorldConfigPath -PathType Leaf)) {
+        $worldConfig = Get-Content -LiteralPath $SuiWorldConfigPath -Raw | ConvertFrom-Json
+        if ($null -ne $worldConfig.PSObject.Properties['legacyEvmBridgePath']) {
+            $selectedPath = [string]$worldConfig.legacyEvmBridgePath
+            if (-not [string]::IsNullOrWhiteSpace($selectedPath) -and -not [IO.Path]::IsPathFullyQualified($selectedPath)) {
+                $selectedPath = Join-Path (Split-Path -Parent $SuiWorldConfigPath) $selectedPath
+            }
+            if ([string]::IsNullOrWhiteSpace($selectedPath) -or -not (Test-Path -LiteralPath $selectedPath -PathType Leaf)) {
+                throw "Referenced EVM backend secrets are missing; restore them before starting: $selectedPath"
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($selectedPath)) {
+        $selectedPath = Join-Path (Split-Path -Parent $SuiWorldConfigPath) 'legacy-evm-sui.private.json'
+    }
+    if (-not [IO.Path]::IsPathFullyQualified($selectedPath)) { $selectedPath = Join-Path $RepoRoot $selectedPath }
+    $script:LegacyEvmBridgeConfigPath = [IO.Path]::GetFullPath($selectedPath)
+    $syncScript = Join-Path $RepoRoot 'tools\frontier-contracts\sync-legacy-evm-sui.mjs'
+    if (-not (Test-Path -LiteralPath $syncScript -PathType Leaf)) {
+        throw 'EVM backend startup requires compiled tools. Run npm run build:server and npm run build:tools.'
+    }
+    $syncArgs = @($syncScript, '--world-config', $SuiWorldConfigPath, '--build', $Build, '--out', $LegacyEvmBridgeConfigPath)
+    if (-not (Test-Path -LiteralPath $SuiWorldConfigPath -PathType Leaf)) { $syncArgs += '--prepare-only' }
+    $output = & $NodePath @syncArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Automatic EVM-to-Sui backend preparation failed.' }
+    try { $result = ($output -join [Environment]::NewLine) | ConvertFrom-Json }
+    catch { throw 'Automatic EVM-to-Sui backend preparation returned invalid metadata.' }
+    if ($result.enabled -ne $true -or [string]$result.clientBuild -ne $Build -or
+        -not (Test-SamePath -Left ([string]$result.manifestPath) -Right $LegacyEvmBridgeConfigPath)) {
+        throw 'Automatic EVM-to-Sui backend preparation returned a mismatched manifest.'
+    }
+    Import-Module (Join-Path $RepoRoot 'tools\frontier-client\FrontierWindows.Common.psm1') -Force
+    Set-FrontierPrivateFileAcl -Path $LegacyEvmBridgeConfigPath
+    Write-Host "[evejs-frontier] EVM-to-Sui backend: $LegacyEvmBridgeConfigPath"
 }
 
 function Invoke-WithChildEnvironment {
@@ -1022,6 +1125,7 @@ if ($DryRun) {
         Assert-ServerDependencies
         Assert-DappDependencies
         Write-Output '[evejs-frontier] Dry run: would build and start the Smart Assembly dApp on 127.0.0.1:443'
+        if ($LegacyEvmClientBuild) { Write-Output '[evejs-frontier] Dry run: would prepare/synchronize the selected EVM-to-Sui backend.' }
         Write-Output "[evejs-frontier] Dry run: would start build $Build $(if ($Background) { 'in the background' } else { 'in the foreground' })"
     }
     return
@@ -1061,6 +1165,7 @@ $NodePath = Get-NodePath
 $PnpmPath = Get-PnpmPath
 & (Join-Path $RepoRoot 'tools\BuildTypeScript.ps1')
 Assert-ServerDependencies
+Initialize-LegacyEvmBackend -NodePath $NodePath
 Assert-DappDependencies
 Build-Dapp -PnpmPath $PnpmPath
 Assert-ListenerPortsAvailable

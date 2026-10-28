@@ -1,4 +1,5 @@
 const { createFrontierEconomyGatewayService } = require("./frontierEconomyGatewayService");
+const { createLegacyEvmGatewayService } = require("./legacyEvmGatewayService");
 const { createCompatibilityGatewayService } = require("./compatibilityGatewayService");
 const {
   createAssemblyGateGatewayService,
@@ -61,6 +62,7 @@ const { createExplorationGatewayService } = require("./explorationGatewayService
 
 function createGatewayServiceRegistry(context) {
   const services: any[] = [
+    createLegacyEvmGatewayService(context),
     createFrontierEconomyGatewayService(context),
     createAssemblyGateGatewayService(context),
     createAssemblyNetworkNodeGatewayService(context),

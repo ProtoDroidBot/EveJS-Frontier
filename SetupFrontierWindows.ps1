@@ -77,6 +77,54 @@ function Ensure-Prerequisites {
     if ($implementation.Trim() -ne 'CPython') { throw 'CPython 3.12 x64 is required.' }
 }
 
+function Initialize-LegacyEvmBackendConfiguration {
+    param([Parameter(Mandatory)] [string]$NodePath, [Parameter(Mandatory)] [int]$ClientBuild)
+    $catalog = Get-Content -LiteralPath (Join-Path $RepoRoot 'server\src\config\clientBuildCatalog.json') -Raw | ConvertFrom-Json
+    $profile = @($catalog.profiles | Where-Object { [string]$_.clientBuild -eq [string]$ClientBuild })
+    if ($profile.Count -ne 1 -or $null -eq $profile[0].PSObject.Properties['blockchain'] -or
+        [string]$profile[0].blockchain.protocol -ne 'evm') { return }
+    $worldPath = [string]$env:EVEJS_SUI_WORLD_CONFIG_PATH
+    if ([string]::IsNullOrWhiteSpace($worldPath)) {
+        $worldPath = Join-Path $RepoRoot "_local\frontier-world\$ClientBuild\world.private.json"
+    }
+    elseif (-not [IO.Path]::IsPathFullyQualified($worldPath)) { $worldPath = Join-Path $RepoRoot $worldPath }
+    $worldPath = [IO.Path]::GetFullPath($worldPath)
+    $manifestPath = [string]$env:EVEJS_LEGACY_EVM_SUI_BRIDGE_PATH
+    if ([string]::IsNullOrWhiteSpace($manifestPath) -and (Test-Path -LiteralPath $worldPath -PathType Leaf)) {
+        $worldConfig = Get-Content -LiteralPath $worldPath -Raw | ConvertFrom-Json
+        if ($null -ne $worldConfig.PSObject.Properties['legacyEvmBridgePath']) {
+            $manifestPath = [string]$worldConfig.legacyEvmBridgePath
+            if (-not [string]::IsNullOrWhiteSpace($manifestPath) -and -not [IO.Path]::IsPathFullyQualified($manifestPath)) {
+                $manifestPath = Join-Path (Split-Path -Parent $worldPath) $manifestPath
+            }
+            if ([string]::IsNullOrWhiteSpace($manifestPath) -or -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+                throw "Referenced EVM backend secrets are missing; restore them before setup: $manifestPath"
+            }
+        }
+    }
+    $syncScript = Join-Path $RepoRoot 'tools\frontier-contracts\sync-legacy-evm-sui.mjs'
+    if (-not (Test-Path -LiteralPath $syncScript -PathType Leaf)) {
+        throw 'EVM backend setup requires compiled tools. Run npm run build:server and npm run build:tools.'
+    }
+    $syncArgs = @($syncScript, '--world-config', $worldPath, '--build', [string]$ClientBuild, '--prepare-only')
+    if (-not [string]::IsNullOrWhiteSpace($manifestPath)) {
+        if (-not [IO.Path]::IsPathFullyQualified($manifestPath)) { $manifestPath = Join-Path $RepoRoot $manifestPath }
+        $syncArgs += @('--out', [IO.Path]::GetFullPath($manifestPath))
+    }
+    $output = & $NodePath @syncArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Initial EVM-to-Sui backend preparation failed.' }
+    try { $result = ($output -join [Environment]::NewLine) | ConvertFrom-Json }
+    catch { throw 'Initial EVM-to-Sui backend preparation returned invalid metadata.' }
+    if ($result.enabled -eq $true) {
+        if ([int]$result.clientBuild -ne $ClientBuild -or [string]::IsNullOrWhiteSpace([string]$result.manifestPath)) {
+            throw 'Initial EVM-to-Sui backend preparation selected another client build.'
+        }
+        Set-FrontierPrivateFileAcl -Path ([string]$result.manifestPath)
+        Write-SetupStep "Prepared EVM-to-Sui backend: $($result.manifestPath)"
+        Write-Output '[evejs-frontier] FrontierWorld up/sync will bind this configuration to the deployed Sui world.'
+    }
+}
+
 $report = Get-PrerequisiteReport
 if ($Status) {
     Write-Output ($report | ConvertTo-Json -Depth 4)
@@ -96,6 +144,12 @@ if ($DryRun) {
     $client = Invoke-FrontierDiscovery -RepoRoot $RepoRoot -SourceRoot $SourceRoot -Build $Build
     & (Join-Path $RepoRoot 'StageFrontierClient.ps1') -SourceRoot $client.buildRoot `
         -Build ([int]$client.metadata.build) -CopyResFiles:$CopyResFiles -DryRun
+    $catalog = Get-Content -LiteralPath (Join-Path $RepoRoot 'server\src\config\clientBuildCatalog.json') -Raw | ConvertFrom-Json
+    $profile = @($catalog.profiles | Where-Object { [string]$_.clientBuild -eq [string]$client.metadata.build })
+    if ($profile.Count -eq 1 -and $null -ne $profile[0].PSObject.Properties['blockchain'] -and
+        [string]$profile[0].blockchain.protocol -eq 'evm') {
+        Write-Output '[evejs-frontier] Dry run: would prepare the private EVM-to-Sui backend without starting Docker or efctl.'
+    }
     return
 }
 
@@ -137,6 +191,7 @@ try {
 
     $client = Invoke-FrontierDiscovery -RepoRoot $RepoRoot -SourceRoot $SourceRoot -Build $Build
     $Build = [int]$client.metadata.build
+    Initialize-LegacyEvmBackendConfiguration -NodePath $node -ClientBuild $Build
     $snapshot = Join-Path $RepoRoot "_local\frontier-sde\$Build"
     $contracts = Join-Path $RepoRoot "_local\frontier-contracts\$Build"
     $database = Join-Path $RepoRoot "_local\frontier-gameStore\$Build\data"

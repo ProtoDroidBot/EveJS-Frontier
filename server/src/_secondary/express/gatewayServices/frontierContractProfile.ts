@@ -1,8 +1,9 @@
 const protobuf = require("protobufjs");
 const contracts = require("./frontierContracts3640684.json");
+const { hasServerBuildFeature } = require("../../../config/clientBuildProfiles");
 
 function applyFrontier3640684ContractProfile(root, build = require("../../../config").clientBuild) {
-  if (Number(build) !== 3640684) return root;
+  if (!hasServerBuildFeature(build, "publicGatewayContracts")) return root;
   // Replace complete shared messages before compiling encoders. Scalar varints
   // are wire-compatible but not value-compatible (notably sint32 user IDs).
   for (const [name, descriptor] of Object.entries(contracts.types) as Array<[string, any]>) {

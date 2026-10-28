@@ -104,6 +104,7 @@ function buildGlobalConfigEntries(runtimeConfig = getRuntimeConfig()) {
         ],
         ["strafe_enabled", runtimeConfig.strafeEnabled !== false ? "1" : "0"],
         ...buildSuiClientGlobalConfigEntries(runtimeConfig.clientCompatibilityProfile),
+        ...require("../frontier/legacyEvmSuiBridge").buildLegacyEvmGlobalConfigEntries(runtimeConfig),
         ...buildClientGlobalConfigEntries(),
     ];
     const entriesByKey = new Map();

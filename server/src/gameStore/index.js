@@ -254,6 +254,8 @@ const SQLITE_TABLES = new Set([
     "frontierDockingPoints",
     "frontierProgressionState",
     "frontierEconomyState",
+    "frontierLegacyEvmRelayState",
+    "frontierLegacyEvmWalletState",
     "digitalChemistryState",
     "frontierClaims",
     "frontierKillReports",

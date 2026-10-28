@@ -1284,6 +1284,14 @@ function reconcileSuiAssemblyState(assembly, targetStatus, expectedIntentID = nu
     }
     return true;
 }
+const authorizedAssemblyRelay = Symbol("authorized assembly relay");
+/** Internal relay entry: authorization is verified before recording a Sui intent. */
+function requestAuthorizedAssemblyStateTransition(session, itemID, targetStatus) {
+    const prepared = beginAssemblyStateTransition(session, itemID, targetStatus);
+    if (!prepared.success)
+        return prepared;
+    return commitAssemblyStateTransition(session, itemID, prepared.data.transactionUUID, authorizedAssemblyRelay, targetStatus);
+}
 function commitAssemblyStateTransition(session, itemID, transactionUUID, signature, targetStatus) {
     const numericItemID = toInt(itemID, 0);
     const numericTargetStatus = toInt(targetStatus, 0);
@@ -1299,7 +1307,7 @@ function commitAssemblyStateTransition(session, itemID, transactionUUID, signatu
         pending.characterID !== getCharacterID(session)) {
         return { success: false, errorMsg: "ASSEMBLY_TRANSACTION_MISMATCH" };
     }
-    if (!isValidAssemblyTransitionSignature(signature)) {
+    if (signature !== authorizedAssemblyRelay && !isValidAssemblyTransitionSignature(signature)) {
         return { success: false, errorMsg: "INVALID_ASSEMBLY_SIGNATURE" };
     }
     pendingAssemblyTransitions.delete(normalizedUUID);
@@ -4224,6 +4232,7 @@ module.exports = {
     commitGateLinkTransition,
     commitGateUnlinkTransition,
     commitAssemblyStateTransition,
+    requestAuthorizedAssemblyStateTransition,
     completeConstruction,
     completeAssemblyActivation,
     scheduleAssemblyActivation,

@@ -524,6 +524,7 @@ export function startSuiAssemblySync() {
   const log = require("../../utils/logger");
   const env = {
     ...process.env,
+    EVEJS_CLIENT_BUILD: String(config.clientBuild),
     EVEJS_SUI_WORLD_CONFIG_PATH: process.env.EVEJS_SUI_WORLD_CONFIG_PATH ||
       path.resolve(__dirname, "../../../../_local/frontier-world", String(config.clientBuild), "world.private.json"),
   };
@@ -938,6 +939,7 @@ export function startSuiAssemblySync() {
         energyRequirements,
         synced.assemblyEnergy,
         readStaticRows(TABLE.SPACE_COMPONENTS_BY_TYPE),
+        Number(config.clientBuild),
       );
       setAssemblyEnergyConfig(energyRequirements, {
         energyConfigID: context.world.energyConfigId, chainId: synced.chainId,

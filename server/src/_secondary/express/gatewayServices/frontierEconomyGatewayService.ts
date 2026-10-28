@@ -1,6 +1,7 @@
 "use strict";
 const { getFrontierEconomyProtoRoot } = require("./frontierEconomyProto");
 const { bufferFromBytes, encodePayload } = require("./gatewayServiceHelpers");
+const { hasServerBuildFeature } = require("../../../config/clientBuildProfiles");
 const TOKEN = "eve_public.token.exchange.api.";
 const LENS = "eve_public.assembly.relay.lens.api.";
 const WALLET = "eve_public.wallet.api.";
@@ -20,7 +21,7 @@ function uuidText(raw) {
 }
 function createFrontierEconomyGatewayService(context: Record<string, any> = {}) {
   const root = getFrontierEconomyProtoRoot();
-  const active = () => Number(context.clientBuild || require("../../../config").clientBuild) === 3640684;
+  const active = () => hasServerBuildFeature(context.clientBuild || require("../../../config").clientBuild, "economy");
   const runtime = () => context.frontierEconomyRuntime || require("../../../services/frontier/frontierEconomyRuntime").getFrontierEconomyRuntime();
   function identity(envelope) {
     const trusted = context.resolveGatewayIdentity && context.resolveGatewayIdentity(envelope);
