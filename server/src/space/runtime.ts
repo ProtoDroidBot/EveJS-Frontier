@@ -3,6 +3,7 @@ import type { OperationResult } from "./types";
 import type { Vector3 } from "./types";
 
 const crypto = require("crypto");
+const FRONTIER_ACTIVITY_RUNTIME_ID = crypto.randomUUID();
 const path = require("path");
 const { performance } = require("perf_hooks");
 
@@ -26,6 +27,9 @@ const rotatingLog = require(path.join(__dirname, "../utils/rotatingLog"));
 const syncLedger = require(path.join(__dirname, "../network/syncLedger"));
 const spatialTrace = require(path.join(__dirname, "../network/spatialTrace"));
 const tickProfiler = require(path.join(__dirname, "tickProfiler"));
+const worldPlanningPool = require(path.join(__dirname, "./worldPlanningPool"));
+const DEFAULT_SCENE_BOOTSTRAP_COMMIT_BATCH_SIZE = 24;
+const DEFAULT_SCENE_BOOTSTRAP_TIMEOUT_MS = 30_000;
 
 function traceVisibilityEligibilityResult(
   scene,
@@ -51,6 +55,9 @@ const AIR_CIVILIAN_ASTERO_TYPE_ID = 58745;
 
 const config = require(path.join(__dirname, "../config"));
 const log = require(path.join(__dirname, "../utils/logger"));
+const {
+  createAdaptiveTickRateController,
+} = require(path.join(__dirname, "../utils/adaptiveTickRate"));
 const {
   isFrontierProfile: isFrontierStartupProfile,
   resolveDefaultStartupSystemIDs,
@@ -82,9 +89,12 @@ const {
   ATTRIBUTE_FUEL_EFFICIENCY,
   ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY,
   ATTRIBUTE_FUEL_VOLATILITY,
+  ATTRIBUTE_WARP_FUEL_RATE,
   calculateFueledCapacitorRecharge,
+  calculateWarpFuelConsumptionRate,
   getShipFuelCharge,
   getShipFuelQueue,
+  getShipFuelProperties,
   getShipFuelTypeID,
   normalizeFuelQueue,
   resolveShipFuelTank,
@@ -113,6 +123,7 @@ const {
 } = require(path.join(__dirname, "./destiny/identity/entityID.js"));
 const {
   canEntitiesInteractLocally,
+  resolveEntityInteractionScope,
 } = require(path.join(__dirname, "./destiny/identity/interactionScope.js"));
 const {
   CLIENT_WARP_VISUAL_ACTIVATION_ACCELERATION_MS2,
@@ -132,6 +143,9 @@ const {
   buildStaticVisibilityDeltaPlan,
 } = require(path.join(__dirname, "./destiny/visibility/delta.js"));
 const {
+  forceResolveScanningContact,
+  forgetResolvedScanningContact,
+  isCombatResolvedScanningContact,
   isScanningContactResolved,
   recordEntityScannerEmissionActivity,
   replaceResolvedScanningContacts,
@@ -146,6 +160,10 @@ const temperatureRuntime = require(path.join(
 const environmentalEffectsRuntime = require(path.join(
   __dirname,
   "../services/frontier/environmentalEffectsService.js",
+));
+const berthingRuntime = require(path.join(
+  __dirname,
+  "../services/frontier/berthingRuntime.js",
 ));
 const npcMetamorphosisRuntime = require(path.join(
   __dirname,
@@ -363,6 +381,7 @@ const {
   getEffectTypeRecord,
   getLoadedChargeByFlag,
   isChargeCompatibleWithModule,
+  isEffectivelyOnlineModule,
   isModuleOnline,
   isStructureDogmaHost,
   resolveDogmaSkillMapForHost,
@@ -406,9 +425,17 @@ const {
   summarizeNpcCombatModule,
 } = require(path.join(__dirname, "./npc/npcCombatDebug"));
 const {
+  resolveCollisionSafeScenePosition,
+} = require(path.join(__dirname, "./npc/npcWarpOrigins"));
+const {
   buildStartupPresenceSummary,
   getSceneActivityState,
 } = require(path.join(__dirname, "./npc/npcSceneActivity"));
+const {
+  initializeSceneIdleLifecycle,
+  recordScenePlayerActivity,
+  getSceneIdleLifecycleState,
+} = require(path.join(__dirname, "./sceneIdleLifecycle"));
 const {
   materializeAmbientStartupControllersForScene,
   dematerializeAmbientStartupControllersForScene,
@@ -578,8 +605,18 @@ const {
 const {
   findSweptWeaponOccluder,
   findWeaponLineOccluder,
+  isEntityCollisionMover,
   resolveEntityMovementCollision,
 } = require(path.join(__dirname, "./destiny/simulation/collisions.js"));
+const {
+  processCollisionContacts,
+} = require(path.join(__dirname, "./destiny/simulation/collisionImpact.js"));
+const {
+  buildSetBallVelocityPayload,
+} = require(path.join(__dirname, "./destiny/stream/actions.js"));
+const {
+  npcRetainsOccludedTargetLocks,
+} = require(path.join(__dirname, "./npc/npcBehaviorCapabilities.js"));
 const {
   createNativeSubwarpController,
 } = require(path.join(__dirname, "./destiny/simulation/nativeSubwarp.js"));
@@ -637,6 +674,10 @@ const {
   applyPropulsionMotionTimingCommand,
   restoreCommandedSpeedFractionCommand,
 } = require(path.join(__dirname, "./destiny/commands/shipDerivedMotion.js"));
+const {
+  resolveMassAdjustedMaxVelocity,
+  resolveMassMobilityMultiplier,
+} = require(path.join(__dirname, "./destiny/simulation/massDynamics.js"));
 const {
   materializeDormantCombatControllersForScene,
   dematerializeDormantCombatControllersForScene,
@@ -1342,6 +1383,8 @@ function isMobileAnalysisBeaconCloakBlocked(entity, nowMs = Date.now()) {
 
 function isShipMovementLockedByRuntime(entity, nowMs = Date.now()) {
   return (
+    Boolean(entity && entity.frontierDockingPointID) ||
+    berthingRuntime.isShipEntityBerthed(entity) ||
     isEntityBastionLocked(entity) ||
     isSuperweaponMovementLocked(entity, nowMs) ||
     isMobileAnalysisBeaconMovementLocked(entity, nowMs) ||
@@ -1534,6 +1577,72 @@ function distanceSquared(left, right) {
   return (dx ** 2) + (dy ** 2) + (dz ** 2);
 }
 
+function scheduleAfterSessionOutboundDrain(session, isStillUsable, callback) {
+  if (typeof callback !== "function") {
+    return false;
+  }
+  const scheduleMacrotask =
+    typeof setImmediate === "function"
+      ? setImmediate
+      : (task) => setTimeout(task, 0);
+  let complete = false;
+  const sessionIsUsable = () => (
+    !complete &&
+    (typeof isStillUsable !== "function" || isStillUsable())
+  );
+  const waitForStableOutboundTail = () => {
+    if (!sessionIsUsable()) {
+      complete = true;
+      return;
+    }
+    const observedTail = session && session._outboundWriteTail;
+    Promise.resolve(observedTail).then(() => {
+      scheduleMacrotask(() => {
+        if (!sessionIsUsable()) {
+          complete = true;
+          return;
+        }
+        // The RPC dispatcher queues its response only after the service handler
+        // returns. Waiting one macrotask and then observing a stable, empty tail
+        // guarantees that response has been encoded and written before any
+        // expensive post-bootstrap scene restoration can block the event loop.
+        if (
+          (session && session._outboundWriteTail) !== observedTail ||
+          toInt(session && session._queuedOutboundPackets, 0) > 0
+        ) {
+          waitForStableOutboundTail();
+          return;
+        }
+        complete = true;
+        callback();
+      });
+    });
+  };
+  scheduleMacrotask(waitForStableOutboundTail);
+  return true;
+}
+
+function flushPendingInitialBallparkPostBootstrap(session) {
+  const initialBallparkGeneration = session && session._space;
+  const callback =
+    initialBallparkGeneration &&
+    initialBallparkGeneration.pendingInitialBallparkPostBootstrap;
+  if (typeof callback !== "function") {
+    return false;
+  }
+  initialBallparkGeneration.pendingInitialBallparkPostBootstrap = null;
+  return scheduleAfterSessionOutboundDrain(
+    session,
+    () => Boolean(
+      session &&
+      session._space === initialBallparkGeneration &&
+      initialBallparkGeneration.initialStateSent === true &&
+      !(session.socket && session.socket.destroyed)
+    ),
+    callback,
+  );
+}
+
 const UNIVERSE_SITE_ATTACH_AUTO_MATERIALIZE_RANGE_METERS = 1_000_000;
 const UNIVERSE_SITE_ATTACH_AUTO_MATERIALIZE_RANGE_SQUARED =
   UNIVERSE_SITE_ATTACH_AUTO_MATERIALIZE_RANGE_METERS ** 2;
@@ -1624,6 +1733,125 @@ function autoMaterializeNearbyUniverseSiteForAttach(scene, anchorEntity, options
       `[SpaceRuntime] attach-session site auto-materialize failed for system=${toInt(scene && scene.systemID, 0)}: ${error.message}`,
     );
     return null;
+  }
+}
+
+function initializeSessionlessWarpDestination(
+  scene,
+  arrivingEntity,
+  destinationPoint,
+  options: Record<string, any> = {},
+) {
+  if (!scene || !arrivingEntity) {
+    return {
+      success: false as const,
+      errorMsg: "SCENE_NOT_FOUND",
+    };
+  }
+
+  const nowMs = toFiniteNumber(
+    options.nowMs,
+    typeof scene.getCurrentSimTimeMs === "function"
+      ? scene.getCurrentSimTimeMs()
+      : Date.now(),
+  );
+  const targetEntityID = toInt(options.targetEntityID, 0);
+  const targetEntity = targetEntityID > 0 && typeof scene.getEntityByID === "function"
+    ? scene.getEntityByID(targetEntityID)
+    : null;
+  const destinationAnchor = targetEntity || {
+    position: cloneVector(destinationPoint),
+  };
+
+  try {
+    // Scene creation normally performs these steps. Keeping them here as
+    // idempotent guards means an NPC can be the first actor to make a lazily
+    // prepared celestial or resource grid live.
+    if (scene._asteroidFieldsInitialized !== true) {
+      const asteroidService = lazyRequire("./asteroids");
+      if (asteroidService && typeof asteroidService.handleSceneCreated === "function") {
+        const asteroidResult = asteroidService.handleSceneCreated(scene);
+        if (asteroidResult && asteroidResult.success === false) {
+          return asteroidResult;
+        }
+      }
+    }
+
+    if (
+      config.miningEnabled === true &&
+      scene._miningResourceSitesInitialized !== true
+    ) {
+      const miningResourceSiteService = lazyRequire(
+        "../services/mining/miningResourceSiteService",
+      );
+      if (
+        miningResourceSiteService &&
+        typeof miningResourceSiteService.handleSceneCreated === "function"
+      ) {
+        const miningSiteResult = miningResourceSiteService.handleSceneCreated(scene);
+        if (miningSiteResult && miningSiteResult.success === false) {
+          return miningSiteResult;
+        }
+      }
+    }
+
+    const requestedInstanceID = normalizePersistentEntityID(
+      options.destinationStaticInstanceID,
+    );
+    const targetScope = resolveEntityInteractionScope(targetEntity);
+    const targetInstanceID =
+      targetScope && targetScope.valid && targetScope.hasDungeonScope
+        ? targetScope.dungeonInstanceID
+        : null;
+    const destinationInstanceID = requestedInstanceID ?? targetInstanceID;
+    const dungeonResult = destinationInstanceID !== null
+      ? materializeDungeonWarpDestination(
+          scene,
+          null,
+          destinationInstanceID,
+          { nowMs },
+        )
+      : autoMaterializeNearbyUniverseSiteForAttach(scene, destinationAnchor, {
+          broadcast: true,
+          excludedSession: null,
+          session: null,
+          nowMs,
+        });
+    if (dungeonResult && dungeonResult.success === false) {
+      return dungeonResult;
+    }
+
+    if (config.miningEnabled === true && !scene._miningRuntimeState) {
+      const miningRuntimeState = lazyRequire(
+        "../services/mining/miningRuntimeState",
+      );
+      if (
+        miningRuntimeState &&
+        typeof miningRuntimeState.ensureSceneMiningState === "function"
+      ) {
+        miningRuntimeState.ensureSceneMiningState(scene);
+      }
+    }
+
+    return {
+      success: true as const,
+      data: {
+        targetEntityID: targetEntity ? targetEntity.itemID : null,
+        dungeonInstanceID: destinationInstanceID,
+        dungeonMaterialized: Boolean(dungeonResult),
+        asteroidFieldsInitialized: scene._asteroidFieldsInitialized === true,
+        miningSitesInitialized: scene._miningResourceSitesInitialized === true,
+        miningStateInitialized: Boolean(scene._miningRuntimeState),
+      },
+    };
+  } catch (error) {
+    log.warn(
+      `[SpaceRuntime] NPC warp destination initialization failed system=${toInt(scene.systemID, 0)} ship=${toInt(arrivingEntity.itemID, 0)} target=${targetEntityID}: ${error.message}`,
+    );
+    return {
+      success: false as const,
+      errorMsg: "NPC_WARP_DESTINATION_INITIALIZATION_FAILED",
+    };
   }
 }
 
@@ -3575,8 +3803,8 @@ function getEntityRuntimeShipItem(entity) {
   if (characterID > 0) {
     return structureDogmaHost
       ? buildRuntimeShipItemFromEntity(entity)
-      : resolveActiveShipRecord(characterID) ||
-        findShipItemById(entity.itemID) ||
+      : findShipItemById(entity.itemID) ||
+        resolveActiveShipRecord(characterID) ||
         buildRuntimeShipItemFromEntity(entity);
   }
 
@@ -3630,6 +3858,466 @@ function getCreationDogmaShipAttributeModifierEntries(creationDogmaContext) {
     Array.isArray(creationDogmaContext.shipAttributeModifierEntries)
     ? creationDogmaContext.shipAttributeModifierEntries
     : [];
+}
+
+const CREATION_ATTRIBUTE_POWER_OUTPUT = 11;
+const CREATION_ATTRIBUTE_POWER_LOAD = 15;
+const CREATION_ATTRIBUTE_POWER = 30;
+const CREATION_ATTRIBUTE_RECHARGE_RATE = 55;
+const CREATION_ATTRIBUTE_CAPACITOR_CAPACITY = 482;
+const CREATION_ATTRIBUTE_SOLAR_CHARGE_RATE = 6355;
+const CREATION_ATTRIBUTE_CONTAINMENT_REDUCTION = 6341;
+const WARP_CAPACITOR_COST_RATIO = 0.15;
+const CREATION_TYPE_BLACKSTART_CELL = 96055;
+const CREATION_EFFECT_ONLINE = 16;
+const CREATION_EFFECT_POWER_OUTPUT_ADD_ONLINE = 3782;
+const CREATION_EFFECT_PROCESS_POWER_ADD_ONLINE = 12326;
+const CREATION_EFFECT_CAPACITOR_CAPACITY_ADD_ONLINE = 3811;
+const CREATION_EFFECT_CAPACITOR_CAPACITY_ADD_PASSIVE = 12921;
+const CREATION_EFFECT_CAPACITOR_BATTERY_ONLINE = 12922;
+const CREATION_EFFECT_WARP_FUEL_RATE = 12917;
+
+/** Reproduce the Frontier client's Creation power-grid inputs from the set of
+ * modules which are actually online. Creation modules live on the hidden
+ * fitting flag, so the ordinary EVE fitting resource calculator cannot see
+ * their generator output or power demand. */
+function calculateCreationPowerState(
+  creationDogmaContext,
+  deps: Record<string, any> = {},
+) {
+  if (
+    !creationDogmaContext ||
+    !Array.isArray(creationDogmaContext.moduleItems)
+  ) {
+    return null;
+  }
+
+  let powerOutput = 0;
+  let powerLoad = 0;
+  let capacitorCapacity = 0;
+  let capacitorRechargeRate = 0;
+  let capacitorDischargeRate = 0;
+  let blackstartCapacity = 0;
+  let blackstartSolarChargeRate = 0;
+  let warpFuelRate = 0;
+  const onlineModuleIDs: any[] = [];
+  const propulsionModuleIDs: any[] = [];
+  const resolveAttributes = typeof deps.buildEffectiveItemAttributeMap === "function"
+    ? deps.buildEffectiveItemAttributeMap
+    : buildEffectiveItemAttributeMap;
+  const resolveEffects = typeof deps.getTypeDogmaEffects === "function"
+    ? deps.getTypeDogmaEffects
+    : getTypeDogmaEffects;
+
+  for (const moduleItem of creationDogmaContext.moduleItems) {
+    if (!moduleItem || moduleItem.moduleState?.online !== true) {
+      continue;
+    }
+    const moduleID = toInt(moduleItem.itemID, 0);
+    const typeID = toInt(moduleItem.typeID, 0);
+    if (typeID <= 0) {
+      continue;
+    }
+    onlineModuleIDs.push(moduleID);
+    const attributes = resolveAttributes(moduleItem) || {};
+    const effects = resolveEffects(typeID);
+    if (effects.has(CREATION_EFFECT_POWER_OUTPUT_ADD_ONLINE)) {
+      powerOutput += Math.max(
+        0,
+        toFiniteNumber(attributes[CREATION_ATTRIBUTE_POWER_OUTPUT], 0),
+      );
+    }
+    if (
+      effects.has(CREATION_EFFECT_PROCESS_POWER_ADD_ONLINE) ||
+      effects.has(CREATION_EFFECT_ONLINE)
+    ) {
+      powerLoad += Math.max(
+        0,
+        toFiniteNumber(attributes[CREATION_ATTRIBUTE_POWER], 0),
+      );
+    }
+    if (effects.has(CREATION_EFFECT_WARP_FUEL_RATE)) {
+      warpFuelRate += toFiniteNumber(attributes[ATTRIBUTE_WARP_FUEL_RATE], 0);
+      if (moduleID > 0) {
+        propulsionModuleIDs.push(moduleID);
+      }
+    }
+
+    const hasCapacitorCapacity =
+      effects.has(CREATION_EFFECT_CAPACITOR_CAPACITY_ADD_PASSIVE) ||
+      effects.has(CREATION_EFFECT_CAPACITOR_CAPACITY_ADD_ONLINE);
+    if (!hasCapacitorCapacity) {
+      continue;
+    }
+    capacitorCapacity += Math.max(
+      0,
+      toFiniteNumber(attributes[CREATION_ATTRIBUTE_CAPACITOR_CAPACITY], 0),
+    );
+    if (typeID === CREATION_TYPE_BLACKSTART_CELL) {
+      blackstartCapacity += Math.max(
+        0,
+        toFiniteNumber(attributes[CREATION_ATTRIBUTE_CAPACITOR_CAPACITY], 0),
+      );
+      blackstartSolarChargeRate += Math.max(
+        0,
+        toFiniteNumber(attributes[CREATION_ATTRIBUTE_SOLAR_CHARGE_RATE], 0),
+      );
+      // Blackstart recharge is admitted by direct starlight below. It must
+      // not enter the generator/headroom path or consume fuel.
+      continue;
+    }
+    if (
+      effects.has(CREATION_EFFECT_CAPACITOR_BATTERY_ONLINE) ||
+      effects.has(CREATION_EFFECT_CAPACITOR_CAPACITY_ADD_ONLINE)
+    ) {
+      capacitorRechargeRate += Math.max(
+        0,
+        toFiniteNumber(attributes[CREATION_ATTRIBUTE_RECHARGE_RATE], 0),
+      );
+      capacitorDischargeRate += Math.max(
+        0,
+        toFiniteNumber(attributes[CREATION_ATTRIBUTE_POWER_OUTPUT], 0),
+      );
+    }
+  }
+
+  return {
+    powerOutput: roundNumber(powerOutput, 6),
+    powerLoad: roundNumber(powerLoad, 6),
+    capacitorCapacity: roundNumber(capacitorCapacity, 6),
+    capacitorRechargeRate: roundNumber(capacitorRechargeRate, 6),
+    capacitorDischargeRate: roundNumber(capacitorDischargeRate, 6),
+    blackstartCapacity: roundNumber(blackstartCapacity, 6),
+    blackstartSolarChargeRate: roundNumber(blackstartSolarChargeRate, 6),
+    warpFuelRate: roundNumber(warpFuelRate, 6),
+    onlineModuleIDs,
+    propulsionModuleIDs,
+  };
+}
+
+function applyCreationPowerStateToResourceState(
+  resourceState,
+  creationDogmaContext,
+) {
+  const creationPowerState = calculateCreationPowerState(creationDogmaContext);
+  if (!resourceState || !creationPowerState) {
+    return creationPowerState;
+  }
+  resourceState.powerOutput = creationPowerState.powerOutput;
+  resourceState.powerLoad = creationPowerState.powerLoad;
+  resourceState.capacitorCapacity = creationPowerState.capacitorCapacity;
+  resourceState.capacitorRechargeRate =
+    creationPowerState.capacitorRechargeRate;
+  if (resourceState.attributes && typeof resourceState.attributes === "object") {
+    resourceState.attributes[CREATION_ATTRIBUTE_POWER_OUTPUT] =
+      creationPowerState.powerOutput;
+    resourceState.attributes[CREATION_ATTRIBUTE_POWER_LOAD] =
+      creationPowerState.powerLoad;
+    resourceState.attributes[CREATION_ATTRIBUTE_CAPACITOR_CAPACITY] =
+      creationPowerState.capacitorCapacity;
+    resourceState.attributes[CREATION_ATTRIBUTE_RECHARGE_RATE] =
+      creationPowerState.capacitorRechargeRate;
+  }
+  return creationPowerState;
+}
+
+const REGULAR_SHIP_ENGINE_FLAG_ID = 37;
+
+/**
+ * Regular Frontier ships receive their linear capacitor recharge rate from
+ * the fitted engine, rather than from the hull. The ordinary fitting resource
+ * state already contains the online engine/consumer power load and generator
+ * output; only the engine's authored recharge attribute needs to be folded in
+ * here. Creation-family hulls do not use this path because their hidden
+ * modular capacitor modules are handled by calculateCreationPowerState.
+ */
+function calculateRegularShipFuelPowerState(
+  resourceState,
+  fittedItems = null,
+  deps: Record<string, any> = {},
+) {
+  if (!resourceState || typeof resourceState !== "object") {
+    return null;
+  }
+
+  const items = Array.isArray(fittedItems)
+    ? fittedItems
+    : Array.isArray(resourceState.fittedItems)
+      ? resourceState.fittedItems
+      : [];
+  const engineModuleIDs: any[] = [];
+  const onlineEngineModuleIDs: any[] = [];
+  let capacitorRechargeRate = 0;
+  let warpFuelRate = 0;
+  const resolveAttributes = typeof deps.buildEffectiveItemAttributeMap === "function"
+    ? deps.buildEffectiveItemAttributeMap
+    : buildEffectiveItemAttributeMap;
+
+  for (const moduleItem of items) {
+    if (toInt(moduleItem && moduleItem.flagID, 0) !== REGULAR_SHIP_ENGINE_FLAG_ID) {
+      continue;
+    }
+    const moduleID = toInt(moduleItem && moduleItem.itemID, 0);
+    if (moduleID > 0) {
+      engineModuleIDs.push(moduleID);
+    }
+    if (!isEffectivelyOnlineModule(moduleItem)) {
+      continue;
+    }
+    if (moduleID > 0) {
+      onlineEngineModuleIDs.push(moduleID);
+    }
+    const attributes = resolveAttributes(moduleItem) || {};
+    capacitorRechargeRate += Math.max(
+      0,
+      toFiniteNumber(attributes[CREATION_ATTRIBUTE_RECHARGE_RATE], 0),
+    );
+    const authoredWarpFuelRate = toFiniteNumber(
+      attributes[ATTRIBUTE_WARP_FUEL_RATE],
+      0,
+    );
+    // EngineDogmaItem.add_warp_modifiers authors -0.5 when an engine leaves
+    // warpFuelRate at zero.
+    warpFuelRate += authoredWarpFuelRate === 0 ? -0.5 : authoredWarpFuelRate;
+  }
+
+  if (engineModuleIDs.length === 0) {
+    return null;
+  }
+
+  return {
+    powerOutput: roundNumber(toFiniteNumber(resourceState.powerOutput, 0), 6),
+    powerLoad: roundNumber(toFiniteNumber(resourceState.powerLoad, 0), 6),
+    capacitorRechargeRate: roundNumber(capacitorRechargeRate, 6),
+    warpFuelRate: roundNumber(warpFuelRate, 6),
+    engineModuleIDs,
+    onlineEngineModuleIDs,
+  };
+}
+
+function applyRegularShipFuelPowerStateToResourceState(
+  resourceState,
+  creationPowerState,
+) {
+  if (creationPowerState) {
+    return null;
+  }
+  const regularFuelPowerState = calculateRegularShipFuelPowerState(resourceState);
+  if (!resourceState || !regularFuelPowerState) {
+    return regularFuelPowerState;
+  }
+  resourceState.capacitorRechargeRate =
+    regularFuelPowerState.capacitorRechargeRate;
+  if (resourceState.attributes && typeof resourceState.attributes === "object") {
+    resourceState.attributes[CREATION_ATTRIBUTE_RECHARGE_RATE] =
+      regularFuelPowerState.capacitorRechargeRate;
+  }
+  return regularFuelPowerState;
+}
+
+/**
+ * Validate only the resources required to begin an in-system warp.  Fuel is
+ * not reserved here: the active warp process consumes it continuously, so a
+ * ship which cancels during alignment pays no warp-fuel charge.
+ *
+ * Tankless legacy hulls retain their existing behavior. Native NPCs also stay
+ * on that compatibility path until their persistent profile explicitly opts
+ * into fuel requirements; this prevents existing fleets from being stranded
+ * before NPC refuelling behavior is available.
+ */
+function checkEntityWarpFuelAvailability(
+  entity,
+  deps: Record<string, any> = {},
+) {
+  if (!entity || entity.kind !== "ship") {
+    return { success: false, errorMsg: "SHIP_NOT_FOUND" };
+  }
+
+  if (
+    isNativeNpcEntity(entity) &&
+    entity.npcFuelRequirementsEnabled !== true
+  ) {
+    return {
+      success: true,
+      skipped: true,
+      reason: "NPC_FUEL_NOT_PROVISIONED",
+    };
+  }
+
+  const runtimeShipItem = buildRuntimeShipItemFromEntity(entity);
+  const derivedFuelCapacity = Math.max(
+    0,
+    getEntityPassiveAttribute(entity, ATTRIBUTE_FUEL_CAPACITY, 0),
+  );
+  let fuelTank = resolveShipFuelTank(runtimeShipItem, derivedFuelCapacity, deps);
+  if (
+    !fuelTank.creationType &&
+    fuelTank.baseCapacity > 0 &&
+    fuelTank.capacity <= 0
+  ) {
+    fuelTank = resolveShipFuelTank(runtimeShipItem, fuelTank.baseCapacity, deps);
+  }
+
+  if (!fuelTank.creationType && fuelTank.baseCapacity <= 0) {
+    return {
+      success: true,
+      skipped: true,
+      reason: "TANKLESS_LEGACY_SHIP",
+      fuelTank,
+    };
+  }
+
+  const creationPowerState = entity.creationPowerState || null;
+  const regularFuelPowerState = creationPowerState
+    ? null
+    : entity.regularFuelPowerState ||
+      calculateRegularShipFuelPowerState(
+        entity.passiveDerivedState || {},
+        null,
+        deps,
+      );
+  const fuelPowerState = creationPowerState || regularFuelPowerState;
+  const warpFuelProfile = fuelTank.creationType ? "creation" : "regular-engine";
+  const onlinePropulsionModuleIDs = creationPowerState
+    ? creationPowerState.propulsionModuleIDs
+    : regularFuelPowerState && regularFuelPowerState.onlineEngineModuleIDs;
+  const warpFuelRate = toFiniteNumber(
+    fuelPowerState && fuelPowerState.warpFuelRate,
+    0,
+  );
+
+  if (
+    !Array.isArray(onlinePropulsionModuleIDs) ||
+    onlinePropulsionModuleIDs.length === 0 ||
+    warpFuelRate >= 0
+  ) {
+    return {
+      success: false,
+      errorMsg: "PROPULSION_REQUIRED",
+      data: { fuelTank, warpFuelProfile, warpFuelRate },
+    };
+  }
+
+  const fuelProperties = getShipFuelProperties(entity, deps);
+  const fuelCharge = getShipFuelCharge(entity);
+  const consumptionRate = calculateWarpFuelConsumptionRate({
+    warpFuelRate,
+    shipMass: entity.mass,
+    fuelProperties,
+    profile: warpFuelProfile,
+  });
+  if (
+    !fuelTank.supported ||
+    fuelCharge <= 0 ||
+    toInt(fuelProperties.activeFuelTypeID, 0) <= 0 ||
+    consumptionRate <= 0
+  ) {
+    return {
+      success: false,
+      errorMsg: "NO_FUEL",
+      data: {
+        fuelTank,
+        fuelCharge,
+        fuelProperties,
+        warpFuelProfile,
+        warpFuelRate,
+      },
+    };
+  }
+
+  return {
+    success: true,
+    data: {
+      fuelTank,
+      fuelCharge,
+      fuelProperties,
+      warpFuelProfile,
+      warpFuelRate,
+      consumptionRate,
+      onlinePropulsionModuleIDs: [...onlinePropulsionModuleIDs],
+    },
+  };
+}
+
+/**
+ * Every in-system warp requires and consumes fifteen percent of the ship's
+ * total capacitor capacity. The command path uses this read-only check before
+ * creating destination/departure side effects, then repeats it at activation
+ * because alignment-time module use may have changed the available charge.
+ */
+function checkEntityWarpCapacitorAvailability(entity) {
+  if (!entity || entity.kind !== "ship") {
+    return { success: false, errorMsg: "SHIP_NOT_FOUND" };
+  }
+
+  const capacitorCapacity = Math.max(
+    0,
+    toFiniteNumber(entity.capacitorCapacity, 0),
+  );
+  const currentCapacitorAmount = getEntityCapacitorAmount(entity);
+  const requiredCapacitorAmount = capacitorCapacity * WARP_CAPACITOR_COST_RATIO;
+  if (
+    capacitorCapacity <= 0 ||
+    currentCapacitorAmount + 1e-6 < requiredCapacitorAmount
+  ) {
+    return {
+      success: false,
+      errorMsg: "NOT_ENOUGH_CAPACITOR",
+      data: {
+        capacitorCapacity,
+        currentCapacitorAmount,
+        requiredCapacitorAmount,
+        requiredCapacitorRatio: WARP_CAPACITOR_COST_RATIO,
+      },
+    };
+  }
+
+  return {
+    success: true,
+    data: {
+      capacitorCapacity,
+      currentCapacitorAmount,
+      requiredCapacitorAmount,
+      requiredCapacitorRatio: WARP_CAPACITOR_COST_RATIO,
+    },
+  };
+}
+
+function consumeEntityWarpCapacitor(entity, nowMs = Date.now()) {
+  const availability = checkEntityWarpCapacitorAvailability(entity);
+  if (!availability.success) {
+    return availability;
+  }
+
+  const previousCapacitorAmount = availability.data.currentCapacitorAmount;
+  if (!consumeEntityCapacitor(
+    entity,
+    availability.data.requiredCapacitorAmount,
+  )) {
+    return {
+      success: false,
+      errorMsg: "NOT_ENOUGH_CAPACITOR",
+      data: availability.data,
+    };
+  }
+
+  if (entity.session && isReadyForDestiny(entity.session)) {
+    notifyCapacitorChangeToSession(
+      entity.session,
+      entity,
+      nowMs,
+      previousCapacitorAmount,
+    );
+  }
+  return {
+    success: true,
+    data: {
+      ...availability.data,
+      consumedCapacitorAmount: availability.data.requiredCapacitorAmount,
+      nextCapacitorAmount: getEntityCapacitorAmount(entity),
+      nextCapacitorRatio: getEntityCapacitorRatio(entity),
+    },
+  };
 }
 
 function getEntityRuntimeFittedItems(entity) {
@@ -3700,6 +4388,33 @@ function getEntityRuntimeModuleOwnerItems(entity, options: Record<string, any> =
     moduleOwnerItems.push(moduleItem);
   }
   return moduleOwnerItems;
+}
+
+function hasExplicitOfflineModuleState(moduleItem) {
+  return Boolean(
+    moduleItem &&
+    moduleItem.moduleState &&
+    typeof moduleItem.moduleState === "object" &&
+    Object.prototype.hasOwnProperty.call(moduleItem.moduleState, "online") &&
+    moduleItem.moduleState.online !== true
+  );
+}
+
+function shouldStopEffectForUnavailableModule(moduleItem) {
+  return !moduleItem || hasExplicitOfflineModuleState(moduleItem);
+}
+
+function isEntityRuntimeModuleOnline(moduleItem) {
+  if (!moduleItem) {
+    return false;
+  }
+  // Creation modules use hidden fitting flag 183, outside the ordinary EVE
+  // fitting ranges. Their Creation Dogma context always supplies an explicit
+  // online state, including the ship-wide powered-off override.
+  if (toInt(moduleItem.flagID, 0) === 183) {
+    return !hasExplicitOfflineModuleState(moduleItem);
+  }
+  return isEffectivelyOnlineModule(moduleItem);
 }
 
 function getEntityRuntimeModuleItem(entity, moduleID = 0, moduleFlagID = 0) {
@@ -3811,6 +4526,31 @@ function getEntityRuntimeLoadedCharge(entity, moduleItem = null, moduleFlagID = 
       resolvedModuleItem,
       resolvedFlagID,
     );
+  }
+
+  // Creation modules are hidden fittings (flag 183), while their charge is a
+  // real inventory row beneath the module itself on flag 184. Looking up a
+  // conventional ship/slot charge cannot find that row.
+  const creationRuntime = lazyRequire("../services/frontier/creationRuntime");
+  const creationChargeRuntime = lazyRequire(
+    "../services/frontier/creationChargeRuntime",
+  );
+  if (
+    resolvedModuleItem &&
+    toInt(resolvedModuleItem.flagID, 0) ===
+      toInt(creationRuntime && creationRuntime.CREATION_FITTING_FLAG_ID, 183) &&
+    creationChargeRuntime &&
+    typeof creationChargeRuntime.getCreationModuleChargeState === "function"
+  ) {
+    const loaded = creationChargeRuntime.getCreationModuleChargeState(
+      characterID,
+      toInt(resolvedModuleItem.itemID, 0),
+    );
+    if (loaded && loaded.success === true && loaded.data && loaded.data.item) {
+      return {
+        ...loaded.data.item,
+      };
+    }
   }
   return getLoadedChargeByFlag(characterID, toInt(entity.itemID, 0), resolvedFlagID);
 }
@@ -4240,6 +4980,98 @@ function recordAreaDamageKillmailOutcome(
   }
 }
 
+function dischargeHeatTrapBeforeDestruction(scene, heatTrapEntity, whenMs) {
+  if (
+    !scene ||
+    !heatTrapEntity ||
+    heatTrapEntity.heatTrapDischargeTriggered === true
+  ) {
+    return { triggered: false, targetCount: 0, damage: 0 };
+  }
+  const launchBayPayloadRuntime = lazyRequire(
+    "../services/frontier/launchBayPayloadRuntime",
+  );
+  const item = findItemById(toInt(heatTrapEntity.itemID, 0));
+  if (
+    !launchBayPayloadRuntime ||
+    typeof launchBayPayloadRuntime.resolveHeatTrapDischarge !== "function" ||
+    !launchBayPayloadRuntime.isLaunchBayPayloadItem(item)
+  ) {
+    return { triggered: false, targetCount: 0, damage: 0 };
+  }
+  const normalizedWhenMs = toFiniteNumber(
+    whenMs,
+    typeof scene.getCurrentSimTimeMs === "function"
+      ? scene.getCurrentSimTimeMs()
+      : Date.now(),
+  );
+  const discharge = launchBayPayloadRuntime.resolveHeatTrapDischarge(
+    item,
+    normalizedWhenMs,
+  );
+  if (!discharge) {
+    return { triggered: false, targetCount: 0, damage: 0 };
+  }
+
+  // Mark first because a lethal discharge can recursively destroy other
+  // combat entities before this deployable is removed from the ballpark.
+  heatTrapEntity.heatTrapDischargeTriggered = true;
+  const radiusMeters = Math.max(0, toFiniteNumber(discharge.radiusMeters, 0));
+  const thermalDamage = Math.max(0, toFiniteNumber(discharge.damage, 0));
+  if (radiusMeters <= 0 || thermalDamage <= 0) {
+    return { triggered: true, targetCount: 0, damage: thermalDamage };
+  }
+  const damageVector = {
+    em: 0,
+    thermal: thermalDamage,
+    kinetic: 0,
+    explosive: 0,
+  };
+  const targets = [...(scene.dynamicEntities?.values?.() || [])]
+    .filter((candidate) => (
+      candidate &&
+      candidate.kind === "ship" &&
+      toInt(candidate.itemID, 0) !== toInt(heatTrapEntity.itemID, 0) &&
+      hasDamageableHealth(candidate) &&
+      getEntitySurfaceDistance(heatTrapEntity, candidate) <= radiusMeters + 1.0e-6
+    ));
+  let targetCount = 0;
+  for (const targetEntity of targets) {
+    recordCrimewatchOffensiveAggression(
+      scene,
+      heatTrapEntity,
+      targetEntity,
+      normalizedWhenMs,
+    );
+    const weaponDamageResult = applyWeaponDamageToTarget(
+      scene,
+      heatTrapEntity,
+      targetEntity,
+      damageVector,
+      normalizedWhenMs,
+      { skipWeaponOcclusion: true },
+    );
+    recordAreaDamageKillmailOutcome(
+      heatTrapEntity,
+      targetEntity,
+      item,
+      damageVector,
+      weaponDamageResult,
+      normalizedWhenMs,
+    );
+    notifyWeaponDamageMessages(
+      heatTrapEntity,
+      weaponDamageResult?.impactTargetEntity || targetEntity,
+      item,
+      damageVector,
+      getAppliedDamageAmount(weaponDamageResult?.damageResult),
+      3,
+    );
+    targetCount += 1;
+  }
+  return { triggered: true, targetCount, damage: thermalDamage };
+}
+
 function buildPointDefenseRuntimeCallbacks(scene = null) {
   return {
     getEntityRuntimeLoadedCharge,
@@ -4283,9 +5115,10 @@ function buildPointDefenseRuntimeCallbacks(scene = null) {
         damageVector,
         whenMs,
       );
+      const impactTargetEntity = result.impactTargetEntity || targetEntity;
       recordAreaDamageKillmailOutcome(
         attackerEntity,
-        targetEntity,
+        impactTargetEntity,
         moduleItem,
         damageVector,
         result,
@@ -4293,11 +5126,14 @@ function buildPointDefenseRuntimeCallbacks(scene = null) {
       );
       notifyWeaponDamageMessages(
         attackerEntity,
-        targetEntity,
+        impactTargetEntity,
         moduleItem,
         damageVector,
         getAppliedDamageAmount(result && result.damageResult),
         sumDamageVector(damageVector) > 0 ? 3 : 0,
+        {
+          suppress: Boolean(result.occlusion && !result.damageResult),
+        },
       );
       return result;
     },
@@ -4729,6 +5565,10 @@ function buildWeaponSnapshotForEntity(entity, moduleItem, chargeItem = null, opt
   if (!shipItem || !moduleItem) {
     return null;
   }
+  const creationDogmaContext = getEntityRuntimeCreationDogmaContext(
+    entity,
+    shipItem,
+  );
   const hostileWeaponModifiers =
     options.directModuleModifierEntries || options.directChargeModifierEntries
       ? {
@@ -4770,7 +5610,9 @@ function buildWeaponSnapshotForEntity(entity, moduleItem, chargeItem = null, opt
           ),
     ...(Array.isArray(options.hiddenModifierItems)
       ? { hiddenModifierItems: options.hiddenModifierItems }
-      : {}),
+      : creationDogmaContext && Array.isArray(creationDogmaContext.moduleItems)
+        ? { hiddenModifierItems: creationDogmaContext.moduleItems }
+        : {}),
     directModuleModifierEntries: [
       ...hostileWeaponModifiers.moduleEntries,
       ...assistanceWeaponModifiers.moduleEntries,
@@ -5490,6 +6332,10 @@ function buildMissileDynamicEntity(
     )),
     clientDoSpread: visualProfile.doSpread,
     sourceShipID: toInt(attackerEntity.itemID, 0),
+    // Physical line-of-fire is authoritative for every launcher. Keep the
+    // serialized field for compatibility with persisted/in-flight missiles,
+    // but never permit NPC missiles to bypass an intervening hull.
+    npcFireThroughOccluders: false,
     launchModules: buildMissileLaunchModuleList(
       options.moduleItem,
       options,
@@ -6512,6 +7358,8 @@ function refreshInventoryBackedEntityPresentationFields(entity) {
   if (entity.kind === "deployable") {
     lazyRequire("../services/frontier/deploymentRuntime")
       .hydrateConstructionEntityFromInventoryItem(entity, itemRecord);
+    lazyRequire("../services/frontier/launchBayPayloadRuntime")
+      .hydrateLaunchBayPayloadEntityFromInventoryItem(entity, itemRecord);
     deployableCynoRuntime.hydrateMobileCynoDeployableEntityFromInventoryItem(entity, itemRecord);
     mobileDepotRuntime.hydrateMobileDepotEntityFromInventoryItem(entity, itemRecord);
     mobileAnalysisBeaconRuntime.hydrateMobileAnalysisBeaconEntityFromInventoryItem(entity, itemRecord);
@@ -6535,6 +7383,7 @@ function applySessionStateToShipEntity(entity, session, shipItem = null) {
   const characterData =
     characterID > 0 ? resolveCharacterRecord(characterID) || null : null;
 
+  const preserveRuntimeCondition = entity.offlinePersistent === true;
   entity.session = session || null;
   entity.persistSpaceState = true;
   entity.ownerID = toInt(
@@ -6553,8 +7402,11 @@ function applySessionStateToShipEntity(entity, session, shipItem = null) {
       "Ship",
   );
   entity.conditionState = normalizeShipConditionState(
-    (shipItem && shipItem.conditionState) || entity.conditionState,
+    preserveRuntimeCondition
+      ? entity.conditionState
+      : (shipItem && shipItem.conditionState) || entity.conditionState,
   );
+  entity.offlinePersistent = false;
 
   const resolvedSkinMaterialSetID = resolveShipSkinMaterialSetID(shipItem);
   entity.skinMaterialSetID =
@@ -6595,6 +7447,23 @@ function clearSessionStateFromShipEntity(entity) {
   entity.warFactionID = 0;
   entity.securityStatus = 0;
   entity.bounty = 0;
+  refreshShipCompressionFacilityState(entity);
+  return entity;
+}
+
+function clearControlSessionFromPersistentPlayerShipEntity(entity) {
+  if (!entity || entity.kind !== "ship") {
+    return entity;
+  }
+
+  // Keep the inventory/pilot identity used by slim items and reconnect
+  // ownership checks.  Only the live controller disappears on an unsafe
+  // logout; this is still the same ship in the same ballpark.
+  clearFleetWarpCommandAssociation(entity);
+  entity.session = null;
+  entity.pendingModuleStopNotifications = [];
+  entity.characterID = 0;
+  entity.offlinePersistent = true;
   refreshShipCompressionFacilityState(entity);
   return entity;
 }
@@ -6690,6 +7559,73 @@ function buildMissileFreshAcquirePresentationEntity(entity) {
 
 function isBubbleScopedStaticEntity(entity) {
   return entity && entity.staticVisibilityScope === "bubble";
+}
+
+function materializeDungeonWarpDestination(
+  scene,
+  session,
+  instanceID,
+  options: Record<string, any> = {},
+) {
+  const normalizedInstanceID = normalizePersistentEntityID(instanceID);
+  if (!scene || normalizedInstanceID === null) {
+    return {
+      success: false as const,
+      errorMsg: "DUNGEON_INSTANCE_NOT_FOUND",
+    };
+  }
+  try {
+    const dungeonUniverseSiteService = lazyRequire(
+      "../services/dungeon/dungeonUniverseSiteService",
+    );
+    if (
+      !dungeonUniverseSiteService ||
+      typeof dungeonUniverseSiteService.ensureSiteContentsMaterialized !== "function" ||
+      typeof dungeonUniverseSiteService.isManagedMaterializedSiteInstance !== "function"
+    ) {
+      return {
+        success: false as const,
+        errorMsg: "DUNGEON_SITE_SERVICE_UNAVAILABLE",
+      };
+    }
+    const dungeonRuntime = lazyRequire("../services/dungeon/dungeonRuntime");
+    const instance = dungeonRuntime && typeof dungeonRuntime.getInstance === "function"
+      ? dungeonRuntime.getInstance(normalizedInstanceID)
+      : null;
+    if (
+      !instance ||
+      !dungeonUniverseSiteService.isManagedMaterializedSiteInstance(instance)
+    ) {
+      return {
+        success: true as const,
+        data: {
+          instanceID: normalizedInstanceID,
+          skipped: true,
+          reason: "UNMANAGED_DUNGEON_INSTANCE",
+        },
+      };
+    }
+    return dungeonUniverseSiteService.ensureSiteContentsMaterialized(
+      scene,
+      instance,
+      {
+        spawnEncounters: true,
+        broadcast: true,
+        excludedSession: session || null,
+        session: session || null,
+        resyncSession: false,
+        nowMs: options.nowMs,
+      },
+    );
+  } catch (error) {
+    log.warn(
+      `[SpaceRuntime] dungeon warp destination materialization failed for system=${toInt(scene && scene.systemID, 0)} instance=${normalizedInstanceID}: ${error.message}`,
+    );
+    return {
+      success: false as const,
+      errorMsg: "DUNGEON_DESTINATION_MATERIALIZATION_FAILED",
+    };
+  }
 }
 
 // Smart Assemblies are `deployable` entities with an independently public
@@ -7478,6 +8414,8 @@ function applyRuntimeEntityScopeMetadata(entity, scopeMetadata: Record<string, a
   for (const key of [
     "airNpeHostileWave",
     "dungeonEncounterKey",
+    "dungeonFactionKey",
+    "dungeonFactionTag",
     "dungeonSiteContentKey",
     "dungeonSiteContentRole",
     "dungeonSiteContentAnalyzer",
@@ -7493,6 +8431,7 @@ function applyRuntimeEntityScopeMetadata(entity, scopeMetadata: Record<string, a
     }
   }
   for (const key of [
+    "dungeonTags",
     "dungeonSiteContentExplicitLoot",
     "dungeonSiteContentLootTags",
   ]) {
@@ -7604,6 +8543,8 @@ function serializeRuntimeEntityScopeMetadata(entity) {
   for (const key of [
     "airNpeHostileWave",
     "dungeonEncounterKey",
+    "dungeonFactionKey",
+    "dungeonFactionTag",
     "dungeonSiteContentKey",
     "dungeonSiteContentRole",
     "dungeonSiteContentAnalyzer",
@@ -7617,6 +8558,7 @@ function serializeRuntimeEntityScopeMetadata(entity) {
     }
   }
   for (const key of [
+    "dungeonTags",
     "dungeonSiteContentExplicitLoot",
     "dungeonSiteContentLootTags",
   ]) {
@@ -7736,9 +8678,26 @@ function serializeRuntimeDungeonTrackingState(entity) {
   return serialized;
 }
 
+function persistedManualFlightState(source, mode) {
+  const active = normalizeMode(mode) === "GOTO" && source.manualFlightActive === true;
+  return {
+    manualRoll: toFiniteNumber(source.manualRoll, 0),
+    manualFlightActive: active,
+    manualPitch: clamp(toFiniteNumber(source.manualPitch, 0), -1, 1),
+    manualPitchRate: active && source.manualPitchRate != null ? clamp(toFiniteNumber(source.manualPitchRate, 0), -1, 1) : null,
+    manualYawRate: active ? clamp(toFiniteNumber(source.manualYawRate, 0), -1, 1) : 0,
+    manualRollRate: active ? clamp(toFiniteNumber(source.manualRollRate, 0), -1, 1) : 0,
+    manualBrakeFraction: active ? clamp(toFiniteNumber(source.manualBrakeFraction, 0), 0, 1) : 0,
+    manualHeading: active && source.manualHeading ? normalizeVector(cloneVector(source.manualHeading), DEFAULT_RIGHT) : null,
+    manualStrafingThrust: active ? cloneVector(source.manualStrafingThrust) : { x: 0, y: 0, z: 0 },
+  };
+}
+
 function serializeSpaceState(entity) {
   const serialized: Record<string, any> = {
     systemID: entity.systemID,
+    offlinePersistent: entity.offlinePersistent === true,
+    ...persistedManualFlightState(entity, entity.mode),
     position: cloneVector(entity.position),
     velocity: cloneVector(entity.velocity),
     direction: cloneVector(entity.direction),
@@ -7837,6 +8796,424 @@ function canSessionReceiveEntityDependentDestinyUpdate(scene, session, entity) {
     session._space.visibleDynamicEntityIDs instanceof Set &&
     session._space.visibleDynamicEntityIDs.has(entityID)
   );
+}
+
+function getCombatRevealedDynamicEntityIDs(session, create = false) {
+  if (!session || !session._space) {
+    return null;
+  }
+  if (session._space.combatRevealedDynamicEntityIDs instanceof Set) {
+    return session._space.combatRevealedDynamicEntityIDs;
+  }
+  if (!create) {
+    return null;
+  }
+  session._space.combatRevealedDynamicEntityIDs = new Set();
+  return session._space.combatRevealedDynamicEntityIDs;
+}
+
+function getCombatRevealDestinyStampsByID(session, create = false) {
+  if (!session || !session._space) {
+    return null;
+  }
+  if (session._space.combatRevealDestinyStampsByID instanceof Map) {
+    return session._space.combatRevealDestinyStampsByID;
+  }
+  if (!create) {
+    return null;
+  }
+  session._space.combatRevealDestinyStampsByID = new Map();
+  return session._space.combatRevealDestinyStampsByID;
+}
+
+function getCombatRevealPresentationEntityIDs(session, create = false) {
+  if (!session || !session._space) {
+    return null;
+  }
+  if (session._space.combatRevealPresentationEntityIDs instanceof Set) {
+    return session._space.combatRevealPresentationEntityIDs;
+  }
+  if (!create) {
+    return null;
+  }
+  session._space.combatRevealPresentationEntityIDs = new Set();
+  return session._space.combatRevealPresentationEntityIDs;
+}
+
+function hasCombatRevealPresentation(session, entityID) {
+  const entityKey = getEntityMapKey(entityID);
+  const presentedEntityIDs = getCombatRevealPresentationEntityIDs(session);
+  return Boolean(
+    entityKey !== null &&
+    presentedEntityIDs instanceof Set &&
+    visibilitySetHasEntityID(presentedEntityIDs, entityKey)
+  );
+}
+
+function rememberCombatRevealPresentation(session, entityID) {
+  const entityKey = getEntityMapKey(entityID);
+  const presentedEntityIDs = getCombatRevealPresentationEntityIDs(
+    session,
+    true,
+  );
+  if (entityKey === null || !(presentedEntityIDs instanceof Set)) {
+    return false;
+  }
+  presentedEntityIDs.add(entityKey);
+  return true;
+}
+
+function forgetCombatRevealPresentation(session, entityID) {
+  const entityKey = getEntityMapKey(entityID);
+  const presentedEntityIDs = getCombatRevealPresentationEntityIDs(session);
+  if (entityKey === null || !(presentedEntityIDs instanceof Set)) {
+    return false;
+  }
+  let deleted = false;
+  for (const candidateID of [...presentedEntityIDs]) {
+    if (entityIDsEqual(candidateID, entityKey)) {
+      presentedEntityIDs.delete(candidateID);
+      deleted = true;
+    }
+  }
+  return deleted;
+}
+
+function rememberCombatRevealDestinyStamp(session, entityID, stamp) {
+  const entityKey = getEntityMapKey(entityID);
+  if (entityKey === null || !hasDestinyStamp(stamp)) {
+    return null;
+  }
+  const stampsByID = getCombatRevealDestinyStampsByID(session, true);
+  if (!(stampsByID instanceof Map)) {
+    return null;
+  }
+  const normalizedStamp = normalizeDestinyStamp(stamp);
+  stampsByID.set(entityKey, normalizedStamp);
+  return normalizedStamp;
+}
+
+function getCombatRevealDestinyStamp(session, entityID) {
+  const entityKey = getEntityMapKey(entityID);
+  const stampsByID = getCombatRevealDestinyStampsByID(session);
+  if (entityKey === null || !(stampsByID instanceof Map)) {
+    return null;
+  }
+  for (const [candidateID, stamp] of stampsByID.entries()) {
+    if (entityIDsEqual(candidateID, entityKey) && hasDestinyStamp(stamp)) {
+      return normalizeDestinyStamp(stamp);
+    }
+  }
+  return null;
+}
+
+function forgetCombatRevealDestinyStamp(session, entityID) {
+  const entityKey = getEntityMapKey(entityID);
+  const stampsByID = getCombatRevealDestinyStampsByID(session);
+  if (entityKey === null || !(stampsByID instanceof Map)) {
+    return false;
+  }
+  let deleted = false;
+  for (const candidateID of [...stampsByID.keys()]) {
+    if (entityIDsEqual(candidateID, entityKey)) {
+      stampsByID.delete(candidateID);
+      deleted = true;
+    }
+  }
+  return deleted;
+}
+
+function buildCombatRevealPresentationEntity(entity) {
+  if (!entity || typeof entity !== "object") {
+    return entity;
+  }
+  const presentationEntity = cloneDynamicEntityForDestinyPresentation(entity);
+  const typeRecord = resolveItemByTypeID(
+    toInt(entity.slimTypeID, toInt(entity.typeID, 0)),
+  );
+  const combatDisplayName = String(
+    entity.slimName ||
+      entity.itemName ||
+      entity.selectionName ||
+      typeRecord && typeRecord.name ||
+      "Unknown Contact",
+  ).trim() || "Unknown Contact";
+  presentationEntity.suppressSlimName = false;
+  presentationEntity.slimName = combatDisplayName;
+  presentationEntity.itemName = combatDisplayName;
+  // A localized dungeon nameID intentionally suppresses the plain `name`
+  // field. Combat-source CR data needs a direct name because the damage-log
+  // formatter resolves the attacker from GetCrData(sourceID) synchronously.
+  presentationEntity.nameID = null;
+  return presentationEntity;
+}
+
+function isCombatRevealedDynamicEntity(session, entityID) {
+  const entityKey = getEntityMapKey(entityID);
+  const revealedEntityIDs = getCombatRevealedDynamicEntityIDs(session);
+  return Boolean(
+    entityKey !== null &&
+    revealedEntityIDs instanceof Set &&
+    visibilitySetHasEntityID(revealedEntityIDs, entityKey)
+  );
+}
+
+function rememberCombatRevealedDynamicEntity(session, entityID) {
+  const entityKey = getEntityMapKey(entityID);
+  const revealedEntityIDs = getCombatRevealedDynamicEntityIDs(session, true);
+  if (entityKey === null || !(revealedEntityIDs instanceof Set)) {
+    return false;
+  }
+  const wasRevealed = visibilitySetHasEntityID(revealedEntityIDs, entityKey);
+  revealedEntityIDs.add(entityKey);
+  return !wasRevealed;
+}
+
+function forgetCombatRevealedDynamicEntity(session, entityID) {
+  const entityKey = getEntityMapKey(entityID);
+  const revealedEntityIDs = getCombatRevealedDynamicEntityIDs(session);
+  if (entityKey === null) {
+    return false;
+  }
+  let deleted = false;
+  if (revealedEntityIDs instanceof Set) {
+    for (const candidateID of [...revealedEntityIDs]) {
+      if (entityIDsEqual(candidateID, entityKey)) {
+        revealedEntityIDs.delete(candidateID);
+        deleted = true;
+      }
+    }
+  }
+  forgetCombatRevealPresentation(session, entityID);
+  forgetCombatRevealDestinyStamp(session, entityID);
+  return deleted;
+}
+
+function clearCombatRevealedContactsForWarpDeparture(
+  session,
+  nowMs = Date.now(),
+) {
+  const revealedEntityIDs = getCombatRevealedDynamicEntityIDs(session);
+  if (!(revealedEntityIDs instanceof Set) || revealedEntityIDs.size === 0) {
+    return [];
+  }
+
+  const clearedEntityIDs: any[] = [];
+  for (const entityID of [...revealedEntityIDs]) {
+    const normalizedEntityID = getEntityMapKey(entityID);
+    if (normalizedEntityID === null) {
+      revealedEntityIDs.delete(entityID);
+      continue;
+    }
+    const combatResolvedScanningContact = isCombatResolvedScanningContact(
+      session,
+      normalizedEntityID,
+      nowMs,
+    );
+    if (!forgetCombatRevealedDynamicEntity(session, normalizedEntityID)) {
+      continue;
+    }
+    if (combatResolvedScanningContact) {
+      forgetResolvedScanningContact(session, normalizedEntityID);
+    }
+    clearedEntityIDs.push(normalizedEntityID);
+  }
+  return clearedEntityIDs;
+}
+
+function isOffensiveFxTargetingSession(session, options: Record<string, any> = {}) {
+  return Boolean(
+    session &&
+    session._space &&
+    options &&
+    options.isOffensive === true &&
+    options.start !== false &&
+    entityIDsEqual(options.targetID, session._space.shipID)
+  );
+}
+
+// Effect-only balls live in a client-local identity range. They deliberately
+// never enter scene membership, CR data, scanning resolution, or targeting.
+// The client only needs their Destiny positions in order to attach a weapon
+// effect when an observing pilot has not resolved one or both real endpoints.
+const COMBAT_EFFECT_PROXY_ID_BASE = 8_800_000_000_000_000;
+const COMBAT_EFFECT_PROXY_ID_LIMIT = 100_000;
+
+function getCombatEffectProxyState(session, create = false) {
+  if (!session || !session._space) {
+    return null;
+  }
+  const existing = session._space.combatEffectProxyState;
+  if (
+    existing &&
+    existing.entriesByRealEntityID instanceof Map &&
+    existing.activeEffectRealEntityIDsByKey instanceof Map
+  ) {
+    return existing;
+  }
+  if (!create) {
+    return null;
+  }
+  const state = {
+    nextSequence: 1,
+    entriesByRealEntityID: new Map(),
+    activeEffectRealEntityIDsByKey: new Map(),
+  };
+  session._space.combatEffectProxyState = state;
+  return state;
+}
+
+function getCombatEffectProxyEntry(session, realEntityID) {
+  const realEntityKey = getEntityMapKey(realEntityID);
+  const state = getCombatEffectProxyState(session);
+  if (realEntityKey === null || !state) {
+    return null;
+  }
+  for (const [candidateID, entry] of state.entriesByRealEntityID.entries()) {
+    if (entityIDsEqual(candidateID, realEntityKey)) {
+      return entry || null;
+    }
+  }
+  return null;
+}
+
+function allocateCombatEffectProxyID(session) {
+  const state = getCombatEffectProxyState(session, true);
+  if (!state) {
+    return null;
+  }
+  const sequence = clamp(
+    toInt(state.nextSequence, 1),
+    1,
+    COMBAT_EFFECT_PROXY_ID_LIMIT,
+  );
+  state.nextSequence = sequence >= COMBAT_EFFECT_PROXY_ID_LIMIT
+    ? 1
+    : sequence + 1;
+  return COMBAT_EFFECT_PROXY_ID_BASE + sequence;
+}
+
+function buildCombatEffectProxyKey(sourceEntityID, guid, options: Record<string, any> = {}) {
+  return [
+    String(sourceEntityID),
+    String(options.targetID ?? ""),
+    String(options.moduleID ?? options.moduleFlagID ?? ""),
+    String(guid || ""),
+  ].join(":");
+}
+
+function buildCombatEffectProxyPresentationEntity(entity, proxyID) {
+  const proxy = cloneDynamicEntityForDestinyPresentation(entity);
+  proxy.itemID = proxyID;
+  proxy.omitSlimItem = true;
+  proxy.forceDamageState = false;
+  proxy.session = null;
+  proxy.characterID = 0;
+  proxy.pilotCharacterID = 0;
+  proxy.ownerID = 0;
+  proxy.controllerID = 0;
+  proxy.mode = "STOP";
+  proxy.destinyBallMode = "STOP";
+  proxy.targetEntityID = null;
+  proxy.followTargetID = null;
+  proxy.followID = null;
+  proxy.parentEntityID = null;
+  proxy.warpState = null;
+  proxy.velocity = { x: 0, y: 0, z: 0 };
+  proxy.collisionEnabled = false;
+  proxy.destinyCollisionEnabled = false;
+  proxy.destinyForceInteractive = false;
+  proxy.destinyForceMassive = false;
+  return proxy;
+}
+
+function rememberCombatEffectProxyReference(
+  session,
+  effectKey,
+  realEntityIDs,
+) {
+  const state = getCombatEffectProxyState(session, true);
+  if (!state || !effectKey) {
+    return;
+  }
+  state.activeEffectRealEntityIDsByKey.set(
+    effectKey,
+    new Set(
+      (Array.isArray(realEntityIDs) ? realEntityIDs : [])
+        .map((entityID) => getEntityMapKey(entityID))
+        .filter((entityID) => entityID !== null),
+    ),
+  );
+}
+
+function releaseCombatEffectProxyReference(session, effectKey) {
+  const state = getCombatEffectProxyState(session);
+  if (!state || !effectKey) {
+    return [];
+  }
+  const releasedIDs = state.activeEffectRealEntityIDsByKey.get(effectKey);
+  state.activeEffectRealEntityIDsByKey.delete(effectKey);
+  if (!(releasedIDs instanceof Set) || releasedIDs.size === 0) {
+    return [];
+  }
+  const retainedIDs = new Set<any>();
+  for (const activeIDs of state.activeEffectRealEntityIDsByKey.values()) {
+    if (!(activeIDs instanceof Set)) {
+      continue;
+    }
+    for (const entityID of activeIDs) {
+      retainedIDs.add(entityID);
+    }
+  }
+  return [...releasedIDs].filter((entityID) => (
+    !visibilitySetHasEntityID(retainedIDs, entityID)
+  ));
+}
+
+function forgetCombatEffectProxiesForRealEntity(session, realEntityID) {
+  const realEntityKey = getEntityMapKey(realEntityID);
+  const state = getCombatEffectProxyState(session);
+  if (realEntityKey === null || !state) {
+    return [];
+  }
+
+  for (const [effectKey, activeIDs] of [
+    ...state.activeEffectRealEntityIDsByKey.entries(),
+  ]) {
+    if (
+      activeIDs instanceof Set &&
+      visibilitySetHasEntityID(activeIDs, realEntityKey)
+    ) {
+      state.activeEffectRealEntityIDsByKey.delete(effectKey);
+    }
+  }
+
+  const retainedIDs = new Set<any>();
+  for (const activeIDs of state.activeEffectRealEntityIDsByKey.values()) {
+    if (!(activeIDs instanceof Set)) {
+      continue;
+    }
+    for (const entityID of activeIDs) {
+      retainedIDs.add(entityID);
+    }
+  }
+
+  const removedProxyIDs: any[] = [];
+  for (const [candidateID, entry] of [
+    ...state.entriesByRealEntityID.entries(),
+  ]) {
+    if (
+      !entityIDsEqual(candidateID, realEntityKey) &&
+      visibilitySetHasEntityID(retainedIDs, candidateID)
+    ) {
+      continue;
+    }
+    state.entriesByRealEntityID.delete(candidateID);
+    if (entry && Number.isSafeInteger(entry.proxyID)) {
+      removedProxyIDs.push(entry.proxyID);
+    }
+  }
+  return removedProxyIDs;
 }
 
 function recordDependentNotificationSkip(scene, session, source, entity, details: Record<string, any> = {}) {
@@ -8307,6 +9684,11 @@ function logMovementDebug(event, entity, extra: Record<string, any> = {}) {
 
 function buildStaticStationEntity(station) {
   const dunRotation = getStationAuthoredDunRotation(station);
+  const graphicID = toInt(
+    station && (station.graphicID || station.stationGraphicID) ||
+      getStationRenderMetadata(station, "graphicID"),
+    0,
+  );
   const dockingGeometry = station
     ? stationLocatorGeometry.buildStationDockingGeometry(station, {
       selectionStrategy: "first",
@@ -8316,6 +9698,7 @@ function buildStaticStationEntity(station) {
     kind: "station",
     itemID: station.stationID,
     typeID: station.stationTypeID,
+    graphicID: graphicID > 0 ? graphicID : undefined,
     groupID: station.groupID,
     categoryID: station.categoryID,
     itemName: station.stationName,
@@ -9098,6 +10481,9 @@ function buildStaticLandscapeSiteEntity(site) {
       : [],
     ecosystemID: toInt(site && site.ecosystemID, 0),
     ecosystemName: String(site && site.ecosystemName || ""),
+    temporaryLandscapeProfile: site && site.temporaryLandscapeProfile === true,
+    landscapeSourceBuild: toInt(site && site.sourceBuild, 0) || undefined,
+    temporaryLandscapeRevision: String(site && site.temporaryLandscapeRevision || "") || undefined,
     dungeonID: toInt(site && site.dungeonID, 0),
     dungeonNameID: toInt(site && site.dungeonNameID, 0) || null,
     archetypeID: toInt(site && site.archetypeID, 0) || null,
@@ -9131,6 +10517,14 @@ function buildStaticStargateEntity(stargate) {
     stargate,
     "skinMaterialSetID",
   );
+  let maintenanceState = null;
+  try {
+    const result = lazyRequire("../services/frontier/celestialStargateRuntime")
+      .getStargateState(stargate && stargate.itemID);
+    maintenanceState = result && result.success ? result.data : null;
+  } catch (_) {
+    maintenanceState = null;
+  }
 
   return {
     kind: "stargate",
@@ -9150,11 +10544,22 @@ function buildStaticStargateEntity(stargate) {
     raceID: toInt(getStargateTypeMetadata(stargate, "raceID"), 0) || null,
     destinationID: stargate.destinationID,
     destinationSolarSystemID: stargate.destinationSolarSystemID,
-    activationState: coerceStableActivationState(
-      stargate.activationState,
+    activationState: Number(config.clientBuild) === 3640684 && maintenanceState?.target3640684
+      ? maintenanceState.targetActivationState : coerceStableActivationState(
+      maintenanceState && maintenanceState.dormant
+        ? STARGATE_ACTIVATION_STATE.CLOSED
+        : stargate.activationState,
       STARGATE_ACTIVATION_STATE.OPEN,
     ),
     activationTransitionAtMs: 0,
+    ...(maintenanceState ? {
+      stargateTarget3640684: Number(config.clientBuild) === 3640684 && maintenanceState.target3640684,
+      stargateFuelEnergy: maintenanceState.fuelEnergy,
+      stargateMaintenanceStatus: maintenanceState.status,
+      stargateFuelLevel: maintenanceState.fuelLevel,
+      stargateMaterialLevel: maintenanceState.materialLevel,
+      stargateActivationCompleteAtMs: maintenanceState.activationCompleteAtMs,
+    } : {}),
     poseID: toInt(stargate.poseID, 0),
     localCorruptionStageAndMaximum: coerceStageTuple(
       stargate.localCorruptionStageAndMaximum,
@@ -9210,6 +10615,20 @@ function calculateAlignTimeSecondsFromMassInertia(mass, inertia, fallback = 0) {
     return (DESTINY_ALIGN_LOG_DENOMINATOR * numericMass * numericInertia) / 1_000_000;
   }
   return toFiniteNumber(fallback, 0);
+}
+
+function resolveShipBaseMass(typeID, movement, fallbackMass) {
+  const movementMass = toFiniteNumber(movement && movement.mass, 0);
+  if (movementMass > 0) {
+    return movementMass;
+  }
+  const dogmaMass = toFiniteNumber(
+    getTypeAttributeValue(typeID, "mass"),
+    0,
+  );
+  return dogmaMass > 0
+    ? dogmaMass
+    : Math.max(1, toFiniteNumber(fallbackMass, 1));
 }
 
 function buildPassiveShipResourceState(characterID, shipItem, options: Record<string, any> = {}) {
@@ -9451,21 +10870,57 @@ function applyPassiveResourceStateToEntity(entity, resourceState, options: Recor
     toFiniteNumber(resourceState.agility, 0) > 0
       ? toFiniteNumber(resourceState.agility, 0)
       : toFiniteNumber(entity.inertia, 0);
+  const baseMass = resolveShipBaseMass(
+    entity.typeID,
+    movement,
+    entity.baseMass || nextMass,
+  );
+  const dogmaMaxVelocity =
+    toFiniteNumber(resourceState.maxVelocity, 0) > 0
+      ? toFiniteNumber(resourceState.maxVelocity, 0)
+      : toFiniteNumber(entity.dogmaMaxVelocity, 0) > 0
+        ? toFiniteNumber(entity.dogmaMaxVelocity, 0)
+        : toFiniteNumber(entity.maxVelocity, 0);
+  const massAdjustedMaxVelocity = resolveMassAdjustedMaxVelocity(
+    dogmaMaxVelocity,
+    nextMass,
+    baseMass,
+  );
   const fallbackAlignTime =
     toFiniteNumber(movement && movement.alignTime, 0) > 0
       ? toFiniteNumber(movement.alignTime, 0)
       : toFiniteNumber(entity.alignTime, 0);
 
   entity.passiveDerivedState = resourceState;
+  entity.baseMass = baseMass;
+  entity.dogmaMaxVelocity = dogmaMaxVelocity;
+  entity.collisionStableMaxVelocity =
+    getUnmodifiedShipTypeMaxVelocity(entity.typeID, movement) || dogmaMaxVelocity;
+  entity.massVelocityMultiplier = resolveMassMobilityMultiplier(
+    nextMass,
+    baseMass,
+  );
   applyPassiveMotionBaseCommand(
     entity,
     () => (nextMass > 0 ? nextMass : entity.mass),
     () => (nextInertia > 0 ? nextInertia : entity.inertia),
     () => (
-      toFiniteNumber(resourceState.maxVelocity, 0) > 0
-        ? toFiniteNumber(resourceState.maxVelocity, 0)
+      massAdjustedMaxVelocity > 0
+        ? massAdjustedMaxVelocity
         : entity.maxVelocity
     ),
+  );
+  entity.maxAngularSpeed = resolveShipAngularAttribute(
+    resourceState,
+    entity.typeID,
+    "maxAngularSpeed",
+    toFiniteNumber(entity.maxAngularSpeed, 0.25),
+  );
+  entity.angularAgility = resolveShipAngularAttribute(
+    resourceState,
+    entity.typeID,
+    "angularAgility",
+    toFiniteNumber(entity.angularAgility, 1),
   );
   entity.maxTargetRange = toFiniteNumber(
     resourceState.maxTargetRange,
@@ -10461,14 +11916,28 @@ function applyPropulsionEffectStateToEntity(entity, effectState) {
       toFiniteNumber(effectState.speedFactor, 0) *
       toFiniteNumber(effectState.speedBoostFactor, 0) /
       Math.max(massAfterAddition, 1));
+  const baseMass = Math.max(
+    1,
+    toFiniteNumber(entity.baseMass, passiveMass || massAfterAddition || 1),
+  );
+  const propelledDogmaMaxVelocity =
+    passiveMaxVelocity * Math.max(speedMultiplier, 0);
+  const massAdjustedMaxVelocity = resolveMassAdjustedMaxVelocity(
+    propelledDogmaMaxVelocity,
+    massAfterAddition,
+    baseMass,
+  );
 
+  entity.baseMass = baseMass;
+  entity.dogmaMaxVelocity = propelledDogmaMaxVelocity;
+  entity.massVelocityMultiplier = resolveMassMobilityMultiplier(
+    massAfterAddition,
+    baseMass,
+  );
   applyPropulsionMotionBaseCommand(
     entity,
     () => roundNumber(massAfterAddition, 6),
-    () => roundNumber(
-      passiveMaxVelocity * Math.max(speedMultiplier, 0),
-      6,
-    ),
+    () => roundNumber(massAdjustedMaxVelocity, 6),
   );
   if (effectState.effectName === PROPULSION_EFFECT_MICROWARPDRIVE) {
     entity.signatureRadius = roundNumber(
@@ -12678,6 +14147,15 @@ function resolveInitialModuleRemainingCycles(rawRepeat) {
   return normalizeEffectRepeatCount(rawRepeat, null) === 0 ? 1 : null;
 }
 
+function resolveModuleActivationRepeat(effectRecord, rawRepeat) {
+  return effectRecord && (
+    effectRecord.disallowAutoRepeat === true ||
+    toInt(effectRecord.disallowAutoRepeat, 0) > 0
+  )
+    ? 0
+    : normalizeEffectRepeatCount(rawRepeat, null);
+}
+
 function normalizeModuleConsequenceDelivery(rawDelivery) {
   const normalizedDelivery = String(rawDelivery || "").trim();
   return MODULE_CONSEQUENCE_DELIVERY_VALUES.has(normalizedDelivery)
@@ -12688,6 +14166,10 @@ function normalizeModuleConsequenceDelivery(rawDelivery) {
 function resolveModuleConsequenceDelivery(effectState) {
   if (!effectState || typeof effectState !== "object") {
     return MODULE_CONSEQUENCE_DELIVERY.LEGACY_UNKNOWN;
+  }
+
+  if (effectState.consequenceDelivery !== undefined) {
+    return normalizeModuleConsequenceDelivery(effectState.consequenceDelivery);
   }
 
   // These families already own their terminal/reload sequencing. The shared
@@ -13128,6 +14610,7 @@ function finalizeGenericModuleDeactivationWithoutSession(
   effectState.deactivationRequestedAtMs = 0;
   effectState.deactivateAtMs = 0;
   effectState.stopReason = options.reason || effectState.stopReason || null;
+  cleanupCreationActiveModuleEffectOnDeactivation(scene, entity, effectState);
   clearJumpPortalBridgeModeForEffect(effectState);
   clearCynosuralFieldForEffect(scene, null, effectState, {
     nowMs: stopTimeMs,
@@ -14309,6 +15792,105 @@ function notifyFuelPropertyChangesToSession(
   notifyAttributeChanges(session, changes);
 }
 
+function cleanupCreationActiveModuleEffectOnDeactivation(scene, entity, effectState) {
+  if (effectState && effectState.iffCreationEffect === true) {
+    try {
+      const iffHandlers = lazyRequire("../services/frontier/iffAbilityHandlers");
+      if (effectState.effectName === "iffBroadcast") {
+        iffHandlers.handleIffBroadcastEffectStopped(effectState, scene && scene.systemID);
+      } else if (effectState.effectName === "iffBeacon") {
+        iffHandlers.handleIffBeaconEffectStopped(effectState);
+      }
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Failed to finish IFF effect module=${toInt(effectState.moduleID, 0)}: ` +
+          `${(error as any)?.message || error}`,
+      );
+    }
+  }
+  if (!effectState || effectState.creationActiveModuleEffect !== true) {
+    return;
+  }
+  try {
+    const creationActiveModuleRuntime = lazyRequire(
+      "../services/frontier/creationActiveModuleRuntime",
+    );
+    if (
+      creationActiveModuleRuntime &&
+      typeof creationActiveModuleRuntime.cleanupCreationActiveModuleEffect === "function"
+    ) {
+      creationActiveModuleRuntime.cleanupCreationActiveModuleEffect({
+        scene,
+        entity,
+        effectState,
+        callbacks: buildCreationActiveModuleRuntimeCallbacks(scene),
+      });
+    }
+  } catch (error) {
+    log.warn(
+      `[SpaceRuntime] Creation active cleanup failed ship=${toInt(entity && entity.itemID, 0)} ` +
+        `module=${toInt(effectState && effectState.moduleID, 0)}: ${error.message}`,
+    );
+  }
+}
+
+function buildCreationActiveModuleRuntimeCallbacks(scene) {
+  return {
+    getOwningSessionForEntity: (sourceScene, entity) =>
+      getOwningSessionForEntity(sourceScene || scene, entity),
+    follow: ({ entity, targetID, range }) => {
+      const followed = scene.followShipEntity(entity, targetID, range, {
+        source: "approachComputer",
+      });
+      return followed === false
+        ? false
+        : {
+          success: true,
+          movementTraceID: toInt(entity && entity.movementTrace && entity.movementTrace.id, 0),
+        };
+    },
+    stop: ({ entity, reason }) => scene.stopShipEntity(entity, {
+      reason: reason || "approachComputerDeactivated",
+    }),
+    refreshDerivedState: (payload) => {
+      const targetEntity = payload && payload.entity;
+      if (!targetEntity) {
+        return null;
+      }
+      const targetSession = payload && payload.session
+        ? payload.session
+        : getOwningSessionForEntity(scene, targetEntity);
+      return scene.refreshShipEntityDerivedState(targetEntity, {
+        session: targetSession || undefined,
+        broadcast: true,
+        notifyTargeting: true,
+      });
+    },
+    notifyFuelMutation: (payload) => {
+      const targetEntity = payload && payload.entity;
+      const targetSession = payload && payload.session
+        ? payload.session
+        : getOwningSessionForEntity(scene, targetEntity);
+      if (!targetEntity || !targetSession || !isReadyForDestiny(targetSession)) {
+        return;
+      }
+      notifyFuelChargeChangeToSession(
+        targetSession,
+        targetEntity,
+        payload.nowMs,
+        payload.previousFuelCharge,
+      );
+      notifyFuelPropertyChangesToSession(
+        targetSession,
+        targetEntity,
+        payload.previousFuelProperties,
+        payload.nextFuelProperties,
+        payload.nowMs,
+      );
+    },
+  };
+}
+
 function advanceEntityCapacitorRecharge(
   entity,
   deltaSeconds,
@@ -14325,17 +15907,12 @@ function advanceEntityCapacitorRecharge(
   );
   if (
     !entity ||
-    entity.kind !== "ship" ||
-    capacitorCapacity <= 0
+    entity.kind !== "ship"
   ) {
     return { mode: "none", changed: false, rechargedEnergy: 0, consumedFuel: 0 };
   }
 
   const capRatio = getEntityCapacitorRatio(entity);
-  if (capRatio >= 1) {
-    return { mode: "none", changed: false, rechargedEnergy: 0, consumedFuel: 0 };
-  }
-
   const previousChargeAmount = capacitorCapacity * capRatio;
   const runtimeShipItem = buildRuntimeShipItemFromEntity(entity);
   const derivedFuelCapacity = Math.max(
@@ -14353,8 +15930,11 @@ function advanceEntityCapacitorRecharge(
     fuelTank = resolveShipFuelTank(runtimeShipItem, fuelTank.baseCapacity, deps);
   }
 
-  const usesFrontierFuelRecharge =
-    fuelTank.creationType || fuelTank.baseCapacity > 0;
+  const npcFuelRequirementsEnabled =
+    !isNativeNpcEntity(entity) || entity.npcFuelRequirementsEnabled === true;
+  const usesFrontierFuelRecharge = npcFuelRequirementsEnabled && (
+    fuelTank.creationType || fuelTank.baseCapacity > 0
+  );
   if (usesFrontierFuelRecharge) {
     if (!fuelTank.supported) {
       return {
@@ -14370,24 +15950,59 @@ function advanceEntityCapacitorRecharge(
     const fuelQueue = getShipFuelQueue(entity);
     const fuelTypeID = getShipFuelTypeID(entity);
     const passiveState = entity.passiveDerivedState || {};
+    const creationPowerState = entity.creationPowerState || null;
+    const regularFuelPowerState = creationPowerState
+      ? null
+      : entity.regularFuelPowerState ||
+        calculateRegularShipFuelPowerState(passiveState, null, deps);
+    const fuelPowerState = creationPowerState || regularFuelPowerState;
+    const usesCreationFuelProfile = fuelTank.creationType === true;
     const recharge = calculateFueledCapacitorRecharge({
       currentCapacitorAmount: previousChargeAmount,
       capacitorCapacity,
-      capacitorRechargeRate,
+      capacitorRechargeRate: fuelPowerState
+        ? toFiniteNumber(
+            fuelPowerState.capacitorRechargeRate,
+            capacitorRechargeRate,
+          )
+        : capacitorRechargeRate,
       powerOutput: toFiniteNumber(
-        passiveState.powerOutput,
+        fuelPowerState
+          ? fuelPowerState.powerOutput
+          : passiveState.powerOutput,
         getEntityPassiveAttribute(entity, ATTRIBUTE_POWER_OUTPUT, 0),
       ),
       powerLoad: toFiniteNumber(
-        passiveState.powerLoad,
+        fuelPowerState
+          ? fuelPowerState.powerLoad
+          : passiveState.powerLoad,
         getEntityPassiveAttribute(entity, ATTRIBUTE_POWER_LOAD, 0),
       ),
       fuelCharge: previousFuelCharge,
       fuelTypeID,
       fuelQueue,
       deltaSeconds,
+      isWarping: Boolean(
+        entity.mode === "WARP" && entity.warpState && !entity.pendingWarp
+      ),
+      warpFuelRate: fuelPowerState
+        ? toFiniteNumber(fuelPowerState.warpFuelRate, 0)
+        : 0,
+      warpFuelProfile: usesCreationFuelProfile ? "creation" : "regular-engine",
+      shipMass: toFiniteNumber(entity.mass, 0),
+      powerFuelProfile: usesCreationFuelProfile ? "creation" : "regular-engine",
+      fuelContainmentReduction: usesCreationFuelProfile
+        ? Math.max(
+            1,
+            getEntityPassiveAttribute(
+              entity,
+              CREATION_ATTRIBUTE_CONTAINMENT_REDUCTION,
+              1,
+            ),
+          )
+        : 1,
     }, deps);
-    if (recharge.rechargedEnergy <= 0) {
+    if (recharge.rechargedEnergy <= 0 && recharge.consumedFuel <= 0) {
       return {
         mode: "frontier-fueled",
         changed: false,
@@ -14396,10 +16011,14 @@ function advanceEntityCapacitorRecharge(
       };
     }
 
-    setEntityCapacitorRatio(
-      entity,
-      recharge.nextCapacitorAmount / capacitorCapacity,
-    );
+    const capacitorChanged = recharge.rechargedEnergy > 0;
+    const fuelChanged = recharge.consumedFuel > 0;
+    if (capacitorChanged) {
+      setEntityCapacitorRatio(
+        entity,
+        recharge.nextCapacitorAmount / capacitorCapacity,
+      );
+    }
     setEntityFuelState(
       entity,
       recharge.nextFuelCharge,
@@ -14414,23 +16033,27 @@ function advanceEntityCapacitorRecharge(
       recharge.previousFuelTypeID !== recharge.nextFuelTypeID;
     const reachedTerminalState =
       recharge.nextFuelCharge <= 0 ||
-      recharge.nextCapacitorAmount >= capacitorCapacity ||
+      (capacitorChanged && recharge.nextCapacitorAmount >= capacitorCapacity) ||
       activeFuelChanged;
     if (normalizedNowMs - lastCapNotify >= 500 || reachedTerminalState) {
       persistEntityCapacitorRatio(entity);
       if (entity.session && isReadyForDestiny(entity.session)) {
-        notifyCapacitorChangeToSession(
-          entity.session,
-          entity,
-          normalizedNowMs,
-          previousChargeAmount,
-        );
-        notifyFuelChargeChangeToSession(
-          entity.session,
-          entity,
-          normalizedNowMs,
-          previousFuelCharge,
-        );
+        if (capacitorChanged) {
+          notifyCapacitorChangeToSession(
+            entity.session,
+            entity,
+            normalizedNowMs,
+            previousChargeAmount,
+          );
+        }
+        if (fuelChanged) {
+          notifyFuelChargeChangeToSession(
+            entity.session,
+            entity,
+            normalizedNowMs,
+            previousFuelCharge,
+          );
+        }
         if (activeFuelChanged) {
           notifyFuelPropertyChangesToSession(
             entity.session,
@@ -14453,6 +16076,12 @@ function advanceEntityCapacitorRecharge(
   }
 
   // Tankless legacy ships retain the standard nonlinear EVE recharge curve.
+  if (capacitorCapacity <= 0) {
+    return { mode: "legacy", changed: false, rechargedEnergy: 0, consumedFuel: 0 };
+  }
+  if (capRatio >= 1) {
+    return { mode: "none", changed: false, rechargedEnergy: 0, consumedFuel: 0 };
+  }
   if (capacitorRechargeRate <= 0) {
     return { mode: "legacy", changed: false, rechargedEnergy: 0, consumedFuel: 0 };
   }
@@ -14492,6 +16121,90 @@ function advanceEntityCapacitorRecharge(
     changed: true,
     rechargedEnergy: capacitorCapacity * (newRatio - capRatio),
     consumedFuel: 0,
+  };
+}
+
+function advanceEntityBlackstartRecharge(
+  entity,
+  deltaSeconds,
+  nowMs = Date.now(),
+) {
+  if (!entity || entity.kind !== "ship") {
+    return { changed: false, rechargedEnergy: 0, reason: "not-ship" };
+  }
+  const state = entity.creationPowerState;
+  const reserveCapacity = Math.max(
+    0,
+    toFiniteNumber(state && state.blackstartCapacity, 0),
+  );
+  const solarChargeRate = Math.max(
+    0,
+    toFiniteNumber(state && state.blackstartSolarChargeRate, 0),
+  );
+  if (reserveCapacity <= 0 || solarChargeRate <= 0) {
+    return { changed: false, rechargedEnergy: 0, reason: "no-blackstart" };
+  }
+  if (
+    String(entity.mode || "").trim().toUpperCase() === "WARP" ||
+    berthingRuntime.isShipEntityBerthed(entity)
+  ) {
+    return { changed: false, rechargedEnergy: 0, reason: "protected-or-warping" };
+  }
+  const thermalState = entity.temperatureState;
+  if (!thermalState || thermalState.shadowed === true) {
+    return { changed: false, rechargedEnergy: 0, reason: "shadowed" };
+  }
+  const externalTemperature = Math.max(
+    0,
+    toFiniteNumber(thermalState.externalTemperature, 0),
+  );
+  if (externalTemperature <= temperatureRuntime.SHADOW_TEMPERATURE_K) {
+    return { changed: false, rechargedEnergy: 0, reason: "dark" };
+  }
+
+  const capacitorCapacity = Math.max(
+    0,
+    toFiniteNumber(entity.capacitorCapacity, 0),
+  );
+  const previousAmount = getEntityCapacitorAmount(entity);
+  const rechargeCeiling = Math.min(capacitorCapacity, reserveCapacity);
+  const missingReserveEnergy = Math.max(0, rechargeCeiling - previousAmount);
+  const rechargedEnergy = Math.min(
+    missingReserveEnergy,
+    solarChargeRate *
+      (externalTemperature / temperatureRuntime.FROSTLINE_TEMPERATURE_K) *
+      Math.max(0, toFiniteNumber(deltaSeconds, 0)),
+  );
+  if (rechargedEnergy <= 1.0e-9 || capacitorCapacity <= 0) {
+    return { changed: false, rechargedEnergy: 0, reason: "reserve-full" };
+  }
+
+  setEntityCapacitorRatio(
+    entity,
+    (previousAmount + rechargedEnergy) / capacitorCapacity,
+  );
+  const normalizedNowMs = toFiniteNumber(nowMs, Date.now());
+  const notificationDue =
+    normalizedNowMs - toFiniteNumber(entity._lastCapNotifyAtMs, 0) >= 500 ||
+    previousAmount + rechargedEnergy >= rechargeCeiling - 1.0e-9;
+  if (notificationDue) {
+    persistEntityCapacitorRatio(entity);
+    if (entity.session && isReadyForDestiny(entity.session)) {
+      notifyCapacitorChangeToSession(
+        entity.session,
+        entity,
+        normalizedNowMs,
+        previousAmount,
+      );
+    }
+    entity._lastCapNotifyAtMs = normalizedNowMs;
+  }
+  return {
+    changed: true,
+    externalTemperature,
+    rechargeCeiling,
+    rechargedEnergy,
+    reason: "direct-starlight",
   };
 }
 
@@ -15584,6 +17297,7 @@ function consumeTurretAmmoCharge(
           stacksize: previousQuantity,
         }
       : null;
+  let persistedInventoryChanges: any[] = [];
 
   if (isNativeNpcEntity(attackerEntity)) {
     const entityID = toInt(attackerEntity.itemID, 0);
@@ -15674,6 +17388,16 @@ function consumeTurretAmmoCharge(
       };
     }
 
+    persistedInventoryChanges = nextQuantity > 0
+      ? [{
+          item: persistResult.data,
+          previousData:
+            persistResult.previousData || previousChargeItemSnapshot,
+        }]
+      : persistResult.data && Array.isArray(persistResult.data.changes)
+        ? persistResult.data.changes
+        : [];
+
     updatedChargeItem = nextQuantity > 0
       ? findItemById(chargeItemID) || {
         ...chargeItem,
@@ -15683,7 +17407,18 @@ function consumeTurretAmmoCharge(
       : null;
   }
 
-  if (attackerEntity.session) {
+  const creationModuleCharge = Boolean(
+    toInt(moduleItem && moduleItem.flagID, 0) === 183 &&
+    toInt(chargeItem && chargeItem.locationID, 0) ===
+      toInt(moduleItem && moduleItem.itemID, 0) &&
+    toInt(chargeItem && chargeItem.flagID, 0) === 184
+  );
+  if (attackerEntity.session && creationModuleCharge) {
+    syncInventoryChangesToSession(
+      attackerEntity.session,
+      persistedInventoryChanges,
+    );
+  } else if (attackerEntity.session) {
     notifyRuntimeChargeTransitionToSession(
       attackerEntity.session,
       attackerEntity.itemID,
@@ -16335,6 +18070,109 @@ function getOwningSessionForEntity(scene, entity) {
   return null;
 }
 
+const WEAPON_OBSTRUCTION_MESSAGE_THROTTLE_MS = 1_000;
+const weaponObstructionMessageState = new WeakMap();
+
+function resolveWeaponObstructionDisplayName(entity) {
+  return String(
+    entity && (
+      entity.itemName ||
+      entity.name ||
+      entity.typeName ||
+      entity.groupName
+    ) ||
+    "an intervening object",
+  );
+}
+
+function sendWeaponObstructionMessage(
+  session,
+  message,
+  attackerEntity,
+  intendedTargetEntity,
+  obstructionEntity,
+  whenMs,
+) {
+  if (!session || typeof session.sendNotification !== "function") {
+    return false;
+  }
+
+  const attackerID = toInt(attackerEntity && attackerEntity.itemID, 0);
+  const intendedTargetID = toInt(intendedTargetEntity && intendedTargetEntity.itemID, 0);
+  const obstructionID = toInt(obstructionEntity && obstructionEntity.itemID, 0);
+  const throttleKey = `${attackerID}:${intendedTargetID}:${obstructionID}:${message}`;
+  let sessionState = weaponObstructionMessageState.get(session);
+  if (!(sessionState instanceof Map)) {
+    sessionState = new Map();
+    weaponObstructionMessageState.set(session, sessionState);
+  }
+  const normalizedWhenMs = toFiniteNumber(whenMs, Date.now());
+  const previousWhenMs = toFiniteNumber(sessionState.get(throttleKey), -Infinity);
+  if (
+    normalizedWhenMs >= previousWhenMs &&
+    normalizedWhenMs - previousWhenMs < WEAPON_OBSTRUCTION_MESSAGE_THROTTLE_MS
+  ) {
+    return false;
+  }
+  sessionState.set(throttleKey, normalizedWhenMs);
+
+  session.sendNotification("OnRemoteMessage", "clientID", [
+    "CustomNotify",
+    buildMarshalDict([
+      ["notify", message],
+      ["reason", "weapon-obstructed"],
+      ["attackerID", attackerID],
+      ["intendedTargetID", intendedTargetID],
+      ["obstructionID", obstructionID],
+    ]),
+  ]);
+  return true;
+}
+
+function notifyWeaponObstructionMessages(
+  scene,
+  attackerEntity,
+  intendedTargetEntity,
+  weaponOcclusion,
+  whenMs,
+) {
+  const obstructionEntity = weaponOcclusion && weaponOcclusion.entity;
+  if (!obstructionEntity) {
+    return 0;
+  }
+
+  const obstructionName = resolveWeaponObstructionDisplayName(obstructionEntity);
+  const attackerSession =
+    getCombatNotificationSession(attackerEntity) ||
+    getOwningSessionForEntity(scene, attackerEntity);
+  const intendedTargetSession =
+    getCombatNotificationSession(intendedTargetEntity) ||
+    getOwningSessionForEntity(scene, intendedTargetEntity);
+  let deliveredCount = 0;
+
+  if (attackerSession) {
+    deliveredCount += sendWeaponObstructionMessage(
+      attackerSession,
+      `Weapon fire obstructed by ${obstructionName}; the impact was redirected to the obstruction.`,
+      attackerEntity,
+      intendedTargetEntity,
+      obstructionEntity,
+      whenMs,
+    ) ? 1 : 0;
+  }
+  if (intendedTargetSession && intendedTargetSession !== attackerSession) {
+    deliveredCount += sendWeaponObstructionMessage(
+      intendedTargetSession,
+      `Incoming weapon fire was obstructed by ${obstructionName}; the obstruction absorbed the impact.`,
+      attackerEntity,
+      intendedTargetEntity,
+      obstructionEntity,
+      whenMs,
+    ) ? 1 : 0;
+  }
+  return deliveredCount;
+}
+
 function buildLaserDamageMessagePayload({
   attackType = "me",
   attackerEntity = null,
@@ -16398,7 +18236,7 @@ function notifyWeaponDamageMessages(
   hitQuality = 0,
   options: Record<string, any> = {},
 ) {
-  if (!targetEntity || !moduleItem) {
+  if (!targetEntity || !moduleItem || options.suppress === true) {
     return false;
   }
 
@@ -16458,6 +18296,43 @@ function notifyWeaponDamageMessages(
   }
 
   return notified;
+}
+
+function notifyCollisionDamageMessages(
+  scene,
+  sourceEntity,
+  targetEntity,
+  rawKineticDamage,
+  damageResult,
+  victimSession = null,
+) {
+  const appliedDamage = getAppliedDamageAmount(damageResult);
+  if (!targetEntity || appliedDamage <= 0) return false;
+
+  const sourceSession = getOwningSessionForEntity(scene, sourceEntity);
+  const targetSession = victimSession || getOwningSessionForEntity(scene, targetEntity);
+  const payload = {
+    attackerEntity: sourceEntity,
+    targetEntity,
+    shotDamage: { kinetic: rawKineticDamage },
+    totalDamage: appliedDamage,
+    hitQuality: 3,
+  };
+  if (sourceSession) {
+    sourceSession.sendNotification("OnDamageMessage", "clientID", [
+      buildLaserDamageMessagePayload({ ...payload, attackType: "me" }),
+    ]);
+  }
+  if (targetSession && targetSession !== sourceSession) {
+    targetSession.sendNotification("OnDamageMessage", "clientID", [
+      buildLaserDamageMessagePayload({
+        ...payload,
+        attackType: "otherPlayerWeapons",
+        includeAttackerID: true,
+      }),
+    ]);
+  }
+  return Boolean(sourceSession || targetSession);
 }
 
 function buildCombatDestructionOwnerContext(attackerEntity = null) {
@@ -16554,17 +18429,12 @@ function applyWeaponDamageToTarget(
   whenMs,
   options: Record<string, any> = {},
 ) {
+  const collisionImpact = options.collisionImpact === true;
   const resolvedShotDamage =
     shotDamage && typeof shotDamage === "object"
       ? shotDamage
       : {};
-  if (!targetEntity || !hasDamageableHealth(targetEntity)) {
-    return {
-      damageResult: null,
-      destroyResult: null,
-    };
-  }
-  if (structureTethering.isEntityStructureTethered(targetEntity)) {
+  if (!targetEntity) {
     return {
       damageResult: null,
       destroyResult: null,
@@ -16576,26 +18446,140 @@ function applyWeaponDamageToTarget(
       destroyResult: null,
     };
   }
+
+  if (!collisionImpact) {
+    try {
+      const smartTurretRuntime = lazyRequire("../services/frontier/smartTurretRuntime");
+      if (
+        smartTurretRuntime &&
+        typeof smartTurretRuntime.noteIncomingAggression === "function"
+      ) {
+        smartTurretRuntime.noteIncomingAggression(
+          attackerEntity,
+          targetEntity,
+          whenMs,
+        );
+      }
+    } catch (error) {
+      log.warn(`[SpaceRuntime] Smart Turret aggression note failed: ${error.message}`);
+    }
+  }
+
+  const weaponOcclusion =
+    collisionImpact || (
+      options.skipWeaponOcclusion === true &&
+      !(attackerEntity && attackerEntity.nativeNpc === true)
+    )
+    ? null
+    : findWeaponLineOccluder(
+        scene,
+        attackerEntity,
+        targetEntity,
+        {
+          // Authored dungeon collision bundles can contain sparse primitives
+          // inside a continuous rendered hull. Damage rays use the conservative
+          // visual envelope; scanning/visibility rays keep their exact geometry.
+          includeDungeonVisualHull: true,
+        },
+      );
+  if (weaponOcclusion) {
+    const obstructionEntity =
+      weaponOcclusion.entity ||
+      (scene && typeof scene.getEntityByID === "function"
+        ? scene.getEntityByID(weaponOcclusion.entityID)
+        : null);
+    notifyWeaponObstructionMessages(
+      scene,
+      attackerEntity,
+      targetEntity,
+      {
+        ...weaponOcclusion,
+        entity: obstructionEntity,
+      },
+      whenMs,
+    );
+
+    // A direct shot resolves against the first physical hull or object. If the
+    // obstruction has health, apply the same shot to it; otherwise the solid
+    // scenery absorbs the impact without allowing damage to reach the selected
+    // target. Missile and skill-shot paths opt out after their own sweep has
+    // already selected the authoritative impact entity.
+    if (
+      obstructionEntity &&
+      !entityIDsEqual(obstructionEntity.itemID, targetEntity.itemID) &&
+      hasDamageableHealth(obstructionEntity)
+    ) {
+      const redirectedDamageResult = applyWeaponDamageToTarget(
+        scene,
+        attackerEntity,
+        obstructionEntity,
+        resolvedShotDamage,
+        whenMs,
+        {
+          ...options,
+          skipWeaponOcclusion: true,
+        },
+      );
+      return {
+        ...redirectedDamageResult,
+        occlusion: {
+          ...weaponOcclusion,
+          entity: obstructionEntity,
+        },
+        redirected: true,
+        intendedTargetEntity: targetEntity,
+        impactTargetEntity: obstructionEntity,
+      };
+    }
+    return {
+      damageResult: null,
+      destroyResult: null,
+      occlusion: {
+        ...weaponOcclusion,
+        entity: obstructionEntity,
+      },
+      redirected: true,
+      intendedTargetEntity: targetEntity,
+      impactTargetEntity: obstructionEntity,
+    };
+  }
+
+  if (!hasDamageableHealth(targetEntity)) {
+    return {
+      damageResult: null,
+      destroyResult: null,
+      impactTargetEntity: targetEntity,
+    };
+  }
+  if (structureTethering.isEntityStructureTethered(targetEntity)) {
+    return {
+      damageResult: null,
+      destroyResult: null,
+      impactTargetEntity: targetEntity,
+    };
+  }
   if (mobileDepotRuntime.isMobileDepotEntityReinforced(targetEntity)) {
     return {
       damageResult: null,
       destroyResult: null,
+      impactTargetEntity: targetEntity,
     };
   }
 
-  const weaponOcclusion =
-    options.skipWeaponOcclusion === true
-      ? null
-      : findWeaponLineOccluder(scene, attackerEntity, targetEntity);
-  if (weaponOcclusion) {
-    // A direct shot is absorbed at the first physical hull or object. Missile
-    // impacts opt out here because their swept path has already selected the
-    // actual impact entity.
-    return {
-      damageResult: null,
-      destroyResult: null,
-      occlusion: weaponOcclusion,
-    };
+  if (
+    !collisionImpact &&
+    attackerEntity &&
+    scene &&
+    typeof scene.revealCombatSourceToTargetSession === "function"
+  ) {
+    scene.revealCombatSourceToTargetSession(
+      attackerEntity,
+      targetEntity,
+      {
+        nowMs: whenMs,
+        reason: "weapon-damage",
+      },
+    );
   }
 
   const fighterDamageContext =
@@ -16615,21 +18599,28 @@ function applyWeaponDamageToTarget(
   let destroyResult = null;
   if (damageResult.success) {
     const appliedDamage = getAppliedDamageAmount(damageResult);
-    const feralizationResult = environmentalEffectsRuntime.applyNpcFeralization(
-      targetEntity,
-      attackerEntity,
-      "hit",
-      whenMs,
-      { appliedDamage },
-    );
-    npcMetamorphosisRuntime.generateNpcMetamorphosisItems(
-      attackerEntity,
-      "hit",
-      {
-        appliedDamage,
-        dependencies: options.npcMetamorphosisDependencies,
-      },
-    );
+    if (!collisionImpact && appliedDamage > 0 && targetEntity.temporaryLandscapePolicyRevision) {
+      require("./temporaryLandscapeRuntime").notifyTemporaryLandscapeEvent(scene, "attacked", { entity: targetEntity });
+    }
+    const feralizationResult = collisionImpact
+      ? { applied: false }
+      : environmentalEffectsRuntime.applyNpcFeralization(
+          targetEntity,
+          attackerEntity,
+          "hit",
+          whenMs,
+          { appliedDamage },
+        );
+    if (!collisionImpact) {
+      npcMetamorphosisRuntime.generateNpcMetamorphosisItems(
+        attackerEntity,
+        "hit",
+        {
+          appliedDamage,
+          dependencies: options.npcMetamorphosisDependencies,
+        },
+      );
+    }
     if (feralizationResult.applied === true) {
       notifyEnvironmentalEffectsToSession(
         getOwningSessionForEntity(scene, targetEntity),
@@ -16638,17 +18629,19 @@ function applyWeaponDamageToTarget(
         whenMs,
       );
     }
-    try {
-      const droneRuntime = lazyRequire("../services/drone/droneRuntime");
-      if (droneRuntime && typeof droneRuntime.noteIncomingAggression === "function") {
-        droneRuntime.noteIncomingAggression(
-          attackerEntity,
-          targetEntity,
-          whenMs,
-        );
+    if (!collisionImpact) {
+      try {
+        const droneRuntime = lazyRequire("../services/drone/droneRuntime");
+        if (droneRuntime && typeof droneRuntime.noteIncomingAggression === "function") {
+          droneRuntime.noteIncomingAggression(
+            attackerEntity,
+            targetEntity,
+            whenMs,
+          );
+        }
+      } catch (error) {
+        log.warn(`[SpaceRuntime] Drone aggression note failed: ${error.message}`);
       }
-    } catch (error) {
-      log.warn(`[SpaceRuntime] Drone aggression note failed: ${error.message}`);
     }
     if (targetEntity.kind === "structure") {
       const structureDamageResult = structureState.applyRuntimeStructureDamage(
@@ -16723,17 +18716,19 @@ function applyWeaponDamageToTarget(
         );
       }
     }
-    try {
-      const npcService = lazyRequire("./npc");
-      if (npcService && typeof npcService.noteNpcIncomingAggression === "function") {
-        npcService.noteNpcIncomingAggression(
-          targetEntity,
-          attackerEntity,
-          whenMs,
-        );
+    if (!collisionImpact) {
+      try {
+        const npcService = lazyRequire("./npc");
+        if (npcService && typeof npcService.noteNpcIncomingAggression === "function") {
+          npcService.noteNpcIncomingAggression(
+            targetEntity,
+            attackerEntity,
+            whenMs,
+          );
+        }
+      } catch (error) {
+        log.warn(`[SpaceRuntime] NPC aggression note failed: ${error.message}`);
       }
-    } catch (error) {
-      log.warn(`[SpaceRuntime] NPC aggression note failed: ${error.message}`);
     }
     const mobileDepotReinforcementResult =
       mobileDepotRuntime.enterMobileDepotReinforcementFromDamage(
@@ -16787,6 +18782,8 @@ function applyWeaponDamageToTarget(
         {
           ...buildCombatDestructionOwnerContext(attackerEntity),
           destructionNowMs: whenMs,
+          environmentalStatusEffectKey:
+            options.environmentalStatusEffectKey || null,
         },
       );
       if (
@@ -16814,6 +18811,7 @@ function applyWeaponDamageToTarget(
     damageResult,
     destroyResult,
     victimSession,
+    impactTargetEntity: targetEntity,
   };
 }
 
@@ -16823,6 +18821,7 @@ function applyCrystalVolatilityDamage(
   moduleItem,
   chargeItem,
   whenMs = null,
+  random = Math.random,
 ) {
   if (!scene || !attackerEntity || !moduleItem || !chargeItem) {
     return {
@@ -16871,7 +18870,7 @@ function applyCrystalVolatilityDamage(
       },
     };
   }
-  if (Math.random() > volatilityChance) {
+  if (random() >= volatilityChance) {
     return {
       success: true,
       data: {
@@ -16892,6 +18891,12 @@ function applyCrystalVolatilityDamage(
   );
   const nextDamage = clamp(previousDamage + volatilityDamage, 0, 1);
   const when = resolveSessionNotificationFileTime(attackerEntity.session, whenMs);
+  // Creation lenses are real inventory items beneath the module on flag 184.
+  // Ordinary turret crystals use a ship/slot charge tuple instead.
+  const isCreationCharge =
+    !isNativeNpcEntity(attackerEntity) &&
+    toInt(chargeItem.locationID, 0) === toInt(moduleItem.itemID, 0) &&
+    toInt(chargeItem.flagID, 0) === 184;
   let updatedChargeItem = chargeItem;
   if (isNativeNpcEntity(attackerEntity)) {
     const cargoRecord = nativeNpcStore
@@ -16952,16 +18957,27 @@ function applyCrystalVolatilityDamage(
   }
 
   if (attackerEntity.session) {
-    notifyChargeDamageChangeToSession(
-      attackerEntity.session,
-      attackerEntity.itemID,
-      moduleItem.flagID,
-      chargeItem.typeID,
-      nextDamage,
-      previousDamage,
-      when,
-      updatedChargeItem,
-    );
+    if (isCreationCharge) {
+      notifyAttributeChanges(attackerEntity.session, [buildAttributeChange(
+        attackerEntity.session,
+        updatedChargeItem.itemID,
+        ATTRIBUTE_ITEM_DAMAGE,
+        getChargeDamageAttributeValue(chargeItem.typeID, nextDamage),
+        getChargeDamageAttributeValue(chargeItem.typeID, previousDamage),
+        when,
+      )]);
+    } else {
+      notifyChargeDamageChangeToSession(
+        attackerEntity.session,
+        attackerEntity.itemID,
+        moduleItem.flagID,
+        chargeItem.typeID,
+        nextDamage,
+        previousDamage,
+        when,
+        updatedChargeItem,
+      );
+    }
   }
 
   if (nextDamage < 1 - 1e-9) {
@@ -17002,34 +19018,43 @@ function applyCrystalVolatilityDamage(
     removeResult = removeInventoryItem(chargeItem.itemID);
   }
   if (removeResult.success && attackerEntity.session) {
-    notifyRuntimeChargeTransitionToSession(
-      attackerEntity.session,
-      attackerEntity.itemID,
-      moduleItem.flagID,
-      {
-        typeID: chargeItem.typeID,
-        quantity: 1,
-      },
-      {
-        typeID: chargeItem.typeID,
-        quantity: 0,
-      },
-      toInt(
-        chargeItem && chargeItem.ownerID,
-        getShipEntityInventoryCharacterID(attackerEntity, 0),
-      ),
-      {
-        previousChargeItem:
-          chargeItem && typeof chargeItem === "object"
-            ? {
-                ...chargeItem,
-                quantity: 1,
-                stacksize: 1,
-              }
-            : null,
-        nextChargeItem: null,
-      },
-    );
+    if (isCreationCharge) {
+      syncInventoryChangesToSession(attackerEntity.session, removeResult.data.changes);
+      lazyRequire("../services/frontier/creationChargeRuntime")
+        .notifyCreationChargeChangedForSession(
+          attackerEntity.session,
+          attackerEntity.itemID,
+        );
+    } else {
+      notifyRuntimeChargeTransitionToSession(
+        attackerEntity.session,
+        attackerEntity.itemID,
+        moduleItem.flagID,
+        {
+          typeID: chargeItem.typeID,
+          quantity: 1,
+        },
+        {
+          typeID: chargeItem.typeID,
+          quantity: 0,
+        },
+        toInt(
+          chargeItem && chargeItem.ownerID,
+          getShipEntityInventoryCharacterID(attackerEntity, 0),
+        ),
+        {
+          previousChargeItem:
+            chargeItem && typeof chargeItem === "object"
+              ? {
+                  ...chargeItem,
+                  quantity: 1,
+                  stacksize: 1,
+                }
+              : null,
+          nextChargeItem: null,
+        },
+      );
+    }
   }
 
   return {
@@ -17070,6 +19095,22 @@ function notifyDungeonEntityDestroyedSafe(scene, entity, reason = "dungeon_entit
 }
 
 function destroyCombatEntity(scene, entity, options: Record<string, any> = {}) {
+  if (!entity?.temporaryLandscapePolicyRevision || !entity.landscapePolicyKey) {
+    return destroyCombatEntityWithoutLandscapeReceipt(scene, entity, options);
+  }
+  const receipt = lazyRequire("./temporaryLandscapeRuntime").prepareDestruction(scene, entity);
+  if (!receipt.success) return receipt;
+  try {
+    const result = destroyCombatEntityWithoutLandscapeReceipt(scene, entity, options);
+    if (!result?.success) receipt.rollback?.();
+    return result;
+  } catch (error) {
+    receipt.rollback?.();
+    throw error;
+  }
+}
+
+function destroyCombatEntityWithoutLandscapeReceipt(scene, entity, options: Record<string, any> = {}) {
   if (!scene || !entity) {
     return {
       success: false,
@@ -17079,11 +19120,14 @@ function destroyCombatEntity(scene, entity, options: Record<string, any> = {}) {
 
   if (entity.kind === "ship") {
     const {
-      destroySessionShip,
+      destroySessionShipAndClone,
       destroyShipEntityWithWreck,
     } = lazyRequire("./shipDestruction");
     if (entity.session) {
-      return destroySessionShip(entity.session, {
+      return destroySessionShipAndClone(entity.session, {
+        attackerEntity: options.attackerEntity || null,
+        environmentalStatusEffectKey: options.environmentalStatusEffectKey,
+        nowMs: options.destructionNowMs,
         sessionChangeReason: "combat",
       });
     }
@@ -17184,6 +19228,7 @@ function destroyCombatEntity(scene, entity, options: Record<string, any> = {}) {
   if (isInventoryBackedDynamicEntity(entity)) {
     return scene.destroyInventoryBackedDynamicEntity(entity.itemID, {
       terminalDestructionEffectID: DESTRUCTION_EFFECT_EXPLOSION,
+      destructionNowMs: options.destructionNowMs,
     });
   }
 
@@ -17432,6 +19477,7 @@ function executeTurretCycle(scene, attackerEntity, effectState, cycleBoundaryMs)
   let damageResult = null;
   let destroyResult = null;
   let weaponOcclusion = null;
+  let damageTargetEntity = targetEntity;
 
   if (shotResult.hit && hasDamageableHealth(targetEntity)) {
     const weaponDamageResult = applyWeaponDamageToTarget(
@@ -17444,9 +19490,10 @@ function executeTurretCycle(scene, attackerEntity, effectState, cycleBoundaryMs)
     damageResult = weaponDamageResult.damageResult;
     destroyResult = weaponDamageResult.destroyResult;
     weaponOcclusion = weaponDamageResult.occlusion || null;
+    damageTargetEntity = weaponDamageResult.impactTargetEntity || targetEntity;
     const appliedDamageAmount = getAppliedDamageAmount(damageResult);
     if (appliedDamageAmount > 0) {
-      noteKillmailDamage(attackerEntity, targetEntity, appliedDamageAmount, {
+      noteKillmailDamage(attackerEntity, damageTargetEntity, appliedDamageAmount, {
         whenMs: cycleBoundaryMs,
         weaponSnapshot: presentedWeaponSnapshot,
         moduleItem,
@@ -17454,7 +19501,7 @@ function executeTurretCycle(scene, attackerEntity, effectState, cycleBoundaryMs)
       });
     }
     if (destroyResult && destroyResult.success) {
-      recordKillmailFromDestruction(targetEntity, destroyResult, {
+      recordKillmailFromDestruction(damageTargetEntity, destroyResult, {
         attackerEntity,
         victimSession: weaponDamageResult.victimSession,
         whenMs: cycleBoundaryMs,
@@ -17467,13 +19514,14 @@ function executeTurretCycle(scene, attackerEntity, effectState, cycleBoundaryMs)
 
   notifyWeaponDamageMessages(
     attackerEntity,
-    targetEntity,
+    damageTargetEntity,
     moduleItem,
     shotResult && shotResult.shotDamage,
     getAppliedDamageAmount(damageResult),
     getCombatMessageHitQuality(shotResult),
     {
       isBanked: bankContext.banked,
+      suppress: Boolean(weaponOcclusion && !damageResult),
     },
   );
   // Chain lightning: the bolt walks outward from the primary target, striking
@@ -17532,9 +19580,10 @@ function executeTurretCycle(scene, attackerEntity, effectState, cycleBoundaryMs)
         arcShotResult.shotDamage,
         cycleBoundaryMs,
       );
+      const arcDamageTargetEntity = arcDamage.impactTargetEntity || link.entity;
       const arcAppliedAmount = getAppliedDamageAmount(arcDamage.damageResult);
       if (arcAppliedAmount > 0) {
-        noteKillmailDamage(attackerEntity, link.entity, arcAppliedAmount, {
+        noteKillmailDamage(attackerEntity, arcDamageTargetEntity, arcAppliedAmount, {
           whenMs: cycleBoundaryMs,
           weaponSnapshot: presentedWeaponSnapshot,
           moduleItem,
@@ -17542,7 +19591,7 @@ function executeTurretCycle(scene, attackerEntity, effectState, cycleBoundaryMs)
         });
       }
       if (arcDamage.destroyResult && arcDamage.destroyResult.success) {
-        recordKillmailFromDestruction(link.entity, arcDamage.destroyResult, {
+        recordKillmailFromDestruction(arcDamageTargetEntity, arcDamage.destroyResult, {
           attackerEntity,
           victimSession: arcDamage.victimSession,
           whenMs: cycleBoundaryMs,
@@ -17553,17 +19602,19 @@ function executeTurretCycle(scene, attackerEntity, effectState, cycleBoundaryMs)
       }
       notifyWeaponDamageMessages(
         attackerEntity,
-        link.entity,
+        arcDamageTargetEntity,
         moduleItem,
         arcShotResult.shotDamage,
         arcAppliedAmount,
         getCombatMessageHitQuality(arcShotResult),
         {
           isBanked: bankContext.banked,
+          suppress: Boolean(arcDamage.occlusion && !arcDamage.damageResult),
         },
       );
       vortonArcResults.push({
-        targetEntityID: toInt(link.entity.itemID, 0),
+        targetEntityID: toInt(arcDamageTargetEntity.itemID, 0),
+        intendedTargetEntityID: toInt(link.entity.itemID, 0),
         linkIndex: link.linkIndex,
         distanceFromPreviousLink: link.distanceFromPreviousLink,
         shotResult: arcShotResult,
@@ -18315,6 +20366,20 @@ function resolveMissileLifecycle(scene, missileEntity, nowMs) {
             : "unknown",
       );
     }
+    if (pendingWeaponOcclusion && impactTargetEntity) {
+      notifyWeaponObstructionMessages(
+        scene,
+        attackerEntity,
+        targetEntity,
+        {
+          entity: impactTargetEntity,
+          entityID: impactTargetEntity.itemID,
+          position: cloneVector(missileEntity.pendingGeometryImpactPosition),
+          kind: String(impactTargetEntity.kind || "object"),
+        },
+        nowMs,
+      );
+    }
     const impactResult = resolveMissileAppliedDamage(
       missileEntity.missileSnapshot,
       impactTargetEntity,
@@ -18362,7 +20427,10 @@ function resolveMissileLifecycle(scene, missileEntity, nowMs) {
           isBanked:
             missileEntity &&
             missileEntity.missileSnapshot &&
-            missileEntity.missileSnapshot.isBanked === true,
+              missileEntity.missileSnapshot.isBanked === true,
+          suppress: Boolean(
+            pendingWeaponOcclusion && !weaponDamageResult.damageResult,
+          ),
         },
       );
     }
@@ -18529,16 +20597,18 @@ function resolveMissileLifecycle(scene, missileEntity, nowMs) {
       impactResult.appliedDamage,
       nowMs,
     );
+    const resolvedImpactTargetEntity =
+      weaponDamageResult.impactTargetEntity || targetEntity;
     const appliedDamageAmount = getAppliedDamageAmount(weaponDamageResult.damageResult);
     if (appliedDamageAmount > 0) {
-      noteKillmailDamage(attackerEntity, targetEntity, appliedDamageAmount, {
+      noteKillmailDamage(attackerEntity, resolvedImpactTargetEntity, appliedDamageAmount, {
         whenMs: nowMs,
         weaponSnapshot: missileEntity.missileSnapshot,
         moduleItem,
       });
     }
     if (weaponDamageResult.destroyResult && weaponDamageResult.destroyResult.success) {
-      recordKillmailFromDestruction(targetEntity, weaponDamageResult.destroyResult, {
+      recordKillmailFromDestruction(resolvedImpactTargetEntity, weaponDamageResult.destroyResult, {
         attackerEntity,
         victimSession: weaponDamageResult.victimSession,
         whenMs: nowMs,
@@ -18548,7 +20618,7 @@ function resolveMissileLifecycle(scene, missileEntity, nowMs) {
     }
     notifyWeaponDamageMessages(
       attackerEntity,
-      targetEntity,
+      resolvedImpactTargetEntity,
       moduleItem,
       impactResult.appliedDamage,
       getAppliedDamageAmount(weaponDamageResult.damageResult),
@@ -18557,7 +20627,10 @@ function resolveMissileLifecycle(scene, missileEntity, nowMs) {
         isBanked:
           missileEntity &&
           missileEntity.missileSnapshot &&
-          missileEntity.missileSnapshot.isBanked === true,
+            missileEntity.missileSnapshot.isBanked === true,
+        suppress: Boolean(
+          weaponDamageResult.occlusion && !weaponDamageResult.damageResult,
+        ),
       },
     );
     logLifecycle("timeout-forced-impact", {
@@ -18994,12 +21067,16 @@ function buildShipEntityCore(source, systemID, options: Record<string, any> = {}
     spaceState.targetPoint,
     addVectors(position, scaleVector(direction, 1.0e16)),
   );
-  const maxVelocity =
+  const dogmaMaxVelocity =
     toFiniteNumber(passiveResourceState && passiveResourceState.maxVelocity, 0) > 0
       ? toFiniteNumber(passiveResourceState.maxVelocity, 0)
       : toFiniteNumber(movement && movement.maxVelocity, 0) > 0
         ? toFiniteNumber(movement.maxVelocity, 0)
         : 200;
+  const collisionStableMaxVelocity =
+    toFiniteNumber(source.collisionStableMaxVelocity, 0) > 0
+      ? toFiniteNumber(source.collisionStableMaxVelocity, 0)
+      : getUnmodifiedShipTypeMaxVelocity(source.typeID, movement) || dogmaMaxVelocity;
   const warpSpeedAU =
     toFiniteNumber(movement && movement.warpSpeedMultiplier, 0) > 0
       ? toFiniteNumber(movement.warpSpeedMultiplier, 0)
@@ -19010,6 +21087,20 @@ function buildShipEntityCore(source, systemID, options: Record<string, any> = {}
       : toFiniteNumber(movement && movement.mass, 0) > 0
         ? toFiniteNumber(movement.mass, 0)
         : 1_000_000;
+  const baseMass = resolveShipBaseMass(
+    source.typeID,
+    movement,
+    resolvedMass,
+  );
+  const massVelocityMultiplier = resolveMassMobilityMultiplier(
+    resolvedMass,
+    baseMass,
+  );
+  const maxVelocity = resolveMassAdjustedMaxVelocity(
+    dogmaMaxVelocity,
+    resolvedMass,
+    baseMass,
+  );
   const resolvedInertia =
     toFiniteNumber(passiveResourceState && passiveResourceState.agility, 0) > 0
       ? toFiniteNumber(passiveResourceState.agility, 0)
@@ -19087,6 +21178,11 @@ function buildShipEntityCore(source, systemID, options: Record<string, any> = {}
     warFactionID: toInt(source.warFactionID, 0),
     nativeNpc: source && source.nativeNpc === true,
     nativeNpcOccupied: source && source.nativeNpcOccupied === true,
+    npcFuelRequirementsEnabled:
+      source && source.npcFuelRequirementsEnabled === true,
+    frontierBerthingHostAssemblyID:
+      berthingRuntime.readBerthHostIDFromCustomInfo(source && source.customInfo) ||
+      undefined,
     transient: source && source.transient === true,
     skinMaterialSetID:
       options.skinMaterialSetID !== undefined
@@ -19111,6 +21207,10 @@ function buildShipEntityCore(source, systemID, options: Record<string, any> = {}
     targetPoint,
     mode,
     speedFraction,
+    baseMass,
+    dogmaMaxVelocity,
+    collisionStableMaxVelocity,
+    massVelocityMultiplier,
     mass: resolvedMass,
     inertia: resolvedInertia,
     radius:
@@ -19132,6 +21232,8 @@ function buildShipEntityCore(source, systemID, options: Record<string, any> = {}
       resolvedInertia,
     ),
     passiveDerivedState: passiveResourceState,
+    creationPowerState: source.creationPowerState || null,
+    regularFuelPowerState: source.regularFuelPowerState || null,
     maxTargetRange: toFiniteNumber(
       passiveResourceState && passiveResourceState.maxTargetRange,
       0,
@@ -19203,6 +21305,7 @@ function buildShipEntityCore(source, systemID, options: Record<string, any> = {}
     publicGridKey: null,
     ...visibilityControlState.buildEntityVisibilityControlState(),
     warpState: null,
+    ...persistedManualFlightState(spaceState, mode),
     pendingWarp,
     dockingTargetID: null,
     pendingDock: null,
@@ -19243,6 +21346,10 @@ function buildShipEntityCore(source, systemID, options: Record<string, any> = {}
   applyRuntimeDungeonTrackingState(entity, spaceState);
   clearPlayerShipGenericDungeonScope(entity);
 
+  if (berthingRuntime.isShipEntityBerthed(entity)) {
+    resetEntityMotionForHardRelocation(entity);
+  }
+
   return entity;
 }
 
@@ -19263,6 +21370,14 @@ function buildShipEntity(session, shipItem, systemID) {
         ) || []),
       ],
     },
+  );
+  const creationPowerState = applyCreationPowerStateToResourceState(
+    passiveResourceState,
+    creationDogmaContext,
+  );
+  const regularFuelPowerState = applyRegularShipFuelPowerStateToResourceState(
+    passiveResourceState,
+    creationPowerState,
   );
   const initialModules = resolveShipSlimModules({
     kind: "ship",
@@ -19285,7 +21400,10 @@ function buildShipEntity(session, shipItem, systemID) {
     warFactionID: session.warFactionID || 0,
     radius: shipItem.radius,
     conditionState: shipItem.conditionState || {},
+    customInfo: shipItem.customInfo,
     passiveResourceState,
+    creationPowerState,
+    regularFuelPowerState,
     spaceState: shipItem.spaceState || {},
     modules: initialModules,
     securityStatus:
@@ -19327,10 +21445,21 @@ function buildRuntimeShipEntity(shipSpec, systemID, options: Record<string, any>
         ],
       },
     );
+  const creationPowerState = applyCreationPowerStateToResourceState(
+    passiveResourceState,
+    creationDogmaContext,
+  );
+  const regularFuelPowerState = applyRegularShipFuelPowerStateToResourceState(
+    passiveResourceState,
+    creationPowerState,
+  );
 
   return buildShipEntityCore({
     ...source,
     passiveResourceState,
+    creationPowerState: source.creationPowerState || creationPowerState,
+    regularFuelPowerState:
+      source.regularFuelPowerState || regularFuelPowerState,
   }, systemID, {
     session: options.session || null,
     persistSpaceState: options.persistSpaceState === true,
@@ -19380,7 +21509,8 @@ function buildRuntimePersistedSpaceShipEntity(shipItem, systemID, options: Recor
       : null;
   if (
     options.includeOfflinePlayerShips === false &&
-    isPlayerOwnedPersistedSpaceShipRecord(shipItem, characterData)
+    isPlayerOwnedPersistedSpaceShipRecord(shipItem, characterData) &&
+    shipItem.spaceState.offlinePersistent !== true
   ) {
     return null;
   }
@@ -19400,6 +21530,7 @@ function buildRuntimePersistedSpaceShipEntity(shipItem, systemID, options: Recor
       0,
     ),
     conditionState: shipItem.conditionState || {},
+    customInfo: shipItem.customInfo,
     spaceState: shipItem.spaceState || {},
     securityStatus:
       characterData && (characterData.securityStatus ?? characterData.securityRating),
@@ -19407,6 +21538,7 @@ function buildRuntimePersistedSpaceShipEntity(shipItem, systemID, options: Recor
   }, systemID, {
     persistSpaceState: true,
   });
+  entity.offlinePersistent = shipItem.spaceState.offlinePersistent === true;
 
   applyRuntimeEntityScopeMetadata(entity, shipItem);
   applyRuntimeEntityScopeMetadata(entity, shipItem.spaceState);
@@ -19981,6 +22113,8 @@ function buildRuntimeInventoryEntity(item, systemID, nowMs) {
   if (kind === "deployable") {
     lazyRequire("../services/frontier/deploymentRuntime")
       .hydrateConstructionEntityFromInventoryItem(entity, item);
+    lazyRequire("../services/frontier/launchBayPayloadRuntime")
+      .hydrateLaunchBayPayloadEntityFromInventoryItem(entity, item, nowMs);
     deployableCynoRuntime.hydrateMobileCynoDeployableEntityFromInventoryItem(entity, item);
     mobileDepotRuntime.hydrateMobileDepotEntityFromInventoryItem(entity, item);
     mobileAnalysisBeaconRuntime.hydrateMobileAnalysisBeaconEntityFromInventoryItem(entity, item);
@@ -20107,6 +22241,9 @@ function persistShipEntity(entity, options: Record<string, any> = {}) {
   }
 
   const nowMs = toFiniteNumber(options.nowMs, Date.now());
+  if (Object.hasOwn(options, "offlinePersistent")) {
+    entity.offlinePersistent = options.offlinePersistent === true;
+  }
   const findShipItem = typeof options.findShipItemById === "function"
     ? options.findShipItemById
     : findShipItemById;
@@ -20188,6 +22325,32 @@ function persistDynamicEntity(entity) {
   if (!entity) {
     return;
   }
+  if (entity.kind === "detachedDungeonProp" && entity.detachedPropMove) {
+    try {
+      return require(path.join(__dirname, "./detachedDungeonProps"))
+        .getDetachedDungeonPropStore()
+        .checkpointPose(entity.systemID, entity.itemID, entity.position);
+    } catch (error) {
+      log.warn(`[SpaceRuntime] Failed to persist detached prop ${entity.itemID}: ${error.message}`);
+      return { success: false, errorMsg: "DETACHED_PROP_STORE_FAILED" };
+    }
+  }
+  if (isNativeNpcEntity(entity)) {
+    try {
+      const nativeNpcService = lazyRequire("./npc/nativeNpcService");
+      if (
+        nativeNpcService &&
+        typeof nativeNpcService.persistNativeRuntimeEntity === "function"
+      ) {
+        nativeNpcService.persistNativeRuntimeEntity(entity);
+      }
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Failed to persist native NPC ${entity.itemID}: ${error.message}`,
+      );
+    }
+    return;
+  }
   if (entity.kind === "ship") {
     persistShipEntity(entity);
     return;
@@ -20212,6 +22375,47 @@ const {
   resetEntityMotion,
   resetEntityMotionForHardRelocation,
 } = movementMotionStateHelpers;
+
+function enforceFrontierBerthedShipMotion(scene, entity) {
+  if (!berthingRuntime.isShipEntityBerthed(entity)) {
+    return { berthed: false, changed: false, hostAssemblyID: 0 };
+  }
+
+  const hostAssemblyID = berthingRuntime.getBerthHostIDForShipEntity(entity);
+  const hostEntity = scene && typeof scene.getEntityByID === "function"
+    ? scene.getEntityByID(hostAssemblyID)
+    : null;
+  const hostPosition = hostEntity && hostEntity.position;
+  const positionChanged = Boolean(
+    hostPosition &&
+      Number.isFinite(Number(hostPosition.x)) &&
+      Number.isFinite(Number(hostPosition.y)) &&
+      Number.isFinite(Number(hostPosition.z)) &&
+      distanceSquared(entity.position, hostPosition) > 0.000001
+  );
+  const motionChanged = Boolean(
+    entity.mode !== "STOP" ||
+      magnitude(entity.velocity) > 0.000001 ||
+      toFiniteNumber(entity.speedFraction, 0) !== 0 ||
+      entity.pendingWarp ||
+      entity.warpState ||
+      entity.targetEntityID ||
+      entity.manualFlightActive === true ||
+      magnitude(entity.manualStrafingThrust || { x: 0, y: 0, z: 0 }) > 0.000001
+  );
+  if (positionChanged) {
+    entity.position = cloneVector(hostPosition);
+  }
+  if (positionChanged || motionChanged) {
+    resetEntityMotionForHardRelocation(entity);
+  }
+  return {
+    berthed: true,
+    changed: positionChanged || motionChanged,
+    hostAssemblyID,
+    hostEntity,
+  };
+}
 
 function dispatchIndependentWarpWithFleetAssociationRetirement(
   entity,
@@ -20486,6 +22690,7 @@ function prepareActiveNativeSubwarpPlan(scene) {
       cloneEntity: cloneDynamicEntityForDestinyPresentation,
       previousFrame: scene._nativeSubwarpFrame,
       shouldAdvance: (entity) => (
+        entity.kind !== "regolith" &&
         !entity.pendingDock &&
         toInt(entity._lastMovementAdvancedTickSequence, 0) !==
           activeTickSequence
@@ -20511,6 +22716,7 @@ function refreshActiveNativeSubwarpPlan(scene) {
         // be compared with the detached start scene, while consumed balls are
         // already at their authored endpoint.
         shouldCompare: (entity) => (
+          entity.kind !== "regolith" &&
           toInt(entity && entity._lastMovementAdvancedTickSequence, 0) !==
             activeTickSequence
         ),
@@ -20530,6 +22736,7 @@ function refreshActiveNativeSubwarpPlan(scene) {
       advanceMovement,
       cloneEntity: cloneDynamicEntityForDestinyPresentation,
       shouldAdvance: (entity) => (
+        entity.kind !== "regolith" &&
         !entity.pendingDock &&
         toInt(entity._lastMovementAdvancedTickSequence, 0) !==
           activeTickSequence
@@ -20615,6 +22822,7 @@ function advanceEntityForActiveSceneTick(scene, entity) {
   if (
     !scene ||
     !entity ||
+    entity.kind === "regolith" ||
     activeTickSequence <= 0 ||
     toInt(entity._lastMovementAdvancedTickSequence, 0) === activeTickSequence
   ) {
@@ -20632,6 +22840,7 @@ function advanceEntityForActiveSceneTick(scene, entity) {
   // behavior frames and start snapshots.
   const plan = refreshActiveNativeSubwarpPlan(scene);
   const previousPosition = cloneVector(entity.position);
+  const frontierWasWarping = entity.mode === "WARP" || Boolean(entity.pendingWarp || entity.warpState);
   const nativeResult = destinyNativeSubwarpController.consumeSceneIntervalEntity(
     plan,
     entity,
@@ -20657,9 +22866,11 @@ function advanceEntityForActiveSceneTick(scene, entity) {
       )
     : nativeResult;
   const sweptWeaponOcclusion =
-    movementResult && entity.kind === "missile"
+    movementResult &&
+    entity.kind === "missile"
       ? findSweptWeaponOccluder(entity, scene, previousPosition, {
           activeTickSequence,
+          includeDungeonVisualHull: true,
           ignoreEntityIDs: [
             entity.sourceShipID,
             entity.targetEntityID,
@@ -20736,6 +22947,15 @@ function advanceEntityForActiveSceneTick(scene, entity) {
         activeTickSequence,
       })
     : null;
+  let collisionContactEvent = null;
+  if (movementCollision && Array.isArray(scene._collisionContactEvents)) {
+    const candidate = typeof scene.getEntityByID === "function"
+      ? scene.getEntityByID(movementCollision.entityID)
+      : null;
+    if (candidate) {
+      collisionContactEvent = { mover: entity, candidate, collision: movementCollision };
+    }
+  }
   const collision = sweptWeaponOcclusion
     ? {
         entityID: sweptWeaponOcclusion.entityID,
@@ -20754,12 +22974,140 @@ function advanceEntityForActiveSceneTick(scene, entity) {
         collisionResolved: true,
       }
     : movementResult;
+  if (Number(config.clientBuild) === 3640684 && entity.kind === "ship" && entity.session && !frontierWasWarping && entity.mode !== "WARP") {
+    const travelled = distance(previousPosition, entity.position);
+    if (Number.isFinite(travelled) && travelled > 0 && travelled <= Math.max(1, entity.maxVelocity || 0) * Math.max(0, rawDeltaSeconds) * 2) {
+      entity._frontierPilotingMeters = (entity._frontierPilotingMeters || 0) + travelled;
+    }
+    if (entity._frontierPilotingMeters > 0 && interval.endSimTimeMs - (entity._frontierLastActivityMs || 0) >= 5000) {
+      entity._frontierPendingActivity ||= { eventID: `pilot:${FRONTIER_ACTIVITY_RUNTIME_ID}:${entity.itemID}:${activeTickSequence}`, eventKind: "piloting", amount: entity._frontierPilotingMeters };
+      try {
+        const credited = lazyRequire("../services/frontier/progressionRuntime").recordActivity(entity.session, entity._frontierPendingActivity);
+        if (credited.success || credited.errorMsg === "ACTIVITY_POLICY_UNAVAILABLE") {
+          entity._frontierPilotingMeters = Math.max(0, entity._frontierPilotingMeters - entity._frontierPendingActivity.amount);
+          entity._frontierPendingActivity = null;
+          entity._frontierLastActivityMs = interval.endSimTimeMs;
+        }
+      } catch (error) { log.debug(`[SpaceRuntime] Piloting progression deferred: ${error.message}`); }
+    }
+  }
   entity._lastMovementAdvancedTickSequence = activeTickSequence;
   entity._lastMovementAdvancedAtMs = interval.endSimTimeMs;
+  if (collisionContactEvent) {
+    scene._collisionContactEvents.push(collisionContactEvent);
+    try {
+      processSceneCollisionContacts(
+        scene, [collisionContactEvent], interval.endSimTimeMs, [],
+        { damageOnly: true },
+      );
+    } catch (error) {
+      log.warn(`[SpaceRuntime] Immediate collision impact failed entity=${entity.itemID}: ${error.message}`);
+    }
+  }
   return {
     advanced: true,
     result,
   };
+}
+
+function getUnmodifiedShipTypeMaxVelocity(typeID, movement = null) {
+  const typeSpeed = toFiniteNumber(getTypeAttributeValue(typeID, "maxVelocity"), 0);
+  if (typeSpeed > 0) return typeSpeed;
+  const typeMovement = movement || worldData.getMovementAttributesForType(typeID);
+  const movementSpeed = toFiniteNumber(typeMovement && typeMovement.maxVelocity, 0);
+  return movementSpeed > 0 ? movementSpeed : null;
+}
+
+function resolveCollisionStableSpeed(entity) {
+  if (!entity) return null;
+  if (entity.kind !== "ship") {
+    return Math.max(0, toFiniteNumber(entity.collisionStableMaxVelocity, 0));
+  }
+  const explicit = toFiniteNumber(entity.collisionStableMaxVelocity, 0);
+  if (explicit > 0) return explicit;
+  const typeID = toInt(entity.typeID, 0);
+  const typeSpeed = getUnmodifiedShipTypeMaxVelocity(typeID);
+  if (typeSpeed) return typeSpeed;
+  // Modular Creation hulls can have a zero type speed. Their fitted passive
+  // assembly supplies the stable speed; active thrust changes maxVelocity
+  // without changing this saved baseline.
+  const passiveSpeed = toFiniteNumber(entity.passiveDerivedState?.maxVelocity, 0);
+  if (passiveSpeed > 0) return passiveSpeed;
+  const spawnSpeed = toFiniteNumber(entity.dogmaMaxVelocity, 0);
+  return spawnSpeed > 0 ? spawnSpeed : null;
+}
+
+function isCollisionPushRecipient(scene, entity, nowMs) {
+  if (!entity || !isEntityCollisionMover(entity) ||
+      !(scene.dynamicEntities instanceof Map) ||
+      scene.dynamicEntities.get(entity.itemID) !== entity ||
+      entity.anchored === true || entity.isAnchored === true ||
+      ["structure", "orbital", "station", "stargate", "deployable"].includes(entity.kind) ||
+      entity.pendingWarp || entity.pendingDock ||
+      (entity.kind === "ship" && isShipMovementLockedByRuntime(entity, nowMs))) {
+    return false;
+  }
+  return true;
+}
+
+function processSceneCollisionContacts(
+  scene, events, nowMs, sharedUpdates: any[] = [],
+  options: Record<string, any> = {},
+) {
+  return processCollisionContacts(scene, events, {
+    tickSequence: scene._activeTickSequence,
+    nowMs,
+    safeSpeedFor: resolveCollisionStableSpeed,
+    applyDamage(target, source, amount, event) {
+      const targetID = target && target.itemID;
+      const liveTarget = scene.dynamicEntities instanceof Map &&
+        scene.dynamicEntities.get(targetID) === target ||
+        scene.staticEntitiesByID instanceof Map &&
+        scene.staticEntitiesByID.get(targetID) === target;
+      if (!liveTarget || !hasDamageableHealth(target)) return false;
+      const attacker = event.collision.impact.candidateImmovable === true &&
+        target === event.mover ? null : source;
+      try {
+        const result = applyWeaponDamageToTarget(
+          scene, attacker, target, { kinetic: amount }, nowMs,
+          { collisionImpact: true, skipWeaponOcclusion: true },
+        );
+        notifyCollisionDamageMessages(
+          scene, source, target, amount, result.damageResult, result.victimSession,
+        );
+        return result.damageResult && result.damageResult.success === true;
+      } catch (error) {
+        log.warn(`[SpaceRuntime] Collision damage failed target=${targetID}: ${error.message}`);
+        return false;
+      }
+    },
+    applyPush: options.damageOnly === true ? undefined : (target, deltaVelocity) => {
+      if (!isCollisionPushRecipient(scene, target, nowMs)) return false;
+      const previousVelocity = cloneVector(target.velocity);
+      const nextVelocity = addVectors(previousVelocity, deltaVelocity);
+      const maxSpeed = Math.max(
+        magnitude(previousVelocity),
+        500,
+        2 * Math.max(0, toFiniteNumber(target.maxVelocity, 0)),
+      );
+      const nextSpeed = magnitude(nextVelocity);
+      const boundedVelocity = nextSpeed > maxSpeed
+        ? scaleVector(nextVelocity, maxSpeed / nextSpeed)
+        : nextVelocity;
+      if (magnitude(subtractVectors(boundedVelocity, previousVelocity)) <= 0.000001) {
+        return false;
+      }
+      target.velocity = boundedVelocity;
+      persistDynamicEntity(target);
+      if (typeof scene.getMovementStamp === "function") {
+        sharedUpdates.push({
+          stamp: scene.getMovementStamp(nowMs),
+          payload: buildSetBallVelocityPayload(target.itemID, target.velocity),
+        });
+      }
+      return true;
+    },
+  });
 }
 
 function finalizeActiveNativeSubwarpPlan(scene) {
@@ -20893,6 +23241,7 @@ const movementSceneRefresh = createMovementSceneRefresh({
   notifyActiveHostileJamStatesToSession,
   notifyActiveCommandBurstHudStatesToSession,
   isReadyForDestiny,
+  isIncrementalStaticVisibilityEntity,
   logMissileDebug,
   logMovementDebug,
   refreshEntitiesForSlimPayload,
@@ -21033,8 +23382,11 @@ const movementWarpCommands = createMovementWarpCommands({
   buildSessionlessWarpIngressState,
   buildWarpPrepareDispatch,
   buildWarpStartUpdates,
+  checkWarpCapacitorAvailability: checkEntityWarpCapacitorAvailability,
+  checkWarpFuelAvailability: checkEntityWarpFuelAvailability,
   clearTrackingState,
   cloneVector,
+  consumeWarpCapacitor: consumeEntityWarpCapacitor,
   deactivateWarpUnsafeActiveModulesForWarpStart,
   getClientParityWarpInPoint,
   getStargateWarpLandingPoint,
@@ -21057,10 +23409,12 @@ const movementWarpCommands = createMovementWarpCommands({
     );
   },
   hasPendingPilotWarpLanding,
+  initializeSessionlessWarpDestination,
   isReadyForDestiny,
   logMovementDebug,
   logWarpDebug,
   normalizeVector,
+  materializeDungeonWarpDestination,
   prewarmStartupControllersForWarpDestination,
   primePilotWarpActivationState,
   persistShipEntity,
@@ -21131,6 +23485,10 @@ const {
   setPitch: dispatchSetPitch,
   setStrafingThrust: dispatchSetStrafingThrust,
   setYawRate: dispatchSetYawRate,
+  setPitchRate: dispatchSetPitchRate,
+  setRollRate: dispatchSetRollRate,
+  setBrakeFraction: dispatchSetBrakeFraction,
+  setHeading: dispatchSetHeading,
 } = movementManualFlightCommands;
 
 function pushMinHeapEntry(heap, entry, compareEntries) {
@@ -21190,6 +23548,10 @@ function popMinHeapEntry(heap, compareEntries) {
 }
 
 class SolarSystemScene {
+  declare _lastFrontierClaimSweepAtMs: number;
+  declare _detachedWorldSourceIDs: Set<number> | undefined;
+  declare _bootstrapGeneration: any;
+  declare _bootstrapReady: any;
   declare _dungeonUniversePendingSiteTeardowns: Map<any, any>;
   declare _activeDestinyDeliveryFlush: any;
   declare deferredInitialVisibilityEntityIDs: any;
@@ -21199,10 +23561,13 @@ class SolarSystemScene {
   declare _activeTickDeltaSeconds: any;
   declare _activeTickNowMs: any;
   declare _activeTickSequence: any;
+  declare _collisionContactEvents: any[];
+  declare _collisionImpactContactState: Map<string, any>;
   declare _directDestinyNotificationBatch: any;
   declare _nativeSubwarpFrame: any;
   declare _nextTickSequence: any;
   declare _tickDestinyPresentation: any;
+  declare _tickIntervalMs: any;
   declare _tickTargetingStatsCache: any;
   declare bubbles: any;
   declare commandBurstExpiryByEntityID: any;
@@ -21317,6 +23682,14 @@ class SolarSystemScene {
     }
     for (const entity of authoredSpaceProps.getConfiguredStaticEntitiesForSystem(this.systemID)) {
       this.addStaticEntity(entity);
+    }
+    const detachedPropRestore = require(path.join(__dirname, "./dungeonPropDetachment"))
+      .restoreDetachedPropsToScene(this);
+    if (!detachedPropRestore.success) {
+      throw new Error(
+        `Detached dungeon prop restore failed in system ${this.systemID}: ` +
+        JSON.stringify(detachedPropRestore.failures),
+      );
     }
 
     const systemSpaceItems = listSystemSpaceItems(this.systemID);
@@ -21680,6 +24053,12 @@ class SolarSystemScene {
 
     const normalizedItemID = Number(entity.itemID);
     if (!Number.isInteger(normalizedItemID) || normalizedItemID <= 0) {
+      return false;
+    }
+
+    // A Physics Gun detachment owns the original world source ID durably.
+    // Generated asteroid fields may be populated again after scene restore.
+    if (this._detachedWorldSourceIDs?.has(normalizedItemID)) {
       return false;
     }
 
@@ -23459,6 +25838,7 @@ class SolarSystemScene {
   beginPilotWarpVisibilityHandoff(
     entity,
     warpState,
+    now = this.getCurrentSimTimeMs(),
   ) {
     if (!entity || !warpState) {
       return null;
@@ -23484,6 +25864,14 @@ class SolarSystemScene {
         handoff,
         warpState,
       });
+      // Combat reveal is a local-grid presentation override. Keeping it past
+      // departure makes its forced scanner resolution win over the normal
+      // destination visibility test, which can strand dungeon NPC balls (and
+      // their target brackets) on the client after the pilot warps away.
+      clearCombatRevealedContactsForWarpDeparture(
+        entity.session,
+        toFiniteNumber(now, this.getCurrentSimTimeMs()),
+      );
     }
     return handoff;
   }
@@ -25214,6 +27602,8 @@ class SolarSystemScene {
       entity.dungeonSiteContentPersistsAfterResponse === true ||
       [
         "dungeonEncounterKey",
+        "dungeonFactionKey",
+        "dungeonFactionTag",
         "dungeonSiteContentKey",
         "dungeonSiteContentRole",
         "dungeonSiteContentAnalyzer",
@@ -25221,6 +27611,7 @@ class SolarSystemScene {
         "dungeonSiteContentLootProfile",
         "dungeonSiteContentHackingDifficulty",
       ].some((fieldName) => String(entity[fieldName] || "").trim()) ||
+      Array.isArray(entity.dungeonTags) ||
       Array.isArray(entity.dungeonSiteContentExplicitLoot) ||
       Array.isArray(entity.dungeonSiteContentLootTags)
     );
@@ -25397,6 +27788,10 @@ class SolarSystemScene {
       entity.itemID,
       now,
     );
+    const combatRevealedContact = isCombatRevealedDynamicEntity(
+      session,
+      entity.itemID,
+    );
     const publicGridEligible = this.canSessionSeeEntityInPublicGrid(
       session,
       entity,
@@ -25404,12 +27799,14 @@ class SolarSystemScene {
       egoEntity,
     );
     const requiresLineOfSight =
+      !combatRevealedContact &&
       !resolvedScanningContact &&
       publicGridEligible &&
       isLineOfSightVisibilitySubject(entity);
     const hasLineOfSight =
       !requiresLineOfSight || this.hasLineOfSightForSession(session, entity);
-    const eligible = resolvedScanningContact ||
+    const eligible = combatRevealedContact ||
+      resolvedScanningContact ||
       (publicGridEligible && hasLineOfSight);
     if (traceEligibility) {
       const visibilityPosition =
@@ -25446,7 +27843,9 @@ class SolarSystemScene {
               : "public-grid-cluster-mismatch";
       spatialTrace.recordVisibilityEligibility(this, session, entity, {
         eligible,
-        reason: resolvedScanningContact
+        reason: combatRevealedContact
+          ? "combat-revealed-contact"
+          : resolvedScanningContact
           ? "resolved-scanning-contact"
           : publicGridEligible && !hasLineOfSight
             ? "line-of-sight-occluded"
@@ -25461,6 +27860,7 @@ class SolarSystemScene {
             options.requireExactPublicGridCluster === true,
           visibilityDistanceMeters,
           hasLineOfSight,
+          combatRevealedContact,
           resolvedScanningContact,
         },
       });
@@ -25535,6 +27935,8 @@ class SolarSystemScene {
       {
         nowMs,
         delayMs: options.delayMs,
+        delayMsByEntityID: options.delayMsByEntityID,
+        source: options.source,
       },
     );
     this.requestFinalSceneVisibilityReconciliation();
@@ -26413,6 +28815,42 @@ class SolarSystemScene {
         errorMsg: "TARGET_NOT_FOUND",
       };
     }
+    if (!sourceEntity.session) {
+      const targetSession = getOwningSessionForEntity(this, targetEntity);
+      const targetObstruction = findWeaponLineOccluder(
+        this,
+        sourceEntity,
+        targetEntity,
+      );
+      const canRetainOccludedLock = Boolean(
+        targetObstruction &&
+        options.allowOccludedExistingLock === true &&
+        npcRetainsOccludedTargetLocks(sourceEntity)
+      );
+      if (
+        targetSession &&
+        !this.canSessionDetectDynamicEntity(
+          targetSession,
+          sourceEntity,
+          this.getCurrentSimTimeMs(),
+        ) &&
+        !canRetainOccludedLock
+      ) {
+        return {
+          success: false,
+          errorMsg: "TARGET_NOT_FOUND",
+        };
+      }
+      if (targetObstruction && !canRetainOccludedLock) {
+        return {
+          success: false,
+          errorMsg: "TARGET_OBSTRUCTED",
+          data: {
+            occluderID: targetObstruction.entityID,
+          },
+        };
+      }
+    }
     if (
       session &&
       !this.canSessionSeeDungeonScopedEntity(session, targetEntity)
@@ -26671,6 +29109,24 @@ class SolarSystemScene {
       acquiredAtMs: toFiniteNumber(options.nowMs, this.getCurrentSimTimeMs()),
     });
     targetState.targetedBy.add(sourceID);
+
+    // Sessionless NPCs do not have a player visibility lane of their own.
+    // Resolve/materialize the attacker for its victim as soon as the hostile
+    // lock completes, before OnTarget, weapon FX, or damage messages can refer
+    // to a ball the victim has not received yet.
+    if (
+      !sourceEntity.session &&
+      typeof this.revealCombatSourceToTargetSession === "function"
+    ) {
+      this.revealCombatSourceToTargetSession(
+        sourceEntity,
+        targetEntity,
+        {
+          nowMs: toFiniteNumber(options.nowMs, this.getCurrentSimTimeMs()),
+          reason: "npc-target-lock",
+        },
+      );
+    }
 
     if (sourceEntity.session) {
       this.notifyTargetEvent(sourceEntity.session, "add", targetID);
@@ -27181,6 +29637,7 @@ class SolarSystemScene {
         targetEntity,
         {
           ignoreCapacity: true,
+          allowOccludedExistingLock: true,
         },
       );
       if (!validation.success) {
@@ -27202,6 +29659,21 @@ class SolarSystemScene {
       if (
         !(entity && entity.lockedTargets instanceof Map && entity.lockedTargets.size > 0) &&
         !(entity && entity.pendingTargetLocks instanceof Map && entity.pendingTargetLocks.size > 0)
+      ) {
+        continue;
+      }
+      this.validateEntityTargetLocks(entity, now);
+    }
+  }
+
+  validateNpcTargetLocksBeforeCombat(now = this.getCurrentSimTimeMs()) {
+    for (const entity of this.dynamicEntities.values()) {
+      if (
+        !isNativeNpcEntity(entity) ||
+        (
+          !(entity.lockedTargets instanceof Map && entity.lockedTargets.size > 0) &&
+          !(entity.pendingTargetLocks instanceof Map && entity.pendingTargetLocks.size > 0)
+        )
       ) {
         continue;
       }
@@ -27405,6 +29877,46 @@ class SolarSystemScene {
       };
     }
 
+    // Creation configuration actions (notably sealing or reopening a Fuel
+    // Blister) update the durable ship row before asking the live ball to
+    // refresh. Hydrate the fuel fields first so the subsequent entity
+    // persistence cannot write its pre-action queue back over that commit.
+    const persistedConditionState = shipRecord.conditionState;
+    if (
+      persistedConditionState &&
+      typeof persistedConditionState === "object" &&
+      Object.prototype.hasOwnProperty.call(persistedConditionState, "charge")
+    ) {
+      const persistedChargeRatio = clamp(
+        toFiniteNumber(persistedConditionState.charge, 0),
+        0,
+        1,
+      );
+      entity.capacitorChargeRatio = persistedChargeRatio;
+      entity.conditionState = {
+        ...(entity.conditionState || {}),
+        charge: persistedChargeRatio,
+      };
+    }
+    if (
+      persistedConditionState &&
+      typeof persistedConditionState === "object" &&
+      (
+        Object.prototype.hasOwnProperty.call(persistedConditionState, "fuelCharge") ||
+        Array.isArray(persistedConditionState.fuelQueue)
+      )
+    ) {
+      const persistedFuelQueue = getShipFuelQueue(shipRecord);
+      entity.conditionState = {
+        ...(entity.conditionState || {}),
+        fuelCharge: getShipFuelCharge(shipRecord),
+        fuelQueue: persistedFuelQueue.map((entry) => ({ ...entry })),
+        fuelTypeID: persistedFuelQueue[0]
+          ? toInt(persistedFuelQueue[0].fuelTypeID, 0)
+          : 0,
+      };
+    }
+
     const previousCommandedSpeedFraction = clamp(
       toFiniteNumber(entity.speedFraction, 0),
       0,
@@ -27426,6 +29938,7 @@ class SolarSystemScene {
     );
     const validModuleOwnerIDs = new Set(
       getEntityRuntimeModuleOwnerItems(entity, { creationDogmaContext })
+        .filter((item) => !hasExplicitOfflineModuleState(item))
         .map((item) => toInt(item && item.itemID, 0))
         .filter((itemID) => itemID > 0),
     );
@@ -27508,6 +30021,25 @@ class SolarSystemScene {
         ],
       },
     );
+    const creationPowerState = applyCreationPowerStateToResourceState(
+      passiveResourceState,
+      creationDogmaContext,
+    );
+    const regularFuelPowerState = applyRegularShipFuelPowerStateToResourceState(
+      passiveResourceState,
+      creationPowerState,
+    );
+    const creationActiveModuleRuntime = lazyRequire(
+      "../services/frontier/creationActiveModuleRuntime",
+    );
+    creationActiveModuleRuntime.applyCreationActiveThrustToResourceState(
+      passiveResourceState,
+      entity,
+      creationDogmaContext,
+      { shipItem: shipRecord },
+    );
+    entity.creationPowerState = creationPowerState;
+    entity.regularFuelPowerState = regularFuelPowerState;
     applyPassiveResourceStateToEntity(entity, passiveResourceState, {
       recalculateSpeedFraction: false,
     });
@@ -27709,6 +30241,9 @@ class SolarSystemScene {
         success: false,
         errorMsg: "SHIP_NOT_FOUND",
       };
+    }
+    if (require("./temporaryLandscapeRuntime").isModuleBlocked(this, entity)) {
+      return { success: false, errorMsg: "MODULE_BLOCKED_BY_LANDSCAPE" };
     }
 
     const normalizedModuleID = toInt(moduleItem.itemID, 0);
@@ -28120,7 +30655,11 @@ class SolarSystemScene {
     const cycleBoundaryMs = getEffectCycleBoundaryMs(effectState, now);
     const shouldDefer = options.deferUntilCycle !== false && reason === "manual";
 
-    if (effectState.deactivateAtMs > 0 && effectState.deactivateAtMs > now) {
+    if (
+      effectState.deactivateAtMs > 0 &&
+      effectState.deactivateAtMs > now &&
+      options.deferUntilCycle !== false
+    ) {
       return {
         success: true,
         data: {
@@ -28150,7 +30689,9 @@ class SolarSystemScene {
 
     return this.finalizePropulsionModuleDeactivation(session, normalizedModuleID, {
       reason,
-      nowMs: cycleBoundaryMs > 0 ? cycleBoundaryMs : now,
+      nowMs: options.deferUntilCycle === false
+        ? now
+        : (cycleBoundaryMs > 0 ? cycleBoundaryMs : now),
     });
   }
 
@@ -28164,6 +30705,9 @@ class SolarSystemScene {
     const entity = this.getShipEntityForSession(session);
     if (!entity || !moduleItem) {
       return { success: false, errorMsg: "SHIP_NOT_FOUND" };
+    }
+    if (require("./temporaryLandscapeRuntime").isModuleBlocked(this, entity)) {
+      return { success: false, errorMsg: "MODULE_BLOCKED_BY_LANDSCAPE" };
     }
     if (isRuntimeStructureDogmaHostEntity(entity) && session) {
       entity.session = session;
@@ -28938,6 +31482,27 @@ class SolarSystemScene {
         ) ||
         effectRecord.isOffensive === true
       );
+    if (
+      entity.nativeNpc === true &&
+      offensiveActivation &&
+      targetEntity &&
+      !isOffensiveWeaponFamily(finalWeaponFamily)
+    ) {
+      const targetObstruction = findWeaponLineOccluder(
+        this,
+        entity,
+        targetEntity,
+      );
+      if (targetObstruction) {
+        return {
+          success: false,
+          errorMsg: "TARGET_OBSTRUCTED",
+          data: {
+            occluderID: targetObstruction.entityID,
+          },
+        };
+      }
+    }
     if (targetEntity && structureTethering.isEntityStructureTethered(targetEntity)) {
       return { success: false, errorMsg: "TARGET_TETHERED" };
     }
@@ -28984,6 +31549,34 @@ class SolarSystemScene {
     if (finalRuntimeAttrs.capNeed > previousChargeAmount + 1e-6) {
       return { success: false, errorMsg: "NOT_ENOUGH_CAPACITOR" };
     }
+    if (typeof options.beforeCommit === "function") {
+      let beforeCommitResult;
+      try {
+        beforeCommitResult = options.beforeCommit({
+          scene: this,
+          session,
+          entity,
+          moduleItem: effectiveModuleItem,
+          effectRecord,
+          nowMs: now,
+        });
+      } catch (error) {
+        return {
+          success: false,
+          errorMsg: error && error.message
+            ? String(error.message)
+            : "MODULE_PRECOMMIT_FAILED",
+        };
+      }
+      if (
+        beforeCommitResult === false ||
+        (beforeCommitResult && beforeCommitResult.success === false)
+      ) {
+        return beforeCommitResult && typeof beforeCommitResult === "object"
+          ? beforeCommitResult
+          : { success: false, errorMsg: "MODULE_PRECOMMIT_FAILED" };
+      }
+    }
     const initialFuelConsumptionResult = consumeShipModuleFuelForSession(
       session,
       entity,
@@ -29010,6 +31603,14 @@ class SolarSystemScene {
     );
 
     let cloakActivationDeactivationResult = null;
+    const activationRepeat = isCynosuralActivation
+      ? 1
+      : resolveModuleActivationRepeat(effectRecord, options.repeat);
+    const creationEffectStatePatch =
+      options.creationEffectStatePatch &&
+      options.creationEffectStatePatch.creationActiveModuleEffect === true
+        ? options.creationEffectStatePatch
+        : null;
     const effectState = {
       moduleID: normalizedModuleID,
       moduleFlagID: toInt(moduleItem.flagID, 0),
@@ -29039,12 +31640,10 @@ class SolarSystemScene {
       fuelTypeID: Math.max(0, toInt(finalRuntimeAttrs.fuelTypeID, 0)),
       fuelPerActivation: Math.max(0, toInt(finalRuntimeAttrs.fuelPerActivation, 0)),
       reactivationDelayMs: finalRuntimeAttrs.reactivationDelayMs,
-      repeat: isCynosuralActivation
-        ? 1
-        : normalizeEffectRepeatCount(options.repeat, null),
+      repeat: activationRepeat,
       remainingCycles: isCynosuralActivation
         ? null
-        : resolveInitialModuleRemainingCycles(options.repeat),
+        : resolveInitialModuleRemainingCycles(activationRepeat),
       targetID: targetEntity ? resolvedTargetID : 0,
       chargeTypeID: toInt(
         (chargeItem && chargeItem.typeID) ||
@@ -29144,6 +31743,7 @@ class SolarSystemScene {
       ...(superweaponActivation.matched === true && superweaponActivation.success === true
         ? superweaponEffectStatePatch
         : {}),
+      ...(creationEffectStatePatch || {}),
     };
     if (effectState.cloakModuleEffect === true) {
       effectState.durationMs = -1;
@@ -29186,6 +31786,16 @@ class SolarSystemScene {
       nowMs: now,
       isWeapon: isOffensiveWeaponFamily(effectState.weaponFamily),
     });
+    // Do not depend on a particular weapon FX GUID or on the first damage
+    // cycle. A successful hostile activation is the authoritative moment the
+    // attacker has identified itself to the victim, including sessionless
+    // regular and modular NPC ships outside passive visual range.
+    if (offensiveActivation && targetEntity) {
+      this.revealCombatSourceToTargetSession(entity, targetEntity, {
+        nowMs: now,
+        reason: entity.session ? "weapon-activation" : "npc-weapon-activation",
+      });
+    }
     if (
       effectState.bastionModuleEffect === true ||
       effectState.immobilizesShip === true
@@ -29336,6 +31946,15 @@ class SolarSystemScene {
       }
     }
 
+    const activationWeaponOcclusion =
+      targetEntity && isTurretCycleWeaponFamily(effectState.weaponFamily)
+        ? findWeaponLineOccluder(this, entity, targetEntity, {
+            includeDungeonVisualHull: true,
+          })
+        : null;
+    effectState.weaponPresentationTargetID = activationWeaponOcclusion
+      ? toInt(activationWeaponOcclusion.entityID, 0)
+      : 0;
     const groupedTurretPresentationStates =
       buildGroupedTurretBankPresentationEffectStates(entity, effectState);
     if (effectState.guid && effectState.suppressStartSpecialFx !== true) {
@@ -29344,7 +31963,10 @@ class SolarSystemScene {
           moduleID: presentationEffectState.moduleID,
           moduleFlagID: presentationEffectState.moduleFlagID,
           moduleTypeID: presentationEffectState.typeID,
-          targetID: presentationEffectState.targetID || null,
+          targetID:
+            toInt(effectState.weaponPresentationTargetID, 0) ||
+            presentationEffectState.targetID ||
+            null,
           chargeTypeID: presentationEffectState.chargeTypeID || null,
           weaponFamily: String(effectState.weaponFamily || ""),
           isOffensive:
@@ -29814,6 +32436,7 @@ class SolarSystemScene {
     effectState.deactivationRequestedAtMs = 0;
     effectState.deactivateAtMs = 0;
     effectState.stopReason = stopReason;
+    cleanupCreationActiveModuleEffectOnDeactivation(this, entity, effectState);
     clearJumpPortalBridgeModeForEffect(effectState);
     clearCynosuralFieldForEffect(this, session, effectState, {
       nowMs: stopTimeMs,
@@ -29995,7 +32618,10 @@ class SolarSystemScene {
           moduleID: presentationEffectState.moduleID,
           moduleFlagID: presentationEffectState.moduleFlagID,
           moduleTypeID: presentationEffectState.typeID,
-          targetID: presentationEffectState.targetID || null,
+          targetID:
+            toInt(effectState.weaponPresentationTargetID, 0) ||
+            presentationEffectState.targetID ||
+            null,
           chargeTypeID: presentationEffectState.chargeTypeID || null,
           weaponFamily: String(effectState.weaponFamily || ""),
           isOffensive: isOffensiveFx,
@@ -30103,12 +32729,14 @@ class SolarSystemScene {
       options.deferUntilCycle !== false &&
       reason === "manual";
 
-    // EVE parity: basic mining lasers / strip miners can be short-cycled — a
-    // manual mid-cycle stop interrupts the cycle immediately and deposits ore
-    // proportional to the elapsed time. Modulated Strip Miners load crystals
-    // and CANNOT be short-cycled, so they fall through to the deferred boundary
-    // stop below (and deliver the full final-cycle yield via the tick path).
-    if (reason === "manual" && effectState.miningEffect === true) {
+    // An explicit short-cycle request is still available for callers that
+    // need proportional mining yield. Normal manual deactivation finishes the
+    // current cycle, matching the action bar timing of other modules.
+    if (
+      reason === "manual" &&
+      effectState.miningEffect === true &&
+      options.shortCycle === true
+    ) {
       const miningRuntime = config.miningEnabled === true
         ? lazyRequire("../services/mining/miningRuntime")
         : null;
@@ -30186,7 +32814,11 @@ class SolarSystemScene {
       }
     }
 
-    if (effectState.deactivateAtMs > 0 && effectState.deactivateAtMs > now) {
+    if (
+      effectState.deactivateAtMs > 0 &&
+      effectState.deactivateAtMs > now &&
+      options.deferUntilCycle !== false
+    ) {
       return {
         success: true,
         data: { entity, effectState, pending: true, deactivateAtMs: effectState.deactivateAtMs },
@@ -30203,9 +32835,25 @@ class SolarSystemScene {
       };
     }
 
+    if (
+      reason === "manual" &&
+      options.deferUntilCycle === false &&
+      options.cooldownUntilCycle === true &&
+      cycleBoundaryMs > now
+    ) {
+      // Release Leap thrust now, but keep the unused part of this activation
+      // cycle as the module's reactivation lock.
+      effectState.reactivationDelayMs = Math.max(
+        toFiniteNumber(effectState.reactivationDelayMs, 0),
+        cycleBoundaryMs - now,
+      );
+    }
+
     return this.finalizeGenericModuleDeactivation(session, normalizedModuleID, {
       reason,
-      nowMs: isCloakingEffect ? now : (cycleBoundaryMs > 0 ? cycleBoundaryMs : now),
+      nowMs: isCloakingEffect || options.deferUntilCycle === false
+        ? now
+        : (cycleBoundaryMs > 0 ? cycleBoundaryMs : now),
     });
   }
 
@@ -30604,6 +33252,36 @@ class SolarSystemScene {
     visibilityControlState.resetWarpDepartureVisibilityGrace(entity);
     forgetEntityFromNativeSubwarpPlans(this, entity);
     this.dynamicEntities.delete(entity.itemID);
+    for (const session of this.sessions.values()) {
+      forgetCombatRevealedDynamicEntity(session, entity.itemID);
+      forgetResolvedScanningContact(session, entity.itemID);
+      const removedCombatEffectProxyIDs =
+        forgetCombatEffectProxiesForRealEntity(session, entity.itemID);
+      if (
+        removedCombatEffectProxyIDs.length > 0 &&
+        isReadyForDestiny(session)
+      ) {
+        try {
+          const proxyRemovalUpdates = this.buildRemoveBallsUpdates(
+            removedCombatEffectProxyIDs,
+            {
+              nowMs: options.nowMs,
+              stampOverride: options.stampOverride,
+            },
+          );
+          this.sendDestinyUpdates(
+            session,
+            proxyRemovalUpdates,
+            false,
+            { translateStamps: false },
+          );
+        } catch (error) {
+          log.warn(
+            `[SpaceRuntime] Combat FX proxy cleanup failed source=${entity.itemID}: ${error.message}`,
+          );
+        }
+      }
+    }
     if (this.pendingNativeBallReplacements.get(entity.itemID)?.entity === entity) {
       this.pendingNativeBallReplacements.delete(entity.itemID);
     }
@@ -30689,6 +33367,12 @@ class SolarSystemScene {
       };
     }
 
+    dischargeHeatTrapBeforeDestruction(
+      this,
+      entity,
+      options.destructionNowMs,
+    );
+
     deployableCynoRuntime.clearMobileCynoDeployable(entity.itemID, "destroyed");
     mobileDepotRuntime.clearMobileDepot(entity.itemID, "destroyed");
     mobileAnalysisBeaconRuntime.clearMobileAnalysisBeacon(entity.itemID, "destroyed");
@@ -30761,7 +33445,10 @@ class SolarSystemScene {
           systemID: this.systemID,
         });
       } else {
-        destroyResult = this.destroyInventoryBackedDynamicEntity(expiredEntity.entityID);
+        destroyResult = this.destroyInventoryBackedDynamicEntity(
+          expiredEntity.entityID,
+          { destructionNowMs: numericNow },
+        );
       }
       if (destroyResult.success) {
         destroyedEntityIDs.push(expiredEntity.entityID);
@@ -30895,8 +33582,10 @@ class SolarSystemScene {
       .flatMap((entity) => buildSlimItemPresentationUpdates({
         stamp,
         entityID: entity.itemID,
-        crData: entity.kind === "deployable" &&
-            Object.prototype.hasOwnProperty.call(entity, "assembly_status")
+        crData: (entity.kind === "ship" &&
+            Object.prototype.hasOwnProperty.call(entity, "selfDestructAtMs")) ||
+            (entity.kind === "deployable" &&
+            Object.prototype.hasOwnProperty.call(entity, "assembly_status"))
           ? destiny.buildCrDataUpdate(entity)
           : null,
         slimItem: destiny.buildSlimItemObject(entity),
@@ -31010,6 +33699,230 @@ class SolarSystemScene {
     };
   }
 
+  canSessionObserveCombatEffectAsBystander(
+    session,
+    sourceEntity,
+    targetEntity,
+    options: Record<string, any> = {},
+  ) {
+    if (
+      !isReadyForDestiny(session) ||
+      !sourceEntity ||
+      !targetEntity ||
+      options.isOffensive !== true ||
+      isSessionViewingOwnVisibilityEntity(session, sourceEntity) ||
+      isSessionViewingOwnVisibilityEntity(session, targetEntity) ||
+      !this.canSessionSeeDungeonScopedEntity(session, sourceEntity) ||
+      !this.canSessionSeeDungeonScopedEntity(session, targetEntity)
+    ) {
+      return false;
+    }
+
+    const egoEntity = this.getShipEntityForSession(session);
+    if (
+      !egoEntity ||
+      !egoEntity.position ||
+      !sourceEntity.position ||
+      !targetEntity.position
+    ) {
+      return false;
+    }
+
+    // A solar-system scene is much larger than a visible combat encounter.
+    // Limit proxy presentation to observers whose configured scanner envelope
+    // intersects the source-to-target segment.
+    const segment = subtractVectors(targetEntity.position, sourceEntity.position);
+    const segmentLengthSquared = dotProduct(segment, segment);
+    const sourceToObserver = subtractVectors(
+      egoEntity.position,
+      sourceEntity.position,
+    );
+    const fraction = segmentLengthSquared > 0
+      ? clamp(
+          dotProduct(sourceToObserver, segment) / segmentLengthSquared,
+          0,
+          1,
+        )
+      : 0;
+    const closestPoint = addVectors(
+      sourceEntity.position,
+      scaleVector(segment, fraction),
+    );
+    const observerRange = Math.max(
+      1,
+      toFiniteNumber(
+        config.frontierScanningDetectionRangeMeters,
+        100_000_000,
+      ),
+    );
+    return distance(egoEntity.position, closestPoint) <= observerRange;
+  }
+
+  prepareBystanderCombatEffectPresentation(
+    session,
+    sourceEntity,
+    guid,
+    options: Record<string, any> = {},
+  ) {
+    const targetEntity = this.getEntityByID(options.targetID);
+    if (
+      !this.canSessionObserveCombatEffectAsBystander(
+        session,
+        sourceEntity,
+        targetEntity,
+        options,
+      )
+    ) {
+      return null;
+    }
+
+    const effectKey = buildCombatEffectProxyKey(
+      sourceEntity.itemID,
+      guid,
+      options,
+    );
+    const endpointEntities = [sourceEntity, targetEntity];
+    const endpointIDs: any[] = [];
+    const proxyRealEntityIDs: any[] = [];
+    const newlyCreatedEntries: any[] = [];
+    let materializedEndpointCount = 0;
+    const state = getCombatEffectProxyState(session, options.start !== false);
+
+    for (const endpointEntity of endpointEntities) {
+      const realEntityID = getEntityMapKey(endpointEntity.itemID);
+      if (realEntityID === null) {
+        return null;
+      }
+      const existingEntry = getCombatEffectProxyEntry(
+        session,
+        realEntityID,
+      );
+      const isMaterialized = canSessionReceiveEntityDependentDestinyUpdate(
+        this,
+        session,
+        endpointEntity,
+      );
+      if (isMaterialized) {
+        materializedEndpointCount += 1;
+      }
+      if (options.start === false && existingEntry) {
+        endpointIDs.push(existingEntry.proxyID);
+        proxyRealEntityIDs.push(realEntityID);
+        continue;
+      }
+      if (isMaterialized) {
+        endpointIDs.push(realEntityID);
+        continue;
+      }
+      if (existingEntry) {
+        endpointIDs.push(existingEntry.proxyID);
+        proxyRealEntityIDs.push(realEntityID);
+        continue;
+      }
+      if (options.start === false || !state) {
+        return null;
+      }
+      const proxyID = allocateCombatEffectProxyID(session);
+      if (!Number.isSafeInteger(proxyID)) {
+        return null;
+      }
+      const proxyEntity = buildCombatEffectProxyPresentationEntity(
+        endpointEntity,
+        proxyID,
+      );
+      const entry = {
+        proxyID,
+        realEntityID,
+        proxyEntity,
+      };
+      state.entriesByRealEntityID.set(realEntityID, entry);
+      newlyCreatedEntries.push(entry);
+      endpointIDs.push(proxyID);
+      proxyRealEntityIDs.push(realEntityID);
+    }
+
+    if (proxyRealEntityIDs.length === 0) {
+      return null;
+    }
+
+    let acquireStamp = null;
+    if (newlyCreatedEntries.length > 0) {
+      const delivery = this.sendAddBallsToSession(
+        session,
+        newlyCreatedEntries.map((entry) => entry.proxyEntity),
+        {
+          freshAcquire: true,
+          bypassTickPresentationBatch: true,
+          nowMs: this.getCurrentSimTimeMs(),
+        },
+      );
+      if (!delivery || delivery.delivered !== true) {
+        for (const entry of newlyCreatedEntries) {
+          state.entriesByRealEntityID.delete(entry.realEntityID);
+        }
+        return null;
+      }
+      acquireStamp = hasDestinyStamp(delivery.stamp)
+        ? normalizeDestinyStamp(delivery.stamp)
+        : null;
+    }
+
+    if (options.start !== false) {
+      rememberCombatEffectProxyReference(
+        session,
+        effectKey,
+        proxyRealEntityIDs,
+      );
+    }
+
+    return {
+      effectKey,
+      sourceID: endpointIDs[0],
+      targetID: endpointIDs[1],
+      acquireStamp,
+      proxyRealEntityIDs,
+      allRealEndpointsMaterialized:
+        materializedEndpointCount === endpointEntities.length,
+    };
+  }
+
+  releaseBystanderCombatEffectPresentation(session, effectKey, stamp) {
+    const releasableRealEntityIDs = releaseCombatEffectProxyReference(
+      session,
+      effectKey,
+    );
+    const state = getCombatEffectProxyState(session);
+    if (!state || releasableRealEntityIDs.length === 0) {
+      return false;
+    }
+    const entries = releasableRealEntityIDs
+      .map((entityID) => getCombatEffectProxyEntry(session, entityID))
+      .filter(Boolean);
+    if (entries.length === 0) {
+      return false;
+    }
+    const removalStamp = hasDestinyStamp(stamp)
+      ? advanceDestinyStamp(stamp, 1)
+      : this.getNextDestinyStamp();
+    const updates = this.buildRemoveBallsUpdates(
+      entries.map((entry) => entry.proxyID),
+      { stampOverride: removalStamp },
+    );
+    const emittedStamp = this.sendDestinyUpdates(
+      session,
+      updates,
+      false,
+      { translateStamps: false },
+    );
+    if (!hasDestinyStamp(emittedStamp)) {
+      return false;
+    }
+    for (const entry of entries) {
+      state.entriesByRealEntityID.delete(entry.realEntityID);
+    }
+    return true;
+  }
+
   sendSpecialFxToSession(session, shipID, guid, options: Record<string, any> = {}, visibilityEntity = null) {
     if (!session || !isReadyForDestiny(session)) {
       return {
@@ -31017,8 +33930,39 @@ class SolarSystemScene {
         stamp: null,
       };
     }
-    const mayReferenceUnresolvedWeaponSource =
-      options && options.isOffensive === true;
+    let combatRevealDelivered = false;
+    let combatRevealStamp = null;
+    let bystanderEffectPresentation = null;
+    if (
+      visibilityEntity &&
+      isOffensiveFxTargetingSession(session, options)
+    ) {
+      const combatReveal = this.revealCombatSourceToSession(
+        session,
+        visibilityEntity,
+        {
+          nowMs: this.getCurrentSimTimeMs(),
+          reason: "offensive-special-fx",
+        },
+      );
+      combatRevealDelivered = Boolean(
+        combatReveal &&
+        (combatReveal.materialized === true || combatReveal.delivered === true)
+      );
+      combatRevealStamp =
+        combatReveal && hasDestinyStamp(combatReveal.stamp)
+          ? normalizeDestinyStamp(combatReveal.stamp)
+          : null;
+    }
+    if (visibilityEntity) {
+      bystanderEffectPresentation =
+        this.prepareBystanderCombatEffectPresentation(
+          session,
+          visibilityEntity,
+          guid,
+          options,
+        );
+    }
     if (visibilityEntity) {
       const canSeeVisibilityEntity =
         isSessionViewingOwnVisibilityEntity(session, visibilityEntity) ||
@@ -31031,7 +33975,8 @@ class SolarSystemScene {
         );
       if (
         !hasMaterializedVisibilityEntity &&
-        !mayReferenceUnresolvedWeaponSource
+        !combatRevealDelivered &&
+        !bystanderEffectPresentation
       ) {
         if (canSeeVisibilityEntity) {
           recordDependentNotificationSkip(
@@ -31114,10 +34059,38 @@ class SolarSystemScene {
     }
     delete rawOptions.stampOverride;
     delete rawOptions.minimumLeadFromCurrentHistory;
-    const {
-      resolvedOptions,
-      payloads,
-    } = buildSpecialFxPayloadsForEntity(shipID, guid, rawOptions, visibilityEntity);
+    const sessionFxOptions = bystanderEffectPresentation
+      ? {
+          ...rawOptions,
+          targetID: bystanderEffectPresentation.targetID,
+        }
+      : rawOptions;
+    const sessionFxSourceID = bystanderEffectPresentation
+      ? bystanderEffectPresentation.sourceID
+      : shipID;
+    const sessionPayloadPresentation = buildSpecialFxPayloadsForEntity(
+      sessionFxSourceID,
+      guid,
+      sessionFxOptions,
+      visibilityEntity,
+    );
+    const { resolvedOptions } = sessionPayloadPresentation;
+    let payloads = sessionPayloadPresentation.payloads;
+    if (
+      bystanderEffectPresentation &&
+      rawOptions.start === false &&
+      bystanderEffectPresentation.allRealEndpointsMaterialized === true
+    ) {
+      payloads = [
+        ...payloads,
+        ...buildSpecialFxPayloadsForEntity(
+          shipID,
+          guid,
+          rawOptions,
+          visibilityEntity,
+        ).payloads,
+      ];
+    }
     if (payloads.length === 0) {
       return {
         delivered: false,
@@ -31142,19 +34115,35 @@ class SolarSystemScene {
       resolvedOptions.useCurrentVisibleStamp === true;
     const useLastClientVisibleStamp =
       resolvedOptions.useLastClientVisibleStamp === true;
-    const stamp = useImmediateVisibleStamp
-      ? this.getImmediateDestinyStampForSession(session, baseStamp)
-      : useCurrentVisibleStamp
-        ? this.getCurrentVisibleSessionDestinyStamp(session)
-        : useLastClientVisibleStamp
-          ? this.getCurrentVisibleSessionDestinyStamp(session)
-          : baseStamp;
+    const bystanderAcquireStamp =
+      bystanderEffectPresentation &&
+      hasDestinyStamp(bystanderEffectPresentation.acquireStamp)
+        ? normalizeDestinyStamp(bystanderEffectPresentation.acquireStamp)
+        : null;
+    // Michelle must install the source/endpoint ball and its CR data before
+    // resolving OnSpecialFX.  Sharing the acquisition stamp is racy: the FX
+    // handler can run while GetBall/GetCrData still returns nothing.  Preserve
+    // deterministic ordering by placing the first effect one Destiny tick
+    // after whichever presentation it depends on.
+    const stamp = hasDestinyStamp(combatRevealStamp)
+      ? advanceDestinyStamp(combatRevealStamp, 1)
+      : hasDestinyStamp(bystanderAcquireStamp)
+        ? advanceDestinyStamp(bystanderAcquireStamp, 1)
+        : useImmediateVisibleStamp
+          ? this.getImmediateDestinyStampForSession(session, baseStamp)
+          : useCurrentVisibleStamp
+            ? this.getCurrentVisibleSessionDestinyStamp(session)
+            : useLastClientVisibleStamp
+              ? this.getCurrentVisibleSessionDestinyStamp(session)
+              : baseStamp;
 
-    this.sendDestinyUpdates(session, payloads.map((payload) => ({
+    const emittedFxStamp = this.sendDestinyUpdates(session, payloads.map((payload) => ({
       stamp,
       payload,
     })), false, {
       translateStamps:
+        hasDestinyStamp(combatRevealStamp) ||
+        hasDestinyStamp(bystanderAcquireStamp) ||
         useImmediateVisibleStamp ||
         useCurrentVisibleStamp ||
         useLastClientVisibleStamp
@@ -31181,13 +34170,32 @@ class SolarSystemScene {
           ? historyLeadPresentedMaximumFutureLead
           : undefined,
       destinyAuthorityAllowPostHeldFuture:
-        rawOptions.destinyAuthorityAllowPostHeldFuture === true || undefined,
+        rawOptions.destinyAuthorityAllowPostHeldFuture === true ||
+        hasDestinyStamp(combatRevealStamp) ||
+        hasDestinyStamp(bystanderAcquireStamp) ||
+        undefined,
       destinyAuthorityContract,
     });
+    const deliveredFxStamp = hasDestinyStamp(emittedFxStamp)
+      ? normalizeDestinyStamp(emittedFxStamp, stamp)
+      : stamp;
+    if (hasDestinyStamp(combatRevealStamp) && visibilityEntity) {
+      forgetCombatRevealDestinyStamp(session, visibilityEntity.itemID);
+    }
+    if (
+      bystanderEffectPresentation &&
+      rawOptions.start === false
+    ) {
+      this.releaseBystanderCombatEffectPresentation(
+        session,
+        bystanderEffectPresentation.effectKey,
+        deliveredFxStamp,
+      );
+    }
 
     return {
       delivered: true,
-      stamp,
+      stamp: deliveredFxStamp,
     };
   }
 
@@ -31243,19 +34251,19 @@ class SolarSystemScene {
       options && typeof options === "object"
         ? { ...options }
         : {};
-    const mayReferenceUnresolvedWeaponSource =
+    const isOffensiveWeaponSource =
       rawOptions.isOffensive === true;
     if (
       visibilityEntity &&
       rawOptions.start !== false &&
       (
         toInt(rawOptions.moduleID, 0) > 0 ||
-        mayReferenceUnresolvedWeaponSource
+        isOffensiveWeaponSource
       )
     ) {
       recordEntityScannerEmissionActivity(visibilityEntity, {
         nowMs: this.getCurrentSimTimeMs(),
-        isWeapon: mayReferenceUnresolvedWeaponSource,
+        isWeapon: isOffensiveWeaponSource,
       });
     }
     delete rawOptions.stampOverride;
@@ -31298,7 +34306,60 @@ class SolarSystemScene {
       ) {
         continue;
       }
+      let combatRevealStamp = null;
+      let bystanderEffectPresentation = null;
+      let sessionResolvedOptions = resolvedOptions;
+      let sessionPayloads = payloads;
       if (visibilityEntity) {
+        let combatRevealDelivered = false;
+        if (isOffensiveFxTargetingSession(session, rawOptions)) {
+          const combatReveal = this.revealCombatSourceToSession(
+            session,
+            visibilityEntity,
+            {
+              nowMs: this.getCurrentSimTimeMs(),
+              reason: "offensive-special-fx",
+            },
+          );
+          combatRevealDelivered = Boolean(
+            combatReveal &&
+            (combatReveal.materialized === true || combatReveal.delivered === true)
+          );
+          combatRevealStamp =
+            combatReveal && hasDestinyStamp(combatReveal.stamp)
+              ? normalizeDestinyStamp(combatReveal.stamp)
+              : null;
+        }
+        bystanderEffectPresentation =
+          this.prepareBystanderCombatEffectPresentation(
+            session,
+            visibilityEntity,
+            guid,
+            rawOptions,
+          );
+        if (bystanderEffectPresentation) {
+          const bystanderPayloadPresentation =
+            buildSpecialFxPayloadsForEntity(
+              bystanderEffectPresentation.sourceID,
+              guid,
+              {
+                ...rawOptions,
+                targetID: bystanderEffectPresentation.targetID,
+              },
+              visibilityEntity,
+            );
+          sessionResolvedOptions = bystanderPayloadPresentation.resolvedOptions;
+          sessionPayloads = bystanderPayloadPresentation.payloads;
+          if (
+            rawOptions.start === false &&
+            bystanderEffectPresentation.allRealEndpointsMaterialized === true
+          ) {
+            // A contact can resolve while a proxy-backed continuous effect is
+            // active. Fresh-acquire replay may then have installed a second,
+            // real-ID effect. Stop both identities before removing the proxy.
+            sessionPayloads = [...sessionPayloads, ...payloads];
+          }
+        }
         const canSeeVisibilityEntity =
           isSessionViewingOwnVisibilityEntity(session, visibilityEntity) ||
           this.canSessionSeeDynamicEntity(session, visibilityEntity);
@@ -31310,7 +34371,8 @@ class SolarSystemScene {
           );
         if (
           !hasMaterializedVisibilityEntity &&
-          !mayReferenceUnresolvedWeaponSource
+          !combatRevealDelivered &&
+          !bystanderEffectPresentation
         ) {
           if (canSeeVisibilityEntity) {
             recordDependentNotificationSkip(
@@ -31325,66 +34387,101 @@ class SolarSystemScene {
       }
 
       const useImmediateVisibleStamp =
-        resolvedOptions.useImmediateClientVisibleStamp === true &&
-        sessionMatchesIdentity(session, resolvedOptions.resultSession);
+        sessionResolvedOptions.useImmediateClientVisibleStamp === true &&
+        sessionMatchesIdentity(session, sessionResolvedOptions.resultSession);
       const useCurrentVisibleStamp =
-        resolvedOptions.useCurrentVisibleStamp === true;
+        sessionResolvedOptions.useCurrentVisibleStamp === true;
       const useLastClientVisibleStamp =
-        resolvedOptions.useLastClientVisibleStamp === true;
-      const stamp = useImmediateVisibleStamp
-        ? this.getImmediateDestinyStampForSession(session, baseStamp)
-        : useCurrentVisibleStamp
-          ? this.getCurrentVisibleSessionDestinyStamp(session)
-        : useLastClientVisibleStamp
-          ? this.getCurrentVisibleSessionDestinyStamp(session)
-          : baseStamp;
-      this.sendDestinyUpdates(session, payloads.map((payload) => ({
-        stamp,
-        payload,
-      })), false, {
-        translateStamps:
-          useImmediateVisibleStamp ||
-          useCurrentVisibleStamp ||
-          useLastClientVisibleStamp
-            ? false
-            : undefined,
-        minimumLeadFromCurrentHistory:
-          minimumLeadFromCurrentHistory > 0
-            ? minimumLeadFromCurrentHistory
-            : undefined,
-        maximumLeadFromCurrentHistory:
-          maximumLeadFromCurrentHistory !== null
-            ? maximumLeadFromCurrentHistory
-            : undefined,
-        avoidCurrentHistoryInsertion:
-          avoidCurrentHistoryInsertion || undefined,
-        historyLeadUsesImmediateSessionStamp:
-          historyLeadUsesImmediateSessionStamp || undefined,
-        historyLeadUsesCurrentSessionStamp:
-          historyLeadUsesCurrentSessionStamp || undefined,
-        historyLeadUsesPresentedSessionStamp:
-          historyLeadUsesPresentedSessionStamp || undefined,
-        historyLeadPresentedMaximumFutureLead:
-          historyLeadPresentedMaximumFutureLead !== null
-            ? historyLeadPresentedMaximumFutureLead
-            : undefined,
-        destinyAuthorityAllowPostHeldFuture:
-          rawOptions.destinyAuthorityAllowPostHeldFuture === true || undefined,
-        destinyAuthorityContract,
-        onDeliveryCommit: rawOptions.onDeliveryCommit,
-        onDeliveryRollback: rawOptions.onDeliveryRollback,
-        onDeliveryRetry: rawOptions.onDeliveryRetry,
-      });
+        sessionResolvedOptions.useLastClientVisibleStamp === true;
+      const bystanderAcquireStamp =
+        bystanderEffectPresentation &&
+        hasDestinyStamp(bystanderEffectPresentation.acquireStamp)
+          ? normalizeDestinyStamp(bystanderEffectPresentation.acquireStamp)
+          : null;
+      const stamp = hasDestinyStamp(combatRevealStamp)
+        ? advanceDestinyStamp(combatRevealStamp, 1)
+        : hasDestinyStamp(bystanderAcquireStamp)
+          ? advanceDestinyStamp(bystanderAcquireStamp, 1)
+          : useImmediateVisibleStamp
+            ? this.getImmediateDestinyStampForSession(session, baseStamp)
+            : useCurrentVisibleStamp
+              ? this.getCurrentVisibleSessionDestinyStamp(session)
+              : useLastClientVisibleStamp
+                ? this.getCurrentVisibleSessionDestinyStamp(session)
+                : baseStamp;
+      const emittedFxStamp = this.sendDestinyUpdates(
+        session,
+        sessionPayloads.map((payload) => ({
+          stamp,
+          payload,
+        })),
+        false,
+        {
+          translateStamps:
+            hasDestinyStamp(combatRevealStamp) ||
+            hasDestinyStamp(bystanderAcquireStamp) ||
+            useImmediateVisibleStamp ||
+            useCurrentVisibleStamp ||
+            useLastClientVisibleStamp
+              ? false
+              : undefined,
+          minimumLeadFromCurrentHistory:
+            minimumLeadFromCurrentHistory > 0
+              ? minimumLeadFromCurrentHistory
+              : undefined,
+          maximumLeadFromCurrentHistory:
+            maximumLeadFromCurrentHistory !== null
+              ? maximumLeadFromCurrentHistory
+              : undefined,
+          avoidCurrentHistoryInsertion:
+            avoidCurrentHistoryInsertion || undefined,
+          historyLeadUsesImmediateSessionStamp:
+            historyLeadUsesImmediateSessionStamp || undefined,
+          historyLeadUsesCurrentSessionStamp:
+            historyLeadUsesCurrentSessionStamp || undefined,
+          historyLeadUsesPresentedSessionStamp:
+            historyLeadUsesPresentedSessionStamp || undefined,
+          historyLeadPresentedMaximumFutureLead:
+            historyLeadPresentedMaximumFutureLead !== null
+              ? historyLeadPresentedMaximumFutureLead
+              : undefined,
+          destinyAuthorityAllowPostHeldFuture:
+            rawOptions.destinyAuthorityAllowPostHeldFuture === true ||
+            hasDestinyStamp(combatRevealStamp) ||
+            hasDestinyStamp(bystanderAcquireStamp) ||
+            undefined,
+          destinyAuthorityContract,
+          onDeliveryCommit: rawOptions.onDeliveryCommit,
+          onDeliveryRollback: rawOptions.onDeliveryRollback,
+          onDeliveryRetry: rawOptions.onDeliveryRetry,
+        },
+      );
+      const deliveredFxStamp = hasDestinyStamp(emittedFxStamp)
+        ? normalizeDestinyStamp(emittedFxStamp, stamp)
+        : stamp;
+      if (hasDestinyStamp(combatRevealStamp) && visibilityEntity) {
+        forgetCombatRevealDestinyStamp(session, visibilityEntity.itemID);
+      }
+      if (
+        bystanderEffectPresentation &&
+        rawOptions.start === false
+      ) {
+        this.releaseBystanderCombatEffectPresentation(
+          session,
+          bystanderEffectPresentation.effectKey,
+          deliveredFxStamp,
+        );
+      }
       deliveredCount += 1;
       if (
         resultStamp === null &&
         (
-          resolvedOptions.resultSession === undefined ||
-          resolvedOptions.resultSession === null ||
-          sessionMatchesIdentity(session, resolvedOptions.resultSession)
+          sessionResolvedOptions.resultSession === undefined ||
+          sessionResolvedOptions.resultSession === null ||
+          sessionMatchesIdentity(session, sessionResolvedOptions.resultSession)
         )
       ) {
-        resultStamp = stamp;
+        resultStamp = deliveredFxStamp;
       }
     }
 
@@ -31672,9 +34769,16 @@ class SolarSystemScene {
       false,
       presentation.sendOptions,
     );
-    if (hasDestinyStamp(emittedStamp)) {
-      deliveryStamp = normalizeDestinyStamp(emittedStamp, deliveryStamp);
+    if (!hasDestinyStamp(emittedStamp)) {
+      if (acquisitionReservation) {
+        acquisitionReservation.rollback();
+      }
+      return {
+        delivered: false,
+        stamp: null,
+      };
     }
+    deliveryStamp = normalizeDestinyStamp(emittedStamp, deliveryStamp);
     return {
       delivered: true,
       stamp: deliveryStamp,
@@ -35882,6 +38986,21 @@ class SolarSystemScene {
       );
     }
 
+    const resumeClearance = resolveCollisionSafeScenePosition(this, shipEntity, {
+      entityRadiusMeters: shipEntity.radius,
+      clearanceMeters: 100,
+      excludeEntityIDs: [shipEntity.itemID],
+    });
+    if (resumeClearance.relocated === true) {
+      shipEntity.position = cloneVector(resumeClearance.position);
+      shipEntity.targetPoint = cloneVector(resumeClearance.position);
+      resetEntityMotion(shipEntity);
+      log.info(
+        `[SpaceRuntime] Relocated ship=${shipEntity.itemID} to a collision-safe resume ` +
+          `position in system=${this.systemID}`,
+      );
+    }
+
     ensureEntityTargetingState(shipEntity);
     const attachedSceneCurrentSimTimeMs = this.getCurrentSimTimeMs();
     if (options.stargateJumpCloak === true) {
@@ -35955,6 +39074,7 @@ class SolarSystemScene {
     this.sessions.set(session.clientID, session);
     forgetEntityFromNativeSubwarpPlans(this, shipEntity.itemID);
     this.dynamicEntities.set(shipEntity.itemID, shipEntity);
+    lazyRequire("../services/frontier/dockingPointRuntime").getDockedPoint(session);
     temperatureRuntime.advanceShipTemperature(
       this,
       shipEntity,
@@ -36161,6 +39281,20 @@ class SolarSystemScene {
         options.speedFraction ?? 1,
       );
     }
+    const resumeClearance = resolveCollisionSafeScenePosition(this, entity, {
+      entityRadiusMeters: entity.radius,
+      clearanceMeters: 100,
+      excludeEntityIDs: [entity.itemID],
+    });
+    if (resumeClearance.relocated === true) {
+      entity.position = cloneVector(resumeClearance.position);
+      entity.targetPoint = cloneVector(resumeClearance.position);
+      resetEntityMotion(entity);
+      log.info(
+        `[SpaceRuntime] Relocated boarded ship=${entity.itemID} to a collision-safe ` +
+          `resume position in system=${this.systemID}`,
+      );
+    }
     forgetEntityFromNativeSubwarpPlans(this, entity);
 
     session._space = {
@@ -36297,6 +39431,8 @@ class SolarSystemScene {
       syncResult,
     });
 
+    lazyRequire("../services/frontier/dockingPointRuntime").getDockedPoint(session);
+
     log.info(
       `[SpaceRuntime] Attached ${session.characterName || session.characterID} to existing ship=${entity.itemID} in system ${this.systemID}`,
     );
@@ -36412,6 +39548,9 @@ class SolarSystemScene {
       return;
     }
 
+    lazyRequire("../services/frontier/dockingPointRuntime").detachSession(session);
+    lazyRequire("../services/mining/voxelMiningRuntime").handleSessionDetached(session);
+
     recordSessionJumpTimingTrace(session, "detach-session", {
       systemID: session._space.systemID,
       shipID: session._space.shipID,
@@ -36421,6 +39560,14 @@ class SolarSystemScene {
       sessionTimeDilation: session._space.timeDilation,
     });
     const entity = this.dynamicEntities.get(session._space.shipID) || null;
+    const preserveShipInSpace = options.preserveShipInSpace === true;
+    if (entity && preserveShipInSpace) {
+      this.deactivateAllActiveModules(session, {
+        reason: "disconnect",
+        nowMs: this.getCurrentSimTimeMs(),
+        clampToVisibleStamp: true,
+      });
+    }
     this.sessions.delete(session.clientID);
     if (entity) {
       this.clearAllTargetingForEntity(entity, {
@@ -36436,10 +39583,32 @@ class SolarSystemScene {
         lifecycleReason: options.lifecycleReason,
         attemptTubeRecovery: options.attemptFighterTubeRecovery === true,
       });
-      this.unregisterDynamicEntity(entity, {
-        broadcast: options.broadcast !== false,
-        excludedSession: session,
-      });
+      if (preserveShipInSpace) {
+        resetEntityMotion(entity);
+        entity.warpState = null;
+        entity.pendingWarp = null;
+        entity.targetEntityID = null;
+        clearControlSessionFromPersistentPlayerShipEntity(entity);
+        persistShipEntity(entity, {
+          nowMs: this.getCurrentSimTimeMs(),
+          offlinePersistent: true,
+        });
+        this.reconcileEntityPublicGrid(entity);
+        this.reconcileEntityBubble(entity);
+        this.publicGridCompositionDirty = true;
+        this.ensurePublicGridComposition();
+        if (options.broadcast !== false) {
+          this.broadcastSlimItemChanges([entity]);
+          this.broadcastBallRefresh([entity], session);
+          this.requestFinalSceneVisibilityReconciliation();
+        }
+      } else {
+        entity.offlinePersistent = false;
+        this.unregisterDynamicEntity(entity, {
+          broadcast: options.broadcast !== false,
+          excludedSession: session,
+        });
+      }
     }
 
     session._space = null;
@@ -36791,9 +39960,18 @@ class SolarSystemScene {
     const dynamicEntities = refreshEntitiesForSlimPayload(
       this.getVisibleDynamicEntitiesForSession(session),
     );
-    const visibleEntities = refreshEntitiesForSlimPayload(
-      this.getVisibleEntitiesForSession(session),
-    );
+    // Dynamic balls used to be enumerated and presentation-refreshed twice:
+    // once for the AddBalls2 bootstrap lane and again through
+    // getVisibleEntitiesForSession(). Active dungeon grids make that duplicate
+    // pass particularly expensive. Reuse the already-refreshed dynamic slice
+    // and only prepare the static slice separately while preserving the
+    // original static-before-dynamic ordering.
+    const visibleEntities = [
+      ...refreshEntitiesForSlimPayload(
+        this.getVisibleStaticEntitiesForSession(session),
+      ),
+      ...dynamicEntities,
+    ];
     const {
       bootstrapEntities,
       bootstrapIncludesDedicatedSiteStatics,
@@ -37094,11 +40272,11 @@ class SolarSystemScene {
       };
     };
     const scheduleAfterDestinyDeliveryFlush = (callback) => {
-      const schedule =
-        typeof queueMicrotask === "function"
-          ? queueMicrotask
-          : (task) => Promise.resolve().then(task);
-      schedule(callback);
+      scheduleAfterSessionOutboundDrain(
+        session,
+        () => isInitialBallparkDeliveryBoundaryUsable(),
+        callback,
+      );
     };
 
     if (
@@ -37380,23 +40558,30 @@ class SolarSystemScene {
           { unsafe: true },
         );
       }
+      const postBootstrapStartedAtMs = Date.now();
       try {
-        autoMaterializeNearbyUniverseSiteForAttach(this, egoEntity, {
+        const universeMaterializeStartedAtMs = Date.now();
+        const universeMaterializeResult = autoMaterializeNearbyUniverseSiteForAttach(this, egoEntity, {
           broadcast: false,
           session,
           nowMs: rawCurrentSimTimeMs,
         });
+        const universeMaterializeMs = Date.now() - universeMaterializeStartedAtMs;
+        const landscapeMaterializeStartedAtMs = Date.now();
         autoMaterializeNearbyLandscapeSiteForAttach(this, egoEntity, {
           broadcast: false,
           session,
           nowMs: rawCurrentSimTimeMs,
         });
+        const landscapeMaterializeMs = Date.now() - landscapeMaterializeStartedAtMs;
         if (session._space !== initialBallparkGeneration) {
           throw new Error("DESTINY_BOOTSTRAP_POST_MATERIALIZE_GENERATION_REPLACED");
         }
+        const staticVisibilityStartedAtMs = Date.now();
         this.syncStaticVisibilityForSession(session, rawCurrentSimTimeMs, {
           stampOverride: modeStamp,
         });
+        const staticVisibilityMs = Date.now() - staticVisibilityStartedAtMs;
         if (session._space !== initialBallparkGeneration) {
           throw new Error("DESTINY_BOOTSTRAP_POST_STATIC_GENERATION_REPLACED");
         }
@@ -37437,6 +40622,32 @@ class SolarSystemScene {
         );
         this.flushDirectDestinyNotificationBatchIfIdle();
         postBootstrapActionsComplete = true;
+        const postBootstrapElapsedMs = Date.now() - postBootstrapStartedAtMs;
+        const siteContentTimings =
+          universeMaterializeResult &&
+          universeMaterializeResult.data &&
+          universeMaterializeResult.data.contentSummary &&
+          universeMaterializeResult.data.contentSummary.timings;
+        recordSessionJumpTimingTrace(
+          session,
+          "ensure-initial-ballpark-post-bootstrap",
+          {
+            elapsedMs: postBootstrapElapsedMs,
+            universeMaterializeMs,
+            landscapeMaterializeMs,
+            staticVisibilityMs,
+            siteContentTimings: siteContentTimings || null,
+          },
+        );
+        if (postBootstrapElapsedMs >= 100) {
+          log.info(
+            `[SpaceRuntime] Post-bootstrap scene restore took ${postBootstrapElapsedMs}ms ` +
+            `for system=${this.systemID} char=${toInt(session && session.characterID, 0)} ` +
+            `universe=${universeMaterializeMs}ms landscape=${landscapeMaterializeMs}ms ` +
+            `visibility=${staticVisibilityMs}ms` +
+            (siteContentTimings ? ` site=${JSON.stringify(siteContentTimings)}` : ""),
+          );
+        }
         return true;
       } catch (error) {
         return rejectInitialBallparkDelivery(
@@ -37454,7 +40665,12 @@ class SolarSystemScene {
         return;
       }
       followUpPostCommitScheduled = true;
-      scheduleAfterDestinyDeliveryFlush(() => {
+      // GetFormations still has to encode its CachedMethodCallResult after the
+      // service handler returns. Starting site restoration here can block that
+      // worker result for tens of seconds. Leave the continuation on the
+      // session generation; Beyonce flushes it from afterCallResponse, after
+      // the RPC response has actually been queued on the outbound tail.
+      initialBallparkGeneration.pendingInitialBallparkPostBootstrap = () => {
         try {
           runPostBootstrapActions();
         } catch (error) {
@@ -37463,7 +40679,7 @@ class SolarSystemScene {
             { error, unsafe: true },
           );
         }
-      });
+      };
     };
     const runInitialBallparkFollowUpPhase = () => {
       if (followUpPhaseStarted) {
@@ -37542,7 +40758,8 @@ class SolarSystemScene {
             { error, unsafe: true },
           );
         }
-        return runPostBootstrapActions();
+        schedulePostBootstrapActions();
+        return true;
       }
 
       let followUpDeliveryCommitted = false;
@@ -37617,7 +40834,8 @@ class SolarSystemScene {
         followUpDeliveryCommitted &&
         followUpDeliveryTransaction.state === "committed"
       ) {
-        return runPostBootstrapActions();
+        schedulePostBootstrapActions();
+        return true;
       }
       if (
         followUpDeliveryRolledBack ||
@@ -38613,6 +41831,182 @@ class SolarSystemScene {
     };
   }
 
+  revealCombatSourceToTargetSession(
+    sourceEntity,
+    targetEntity,
+    options: Record<string, any> = {},
+  ) {
+    const targetSession = getOwningSessionForEntity(this, targetEntity);
+    return this.revealCombatSourceToSession(
+      targetSession,
+      sourceEntity,
+      options,
+    );
+  }
+
+  revealCombatSourceToSession(
+    session,
+    sourceEntity,
+    options: Record<string, any> = {},
+  ) {
+    if (!isReadyForDestiny(session) || !sourceEntity) {
+      return {
+        revealed: false,
+        materialized: false,
+        delivered: false,
+        stamp: null,
+        reason: "session-or-source-not-ready",
+      };
+    }
+    const sourceEntityID = getEntityMapKey(sourceEntity.itemID);
+    const liveSourceEntity =
+      sourceEntityID !== null && this.dynamicEntities instanceof Map
+        ? (
+            this.dynamicEntities.get(sourceEntityID) ||
+            [...this.dynamicEntities.values()].find((candidate) => (
+              candidate && entityIDsEqual(candidate.itemID, sourceEntityID)
+            )) ||
+            null
+          )
+        : null;
+    if (
+      sourceEntityID === null ||
+      !liveSourceEntity ||
+      entityIDsEqual(sourceEntityID, session._space.shipID)
+    ) {
+      return {
+        revealed: false,
+        materialized: false,
+        delivered: false,
+        stamp: null,
+        reason: "source-not-dynamic-or-is-ego",
+      };
+    }
+
+    rememberCombatRevealedDynamicEntity(
+      session,
+      sourceEntityID,
+    );
+    const nowMs = toFiniteNumber(
+      options.nowMs,
+      this.getCurrentSimTimeMs(),
+    );
+    const resolvedScanningContact = forceResolveScanningContact(
+      session,
+      sourceEntityID,
+      { nowMs },
+    );
+    const wasAlreadyMaterialized =
+      canSessionReceiveEntityDependentDestinyUpdate(
+        this,
+        session,
+        liveSourceEntity,
+      );
+    if (
+      wasAlreadyMaterialized &&
+      hasCombatRevealPresentation(session, sourceEntityID)
+    ) {
+      let pendingRevealStamp = getCombatRevealDestinyStamp(
+        session,
+        sourceEntityID,
+      );
+      if (hasDestinyStamp(pendingRevealStamp)) {
+        const currentVisibleStamp = this.getCurrentVisibleSessionDestinyStamp(
+          session,
+          nowMs,
+        );
+        const revealIsStillPending =
+          normalizeDestinyStamp(pendingRevealStamp) ===
+            normalizeDestinyStamp(currentVisibleStamp) ||
+          isDestinyStampAfter(
+            currentVisibleStamp,
+            pendingRevealStamp,
+            DESTINY_STAMP_MAX_FORWARD_LEAD,
+          );
+        if (!revealIsStillPending) {
+          forgetCombatRevealDestinyStamp(session, sourceEntityID);
+          pendingRevealStamp = null;
+        }
+      }
+      return {
+        revealed: true,
+        resolved: Boolean(resolvedScanningContact),
+        materialized: true,
+        delivered: false,
+        stamp: pendingRevealStamp,
+        reason: "already-materialized",
+      };
+    }
+
+    try {
+      const presentationEntity = buildCombatRevealPresentationEntity(
+        liveSourceEntity,
+      );
+      const delivery = this.sendAddBallsToSession(
+        session,
+        [presentationEntity],
+        {
+          // A contact may already have a physical ball because unresolved
+          // contacts and warp-destination occupants are preloaded for scene
+          // rendering.  Its CR data can still be anonymous or unusable.  A
+          // fresh AddBalls2 presentation is an established CR/model refresh
+          // path and upgrades that same ball before the combat HUD/FX event.
+          visibilityAcquisition: !wasAlreadyMaterialized,
+          freshAcquire: true,
+          bypassTickPresentationBatch: true,
+          nowMs,
+        },
+      );
+      const delivered = Boolean(delivery && delivery.delivered === true);
+      if (delivered) {
+        rememberCombatRevealPresentation(session, sourceEntityID);
+      }
+      const deliveryStamp =
+        delivered && hasDestinyStamp(delivery && delivery.stamp)
+          ? rememberCombatRevealDestinyStamp(
+              session,
+              sourceEntityID,
+              delivery.stamp,
+            )
+          : null;
+      recordVisibilityJournal(session, "combat.reveal", {
+        nowMs,
+        source: String(options.reason || "combat"),
+        entityIDs: [sourceEntityID],
+        delivered,
+      });
+      return {
+        revealed: true,
+        resolved: Boolean(resolvedScanningContact),
+        materialized:
+          canSessionReceiveEntityDependentDestinyUpdate(
+            this,
+            session,
+            liveSourceEntity,
+          ),
+        delivered,
+        stamp: deliveryStamp,
+        reason: delivered
+          ? wasAlreadyMaterialized
+            ? "combat-source-refreshed"
+            : "combat-source-acquired"
+          : "delivery-deferred",
+      };
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Combat source reveal failed for source=${sourceEntityID}: ${error.message}`,
+      );
+      return {
+        revealed: true,
+        resolved: Boolean(resolvedScanningContact),
+        materialized: wasAlreadyMaterialized,
+        delivered: false,
+        stamp: null,
+        reason: "delivery-failed",
+      };
+    }
+  }
+
   broadcastMovementUpdates(updates, excludedSession = null, options: Record<string, any> = {}) {
     if (updates.length === 0) {
       return;
@@ -39232,6 +42626,94 @@ class SolarSystemScene {
     return result;
   }
 
+  setPitchRate(session, pitchRate) {
+    const entity = this.getShipEntityForSession(session);
+    if (
+      !entity ||
+      entity.mode === "WARP" ||
+      entity.pendingDock ||
+      hasPendingPilotWarpLanding(session, entity) ||
+      isShipMovementLockedByRuntime(entity, this.getCurrentSimTimeMs())
+    ) {
+      return false;
+    }
+    this.cancelStargateJumpCloakBeforePilotCommand(session, "movement");
+    const result = dispatchSetPitchRate(this, session, pitchRate);
+    this.cancelStargateJumpCloakAfterCommand(session, result, "movement");
+    if (result) {
+      this.retireInactiveFleetWarpCommandAssociation(entity);
+      this.processSessionShipCloakProximityDecloak(session);
+      this.flushDirectDestinyNotificationBatchIfIdle();
+    }
+    return result;
+  }
+
+  setRollRate(session, rollRate) {
+    const entity = this.getShipEntityForSession(session);
+    if (
+      !entity ||
+      entity.mode === "WARP" ||
+      entity.pendingDock ||
+      hasPendingPilotWarpLanding(session, entity) ||
+      isShipMovementLockedByRuntime(entity, this.getCurrentSimTimeMs())
+    ) {
+      return false;
+    }
+    this.cancelStargateJumpCloakBeforePilotCommand(session, "movement");
+    const result = dispatchSetRollRate(this, session, rollRate);
+    this.cancelStargateJumpCloakAfterCommand(session, result, "movement");
+    if (result) {
+      this.retireInactiveFleetWarpCommandAssociation(entity);
+      this.processSessionShipCloakProximityDecloak(session);
+      this.flushDirectDestinyNotificationBatchIfIdle();
+    }
+    return result;
+  }
+
+  setBrakeFraction(session, brakeFraction) {
+    const entity = this.getShipEntityForSession(session);
+    if (
+      !entity ||
+      entity.mode === "WARP" ||
+      entity.pendingDock ||
+      hasPendingPilotWarpLanding(session, entity) ||
+      isShipMovementLockedByRuntime(entity, this.getCurrentSimTimeMs())
+    ) {
+      return false;
+    }
+    this.cancelStargateJumpCloakBeforePilotCommand(session, "movement");
+    const result = dispatchSetBrakeFraction(this, session, brakeFraction);
+    this.cancelStargateJumpCloakAfterCommand(session, result, "movement");
+    if (result) {
+      this.retireInactiveFleetWarpCommandAssociation(entity);
+      this.processSessionShipCloakProximityDecloak(session);
+      this.flushDirectDestinyNotificationBatchIfIdle();
+    }
+    return result;
+  }
+
+  setHeading(session, heading) {
+    const entity = this.getShipEntityForSession(session);
+    if (
+      !entity ||
+      entity.mode === "WARP" ||
+      entity.pendingDock ||
+      hasPendingPilotWarpLanding(session, entity) ||
+      isShipMovementLockedByRuntime(entity, this.getCurrentSimTimeMs())
+    ) {
+      return false;
+    }
+    this.cancelStargateJumpCloakBeforePilotCommand(session, "movement");
+    const result = dispatchSetHeading(this, session, heading);
+    this.cancelStargateJumpCloakAfterCommand(session, result, "movement");
+    if (result) {
+      this.retireInactiveFleetWarpCommandAssociation(entity);
+      this.processSessionShipCloakProximityDecloak(session);
+      this.flushDirectDestinyNotificationBatchIfIdle();
+    }
+    return result;
+  }
+
   gotoPoint(session, point, options: Record<string, any> = {}) {
     const entity = this.getShipEntityForSession(session);
     if (
@@ -39675,6 +43157,7 @@ class SolarSystemScene {
     const deltaSeconds = Math.max(clockState.simDeltaMs / 1000, 0);
     this._activeTickSequence = this._nextTickSequence;
     this._nextTickSequence += 1;
+    this._collisionContactEvents = [];
     this._activeTickDeltaSeconds = deltaSeconds;
     this._activeTickNowMs = now;
     this._tickTargetingStatsCache = new Map();
@@ -39696,6 +43179,43 @@ class SolarSystemScene {
     );
     if (settledStargates.length > 0) {
       this.broadcastSlimItemChanges(settledStargates);
+    }
+
+    // NPC targeting must be reconciled before any behavior, superweapon, or
+    // generic-module producer runs.  The ordinary end-of-tick validation was
+    // too late: a target that moved behind dungeon geometry could receive one
+    // more weapon/EWAR cycle before the stale lock and its effects were torn
+    // down.
+    this.validateNpcTargetLocksBeforeCombat(now);
+
+    try {
+      const launchBayPayloadRuntime = lazyRequire(
+        "../services/frontier/launchBayPayloadRuntime",
+      );
+      if (
+        launchBayPayloadRuntime &&
+        typeof launchBayPayloadRuntime.tickScene === "function"
+      ) {
+        tickProfiler.section(
+          "launchBayPayload",
+          () => launchBayPayloadRuntime.tickScene(this, now),
+        );
+      }
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Launch Bay payload tick failed for system=${this.systemID}: ${error.message}`,
+      );
+    }
+
+    try {
+      const smartTurretRuntime = lazyRequire("../services/frontier/smartTurretRuntime");
+      if (smartTurretRuntime && typeof smartTurretRuntime.tickScene === "function") {
+        tickProfiler.section("smartTurret", () => smartTurretRuntime.tickScene(this, now));
+      }
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Smart Turret tick failed for system=${this.systemID}: ${error.message}`,
+      );
     }
 
     const sharedUpdates: any[] = [];
@@ -39720,6 +43240,11 @@ class SolarSystemScene {
       }
     } catch (error) {
       log.warn(`[SpaceRuntime] NPC tick failed for system=${this.systemID}: ${error.message}`);
+    }
+    try {
+      tickProfiler.section("temporaryLandscape", () => lazyRequire("./temporaryLandscapeRuntime").tickScene(this));
+    } catch (error) {
+      log.warn(`[SpaceRuntime] Temporary landscape tick failed for system=${this.systemID}: ${error.message}`);
     }
     try {
       const bountyRuntime = lazyRequire("../services/bounty/bountyRuntime");
@@ -39810,6 +43335,32 @@ class SolarSystemScene {
     // authored so deferred missile launch snapshots retain their current lane.
     this.pruneExpiredCommandBurstBuffs(now);
     for (const entity of this.dynamicEntities.values()) {
+      if (entity.kind === "detachedDungeonProp" && entity.detachedPropMove) {
+        try {
+          const movement = require(path.join(__dirname, "./dungeonPropMovement"));
+          const result = movement.tickDetachedPropMove(this, entity, deltaSeconds, now);
+          if (!result.success) {
+            log.warn(`[SpaceRuntime] Detached prop move failed entity=${entity.itemID}: ${result.errorMsg}`);
+          } else if (result.data && result.data.reason === "collision" && entity.lastCollision) {
+            const settledMover = this.getEntityByID(entity.itemID);
+            const candidate = this.getEntityByID(entity.lastCollision.entityID);
+            if (settledMover && candidate) {
+              const collisionContactEvent = {
+                mover: settledMover,
+                candidate,
+                collision: entity.lastCollision,
+              };
+              this._collisionContactEvents.push(collisionContactEvent);
+              processSceneCollisionContacts(
+                this, [collisionContactEvent], now, [], { damageOnly: true },
+              );
+            }
+          }
+        } catch (error) {
+          log.warn(`[SpaceRuntime] Detached prop move threw entity=${entity.itemID}: ${error.message}`);
+        }
+        continue;
+      }
       if (Array.isArray(entity.pendingModuleStopNotifications) && entity.pendingModuleStopNotifications.length > 0) {
         const flushSession = entity.session || getOwningSessionForEntity(this, entity);
         if (flushSession && isReadyForDestiny(flushSession)) {
@@ -39853,6 +43404,32 @@ class SolarSystemScene {
             effectState.moduleFlagID,
           );
 
+          // Refresh normally tears down an effect as soon as its module is
+          // powered off. Re-check at every cycle boundary as a fail-safe so a
+          // missed refresh, disconnect, or direct persisted-state change can
+          // never let an offline module consume another fuel/capacitor cycle.
+          if (shouldStopEffectForUnavailableModule(moduleItem)) {
+            if (ownerSession && isReadyForDestiny(ownerSession)) {
+              finalizeDeactivation(ownerSession, effectState.moduleID, {
+                reason: "offline",
+                nowMs: cycleBoundaryMs,
+              });
+            } else if (isGenericEffect) {
+              finalizeGenericModuleDeactivationWithoutSession(
+                this,
+                entity,
+                effectState,
+                {
+                  reason: "offline",
+                  nowMs: cycleBoundaryMs,
+                },
+              );
+            } else {
+              entity.activeModuleEffects.delete(toInt(effectState.moduleID, 0));
+            }
+            continue;
+          }
+
           // A deferred manual stop on an end-of-cycle module must still complete
           // the current cycle and deliver its final effect at the boundary (EVE
           // parity) before deactivating, rather than short-circuiting and
@@ -39860,12 +43437,9 @@ class SolarSystemScene {
           // is finalized after the effect is applied, and the stop cycle does
           // not charge capacitor/fuel for the next (non-existent) cycle. This
           // covers:
-          //   - crystal-based (Modulated) Strip Miners, which cannot be
-          //     short-cycled and must deliver their full final-cycle yield (ore
-          //     only lands when a cycle completes). Basic mining lasers
-          //     short-cycle immediately in deactivateGenericModule and never set
-          //     deactivateAtMs, so only modulated miners reach this branch among
-          //     mining effects; and
+          //   - mining modules, which deliver their full final-cycle yield at
+          //     the boundary when manually deactivated. An explicit short-cycle
+          //     request finalizes immediately and never sets deactivateAtMs; and
           //   - end-of-cycle local-cycle repairers (armor, hull/structure, and
           //     ancillary armor repairers), whose final repair tick lands at the
           //     cycle end.
@@ -40197,6 +43771,46 @@ class SolarSystemScene {
             effectState.remainingCycles = 0;
           }
 
+          const creationDogmaContext =
+            effectState && effectState.creationActiveModuleEffect === true
+              ? { moduleItems: getEntityRuntimeModuleOwnerItems(entity) }
+              : null;
+          if (creationDogmaContext) {
+            const creationActiveModuleRuntime = lazyRequire(
+              "../services/frontier/creationActiveModuleRuntime",
+            );
+            const preflightResult = creationActiveModuleRuntime
+              .preflightCreationActiveModuleCycle({
+                scene: this,
+                session: ownerSession,
+                entity,
+                moduleItem,
+                effectState,
+                creationDogmaContext,
+                nowMs: cycleBoundaryMs,
+                callbacks: buildCreationActiveModuleRuntimeCallbacks(this),
+              });
+            if (!preflightResult.success) {
+              const preflightStopReason = preflightResult.stopReason || "creationActive";
+              if (ownerSession && isReadyForDestiny(ownerSession)) {
+                finalizeDeactivation(ownerSession, effectState.moduleID, {
+                  reason: preflightStopReason,
+                  nowMs: cycleBoundaryMs,
+                });
+              } else if (isGenericEffect) {
+                finalizeGenericModuleDeactivationWithoutSession(
+                  this,
+                  entity,
+                  effectState,
+                  { reason: preflightStopReason, nowMs: cycleBoundaryMs },
+                );
+              } else {
+                entity.activeModuleEffects.delete(toInt(effectState.moduleID, 0));
+              }
+              continue;
+            }
+          }
+
           const previousChargeAmount = getEntityCapacitorAmount(entity);
           if (!terminalFinalEffectDue && effectState.capNeed > previousChargeAmount + 1e-6) {
             if (entity.session && isReadyForDestiny(entity.session)) {
@@ -40298,6 +43912,28 @@ class SolarSystemScene {
           let cycleStopReason = null;
           let cycleExecutedForHeat = true;
           if (
+            effectState &&
+            effectState.creationActiveModuleEffect === true
+          ) {
+            const creationActiveModuleRuntime = lazyRequire(
+              "../services/frontier/creationActiveModuleRuntime",
+            );
+            const cycleResult = creationActiveModuleRuntime
+              .executeCreationActiveModuleCycle({
+                scene: this,
+                session: ownerSession,
+                entity,
+                moduleItem,
+                effectState,
+                creationDogmaContext,
+                nowMs: cycleBoundaryMs,
+                callbacks: buildCreationActiveModuleRuntimeCallbacks(this),
+              });
+            if (!cycleResult.success) {
+              cycleExecutedForHeat = false;
+              cycleStopReason = cycleResult.stopReason || "creationActive";
+            }
+          } else if (
             effectState &&
             effectState.localCycleEffect === true
           ) {
@@ -40848,6 +44484,7 @@ class SolarSystemScene {
       // and are capped by unused power-grid headroom; tankless legacy ships
       // retain the standard nonlinear EVE recharge curve.
       // -----------------------------------------------------------------
+      advanceEntityBlackstartRecharge(entity, deltaSeconds, now);
       advanceEntityCapacitorRecharge(entity, deltaSeconds, now);
 
       // -----------------------------------------------------------------
@@ -40864,6 +44501,7 @@ class SolarSystemScene {
       if (
         passiveShieldRechargeEnabled &&
         entity.kind === "ship" &&
+        entity.offlinePersistent !== true &&
         toFiniteNumber(entity.shieldCapacity, 0) > 0 &&
         toFiniteNumber(entity.shieldRechargeRate, 0) > 0
       ) {
@@ -40913,6 +44551,20 @@ class SolarSystemScene {
       }
 
       const traceActive = isMovementTraceActive(entity, now);
+      const berthingMotion = enforceFrontierBerthedShipMotion(this, entity);
+      if (berthingMotion.berthed) {
+        forgetEntityFromNativeSubwarpPlans(this, entity);
+        if (berthingMotion.changed) {
+          persistDynamicEntity(entity);
+          this.broadcastMovementUpdates(
+            buildTeleportStopPresentationUpdates(
+              entity,
+              this.getMovementStamp(now),
+            ),
+          );
+        }
+        continue;
+      }
       if (entity.pendingDock) {
         if (
           entity.session &&
@@ -40928,7 +44580,16 @@ class SolarSystemScene {
         continue;
       }
 
+      // Channeled scoop owns regolith movement and position checkpoints.
+      // Integrating its velocity again would apply the tractor pull twice.
+      if (entity.kind === "regolith") {
+        forgetEntityFromNativeSubwarpPlans(this, entity);
+        continue;
+      }
       const { result } = advanceEntityForActiveSceneTick(this, entity);
+      if (this.dynamicEntities.get(entity.itemID) !== entity) {
+        continue;
+      }
       if (entity.pendingWarp) {
         const pendingWarp = entity.pendingWarp;
         const pendingWarpState = evaluatePendingWarp(entity, pendingWarp, now);
@@ -40978,6 +44639,34 @@ class SolarSystemScene {
             pendingWarpState,
             preWarpSyncStamp: toInt(pendingWarp.preWarpSyncStamp, 0),
           });
+          const activationCapacitorCheck =
+            checkEntityWarpCapacitorAvailability(entity);
+          if (
+            !activationCapacitorCheck ||
+            activationCapacitorCheck.success !== true
+          ) {
+            this.stopShipEntity(entity, {
+              reason: "warpCapacitorUnavailableAtActivation",
+            });
+            logMovementDebug("warp.aborted", entity, {
+              reason: "NOT_ENOUGH_CAPACITOR",
+              pendingWarpState,
+            });
+            continue;
+          }
+          const activationFuelCheck = checkEntityWarpFuelAvailability(entity);
+          if (!activationFuelCheck || activationFuelCheck.success !== true) {
+            this.stopShipEntity(entity, {
+              reason: "warpFuelUnavailableAtActivation",
+            });
+            logMovementDebug("warp.aborted", entity, {
+              reason:
+                activationFuelCheck && activationFuelCheck.errorMsg ||
+                "NO_FUEL",
+              pendingWarpState,
+            });
+            continue;
+          }
           const warpStartDeactivationResult =
             deactivateWarpUnsafeActiveModulesForWarpStart(
               this,
@@ -41051,6 +44740,20 @@ class SolarSystemScene {
             defaultEffectStamp: currentStamp,
           });
           if (warpState) {
+            const capacitorDebit = consumeEntityWarpCapacitor(entity, now);
+            if (!capacitorDebit || capacitorDebit.success !== true) {
+              clearTrackingState(entity);
+              entity.mode = "STOP";
+              entity.speedFraction = 0;
+              entity.velocity = { x: 0, y: 0, z: 0 };
+              entity.targetPoint = cloneVector(entity.position);
+              persistShipEntity(entity);
+              logMovementDebug("warp.aborted", entity, {
+                reason: "NOT_ENOUGH_CAPACITOR",
+                pendingWarpState,
+              });
+              continue;
+            }
             visibilityControlState.consumeWarpAcquireUntilNextTickSuppression({
               entity,
               nowMs: now,
@@ -41457,6 +45160,26 @@ class SolarSystemScene {
             ),
           ),
         });
+        const dungeonArrivalScope = resolveEntityInteractionScope(entity);
+        if (
+          dungeonArrivalScope.valid &&
+          dungeonArrivalScope.hasDungeonScope &&
+          dungeonArrivalScope.dungeonInstanceID !== null
+        ) {
+          try {
+            const npcService = lazyRequire("./npc");
+            if (
+              npcService &&
+              typeof npcService.notifyNpcDungeonArrival === "function"
+            ) {
+              npcService.notifyNpcDungeonArrival(this, entity, now);
+            }
+          } catch (error) {
+            log.warn(
+              `[SpaceRuntime] Dungeon NPC arrival response failed for ship=${entity.itemID}: ${error.message}`,
+            );
+          }
+        }
         if (!entity.session) {
           try {
             const npcService = lazyRequire("./npc");
@@ -41476,7 +45199,16 @@ class SolarSystemScene {
         }
       }
 
-      if (shouldPersistShipEntityAtTick(entity, now, {
+      if (
+        isNativeNpcEntity(entity) &&
+        (
+          result.warpCompleted ||
+          now - toFiniteNumber(entity.lastPersistAt, 0) >=
+            SHIP_SPACE_STATE_PERSIST_INTERVAL_MS
+        )
+      ) {
+        persistDynamicEntity(entity);
+      } else if (shouldPersistShipEntityAtTick(entity, now, {
         force: result.warpCompleted,
       })) {
         persistShipEntity(entity);
@@ -41515,6 +45247,22 @@ class SolarSystemScene {
       tickProfiler.section(
         "environmentalEffects",
         () => environmentalEffectsRuntime.tickScene(this, now, {
+          applyHitpointDamage: (
+            entity,
+            rawDamage,
+            metadata: Record<string, any> = {},
+          ) =>
+            applyWeaponDamageToTarget(
+              this,
+              null,
+              entity,
+              rawDamage,
+              now,
+              {
+                environmentalStatusEffectKey: metadata.statusEffectKey,
+                skipWeaponOcclusion: true,
+              },
+            ),
           onAdvanced: (entity, result) => {
             const ownerSession = getOwningSessionForEntity(this, entity);
             if (ownerSession && isReadyForDestiny(ownerSession)) {
@@ -41525,6 +45273,36 @@ class SolarSystemScene {
                 now,
               );
             }
+            if (
+              result &&
+              result.cloneDeath &&
+              result.cloneDeath.reason === "vitality"
+            ) {
+              const { destroySessionClonePreservingShip } = lazyRequire(
+                "./shipDestruction",
+              );
+              const cloneDeathResult = ownerSession
+                ? destroySessionClonePreservingShip(ownerSession, {
+                    nowMs: now,
+                    sessionChangeReason: "environmental",
+                    statusEffectKey: result.cloneDeath.statusEffectKey,
+                  })
+                : {
+                    success: false,
+                    errorMsg: "SESSION_NOT_FOUND",
+                  };
+              if (!cloneDeathResult || cloneDeathResult.success !== true) {
+                environmentalEffectsRuntime.releaseCloneDeathTrigger(
+                  result.cloneDeath.characterID,
+                );
+                log.warn(
+                  `[SpaceRuntime] Environmental clone death failed ` +
+                    `char=${result.cloneDeath.characterID} ` +
+                    `effect=${result.cloneDeath.statusEffectKey} ` +
+                    `error=${cloneDeathResult && cloneDeathResult.errorMsg || "UNKNOWN"}`,
+                );
+              }
+            }
           },
         }),
       );
@@ -41534,6 +45312,12 @@ class SolarSystemScene {
       );
     }
 
+    try {
+      processSceneCollisionContacts(this, this._collisionContactEvents, now, sharedUpdates);
+    } catch (error) {
+      log.warn(`[SpaceRuntime] Collision impacts failed for system=${this.systemID}: ${error.message}`);
+    }
+    this._collisionContactEvents = [];
     finalizeActiveNativeSubwarpPlan(this);
 
     if (dockRequests.size > 0) {
@@ -41551,7 +45335,33 @@ class SolarSystemScene {
     }
     tickProfiler.add("mv.entityLoop", __mvEntityLoopStart);
 
+    try {
+      lazyRequire("../services/frontier/dockingPointRuntime").advanceScene(this, now);
+      if (!this._lastFrontierClaimSweepAtMs || now - this._lastFrontierClaimSweepAtMs >= 10000) {
+        lazyRequire("../services/frontier/frontierClaimsRuntime").getFrontierClaimsRuntime().reconcileClaims();
+        this._lastFrontierClaimSweepAtMs = now;
+      }
+    } catch (error) {
+      log.warn(`[SpaceRuntime] Docking point tick failed: ${error.message}`);
+    }
     const __mvVisibilityStart = tickProfiler.now();
+    try {
+      const passiveScanningRuntime = lazyRequire(
+        "../services/frontier/passiveScanningRuntime",
+      );
+      if (
+        passiveScanningRuntime &&
+        typeof passiveScanningRuntime.tickScene === "function"
+      ) {
+        tickProfiler.section("passiveScanning", () =>
+          passiveScanningRuntime.tickScene(this, now));
+      }
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Passive scanning tick failed for system=${this.systemID}: ` +
+          `${error.message}`,
+      );
+    }
     this.validateAllTargetLocks(now);
     tickSceneStructureTethers(this, now);
     if (isAnchorRelevanceEnabled() && hasStartupAnchorRelevanceContext(this)) {
@@ -41668,7 +45478,7 @@ class SolarSystemScene {
       if (entity.kind !== "stargate") {
         continue;
       }
-      if (entity.activationState !== STARGATE_ACTIVATION_STATE.ACTIVATING) {
+      if (entity.stargateTarget3640684 === true || entity.activationState !== STARGATE_ACTIVATION_STATE.ACTIVATING) {
         continue;
       }
       if (toFiniteNumber(entity.activationTransitionAtMs, 0) > now) {
@@ -41683,9 +45493,15 @@ class SolarSystemScene {
 }
 
 class SpaceRuntime {
+  declare _adaptiveTickRateController: any;
+  declare _cooledSolarSystemIDs: any;
   declare _lastTickStartedAtMonotonicMs: any;
   declare _lastTickSummary: any;
+  declare _lastAdaptiveTickRateResult: any;
+  declare _lastIdleSceneUnloadSweepAtMs: any;
   declare _pendingAttachUniverseSiteReconciles: any;
+  declare _sceneBootstrapGeneration: any;
+  declare _sceneBootstrapPromises: any;
   declare _recentTickSummaries: any;
   declare _tickHandle: any;
   declare _tickIntervalMs: any;
@@ -41695,17 +45511,100 @@ class SpaceRuntime {
 
   constructor() {
     this.scenes = new Map();
+    this._cooledSolarSystemIDs = new Set();
     this.solarSystemGateActivationOverrides = new Map();
     this.stargateActivationOverrides = new Map();
     this._pendingAttachUniverseSiteReconciles = new Map();
-    this._tickIntervalMs = RUNTIME_TICK_INTERVAL_MS;
+    this._sceneBootstrapGeneration = 0;
+    this._sceneBootstrapPromises = new Map();
+    this._adaptiveTickRateController = createAdaptiveTickRateController({
+      enabled: config.adaptiveTickRateEnabled,
+      minIntervalMs: config.adaptiveTickRateMinIntervalMs,
+      maxIntervalMs: config.adaptiveTickRateMaxIntervalMs,
+      initialIntervalMs: config.adaptiveTickRateInitialIntervalMs,
+      stepMs: config.adaptiveTickRateStepMs,
+      sampleIntervalMs: config.adaptiveTickRateSampleIntervalMs,
+      cpuLowPercent: config.adaptiveTickRateCpuLowPercent,
+      cpuHighPercent: config.adaptiveTickRateCpuHighPercent,
+      memoryLowPercent: config.adaptiveTickRateMemoryLowPercent,
+      memoryHighPercent: config.adaptiveTickRateMemoryHighPercent,
+      memoryLimitMb: config.adaptiveTickRateMemoryLimitMb,
+    });
+    this._tickIntervalMs = this._adaptiveTickRateController
+      .getCurrentIntervalMs();
     this._lastTickStartedAtMonotonicMs = getMonotonicTimeMs();
     this._lastTickSummary = null;
+    this._lastAdaptiveTickRateResult = null;
+    this._lastIdleSceneUnloadSweepAtMs = Date.now();
     pruneExpiredSpaceItems(Date.now());
+    this._tickHandle = null;
+    this.armTickTimer();
+  }
+
+  armTickTimer() {
     this._tickHandle = setInterval(() => this.tick(), this._tickIntervalMs);
     if (this._tickHandle && typeof this._tickHandle.unref === "function") {
       this._tickHandle.unref();
     }
+    if (module.exports && module.exports !== this) {
+      module.exports._tickHandle = this._tickHandle;
+    }
+  }
+
+  setTickIntervalMs(intervalMs) {
+    const normalizedIntervalMs = Math.max(
+      1,
+      toFiniteNumber(intervalMs, this._tickIntervalMs),
+    );
+    if (normalizedIntervalMs === this._tickIntervalMs) {
+      return false;
+    }
+    if (this._tickHandle) {
+      clearInterval(this._tickHandle);
+      this._tickHandle = null;
+    }
+    this._tickIntervalMs = normalizedIntervalMs;
+    if (module.exports && module.exports !== this) {
+      module.exports._tickIntervalMs = normalizedIntervalMs;
+    }
+    for (const scene of this.scenes.values()) {
+      if (scene) {
+        scene._tickIntervalMs = normalizedIntervalMs;
+      }
+    }
+    this.armTickTimer();
+    return true;
+  }
+
+  observeAdaptiveTickRate() {
+    const result = this._adaptiveTickRateController.observe();
+    if (!result) {
+      return null;
+    }
+    this._lastAdaptiveTickRateResult = result;
+    if (module.exports && module.exports !== this) {
+      module.exports._lastAdaptiveTickRateResult = result;
+    }
+    if (!result.changed) {
+      return result;
+    }
+
+    this.setTickIntervalMs(result.intervalMs);
+    const metrics = result.metrics || {};
+    const rssMiB = toFiniteNumber(metrics.rssBytes, 0) / (1024 * 1024);
+    log.info(
+      `[SpaceRuntime] Adaptive tick rate ${result.previousTickRateHz.toFixed(2)}Hz -> ` +
+        `${result.tickRateHz.toFixed(2)}Hz (${result.previousIntervalMs}ms -> ` +
+        `${result.intervalMs}ms, ${result.reason}, CPU ` +
+        `${toFiniteNumber(metrics.cpuPercent, 0).toFixed(1)}%, memory ` +
+        `${toFiniteNumber(metrics.memoryPercent, 0).toFixed(1)}%, RSS ` +
+        `${rssMiB.toFixed(1)}MiB)`,
+    );
+    return result;
+  }
+
+  getAdaptiveTickRateState() {
+    return this._adaptiveTickRateController.getState();
   }
 
   isSolarSystemSceneLoaded(systemID) {
@@ -41746,6 +45645,9 @@ class SpaceRuntime {
     if (keepsAllStargatesActiveDuringLazyLoading()) {
       return STARGATE_ACTIVATION_STATE.OPEN;
     }
+    if (this._cooledSolarSystemIDs.has(numericSystemID)) {
+      return STARGATE_ACTIVATION_STATE.OPEN;
+    }
     return this.isSolarSystemSceneLoaded(numericSystemID)
       ? STARGATE_ACTIVATION_STATE.OPEN
       : STARGATE_ACTIVATION_STATE.CLOSED;
@@ -41755,6 +45657,28 @@ class SpaceRuntime {
     const numericGateID = toInt(stargate && stargate.itemID, 0);
     if (numericGateID && this.stargateActivationOverrides.has(numericGateID)) {
       return this.stargateActivationOverrides.get(numericGateID);
+    }
+
+    if (numericGateID) {
+      try {
+        if (Number(config.clientBuild) === 3640684) {
+          const target = lazyRequire("../services/frontier/celestialStargateRuntime").getStargateState(numericGateID);
+          if (target?.success && target.data.target3640684) return target.data.targetActivationState;
+        }
+        const maintenanceOverride = lazyRequire(
+          "../services/frontier/celestialStargateRuntime",
+        ).resolveActivationOverride(numericGateID);
+        if (maintenanceOverride !== null && maintenanceOverride !== undefined) {
+          return coerceStableActivationState(
+            maintenanceOverride,
+            STARGATE_ACTIVATION_STATE.CLOSED,
+          );
+        }
+      } catch (error) {
+        log.warn(
+          `[SpaceRuntime] Stargate maintenance state failed gate=${numericGateID}: ${error.message}`,
+        );
+      }
     }
 
     const destinationSystemID = toInt(
@@ -41795,16 +45719,40 @@ class SpaceRuntime {
         }
 
         const nextActivationState = this.resolveStargateActivationState(entity);
-        const currentStableActivationState = coerceStableActivationState(
+        let maintenanceChanged = false;
+        try {
+          const maintenance = lazyRequire(
+            "../services/frontier/celestialStargateRuntime",
+          ).getStargateState(entity.itemID);
+          if (maintenance && maintenance.success) {
+            maintenanceChanged =
+              entity.stargateFuelEnergy !== maintenance.data.fuelEnergy ||
+              entity.stargateMaintenanceStatus !== maintenance.data.status ||
+              entity.stargateFuelLevel !== maintenance.data.fuelLevel ||
+              entity.stargateMaterialLevel !== maintenance.data.materialLevel ||
+              entity.stargateActivationCompleteAtMs !== maintenance.data.activationCompleteAtMs;
+            entity.stargateTarget3640684 = Number(config.clientBuild) === 3640684 && maintenance.data.target3640684;
+            entity.stargateFuelEnergy = maintenance.data.fuelEnergy;
+            entity.stargateMaintenanceStatus = maintenance.data.status;
+            entity.stargateFuelLevel = maintenance.data.fuelLevel;
+            entity.stargateMaterialLevel = maintenance.data.materialLevel;
+            entity.stargateActivationCompleteAtMs = maintenance.data.activationCompleteAtMs;
+          }
+        } catch (_) {
+          // An unmanaged legacy stargate has no maintenance payload.
+        }
+        const currentStableActivationState = entity.stargateTarget3640684 ? entity.activationState : coerceStableActivationState(
           entity.activationState,
           STARGATE_ACTIVATION_STATE.CLOSED,
         );
-        if (currentStableActivationState === nextActivationState) {
+        if (currentStableActivationState === nextActivationState && !maintenanceChanged) {
           continue;
         }
 
-        if (
-          animateOpenTransitions &&
+        if (currentStableActivationState === nextActivationState) {
+          // Only the celestial maintenance payload changed.
+        } else if (
+          animateOpenTransitions && !entity.stargateTarget3640684 &&
           currentStableActivationState === STARGATE_ACTIVATION_STATE.CLOSED &&
           nextActivationState === STARGATE_ACTIVATION_STATE.OPEN
         ) {
@@ -42014,20 +45962,40 @@ class SpaceRuntime {
     let created = false;
     if (!this.scenes.has(numericSystemID)) {
       const sceneConstructionStartedAtMs = bootstrapMetrics ? Date.now() : 0;
-      this.scenes.set(numericSystemID, new SolarSystemScene(numericSystemID));
+      const createdScene = new SolarSystemScene(numericSystemID);
+      createdScene._tickIntervalMs = this._tickIntervalMs;
+      createdScene._bootstrapGeneration = ++this._sceneBootstrapGeneration;
+      createdScene._bootstrapReady = false;
+      initializeSceneIdleLifecycle(createdScene, Date.now());
+      this.scenes.set(numericSystemID, createdScene);
       if (bootstrapMetrics) {
         bootstrapMetrics.sceneConstructionElapsedMs =
           Date.now() - sceneConstructionStartedAtMs;
       }
       created = true;
     }
+    this._cooledSolarSystemIDs.delete(numericSystemID);
     const scene = this.scenes.get(numericSystemID);
+    let initializeBootstrap = created && options.deferBootstrap !== true;
+    if (
+      !created &&
+      scene &&
+      scene._bootstrapReady === false &&
+      options.allowPendingBootstrap !== true
+    ) {
+      // A legacy synchronous caller cannot await an in-flight bootstrap. Preserve
+      // correctness by invalidating the worker generation and completing through
+      // the established synchronous path. Player entry uses ensureSceneReady and
+      // therefore never takes this fallback.
+      scene._bootstrapGeneration = ++this._sceneBootstrapGeneration;
+      initializeBootstrap = true;
+    }
     if (created && options.refreshStargates !== false) {
       this.refreshStargateActivationStates({
         broadcast: options.broadcastStargateChanges !== false,
       });
     }
-    if (created && options.reconcileUniverseSites !== false) {
+    if (initializeBootstrap && options.reconcileUniverseSites !== false) {
       try {
         const startupStartedAtMs = bootstrapMetrics ? Date.now() : 0;
         const dungeonUniverseRuntime = lazyRequire("../services/dungeon/dungeonUniverseRuntime");
@@ -42062,7 +46030,7 @@ class SpaceRuntime {
         );
       }
     }
-    if (created) {
+    if (initializeBootstrap) {
       if (config.asteroidFieldsEnabled === true) {
         try {
           const startupStartedAtMs = bootstrapMetrics ? Date.now() : 0;
@@ -42103,27 +46071,27 @@ class SpaceRuntime {
           );
         }
       }
-      if (process.env.EVEJS_SKIP_NPC_STARTUP !== "1") {
-        try {
-          const startupStartedAtMs = Date.now();
-          const npcService = lazyRequire("./npc");
-          if (npcService && typeof npcService.handleSceneCreated === "function") {
-            npcService.handleSceneCreated(scene);
-          }
-          const startupElapsedMs = Date.now() - startupStartedAtMs;
-          if (bootstrapMetrics) {
-            bootstrapMetrics.npcElapsedMs = startupElapsedMs;
-          }
-          if (startupElapsedMs >= 500) {
-            log.info(
-              `[SpaceRuntime] Scene startup npc system=${numericSystemID} took ${startupElapsedMs}ms`,
-            );
-          }
-        } catch (error) {
-          log.warn(
-            `[SpaceRuntime] NPC scene startup failed for system=${numericSystemID}: ${error.message}`,
+      // The skip flag suppresses authored startup rules inside npcService;
+      // durable NPCs still need this hook to rehydrate after a restart.
+      try {
+        const startupStartedAtMs = Date.now();
+        const npcService = lazyRequire("./npc");
+        if (npcService && typeof npcService.handleSceneCreated === "function") {
+          npcService.handleSceneCreated(scene);
+        }
+        const startupElapsedMs = Date.now() - startupStartedAtMs;
+        if (bootstrapMetrics) {
+          bootstrapMetrics.npcElapsedMs = startupElapsedMs;
+        }
+        if (startupElapsedMs >= 500) {
+          log.info(
+            `[SpaceRuntime] Scene startup npc system=${numericSystemID} took ${startupElapsedMs}ms`,
           );
         }
+      } catch (error) {
+        log.warn(
+          `[SpaceRuntime] NPC scene startup failed for system=${numericSystemID}: ${error.message}`,
+        );
       }
       // Reconciliation can be deferred during login, but the active dungeon
       // instances already present in runtime state are cheap to materialize
@@ -42224,6 +46192,7 @@ class SpaceRuntime {
           );
         }
       }
+      scene._bootstrapReady = true;
     }
     if (bootstrapMetrics) {
       bootstrapMetrics.created = created;
@@ -42233,10 +46202,483 @@ class SpaceRuntime {
     return scene;
   }
 
+  _isSceneBootstrapCurrent(scene, generation) {
+    return Boolean(
+      scene &&
+      this.scenes.get(toInt(scene.systemID, 0)) === scene &&
+      toInt(scene._bootstrapGeneration, 0) === toInt(generation, -1),
+    );
+  }
+
+  async _commitSceneBootstrapEntities(
+    scene,
+    generation,
+    entities: any[] = [],
+    options: Record<string, any> = {},
+  ) {
+    const batchSize = Math.max(
+      1,
+      toInt(options.batchSize, DEFAULT_SCENE_BOOTSTRAP_COMMIT_BATCH_SIZE),
+    );
+    const spawned: any[] = [];
+    for (let index = 0; index < entities.length; index += batchSize) {
+      if (!this._isSceneBootstrapCurrent(scene, generation)) {
+        const error: Error & Record<string, any> = new Error(
+          `stale scene bootstrap plan for system ${scene && scene.systemID}`,
+        );
+        error.code = "STALE_SCENE_BOOTSTRAP";
+        throw error;
+      }
+      for (const entity of entities.slice(index, index + batchSize)) {
+        if (scene.addStaticEntity(entity)) {
+          spawned.push(entity);
+        }
+      }
+      if (index + batchSize < entities.length) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+    return spawned;
+  }
+
+  async _finishPlannedSceneBootstrap(scene, generation, options: Record<string, any> = {}) {
+    if (!this._isSceneBootstrapCurrent(scene, generation)) {
+      const error: Error & Record<string, any> = new Error(
+        `scene bootstrap generation changed for system ${scene && scene.systemID}`,
+      );
+      error.code = "STALE_SCENE_BOOTSTRAP";
+      throw error;
+    }
+
+    if (options.reconcileUniverseSites !== false) {
+      try {
+        const dungeonUniverseRuntime = lazyRequire("../services/dungeon/dungeonUniverseRuntime");
+        if (
+          options.synchronousUniverseSiteReconcile === true &&
+          dungeonUniverseRuntime &&
+          typeof dungeonUniverseRuntime.ensureSystemUniversePersistentSites === "function"
+        ) {
+          dungeonUniverseRuntime.ensureSystemUniversePersistentSites(scene.systemID, {
+            reason: options.universeSiteReconcileReason || "scene-created-async",
+            nowMs: options.nowMs,
+            force: options.forceUniverseSiteReconcile === true,
+          });
+        } else if (
+          options.scheduleUniverseSiteReconcile === true &&
+          dungeonUniverseRuntime &&
+          typeof dungeonUniverseRuntime.scheduleSystemUniversePersistentSitesReconcile === "function"
+        ) {
+          dungeonUniverseRuntime.scheduleSystemUniversePersistentSitesReconcile(scene.systemID, {
+            reason: options.universeSiteReconcileReason || "scene-created-async",
+            nowMs: options.nowMs,
+            force: options.forceUniverseSiteReconcile === true,
+            initialDelayMs: options.universeSiteReconcileInitialDelayMs,
+          });
+        }
+      } catch (error) {
+        log.warn(
+          `[SpaceRuntime] Dungeon universe reconcile failed for system=${scene.systemID}: ${error.message}`,
+        );
+      }
+    }
+
+    if (config.miningEnabled === true) {
+      try {
+        const miningRuntime = lazyRequire("../services/mining/miningRuntime");
+        if (miningRuntime && typeof miningRuntime.handleSceneCreatedAsync === "function") {
+          await miningRuntime.handleSceneCreatedAsync(scene, {
+            batchSize: options.miningBatchSize,
+            resourceSitesPlanned: true,
+          });
+        } else if (miningRuntime && typeof miningRuntime.handleSceneCreated === "function") {
+          miningRuntime.handleSceneCreated(scene);
+        }
+      } catch (error) {
+        log.warn(
+          `[SpaceRuntime] Mining scene startup failed for system=${scene.systemID}: ${error.message}`,
+        );
+      }
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    if (!this._isSceneBootstrapCurrent(scene, generation)) {
+      const error: Error & Record<string, any> = new Error(
+        `scene bootstrap generation changed for system ${scene && scene.systemID}`,
+      );
+      error.code = "STALE_SCENE_BOOTSTRAP";
+      throw error;
+    }
+
+    // Recovery is independent of authored NPC startup rules.
+    try {
+      const npcService = lazyRequire("./npc");
+      if (npcService && typeof npcService.handleSceneCreated === "function") {
+        npcService.handleSceneCreated(scene);
+      }
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] NPC scene startup failed for system=${scene.systemID}: ${error.message}`,
+      );
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    if (!this._isSceneBootstrapCurrent(scene, generation)) {
+      const error: Error & Record<string, any> = new Error(
+        `scene bootstrap generation changed for system ${scene && scene.systemID}`,
+      );
+      error.code = "STALE_SCENE_BOOTSTRAP";
+      throw error;
+    }
+
+    if (options.materializeUniverseSites !== false) {
+      try {
+        const dungeonUniverseSiteService = lazyRequire(
+          "../services/dungeon/dungeonUniverseSiteService",
+        );
+        if (
+          dungeonUniverseSiteService &&
+          typeof dungeonUniverseSiteService.handleSceneCreated === "function"
+        ) {
+          dungeonUniverseSiteService.handleSceneCreated(scene);
+        }
+      } catch (error) {
+        log.warn(
+          `[SpaceRuntime] Dungeon universe site startup failed for system=${scene.systemID}: ${error.message}`,
+        );
+      }
+    }
+
+    try {
+      const frontierRiftSceneService = lazyRequire("./frontierRiftSceneService");
+      if (
+        frontierRiftSceneService &&
+        typeof frontierRiftSceneService.handleSceneCreated === "function"
+      ) {
+        frontierRiftSceneService.handleSceneCreated(scene);
+      }
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Frontier Rift scene startup failed for system=${scene.systemID}: ${error.message}`,
+      );
+    }
+
+    if (config.wormholesEnabled === true) {
+      try {
+        const wormholeRuntime = lazyRequire(
+          "../services/exploration/wormholes/wormholeRuntime",
+        );
+        if (wormholeRuntime && typeof wormholeRuntime.handleSceneCreated === "function") {
+          wormholeRuntime.handleSceneCreated(scene);
+        }
+      } catch (error) {
+        log.warn(
+          `[SpaceRuntime] Wormhole scene startup failed for system=${scene.systemID}: ${error.message}`,
+        );
+      }
+    }
+
+    if (process.env.EVEJS_SKIP_NPC_STARTUP !== "1") {
+      try {
+        const npcService = lazyRequire("./npc");
+        if (npcService && typeof npcService.refreshStartupRulesForScene === "function") {
+          npcService.refreshStartupRulesForScene(scene);
+        }
+      } catch (error) {
+        log.warn(
+          `[SpaceRuntime] NPC post-static startup sweep failed for system=${scene.systemID}: ${error.message}`,
+        );
+      }
+    }
+  }
+
+  ensureSceneReady(systemID, options: Record<string, any> = {}) {
+    const numericSystemID = toInt(systemID, 0);
+    if (numericSystemID <= 0) {
+      return Promise.resolve(null);
+    }
+    const existing = this.scenes.get(numericSystemID) || null;
+    if (existing && existing._bootstrapReady !== false) {
+      return Promise.resolve(existing);
+    }
+    const pending = this._sceneBootstrapPromises.get(numericSystemID);
+    if (pending) {
+      return pending;
+    }
+
+    const scene = existing || this.ensureScene(numericSystemID, {
+      ...options,
+      allowPendingBootstrap: true,
+      deferBootstrap: true,
+      reconcileUniverseSites: false,
+    });
+    if (!scene) {
+      return Promise.resolve(null);
+    }
+    const generation = toInt(scene._bootstrapGeneration, 0);
+    const planningPromise = (async () => {
+      const miningResourceSiteService = lazyRequire(
+        "../services/mining/miningResourceSiteService",
+      );
+      const resourceSiteDefinitions = config.miningEnabled === true &&
+        miningResourceSiteService &&
+        typeof miningResourceSiteService.captureGeneratedResourceSiteDefinitions === "function"
+        ? miningResourceSiteService.captureGeneratedResourceSiteDefinitions(scene)
+        : [];
+      const staticEntities = (Array.isArray(scene.staticEntities) ? scene.staticEntities : [])
+        .filter((entity) => entity && entity.position)
+        .map((entity) => ({
+          itemID: entity.itemID,
+          itemName: entity.itemName,
+          kind: entity.kind,
+          groupID: entity.groupID,
+          radius: entity.radius,
+          generatedMiningSite: entity.generatedMiningSite === true,
+          position: {
+            x: toFiniteNumber(entity.position.x, 0),
+            y: toFiniteNumber(entity.position.y, 0),
+            z: toFiniteNumber(entity.position.z, 0),
+          },
+        }));
+      const plan = await worldPlanningPool.buildSceneBootstrapPlan(
+          {
+            systemID: numericSystemID,
+            generation,
+            staticEntities,
+            resourceSiteDefinitions,
+            asteroidsEnabled: config.asteroidFieldsEnabled === true,
+            miningEnabled: config.miningEnabled === true,
+          },
+        {
+          timeoutMs: Math.max(
+            1_000,
+            toInt(options.workerTimeoutMs, DEFAULT_SCENE_BOOTSTRAP_TIMEOUT_MS),
+          ),
+        },
+      );
+      if (
+        !plan ||
+        toInt(plan.systemID, 0) !== numericSystemID ||
+        toInt(plan.generation, -1) !== generation ||
+        !this._isSceneBootstrapCurrent(scene, generation)
+      ) {
+        const error: Error & Record<string, any> = new Error(
+          `scene bootstrap worker returned a stale plan for system ${numericSystemID}`,
+        );
+        error.code = "STALE_SCENE_BOOTSTRAP";
+        throw error;
+      }
+
+      const asteroidService = lazyRequire("./asteroids");
+      if (config.asteroidFieldsEnabled === true) {
+        const spawnedCounts: any[] = [];
+        for (const field of Array.isArray(plan.asteroidPlan && plan.asteroidPlan.fields)
+          ? plan.asteroidPlan.fields
+          : []) {
+          const spawned = await this._commitSceneBootstrapEntities(
+            scene,
+            generation,
+            Array.isArray(field && field.entities) ? field.entities : [],
+            options,
+          );
+          spawnedCounts.push(spawned.length);
+        }
+        asteroidService.finalizeSceneAsteroidFieldPlan(
+          scene,
+          plan.asteroidPlan,
+          spawnedCounts,
+        );
+      } else {
+        scene._asteroidFieldsInitialized = true;
+      }
+
+      if (config.miningEnabled === true) {
+        const spawnedResources = await this._commitSceneBootstrapEntities(
+          scene,
+          generation,
+          Array.isArray(plan.resourceSiteEntities) ? plan.resourceSiteEntities : [],
+          options,
+        );
+        miningResourceSiteService.finalizeGeneratedResourceSitePlan(
+          scene,
+          spawnedResources,
+        );
+      }
+
+      await this._finishPlannedSceneBootstrap(scene, generation, options);
+      if (!this._isSceneBootstrapCurrent(scene, generation)) {
+        const error: Error & Record<string, any> = new Error(
+          `scene bootstrap changed before commit for system ${numericSystemID}`,
+        );
+        error.code = "STALE_SCENE_BOOTSTRAP";
+        throw error;
+      }
+      scene._bootstrapReady = true;
+      return scene;
+    })();
+
+    this._sceneBootstrapPromises.set(numericSystemID, planningPromise);
+    return planningPromise.finally(() => {
+      if (this._sceneBootstrapPromises.get(numericSystemID) === planningPromise) {
+        this._sceneBootstrapPromises.delete(numericSystemID);
+      }
+      if (
+        scene._bootstrapReady !== true &&
+        this.scenes.get(numericSystemID) === scene &&
+        toInt(scene._bootstrapGeneration, 0) === generation
+      ) {
+        this.scenes.delete(numericSystemID);
+      }
+    });
+  }
+
   getSceneActivityState(systemID, wallclockNow = Date.now()) {
     const numericSystemID = toInt(systemID, 0);
     const scene = this.scenes.get(numericSystemID);
     return scene ? getSceneActivityState(scene, wallclockNow) : null;
+  }
+
+  getSolarSystemSceneIdleState(systemID, wallclockNow = Date.now()) {
+    const numericSystemID = toInt(systemID, 0);
+    const scene = this.scenes.get(numericSystemID);
+    if (!scene) return null;
+    return getSceneIdleLifecycleState(
+      scene,
+      wallclockNow,
+      Math.max(0, toFiniteNumber(config.solarSystemSceneIdleUnloadMs, 3_600_000)),
+    );
+  }
+
+  recordSolarSystemPlayerActivity(systemID, wallclockNow = Date.now()) {
+    const numericSystemID = toInt(systemID, 0);
+    const scene = this.scenes.get(numericSystemID);
+    return scene ? recordScenePlayerActivity(scene, wallclockNow) : null;
+  }
+
+  unloadSolarSystemScene(systemID, options: Record<string, any> = {}) {
+    const numericSystemID = toInt(systemID, 0);
+    const scene = this.scenes.get(numericSystemID);
+    if (!scene) {
+      return {
+        success: true,
+        unloaded: false,
+        systemID: numericSystemID,
+        reason: "scene-not-loaded",
+      };
+    }
+    if (scene.sessions instanceof Map && scene.sessions.size > 0) {
+      return {
+        success: false,
+        unloaded: false,
+        systemID: numericSystemID,
+        reason: "player-sessions-present",
+      };
+    }
+    if (
+      scene._bootstrapReady === false ||
+      this._sceneBootstrapPromises.has(numericSystemID)
+    ) {
+      return {
+        success: false,
+        unloaded: false,
+        systemID: numericSystemID,
+        reason: "scene-bootstrap-pending",
+      };
+    }
+
+    const pendingReconcile = this._pendingAttachUniverseSiteReconciles.get(numericSystemID);
+    if (pendingReconcile && pendingReconcile.timer) {
+      clearTimeout(pendingReconcile.timer);
+    }
+    this._pendingAttachUniverseSiteReconciles.delete(numericSystemID);
+
+    let npcVirtualization = null;
+    try {
+      const nativeNpcService = lazyRequire("./npc/nativeNpcService");
+      npcVirtualization =
+        nativeNpcService &&
+        typeof nativeNpcService.virtualizeAndDematerializeNativeControllersForScene === "function"
+          ? nativeNpcService.virtualizeAndDematerializeNativeControllersForScene(scene, {
+              broadcast: false,
+            })
+          : { success: false, errorMsg: "NPC_VIRTUALIZATION_UNAVAILABLE" };
+      if (!npcVirtualization || npcVirtualization.success !== true) {
+        return {
+          success: false,
+          unloaded: false,
+          systemID: numericSystemID,
+          reason:
+            npcVirtualization && npcVirtualization.errorMsg ||
+            "npc-virtualization-failed",
+        };
+      }
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Scene unload NPC virtualization failed system=${numericSystemID}: ` +
+          `${error.message}`,
+      );
+      return {
+        success: false,
+        unloaded: false,
+        systemID: numericSystemID,
+        reason: "npc-virtualization-failed",
+      };
+    }
+
+    scene._bootstrapGeneration = ++this._sceneBootstrapGeneration;
+    this.scenes.delete(numericSystemID);
+    if (String(options.reason || "idle-timeout") === "idle-timeout") {
+      this._cooledSolarSystemIDs.add(numericSystemID);
+    }
+    if (options.refreshStargates !== false) {
+      this.refreshStargateActivationStates({
+        broadcast: options.broadcastStargateChanges !== false,
+        targetSystemID: numericSystemID,
+      });
+    }
+    if (options.log !== false) {
+      log.info(
+        `[SpaceRuntime] Unloaded solar-system scene system=${numericSystemID} ` +
+          `reason=${String(options.reason || "idle-timeout")}`,
+      );
+    }
+    return {
+      success: true,
+      unloaded: true,
+      systemID: numericSystemID,
+      reason: String(options.reason || "idle-timeout"),
+      npcVirtualization: npcVirtualization && npcVirtualization.data || null,
+    };
+  }
+
+  unloadIdleSolarSystemScenes(wallclockNow = Date.now(), options: Record<string, any> = {}) {
+    const timeoutMs = Math.max(
+      0,
+      toFiniteNumber(config.solarSystemSceneIdleUnloadMs, 3_600_000),
+    );
+    const result: Record<string, any> = {
+      timeoutMs,
+      checked: 0,
+      unloaded: [],
+      skipped: [],
+    };
+    if (timeoutMs <= 0) return result;
+
+    for (const [systemID, scene] of [...this.scenes.entries()]) {
+      result.checked += 1;
+      const state = getSceneIdleLifecycleState(scene, wallclockNow, timeoutMs);
+      if (!state.eligible) continue;
+      const unload = this.unloadSolarSystemScene(systemID, {
+        reason: "idle-timeout",
+        refreshStargates: false,
+        log: options.log,
+      });
+      if (unload.unloaded) result.unloaded.push(systemID);
+      else result.skipped.push({ systemID, reason: unload.reason });
+    }
+    if (result.unloaded.length > 0) {
+      this.refreshStargateActivationStates({
+        broadcast: options.broadcastStargateChanges !== false,
+      });
+    }
+    return result;
   }
 
   wakeSceneForImmediateUse(sceneOrSystemID, options: Record<string, any> = {}) {
@@ -43123,6 +47565,23 @@ class SpaceRuntime {
     return entity ? serializeSpaceState(entity) : null;
   }
 
+  persistSessionShipState(session, options: Record<string, any> = {}) {
+    const scene = this.getSceneForSession(session);
+    const entity = scene ? scene.getShipEntityForSession(session) : null;
+    if (!entity) {
+      return {
+        success: false,
+        errorMsg: "SHIP_NOT_FOUND",
+      };
+    }
+    return persistShipEntity(entity, {
+      nowMs: options.nowMs,
+      ...(Object.hasOwn(options, "offlinePersistent")
+        ? { offlinePersistent: options.offlinePersistent === true }
+        : {}),
+    });
+  }
+
   getBubbleForSession(session) {
     const scene = this.getSceneForSession(session);
     return scene ? scene.getBubbleForSession(session) : null;
@@ -43159,7 +47618,9 @@ class SpaceRuntime {
       };
     }
 
-    const scene = this.ensureScene(numericSystemID);
+    const scene = this.ensureScene(numericSystemID, {
+      allowPendingBootstrap: options.allowPendingBootstrap === true,
+    });
     if (!scene) {
       return {
         success: false,
@@ -43384,11 +47845,33 @@ class SpaceRuntime {
       );
     }
     const attachStartedAtMs = Date.now();
-    const attached = scene.attachSession(session, shipItem, {
-      ...options,
-      forceSimClockRebase: options.forceSimClockRebase === true,
-      previousSimTimeMs,
-    });
+    const existingEntity = scene.getEntityByID(
+      toInt(shipItem && shipItem.itemID, 0),
+    );
+    const canResumeOfflineEntity = Boolean(
+      existingEntity &&
+      existingEntity.kind === "ship" &&
+      !existingEntity.session &&
+      !isNativeNpcEntity(existingEntity) &&
+      (
+        toInt(existingEntity.pilotCharacterID, 0) ===
+          toInt(session && session.characterID, 0) ||
+        toInt(existingEntity.ownerID, 0) ===
+          toInt(session && session.characterID, 0)
+      )
+    );
+    const attached = canResumeOfflineEntity
+      ? scene.attachSessionToExistingEntity(session, shipItem, existingEntity, {
+          ...options,
+          forceSimClockRebase: options.forceSimClockRebase === true,
+          previousSimTimeMs,
+        })
+      : scene.attachSession(session, shipItem, {
+          ...options,
+          forceSimClockRebase: options.forceSimClockRebase === true,
+          previousSimTimeMs,
+        });
+    recordScenePlayerActivity(scene, Date.now());
     const attachElapsedMs = Date.now() - attachStartedAtMs;
     if (attachElapsedMs >= 500) {
       log.info(
@@ -43482,6 +47965,7 @@ class SpaceRuntime {
       forceSimClockRebase: options.forceSimClockRebase === true,
       previousSimTimeMs,
     });
+    recordScenePlayerActivity(scene, Date.now());
     if (shouldReconcileUniverseSites && !preparedForEntry) {
       const universeSiteOptions = {
         reason:
@@ -43518,6 +48002,7 @@ class SpaceRuntime {
     const scene = this.scenes.get(Number(session._space.systemID));
     if (scene) {
       scene.detachSession(session, options);
+      recordScenePlayerActivity(scene, Date.now());
       if (scene.sessions instanceof Map && scene.sessions.size === 0) {
         dematerializeAmbientStartupControllersForScene(scene, {
           broadcast: false,
@@ -43547,6 +48032,7 @@ class SpaceRuntime {
     }
 
     const entity = scene.disembarkSession(session, options);
+    recordScenePlayerActivity(scene, Date.now());
     if (scene.sessions instanceof Map && scene.sessions.size === 0) {
       dematerializeAmbientStartupControllersForScene(scene, {
         broadcast: false,
@@ -43693,6 +48179,26 @@ class SpaceRuntime {
   setYawRate(session, yawRate) {
     const scene = this.getSceneForSession(session);
     return scene ? scene.setYawRate(session, yawRate) : false;
+  }
+
+  setPitchRate(session, pitchRate) {
+    const scene = this.getSceneForSession(session);
+    return scene ? scene.setPitchRate(session, pitchRate) : false;
+  }
+
+  setRollRate(session, rollRate) {
+    const scene = this.getSceneForSession(session);
+    return scene ? scene.setRollRate(session, rollRate) : false;
+  }
+
+  setBrakeFraction(session, brakeFraction) {
+    const scene = this.getSceneForSession(session);
+    return scene ? scene.setBrakeFraction(session, brakeFraction) : false;
+  }
+
+  setHeading(session, heading) {
+    const scene = this.getSceneForSession(session);
+    return scene ? scene.setHeading(session, heading) : false;
   }
 
   gotoPoint(session, point, options: Record<string, any> = {}) {
@@ -44032,6 +48538,7 @@ class SpaceRuntime {
 
     return {
       itemID: toInt(entity.itemID, 0),
+      creationModifiersApplied: Boolean(entity.creationPowerState),
       mass: roundNumber(toFiniteNumber(entity.mass, 0), 6),
       maxVelocity: roundNumber(toFiniteNumber(entity.maxVelocity, 0), 6),
       maxLockedTargets: roundNumber(toFiniteNumber(entity.maxLockedTargets, 0), 6),
@@ -44579,12 +49086,13 @@ class SpaceRuntime {
   tick() {
     tickProfiler.tickBoundary();
     const startedAtMonotonicMs = getMonotonicTimeMs();
+    const targetTickIntervalMs = this._tickIntervalMs;
     const previousTickStartedAtMonotonicMs = toFiniteNumber(
       this._lastTickStartedAtMonotonicMs,
-      startedAtMonotonicMs - this._tickIntervalMs,
+      startedAtMonotonicMs - targetTickIntervalMs,
     );
     const actualIntervalMs = Math.max(
-      this._tickIntervalMs,
+      targetTickIntervalMs,
       startedAtMonotonicMs - previousTickStartedAtMonotonicMs,
     );
     this._lastTickStartedAtMonotonicMs = startedAtMonotonicMs;
@@ -44593,7 +49101,13 @@ class SpaceRuntime {
     structureState.tickStructures(now);
     let tickedSceneCount = 0;
     for (const scene of this.scenes.values()) {
+      if (scene && scene._bootstrapReady === false) {
+        continue;
+      }
       const sceneActivity = getSceneActivityState(scene, now);
+      if (sceneActivity.hasSessions) {
+        recordScenePlayerActivity(scene, now);
+      }
       if (!sceneActivity.shouldTick) {
         continue;
       }
@@ -44626,15 +49140,37 @@ class SpaceRuntime {
       tickedSceneCount += 1;
     }
 
+    let idleUnloadSummary = null;
+    const idleUnloadMs = Math.max(
+      0,
+      toFiniteNumber(config.solarSystemSceneIdleUnloadMs, 3_600_000),
+    );
+    const idleUnloadSweepIntervalMs = Math.max(
+      1_000,
+      Math.min(60_000, Math.floor(idleUnloadMs / 4) || 60_000),
+    );
+    if (
+      idleUnloadMs > 0 &&
+      now - toFiniteNumber(this._lastIdleSceneUnloadSweepAtMs, 0) >=
+        idleUnloadSweepIntervalMs
+    ) {
+      this._lastIdleSceneUnloadSweepAtMs = now;
+      idleUnloadSummary = this.unloadIdleSolarSystemScenes(now);
+    }
+
     const finishedAtMonotonicMs = getMonotonicTimeMs();
-    const tickSummary = {
+    const tickSummary: Record<string, any> = {
       startedAtMonotonicMs,
       actualIntervalMs,
-      targetTickIntervalMs: this._tickIntervalMs,
+      targetTickIntervalMs,
       tickDurationMs: Math.max(0, finishedAtMonotonicMs - startedAtMonotonicMs),
-      latenessMs: Math.max(0, actualIntervalMs - this._tickIntervalMs),
+      latenessMs: Math.max(0, actualIntervalMs - targetTickIntervalMs),
       sceneCount: this.scenes.size,
       tickedSceneCount,
+      unloadedIdleSceneCount:
+        idleUnloadSummary && Array.isArray(idleUnloadSummary.unloaded)
+          ? idleUnloadSummary.unloaded.length
+          : 0,
     };
     this._lastTickSummary = tickSummary;
     if (!Array.isArray(this._recentTickSummaries)) this._recentTickSummaries = [];
@@ -44652,6 +49188,18 @@ class SpaceRuntime {
       log.warn(`[SpaceRuntime] TiDi autoscaler sample failed: ${error.message}`);
     }
 
+    try {
+      const adaptiveTickRate = this.observeAdaptiveTickRate();
+      if (adaptiveTickRate) {
+        tickSummary.adaptiveTickRate = adaptiveTickRate;
+        tickSummary.nextTargetTickIntervalMs = this._tickIntervalMs;
+      }
+    } catch (error) {
+      log.warn(
+        `[SpaceRuntime] Adaptive tick-rate sample failed: ${error.message}`,
+      );
+    }
+
     return tickSummary;
   }
 }
@@ -44664,11 +49212,17 @@ Object.setPrototypeOf(runtimeExports, Object.getPrototypeOf(runtimeSingleton));
 Object.assign(runtimeExports, runtimeSingleton);
 runtimeExports.beginSessionJumpTimingTrace = beginSessionJumpTimingTrace;
 runtimeExports.recordSessionJumpTimingTrace = recordSessionJumpTimingTrace;
+runtimeExports.flushPendingInitialBallparkPostBootstrap =
+  flushPendingInitialBallparkPostBootstrap;
 runtimeExports.resolveCompressionFacilityRangeMeters = resolveCompressionFacilityRangeMeters;
 runtimeExports.resolveCompressionFacilityTypelistsForEntity =
   resolveCompressionFacilityTypelistsForEntity;
 runtimeExports.applyJammerCyclePresentation = applyJammerCyclePresentation;
 runtimeExports.removeJammerCyclePresentation = removeJammerCyclePresentation;
+runtimeExports.getCreationActiveModuleCallbacksForSession = (session) => {
+  const scene = runtimeExports.getSceneForSession(session);
+  return scene ? buildCreationActiveModuleRuntimeCallbacks(scene) : {};
+};
 runtimeExports.applyRuntimeEntityScopeMetadata = applyRuntimeEntityScopeMetadata;
 runtimeExports.buildHostileModuleRuntimeCallbacks = buildHostileModuleRuntimeCallbacks;
 runtimeExports.droneInterop = {
@@ -44685,6 +49239,57 @@ runtimeExports.droneInterop = {
   broadcastDamageStateChange,
   persistDynamicEntity,
 };
+runtimeExports.smartTurretInterop = {
+  resolveTurretShot,
+  getCombatMessageHitQuality,
+  getAppliedDamageAmount,
+  notifyWeaponDamageMessages,
+  applyWeaponDamageToTarget,
+  noteKillmailDamage,
+  recordKillmailFromDestruction,
+  getEntityCurrentHealthLayers,
+  getEntityMaxHealthLayers,
+  hasDamageableHealth,
+};
+// Keep skill-shot orchestration outside this already large ballpark runtime,
+// while exposing the same authoritative item, capacitor, ammunition, damage,
+// and presentation primitives used by normal turret cycles.  In particular,
+// the skill-shot service intentionally does not call the target-lock-gated
+// generic module activation path.
+runtimeExports.skillShotInterop = {
+  getEntityRuntimeShipItem,
+  getEntityRuntimeFittedItems,
+  getEntityRuntimeModuleItem,
+  getEntityRuntimeLoadedCharge,
+  buildWeaponSnapshotForEntity,
+  isEffectivelyOnlineModule: isEntityRuntimeModuleOnline,
+  getEntityCapacitorAmount,
+  consumeEntityCapacitor,
+  notifyCapacitorChangeToSession,
+  consumeTurretAmmoCharge,
+  applyCrystalVolatilityDamage,
+  getCombatMessageHitQuality,
+  getAppliedDamageAmount,
+  notifyWeaponDamageMessages,
+  applyWeaponDamageToTarget,
+  noteKillmailDamage,
+  recordKillmailFromDestruction,
+  applySkillShotUtilityHit(options) {
+    return lazyRequire("../services/frontier/skillShotUtilityRuntime")
+      .applySkillShotUtilityHit(options);
+  },
+};
+// Cross-system jump drives use the same authoritative Dogma notification
+// primitives as the continuous fuel/temperature simulation.  Keeping this
+// narrow bridge here avoids routing jump initiation through Destiny warp.
+runtimeExports.jumpDriveInterop = {
+  buildAttributeChange,
+  notifyAttributeChanges,
+  notifyFuelChargeChangeToSession,
+  notifyFuelPropertyChangesToSession,
+  notifyShipTemperatureToSession,
+  resolveSessionNotificationFileTime,
+};
 
 if (typeof structureState.registerStructureChangeListener === "function") {
   structureState.registerStructureChangeListener((changePayload) => {
@@ -44700,10 +49305,23 @@ if (typeof structureState.registerStructureChangeListener === "function") {
 
 runtimeExports._testing = {
   SolarSystemScene,
+  initializeSessionlessWarpDestinationForTesting:
+    initializeSessionlessWarpDestination,
+  calculateCreationPowerStateForTesting: calculateCreationPowerState,
+  applyCreationPowerStateToResourceStateForTesting:
+    applyCreationPowerStateToResourceState,
+  checkEntityWarpFuelAvailabilityForTesting:
+    checkEntityWarpFuelAvailability,
+  checkEntityWarpCapacitorAvailabilityForTesting:
+    checkEntityWarpCapacitorAvailability,
+  consumeEntityWarpCapacitorForTesting: consumeEntityWarpCapacitor,
+  WARP_CAPACITOR_COST_RATIO,
   isSceneVisibilityRemovalPresentationAuthorized,
   MODULE_CONSEQUENCE_DELIVERY,
   normalizeModuleConsequenceDelivery,
   resolveModuleConsequenceDelivery,
+  resolveModuleActivationRepeat,
+  shouldStopEffectForUnavailableModule,
   collectEntityActiveShipAttributeModifierEntries,
   RUNTIME_UNANCHORED_STRUCTURE_HULL_KIND,
   BUBBLE_RADIUS_METERS,
@@ -44762,6 +49380,8 @@ runtimeExports._testing = {
   },
   buildShipEntityForTesting: buildShipEntity,
   buildRuntimeShipEntityForTesting: buildRuntimeShipEntity,
+  buildStaticStationEntityForTesting: buildStaticStationEntity,
+  resolveCollisionStableSpeedForTesting: resolveCollisionStableSpeed,
   getEntityRuntimeCreationDogmaContextForTesting:
     getEntityRuntimeCreationDogmaContext,
   getEntityRuntimeModuleOwnerItemsForTesting: getEntityRuntimeModuleOwnerItems,
@@ -44775,17 +49395,25 @@ runtimeExports._testing = {
   serializeSpaceStateForTesting: serializeSpaceState,
   shouldPersistShipEntityAtTickForTesting: shouldPersistShipEntityAtTick,
   buildPublicGridKeyForTesting: buildPublicGridKey,
+  scheduleAfterSessionOutboundDrainForTesting:
+    scheduleAfterSessionOutboundDrain,
   applyDesiredVelocityForTesting: applyDesiredVelocity,
   advanceMovementForTesting: advanceMovement,
   nativeSubwarpControllerForTesting: destinyNativeSubwarpController,
   prepareActiveNativeSubwarpPlanForTesting: prepareActiveNativeSubwarpPlan,
   refreshActiveNativeSubwarpPlanForTesting: refreshActiveNativeSubwarpPlan,
   advanceEntityForActiveSceneTickForTesting: advanceEntityForActiveSceneTick,
+  processSceneCollisionContactsForTesting: processSceneCollisionContacts,
+  enforceFrontierBerthedShipMotionForTesting:
+    enforceFrontierBerthedShipMotion,
+  isShipMovementLockedByRuntimeForTesting: isShipMovementLockedByRuntime,
   finalizeActiveNativeSubwarpPlanForTesting: finalizeActiveNativeSubwarpPlan,
   abortActiveNativeSubwarpPlanForTesting: abortActiveNativeSubwarpPlan,
   advanceEntityForDestructionSnapshotForTesting:
     advanceEntityForDestructionSnapshot,
   applyWeaponDamageToTargetForTesting: applyWeaponDamageToTarget,
+  dischargeHeatTrapBeforeDestructionForTesting:
+    dischargeHeatTrapBeforeDestruction,
   executeTurretCycleForTesting: executeTurretCycle,
   resolveMissileLifecycleForTesting: resolveMissileLifecycle,
   buildSalvagerRuntimeCallbacksForTesting: buildSalvagerRuntimeCallbacks,
@@ -44808,6 +49436,9 @@ runtimeExports._testing = {
     notifyShipDerivedAttributesToSession,
   computeTargetLockDurationMsForTesting: computeTargetLockDurationMs,
   advanceEntityCapacitorRechargeForTesting: advanceEntityCapacitorRecharge,
+  advanceEntityBlackstartRechargeForTesting: advanceEntityBlackstartRecharge,
+  calculateRegularShipFuelPowerStateForTesting:
+    calculateRegularShipFuelPowerState,
   advancePassiveRechargeRatioForTesting: advancePassiveRechargeRatio,
   notifyCapacitorChangeToSessionForTesting: notifyCapacitorChangeToSession,
   notifyFuelChargeChangeToSessionForTesting: notifyFuelChargeChangeToSession,
@@ -44879,6 +49510,7 @@ runtimeExports._testing = {
   },
   clearScenes() {
     runtimeExports.scenes.clear();
+    runtimeExports._cooledSolarSystemIDs.clear();
     nextRuntimeEntityID = 900_000_000_000;
     resetFallbackDestinyAllocator();
     passiveShieldRechargeEnabled = DEFAULT_PASSIVE_SHIELD_RECHARGE_ENABLED;

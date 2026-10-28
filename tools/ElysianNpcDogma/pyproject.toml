@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "elysian-npc-dogma"
+version = "0.1.0"
+description = "Review and safely edit EVE NPC typeDogma attributes and effects"
+requires-python = ">=3.11"
+dependencies = ["PySide6>=6.8,<7", "elysian-fsd==0.1.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+elysian-npc-dogma = "elysian_npc_dogma.cli:main"
+elysian-npc-dogma-gui = "elysian_npc_dogma.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["elysian_npc_dogma*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "../ElysianFSD"]

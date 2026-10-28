@@ -7,7 +7,7 @@ import { registerSuiIndustryStorageSnapshotReader, syncIndustryStorageTransfer }
 const request = { facilityID: 200, characterID: 1, storageUnitID: 100 };
 function industry(): SuiIndustrySyncStatus {
   return { facilityID: 200, characterID: 1, status: "synced", synchronized: true,
-    productionMirrored: true, industryObjectID: "0x200", assemblyObjectID: "0x201", chainProduction: null };
+    productionMirrored: true, laneStatesMirrored: true, industryObjectID: "0x200", assemblyObjectID: "0x201", chainProduction: null };
 }
 function storage(): SuiStorageSyncStatus {
   return { storageUnitID: 100, characterID: 1, status: "synced", chain: {
@@ -70,6 +70,14 @@ test("transfer synchronization requires confirmed inventories and production on 
   f.industry = industry();
   f.storage.chain!.partitions[0].synchronized = false;
   assert.deepEqual(await syncIndustryStorageTransfer(request), { status: "error", industryStatus: "synced", storageStatus: "error" });
+});
+
+test("transfer synchronization rejects missing or unconfirmed Industry lane states", async t => {
+  const f = setup(t);
+  for (const laneStatesMirrored of [undefined, false]) {
+    f.industry = { ...industry(), laneStatesMirrored };
+    assert.deepEqual(await syncIndustryStorageTransfer(request), { status: "error", industryStatus: "error", storageStatus: "synced" });
+  }
 });
 
 test("a transfer remains pending if one mirror is pending or disabled", async t => {

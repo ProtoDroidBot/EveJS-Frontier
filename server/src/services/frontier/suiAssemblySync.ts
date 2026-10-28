@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
+import { readAssemblyMoveObject } from "./suiAssemblyGrpc";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
+import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { buildSuiAssemblySnapshot, type SuiAssemblySnapshotInput } from "./suiAssemblySnapshot";
 import { createSuiAssemblyChain, suiAssemblyFields, suiAssemblyOption } from "./suiAssemblyChain";
 import { createSuiAssemblyContents } from "./suiAssemblyContents";
@@ -12,14 +13,42 @@ import { readSuiIndustryDeployment, assertSuiIndustryDeploymentCurrent } from ".
 import { createSuiIndustrySyncWorkerBridge, registerSuiIndustrySyncBridge, reconcileSuiIndustryFacilities } from "./suiIndustrySync";
 import { registerSuiIndustryStorageSnapshotReader } from "./suiIndustryStorageSync";
 import { createAssemblyTransactionExecutor } from "./suiAssemblyTransactions";
+import { createSuiAssemblySupervisor } from "./suiAssemblySupervisor";
 import { registerSuiStorageSyncBridge, type SuiStorageSyncRequest } from "./suiStorageSync";
 import { registerSuiGateSyncBridge, type SuiGateSyncBridge } from "./suiGateSync";
 import { createSponsoredAssemblyAdmin, registerSuiAssemblyAdminBridge } from "./suiAssemblyAdmin";
-import { clearAssemblyEnergyConfig, setAssemblyEnergyConfig } from "./networkNodeEnergyConfig";
+import {
+  assertAssemblyEnergyConfigMatches,
+  clearAssemblyEnergyConfig,
+  setAssemblyEnergyConfig,
+} from "./networkNodeEnergyConfig";
 import { registerSuiAssemblyStatesRunner, readSuiAssemblyStatusIntent } from "./suiAssemblyState";
 import {
-  readSyncedSuiWorldConfig, prepareSuiCharacterIdentity, createSuiCharacterTransaction,
+  createSuiAssemblyRequestLinkBridge,
+  registerSuiAssemblyRequestLinkBridge,
+} from "./suiAssemblyRequestLink";
+import {
+  createSuiAssemblyActionQueueBridge,
+  ensureSuiAssemblyActionQueues,
+  registerSuiAssemblyActionQueueBridge,
+} from "./suiAssemblyActionQueue";
+import {
+  readSyncedSuiWorldConfig, prepareSuiCharacterIdentity, createSuiCharacterTransaction, readLiveSuiChainIdentifier,
 } from "./suiCharacterProvisioning";
+import {
+  prepareSuiNpcCharacterIdentity,
+  resolveLocalNpcFactionSuiSigner,
+} from "./suiNpcCharacterProvisioning";
+import {
+  readSuiNpcWorldConfig,
+  assertSuiNpcWorldConfigCurrent,
+} from "./suiNpcWorldConfig";
+import {
+  createSuiAssemblyAccessGrantVerifier,
+  verifySuiAssemblyCustodyProof,
+} from "./suiAssemblyAccess";
+const { registerAssemblyAccessChainVerifier } = require("./assemblyAccessRuntime");
+const { registerAssemblyCustodyChainVerifier } = require("./assemblyCrossOwnerInventoryRuntime");
 
 let trackedNetworkNodeBinding: ((itemId: string) => string | null) | null = null;
 type EnergyMutationRunner = <T>(operation: () => T | Promise<T>) => Promise<T>;
@@ -59,6 +88,7 @@ function gateFingerprint(assembly: any) {
     itemId: assembly.itemId, typeId: assembly.typeId, ownerId: assembly.ownerId,
     status: assembly.status, solarSystemId: assembly.solarSystemId, position: assembly.position,
     networkNodeId: assembly.networkNodeId, destinationGateId: assembly.destinationGateId,
+    destinationSolarSystemId: assembly.destinationSolarSystemId, isCatapult: assembly.isCatapult,
     gateDistanceMeters: assembly.gateDistanceMeters, gateMaxDistanceMeters: assembly.gateMaxDistanceMeters,
   });
 }
@@ -115,6 +145,8 @@ export function createAssemblySyncWorker(options: {
   reconcile: () => Promise<unknown>;
   report: (message: string) => void;
   intervalMs?: number;
+  maxPending?: number;
+  admission?: { runExclusive: <T>(label: string, action: () => Promise<T>) => Promise<T> };
 }) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = true;
@@ -122,18 +154,34 @@ export function createAssemblySyncWorker(options: {
   let generation = 0;
   let running: Promise<void> | null = null;
   let exclusiveTail: Promise<void> | null = null;
+  const activeOperations = new Set<Promise<unknown>>();
+  let pendingOperations = 0;
   let lastError = "";
   function runExclusive<T>(action: () => Promise<T>): Promise<T> {
     if (closing) return Promise.reject(new Error("Assembly synchronization worker is stopped"));
+    const maxPending = options.maxPending ?? 64;
+    if (pendingOperations >= maxPending) {
+      return Promise.reject(Object.assign(new Error(`Assembly synchronization queue is full (${maxPending})`), {
+        code: "ASSEMBLY_SYNC_BUSY",
+      }));
+    }
+    pendingOperations += 1;
     // Inventory status reads can resolve Character capabilities. Keep them on
     // the same queue as reconciliation and its single durable transaction log.
     // Invoke immediately when idle, but convert synchronous throws to rejected
     // promises just like errors from actions already waiting in the queue.
     const invoke = async () => action();
-    const next = exclusiveTail ? exclusiveTail.then(invoke, invoke) : invoke();
+    const admitted = options.admission
+      ? Promise.resolve().then(() => options.admission!.runExclusive("assembly-operation", invoke))
+      : (exclusiveTail ? exclusiveTail.then(invoke, invoke) : invoke());
+    const next = admitted.finally(() => { pendingOperations -= 1; });
     const settled = next.then(() => {}, () => {});
-    exclusiveTail = settled;
-    void settled.then(() => { if (exclusiveTail === settled) exclusiveTail = null; });
+    activeOperations.add(settled);
+    void settled.then(() => activeOperations.delete(settled));
+    if (!options.admission) {
+      exclusiveTail = settled;
+      void settled.then(() => { if (exclusiveTail === settled) exclusiveTail = null; });
+    }
     return next;
   }
   async function runOnce() {
@@ -160,7 +208,13 @@ export function createAssemblySyncWorker(options: {
   }
   return {
     start() { if (stopped) { closing = false; stopped = false; void tick(++generation); } },
-    stop() { closing = true; stopped = true; generation++; if (timer) clearTimeout(timer); return exclusiveTail ?? Promise.resolve(); },
+    stop() {
+      closing = true; stopped = true; generation++;
+      if (timer) clearTimeout(timer);
+      return options.admission
+        ? Promise.allSettled([...activeOperations]).then(() => {})
+        : exclusiveTail ?? Promise.resolve();
+    },
     runOnce,
     runExclusive,
     getLastError() { return lastError; },
@@ -388,7 +442,12 @@ export async function reconcileSuiAssemblies(snapshot: any, context: any, localI
     }
   }
   await attempt("gate links", () => context.contents.syncGateLinks([
-    ...ready, ...removed.map(a => ({ ...a, destinationGateId: null })),
+    ...ready, ...removed.map(a => ({
+      ...a,
+      destinationGateId: null,
+      destinationSolarSystemId: null,
+      gateDistanceMeters: a.isCatapult ? null : a.gateDistanceMeters,
+    })),
   ]));
   async function syncStorage(assembly: any) {
     if (assembly.kind !== "storage_unit" || !await context.contents.hasInventoryChanges(assembly)) return;
@@ -459,6 +518,8 @@ export function startSuiAssemblySync() {
   const deploymentRuntime = require("./deploymentRuntime");
   const energyRuntime = require("./networkNodeEnergyRuntime");
   const characterState = require("../character/characterState");
+  const npcPilotIdentityStore = require("../../space/npc/npcPilotIdentityStore")
+    .getNpcPilotIdentityStore();
   const { TABLE, readStaticRows } = require("../_shared/referenceData");
   const log = require("../../utils/logger");
   const env = {
@@ -479,6 +540,7 @@ export function startSuiAssemblySync() {
     fs.unlinkSync(lockPath);
   }
   fs.writeFileSync(lockPath, String(process.pid), { flag: "wx", mode: 0o600 });
+  const supervisor = createSuiAssemblySupervisor({ log });
   let context: any = null;
   let lastSummary = "";
   trackedNetworkNodeBinding = itemId => {
@@ -489,9 +551,20 @@ export function startSuiAssemblySync() {
   const industryEnv = () => ({ ...process.env, EVEJS_SUI_WORLD_CONFIG_PATH: env.EVEJS_SUI_WORLD_CONFIG_PATH });
 
   function currentSnapshotInput(): SuiAssemblySnapshotInput {
+    const npcCharacters = npcPilotIdentityStore.list().map((pilot: any) => ({
+      // Snapshot normalization requires an account ID, but NPC signer
+      // selection below is keyed by the pilot ledger and never derives a
+      // player account key from this compatibility value.
+      accountId: pilot.characterID,
+      gameCharacterId: pilot.characterID,
+      characterName: pilot.characterName,
+    }));
     return {
       items: itemStore.getAllItems(),
-      characters: characterState.listCharacterIDs().map((id: number) => ({ ...characterState.getCharacterRecord(id), characterID: id })),
+      characters: [
+        ...characterState.listCharacterIDs().map((id: number) => ({ ...characterState.getCharacterRecord(id), characterID: id })),
+        ...npcCharacters,
+      ],
       components: readStaticRows(TABLE.SPACE_COMPONENTS_BY_TYPE),
       itemTypes: readStaticRows(TABLE.ITEM_TYPES), solarSystems: readStaticRows(TABLE.SOLAR_SYSTEMS),
       networkNodeBindings: Object.fromEntries(Object.values<any>(context?.state.assemblies || {}).filter(a => a.networkNodeId).map(a => [a.itemId, a.networkNodeId])),
@@ -508,6 +581,7 @@ export function startSuiAssemblySync() {
 
   async function makeContext(synced: any, snapshot: any) {
     const industryDeployment = readSuiIndustryDeployment(synced, industryEnv());
+    const accessDeployment = readSuiNpcWorldConfig(synced, industryEnv());
     if (!synced.sourceWorkspace) throw new Error("Assembly synchronization requires FrontierWorld.ps1 sync deployment artifacts");
     const contracts = path.join(synced.sourceWorkspace, "world-contracts");
     const deployment = JSON.parse(fs.readFileSync(path.join(contracts, "deployments/localnet/extracted-object-ids.json"), "utf8"));
@@ -521,10 +595,15 @@ export function startSuiAssemblySync() {
       energyConfigId: deployment.world.energyConfig, fuelConfigId: deployment.world.fuelConfig,
       gateConfigId: deployment.world.gateConfig, serverAddressRegistryId: deployment.world.serverAddressRegistry,
       locationRegistryId,
+      catapultPackageId: accessDeployment.catapultPackageId,
+      catapultTypeOrigin: accessDeployment.catapultTypeOrigin,
+      catapultRegistryId: accessDeployment.catapultRegistryId,
     };
-    const client = new SuiJsonRpcClient({ url: "http://127.0.0.1:9000", network: "localnet" });
-    const locationRegistry = await client.getObject({ id: locationRegistryId, options: { showType: true } });
-    if (locationRegistry.data?.type !== `${synced.packageId}::location::LocationRegistry`) {
+    const rpcUrl = "http://127.0.0.1:9000";
+    const rpcDeadlineMs = Math.max(1_000, Number(process.env.EVEJS_SUI_ASSEMBLY_RPC_TIMEOUT_MS) || 10_000);
+    const client = supervisor.createSuiGrpcClient(rpcUrl, rpcDeadlineMs);
+    const locationRegistry = await client.getObject({ objectId: locationRegistryId });
+    if (normalizeStructTag(locationRegistry.object.type) !== normalizeStructTag(`${synced.packageId}::location::LocationRegistry`)) {
       throw new Error("The deployed LocationRegistry does not exist on the current chain");
     }
     const adminSigner = Ed25519Keypair.fromSecretKey(synced.adminPrivateKey);
@@ -535,29 +614,61 @@ export function startSuiAssemblySync() {
       const current = readSyncedSuiWorldConfig(env);
       if (!current || current.chainId !== synced.chainId || current.packageId !== synced.packageId ||
           current.objectRegistryId !== synced.objectRegistryId || current.adminAclId !== synced.adminAclId ||
-          (await client.getChainIdentifier()).toLowerCase() !== synced.chainId) {
+          (await readLiveSuiChainIdentifier(client)).toLowerCase() !== synced.chainId) {
         throw new Error("Sui deployment changed; run FrontierWorld.ps1 sync before retrying assemblies");
       }
       assertSuiIndustryDeploymentCurrent(industryDeployment, current, industryEnv());
+      assertSuiNpcWorldConfigCurrent(accessDeployment, current, industryEnv());
     }
     function localCharacter(ownerId: number) {
       const current = characterState.getCharacterRecord(ownerId);
-      if (!current) return null;
-      return characters.get(ownerId) || {
+      if (current) return characters.get(ownerId) || {
         accountId: current.accountId ?? current.accountID,
         gameCharacterId: ownerId, characterName: current.characterName ?? current.name,
       };
+      const pilot = npcPilotIdentityStore.get(ownerId);
+      if (!pilot) return null;
+      return characters.get(ownerId) || {
+        accountId: ownerId,
+        gameCharacterId: ownerId,
+        characterName: pilot.characterName,
+        npcPilot: pilot,
+      };
     }
     function getSigner(ownerId: number) {
+      const pilot = npcPilotIdentityStore.get(ownerId);
+      if (pilot) {
+        if (pilot.sui?.status !== "confirmed") {
+          throw new Error(`NPC Character ${ownerId} Sui profile is not confirmed`);
+        }
+        const signer = resolveLocalNpcFactionSuiSigner(pilot.factionKey, "dev");
+        const expected = pilot.sui?.walletAddress || pilot.sui?.identity?.walletAddress;
+        if (!expected || normalizeSuiAddress(expected) !== normalizeSuiAddress(signer.toSuiAddress())) {
+          throw new Error(`NPC Character ${ownerId} faction wallet binding changed`);
+        }
+        return signer;
+      }
       const character = localCharacter(ownerId);
       if (!character) throw new Error(`Local Character ${ownerId} is missing`);
       if (!Number.isSafeInteger(Number(character.accountId)) || Number(character.accountId) <= 0) throw new Error(`Local Character ${ownerId} account is invalid`);
       const seed = createHash("sha512").update(`dev:${character.accountId}`, "utf8").digest("hex");
       return Ed25519Keypair.deriveKeypairFromSeed(seed);
     }
+    const journalPath = path.join(root, `${synced.chainId}-${synced.packageId}.transactions.json`);
+    const journalStore = await supervisor.openJournal(journalPath, synced.chainId, synced.packageId);
     const executor = createAssemblyTransactionExecutor({
-      client, chainId: synced.chainId, packageId: synced.packageId, adminSigner, getSigner, assertCurrent,
-      journalPath: path.join(root, `${synced.chainId}-${synced.packageId}.transactions.json`),
+      client, chainId: synced.chainId, packageId: synced.packageId, adminSigner, getSigner,
+      getFactionGasSigner: ownerId => {
+        const pilot = npcPilotIdentityStore.get(ownerId);
+        if (!pilot) return null;
+        if (pilot.sui?.status !== "confirmed" || !pilot.sui?.npcProfileObjectId ||
+            pilot.sui?.chainId !== synced.chainId) {
+          throw new Error(`NPC Character ${ownerId} has no confirmed faction wallet on this chain`);
+        }
+        return getSigner(ownerId);
+      },
+      assertCurrent,
+      journalPath, journalStore,
       onCommitted: (digest, label) => log.info(`[SuiAssemblySync] ${label}: ${digest}`),
       reconcileSponsored: async metadata => { deploymentRuntime.reconcileSponsoredAssemblyState(metadata); },
       reconcileCommitted: async label => {
@@ -595,17 +706,43 @@ export function startSuiAssemblySync() {
     async function getCharacter(ownerId: number, allowCreate = true) {
       const local = localCharacter(ownerId);
       if (!local) throw new Error(`Local Character ${ownerId} is missing`);
-      const identity = prepareSuiCharacterIdentity(local, { world: { ...world, tenant: "dev", tribeId: 100 } });
-      let response = await client.getObject({ id: identity.characterObjectId, options: { showContent: true, showOwner: true } });
-      if (allowCreate && response.error?.code === "notExists") {
-        await executor.execute(`create Character ${ownerId}`, createSuiCharacterTransaction(identity));
-        response = await client.getObject({ id: identity.characterObjectId, options: { showContent: true, showOwner: true } });
+      const pilot = npcPilotIdentityStore.get(ownerId);
+      if (pilot) {
+        if (pilot.sui?.status !== "confirmed" || !pilot.sui?.npcProfileObjectId) {
+          throw new Error(`NPC Character ${ownerId} Sui profile is not confirmed`);
+        }
+        const identity = prepareSuiNpcCharacterIdentity({
+          gameCharacterId: pilot.characterID,
+          characterName: pilot.characterName,
+          factionKey: pilot.factionKey,
+        }, { world: { ...world, tenant: "dev", tribeId: 100 } });
+        const confirmedCharacterID = pilot.sui.characterObjectId || pilot.sui.identity?.characterObjectId;
+        const confirmedWallet = pilot.sui.walletAddress || pilot.sui.identity?.walletAddress;
+        if (!confirmedCharacterID || !confirmedWallet ||
+            normalizeSuiAddress(identity.characterObjectId) !== normalizeSuiAddress(confirmedCharacterID) ||
+            normalizeSuiAddress(identity.walletAddress) !== normalizeSuiAddress(confirmedWallet)) {
+          throw new Error(`NPC Character ${ownerId} identity differs from its confirmed profile`);
+        }
+        const object = await readAssemblyMoveObject(client, identity.characterObjectId);
+        const fields = object!.json;
+        if (normalizeStructTag(object!.type) !== normalizeStructTag(`${world.packageId}::character::Character`) ||
+            normalizeSuiAddress(fields?.character_address) !== normalizeSuiAddress(identity.walletAddress) ||
+            String(suiAssemblyFields(fields?.key)?.id ?? suiAssemblyFields(fields?.key)?.item_id) !== String(ownerId) ||
+            suiAssemblyFields(fields?.key)?.tenant !== "dev") {
+          throw new Error(`On-chain NPC Character ${ownerId} does not match its confirmed profile`);
+        }
+        return { id: identity.characterObjectId, address: identity.walletAddress, ownerCapId: fields.owner_cap_id };
       }
-      const content: any = response.data?.content;
-      const fields = content?.fields;
-      if (content?.type !== `${world.packageId}::character::Character` ||
-          fields?.character_address !== identity.walletAddress ||
-          String(fields?.key?.fields?.id ?? fields?.key?.fields?.item_id) !== String(ownerId) || fields?.key?.fields?.tenant !== "dev") {
+      const identity = prepareSuiCharacterIdentity(local, { world: { ...world, tenant: "dev", tribeId: 100 } });
+      let object = await readAssemblyMoveObject(client, identity.characterObjectId, true);
+      if (allowCreate && !object) {
+        await executor.execute(`create Character ${ownerId}`, createSuiCharacterTransaction(identity));
+        object = await readAssemblyMoveObject(client, identity.characterObjectId);
+      }
+      const fields = object?.json;
+      if (!object || normalizeStructTag(object.type) !== normalizeStructTag(`${world.packageId}::character::Character`) ||
+          normalizeSuiAddress(fields?.character_address) !== normalizeSuiAddress(identity.walletAddress) ||
+          String(suiAssemblyFields(fields?.key)?.id ?? suiAssemblyFields(fields?.key)?.item_id) !== String(ownerId) || suiAssemblyFields(fields?.key)?.tenant !== "dev") {
         throw new Error(`On-chain Character ${ownerId} does not match its local account`);
       }
       return { id: identity.characterObjectId, address: identity.walletAddress, ownerCapId: fields.owner_cap_id };
@@ -631,6 +768,7 @@ export function startSuiAssemblySync() {
     const industry = createSuiIndustryChain({ client, world, chain, tenant: "dev", execute: executor.execute,
       industryPackageId: industryDeployment.industryPackageId,
       industryTypeOrigin: industryDeployment.industryTypeOrigin,
+      industryRegistryId: industryDeployment.industryRegistryId,
       assertSnapshotCurrent(facility) {
         const latest = buildSuiIndustrySnapshot(itemStore.getAllItems()).facilities.find(f => f.itemId === facility.itemId);
         if (industryFingerprint(latest) !== industryFingerprint(facility)) {
@@ -638,9 +776,22 @@ export function startSuiAssemblySync() {
         }
       },
     });
+    const accessVerifier = createSuiAssemblyAccessGrantVerifier({
+      client,
+      world: {
+        packageId: accessDeployment.accessPackageId,
+        typeOrigin: accessDeployment.accessTypeOrigin,
+        worldPackageId: synced.packageId,
+        objectRegistryId: synced.objectRegistryId,
+        accessRegistryId: accessDeployment.accessRegistryId,
+        tenant: "dev",
+      },
+    });
     await assertCurrent();
     return {
-      synced, world, chain, contents, industry, industryDeployment, executor, state, assertCurrent, getCharacter,
+      synced, world, client, adminSigner, chain, contents, industry, industryDeployment, accessDeployment,
+      accessVerifier, executor, state, assertCurrent, getCharacter,
+      supervisorGeneration: journalStore.generation,
       statusAuthority: true,
       fuelAuthority: true,
       initializeFuel(assembly: any) {
@@ -688,8 +839,8 @@ export function startSuiAssemblySync() {
         return applied;
       },
       async simulateSponsored(bytes: string) {
-        const result = await client.dryRunTransactionBlock({ transactionBlock: Buffer.from(bytes, "base64") });
-        if (result.effects?.status?.status !== "success") {
+        const result = await client.simulateTransaction({ transaction: Buffer.from(bytes, "base64") });
+        if (result.$kind !== "Transaction" || !result.Transaction.status.success) {
           throw Object.assign(new Error("Assembly state changed or the sponsored transaction cannot execute"), { code: "ASSEMBLY_STATE_CHANGED" });
         }
       },
@@ -752,6 +903,8 @@ export function startSuiAssemblySync() {
     await refreshSuiAssemblyChainStates(context, currentSnapshotInput, assemblyID, { settleFuel });
   }
   const worker = createAssemblySyncWorker({
+    admission: supervisor,
+    maxPending: Math.max(1, Number(process.env.EVEJS_SUI_ASSEMBLY_MAX_PENDING) || 64),
     report: (message) => log.warn(`[SuiAssemblySync] ${message}`),
     async reconcile() {
       const synced = readSyncedSuiWorldConfig(env);
@@ -761,9 +914,11 @@ export function startSuiAssemblySync() {
         throw new Error("Run FrontierWorld.ps1 sync to enable automatic Smart Assembly synchronization");
       }
       const industryDeployment = readSuiIndustryDeployment(synced, industryEnv());
-      if (!context || context.synced.chainId !== synced.chainId || context.synced.packageId !== synced.packageId ||
+      if (!context || context.supervisorGeneration !== supervisor.getGeneration() ||
+          context.synced.chainId !== synced.chainId || context.synced.packageId !== synced.packageId ||
           context.synced.objectRegistryId !== synced.objectRegistryId || context.synced.adminAclId !== synced.adminAclId ||
-          context.industryDeployment.fingerprint !== industryDeployment.fingerprint) {
+          context.industryDeployment.fingerprint !== industryDeployment.fingerprint ||
+          context.accessDeployment.fingerprint !== readSuiNpcWorldConfig(synced, industryEnv()).fingerprint) {
         clearAssemblyEnergyConfig();
         energyRuntime.clearSuiNetworkNodeEnergy();
         context = await makeContext(synced, { characters: [] });
@@ -779,6 +934,11 @@ export function startSuiAssemblySync() {
       await context.assertCurrent();
       const energyRequirements = await context.chain.readEnergyRequirements();
       await context.assertCurrent();
+      assertAssemblyEnergyConfigMatches(
+        energyRequirements,
+        synced.assemblyEnergy,
+        readStaticRows(TABLE.SPACE_COMPONENTS_BY_TYPE),
+      );
       setAssemblyEnergyConfig(energyRequirements, {
         energyConfigID: context.world.energyConfigId, chainId: synced.chainId,
       });
@@ -796,6 +956,10 @@ export function startSuiAssemblySync() {
       const localItemIds = new Set<string>(Object.values<any>(rawItems).map(item => String(item.itemID)));
       context.setSnapshotItemIds(localItemIds, snapshot.assemblies);
       await reconcileSuiAssemblies(snapshot, context, localItemIds);
+      await ensureSuiAssemblyActionQueues(
+        context,
+        snapshot.assemblies.map(assembly => context.chain.deriveId(assembly.itemId)),
+      );
       // Online/offline, fuel exhaustion and temporary storage operations can all
       // change reservations during this pass. Publish the resulting chain totals.
       await refreshChainStates();
@@ -833,6 +997,52 @@ export function startSuiAssemblySync() {
     },
   });
   const unregisterAdmin = registerSuiAssemblyAdminBridge(sponsoredAdmin);
+  const unregisterAccessVerifier = registerAssemblyAccessChainVerifier(async (grant: any, proof: any) => {
+    if (!context?.accessVerifier) return false;
+    await context.assertCurrent();
+    return context.accessVerifier(grant, proof);
+  });
+  const unregisterCustodyVerifier = registerAssemblyCustodyChainVerifier(async (operation: any, proof: any) => {
+    if (!context?.client || !context?.accessDeployment) return false;
+    await context.assertCurrent();
+    const assemblyID = operation.action === "deposit"
+      ? operation.destinationAssemblyID : operation.sourceAssemblyID;
+    const destinationID = operation.action === "withdraw"
+      ? operation.sourceAssemblyID : operation.destinationAssemblyID;
+    return verifySuiAssemblyCustodyProof({
+      client: context.client,
+      world: {
+        packageId: context.accessDeployment.accessPackageId,
+        typeOrigin: context.accessDeployment.accessTypeOrigin,
+        worldPackageId: context.synced.packageId,
+        objectRegistryId: context.synced.objectRegistryId,
+        accessRegistryId: context.accessDeployment.accessRegistryId,
+        tenant: "dev",
+      },
+      proof: {
+        digest: proof?.digest,
+        operationId: operation.operationID,
+        custodyKind: operation.custodyKind,
+        sourceAssemblyItemId: assemblyID,
+        destinationAssemblyItemId: destinationID,
+        actorCharacterId: operation.actorID,
+        typeId: operation.typeID,
+        quantity: operation.quantity,
+      },
+    });
+  });
+  const unregisterRequestLink = registerSuiAssemblyRequestLinkBridge(createSuiAssemblyRequestLinkBridge({
+    runExclusive: worker.runExclusive,
+    getContext: () => context,
+    getSnapshot: () => buildSuiAssemblySnapshot(currentSnapshotInput()),
+    hasPrepared: () => sponsoredAdmin.hasPrepared(),
+  }));
+  const unregisterActionQueue = registerSuiAssemblyActionQueueBridge(createSuiAssemblyActionQueueBridge({
+    runExclusive: worker.runExclusive,
+    getContext: () => context,
+    getSnapshot: () => buildSuiAssemblySnapshot(currentSnapshotInput()),
+    hasPrepared: () => sponsoredAdmin.hasPrepared(),
+  }));
   const unregisterState = registerSuiAssemblyStatesRunner((assemblyIDs, operation) => worker.runExclusive(async () => {
     try {
       if (!context) throw new Error(worker.getLastError() || "Assembly synchronization is starting");
@@ -848,7 +1058,7 @@ export function startSuiAssemblySync() {
     }
     // Inventory validation and mutation run without yielding after the fresh read.
     return operation();
-  }));
+  }), () => context);
   energyMutationRunner = createSuiAssemblyEnergyMutationRunner({
     runExclusive: worker.runExclusive, getContext: () => context,
     hasPrepared: () => sponsoredAdmin.hasPrepared(),
@@ -906,11 +1116,15 @@ export function startSuiAssemblySync() {
   worker.start();
   log.info("[SuiAssemblySync] Automatic Localnet synchronization enabled (5 second scan)");
   return { ...worker, stop() {
-    unregisterStorageSync(); unregisterGateSync(); unregisterIndustrySync(); unregisterTransferSnapshot(); unregisterAdmin(); unregisterState(); trackedNetworkNodeBinding = null;
+    unregisterStorageSync(); unregisterGateSync(); unregisterIndustrySync(); unregisterTransferSnapshot(); unregisterActionQueue(); unregisterRequestLink(); unregisterCustodyVerifier(); unregisterAccessVerifier(); unregisterAdmin(); unregisterState(); trackedNetworkNodeBinding = null;
     energyMutationRunner = null;
     const stopped = worker.stop();
     clearAssemblyEnergyConfig();
     energyRuntime.clearSuiNetworkNodeEnergy();
-    return stopped.finally(() => { clearAssemblyEnergyConfig(); energyRuntime.clearSuiNetworkNodeEnergy(); });
+    return stopped.finally(async () => {
+      await supervisor.close();
+      try { if (fs.readFileSync(lockPath, "utf8") === String(process.pid)) fs.unlinkSync(lockPath); } catch { /* already removed */ }
+      clearAssemblyEnergyConfig(); energyRuntime.clearSuiNetworkNodeEnergy();
+    });
   } };
 }

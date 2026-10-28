@@ -4,6 +4,10 @@ EVE.js is a local EVE Online server emulator. This release targets **EVE 24.01 b
 
 Join the project Discord: [https://discord.gg/KMuJrMDEBa](https://discord.gg/KMuJrMDEBa)
 
+Clone with `git clone --recurse-submodules <repository-url>` so the pinned
+`builder-scaffold` and `world-contracts` checkouts are downloaded with
+the server. For an existing checkout, run `git submodule update --init --recursive`.
+
 ## TypeScript development
 
 The server, Node tools, tests, and browser editor use TypeScript sources
@@ -47,6 +51,39 @@ dynamic. Compiler checking is enabled for the whole project; stronger domain
 types and strictness can be introduced incrementally.
 
 ## EVE Frontier compatibility fork
+
+The [3640684 port plan](docs/FRONTIER_BUILD_3640684_PORT_PLAN.md) selects
+`3502403-MOD4-STUFF1` galaxy and solar-system data for delivery to the
+cycle-7 client through the new exploration API. The
+[galaxy-data investigation](docs/FRONTIER_BUILD_3640684_GALAXY_DATA.md) records
+the client capability. The [exploration API](docs/EXPLORATION_API.md) now
+provides versioned galaxy pages, visited-system detail and reveal notices from
+an explicit legacy-world export. It includes setup and verification commands.
+Cross-cycle catalog compatibility and live client acceptance remain pending;
+existing build defaults remain unchanged.
+The [3640684 feature audit](docs/FRONTIER_BUILD_3640684_FEATURE_AUDIT.md)
+records the original service, workflow and gateway gaps. The
+[implementation record](docs/FRONTIER_3640684_IMPLEMENTATION.md) covers the
+completed server pass across F01–F21, configuration and regression checks,
+including the remaining native acceptance and external provider boundaries.
+The [3640684 voxel mining implementation](docs/VOXEL_MINING_3640684.md) adds
+cell depletion, collectible ore and timed scoop pickup with atomic inventory
+credit. It documents supported mappings, isolated tests and native acceptance gaps.
+The [temporary landscape integration](docs/FRONTIER_3640684_TEMPORARY_LANDSCAPE.md)
+loads decoded 3640684 landscapes, ecosystems and dungeons on the selected
+3502403 galaxy, preserving authored positions and omitting unresolved map
+parents until the full era 6 cycle 7 files are available.
+Its [allocation policies](docs/FRONTIER_3640684_LANDSCAPE_POLICIES.md) add finite
+voxel resources, persistent NPC encounters and proximity/mining triggers.
+The [3572727 comparison](docs/FRONTIER_BUILD_3572727_COMPARISON.md) documents
+the supplied demo-tool branch against that temporary profile, including
+galaxy sources, content changes, client contracts and remaining compatibility work.
+The [galaxy replacement investigation](docs/FRONTIER_3572727_GALAXY_REPLACEMENT.md)
+explains the conflicting physical snapshots and the validated path to use
+3572727 geography while retaining the 3640684 client and compatible content catalogs.
+The [implementation record](docs/FRONTIER_3572727_IMPLEMENTATION.md) now covers
+the built canonical candidate, compatible catalogs, isolated runtime commands and
+full decoder, persistence and server validation. The current world remains selected.
 
 This checkout contains an experimental, isolated EVE Frontier compatibility
 profile. The Windows port now targets build `3502403` as an exact-build
@@ -107,6 +144,21 @@ Discovery is automatic, or pass the actual build directory explicitly with
 .\SetupFrontierWindows.ps1 -NonInteractive -SourceRoot 'C:\CCP\EVE Frontier\stillness'
 ```
 
+An exact-build modified or merged client can also be the selected client/server
+data target. Its executable patch inputs (`blue.pyd`, `code.ccp`, manifest, CA
+bundles, and `exefile.exe`) must still match the supported build profile, while
+its merged `resfileindex.txt` and `ResFiles` cache are preserved. When switching
+an existing same-build stage from another source, request a verified rebuild and
+refresh the extracted server data:
+
+```powershell
+$target = 'D:\clients\ef\3502403-MOD3-TEST\EVE Frontier\stillness'
+.\SetupFrontierWindows.ps1 -NonInteractive -SourceRoot $target -ForceData -CleanStage
+```
+
+`-CleanStage` removes only a validated marker-owned stage; it will not silently
+retarget an existing `ResFiles` junction.
+
 The setup installs only missing prerequisites, runs the locked npm installs,
 proves `better-sqlite3` under the active Node ABI, creates the ignored
 `_local\frontier-python312` environment, extracts and validates build-numbered
@@ -120,7 +172,7 @@ The default stage is:
 %LOCALAPPDATA%\EveJS-Frontier\windows\staged-client\3502403
 ```
 
-By default its `ResFiles` entry is a junction to the official shared cache.
+By default its `ResFiles` entry is a junction to the selected source cache.
 That saves roughly the size of a second resource cache, but it is shared and
 not OS-enforced read-only. Add `-CopyResFiles` for a complete copy. Every other
 client file is copied before mutation, and the stage marker records the
@@ -286,6 +338,18 @@ workflow and alternate workspace options. Explicit
 precedence over the synchronized values. The Frontier launchers pin the client
 tenant to `dev`, and MachoNet advertises `localnet` so the in-game signer uses
 the Docker-published Sui endpoint at `127.0.0.1:9000`.
+
+The current world deployment is split into the base package plus NPC,
+assembly-access, catapult, Smart Industry, transponder, action-queue, Industry
+Actions, Logistics Actions, Infrastructure Actions, and Automation packages.
+`FrontierWorld.ps1` also synchronizes their public call-package, stable
+type-origin, and registry IDs into `_local/frontier-world/3502403/world-features.v1.json`.
+The versioned manifest carries independent capability records and references a
+default plus one split config file per `factionID-factionStringOnlyID`; historical
+`npc-deployment.json` files are migration inputs. Do not assume
+that a feature module lives at the base-world package address; see
+[Frontier world sync](doc/FRONTIER_WORLD_SYNC.md) and the authoritative
+`world-contracts/docs/package-topology.md` submodule.
 Set
 `EVEJS_SUI_CHARACTER_PROVISIONING_ENABLED=false` only when intentionally
 running isolated tests without a disposable chain.
@@ -301,17 +365,46 @@ Completed Smart Assemblies automatically mirror to Sui Localnet while the native
 Frontier server runs. See [automatic assembly synchronization](doc/FRONTIER_ASSEMBLY_SYNC.md)
 for supported state, retry behavior, and contract constraints.
 
+The `smart-assembly-control` dApp is pinned as a submodule beside
+`world-contracts`. Initialize all three server-managed repositories after cloning:
+
+```powershell
+git submodule update --init --recursive
+npm run frontier:dapp:install
+```
+
+Set up the trusted local HTTPS certificate once:
+
+```powershell
+npm run frontier:dapp:setup:https
+```
+
+`FrontierWorld.ps1 sync`, `up`, and `restart` now refresh the dApp's public
+configuration automatically from the exact deployment they validated. Starting
+`StartFrontierServer.ps1` builds and starts the HTTPS dApp with the game server;
+`StopFrontier.ps1` stops both marker-owned processes. The explicit
+`frontier:dapp:configure`, `build`, and `start` scripts remain available for
+diagnostics and standalone dApp development.
+
+The dApp forwards its `/evejs/storage`, `/evejs/admin`, `/evejs/energy`,
+`/evejs/gates`, and `/evejs/industry` calls to the local game interface at
+`http://127.0.0.1:26102`. Its runtime `/assembly-config.json` endpoint rereads
+the current world deployment, so a rebuilt local world does not require a new
+dApp bundle.
+
 The server advertises `smartAssemblyBaseDappUrl` through MachoNet global
-config with a default of `http://localhost:5173`. To use another base URL, set
+config. This checkout sets it to `https://dev.dapps.evefrontier.com`, matching
+the dApp's trusted local HTTPS host on port 443. To use another base URL, set
 `smartAssemblyBaseDappUrl` in `evejs.config.local.json` or set the environment
-variable `EVEJS_smartAssemblyBaseDappUrl` before starting the server.
+variable `EVEJS_SMART_ASSEMBLY_BASE_DAPP_URL` before starting the server.
 
 Use an HTTP(S) base URL without a query string or fragment. Trailing slashes
 are removed; the client appends `/client/root/`, `/client/behaviour/`, or
 `/client/networknode/monitor/` plus its assembly and tenant query parameters.
-Run the dApp separately at that address and restart the server and game client
-after changing the setting, since the Smart Assembly service caches the URL
-on startup.
+Restart the server and game client after changing the setting, since the Smart
+Assembly service caches the URL on startup. Run `npm run frontier:dapp:test` to
+validate the dApp's current
+world transaction shapes and game API request/response interfaces.
 
 ## Localhost only
 
@@ -567,6 +660,59 @@ Use `evejs.config.local.json` for gameplay, economy, NPC, feature, and logging s
 
 Rust market runtime and seeder tuning are separate from the Node JSON configuration. Routine seed selection belongs in the `market-tools rebuild` arguments; advanced defaults live in `docker/market-server.toml`, `docker/market-seed.toml`, and `docker/market-seed-v2.toml` and require an image rebuild.
 
+### Configuring the adaptive space tick rate
+
+The space runtime uses the fixed `adaptiveTickRateInitialIntervalMs` cadence (100 ms / 10 Hz by default). Dynamic cadence is disabled by default because Destiny stamps, movement, and combat presentation require a stable authoritative tick interval. Set `adaptiveTickRateEnabled` to `true` only to opt into resource-based cadence experiments; when enabled, the runtime samples this Node process every `adaptiveTickRateSampleIntervalMs`. CPU pressure at or above `adaptiveTickRateCpuHighPercent`, or RSS memory pressure at or above `adaptiveTickRateMemoryHighPercent`, increases the interval by `adaptiveTickRateStepMs` and therefore lowers the tick rate. The interval decreases again only when both CPU and memory are at or below their low thresholds. This high/low gap prevents the timer from repeatedly switching direction near one threshold.
+
+`adaptiveTickRateMinIntervalMs` and `adaptiveTickRateMaxIntervalMs` set the hard cadence bounds used only while adaptive cadence is enabled. `adaptiveTickRateMemoryLimitMb` is the RSS budget; leave it at `0` to use the strictest V8 or process/container limit Node can detect. Every adaptive adjustment is written to the server log with the old/new Hz, triggering resource, CPU percentage, memory percentage, and RSS. The corresponding `EVEJS_ADAPTIVE_TICK_RATE_*` environment variables can override every setting.
+
+### Configuring Frontier directional scanning
+
+Frontier directional scanning separates contact detection from object resolution. `frontierScanningDetectionRangeMeters` controls how far a contact can appear in the scan response, while `frontierScanningResolutionRangeMeters` controls how far a sufficiently strong contact can resolve into its real ballpark object. Keep the resolution range below the detection range to leave the outer part of the scan envelope visible as unresolved signatures. The build-3502403 client-authored ceiling is 100,000 km.
+
+`frontierScanningResolutionSnrThreshold` sets the signal-to-noise ratio required for resolution. `frontierScanningRenderResolvedObjects` controls the Frontier-specific delayed object reveal, and `frontierScanningRenderOutOfRangeSignatures` controls whether contacts outside the resolution range remain in the scan result or are omitted. These settings affect both fitted Creation scanners and the module-less `scanningService` path. Changes require a server restart.
+
+### Configuring NPC behavior
+
+The root `npc-behavior.config.json` is the shared behavior-policy layer for every native NPC definition. It is applied at the common materialization path, so direct profile spawns, pools, groups, belt rats, startup rules, dungeon waves, CONCORD, capital NPCs, Drifters, and reinforcement spawns all receive a resolved role and activity.
+
+The shipped policy defines four roles:
+
+- `guard` fills missing combat, movement, leash, and aggression settings while preserving the more specific values authored in `npcBehaviorProfiles`;
+- `passive` preserves non-combat traffic and utility hulls;
+- `miner` keeps weapons and automatic aggression disabled and automatically enrolls matching hulls in the mining controller, including miners created through a generic NPC spawn path;
+- `hauler` keeps mining-operation transports passive and makes them eligible for automatic mining-fleet attachment.
+
+Rules are evaluated by ascending `priority`; later matching rules win the role and can add behavior overrides. Matchers support exact IDs, ID prefixes and fragments for profiles, behavior profiles, and loadouts, plus entity type and authored `behaviorAutoAggro`. Global and role `behaviorDefaults` only fill missing authored values. `behaviorOverrides` intentionally replace authored values, so use overrides only where the role must enforce a setting.
+
+Each authored NPC behavior profile can also set these independent boolean capabilities:
+
+- `chaseTargets` lets autonomous combat movement follow or orbit a target; disabling it makes the NPC hold position while it can still lock and fire;
+- `mineAsteroids` enrolls the NPC as a miner even when it arrived through a generic spawn path, while an explicit `false` keeps a mining-role profile out of the mining controller;
+- `guardAnchor` enables the spawn anchor/home leash and idle return behavior used to guard the object the NPC was spawned around;
+- `retainTargetLockWhenOccluded` preserves an already completed lock when a physical object moves into the line of fire, but does not permit acquiring a new lock through that object;
+- `fireThroughOccluders` permits that NPC's direct weapons and missiles to pass through physical line-of-fire blockers. It is separate from lock retention, so an NPC normally needs both occlusion flags to keep firing after its target becomes hidden.
+
+The shipped role defaults preserve existing behavior: guards chase and defend their anchor, miners mine, and all roles obey target occlusion unless a profile explicitly opts out. These fields can be authored directly in `npcBehaviorProfiles` or supplied through `behaviorDefaults`/`behaviorOverrides` in `npc-behavior.config.json`.
+
+The file is validated at server startup. Invalid schemas, unknown roles, empty match rules, or attempts to replace the reserved `behaviorProfileID` and `name` fields stop startup with the exact config error. Changes require a server restart; Docker users must rebuild and recreate the backend so the changed file is copied into the image.
+
+### Configuring NPC faction interactions
+
+The root `npc-factions.config.json` schema 2 is the unified authoring source for faction identity, capabilities, type membership, diplomacy, transponders, and future command authority. Native NPCs use the `factionID` already authored on their NPC profile; at runtime it is exposed as `npcFactionID` and retained in the existing `warFactionID` compatibility field. Profiles can also provide `npcFactionKey` (the Frontier-generated profiles already expose `frontierFactionKey`) when several distinct groups share one legacy numeric ID. The string key takes precedence for disposition checks. Schema 1 remains readable as a migration input.
+
+Faction membership is dynamic by default. `defaults.typeMembership.typeListProfiles` applies the `npc-profiles-by-faction` profile to live `npcProfiles` rows whose faction identity matches, annotating every resulting ship `typeID` with its matching NPC profile IDs. `includedTypeIDs` and `excludedTypeIDs` are narrow overrides, not a generated catalog that must be manually maintained. Excluded configured types are removed from the NPC profile catalog. Every normalized faction exposes its canonical key, resolved member-type profile, transponder code, and expanded `diplomacy.allies`/`diplomacy.enemies` contacts. Those contacts are derived from the compact directional `relations` rules and include the target faction's current transponder code, avoiding duplicated relationship records.
+
+`leadership` is one optional list for leader/controller characters; `commanders` remains separate. Entries use a canonical u64 `characterID` string plus `characterType: "npc" | "player"`. Both shipped lists are empty so characters can be assigned dynamically later instead of creating preset entities.
+
+Each entry in `factions` can set `unidentifiedDisposition` to `suspicious`, `inherit`, `hostile`, `retaliate`, or `ignore`. A player or NPC broadcasting the exact code expected by the source NPC faction is identified as an ally before faction or aggression rules are evaluated. The shipped factions use `suspicious`: an NPC acquires and investigates a missing or incorrect transponder code while withholding weapons. A successful offensive-module activation against that NPC or a locally visible transponder-matched ally immediately promotes the contact to hostile, before the first damage cycle lands. `inherit` preserves the existing NPC behavior/faction policy, `hostile` permits immediate aggression, `retaliate` waits until that target or owner attacks, and `ignore` prevents IFF-driven combat.
+
+The same file configures native-NPC transponders. Every NPC with the same canonical configured faction broadcasts the same deterministic `code`-channel value, independent of its spawn group or behavior profile. The current testing wire format is exactly `FACTION` or `FACTION:SHARED_SUFFIX`: each faction's required, unique `transponderSignal` supplies `FACTION`, and the optional `transponderSuffix` (uppercase letters, numbers, `_`, or `-`) is shared by every member. The combined value must fit the client's 32-character limit. Factionless NPCs do not derive a code from profile, type, or spawn metadata, and per-entity NPC code/signal overrides are intentionally ignored. The server refreshes `OnIffVerdicts` when NPCs appear or leave, so a player transponder configured to the faction code receives a friendly IFF verdict from every NPC in that faction. External discovery or interrogation of the plaintext code is reserved for a later phase.
+
+Relations are directional rules over `sourceFactionIDs`/`targetFactionIDs` and/or `sourceFactionKeys`/`targetFactionKeys`. Set `reciprocal` to `true` for a two-way relation; later rules override an earlier relation for the same ordered faction pair. Valid NPC dispositions are `friendly`, `neutral`, and `hostile`. The shipped matrix enables empire-war opponents, security/industrial factions versus outlaw factions, rival outlaw factions, and distinct Frontier-faction rivalries. Same-faction friendliness takes precedence so a broad rivalry rule does not create friendly fire inside one faction.
+
+Faction disposition controls target eligibility, while `npc-behavior.config.json` continues to control whether an NPC automatically aggresses, its range, movement, weapons, mining, guarding, and occlusion behavior. Both files are validated at startup and changes require a server restart.
+
 ### Docker persistence
 
 Both SQLite databases, retained market backups, downloaded snapshots, generated static data, and uploaded character portraits and alliance logos live in the named volume `evejs-data`. Normal `stop`, `down`, image rebuild, and container replacement operations preserve it. See [Upgrading and moving your server](#upgrading-and-moving-your-server) for the steps to carry it to a new version, folder, or PC.
@@ -673,6 +819,8 @@ Everything your server remembers — accounts, characters, ships, wallets, uploa
 | `_local\gameStore\` | game database, characters, and uploaded portraits and alliance logos |
 | `externalservices\market-server\data\generated\` | market database |
 | `evejs.config.local.json` | your server settings |
+| `npc-behavior.config.json` | shared NPC role, aggression, mining, and hauling policy |
+| `npc-factions.config.json` | NPC faction identities, transponder signals, player responses, and inter-faction relations |
 
 > **Upgrading from a version released before 25 July 2026:** uploaded character portraits used to be written into the program files, at `server\src\_secondary\image\generated\Character`. That is why they were left behind whenever an install was copied to a new folder, and why rebuilding a Docker container erased them. They now live in `_local\gameStore\images`, beside the game database, so they travel with everything else. The steps below include the one-time copy that brings old portraits across; the server keeps reading the old location in the meantime, so nothing breaks if you upgrade first and migrate later.
 
@@ -712,6 +860,8 @@ Check that your characters are there before deleting the old folder.
    - `_local\gameStore\`
    - `externalservices\market-server\data\generated\`
    - `evejs.config.local.json`
+   - `npc-behavior.config.json` — if you customized NPC roles or behavior rules.
+   - `npc-factions.config.json` — if you customized NPC faction relations, transponder signals, or unidentified-target responses.
    - `server\src\_secondary\image\generated\Character\` — only if the old version has this folder (see the note above). `StartServer.bat` moves its contents into `_local\gameStore\images` on the next start.
 4. Run `StartMarketServer.bat`, then `StartServer.bat`, in the new folder.
 

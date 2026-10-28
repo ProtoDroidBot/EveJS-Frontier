@@ -1,20 +1,19 @@
-"use strict";
 /**
  * Inventory Broker Service (invbroker)
  *
  * Handles inventory/item queries from the client.
  * Called after character selection to load inventory data.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
 const rotatingLog = require(path.join(__dirname, "../../utils/rotatingLog"));
 const { resolveSessionCharacterID, } = require(path.join(__dirname, "../_shared/sessionIdentity"));
 const { throwWrappedUserError } = require(path.join(__dirname, "../../common/machoErrors"));
+const { ROLE_GML, ROLE_LEGIONEER, ROLE_WORLDMOD, normalizeRoleValue, } = require(path.join(__dirname, "../account/accountRoleProfiles"));
 const { resolveShipByTypeID } = require(path.join(__dirname, "../chat/shipTypeRegistry"));
 const { getCharacterShips, findCharacterShip, getActiveShipRecord, shouldFlushDeferredDockedShipSessionChange, flushDeferredDockedShipSessionChange, completeDockedFittingBootstrap, syncInventoryItemForSession, syncShipFittingStateForSession, emitStripFittingDogmaMultiEventForSession, emitItemsChangedBatchForSession, emitFittingTransactionForSession, buildInventoryDogmaPrimeEntry, } = require(path.join(__dirname, "../character/characterState"));
-const { ITEM_FLAGS, FIGHTER_TUBE_FLAGS, listContainerItems, findItemById, findShipItemById, getItemMetadata, getInventoryItemUnitVolume, grantItemToCharacterLocation, moveItemToLocation, removeInventoryItem, takeItemTypeFromCharacterLocation, transferItemToOwnerLocation, mergeItemStacks, updateInventoryItem, } = require(path.join(__dirname, "./itemStore"));
+const { ITEM_FLAGS, FIGHTER_TUBE_FLAGS, ensureFreeStationFuelSupply, listContainerItems, findItemById, findShipItemById, getItemMetadata, getInventoryItemUnitVolume, grantItemToCharacterLocation, moveItemToLocation, removeInventoryItem, takeItemTypeFromCharacterLocation, transferItemToOwnerLocation, mergeItemStacks, updateInventoryItem, } = require(path.join(__dirname, "./itemStore"));
 const { SHELL_EQUIPMENT_FLAG_ID, SHELL_EQUIPMENT_KIND, getShellEquipmentKind, listActiveShellEquipment, } = require(path.join(__dirname, "../frontier/shellEquipmentRuntime"));
 const { CORP_ROLE_DIRECTOR, toRoleMaskBigInt, getCorporationOfficeByInventoryID, getCorporationOffices, } = require(path.join(__dirname, "../corporation/corporationRuntimeState"));
 const { resolveItemByTypeID, } = require(path.join(__dirname, "./itemTypeRegistry"));
@@ -1868,6 +1867,10 @@ class InvBrokerService extends BaseService {
             : accessResult.errorMsg || "ACCESS_DENIED";
     }
     _getSpaceContainerScopeAccessError(session, containerID) {
+        const dockingAccessError = require("../frontier/dockingPointRuntime")
+            .getCargoAccessError(session, containerID);
+        if (dockingAccessError)
+            return dockingAccessError;
         const systemID = this._normalizeInventoryId(session && session._space && session._space.systemID, 0);
         const shipID = this._normalizeInventoryId(session && session._space && session._space.shipID, 0);
         const numericContainerID = this._normalizeInventoryId(containerID, 0);
@@ -3954,6 +3957,13 @@ class InvBrokerService extends BaseService {
                 this._isStructureOwnerBayFlag(numericFlag)) {
                 return listContainerItems(structureOwnerID, containerID, numericFlag);
             }
+            if (charId > 0 &&
+                stationId > 0 &&
+                (numericFlag === null ||
+                    numericFlag === 0 ||
+                    numericFlag === ITEM_FLAGS.HANGAR)) {
+                ensureFreeStationFuelSupply(charId, stationId);
+            }
             return listContainerItems(charId, stationId, numericFlag === null || numericFlag === 0
                 ? ITEM_FLAGS.HANGAR
                 : numericFlag);
@@ -4703,7 +4713,7 @@ class InvBrokerService extends BaseService {
         }
         return result;
     }
-    Handle_ImportExportWithPlanet(args, session) {
+    async Handle_ImportExportWithPlanet(args, session) {
         const boundContext = this._getBoundContext(session);
         const customsOfficeID = this._normalizeInventoryId(boundContext && (boundContext.inventoryID ?? boundContext.locationID), 0);
         const characterID = this._getCharacterId(session);
@@ -4724,7 +4734,7 @@ class InvBrokerService extends BaseService {
             Math.abs(clientTaxRate - currentTaxRate) > 0.000001) {
             throwWrappedUserError("TaxChanged");
         }
-        const colony = planetRuntimeStore.getColonyByPin(characterID, spaceportPinID);
+        const colony = await planetRuntimeStore.getColonyByPinAsync(characterID, spaceportPinID);
         if (!colony) {
             throwWrappedUserError("CannotImportEndpointNotFound");
         }
@@ -5019,6 +5029,59 @@ class InvBrokerService extends BaseService {
         this._emitInventoryMoveChanges(session, changes);
         this._refreshBallparkShipPresentation(session, changes);
         this._refreshBallparkInventoryPresentation(session, changes);
+        return null;
+    }
+    Handle_DestroyItem(args, session) {
+        this._traceInventory("DestroyItem", session, { args });
+        const gmRoles = ROLE_GML | ROLE_LEGIONEER | ROLE_WORLDMOD;
+        if ((normalizeRoleValue(session && session.accountRole, 0n) & gmRoles) === 0n) {
+            throwWrappedUserError("CustomNotify", {
+                notify: "Destroy Item requires a GM account.",
+            });
+        }
+        const itemID = this._normalizeInventoryId(args && args[0], 0);
+        if (itemID <= 0) {
+            throwWrappedUserError("CustomNotify", {
+                notify: "Destroy Item requires a valid item ID.",
+            });
+        }
+        // The GM menu calls DestroyItem on the inventory manager for NPCs as well
+        // as inventory rows. NPC removal must settle equipment and unregister its
+        // controller; deleting only an item row would leave a live NPC behind.
+        const npcService = require(path.join(__dirname, "../../space/npc/npcService"));
+        const controller = npcService.getControllerByEntityID(itemID);
+        if (controller) {
+            const systemID = this._normalizeInventoryId(session && ((session._space && session._space.systemID) ||
+                session.solarsystemid2 ||
+                session.solarsystemid), 0);
+            if (systemID <= 0 || systemID !== this._normalizeInventoryId(controller.systemID, 0)) {
+                throwWrappedUserError("CustomNotify", {
+                    notify: "Destroy Item can only remove an NPC in your current system.",
+                });
+            }
+            const result = npcService.destroyNpcControllerByEntityID(itemID, {
+                destroyed: true,
+                broadcast: true,
+            });
+            if (!result || result.success !== true) {
+                throwWrappedUserError("CustomNotify", {
+                    notify: `Could not destroy NPC ${itemID}: ${result && result.errorMsg || "UNKNOWN_ERROR"}.`,
+                });
+            }
+            return null;
+        }
+        const item = findItemById(itemID);
+        if (!this._isInventoryItemTrashable(session, item, 0)) {
+            throwWrappedUserError("CustomNotify", {
+                notify: "Destroy Item cannot remove that inventory item.",
+            });
+        }
+        const outcome = this.Handle_TrashItems([[itemID], 0], session);
+        if (outcome !== null) {
+            throwWrappedUserError("CustomNotify", {
+                notify: `Could not destroy inventory item ${itemID}.`,
+            });
+        }
         return null;
     }
     Handle_TrashItems(args, session) {

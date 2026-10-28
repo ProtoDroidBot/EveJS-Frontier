@@ -5648,7 +5648,7 @@ function createEvejsWebGatewayRuntime({
   // guest-list departure, space/trade/chat cleanup, and character-control
   // release. Calling the existing mechanic is bridge glue; nothing here
   // reimplements it.
-  function teardownBrowserSession(entry, lifecycleReason) {
+  function teardownBrowserSession(entry, lifecycleReason, options: Record<string, any> = {}) {
     browserSessions.delete(entry.bridgeSessionID);
     // Close the push stream with the session: a subscriber still attached is
     // told the session ended rather than being left on a stream that can never
@@ -5668,11 +5668,20 @@ function createEvejsWebGatewayRuntime({
           __dirname,
           "../../services/_shared/sessionDisconnect",
         ));
-        disconnectCharacterSession(session, {
+        const disconnectResult = disconnectCharacterSession(session, {
           broadcast: true,
           clearSession: true,
           lifecycleReason,
         });
+        if (
+          options.requirePersistence === true &&
+          (!disconnectResult || disconnectResult.success !== true || disconnectResult.cleanupErrors?.length > 0)
+        ) {
+          throw new Error(
+            `Character ${characterID} logoff persistence failed: ` +
+              `${disconnectResult?.cleanupErrors?.join(", ") || disconnectResult?.errorMsg || "DISCONNECT_FAILED"}`,
+          );
+        }
         log.info(
           `[EvejsWebGateway] Browser session ended characterID=${characterID} ` +
             `reason=${lifecycleReason}`,
@@ -6695,11 +6704,12 @@ function createEvejsWebGatewayRuntime({
       } catch {
         // Best effort; shutdown must continue.
       }
+      const teardownErrors: string[] = [];
       for (const entry of [...browserSessions.values()]) {
         try {
-          teardownBrowserSession(entry, "gateway_shutdown");
-        } catch {
-          // Shutdown must tear down every remaining browser session.
+          teardownBrowserSession(entry, "gateway_shutdown", { requirePersistence: true });
+        } catch (error) {
+          teardownErrors.push(error.message);
         }
       }
       sessionEvents.shutdown();
@@ -6707,6 +6717,9 @@ function createEvejsWebGatewayRuntime({
       characterCommands.shutdown();
       if (usesDefaultRuntimes && defaultCharacterRuntimes === defaults) {
         defaultCharacterRuntimes = null;
+      }
+      if (teardownErrors.length > 0) {
+        throw new Error(teardownErrors.join("; "));
       }
     },
   });

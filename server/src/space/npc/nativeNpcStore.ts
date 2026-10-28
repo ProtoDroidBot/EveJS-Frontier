@@ -1,4 +1,5 @@
 const path = require("path");
+const { createHash } = require("node:crypto");
 
 const database = require(path.join(__dirname, "../../gameStore"));
 const {
@@ -41,22 +42,32 @@ const ROOT = Object.freeze({
   },
 });
 
-const transientCounters = {
-  [TABLE.ENTITIES]: null,
-  [TABLE.MODULES]: null,
-  [TABLE.CARGO]: null,
-  [TABLE.WRECKS]: null,
-  [TABLE.WRECK_ITEMS]: null,
-};
-
 const controllerCache = {
   all: null,
   bySystem: new Map(),
   byEntityID: new Map(),
 };
 
+const NATIVE_RECORD_SCHEMA_VERSION = 1;
+
 function cloneValue(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!value || typeof value !== "object") return value;
+  const output = {};
+  for (const key of Object.keys(value).sort()) output[key] = stableValue(value[key]);
+  return output;
+}
+
+function buildRecordChecksum(value) {
+  const copy = cloneValue(value);
+  delete copy.recordChecksum;
+  return createHash("sha256")
+    .update(JSON.stringify(stableValue(copy)))
+    .digest("hex");
 }
 
 function invalidateControllerCache() {
@@ -77,6 +88,7 @@ const NATIVE_SCOPE_ID_FIELDS = Object.freeze([
   "airNpeInstanceID",
   "dungeonSiteID",
   "dungeonSiteInstanceID",
+  "landscapeSiteID",
 ]);
 const NATIVE_SCOPE_BOOLEAN_FIELDS = Object.freeze([
   "airNpeBoardingShipPresentation",
@@ -89,8 +101,14 @@ const NATIVE_SCOPE_BOOLEAN_FIELDS = Object.freeze([
   "dungeonSiteContentPersistsAfterResponse",
 ]);
 const NATIVE_SCOPE_TEXT_FIELDS = Object.freeze([
+  "temporaryLandscapeRevision",
+  "temporaryLandscapePolicyRevision",
+  "landscapePolicyKey",
+  "landscapePolicyGeneration",
   "airNpeHostileWave",
   "dungeonEncounterKey",
+  "dungeonFactionKey",
+  "dungeonFactionTag",
   "dungeonSiteContentKey",
   "dungeonSiteContentRole",
   "dungeonSiteContentAnalyzer",
@@ -99,6 +117,7 @@ const NATIVE_SCOPE_TEXT_FIELDS = Object.freeze([
   "dungeonSiteContentHackingDifficulty",
 ]);
 const NATIVE_SCOPE_ARRAY_FIELDS = Object.freeze([
+  "dungeonTags",
   "dungeonSiteContentExplicitLoot",
   "dungeonSiteContentLootTags",
 ]);
@@ -111,6 +130,8 @@ const NATIVE_DUNGEON_BOOLEAN_MARKERS = new Set([
 ]);
 const NATIVE_DUNGEON_TEXT_MARKERS = new Set([
   "dungeonEncounterKey",
+  "dungeonFactionKey",
+  "dungeonFactionTag",
   "dungeonSiteContentKey",
   "dungeonSiteContentRole",
   "dungeonSiteContentAnalyzer",
@@ -224,6 +245,19 @@ function resolveStoredEntityScopeMetadata(sources: any[] = [], options: Record<s
     missingRequiredIdentityFields.push("airNpeInstanceID");
   }
 
+  const hasLandscapeScope = metadata.landscapeSiteID != null || metadata.temporaryLandscapeRevision ||
+    metadata.temporaryLandscapePolicyRevision || metadata.landscapePolicyKey || metadata.landscapePolicyGeneration;
+  if (hasLandscapeScope) {
+    if (normalizePersistentEntityID(metadata.landscapeSiteID) === null) missingRequiredIdentityFields.push("landscapeSiteID");
+    for (const key of ["temporaryLandscapeRevision", "temporaryLandscapePolicyRevision"]) {
+      if (!/^[a-f0-9]{64}$/.test(metadata[key] || "")) invalidIdentityFields.add(key);
+    }
+    if (!metadata.landscapePolicyKey) missingRequiredIdentityFields.push("landscapePolicyKey");
+    if (!/^\d+$/.test(metadata.landscapePolicyGeneration || "") || !Number.isSafeInteger(Number(metadata.landscapePolicyGeneration))) {
+      invalidIdentityFields.add("landscapePolicyGeneration");
+    }
+  }
+
   const success =
     invalidIdentityFields.size === 0 &&
     conflictingIdentityFields.size === 0 &&
@@ -273,10 +307,6 @@ function ensureRootShape(tableName) {
   return normalizedRoot;
 }
 
-function writeRoot(tableName, root, options: Record<string, any> = {}) {
-  return database.write(tableName, "/", root, options);
-}
-
 function readCollection(tableName, key) {
   const root = ensureRootShape(tableName);
   const collection = root && typeof root === "object" && root[key] && typeof root[key] === "object"
@@ -287,12 +317,19 @@ function readCollection(tableName, key) {
 
 function writeCollectionRow(tableName, collectionKey, rowID, value, options: Record<string, any> = {}) {
   ensureRootShape(tableName);
-  return database.write(
+  const result = database.write(
     tableName,
     `/${collectionKey}/${String(rowID)}`,
     cloneValue(value),
     options,
   );
+  if (result.success && options.durable === true && options.transient !== true) {
+    const flush = database.flushTableSync(tableName);
+    if (!flush.success) {
+      return { success: false, errorMsg: "NPC_NATIVE_DURABLE_FLUSH_FAILED" };
+    }
+  }
+  return result;
 }
 
 function removeCollectionRow(tableName, collectionKey, rowID) {
@@ -301,35 +338,15 @@ function removeCollectionRow(tableName, collectionKey, rowID) {
 }
 
 function allocateID(tableName, counterKey, options: Record<string, any> = {}) {
-  if (options.transient === true) {
-    if (!Number.isInteger(transientCounters[tableName])) {
-      const root = ensureRootShape(tableName);
-      transientCounters[tableName] = Math.max(
-        toPositiveInt(root && root[counterKey], 0),
-        toPositiveInt(ROOT[tableName] && ROOT[tableName][counterKey], 0),
-      );
-    }
-    const nextID = transientCounters[tableName];
-    transientCounters[tableName] += 1;
-    return {
-      success: true,
-      data: nextID,
-    };
-  }
-
   const root = ensureRootShape(tableName);
   const nextID = Math.max(
     toPositiveInt(root && root[counterKey], 0),
     toPositiveInt(ROOT[tableName] && ROOT[tableName][counterKey], 0),
   );
-  const updatedRoot = {
-    ...root,
-    [counterKey]: nextID + 1,
-  };
   // ID counters are authoritative store metadata, not transient runtime rows.
-  // Persisting them avoids collisions without ever transient-marking the whole
-  // table snapshot.
-  const writeResult = writeRoot(tableName, updatedRoot);
+  // Both persistence modes share one high-water mark. Persist the counter path
+  // without making the transient ship/module/cargo records durable.
+  const writeResult = database.write(tableName, `/${counterKey}`, nextID + 1);
   if (!writeResult.success) {
     return {
       success: false,
@@ -387,7 +404,7 @@ function upsertNativeEntity(entityRecord, options: Record<string, any> = {}) {
       errorMsg: scopeResolution.errorMsg,
     };
   }
-  return writeCollectionRow(
+  const versioned = buildVersionedRecord(
     TABLE.ENTITIES,
     "entities",
     entityID,
@@ -395,6 +412,14 @@ function upsertNativeEntity(entityRecord, options: Record<string, any> = {}) {
       ...entityRecord,
       ...scopeResolution.data.metadata,
     },
+    options,
+  );
+  if (!versioned.success) return versioned;
+  return writeCollectionRow(
+    TABLE.ENTITIES,
+    "entities",
+    entityID,
+    versioned.data,
     options,
   );
 }
@@ -422,6 +447,10 @@ function listNativeModulesForEntity(entityID) {
   );
 }
 
+function getNativeModule(moduleID) {
+  return readCollection(TABLE.MODULES, "modules")[String(toPositiveInt(moduleID, 0))] || null;
+}
+
 function upsertNativeModule(moduleRecord, options: Record<string, any> = {}) {
   const moduleID = toPositiveInt(moduleRecord && moduleRecord.moduleID, 0);
   if (!moduleID) {
@@ -430,11 +459,19 @@ function upsertNativeModule(moduleRecord, options: Record<string, any> = {}) {
       errorMsg: "NPC_NATIVE_MODULE_ID_REQUIRED",
     };
   }
-  return writeCollectionRow(
+  const versioned = buildVersionedRecord(
     TABLE.MODULES,
     "modules",
     moduleID,
     moduleRecord,
+    options,
+  );
+  if (!versioned.success) return versioned;
+  return writeCollectionRow(
+    TABLE.MODULES,
+    "modules",
+    moduleID,
+    versioned.data,
     options,
   );
 }
@@ -455,6 +492,10 @@ function listNativeCargoForEntity(entityID) {
   );
 }
 
+function getNativeCargo(cargoID) {
+  return readCollection(TABLE.CARGO, "cargo")[String(toPositiveInt(cargoID, 0))] || null;
+}
+
 function upsertNativeCargo(cargoRecord, options: Record<string, any> = {}) {
   const cargoID = toPositiveInt(cargoRecord && cargoRecord.cargoID, 0);
   if (!cargoID) {
@@ -463,11 +504,19 @@ function upsertNativeCargo(cargoRecord, options: Record<string, any> = {}) {
       errorMsg: "NPC_NATIVE_CARGO_ID_REQUIRED",
     };
   }
-  return writeCollectionRow(
+  const versioned = buildVersionedRecord(
     TABLE.CARGO,
     "cargo",
     cargoID,
     cargoRecord,
+    options,
+  );
+  if (!versioned.success) return versioned;
+  return writeCollectionRow(
+    TABLE.CARGO,
+    "cargo",
+    cargoID,
+    versioned.data,
     options,
   );
 }
@@ -523,11 +572,19 @@ function upsertNativeController(controllerRecord, options: Record<string, any> =
       errorMsg: "NPC_NATIVE_CONTROLLER_ID_REQUIRED",
     };
   }
-  const writeResult = writeCollectionRow(
+  const versioned = buildVersionedRecord(
     TABLE.CONTROLLERS,
     "controllers",
     entityID,
     controllerRecord,
+    options,
+  );
+  if (!versioned.success) return versioned;
+  const writeResult = writeCollectionRow(
+    TABLE.CONTROLLERS,
+    "controllers",
+    entityID,
+    versioned.data,
     options,
   );
   if (writeResult && writeResult.success) {
@@ -544,7 +601,7 @@ function removeNativeController(entityID) {
   return removeResult;
 }
 
-function removeNativeEntityCascade(entityID) {
+function removeNativeEntityCascade(entityID, options: Record<string, any> = {}) {
   const normalizedEntityID = toPositiveInt(entityID, 0);
   if (!normalizedEntityID) {
     return {
@@ -553,6 +610,37 @@ function removeNativeEntityCascade(entityID) {
     };
   }
 
+  const entityRecord = getNativeEntity(normalizedEntityID);
+  let persistenceOperation = null;
+  if (options.skipPersistenceJournal !== true && entityRecord && entityRecord.transient !== true) {
+    const persistence = require("./npcRuntimePersistence");
+    persistenceOperation = persistence.beginNpcOperation(
+      "destroy",
+      `destroy:${normalizedEntityID}:${toPositiveInt(entityRecord.npcIncarnation, 1)}`,
+      {
+        entityID: normalizedEntityID,
+        npcCharacterID: toPositiveInt(entityRecord.npcCharacterID, 0) || null,
+        incarnation: toPositiveInt(entityRecord.npcIncarnation, 1),
+        destroyed: options.destroyed === true,
+        equipmentLossPolicy: options.equipmentLossPolicy || null,
+      },
+    ).data;
+  }
+  if (entityRecord && options.skipEquipmentSettlement !== true) {
+    const settlement = require("./npcFittingService").settleNpcEquipmentBeforeRemoval(
+      normalizedEntityID,
+      {
+        destroyed: options.destroyed === true,
+        lossPolicy: options.equipmentLossPolicy,
+      },
+    );
+    if (!settlement || settlement.success !== true) {
+      return {
+        success: false,
+        errorMsg: settlement && settlement.errorMsg || "NPC_EQUIPMENT_SETTLEMENT_FAILED",
+      };
+    }
+  }
   for (const moduleRecord of listNativeModulesForEntity(normalizedEntityID)) {
     removeNativeModule(moduleRecord.moduleID);
   }
@@ -560,7 +648,23 @@ function removeNativeEntityCascade(entityID) {
     removeNativeCargo(cargoRecord.cargoID);
   }
   removeNativeController(normalizedEntityID);
-  removeNativeEntity(normalizedEntityID);
+  const removeResult = removeNativeEntity(normalizedEntityID);
+  const npcCharacterID = toPositiveInt(entityRecord && entityRecord.npcCharacterID, 0);
+  if (removeResult.success && npcCharacterID) {
+    require("./npcPilotIdentityStore").getNpcPilotIdentityStore().release(
+      npcCharacterID,
+      normalizedEntityID,
+      options.destroyed === true,
+    );
+  }
+
+  if (persistenceOperation) {
+    const persistence = require("./npcRuntimePersistence");
+    persistence.releaseSpawnLeaseByEntity(normalizedEntityID);
+    persistence.commitNpcOperation(persistenceOperation.operationID, {
+      flushTables: [TABLE.ENTITIES, TABLE.MODULES, TABLE.CARGO, TABLE.CONTROLLERS, "npcPilotIdentities"],
+    });
+  }
 
   return {
     success: true,
@@ -597,7 +701,7 @@ function upsertNativeWreck(wreckRecord, options: Record<string, any> = {}) {
       errorMsg: scopeResolution.errorMsg,
     };
   }
-  return writeCollectionRow(
+  const versioned = buildVersionedRecord(
     TABLE.WRECKS,
     "wrecks",
     wreckID,
@@ -605,6 +709,14 @@ function upsertNativeWreck(wreckRecord, options: Record<string, any> = {}) {
       ...wreckRecord,
       ...scopeResolution.data.metadata,
     },
+    options,
+  );
+  if (!versioned.success) return versioned;
+  return writeCollectionRow(
+    TABLE.WRECKS,
+    "wrecks",
+    wreckID,
+    versioned.data,
     options,
   );
 }
@@ -638,11 +750,19 @@ function upsertNativeWreckItem(wreckItemRecord, options: Record<string, any> = {
       errorMsg: "NPC_NATIVE_WRECK_ITEM_ID_REQUIRED",
     };
   }
-  return writeCollectionRow(
+  const versioned = buildVersionedRecord(
     TABLE.WRECK_ITEMS,
     "items",
     wreckItemID,
     wreckItemRecord,
+    options,
+  );
+  if (!versioned.success) return versioned;
+  return writeCollectionRow(
+    TABLE.WRECK_ITEMS,
+    "items",
+    wreckItemID,
+    versioned.data,
     options,
   );
 }
@@ -682,6 +802,40 @@ function buildNativeSlimModuleTuples(entityID) {
     .sort((left, right) => left[1] - right[1] || left[0] - right[0]);
 }
 
+function buildVersionedRecord(
+  tableName,
+  collectionKey,
+  rowID,
+  value,
+  options: Record<string, any> = {},
+) {
+  const current = readCollection(tableName, collectionKey)[String(rowID)] || null;
+  const currentRevision = Math.max(0, Number(current && current.recordRevision) || 0);
+  if (
+    options.expectedRevision !== undefined &&
+    options.expectedRevision !== null &&
+    Number(options.expectedRevision) !== currentRevision
+  ) {
+    return { success: false, errorMsg: "NPC_NATIVE_RECORD_REVISION_CONFLICT" };
+  }
+  const nowMs = Date.now();
+  const next = {
+    ...cloneValue(value),
+    schemaVersion: NATIVE_RECORD_SCHEMA_VERSION,
+    recordRevision: options.preserveRevision === true
+      ? Math.max(1, Number(value && value.recordRevision) || 1)
+      : currentRevision + 1,
+    persistenceCreatedAtMs: Number(
+      current && current.persistenceCreatedAtMs ||
+      value && value.persistenceCreatedAtMs ||
+      nowMs,
+    ),
+    persistenceUpdatedAtMs: nowMs,
+  };
+  next.recordChecksum = buildRecordChecksum(next);
+  return { success: true, data: next };
+}
+
 function buildNativeFittedItems(entityID) {
   return listNativeModulesForEntity(entityID).map((moduleRecord) => ({
     itemID: toPositiveInt(moduleRecord && moduleRecord.moduleID, 0),
@@ -708,6 +862,13 @@ function buildNativeCargoItems(entityID) {
     groupID: toPositiveInt(cargoRecord && cargoRecord.groupID, 0),
     categoryID: toPositiveInt(cargoRecord && cargoRecord.categoryID, 0),
     itemName: String(cargoRecord && cargoRecord.itemName || ""),
+    volume: Math.max(0, Number(
+      cargoRecord && cargoRecord.volume ||
+      require(path.join(__dirname, "../../services/inventory/itemTypeRegistry"))
+        .resolveItemByTypeID(toPositiveInt(cargoRecord && cargoRecord.typeID, 0))?.volume ||
+      0,
+    )),
+    semanticRole: String(cargoRecord && cargoRecord.semanticRole || "").trim() || null,
     quantity: toPositiveInt(cargoRecord && cargoRecord.quantity, 0),
     singleton: cargoRecord && cargoRecord.singleton === true,
     flagID: toPositiveInt(cargoRecord && cargoRecord.flagID, 5),
@@ -797,7 +958,10 @@ function buildNativeWreckContents(wreckID) {
 
 module.exports = {
   TABLE,
+  NATIVE_RECORD_SCHEMA_VERSION,
   INVALID_PERSISTENT_IDENTITY,
+  buildRecordChecksum,
+  invalidateControllerCache,
   buildStoredEntityScopeMetadata,
   resolveStoredEntityScopeMetadata,
   validateStoredEntityScopeMetadata,
@@ -811,10 +975,14 @@ module.exports = {
   getNativeEntity,
   upsertNativeEntity,
   removeNativeEntity,
+  listNativeModules,
   listNativeModulesForEntity,
+  getNativeModule,
   upsertNativeModule,
   removeNativeModule,
+  listNativeCargo,
   listNativeCargoForEntity,
+  getNativeCargo,
   upsertNativeCargo,
   removeNativeCargo,
   listNativeControllers,

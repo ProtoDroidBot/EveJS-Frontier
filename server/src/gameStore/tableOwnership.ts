@@ -108,6 +108,12 @@ define(["frontierRiftSites"], {
   confidence: CONFIDENCE.SCANNER,
   note: "Persistent Frontier Crude Rift anchors authored through the Rift GM command.",
 });
+define(["detachedDungeonProps"], {
+  tier: TIERS.RUNTIME,
+  domain: "in-space",
+  confidence: CONFIDENCE.INFERRED,
+  note: "Durable world props detached from dungeon scenery and their source suppression keys.",
+});
 define(
   [
     "npcEntities",
@@ -165,6 +171,14 @@ define(["identityState"], {
   tier: TIERS.RUNTIME, domain: "service:_shared", confidence: CONFIDENCE.SCANNER,
   note: "Identity allocator (services/_shared/identityAllocator.js).",
 });
+define(["temporaryLandscapeState"], {
+  tier: TIERS.RUNTIME, domain: "in-space", confidence: CONFIDENCE.INFERRED,
+  note: "Revision-scoped temporary landscape allocation and trigger receipts.",
+});
+define(["npcPilotIdentities"], {
+  tier: TIERS.RUNTIME, domain: "in-space", confidence: CONFIDENCE.INFERRED,
+  note: "Permanent NPC pilot identities, spawn-slot ownership, and faction Sui profiles. Retained across ship destruction and transient runtime cleanup.",
+});
 define(["insuranceContracts"], {
   tier: TIERS.RUNTIME, domain: "service:insurance", confidence: CONFIDENCE.SCANNER,
 });
@@ -183,8 +197,20 @@ define(["mapTelemetry", "solarSystemInterferenceState"], {
 define(["marketEscrow", "marketRuntime"], {
   tier: TIERS.RUNTIME, domain: "service:market", confidence: CONFIDENCE.SCANNER,
 });
-define(["miningLedger", "miningRuntimeState"], {
+define(["miningLedger", "miningRuntimeState", "voxelMiningState"], {
   tier: TIERS.RUNTIME, domain: "service:mining", confidence: CONFIDENCE.SCANNER,
+});
+define(["frontierClaims", "frontierKillReports"], {
+  tier: TIERS.RUNTIME, domain: "service:frontier-claims", confidence: CONFIDENCE.SCANNER,
+});
+define(["frontierDockingPoints"], {
+  tier: TIERS.RUNTIME, domain: "service:docking-point", confidence: CONFIDENCE.SCANNER,
+});
+define(["frontierProgressionState"], {
+  tier: TIERS.RUNTIME, domain: "service:frontier-progression", confidence: CONFIDENCE.SCANNER,
+});
+define(["frontierEconomyState", "digitalChemistryState"], {
+  tier: TIERS.RUNTIME, domain: "service:frontier-economy", confidence: CONFIDENCE.SCANNER,
 });
 define(["missionRuntimeState"], {
   tier: TIERS.RUNTIME, domain: "service:agent", confidence: CONFIDENCE.SCANNER,
@@ -221,6 +247,17 @@ define(["raffles", "rafflesRuntime"], {
 define(["sharedSettings"], {
   tier: TIERS.RUNTIME, domain: "service:settings", confidence: CONFIDENCE.SCANNER,
 });
+define([
+  "assemblyAccessPolicies",
+  "networkNodeEnergyHolds",
+  "remoteSystemScans",
+  "smartAssemblyRequests",
+  "stargateRuntimeState",
+  "systemSignatureEvents",
+], {
+  tier: TIERS.RUNTIME, domain: "service:frontier", confidence: CONFIDENCE.SCANNER,
+  note: "Durable Frontier assembly access, infrastructure request, remote scanning, lifecycle, and signal state.",
+});
 define(["shipCosmetics", "shipDirt", "shipKillCounters", "shipLogoFittings"], {
   tier: TIERS.RUNTIME, domain: "service:ship", confidence: CONFIDENCE.SCANNER,
 });
@@ -252,6 +289,14 @@ define(["structures"], {
 define(["savedFittings"], {
   tier: TIERS.RUNTIME, domain: "secondary:fitting", confidence: CONFIDENCE.SCANNER,
   note: "Owned by _secondary/fitting/fittingStore.js (writes SAVED_FITTINGS_TABLE). Also touched cross-cuttingly by character deletion and player transfer.",
+});
+define(["creationPresets"], {
+  tier: TIERS.RUNTIME, domain: "service:frontier", confidence: CONFIDENCE.SCANNER,
+  note: "Owned by services/frontier/creationPresetStore.js. Character-owned records are also handled by character deletion and player transfer.",
+});
+define(["smartAssemblyConstructionTemplates", "smartAssemblyDeploymentPlans"], {
+  tier: TIERS.RUNTIME, domain: "service:frontier", confidence: CONFIDENCE.SCANNER,
+  note: "Owned by services/frontier/smartAssemblyConstructionTemplateStore.js. Player-owned records participate in character deletion and transfer; NPC/faction principals remain server-owned.",
 });
 
 // ── Static · read-only SDE / reference data ──────────────────────────

@@ -1,8 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+const { applyFrontier3640684ContractProfile } = require("./frontierContractProfile");
 const protobuf = require("protobufjs");
 function buildSkillPlanProtoRoot() {
-    return protobuf.Root.fromJSON({
+    return applyFrontier3640684ContractProfile(protobuf.Root.fromJSON({
         nested: {
             eve_public: {
                 nested: {
@@ -300,7 +301,7 @@ function buildSkillPlanProtoRoot() {
                 },
             },
         },
-    });
+    }));
 }
 module.exports = {
     buildSkillPlanProtoRoot,

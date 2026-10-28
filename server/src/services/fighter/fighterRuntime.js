@@ -1861,8 +1861,9 @@ function executeFighterOffensiveCycle(scene, fighterEntity, controllerEntity, sl
         }
     }
     appliedDamageAmount = droneInterop.getAppliedDamageAmount(damageResult);
+    const damageTargetEntity = weaponDamageResult && weaponDamageResult.impactTargetEntity || targetEntity;
     if (appliedDamageAmount > 0) {
-        droneInterop.noteKillmailDamage(combatSourceEntity, targetEntity, appliedDamageAmount, {
+        droneInterop.noteKillmailDamage(combatSourceEntity, damageTargetEntity, appliedDamageAmount, {
             whenMs: nowMs,
             weaponSnapshot: {
                 ...snapshot,
@@ -1873,7 +1874,7 @@ function executeFighterOffensiveCycle(scene, fighterEntity, controllerEntity, sl
         });
     }
     if (destroyResult && destroyResult.success === true) {
-        droneInterop.recordKillmailFromDestruction(targetEntity, destroyResult, {
+        droneInterop.recordKillmailFromDestruction(damageTargetEntity, destroyResult, {
             attackerEntity: combatSourceEntity,
             victimSession: weaponDamageResult && weaponDamageResult.victimSession,
             whenMs: nowMs,
@@ -1885,7 +1886,11 @@ function executeFighterOffensiveCycle(scene, fighterEntity, controllerEntity, sl
             chargeItem: null,
         });
     }
-    droneInterop.notifyWeaponDamageMessages(combatSourceEntity, targetEntity, pseudoModuleItem, shotDamage, appliedDamageAmount, hitQuality);
+    droneInterop.notifyWeaponDamageMessages(combatSourceEntity, damageTargetEntity, pseudoModuleItem, shotDamage, appliedDamageAmount, hitQuality, {
+        suppress: Boolean(weaponDamageResult &&
+            weaponDamageResult.occlusion &&
+            !weaponDamageResult.damageResult),
+    });
     return {
         continueActive: usesContinuousAbilityCycle(snapshot),
         deactivate: false,

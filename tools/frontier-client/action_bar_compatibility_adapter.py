@@ -1,6 +1,8 @@
 """Expose ordinary fitted modules through Frontier's Creation action bar."""
 
+from datetime import timedelta
 from functools import wraps
+import math
 
 
 _EVEJS_CREATION_TEMPLATE_TYPE_IDS = frozenset((95276, 95735, 95968))
@@ -37,14 +39,17 @@ def _evejs_iter_ship_modules(provider, ship_id):
 
     seen = set()
     for candidate in modules:
-        module = candidate
-        if isinstance(candidate, int):
-            module = _evejs_get_item(provider, candidate)
-        item_id = getattr(module, "itemID", None)
-        if module is None or not item_id or item_id in seen:
+        try:
+            module = candidate
+            if isinstance(candidate, int):
+                module = _evejs_get_item(provider, candidate)
+            item_id = getattr(module, "itemID", None)
+            if module is None or not item_id or item_id in seen:
+                continue
+            seen.add(item_id)
+            yield module
+        except Exception:
             continue
-        seen.add(item_id)
-        yield module
 
 
 def _evejs_is_regular_action_bar_slot(provider, module):
@@ -107,27 +112,31 @@ def _evejs_build_regular_module_refs(provider, ship_id):
     module_ref_type = provider._evejs_action_bar_module_ref_type
     result = []
     for module in _evejs_iter_ship_modules(provider, ship_id):
-        type_id = getattr(module, "typeID", None)
-        if not type_id or not _evejs_is_regular_action_bar_slot(provider, module):
-            continue
+        try:
+            type_id = getattr(module, "typeID", None)
+            if not type_id or not _evejs_is_regular_action_bar_slot(provider, module):
+                continue
 
-        abilities = []
-        if provider.has_activatable_default_effect(type_id):
-            abilities.extend((
-                ability_id.ACTIVATE_EFFECT,
-                ability_id.DEACTIVATE_EFFECT,
+            abilities = []
+            if provider.has_activatable_default_effect(type_id):
+                abilities.extend((
+                    ability_id.ACTIVATE_EFFECT,
+                    ability_id.DEACTIVATE_EFFECT,
+                ))
+            if provider.has_online_effect(type_id):
+                abilities.extend((ability_id.ONLINE, ability_id.OFFLINE))
+
+            charge = _evejs_get_regular_charge(provider, module.itemID)
+            result.append(module_ref_type(
+                item_id=module.itemID,
+                type_id=type_id,
+                abilities=abilities,
+                loaded_type_id=getattr(charge, "type_id", None),
+                loaded_count=getattr(charge, "quantity", 0),
             ))
-        if provider.has_online_effect(type_id):
-            abilities.extend((ability_id.ONLINE, ability_id.OFFLINE))
-
-        charge = _evejs_get_regular_charge(provider, module.itemID)
-        result.append(module_ref_type(
-            item_id=module.itemID,
-            type_id=type_id,
-            abilities=abilities,
-            loaded_type_id=getattr(charge, "type_id", None),
-            loaded_count=getattr(charge, "quantity", 0),
-        ))
+        except Exception:
+            # A malformed module must not remove every other action-bar slot.
+            continue
     return result
 
 
@@ -135,6 +144,29 @@ def _evejs_command_time(provider, result):
     if result is None:
         return None
     return provider._evejs_action_bar_gametime.now_sim()
+
+
+def _evejs_active_cycle_duration(provider, module_item_id, type_id):
+    """Use the active Dogma effect's server-supplied cycle length.
+
+    Some Frontier effects (notably Leap and Thrust Overdrive) have no
+    durationAttributeID, so the retail provider returns no duration even
+    though Godma received one in OnGodmaShipEffect.
+    """
+    state_manager = provider._godma.GetStateManager()
+    default_effect = state_manager.GetDefaultEffect(type_id)
+    if default_effect is None:
+        return None
+    effect = state_manager.GetEffect(module_item_id, default_effect.effectName)
+    if effect is None or not getattr(effect, "isActive", False):
+        return None
+    try:
+        duration_ms = float(getattr(effect, "duration", None))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(duration_ms) or duration_ms <= 0:
+        return None
+    return timedelta(milliseconds=duration_ms)
 
 
 def _evejs_default_effect_name(provider, module_item_id):
@@ -225,6 +257,7 @@ def _evejs_install_action_bar_compatibility(namespace):
 
     original_auto_fire = provider_type.is_auto_fire_available
     original_get_charge = provider_type._get_loaded_charge
+    original_get_duration = getattr(provider_type, "_get_duration", None)
     original_activate = provider_type.activate
     original_reload = provider_type.reload
 
@@ -244,7 +277,24 @@ def _evejs_install_action_bar_compatibility(namespace):
     def get_loaded_charge(self, module_item_id):
         if _evejs_is_ordinary_module(self, module_item_id):
             return _evejs_get_regular_charge(self, module_item_id)
-        return original_get_charge(self, module_item_id)
+        try:
+            return original_get_charge(self, module_item_id)
+        except (TypeError, ValueError):
+            # A stale Godma row must not abort loading the entire action bar.
+            return None
+
+    if original_get_duration is not None:
+        @wraps(original_get_duration)
+        def get_duration(self, module_item_id, type_id):
+            cycle_duration = _evejs_active_cycle_duration(
+                self, module_item_id, type_id
+            )
+            if cycle_duration is not None:
+                return cycle_duration
+            return original_get_duration(self, module_item_id, type_id)
+
+        get_duration._evejs_action_bar_compatibility_patch = True
+        provider_type._get_duration = get_duration
 
     @wraps(original_activate)
     def activate(

@@ -79,6 +79,52 @@ test("solar-system map rows include one connector row for a public dungeon beaco
   ]]);
 });
 
+test("solar-system map rows retain an interacted but incomplete dungeon warp-in", () => {
+  const buildCalls: any[] = [];
+  const rows = buildDungeonBeaconMapRows(
+    SOLAR_SYSTEM_ID,
+    { characterID: 140_000_005 },
+    buildOptions([buildInstance({
+      lifecycleState: "active",
+      objectiveState: {
+        state: "in_progress",
+        completedAtMs: 0,
+      },
+      spawnState: {
+        firstPlayerEnteredAtMs: 25_000,
+        lastPlayerProgressAtMs: 30_000,
+      },
+    })], buildCalls),
+  );
+
+  assert.equal(rows.length, 1);
+  assert.deepEqual(buildCalls, [INSTANCE_ID]);
+});
+
+test("solar-system map rows expose only the oldest anchor for a duplicated site key", () => {
+  const siteKey = "sceneanomalysite:30000005:5380000005002";
+  const buildCalls: any[] = [];
+  const rows = buildDungeonBeaconMapRows(
+    SOLAR_SYSTEM_ID,
+    { characterID: 140_000_005 },
+    buildOptions([
+      buildInstance({
+        instanceID: INSTANCE_ID,
+        siteKey,
+        position: { x: 10, y: 20, z: 30 },
+      }),
+      buildInstance({
+        instanceID: INSTANCE_ID + 1,
+        siteKey,
+        position: { x: 900, y: 800, z: 700 },
+      }),
+    ], buildCalls),
+  );
+
+  assert.equal(rows.length, 1);
+  assert.deepEqual(buildCalls, [INSTANCE_ID]);
+});
+
 test("solar-system map rows expose only authorized private dungeon beacons", () => {
   const ownerCharacterID = 140_000_005;
   const instance = buildInstance({
@@ -110,4 +156,51 @@ test("solar-system map rows expose only authorized private dungeon beacons", () 
     1,
   );
   assert.deepEqual(ownerBuildCalls, [INSTANCE_ID]);
+});
+
+test("solar-system map rows retain every Frontier dungeon entry-beacon group", () => {
+  const entryBeacons = [
+    { groupID: 4871, typeID: 91_201, label: "Mining Site" },
+    { groupID: 4872, typeID: 91_202, label: "Rift Site" },
+    { groupID: 4873, typeID: 91_203, label: "Wreck Site" },
+    { groupID: 4874, typeID: 91_204, label: "Landmark Site" },
+  ];
+  const instances = entryBeacons.map((entry, index) => buildInstance({
+    instanceID: INSTANCE_ID + index,
+    metadata: {
+      anchorItemID: ANCHOR_ITEM_ID,
+      entry,
+    },
+  }));
+  const rows = buildDungeonBeaconMapRows(
+    SOLAR_SYSTEM_ID,
+    { characterID: 140_000_005 },
+    {
+      dungeonRuntime: {
+        listActiveInstancesBySystem: () => instances,
+      },
+      dungeonVisibilityPolicy: {
+        resolveDungeonInstanceVisibilityForSession: () => true,
+      },
+      dungeonUniverseSiteService: {
+        buildSiteEntity: (instance) => {
+          const entry = instance.metadata.entry;
+          return {
+            itemID: BEACON_ITEM_ID + (instance.instanceID - INSTANCE_ID),
+            typeID: entry.typeID,
+            groupID: entry.groupID,
+            itemName: entry.label,
+            position: { x: entry.groupID, y: 0, z: 0 },
+          };
+        },
+      },
+    },
+  );
+
+  assert.deepEqual(rows.map((row) => row.slice(0, 4)), [
+    [4871, 91_201, BEACON_ITEM_ID, "Mining Site"],
+    [4872, 91_202, BEACON_ITEM_ID + 1, "Rift Site"],
+    [4873, 91_203, BEACON_ITEM_ID + 2, "Wreck Site"],
+    [4874, 91_204, BEACON_ITEM_ID + 3, "Landmark Site"],
+  ]);
 });

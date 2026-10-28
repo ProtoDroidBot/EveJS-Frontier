@@ -13,7 +13,7 @@ const {
   unwrapMarshalValue,
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const {
-  buildCachedMethodCallResult,
+  buildCachedMethodCallResultAsync: buildCachedMethodCallResult,
 } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 const {
   throwWrappedUserError,
@@ -33,8 +33,12 @@ const frontierDeploymentRuntime = require(path.join(
   __dirname,
   "../frontier/deploymentRuntime",
 ));
+const creationControlAuthority = require(path.join(
+  __dirname,
+  "../frontier/creationControlAuthority",
+));
 const {
-  jumpSessionViaStargate,
+  jumpSessionViaStargateAsync,
   jumpSessionToSolarSystem,
 } = require(path.join(__dirname, "../../space/transitions"));
 const {
@@ -1632,11 +1636,44 @@ function resolveFleetMemberWarpTarget(session, targetCharacterID) {
 }
 
 class BeyonceService extends BaseService {
+  declare _resolveCreationControlAuthority: any;
+  declare _spaceRuntime: any;
   declare reuseBoundObjectForSession: any;
 
-  constructor() {
+  constructor(dependencies: Record<string, any> = {}) {
     super("beyonce");
+    this._spaceRuntime = dependencies.spaceRuntime || spaceRuntime;
+    this._resolveCreationControlAuthority =
+      dependencies.resolveCreationControlAuthority ||
+      creationControlAuthority.resolveCreationControlAuthority;
     this.reuseBoundObjectForSession = true;
+  }
+
+  _enforceCreationAutoApproachAuthority(session, range) {
+    // Build 3502403 authors Approach as CmdFollowBall(target, 50). Keep At
+    // Range shares this RPC, so non-50 ranges remain distinguishable while an
+    // explicitly selected 50m Keep At Range is protocol-identical to Approach.
+    if (!creationControlAuthority.isCreationApproachRange(range)) {
+      return null;
+    }
+    const authorityState = this._resolveCreationControlAuthority(session);
+    if (!authorityState || authorityState.authorityResolved !== true) {
+      throwWrappedUserError("CustomNotify", {
+        notify: "Automatic approach authority could not be verified.",
+      });
+    }
+    if (
+      authorityState.isCreation === true &&
+      !creationControlAuthority.hasOnlineCreationControlModule(
+        authorityState,
+        creationControlAuthority.TYPE_CREATION_AUTOHELM,
+      )
+    ) {
+      throwWrappedUserError("CustomNotify", {
+        notify: "An online Autohelm is required to approach objects automatically.",
+      });
+    }
+    return authorityState || null;
   }
 
   _getMovementThrottleNowMs() {
@@ -1717,6 +1754,9 @@ class BeyonceService extends BaseService {
           info: [USER_ERROR_LOCALIZATION_LABEL, STARGATE_CLOSED_LABEL],
         });
         break;
+      case "STARGATE_INSUFFICIENT_FUEL":
+        throwWrappedUserError("CustomNotify", { notify: "This stargate needs more fuel before another jump." });
+        break;
       case "STARGATE_JUMP_IN_PROGRESS":
         throwWrappedUserError("CustomInfo", {
           info: "Stargate jump already in progress.",
@@ -1758,6 +1798,21 @@ class BeyonceService extends BaseService {
       case "SHIP_IMMOBILE":
         throwWrappedUserError("CustomNotify", {
           notify: SHIP_IMMOBILE_WARP_BLOCKED_MESSAGE,
+        });
+        break;
+      case "NOT_ENOUGH_CAPACITOR":
+        throwWrappedUserError("CustomNotify", {
+          notify: "You need at least 15% capacitor charge to initiate warp.",
+        });
+        break;
+      case "NO_FUEL":
+        throwWrappedUserError("CustomNotify", {
+          notify: "Your ship does not have usable fuel for warp.",
+        });
+        break;
+      case "PROPULSION_REQUIRED":
+        throwWrappedUserError("CustomNotify", {
+          notify: "An online compatible propulsion engine is required to warp.",
         });
         break;
       default:
@@ -2589,18 +2644,31 @@ class BeyonceService extends BaseService {
   Handle_CmdFollowBall(args, session) {
     const targetID = normalizeNumber(args && args[0], 0);
     const range = normalizeNumber(args && args[1], 0);
+    const autoApproachAuthority =
+      this._enforceCreationAutoApproachAuthority(session, range);
     this._enforceMovementCommandThrottle(session, "CmdFollowBall", [targetID, range]);
     log.info(
       `[Beyonce] CmdFollowBall char=${session && session.characterID} target=${targetID} range=${range}`,
     );
     if (targetID > 0 && range <= 50) {
-      const dockingDebug = spaceRuntime.getDockingDebugState(session, targetID);
+      const dockingDebug = this._spaceRuntime.getDockingDebugState(session, targetID);
       if (dockingDebug) {
         log.info(`[Beyonce] CmdFollowBall dockingState=${JSON.stringify(dockingDebug)}`);
       }
     }
 
-    spaceRuntime.followBall(session, targetID, range);
+    const followed = this._spaceRuntime.followBall(session, targetID, range);
+    if (
+      followed &&
+      autoApproachAuthority &&
+      autoApproachAuthority.isCreation === true
+    ) {
+      creationControlAuthority.recordCreationAutoApproachMovement(
+        session,
+        this._spaceRuntime,
+        { targetID, range },
+      );
+    }
     return null;
   }
 
@@ -2630,6 +2698,26 @@ class BeyonceService extends BaseService {
       `[Beyonce] CmdSetPitch char=${session && session.characterID} pitch=${pitch}`,
     );
     spaceRuntime.setPitch(session, pitch);
+    return null;
+  }
+
+  Handle_CmdSetPitchRate(args, session) {
+    this._spaceRuntime.setPitchRate(session, unwrapMarshalValue(args && args[0]));
+    return null;
+  }
+
+  Handle_CmdSetRollRate(args, session) {
+    this._spaceRuntime.setRollRate(session, unwrapMarshalValue(args && args[0]));
+    return null;
+  }
+
+  Handle_CmdSetBrakeFraction(args, session) {
+    this._spaceRuntime.setBrakeFraction(session, unwrapMarshalValue(args && args[0]));
+    return null;
+  }
+
+  Handle_CmdSetHeading(args, session) {
+    this._spaceRuntime.setHeading(session, unwrapMarshalValue(args && args[0]));
     return null;
   }
 
@@ -3376,7 +3464,7 @@ class BeyonceService extends BaseService {
     return result.data.acceptedAtFileTime || null;
   }
 
-  Handle_CmdStargateJump(args, session) {
+  async Handle_CmdStargateJump(args, session) {
     const fromStargateID = normalizeNumber(args && args[0], 0);
     const toStargateID = normalizeNumber(args && args[1], 0);
     const requestedShipID =
@@ -3404,7 +3492,11 @@ class BeyonceService extends BaseService {
       this._throwStargateJumpUserError("SHIP_ID_MISMATCH");
     }
 
-    const result = jumpSessionViaStargate(session, fromStargateID, toStargateID);
+    const result = await jumpSessionViaStargateAsync(
+      session,
+      fromStargateID,
+      toStargateID,
+    );
     if (!result.success) {
       log.warn(
         `[Beyonce] CmdStargateJump failed for char=${session && session.characterID}: ${result.errorMsg}`,
@@ -3510,6 +3602,13 @@ class BeyonceService extends BaseService {
   }
 
   afterCallResponse(methodName, session) {
+    if (
+      (methodName === "GetFormations" || methodName === "MachoBindObject") &&
+      typeof spaceRuntime.flushPendingInitialBallparkPostBootstrap === "function"
+    ) {
+      spaceRuntime.flushPendingInitialBallparkPostBootstrap(session);
+    }
+
     if (methodName === "MachoBindObject") {
       flushPendingCommandSessionEffects(session);
       return;

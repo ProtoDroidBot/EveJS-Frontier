@@ -1,0 +1,627 @@
+{
+  "build": 3640684,
+  "messages": [
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "sequential",
+          "number": 1,
+          "type": "TYPE_UINT64"
+        }
+      ],
+      "fullName": "eve_public.assembly.relay.Identifier",
+      "name": "Identifier"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "sequential",
+          "number": 1,
+          "type": "TYPE_UINT64"
+        }
+      ],
+      "fullName": "eve_public.assembly.relay.lens.Identifier",
+      "name": "Identifier"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "prepared_transaction",
+          "number": 1,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.sponsoredtransaction.preparedtransaction.Identifier"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "signature",
+          "number": 2,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.assembly.relay.lens.api.ExecuteBuyRequest",
+      "name": "ExecuteBuyRequest"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_REPEATED",
+          "name": "lens_items",
+          "number": 1,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.assembly.relay.lens.Identifier"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "transaction_hash",
+          "number": 2,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.assembly.relay.lens.api.ExecuteBuyResponse",
+      "name": "ExecuteBuyResponse"
+    },
+    {
+      "fields": [],
+      "fullName": "eve_public.assembly.relay.lens.api.GetPriceRequest",
+      "name": "GetPriceRequest"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "price_per_lens",
+          "number": 1,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.token.Amount"
+        }
+      ],
+      "fullName": "eve_public.assembly.relay.lens.api.GetPriceResponse",
+      "name": "GetPriceResponse"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "relay",
+          "number": 1,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.assembly.relay.Identifier"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "lens_count",
+          "number": 2,
+          "type": "TYPE_UINT32"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "destination",
+          "number": 3,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.inventory.genericitem.Location"
+        }
+      ],
+      "fullName": "eve_public.assembly.relay.lens.api.PrepareBuyRequest",
+      "name": "PrepareBuyRequest"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "prepared_transaction",
+          "number": 1,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.sponsoredtransaction.preparedtransaction.Identifier"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "prepared_transaction_attributes",
+          "number": 2,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.sponsoredtransaction.preparedtransaction.Attributes"
+        }
+      ],
+      "fullName": "eve_public.assembly.relay.lens.api.PrepareBuyResponse",
+      "name": "PrepareBuyResponse"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_REPEATED",
+          "name": "values",
+          "number": 1,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.auth.zklogin.ZkLoginProofPointBRow",
+      "name": "ZkLoginProofPointBRow"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "value",
+          "number": 1,
+          "type": "TYPE_STRING"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "index_mod_4",
+          "number": 2,
+          "type": "TYPE_INT32"
+        }
+      ],
+      "fullName": "eve_public.auth.zklogin.ZkLoginSignatureInputsClaim",
+      "name": "ZkLoginSignatureInputsClaim"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_REPEATED",
+          "name": "a",
+          "number": 1,
+          "type": "TYPE_STRING"
+        },
+        {
+          "label": "LABEL_REPEATED",
+          "name": "b",
+          "number": 2,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.auth.zklogin.ZkLoginProofPointBRow"
+        },
+        {
+          "label": "LABEL_REPEATED",
+          "name": "c",
+          "number": 3,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.auth.zklogin.ZkLoginSignatureInputsProofPoints",
+      "name": "ZkLoginSignatureInputsProofPoints"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "proof_points",
+          "number": 1,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.auth.zklogin.ZkLoginSignatureInputsProofPoints"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "iss_base_64_details",
+          "number": 2,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.auth.zklogin.ZkLoginSignatureInputsClaim"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "header_base_64",
+          "number": 3,
+          "type": "TYPE_STRING"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "address_seed",
+          "number": 4,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.auth.zklogin.ZkProofResult",
+      "name": "ZkProofResult"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "jwt_zk_token",
+          "number": 1,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.auth.zklogin.api.CallEnokiZKLoginRequest",
+      "name": "CallEnokiZKLoginRequest"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "salt",
+          "number": 1,
+          "type": "TYPE_STRING"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "address",
+          "number": 2,
+          "type": "TYPE_STRING"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "public_key",
+          "number": 3,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.auth.zklogin.api.CallEnokiZKLoginResponse",
+      "name": "CallEnokiZKLoginResponse"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "extended_ephemeral_public_key",
+          "number": 1,
+          "type": "TYPE_STRING"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "max_epoch",
+          "number": 2,
+          "type": "TYPE_UINT64"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "randomness",
+          "number": 3,
+          "type": "TYPE_STRING"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "id_token",
+          "number": 4,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.auth.zklogin.api.CallEnokiZKProofRequest",
+      "name": "CallEnokiZKProofRequest"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "result",
+          "number": 1,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.auth.zklogin.ZkProofResult"
+        }
+      ],
+      "fullName": "eve_public.auth.zklogin.api.CallEnokiZKProofResponse",
+      "name": "CallEnokiZKProofResponse"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "nonce",
+          "number": 1,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.auth.zklogin.token.JWTTokenRequest",
+      "name": "JWTTokenRequest"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "jwt_token",
+          "number": 1,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.auth.zklogin.token.JWTTokenResponse",
+      "name": "JWTTokenResponse"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "value",
+          "number": 1,
+          "type": "TYPE_UINT64"
+        }
+      ],
+      "fullName": "eve_public.inventory.LocationFlag",
+      "name": "LocationFlag"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "sequential",
+          "number": 1,
+          "type": "TYPE_UINT64"
+        }
+      ],
+      "fullName": "eve_public.inventory.genericitem.Identifier",
+      "name": "Identifier"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "item",
+          "number": 1,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.inventory.genericitem.Identifier"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "flag",
+          "number": 2,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.inventory.LocationFlag"
+        }
+      ],
+      "fullName": "eve_public.inventory.genericitem.Location",
+      "name": "Location"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "units",
+          "number": 1,
+          "type": "TYPE_SINT64"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "nanos",
+          "number": 2,
+          "type": "TYPE_SINT32"
+        }
+      ],
+      "fullName": "eve_public.isk.Currency",
+      "name": "Currency"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "bcs_data_b64_bytes",
+          "number": 1,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.sponsoredtransaction.preparedtransaction.Attributes",
+      "name": "Attributes"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "uuid",
+          "number": 1,
+          "type": "TYPE_BYTES"
+        }
+      ],
+      "fullName": "eve_public.sponsoredtransaction.preparedtransaction.Identifier",
+      "name": "Identifier"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "denom",
+          "number": 1,
+          "type": "TYPE_STRING"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "value",
+          "number": 2,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.token.Amount",
+      "name": "Amount"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "wallet_address",
+          "number": 1,
+          "type": "TYPE_STRING"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "lux_amount",
+          "number": 2,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.isk.Currency"
+        }
+      ],
+      "fullName": "eve_public.token.exchange.api.ExchangeLUXToTokenRequest",
+      "name": "ExchangeLUXToTokenRequest"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "operation_id",
+          "number": 1,
+          "type": "TYPE_STRING"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "token_amount",
+          "number": 2,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.token.Amount"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "transaction_hash",
+          "number": 3,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.token.exchange.api.ExchangeLUXToTokenResponse",
+      "name": "ExchangeLUXToTokenResponse"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "operation_id",
+          "number": 1,
+          "type": "TYPE_STRING"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "signature",
+          "number": 2,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.token.exchange.api.ExecuteTokenToLUXRequest",
+      "name": "ExecuteTokenToLUXRequest"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "lux_amount",
+          "number": 1,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.isk.Currency"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "transaction_hash",
+          "number": 2,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.token.exchange.api.ExecuteTokenToLUXResponse",
+      "name": "ExecuteTokenToLUXResponse"
+    },
+    {
+      "fields": [],
+      "fullName": "eve_public.token.exchange.api.GetExchangeRateRequest",
+      "name": "GetExchangeRateRequest"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "lux_per_token",
+          "number": 1,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.isk.Currency"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "token_per_lux",
+          "number": 2,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.token.Amount"
+        }
+      ],
+      "fullName": "eve_public.token.exchange.api.GetExchangeRateResponse",
+      "name": "GetExchangeRateResponse"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "wallet_address",
+          "number": 1,
+          "type": "TYPE_STRING"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "token_amount",
+          "number": 2,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.token.Amount"
+        }
+      ],
+      "fullName": "eve_public.token.exchange.api.PrepareTokenToLUXRequest",
+      "name": "PrepareTokenToLUXRequest"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "operation_id",
+          "number": 1,
+          "type": "TYPE_STRING"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "unsigned_transaction",
+          "number": 2,
+          "type": "TYPE_BYTES"
+        },
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "lux_amount",
+          "number": 3,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.isk.Currency"
+        }
+      ],
+      "fullName": "eve_public.token.exchange.api.PrepareTokenToLUXResponse",
+      "name": "PrepareTokenToLUXResponse"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "hex",
+          "number": 1,
+          "type": "TYPE_STRING"
+        }
+      ],
+      "fullName": "eve_public.wallet.Address",
+      "name": "Address"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "wallet",
+          "number": 1,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.wallet.Address"
+        }
+      ],
+      "fullName": "eve_public.wallet.api.GetBalanceRequest",
+      "name": "GetBalanceRequest"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "balance",
+          "number": 1,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.token.Amount"
+        }
+      ],
+      "fullName": "eve_public.wallet.api.GetBalanceResponse",
+      "name": "GetBalanceResponse"
+    },
+    {
+      "fields": [
+        {
+          "label": "LABEL_OPTIONAL",
+          "name": "wallet_address",
+          "number": 1,
+          "type": "TYPE_MESSAGE",
+          "typeName": ".eve_public.wallet.Address"
+        }
+      ],
+      "fullName": "eve_public.wallet.api.Reported",
+      "name": "Reported"
+    }
+  ],
+  "enums": []
+}

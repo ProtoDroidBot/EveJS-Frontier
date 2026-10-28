@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const POWERSHELL = "pwsh";
@@ -93,6 +93,30 @@ test("3502403 handshake metadata is scoped to Frontier environment overrides", (
 function runScript(script, args) {
     return spawnSync(POWERSHELL, ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", script, ...args], { encoding: "utf8" });
 }
+test("Windows runtime initialization carries generated collision assets", { skip: !canRunPowerShell }, (t) => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "evejs frontier collision runtime "));
+    t.after(() => fs.rmSync(fixtureRoot, { force: true, recursive: true }));
+    const startScript = path.join(fixtureRoot, "StartFrontierServer.ps1");
+    fs.copyFileSync(path.join(REPO_ROOT, "StartFrontierServer.ps1"), startScript);
+    const build = "9994412";
+    const generatedRoot = path.join(fixtureRoot, "_local", "frontier-gameStore", build);
+    fs.mkdirSync(path.join(generatedRoot, "data", "exampleTable"), { recursive: true });
+    fs.writeFileSync(path.join(generatedRoot, "data", "exampleTable", "data.json"), "[]\n");
+    const generatedBundle = path.join(generatedRoot, "assets", "collision", "bundle.collision");
+    fs.mkdirSync(path.dirname(generatedBundle), { recursive: true });
+    fs.writeFileSync(generatedBundle, "collision fixture\n");
+    fs.writeFileSync(path.join(generatedRoot, "manifest.json"), "{}\n");
+    fs.mkdirSync(path.join(fixtureRoot, "_local", "frontier-sde", build), { recursive: true });
+    const initialize = runScript(startScript, [
+        "-Build",
+        build,
+        "-InitializeOnly",
+    ]);
+    assert.equal(initialize.status, 0, initialize.stderr || initialize.stdout);
+    const runtimeGameStore = path.join(fixtureRoot, "_local", "frontier-runtime", build, "gameStore");
+    assert.equal(fs.readFileSync(path.join(runtimeGameStore, "assets", "collision", "bundle.collision"), "utf8"), "collision fixture\n");
+    assert.equal(fs.existsSync(path.join(runtimeGameStore, "manifest.json")), true);
+});
 test("Frontier server dry-run rejects a stale synchronized Sui deployment", { skip: !canRunPowerShell }, (t) => {
     const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "evejs frontier stale world "));
     t.after(() => fs.rmSync(fixtureRoot, { force: true, recursive: true }));
@@ -153,9 +177,20 @@ test("Windows runtime initialization and reset require an exact owned marker", {
     const resetGuardPort = portReservation.address().port;
     await close(portReservation);
     const startSource = fs.readFileSync(path.join(REPO_ROOT, "StartFrontierServer.ps1"), "utf8");
-    const defaultPorts = "@(26000, 26101, 26102, 26103, 5222, 26401)";
+    const defaultPorts = "@(443, 26000, 26101, 26102, 26103, 5222, 26401)";
     assert.equal(startSource.includes(defaultPorts), true, "runtime script required-port declaration changed unexpectedly");
-    fs.writeFileSync(startScript, startSource.replace(defaultPorts, `@(${resetGuardPort})`));
+    fs.writeFileSync(startScript, startSource
+        .replace(defaultPorts, `@(${resetGuardPort})`)
+        // This fixture tests marker/reparse/listener guards. The managed test
+        // host denies Win32_Process enumeration, so isolate that unrelated
+        // host capability from the reset assertions below.
+        .replace("            Get-CimInstance -ClassName Win32_Process -ErrorAction Stop |", "            @() |")
+        .replace(`    $requiredPorts = @(${resetGuardPort})`, [
+        "    if ($env:EVEJS_TEST_FRONTIER_LISTENER -eq '1') {",
+        `        return @([pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = ${resetGuardPort}; OwningProcess = 1 })`,
+        "    }",
+        `    $requiredPorts = @(${resetGuardPort})`,
+    ].join("\n")));
     fs.copyFileSync(path.join(REPO_ROOT, "StopFrontier.ps1"), stopScript);
     const commonModuleRelative = path.join("tools", "frontier-client", "FrontierWindows.Common.psm1");
     const commonModule = path.join(fixtureRoot, commonModuleRelative);
@@ -169,6 +204,9 @@ test("Windows runtime initialization and reset require an exact owned marker", {
     fs.mkdirSync(staticRoot, { recursive: true });
     fs.writeFileSync(path.join(generatedData, "data.json"), "[]\n");
     fs.writeFileSync(path.join(generatedRoot, "manifest.json"), "{}\n");
+    const generatedCollisionBundle = path.join(generatedRoot, "assets", "collision", "bundle.collision");
+    fs.mkdirSync(path.dirname(generatedCollisionBundle), { recursive: true });
+    fs.writeFileSync(generatedCollisionBundle, "collision fixture\n");
     const dryRun = runScript(startScript, [
         "-Build",
         build,
@@ -191,6 +229,8 @@ test("Windows runtime initialization and reset require an exact owned marker", {
     assert.equal(marker.build, build);
     assert.equal(path.resolve(marker.runtimeRoot), path.resolve(runtimeRoot));
     assert.equal(fs.existsSync(path.join(runtimeRoot, "gameStore", "data", "exampleTable", "data.json")), true);
+    assert.equal(fs.readFileSync(path.join(runtimeRoot, "gameStore", "assets", "collision", "bundle.collision"), "utf8"), "collision fixture\n");
+    assert.equal(fs.existsSync(path.join(runtimeRoot, "gameStore", "manifest.json")), true);
     const status = runScript(startScript, ["-Build", build, "-Status"]);
     assert.equal(status.status, 0, status.stderr || status.stdout);
     assert.match(status.stdout, /Runtime: initialized/);
@@ -221,12 +261,14 @@ test("Windows runtime initialization and reset require an exact owned marker", {
     assert.equal(fs.existsSync(sentinel), true);
     const activeListener = net.createServer();
     await listen(activeListener, resetGuardPort);
+    process.env.EVEJS_TEST_FRONTIER_LISTENER = "1";
     const refusedLiveReset = runScript(startScript, [
         "-Build",
         build,
         "-ResetRuntime",
         "-InitializeOnly",
     ]);
+    delete process.env.EVEJS_TEST_FRONTIER_LISTENER;
     assert.notEqual(refusedLiveReset.status, 0);
     assert.match(`${refusedLiveReset.stderr}\n${refusedLiveReset.stdout}`, /required Frontier port\(s\) have listeners/i);
     assert.equal(fs.existsSync(sentinel), true);
@@ -276,6 +318,24 @@ test("Windows runtime initialization and reset require an exact owned marker", {
     assert.equal(clearStale.status, 0, clearStale.stderr || clearStale.stdout);
     assert.match(clearStale.stdout, /Removed stale PID marker/);
     assert.equal(fs.existsSync(pidMarkerPath), false);
+    const dappPidMarkerPath = path.join(runtimeRoot, ".evejs-frontier-dapp.pid.json");
+    fs.writeFileSync(dappPidMarkerPath, `${JSON.stringify({
+        kind: "evejs-frontier-dapp-process",
+        schemaVersion: 1,
+        build,
+        runtimeRoot,
+        pid: 2147483647,
+        processStartTimeUtcTicks: 1,
+        nodePath: path.join(fixtureRoot, "node.exe"),
+        dappEntry: path.join(fixtureRoot, "smart-assembly-control", "scripts", "serve.mjs"),
+    })}\n`);
+    const dappStaleStatus = runScript(stopScript, ["-Build", build, "-Status"]);
+    assert.equal(dappStaleStatus.status, 0, dappStaleStatus.stderr || dappStaleStatus.stdout);
+    assert.match(dappStaleStatus.stdout, /Smart Assembly dApp: stale marker/);
+    const clearDappStale = runScript(stopScript, ["-Build", build]);
+    assert.equal(clearDappStale.status, 0, clearDappStale.stderr || clearDappStale.stdout);
+    assert.match(clearDappStale.stdout, /Removed stale Smart Assembly dApp PID marker/);
+    assert.equal(fs.existsSync(dappPidMarkerPath), false);
 });
 test("Windows runtime initialization rejects a reparse-point ancestor", { skip: !canRunPowerShell }, (t) => {
     const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "evejs frontier runtime ancestor "));
@@ -300,7 +360,7 @@ test("Windows runtime initialization rejects a reparse-point ancestor", { skip: 
     assert.match(`${refused.stderr}\n${refused.stdout}`, /reparse-point path component/i);
     assert.equal(fs.existsSync(path.join(externalRoot, build)), false);
 });
-test("Windows background startup rolls back its exact child before PID publication", { skip: !canRunPowerShell }, async (t) => {
+test("Windows startup rolls back failed background launch and stops a foreground server", { skip: !canRunPowerShell }, async (t) => {
     const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "evejs frontier background rollback "));
     t.after(() => fs.rmSync(fixtureRoot, { force: true, recursive: true }));
     const portReservation = net.createServer();
@@ -309,7 +369,7 @@ test("Windows background startup rolls back its exact child before PID publicati
     await close(portReservation);
     const startScript = path.join(fixtureRoot, "StartFrontierServer.ps1");
     const source = fs.readFileSync(path.join(REPO_ROOT, "StartFrontierServer.ps1"), "utf8");
-    const defaultPorts = "@(26000, 26101, 26102, 26103, 5222, 26401)";
+    const defaultPorts = "@(443, 26000, 26101, 26102, 26103, 5222, 26401)";
     const markerWrite = "        Write-JsonAtomic -Path $PidMarker -Value $pidMarkerValue";
     assert.equal(source.includes(defaultPorts), true);
     assert.equal(source.includes(markerWrite), true);
@@ -322,6 +382,8 @@ test("Windows background startup rolls back its exact child before PID publicati
     fs.writeFileSync(path.join(generatedRoot, "manifest.json"), "{}\n");
     fs.mkdirSync(path.join(fixtureRoot, "_local", "frontier-sde", build), { recursive: true });
     fs.mkdirSync(path.join(fixtureRoot, "server", "node_modules", "better-sqlite3"), { recursive: true });
+    fs.mkdirSync(path.join(fixtureRoot, "tools"), { recursive: true });
+    fs.writeFileSync(path.join(fixtureRoot, "tools", "BuildTypeScript.ps1"), "exit 0\n");
     const childPidPath = path.join(fixtureRoot, "rollback-child.pid");
     fs.writeFileSync(path.join(fixtureRoot, "server", "index.js"), [
         '"use strict";',
@@ -330,6 +392,28 @@ test("Windows background startup rolls back its exact child before PID publicati
         "setInterval(() => {}, 1000);",
         "",
     ].join("\n"));
+    const dappRoot = path.join(fixtureRoot, "smart-assembly-control");
+    const dappPidPath = path.join(fixtureRoot, "rollback-dapp-child.pid");
+    fs.mkdirSync(path.join(dappRoot, "scripts"), { recursive: true });
+    fs.mkdirSync(path.join(dappRoot, "node_modules"), { recursive: true });
+    fs.writeFileSync(path.join(dappRoot, "package.json"), `${JSON.stringify({
+        name: "fixture-dapp",
+        private: true,
+        scripts: { build: "node -e \"process.exit(0)\"" },
+    })}\n`);
+    fs.writeFileSync(path.join(dappRoot, "scripts", "serve.mjs"), [
+        'import fs from "node:fs";',
+        `fs.writeFileSync(${JSON.stringify(dappPidPath)}, String(process.pid));`,
+        "setInterval(() => {}, 1000);",
+        "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(dappRoot, ".env.local"), "VITE_SUI_NETWORK=localnet\n");
+    const worldRoot = path.join(fixtureRoot, "world-contracts");
+    const worldArtifact = path.join(worldRoot, "deployments", "localnet", "extracted-object-ids.json");
+    fs.mkdirSync(path.dirname(worldArtifact), { recursive: true });
+    fs.writeFileSync(worldArtifact, "{}\n");
+    fs.writeFileSync(path.join(path.dirname(worldArtifact), "npc-deployment.json"), "{}\n");
+    fs.writeFileSync(path.join(dappRoot, ".deployment-source.json"), `${JSON.stringify({ worldDir: worldRoot, network: "localnet" })}\n`);
     const initialize = runScript(startScript, [
         "-Build",
         build,
@@ -346,6 +430,9 @@ test("Windows background startup rolls back its exact child before PID publicati
     assert.equal(fs.existsSync(childPidPath), true);
     const childPid = Number.parseInt(fs.readFileSync(childPidPath, "utf8"), 10);
     assert.equal(Number.isInteger(childPid) && childPid > 0, true);
+    assert.equal(fs.existsSync(dappPidPath), true);
+    const dappPid = Number.parseInt(fs.readFileSync(dappPidPath, "utf8"), 10);
+    assert.equal(Number.isInteger(dappPid) && dappPid > 0, true);
     const processProbe = spawnSync(POWERSHELL, [
         "-NoLogo",
         "-NoProfile",
@@ -354,6 +441,61 @@ test("Windows background startup rolls back its exact child before PID publicati
         `if (Get-Process -Id ${childPid} -ErrorAction SilentlyContinue) { exit 1 }`,
     ], { encoding: "utf8" });
     assert.equal(processProbe.status, 0, `background child ${childPid} survived failed marker publication`);
+    const dappProcessProbe = spawnSync(POWERSHELL, [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `if (Get-Process -Id ${dappPid} -ErrorAction SilentlyContinue) { exit 1 }`,
+    ], { encoding: "utf8" });
+    assert.equal(dappProcessProbe.status, 0, `dApp child ${dappPid} survived failed marker publication`);
     assert.equal(fs.existsSync(path.join(fixtureRoot, "_local", "frontier-runtime", build, ".evejs-frontier-server.pid.json")), false);
+    assert.equal(fs.existsSync(path.join(fixtureRoot, "_local", "frontier-runtime", build, ".evejs-frontier-dapp.pid.json")), false);
+    // Exercise the foreground launcher from another terminal. Mock only CIM,
+    // which is unavailable in the managed test host; PID/path/time checks run.
+    const stopScript = path.join(fixtureRoot, "StopFrontier.ps1");
+    const stopSource = fs.readFileSync(path.join(REPO_ROOT, "StopFrontier.ps1"), "utf8");
+    const cimLookup = 'Get-CimInstance Win32_Process -Filter "ProcessId = $($marker.pid)" -ErrorAction SilentlyContinue';
+    assert.equal(stopSource.includes(cimLookup), true);
+    fs.writeFileSync(stopScript, stopSource.replaceAll(cimLookup, '[pscustomobject]@{ CommandLine = "$ServerEntry $DappEntry" }'));
+    const commonModuleRelative = path.join("tools", "frontier-client", "FrontierWindows.Common.psm1");
+    const commonModule = path.join(fixtureRoot, commonModuleRelative);
+    fs.mkdirSync(path.dirname(commonModule), { recursive: true });
+    fs.copyFileSync(path.join(REPO_ROOT, commonModuleRelative), commonModule);
+    const foreground = spawn(POWERSHELL, [
+        "-NoLogo", "-NoProfile", "-NonInteractive", "-File", startScript,
+        "-Build", build,
+    ], { cwd: fixtureRoot, env: process.env, windowsHide: true });
+    let foregroundOutput = "";
+    foreground.stdout.on("data", chunk => { foregroundOutput += chunk; });
+    foreground.stderr.on("data", chunk => { foregroundOutput += chunk; });
+    const serverMarkerPath = path.join(fixtureRoot, "_local", "frontier-runtime", build, ".evejs-frontier-server.pid.json");
+    t.after(() => {
+        if (fs.existsSync(serverMarkerPath)) {
+            runScript(stopScript, ["-Build", build]);
+        }
+        if (foreground.exitCode === null)
+            foreground.kill();
+    });
+    const deadline = Date.now() + 15_000;
+    while (!fs.existsSync(serverMarkerPath) && Date.now() < deadline &&
+        foreground.exitCode === null) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal(fs.existsSync(serverMarkerPath), true, foregroundOutput);
+    const serverMarker = JSON.parse(fs.readFileSync(serverMarkerPath, "utf8"));
+    assert.equal(serverMarker.launchMode, "foreground");
+    assert.equal(serverMarker.pid, Number.parseInt(fs.readFileSync(childPidPath, "utf8"), 10));
+    const stopped = runScript(stopScript, ["-Build", build]);
+    assert.equal(stopped.status, 0, stopped.stderr || stopped.stdout);
+    assert.match(stopped.stdout, /Stopped marker-owned Frontier server/);
+    const foregroundExit = await new Promise(resolve => {
+        if (foreground.exitCode !== null)
+            resolve(foreground.exitCode);
+        else
+            foreground.once("exit", resolve);
+    });
+    assert.notEqual(foregroundExit, null);
+    assert.equal(fs.existsSync(serverMarkerPath), false);
 });
 //# sourceMappingURL=frontier-windows-runtime.test.js.map

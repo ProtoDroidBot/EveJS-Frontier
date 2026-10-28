@@ -1,8 +1,10 @@
+import { createAssemblyGrpcFixture } from "./suiAssemblyGrpcFixture";
 import assert = require("node:assert/strict");
 import { test } from "node:test";
 import { bcs } from "@mysten/sui/bcs";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { Transaction } from "@mysten/sui/transactions";
+import { deriveObjectID } from "@mysten/sui/utils";
 import {
   aggregateAssemblyInventory,
   createAssemblyLocationProof,
@@ -12,8 +14,20 @@ import type { AssemblySnapshot } from "../src/services/frontier/suiAssemblySnaps
 
 const id = (value: number | string) => `0x${BigInt(value).toString(16).padStart(64, "0")}`;
 const packageId = id(900);
+const catapultPackageId = id(905);
+const catapultRegistryId = id(906);
 const signer = Ed25519Keypair.fromSecretKey(new Uint8Array(32).fill(17));
-const world = { packageId, adminAclId: id(901), gateConfigId: id(902), serverAddressRegistryId: id(903) };
+const world = {
+  packageId,
+  adminAclId: id(901),
+  gateConfigId: id(902),
+  serverAddressRegistryId: id(903),
+  objectRegistryId: id(904),
+  catapultPackageId,
+  catapultTypeOrigin: catapultPackageId,
+  catapultRegistryId,
+};
+const catapultKey = bcs.struct("CatapultKey", { gate_id: bcs.Address });
 const schema = bcs.struct("LocationProofMessage", {
   server_address: bcs.Address, player_address: bcs.Address,
   source_structure_id: bcs.Address, source_location_hash: bcs.vector(bcs.u8()),
@@ -26,6 +40,7 @@ function snapshot(overrides: Partial<AssemblySnapshot> = {}): AssemblySnapshot {
   return {
     itemId: "100", typeId: 44, ownerId: 1, name: "Storage", kind: "storage_unit", status: 2,
     solarSystemId: 3001, position: { x: 0, y: 0, z: 0 }, networkNodeId: "50", destinationGateId: null,
+    destinationSolarSystemId: null, isCatapult: false,
     gateDistanceMeters: null, gateMaxDistanceMeters: null,
     fuel: { typeId: 10, quantity: 0, unitVolume: "1" }, fuelCapacity: "1000", burnRateMs: "1000",
     maxEnergy: "1000", storageCapacity: "1000", inventory: [], ...overrides,
@@ -50,7 +65,8 @@ function fixture(assemblies: AssemblySnapshot[] = [snapshot()], assertInventoryS
   const objects = new Map<string, any>();
   const dynamic = new Map<string, any>();
   const chainObjects = new Map<string, any>();
-  const executed: Array<{ label: string; transaction: Transaction; ownerId: number | undefined }> = [];
+  const executed: Array<{ label: string; transaction: Transaction; ownerId: number | undefined;
+    gasPayerOwnerId: number | undefined }> = [];
   const borrowed: Array<{ ownerId: number; refs: any[] }> = [];
   let onRead: () => void = () => {};
   for (const assembly of assemblies) {
@@ -62,15 +78,15 @@ function fixture(assemblies: AssemblySnapshot[] = [snapshot()], assertInventoryS
     });
     dynamic.set(capId, inventory());
   }
-  const client = {
-    async getObject({ id: objectId }: any) {
+  const client = createAssemblyGrpcFixture({
+    async objectRecord({ id: objectId }: any) {
       return objects.get(objectId) || { error: { code: "notExists" } };
     },
-    async getDynamicFieldObject({ name }: any) {
+    async dynamicRecord({ name }: any) {
       onRead();
       return dynamic.get(String(name.value)) || { error: { code: "dynamicFieldNotFound" } };
     },
-  };
+  });
   const chain: any = {
     deriveId: id,
     async readAssembly(assembly: AssemblySnapshot) { return chainObjects.get(assembly.itemId) || null; },
@@ -83,10 +99,10 @@ function fixture(assemblies: AssemblySnapshot[] = [snapshot()], assertInventoryS
   const contents = createSuiAssemblyContents({
     client, chain, world, serverSigner: signer, now: () => 123_000, assertInventorySnapshotCurrent, assertGateSnapshotCurrent,
     getCharacter: async (ownerId) => ({ id: id(ownerId), address: id(ownerId + 500), ownerCapId: id(ownerId + 2000) }),
-    execute: async (label, transaction, ownerId, assertSnapshotCurrent) => {
+    execute: async (label, transaction, ownerId, assertSnapshotCurrent, gasPayerOwnerId) => {
       onExecute(label);
       assertSnapshotCurrent?.();
-      executed.push({ label, transaction, ownerId });
+      executed.push({ label, transaction, ownerId, gasPayerOwnerId });
     },
   });
   return { contents, chainObjects, objects, dynamic, executed, borrowed,
@@ -168,7 +184,7 @@ test("offline unchanged inventory succeeds, offline deltas and unknown open item
   await assert.rejects(f.contents.syncInventory(local), /open inventory/);
 });
 
-test("gate linking signs destination-to-source proof and repeats without mutation", async () => {
+test("gate linking signs the exact source-to-destination pair and repeats without mutation", async () => {
   const a = snapshot({ kind: "gate", itemId: "100", destinationGateId: "101", gateDistanceMeters: "80", gateMaxDistanceMeters: "100" });
   const b = snapshot({ ...a, itemId: "101", destinationGateId: "100" });
   const f = fixture([a, b]);
@@ -187,10 +203,10 @@ test("gate linking signs destination-to-source proof and repeats without mutatio
   const proofArgument = call.arguments[7];
   const encoded = Buffer.from((tx.inputs[proofArgument.Input] as any).Pure.bytes, "base64");
   const proof = proofSchema.parse(Uint8Array.from(bcs.vector(bcs.u8()).parse(encoded)));
-  assert.equal(proof.message.source_structure_id, id(101));
-  assert.equal(proof.message.target_structure_id, id(100));
-  assert.deepEqual(proof.message.source_location_hash, new Array(32).fill(101));
-  assert.deepEqual(proof.message.target_location_hash, new Array(32).fill(100));
+  assert.equal(proof.message.source_structure_id, id(100));
+  assert.equal(proof.message.target_structure_id, id(101));
+  assert.deepEqual(proof.message.source_location_hash, new Array(32).fill(100));
+  assert.deepEqual(proof.message.target_location_hash, new Array(32).fill(101));
   f.dynamic.set(String(a.typeId), move("u64", { value: "200" }));
   await f.contents.syncGateLinks([a, b]);
   assert.equal(f.executed.length, 1);
@@ -220,6 +236,48 @@ test("unlink clears an old reciprocal pair once even when both gates are unlinke
   assert.equal(f.executed[0].ownerId, undefined);
 });
 
+test("Smart Catapult sync creates, confirms, and clears a one-way solar-system route", async () => {
+  const catapult = snapshot({
+    kind: "gate", itemId: "100", typeId: 95627, status: 1, isCatapult: true,
+    destinationSolarSystemId: 3002, gateDistanceMeters: "80", gateMaxDistanceMeters: "100",
+  });
+  const f = fixture([catapult]);
+  f.objects.set(world.gateConfigId, move(`${packageId}::gate::GateConfig`, {
+    max_distance_by_type: { fields: { id: { id: id(999) }, size: "1" } },
+  }));
+  f.dynamic.set(String(catapult.typeId), move("u64", { value: "100" }));
+  await f.contents.syncGateLinks([catapult]);
+  assert.equal(f.executed.length, 1);
+  assert.equal(f.executed[0].label, "catapult-route:100:3002");
+  assert.equal(f.executed[0].gasPayerOwnerId, catapult.ownerId);
+  assert.equal(calls(f.executed[0].transaction)[0].function, "create");
+  assert.equal(calls(f.executed[0].transaction)[0].package, catapultPackageId);
+
+  const sidecarId = deriveObjectID(
+    world.catapultRegistryId,
+    `${catapultPackageId}::catapult::CatapultKey`,
+    catapultKey.serialize({ gate_id: id(100) }).toBytes(),
+  );
+  f.objects.set(sidecarId, move(`${catapultPackageId}::catapult::Catapult`, {
+    gate_id: id(100), gate_key: { fields: { item_id: "100", tenant: "dev" } },
+    type_id: "95627", source_solar_system_id: "3001",
+    destination_solar_system_id: { fields: { vec: ["3002"] } },
+    distance: "80", revision: "1", updated_at_ms: "123000",
+  }));
+  await f.contents.syncGateLinks([catapult]);
+  assert.equal(f.executed.length, 1);
+  const status = await f.contents.getGateStatus(catapult);
+  assert.equal(status.destinationSolarSystemId, "3002");
+  assert.equal(status.synchronized, true);
+
+  const cleared = snapshot({ ...catapult, destinationSolarSystemId: null, gateDistanceMeters: null });
+  await f.contents.syncGateLinks([cleared]);
+  assert.equal(f.executed.length, 2);
+  assert.equal(f.executed[1].label, "catapult-route:100:0");
+  assert.equal(f.executed[1].gasPayerOwnerId, catapult.ownerId);
+  assert.equal(calls(f.executed[1].transaction)[0].function, "sync_destination");
+});
+
 test("a new selected partner replaces the stale reciprocal chain pair before linking", async () => {
   const a = snapshot({ kind: "gate", itemId: "100", destinationGateId: "102", gateDistanceMeters: "80", gateMaxDistanceMeters: "100" });
   const b = snapshot({ kind: "gate", itemId: "101" });
@@ -241,6 +299,7 @@ test("a new selected partner replaces the stale reciprocal chain pair before lin
   });
   await f.contents.syncGateLinks([a, b, c]);
   assert.deepEqual(f.executed.map(entry => entry.label), ["gate-unlink:100", "gate-link:100:102"]);
+  assert.equal(f.executed[0].gasPayerOwnerId, a.ownerId);
   assert.equal((await f.contents.getGateStatus(a, c)).synchronized, true);
   assert.equal((await f.contents.getGateStatus(c, a)).synchronized, true);
   assert.deepEqual(f.chainObjects.get("101").fields.linked_gate_id.fields.vec, []);
@@ -435,7 +494,7 @@ test("inventory status rejects unreadable or inconsistent chain contents instead
   const local = snapshot();
   const f = fixture([local]);
   f.dynamic.set(id(1100), { error: { code: "unavailable" } });
-  await assert.rejects(f.contents.getInventoryStatus(local, 1), /Cannot read storage inventory/);
+  await assert.rejects(f.contents.getInventoryStatus(local, 1), /unavailable/);
   const malformed = inventory([{ typeId: 10, quantity: 3, volume: 2 }]);
   malformed.data.content.fields.value.fields.used_capacity = "0";
   f.dynamic.set(id(1100), malformed);

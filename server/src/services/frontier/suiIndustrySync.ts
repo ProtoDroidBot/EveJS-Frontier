@@ -1,4 +1,4 @@
-import { industryFingerprint, type IndustryFacilitySnapshot, type IndustryProduction } from "./suiIndustrySnapshot";
+import { industryFingerprint, type IndustryFacilitySnapshot, type IndustryProduction, type IndustryLaneProduction, type IndustryLaneState } from "./suiIndustrySnapshot";
 import type { AssemblySnapshot } from "./suiAssemblySnapshot";
 
 export type SuiIndustrySyncRequest = { facilityID: number; characterID: number };
@@ -7,6 +7,8 @@ export type SuiIndustrySyncStatus = SuiIndustrySyncRequest & {
   synchronized?: boolean; industryObjectID?: string; assemblyObjectID?: string;
   revision?: string; observedAtMs?: string; syncedAtMs?: string; message?: string;
   productionMirrored?: boolean; chainProduction?: IndustryProduction | null;
+  productionsMirrored?: boolean; chainProductions?: IndustryLaneProduction[];
+  laneStatesMirrored?: boolean; chainLanes?: IndustryLaneState[];
 };
 export type SuiIndustrySyncBridge = {
   readStatus(request: SuiIndustrySyncRequest): Promise<SuiIndustrySyncStatus>;
@@ -28,6 +30,7 @@ async function invoke(method: keyof SuiIndustrySyncBridge, request: SuiIndustryS
     if (!result || result.facilityID !== identity.facilityID || result.characterID !== identity.characterID ||
         !["disabled", "pending", "synced", "error"].includes(result.status)) throw new Error("Invalid Industry synchronization response");
     if (result.status === "synced" && (result.synchronized !== true || result.productionMirrored !== true ||
+        result.laneStatesMirrored !== true ||
         !/^0x[0-9a-f]{1,64}$/i.test(result.industryObjectID || "") || !/^0x[0-9a-f]{1,64}$/i.test(result.assemblyObjectID || ""))) {
       throw new Error("Industry snapshot has not been confirmed");
     }

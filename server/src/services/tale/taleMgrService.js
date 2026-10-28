@@ -2,7 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
-const { buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
+const { buildCachedMethodCallResultAsync: buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 const { buildObservedTalesDict, } = require(path.join(__dirname, "./observedTaleData"));
 function normalizePositiveInteger(value, fallback = 0) {
     const numericValue = Number(value);

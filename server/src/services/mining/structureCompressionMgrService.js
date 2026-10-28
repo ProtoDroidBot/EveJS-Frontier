@@ -4,7 +4,6 @@ const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const { syncInventoryItemForSession, } = require(path.join(__dirname, "../character/characterState"));
 const { findItemById, } = require(path.join(__dirname, "../inventory/itemStore"));
-const { matchesTypeList, } = require(path.join(__dirname, "../inventory/typeListAuthority"));
 const { compressInventoryItem, decompressGasInStructure, getGasDecompressionCharacterEfficiency, getStructureGasDecompressionEfficiency, itemIsInStructureCompressionSource, } = require("./miningIndustry");
 const { resolveReprocessingContext, } = require(path.join(__dirname, "../reprocessing"));
 const STRUCTURE_COMPRESSIBLE_TYPE_LIST_ID = 336;
@@ -45,10 +44,9 @@ class StructureCompressionMgrService extends BaseService {
         if (!item || !itemIsInStructureCompressionSource(item, contextResult.data, session)) {
             return null;
         }
-        if (!matchesTypeList(item, STRUCTURE_COMPRESSIBLE_TYPE_LIST_ID)) {
-            return null;
-        }
-        const compressResult = compressInventoryItem(itemID);
+        const compressResult = compressInventoryItem(itemID, {
+            requiredTypeListID: STRUCTURE_COMPRESSIBLE_TYPE_LIST_ID,
+        });
         if (!compressResult.success || !compressResult.data) {
             return null;
         }

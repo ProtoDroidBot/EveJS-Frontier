@@ -4,7 +4,7 @@ const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
 const { getItemKillCountNPC, getItemKillCountPlayer, } = require(path.join(__dirname, "./shipKillCounterState"));
-const { buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
+const { buildCachedMethodCallResultAsync: buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 class ShipKillCounterService extends BaseService {
     constructor() {
         super("shipKillCounter");

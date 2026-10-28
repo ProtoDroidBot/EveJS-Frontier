@@ -19,6 +19,18 @@ const FALLBACK_ITEMS = [
     },
 ];
 let cachedRegistry = null;
+function _setEntriesForTests(entries = null) {
+    cachedShipTypeIDs = null;
+    if (entries == null) {
+        cachedRegistry = null;
+        return;
+    }
+    const registry = createRegistry();
+    for (const entry of Array.isArray(entries) ? entries : []) {
+        addEntry(registry, entry);
+    }
+    cachedRegistry = registry;
+}
 function normalizeItemName(value) {
     return String(value || "")
         .toLowerCase()
@@ -112,6 +124,15 @@ function loadRegistry() {
         return cachedRegistry;
     }
     const dbRegistry = loadDbRegistry();
+    if (Number(require("../../config").clientBuild) === 3640684) {
+        const registry = dbRegistry || buildFallbackRegistry();
+        for (const catalog of [require("../frontier/progressionCatalog3640684.json"), require("../frontier/data/economy3640684.json"), require("../../space/compositeMiningCatalog3640684.json")]) {
+            for (const entry of catalog.types || [])
+                addEntry(registry, entry);
+        }
+        cachedRegistry = registry;
+        return cachedRegistry;
+    }
     if (dbRegistry) {
         cachedRegistry = dbRegistry;
         return cachedRegistry;
@@ -304,6 +325,7 @@ function resolveItemByName(query) {
 module.exports = {
     resolveItemByName,
     resolveItemByTypeID,
+    _setEntriesForTests,
     listShipTypeIDs,
 };
 //# sourceMappingURL=itemTypeRegistry.js.map

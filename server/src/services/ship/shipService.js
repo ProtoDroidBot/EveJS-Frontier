@@ -26,10 +26,12 @@ const { launchOrbitalsFromShip, } = require(path.join(__dirname, "./orbitalLaunc
 const { scoopMobileDepotToCargo, scoopMobileDepotToMobileDepotHold, } = require(path.join(__dirname, "./mobileDepotRuntime"));
 const { isScoopableCargoContainerType, scoopCargoContainerToCargo, } = require(path.join(__dirname, "./cargoContainerRuntime"));
 const { isMobileTractorUnitType, scoopMobileTractorUnitToCargo, } = require(path.join(__dirname, "./mobileTractorUnitRuntime"));
+const { isLaunchBayPayloadItem, scoopLaunchBayPayloadToCargo, } = require(path.join(__dirname, "../frontier/launchBayPayloadRuntime"));
 const { getShipDirtTimestamp, normalizeFiletime, resetShipDirtTimestamp, } = require(path.join(__dirname, "./shipDirtState"));
 const { getItemKillCountPlayer, } = require(path.join(__dirname, "./shipKillCounterState"));
 const { normalizeShipNameLabel, } = require(path.join(__dirname, "./shipNameUtils"));
 const { beginSafeLogoff, cancelSafeLogoff, evaluateSafeLogoffConditions, isSafeLogoffEnabled, } = require(path.join(__dirname, "./safeLogoffRuntime"));
+const { beginSelfDestruct, abortSelfDestruct, } = require(path.join(__dirname, "./selfDestructRuntime"));
 const DBTYPE_I4 = 0x03;
 const DBTYPE_R8 = 0x05;
 const DBTYPE_BOOL = 0x0b;
@@ -39,6 +41,10 @@ const EXPECTED_SCOOP_REFUSALS = new Set([
     "ITEM_NOT_MOBILE_DEPOT",
     "ITEM_NOT_MOBILE_TRACTOR_UNIT",
     "ITEM_NOT_SCOOPABLE_CONTAINER",
+    "ITEM_NOT_LAUNCH_BAY_PAYLOAD",
+    "LAUNCH_BAY_PAYLOAD_NOT_OWNER",
+    "LAUNCH_BAY_PAYLOAD_NOT_IN_SPACE",
+    "HEAT_TRAP_VOLATILE",
     "MOBILE_DEPOT_HOLD_NOT_AVAILABLE",
     "MOBILE_DEPOT_NOT_ACTIVE",
     "MOBILE_DEPOT_NOT_OWNER",
@@ -854,16 +860,34 @@ class ShipService extends BaseService {
         void kwargs;
         return scoopDrone(session, args && args.length > 0 ? args[0] : []);
     }
+    Handle_BeginScoop(args, session) {
+        const itemID = this._extractShipId(args?.[0]);
+        const result = require("../mining/voxelMiningRuntime").beginScoop(session, itemID);
+        if (!result.success) {
+            if (result.errorMsg === "TARGET_TOO_FAR")
+                throwWrappedUserError("TargetTooFar", {});
+            if (result.errorMsg === "NOT_ENOUGH_CARGO_SPACE")
+                throwWrappedUserError("NotEnoughCargoSpace", {});
+            throwWrappedUserError("CustomNotify", { notify: "This ore fragment cannot be picked up right now." });
+        }
+        return result.data.durations;
+    }
+    Handle_CancelScoop(args, session) {
+        require("../mining/voxelMiningRuntime").cancelScoop(session, this._extractShipId(args?.[0]));
+        return null;
+    }
     Handle_Scoop(args, session, kwargs) {
         void kwargs;
         const objectID = this._extractShipId(args && args.length > 0 ? args[0] : null);
         const password = args && args.length > 1 ? normalizeText(args[1], "") : "";
         const item = findItemById(objectID);
-        const result = item && isScoopableCargoContainerType(item)
-            ? scoopCargoContainerToCargo(session, objectID, password)
-            : item && isMobileTractorUnitType(item)
-                ? scoopMobileTractorUnitToCargo(session, objectID)
-                : scoopMobileDepotToCargo(session, objectID);
+        const result = item && isLaunchBayPayloadItem(item)
+            ? scoopLaunchBayPayloadToCargo(session, objectID)
+            : item && isScoopableCargoContainerType(item)
+                ? scoopCargoContainerToCargo(session, objectID, password)
+                : item && isMobileTractorUnitType(item)
+                    ? scoopMobileTractorUnitToCargo(session, objectID)
+                    : scoopMobileDepotToCargo(session, objectID);
         return this._handleDeployableScoopResult(session, objectID, result);
     }
     Handle_ScoopToMobileDepotHold(args, session, kwargs) {
@@ -906,6 +930,12 @@ class ShipService extends BaseService {
             }
             else if (errorMsg === "MOBILE_TRACTOR_UNIT_CONTENT_EJECTION_FAILED") {
                 notify = "Unable to eject Mobile Tractor Unit contents.";
+            }
+            else if (errorMsg === "LAUNCH_BAY_PAYLOAD_NOT_OWNER") {
+                notify = "Only the owner can scoop this Launch Bay payload.";
+            }
+            else if (errorMsg === "HEAT_TRAP_VOLATILE") {
+                notify = "The Heat Trap is still volatile and cannot be scooped.";
             }
             throwWrappedUserError("CustomNotify", { notify });
         }
@@ -1374,6 +1404,26 @@ class ShipService extends BaseService {
         log.info(`[Ship] AbortSafeLogoff char=${session ? session.characterID : "?"} active=${cancelled}`);
         return null;
     }
+    Handle_SelfDestruct(args, session, kwargs) {
+        const shipID = normalizeInteger(args && args[0], 0);
+        const result = beginSelfDestruct(session, shipID);
+        if (!result.success) {
+            throwWrappedUserError("CustomNotify", {
+                notify: `Cannot self-destruct this ship: ${result.errorMsg}.`,
+            });
+        }
+        return null;
+    }
+    Handle_AbortSelfDestruct(args, session, kwargs) {
+        const shipID = normalizeInteger(args && args[0], 0);
+        const result = abortSelfDestruct(session, shipID);
+        if (!result.success) {
+            throwWrappedUserError("CustomNotify", {
+                notify: `Cannot abort self-destruct: ${result.errorMsg}.`,
+            });
+        }
+        return null;
+    }
     Handle_MachoResolveObject(args, session, kwargs) {
         const bindParameter = args && args[0];
         void bindParameter;
@@ -1456,7 +1506,8 @@ class ShipService extends BaseService {
     }
     callMethod(method, args, session, kwargs) {
         const response = super.callMethod(method, args, session, kwargs);
-        if (response !== null) {
+        const normalizedMethod = normalizeMethodName(method);
+        if (response !== null || normalizedMethod === "SelfDestruct" || normalizedMethod === "AbortSelfDestruct") {
             return response;
         }
         log.warn(`[Ship] Unhandled method fallback: ${method}`);

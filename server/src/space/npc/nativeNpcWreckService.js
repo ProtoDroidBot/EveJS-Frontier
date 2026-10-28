@@ -10,8 +10,13 @@ const { getNpcLootTable, } = require(path.join(__dirname, "./npcData"));
 const { rollNpcLootEntries, } = require(path.join(__dirname, "./npcLoot"));
 const { getControllerByEntityID, unregisterController, } = require(path.join(__dirname, "./npcRegistry"));
 const nativeNpcStore = require(path.join(__dirname, "./nativeNpcStore"));
+const { isNpcFactionSdeTypeAllowed } = require(path.join(__dirname, "../../config/npcFactionConfig"));
+const frontierDungeonLoot = require(path.join(__dirname, "../../config/frontierDungeonLoot"));
 const { buildDunRotationFromDirection, resolveEntityWreckType, } = require(path.join(__dirname, "../wreckUtils"));
 const DESTRUCTION_EFFECT_EXPLOSION = 3;
+function filterNpcGeneratedLoot(source, entries, matcher = isNpcFactionSdeTypeAllowed) {
+    return (Array.isArray(entries) ? entries : []).filter(entry => matcher(source, "loot", entry.typeID));
+}
 function toPositiveInt(value, fallback = 0) {
     const numeric = Math.trunc(Number(value) || 0);
     return numeric > 0 ? numeric : fallback;
@@ -33,7 +38,15 @@ function cloneVector(vector, fallback = { x: 0, y: 0, z: 0 }) {
 function normalizeWreckSingleton(value) {
     return value === true || Number(value) === 1;
 }
+function resolveNativeWreckLootTableID(wreckTypeID, npcLootTableID = null) {
+    const configured = frontierDungeonLoot.resolveWreckLootTable(wreckTypeID);
+    return configured
+        ? configured.lootTableID
+        : String(npcLootTableID || "").trim() || null;
+}
 function buildNativeWreckRuntimeEntity(wreckRecord, options = {}) {
+    if (!require("../../services/frontier/temporaryLandscapeNpcs").isTemporaryLandscapeRevisionActive(wreckRecord))
+        return null;
     const scopeResolution = nativeNpcStore.validateStoredEntityScopeMetadata(wreckRecord, { projectAirInstanceToDungeonSite: true });
     if (!scopeResolution.success) {
         return null;
@@ -75,6 +88,10 @@ function buildNativeWreckRuntimeEntity(wreckRecord, options = {}) {
             ? cloneValue(wreckRecord.dunRotation)
             : null;
     entity.nativeNpcWreck = true;
+    for (const key of ["temporaryLandscapeRevision", "temporaryLandscapePolicyRevision", "landscapeSiteID", "landscapePolicyKey", "landscapePolicyGeneration"]) {
+        if (entityScopeMetadata[key] != null)
+            entity[key] = entityScopeMetadata[key];
+    }
     if (typeof spaceRuntime.applyRuntimeEntityScopeMetadata === "function") {
         spaceRuntime.applyRuntimeEntityScopeMetadata(entity, entityScopeMetadata);
     }
@@ -421,13 +438,15 @@ function destroyNativeNpcEntityWithWreck(systemID, shipEntity, options = {}) {
         return wreckIDResult;
     }
     const entityScopeMetadata = scopeResolution.data.metadata;
+    const lootTableID = nativeEntityRecord?.temporaryLandscapeRevision ? null : resolveNativeWreckLootTableID(wreckType.typeID, nativeEntityRecord && nativeEntityRecord.lootTableID);
     const wreckRecord = {
         wreckID: wreckIDResult.data,
         sourceEntityID: entityID,
+        sourceNpcCharacterID: toPositiveInt(nativeEntityRecord && nativeEntityRecord.npcCharacterID, toPositiveInt(shipEntity.npcCharacterID, 0)) || null,
         systemID: normalizedSystemID,
         profileID: nativeEntityRecord && nativeEntityRecord.profileID || null,
         loadoutID: nativeEntityRecord && nativeEntityRecord.loadoutID || null,
-        lootTableID: nativeEntityRecord && nativeEntityRecord.lootTableID || null,
+        lootTableID,
         npcEntityType: nativeEntityRecord && nativeEntityRecord.npcEntityType || null,
         typeID: toPositiveInt(wreckType.typeID, 0),
         groupID: toPositiveInt(wreckType.groupID, 0),
@@ -499,10 +518,12 @@ function destroyNativeNpcEntityWithWreck(systemID, shipEntity, options = {}) {
             return writeResult;
         }
     }
-    const lootTable = nativeEntityRecord && nativeEntityRecord.lootTableID
-        ? getNpcLootTable(nativeEntityRecord.lootTableID)
+    const lootTable = wreckRecord.lootTableID
+        ? getNpcLootTable(wreckRecord.lootTableID)
         : null;
-    const rolledLootEntries = rollNpcLootEntries(lootTable);
+    // Restrict generated drops only. Existing fitted modules and cargo retain
+    // their normal wreck semantics regardless of a faction's loot policy.
+    const rolledLootEntries = filterNpcGeneratedLoot(nativeEntityRecord || shipEntity, rollNpcLootEntries(lootTable));
     for (const lootEntry of rolledLootEntries) {
         const wreckItemResult = buildNativeWreckItemRecord(wreckRecord, lootEntry.itemType, {
             quantity: lootEntry.quantity,
@@ -530,7 +551,7 @@ function destroyNativeNpcEntityWithWreck(systemID, shipEntity, options = {}) {
         return removeResult;
     }
     unregisterController(entityID);
-    nativeNpcStore.removeNativeEntityCascade(entityID);
+    nativeNpcStore.removeNativeEntityCascade(entityID, { destroyed: true });
     const wreckSpawnResult = spawnNativeWreck(normalizedSystemID, wreckRecord.wreckID);
     if (!wreckSpawnResult.success) {
         return wreckSpawnResult;
@@ -571,5 +592,9 @@ module.exports = {
     destroyNativeWreck,
     transferNativeWreckItemToCharacterLocation,
     destroyNativeNpcEntityWithWreck,
+    _testing: {
+        resolveNativeWreckLootTableID,
+        filterNpcGeneratedLoot,
+    },
 };
 //# sourceMappingURL=nativeNpcWreckService.js.map

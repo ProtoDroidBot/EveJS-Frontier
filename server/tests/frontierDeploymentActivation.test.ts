@@ -3,6 +3,7 @@
 /** Run through scripts/Tests/run-isolated-tests.js against a disposable game store. */
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const database = require("../src/gameStore");
 const reference = require("../src/services/_shared/referenceData");
 const originalReadStaticRows = reference.readStaticRows;
 
@@ -64,6 +65,19 @@ function grant(locationID, typeID, quantity, options: Record<string, any> = {}) 
 }
 
 function fixture(t) {
+  const createdCharacter = !database.read("characters", String(OWNER_ID)).success;
+  if (createdCharacter) {
+    const written = database.write("characters", String(OWNER_ID), {
+      characterID: OWNER_ID,
+      characterName: "Deployment Activation Test",
+      typeID: 1373,
+      corporationID: 1000442,
+      stationID: 64000001,
+      solarSystemID: SYSTEM_ID,
+      activeShipID: 0,
+    }, { transient: true });
+    assert.equal(written.success, true, written.errorMsg);
+  }
   const originalItemIDs = new Set(
     itemStore.listOwnedItems(OWNER_ID).map(item => item.itemID),
   );
@@ -132,6 +146,7 @@ function fixture(t) {
         itemStore.removeInventoryItem(item.itemID, { removeContents: true });
       }
     }
+    if (createdCharacter) database.remove("characters", String(OWNER_ID));
     if (previousScene) spaceRuntime.scenes.set(SYSTEM_ID, previousScene);
     else spaceRuntime.scenes.delete(SYSTEM_ID);
   });
@@ -156,9 +171,119 @@ function assertActivating(f, itemID, deadline) {
   assert.equal(f.entities.get(itemID).activate_comp_durationSeconds, DURATION_SECONDS);
 }
 
+test("NPC Network Node placement is system-wide, deterministic, and Lagrange-biased", () => {
+  const resolve = deployment._testing.resolveNpcConstructionPlacement;
+  const input = {
+    assemblyTypeID: NODE_TYPE_ID,
+    jobID: "npc-node-at-lagrange",
+    solarSystemID: SYSTEM_ID,
+    shipPosition: { x: 0, y: 0, z: 0 },
+    systemAnchors: [
+      { itemID: 10, groupID: 7, kind: "planet", position: { x: 1_000_000, y: 0, z: 0 } },
+      { itemID: 20, groupID: 4870, kind: "lagrangepoint", position: { x: 9_000_000, y: 2_000_000, z: 0 } },
+    ],
+  };
+  const first = resolve(input);
+  const second = resolve(input);
+  assert.equal(first.success, true, first.errorMsg);
+  assert.deepEqual(second, first, "job retries must resolve to the same coordinates");
+  assert.equal(first.data.placementPreference, "lagrange");
+  assert.equal(first.data.anchorItemID, 20);
+  assert.equal(first.data.unrestrictedInSystem, true);
+  const lagrangeDistance = Math.hypot(
+    first.data.position.x - 9_000_000,
+    first.data.position.y - 2_000_000,
+    first.data.position.z,
+  );
+  assert.ok(lagrangeDistance >= 10_000 && lagrangeDistance <= 40_000);
+
+  const explicit = resolve({
+    ...input,
+    position: { x: 99_000_000_000, y: -77_000_000_000, z: 5_000_000_000 },
+  });
+  assert.equal(explicit.success, true, explicit.errorMsg);
+  assert.equal(explicit.data.placementPreference, "explicit");
+  assert.deepEqual(explicit.data.position, {
+    x: 99_000_000_000,
+    y: -77_000_000_000,
+    z: 5_000_000_000,
+  });
+});
+
+test("NPC dependent construction sites require and remain around a selected Network Node", () => {
+  const resolve = deployment._testing.resolveNpcConstructionPlacement;
+  const missing = resolve({
+    assemblyTypeID: ASSEMBLY_TYPE_ID,
+    jobID: "npc-site-without-node",
+    solarSystemID: SYSTEM_ID,
+    shipPosition: { x: 0, y: 0, z: 0 },
+  });
+  assert.equal(missing.success, false);
+  assert.equal(missing.errorMsg, "NPC_NETWORK_NODE_REQUIRED");
+
+  const networkNode = {
+    itemID: 880920001,
+    kind: "network-node",
+    position: { x: 5_000_000, y: 6_000_000, z: 7_000_000 },
+  };
+  const planned = resolve({
+    assemblyTypeID: ASSEMBLY_TYPE_ID,
+    jobID: "npc-site-around-node",
+    networkNodeID: networkNode.itemID,
+    networkNodeAnchors: [networkNode],
+    solarSystemID: SYSTEM_ID,
+    shipPosition: { x: 0, y: 0, z: 0 },
+  });
+  assert.equal(planned.success, true, planned.errorMsg);
+  assert.equal(planned.data.networkNodeID, networkNode.itemID);
+  assert.equal(planned.data.placementPreference, "around-network-node");
+  const nodeDistance = Math.hypot(
+    planned.data.position.x - networkNode.position.x,
+    planned.data.position.y - networkNode.position.y,
+    planned.data.position.z - networkNode.position.z,
+  );
+  assert.ok(nodeDistance >= 10_000 && nodeDistance <= 60_000);
+
+  const outside = resolve({
+    assemblyTypeID: ASSEMBLY_TYPE_ID,
+    jobID: "npc-site-outside-node",
+    networkNodeID: networkNode.itemID,
+    networkNodeAnchors: [networkNode],
+    position: { x: networkNode.position.x + 80_001, y: networkNode.position.y, z: networkNode.position.z },
+    solarSystemID: SYSTEM_ID,
+    shipPosition: { x: 0, y: 0, z: 0 },
+  });
+  assert.equal(outside.success, false);
+  assert.equal(outside.errorMsg, "NPC_CONSTRUCTION_OUTSIDE_NETWORK_NODE");
+});
+
+test("shared Frontier placement clearance rejects assembly footprint overlap", () => {
+  const findOverlap = deployment._testing.findFrontierAssemblyOverlap;
+  const obstacles = [{
+    itemID: 9900000101,
+    assemblyTypeID: NODE_TYPE_ID,
+    position: { x: 10_000, y: 0, z: 0 },
+    radius: 1_000,
+  }];
+  const overlapping = findOverlap(
+    { x: 11_200, y: 0, z: 0 },
+    500,
+    obstacles,
+  );
+  assert.equal(overlapping.conflictKind, "assembly-footprint-overlap");
+  assert.equal(overlapping.blockerItemID, 9900000101);
+  assert.equal(overlapping.distance, 1_200);
+  assert.equal(overlapping.minimumDistance, 1_500);
+  assert.equal(findOverlap(
+    { x: 11_500, y: 0, z: 0 },
+    500,
+    obstacles,
+  ), null, "touching footprint boundaries do not overlap");
+});
+
 for (const [label, typeID, finalStatus] of [
+  ["portable field structure", FIELD_TYPE_ID, 2],
   ["Network Node", NODE_TYPE_ID, 1],
-  ["field structure", FIELD_TYPE_ID, 2],
 ]) {
   test(`direct ${label} placement remains inactive until its configured timer expires`, t => {
     const f = fixture(t);
@@ -186,6 +311,8 @@ test("an anchoring Network Node cannot go online or extend construction range", 
   const placed = f.place(NODE_TYPE_ID);
   assert.equal(placed.success, true, placed.errorMsg);
   const nodeID = placed.data.item.itemID;
+  assert.equal(placed.data.directPlacement, true);
+  assert.equal(placed.data.item.typeID, NODE_TYPE_ID);
   assert.equal(deployment._testing.isCompletedNetworkNodeBuildAnchorState(f.state(nodeID)), false);
   const online = deployment.beginAssemblyStateTransition(
     f.session, nodeID, deployment.ASSEMBLY_STATUS_ONLINE,
@@ -206,7 +333,8 @@ test("an anchoring Network Node cannot go online or extend construction range", 
 
 test("the last construction deposit replaces the site immediately and starts the assembly timer", t => {
   const f = fixture(t);
-  assert.equal(f.place(NODE_TYPE_ID).success, true);
+  const node = f.place(NODE_TYPE_ID);
+  assert.equal(node.success, true);
   f.tick(DURATION_MS);
   const placed = f.place(ASSEMBLY_TYPE_ID, [10_000, 200, 300]);
   assert.equal(placed.success, true, placed.errorMsg);
@@ -226,6 +354,8 @@ test("the last construction deposit replaces the site immediately and starts the
     .map(item => item.itemID);
 
   f.notifications.length = 0;
+  const removalsBeforeCompletion = f.remove.mock.callCount();
+  const spawnsBeforeCompletion = f.spawn.mock.callCount();
   const deadline = Date.now() + DURATION_MS;
   const deposited = deployment.depositItems(f.session, siteID, f.ship.itemID, { [MATERIAL_B]: 4 });
   assert.equal(deposited.success, true, deposited.errorMsg);
@@ -233,8 +363,10 @@ test("the last construction deposit replaces the site immediately and starts the
   assert.equal(f.item(siteID).typeID, ASSEMBLY_TYPE_ID);
   assert.deepEqual(f.item(siteID).spaceState, originalSpaceState);
   assert.equal(f.entities.get(siteID).typeID, ASSEMBLY_TYPE_ID);
-  assert.equal(f.remove.mock.callCount(), 1, "the construction site is removed from the scene");
-  assert.equal(f.spawn.mock.callCount(), 3, "the node, site, and replacement assembly are spawned");
+  assert.equal(f.remove.mock.callCount(), removalsBeforeCompletion + 1,
+    "the completed construction site is removed from the scene exactly once");
+  assert.equal(f.spawn.mock.callCount(), spawnsBeforeCompletion + 1,
+    "the completed assembly replaces the site with exactly one scene spawn");
   assert.deepEqual(itemStore.listContainerItems(OWNER_ID, siteID, null), []);
   assertActivating(f, siteID, deadline);
   const inventoryRows = f.notifications.filter(args => args[0] === "OnItemsChanged")
@@ -371,33 +503,32 @@ test("legacy completed assemblies without an activation deadline remain active w
   assert.equal(f.broadcasts.length, 0);
 });
 
-test("portable structures deploy directly away from nodes and use construction sites near an owned node", t => {
+test("Network Nodes and portable assemblies deploy directly inside and outside Network Node zones", t => {
   const f = fixture(t);
-  const portable = f.place(FIELD_TYPE_ID);
+  const portable = f.place(FIELD_TYPE_ID, [-2_000, 0, 0]);
   assert.equal(portable.success, true, portable.errorMsg);
   assert.equal(portable.data.directPlacement, true);
   assert.equal(portable.data.item.typeID, FIELD_TYPE_ID);
   assertActivating(f, portable.data.item.itemID, START_MS + DURATION_MS);
+  f.tick(DURATION_MS);
+  const dismantledPortable = deployment.dismantleAssembly(
+    f.session, portable.data.item.itemID,
+  );
+  assert.equal(dismantledPortable.success, true, dismantledPortable.errorMsg);
 
-  const node = f.place(NODE_TYPE_ID, [200, 0, 0]);
+  const node = f.place(NODE_TYPE_ID, [2_000, 0, 0]);
   assert.equal(node.success, true, node.errorMsg);
-  assert.equal(node.data.directPlacement, true,
-    "a Network Node deploys directly even when its definition references a site");
-  assert.equal(node.data.item.typeID, NODE_TYPE_ID);
+  assert.equal(node.data.directPlacement, true);
+  assert.equal(node.data.item.typeID, NODE_TYPE_ID,
+    "a Network Node bypasses the construction-depot route");
   f.tick(DURATION_MS);
 
-  const nearNode = f.place(FIELD_TYPE_ID, [1_000, 0, 0]);
+  const nearNode = f.place(FIELD_TYPE_ID, [10_000, 0, 0]);
   assert.equal(nearNode.success, true, nearNode.errorMsg);
-  assert.equal(nearNode.data.item.typeID, SITE_TYPE_ID,
-    "the node's zone selects a site even when placement is also within ship range");
-  assert.equal(f.state(nearNode.data.item.itemID).assemblyStatus,
-    deployment.ASSEMBLY_STATUS_UNDER_CONSTRUCTION);
-  const deposited = deployment.depositItems(
-    f.session, nearNode.data.item.itemID, f.ship.itemID, COST,
-  );
-  assert.equal(deposited.success, true, deposited.errorMsg);
-  assert.equal(f.item(nearNode.data.item.itemID).typeID, FIELD_TYPE_ID);
-  assertActivating(f, nearNode.data.item.itemID, START_MS + DURATION_MS * 2);
+  assert.equal(nearNode.data.directPlacement, true);
+  assert.equal(nearNode.data.item.typeID, FIELD_TYPE_ID,
+    "portable types bypass construction depots inside an owned Network Node zone");
+  assertActivating(f, nearNode.data.item.itemID, START_MS + DURATION_MS * 3);
   f.tick(DURATION_MS);
   assert.equal(f.state(nearNode.data.item.itemID).assemblyStatus, deployment.ASSEMBLY_STATUS_ONLINE);
 });
@@ -492,9 +623,10 @@ test("dismantling returns construction materials and every user partition in cap
 
 test("dismantling an unfinished construction site returns only deposited materials", t => {
   const f = fixture(t);
-  assert.equal(f.place(NODE_TYPE_ID).success, true);
+  const node = f.place(NODE_TYPE_ID);
+  assert.equal(node.success, true);
   f.tick(DURATION_MS);
-  const placed = f.place(FIELD_TYPE_ID, [1_000, 0, 0]);
+  const placed = f.place(ASSEMBLY_TYPE_ID, [10_000, 0, 0]);
   assert.equal(placed.success, true, placed.errorMsg);
   const siteID = placed.data.item.itemID;
   assert.equal(f.item(siteID).typeID, SITE_TYPE_ID);

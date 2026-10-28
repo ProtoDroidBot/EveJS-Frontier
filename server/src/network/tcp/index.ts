@@ -13,7 +13,7 @@ const interactiveWorkloadGate = require(path.join(
   "../../utils/interactiveWorkloadGate",
 ));
 const EVEHandshake = require(path.join(__dirname, "./handshake"));
-const { marshalDecode } = require(path.join(__dirname, "./utils/marshal"));
+const packetCodecPool = require(path.join(__dirname, "./packetCodecPool"));
 const { readPacketLength } = require(path.join(
   __dirname,
   "./packetFraming",
@@ -157,23 +157,34 @@ module.exports = function (serviceManager) {
   );
 
   const universePrepareStartedAtMs = Date.now();
+  // Register teardown handling before startup lifecycle mutations so persisted
+  // props/NPCs from discarded instances are removed with their old pocket.
+  log.info("[Startup] Starting dungeon universe runtime sync");
+  dungeonUniverseSiteService.startRuntimeSync();
   log.info(
     `[Startup] Dungeon universe prepare: evaluating persistent site state for ` +
       `${startupPreloadPlan.systemIDs.length} startup system(s)`,
   );
   const universeStartup = dungeonUniverseRuntime.prepareStartupUniversePersistentSites({
     startupSystemIDs: startupPreloadPlan.systemIDs,
+    resetIncompleteDungeonsOnStartup: true,
     resetMiningAnomaliesOnStartup: false,
     cleanupInvalidGeneratedIce: true,
     restoreGeneratedIceAfterDowntime: false,
     reconcileStartupSystems: true,
-    scheduleBackgroundReconcile: true,
+    // Persistent sites are reconciled when a system is preloaded or receives
+    // its first player. Sweeping all 24k systems on a fresh database competes
+    // with the scene-planning/packet workers needed by the first login and can
+    // push the client past its bootstrap timeout.
+    scheduleBackgroundReconcile: false,
     backgroundReason: "server-startup",
   });
   const universePrepareElapsedMs = Date.now() - universePrepareStartedAtMs;
   log.info(
     `[Startup] Dungeon universe prepare complete in ${universePrepareElapsedMs}ms ` +
       `(fullUpToDate=${universeStartup && universeStartup.status && universeStartup.status.fullUpToDate === true} ` +
+      `incompleteReset=${Number(universeStartup && universeStartup.startupIncompleteReset && universeStartup.startupIncompleteReset.discardedCount) || 0}/` +
+      `${Number(universeStartup && universeStartup.startupIncompleteReset && universeStartup.startupIncompleteReset.rotatedCount) || 0} ` +
       `startupMiningReset=${Number(universeStartup && universeStartup.startupMiningReset && universeStartup.startupMiningReset.purgedCount) || 0}/` +
       `${Number(universeStartup && universeStartup.startupMiningReset && universeStartup.startupMiningReset.createdInstances) || 0} ` +
       `invalidGeneratedIce=${Number(universeStartup && universeStartup.invalidGeneratedIceCleanup && universeStartup.invalidGeneratedIceCleanup.despawnedCount) || 0}/` +
@@ -214,8 +225,6 @@ module.exports = function (serviceManager) {
     );
   }
 
-  log.info("[Startup] Starting dungeon universe runtime sync");
-  dungeonUniverseSiteService.startRuntimeSync();
   log.info("[Startup] Starting dungeon universe ticker");
   dungeonUniverseRuntime.startTicker({
     systemIDsProvider: awakeDungeonSystemIDs,
@@ -264,7 +273,80 @@ module.exports = function (serviceManager) {
       const handshake = new EVEHandshake(socket);
       let handshakeComplete = false;
       let clientSession = null;
+      let disconnectHandled = false;
+      let inboundCodecTail = Promise.resolve();
+      let queuedCodecPackets = 0;
+      let queuedCodecBytes = 0;
+      let codecReadPaused = false;
       const finishTrackedLogin = interactiveWorkloadGate.beginLogin();
+
+      const queueInboundPacket = (data, rawPayload) => {
+        const packetBytes = data.length;
+        if (queuedCodecPackets >= 64 || queuedCodecBytes + packetBytes > 32 * 1024 * 1024) {
+          log.warn(
+            `[TCP] closing ${socket.remoteAddress}: inbound codec queue limit exceeded`,
+          );
+          socket.destroy();
+          return;
+        }
+        queuedCodecPackets += 1;
+        queuedCodecBytes += packetBytes;
+        if (!codecReadPaused && (queuedCodecPackets >= 16 || queuedCodecBytes >= 8 * 1024 * 1024)) {
+          codecReadPaused = true;
+          socket.pause();
+        }
+
+        inboundCodecTail = inboundCodecTail
+          .then(() => packetCodecPool.decodeInboundPacket(data, {
+            compatibilityProfile: config.clientCompatibilityProfile,
+            maxDecompressedBytes: 32 * 1024 * 1024,
+            maxDepth: 128,
+            maxNodes: 250_000,
+          }))
+          .then((decoded) => {
+            if (socket.destroyed) return;
+            if (log.isPacketPayloadDebugEnabled()) {
+              if (decoded && decoded.type === "object" && decoded.args) {
+                logDebug(
+                  `[TCP] incoming PyPacket: ${decoded.name} has tuple length: ${decoded.args.length}`,
+                );
+              }
+              logDebug(
+                `[TCP] decoded packet: ${JSON.stringify(decoded, (k, v) => {
+                  if (typeof v === "bigint") return v.toString();
+                  if (v && v.type === "Buffer" && v.data) {
+                    try {
+                      return `<Buffer:${Buffer.from(v.data).toString("utf8")}>`;
+                    } catch (e) {}
+                  }
+                  return v;
+                }).substring(0, 500)}`,
+              );
+            }
+            enqueuePacketDispatch(decoded, clientSession);
+          })
+          .catch((err) => {
+            log.err(`[TCP] isolated packet decode error: ${err.message}`);
+            logDebug(`[TCP] stack: ${err.stack}`);
+            logDebug(
+              `[TCP] raw: ${rawPayload.toString("hex").substring(0, 80)}...`,
+            );
+            socket.destroy();
+          })
+          .finally(() => {
+            queuedCodecPackets = Math.max(0, queuedCodecPackets - 1);
+            queuedCodecBytes = Math.max(0, queuedCodecBytes - packetBytes);
+            if (
+              codecReadPaused &&
+              !socket.destroyed &&
+              queuedCodecPackets < 8 &&
+              queuedCodecBytes < 4 * 1024 * 1024
+            ) {
+              codecReadPaused = false;
+              socket.resume();
+            }
+          });
+      };
 
       // Start the handshake (sends VersionExchangeServer)
       handshake.start();
@@ -355,46 +437,14 @@ module.exports = function (serviceManager) {
           } else {
             // ── Post-handshake packet dispatch ──────────────────────────
             try {
-              // Decrypt if needed
+              // Decryption stays ordered on the session thread because its
+              // cipher state is connection-local. Decompression and recursive
+              // marshal decoding run in an ordered per-connection worker queue.
               let data = payload;
               if (clientSession) {
                 data = clientSession.decryptPacket(payload);
               }
-
-              // Check for zlib compression
-              if (data[0] === 0x78) {
-                const zlib = require("zlib");
-                data = zlib.inflateSync(data);
-              }
-
-              // Unmarshal the packet
-              const decoded = marshalDecode(data, {
-                compatibilityProfile: config.clientCompatibilityProfile,
-              });
-
-              if (log.isPacketPayloadDebugEnabled()) {
-                if (decoded && decoded.type === "object" && decoded.args) {
-                  logDebug(
-                    `[TCP] incoming PyPacket: ${decoded.name} has tuple length: ${decoded.args.length}`,
-                  );
-                }
-
-                logDebug(
-                  `[TCP] decoded packet: ${JSON.stringify(decoded, (k, v) => {
-                    if (typeof v === "bigint") return v.toString();
-                    if (v && v.type === "Buffer" && v.data) {
-                      try {
-                        return `<Buffer:${Buffer.from(v.data).toString("utf8")}>`;
-                      } catch (e) {}
-                    }
-                    return v;
-                  }).substring(0, 500)}`,
-                );
-              }
-
-              // Dispatch on a fair event-loop turn so another connection can
-              // progress its handshake between CPU-heavy service calls.
-              enqueuePacketDispatch(decoded, clientSession);
+              queueInboundPacket(data, payload);
             } catch (err) {
               log.err(`[TCP] packet processing error: ${err.message}`);
               logDebug(`[TCP] stack: ${err.stack}`);
@@ -406,29 +456,27 @@ module.exports = function (serviceManager) {
         }
       });
 
-      socket.on("close", () => {
+      const cleanupDisconnectedSession = () => {
         finishTrackedLogin();
-        if (clientSession) {
+        if (!disconnectHandled && clientSession) {
+          disconnectHandled = true;
           disconnectCharacterSession(clientSession, {
             broadcast: true,
             clearSession: true,
           });
           sessionRegistry.unregister(clientSession);
         }
+      };
+
+      socket.on("close", () => {
+        cleanupDisconnectedSession();
         logInfo(
           `connection closed: ${socket.remoteAddress}:${socket.remotePort}`,
         );
       });
 
       socket.on("error", (err) => {
-        finishTrackedLogin();
-        if (clientSession) {
-          disconnectCharacterSession(clientSession, {
-            broadcast: true,
-            clearSession: true,
-          });
-          sessionRegistry.unregister(clientSession);
-        }
+        cleanupDisconnectedSession();
         log.err(`[TCP] socket error: ${err.message}`);
       });
     })

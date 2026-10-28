@@ -33,6 +33,7 @@ const REQUIRED_BUILD_FILES = Object.freeze({
   mapObjects: path.join("bin64", "staticdata", "mapObjects.db"),
   caBundle: path.join("bin64", "cacert.pem"),
   certifiCaBundle: path.join("bin64", "packages", "certifi", "cacert.pem"),
+  collisionBundle: path.join("bin64", "bundle.collision"),
 });
 
 function isDirectory(candidate: string): boolean {

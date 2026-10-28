@@ -21,6 +21,16 @@ function buildRandomAllocatedSystemPlanForFamily(family, options: Record<string,
   return runtime._testing.buildRandomAllocatedSystemPlanForFamily(family, options);
 }
 
+function buildUniverseSeededReconcilePlan(definitions, snapshot, options) {
+  const dungeonRuntime = require(path.join(__dirname, "./dungeonRuntime"));
+  return dungeonRuntime.buildUniverseSeededReconcilePlan(
+    definitions,
+    snapshot,
+    options,
+  );
+}
+
 module.exports = {
   buildRandomAllocatedSystemPlanForFamily,
+  buildUniverseSeededReconcilePlan,
 };

@@ -12,6 +12,7 @@ const test = require("node:test");
 
 const itemStore = require("../src/services/inventory/itemStore");
 const networkNodeFuelRuntime = require("../src/services/frontier/networkNodeFuelRuntime");
+const sessionRegistry = require("../src/services/chat/sessionRegistry");
 const { registerSuiAssemblyStateRunner } = require("../src/services/frontier/suiAssemblyState");
 const {
   getNetworkNodeProtoTypes,
@@ -484,7 +485,7 @@ test("deposit enforces the volume-budget capacity and single fuel type", () => {
   );
 });
 
-test("mid-drain failure restores already-consumed source stacks", () => {
+test("atomic fuel deposit failure leaves source stacks and node unchanged", () => {
   const node = createTestNetworkNode();
   const { container, stack } = createFuelSource(OWNER_ID, FUEL_UNSTABLE, 1000);
 
@@ -497,15 +498,11 @@ test("mid-drain failure restores already-consumed source stacks", () => {
   });
   assert.equal(prepared.success, true, prepared.errorMsg);
 
-  // Let the source drain succeed, then fail the node-state write so the
-  // compensation path has consumed stacks to restore.
-  const realUpdate = itemStore.updateInventoryItem;
-  itemStore.updateInventoryItem = (itemID, updater) => {
-    if (Number(itemID) === Number(node.itemID)) {
-      return { success: false, errorMsg: "WRITE_ERROR" };
-    }
-    return realUpdate(itemID, updater);
-  };
+  const realCommit = itemStore.consumeInventoryItemsAndUpdateItem;
+  itemStore.consumeInventoryItemsAndUpdateItem = () => ({
+    success: false,
+    errorMsg: "WRITE_ERROR",
+  });
   let executed;
   try {
     executed = networkNodeFuelRuntime.executeNetworkNodeFuelTransaction({
@@ -515,7 +512,7 @@ test("mid-drain failure restores already-consumed source stacks", () => {
       signature: VALID_SIGNATURE,
     });
   } finally {
-    itemStore.updateInventoryItem = realUpdate;
+    itemStore.consumeInventoryItemsAndUpdateItem = realCommit;
   }
   assert.equal(executed.success, false);
   assert.equal(
@@ -539,7 +536,7 @@ test("mid-drain failure restores already-consumed source stacks", () => {
   );
 });
 
-test("withdraw succeeds, validates, and restores on grant failure", () => {
+test("withdraw succeeds, validates, and remains atomic on grant failure", () => {
   const node = createTestNetworkNode();
   const { container, stack } = createFuelSource();
   const prepared = networkNodeFuelRuntime.prepareNetworkNodeFuelDeposit({
@@ -620,7 +617,7 @@ test("withdraw succeeds, validates, and restores on grant failure", () => {
     .reduce((total, item) => total + (Number(item.stacksize) || 0), 0);
   assert.equal(destinationTotal, 900, "500 leftover + 400 withdrawn");
 
-  // Grant failure rolls the node quantity back.
+  // The combined grant/node update failing leaves the node unchanged.
   const rollbackPrepared = networkNodeFuelRuntime.prepareNetworkNodeFuelWithdraw({
     characterID: OWNER_ID,
     networkNodeID: node.itemID,
@@ -629,8 +626,8 @@ test("withdraw succeeds, validates, and restores on grant failure", () => {
     destinationItemID: container.itemID,
     destinationFlagID: CARGO_FLAG,
   });
-  const realGrant = itemStore.grantItemsToCharacterLocation;
-  itemStore.grantItemsToCharacterLocation = () => ({
+  const realGrant = itemStore.grantStackableItemsToCharacterLocationAndUpdateItem;
+  itemStore.grantStackableItemsToCharacterLocationAndUpdateItem = () => ({
     success: false,
     errorMsg: "WRITE_ERROR",
   });
@@ -643,7 +640,7 @@ test("withdraw succeeds, validates, and restores on grant failure", () => {
       signature: VALID_SIGNATURE,
     });
   } finally {
-    itemStore.grantItemsToCharacterLocation = realGrant;
+    itemStore.grantStackableItemsToCharacterLocationAndUpdateItem = realGrant;
   }
   assert.equal(rollbackResult.success, false);
   assert.equal(
@@ -761,6 +758,156 @@ test("gateway service: config, get, deposit round trip with one notice", () => {
     Number(types.FuelChangedNotice.decode(notices[1].payloadBuffer).fuel.quantity),
     750,
   );
+});
+
+test("gateway service: deposit and withdraw synchronize exact client inventory deltas", () => {
+  const types = getNetworkNodeProtoTypes();
+  const service = buildService();
+  const node = createTestNetworkNode();
+  const { container, stack } = createFuelSource(OWNER_ID, FUEL_UNSTABLE, 1000);
+  const notifications: any[] = [];
+  const session = {
+    characterID: OWNER_ID,
+    socket: { destroyed: false },
+    sendNotification(...args) {
+      notifications.push(args);
+    },
+  };
+  sessionRegistry.register(session);
+
+  const executeDeposit = (itemID, quantity) => {
+    const prepared = service.handleRequest(
+      PREPARE_DEPOSIT_FUEL_REQUEST,
+      makeEnvelope(types.PrepareDepositFuelRequest, {
+        network_node: { sequential: node.itemID },
+        source: {
+          item: { sequential: container.itemID },
+          flag: { value: CARGO_FLAG },
+        },
+        items: [{ id: { sequential: itemID }, quantity }],
+      }),
+    );
+    assert.equal(prepared.statusCode, 200, prepared.statusMessage);
+    const decoded = types.PrepareDepositFuelResponse.decode(
+      prepared.responsePayloadBuffer,
+    );
+    return service.handleRequest(
+      EXECUTE_DEPOSIT_FUEL_REQUEST,
+      makeEnvelope(types.ExecuteDepositFuelRequest, {
+        prepared_transaction_uuid: decoded.prepared_transaction_uuid,
+        signature: VALID_SIGNATURE,
+      }),
+    );
+  };
+
+  const executeWithdraw = (quantity) => {
+    const prepared = service.handleRequest(
+      PREPARE_WITHDRAW_FUEL_REQUEST,
+      makeEnvelope(types.PrepareWithdrawFuelRequest, {
+        network_node: { sequential: node.itemID },
+        fuel_type: { sequential: FUEL_UNSTABLE },
+        quantity,
+        destination: {
+          item: { sequential: container.itemID },
+          flag: { value: CARGO_FLAG },
+        },
+      }),
+    );
+    assert.equal(prepared.statusCode, 200, prepared.statusMessage);
+    const decoded = types.PrepareWithdrawFuelResponse.decode(
+      prepared.responsePayloadBuffer,
+    );
+    return service.handleRequest(
+      EXECUTE_WITHDRAW_FUEL_REQUEST,
+      makeEnvelope(types.ExecuteWithdrawFuelRequest, {
+        prepared_transaction_uuid: decoded.prepared_transaction_uuid,
+        signature: VALID_SIGNATURE,
+      }),
+    );
+  };
+
+  const findInventoryChange = (itemID) => {
+    for (const notification of notifications) {
+      if (notification[0] !== "OnItemsChanged") continue;
+      const payload = notification[2];
+      const row = payload?.[0]?.items?.find(
+        entry => Number(entry?.fields?.itemID) === Number(itemID),
+      );
+      if (row) return { row, changeDict: payload[1] };
+    }
+    return null;
+  };
+
+  try {
+    const deposited = executeDeposit(stack.itemID, 1000);
+    assert.equal(deposited.statusCode, 200, deposited.statusMessage);
+    assert.equal(itemStore.findItemById(stack.itemID), null);
+    const removal = findInventoryChange(stack.itemID);
+    assert.ok(removal, "a fully deposited stack must be removed from the client inventory");
+    assert.equal(removal.row.fields.locationID, 6);
+    assert.ok(
+      removal.changeDict.entries.some(
+        entry => Number(entry[0]) === 3 && Number(entry[1]) === container.itemID,
+      ),
+      "the removal must identify the stack's former container",
+    );
+
+    notifications.length = 0;
+    const withdrawn = executeWithdraw(250);
+    assert.equal(withdrawn.statusCode, 200, withdrawn.statusMessage);
+    const returnedStack = itemStore.listContainerItems(
+      OWNER_ID,
+      container.itemID,
+      CARGO_FLAG,
+    )
+      .find(item => Number(item.typeID) === FUEL_UNSTABLE);
+    assert.ok(returnedStack, "withdrawn fuel must be granted back to the destination");
+    assert.equal(stackQuantity(returnedStack.itemID), 250);
+    const creation = findInventoryChange(returnedStack.itemID);
+    assert.ok(creation, "withdrawn fuel must be added to the client inventory");
+    assert.equal(creation.row.fields.locationID, container.itemID);
+    assert.equal(creation.row.fields.stacksize, 250);
+    assert.ok(
+      creation.changeDict.entries.some(
+        entry => Number(entry[0]) === 3 && Number(entry[1]) === 0,
+      ),
+      "the new stack must be reported as entering the destination",
+    );
+
+    notifications.length = 0;
+    const merged = executeWithdraw(250);
+    assert.equal(merged.statusCode, 200, merged.statusMessage);
+    assert.equal(stackQuantity(returnedStack.itemID), 500);
+    const merge = findInventoryChange(returnedStack.itemID);
+    assert.ok(merge, "a withdrawal into an existing stack must update the client inventory");
+    assert.equal(merge.row.fields.stacksize, 500);
+    assert.ok(
+      merge.changeDict.entries.some(
+        entry => Number(entry[0]) === 9 && Number(entry[1]) === 250,
+      ),
+      "the stack update must include its exact previous quantity",
+    );
+
+    notifications.length = 0;
+    const partiallyDeposited = executeDeposit(returnedStack.itemID, 125);
+    assert.equal(
+      partiallyDeposited.statusCode,
+      200,
+      partiallyDeposited.statusMessage,
+    );
+    assert.equal(stackQuantity(returnedStack.itemID), 375);
+    const partialDeposit = findInventoryChange(returnedStack.itemID);
+    assert.ok(partialDeposit, "a partial deposit must update the client inventory");
+    assert.equal(partialDeposit.row.fields.stacksize, 375);
+    assert.ok(
+      partialDeposit.changeDict.entries.some(
+        entry => Number(entry[0]) === 9 && Number(entry[1]) === 500,
+      ),
+      "the partial deposit must include the exact pre-deposit quantity",
+    );
+  } finally {
+    sessionRegistry.unregister(session);
+  }
 });
 
 test("gateway service: unauthenticated and error mappings", () => {

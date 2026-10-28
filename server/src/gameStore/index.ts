@@ -169,6 +169,7 @@ const RECOVERABLE_EMPTY_TABLES = new Set([
   "wormholeRuntimeState",
   "probeRuntimeState",
   "dungeonRuntimeState",
+  "stargateRuntimeState",
   "missionRuntimeState",
   "planetRuntimeState",
   "planetOrbitalState",
@@ -212,6 +213,7 @@ const SQLITE_TABLES = new Set([
   "mapTelemetry",
   "moduleGroupingState",
   "notifications",
+  "npcPilotIdentities",
   "npcEntities",
   "npcModules",
   "npcRuntimeControllers",
@@ -220,6 +222,9 @@ const SQLITE_TABLES = new Set([
   "playerBounties",
   "rafflesRuntime",
   "savedFittings",
+  "creationPresets",
+  "smartAssemblyConstructionTemplates",
+  "smartAssemblyDeploymentPlans",
   "shipCosmetics",
   "solarSystemInterferenceState",
   "structurePaintwork",
@@ -252,6 +257,9 @@ const SQLITE_TABLES = new Set([
   "reprocessingFacilityState",
   "sharedBookmarkFolders",
   "shipLogoFittings",
+  "smartAssemblyRequests",
+  "assemblyAccessPolicies",
+  "stargateRuntimeState",
   "structureAssetSafety",
   // Fourth wave: tables that appear in persistence-style tests (verified the
   // tests seed via data.json fixtures / assert via the service, not by reading
@@ -266,6 +274,14 @@ const SQLITE_TABLES = new Set([
   "sovereignty",
   "dungeonRuntimeState",
   "miningRuntimeState",
+  "voxelMiningState",
+  "temporaryLandscapeState",
+  "frontierDockingPoints",
+  "frontierProgressionState",
+  "frontierEconomyState",
+  "digitalChemistryState",
+  "frontierClaims",
+  "frontierKillReports",
   "missionRuntimeState",
   // Final pair: accountLoginPersistenceParity now proves persistence by reading
   // the SQLite row back instead of the legacy data.json file.
@@ -288,6 +304,9 @@ const SQLITE_TABLES = new Set([
   "chatStaticContracts",
   "chatBacklog",
   "contractRuntime",
+  "remoteSystemScans",
+  "systemSignatureEvents",
+  "detachedDungeonProps",
 ]);
 const SQLITE_DB_PATH = path.resolve(DATA_DIR, "..", "gamestore.sqlite");
 let sqliteRecoveryRequired = true;
@@ -1130,6 +1149,97 @@ function flushTablesSync(tables: any[] = []) {
   };
 }
 
+// Opaque, single-use row proposals let separate table owners participate in one
+// durable transaction without granting either owner write access to the other.
+const atomicRowProposals = new WeakMap();
+
+function prepareAtomicRowWrite(table, key, value) {
+  const rowKey = String(key);
+  if (!isSqliteTable(table) ||
+      !rowKey || rowKey.includes("/") || rowKey.includes("\u001f") || ["__proto__", "constructor", "prototype"].includes(rowKey) ||
+      !ensureCached(table)) {
+    throw new Error("Atomic writes require an existing SQLite table and top-level row key");
+  }
+  const groups = sqliteStore.rowGroupsFor(table) || [];
+  if (groups.includes(rowKey) && value !== undefined &&
+      (!value || typeof value !== "object" || Array.isArray(value))) {
+    throw new Error("Atomic grouped rows require an object or deletion");
+  }
+  const serialized = value === undefined ? undefined : JSON.stringify(value);
+  if (value !== undefined && serialized === undefined) throw new Error("Invalid atomic row");
+  // Validate grouped entity keys before issuing an owner-authorized token.
+  if (serialized !== undefined) sqliteStore.explodeToRows(table, { [rowKey]: JSON.parse(serialized) });
+  const token = Object.freeze({});
+  atomicRowProposals.set(token, {
+    table, key: rowKey, serialized,
+    expected: JSON.stringify(cache[table][rowKey]),
+  });
+  return token;
+}
+
+function commitAtomicRowWrites(tokens) {
+  const proposals: any[] = [];
+  const seen = new Set();
+  try {
+    if (!Array.isArray(tokens) || tokens.length === 0) throw new Error("Empty atomic commit");
+    for (const token of tokens) {
+      const proposal = atomicRowProposals.get(token);
+      atomicRowProposals.delete(token);
+      if (!proposal) throw new Error("Invalid or consumed atomic row proposal");
+      const identity = `${proposal.table}/${proposal.key}`;
+      if (seen.has(identity)) throw new Error("Duplicate atomic row proposal");
+      seen.add(identity);
+      if (JSON.stringify(cache[proposal.table][proposal.key]) !== proposal.expected) {
+        return { success: false, errorMsg: "ATOMIC_WRITE_CONFLICT" };
+      }
+      const transient = transientPaths[proposal.table];
+      if (transient && [...transient].some(path => path === "/" ||
+          path === `/${proposal.key}` || String(path).startsWith(`/${proposal.key}/`))) {
+        throw new Error("Cannot atomically mutate a transient row");
+      }
+      proposals.push(proposal);
+    }
+    // Retire every older durable outbox operation before submitting newer row
+    // values. A late worker may only see its retired operation as a no-op.
+    const tables: any[] = [...new Set(proposals.map(proposal => proposal.table))];
+    for (const table of tables) {
+      if (flushTableSync(table).success !== true) {
+        return { success: false, errorMsg: "PERSISTENCE_FLUSH_ERROR" };
+      }
+    }
+    const batches = tables.map(table => {
+      const upserts: any[] = [];
+      const deletes: any[] = [];
+      for (const proposal of proposals.filter(p => p.table === table)) {
+        // Owner proposals address the same logical top-level values as cache
+        // reads. Grouped tables flatten these values to their storage rows;
+        // their group skeleton and removed descendants participate atomically.
+        const before = sqliteStore.explodeToRows(table, proposal.expected === undefined ? {} : {
+          [proposal.key]: JSON.parse(proposal.expected),
+        });
+        const after = sqliteStore.explodeToRows(table, proposal.serialized === undefined ? {} : {
+          [proposal.key]: JSON.parse(proposal.serialized),
+        });
+        for (const [key, value] of Object.entries(after)) upserts.push([key, JSON.stringify(value)]);
+        for (const key of Object.keys(before)) if (!Object.hasOwn(after, key)) deletes.push(key);
+      }
+      return { table, upserts, deletes };
+    });
+    // No cache is changed until SQLite has committed every participating row.
+    // Failures roll back inside better-sqlite3, leaving retryable source state.
+    sqliteStore.applyAtomicChanges(batches);
+    for (const proposal of proposals) {
+      if (proposal.serialized === undefined) delete cache[proposal.table][proposal.key];
+      else cache[proposal.table][proposal.key] = JSON.parse(proposal.serialized);
+    }
+    for (const batch of batches) advanceFlushBaseline(batch.table, batch.upserts, batch.deletes);
+    return { success: true, errorMsg: null };
+  } catch (error) {
+    dbErr(`atomic row commit FAILED: ${error.message}`);
+    return { success: false, errorMsg: "ATOMIC_WRITE_ERROR" };
+  }
+}
+
 /**
  * Synchronously flush ALL dirty tables.  Called on shutdown so
  * nothing is lost when the process exits.
@@ -1160,6 +1270,29 @@ function flushAllSync() {
 // ── Graceful shutdown ───────────────────────────────────────────────
 
 let shutdownInProgress = false;
+const shutdownHooks = new Map<any, number>();
+
+function registerShutdownHook(hook, options: Record<string, any> = {}) {
+  if (typeof hook !== "function") {
+    throw new TypeError("database shutdown hook must be a function");
+  }
+  const priority = Number(options.priority || 0);
+  shutdownHooks.set(hook, Number.isFinite(priority) ? priority : 0);
+  return () => shutdownHooks.delete(hook);
+}
+
+function runShutdownHooks(reason) {
+  const errors: any[] = [];
+  for (const [hook] of [...shutdownHooks].sort((left, right) => right[1] - left[1])) {
+    try {
+      hook(reason);
+    } catch (error) {
+      errors.push(error);
+      dbErr(`shutdown hook FAILED for ${reason}: ${error.message}`);
+    }
+  }
+  return { success: errors.length === 0, errors };
+}
 
 function flushDirtyTablesForShutdown(reason) {
   if (shutdownInProgress) {
@@ -1167,8 +1300,9 @@ function flushDirtyTablesForShutdown(reason) {
   }
   shutdownInProgress = true;
   dbLog(`received ${reason}, flushing cache to disk...`);
-  flushAllSync();
-  return true;
+  const hooks = runShutdownHooks(reason);
+  const flush = flushAllSync();
+  return hooks.success && flush.success;
 }
 
 function onShutdownSignal(signal, exitCode = 0) {
@@ -1176,8 +1310,8 @@ function onShutdownSignal(signal, exitCode = 0) {
     process.exitCode = exitCode;
     return;
   }
-  flushDirtyTablesForShutdown(signal);
-  process.exit(exitCode);
+  const success = flushDirtyTablesForShutdown(signal);
+  process.exit(success ? exitCode : 1);
 }
 
 for (const signal of ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"]) {
@@ -1192,8 +1326,11 @@ process.on("beforeExit", () => {
   if (process[TEST_STORE_CLEANUP_SYMBOL] === true) {
     return;
   }
-  if (dirty.size > 0 || inFlightFlushes.size > 0) {
-    flushDirtyTablesForShutdown("beforeExit");
+  // Hooks may need to create their final checkpoint even when the database was
+  // clean before the event loop became empty. Processes with no hooks retain
+  // the quiet, no-op behavior used by probes and migration tooling.
+  if (shutdownHooks.size > 0 || dirty.size > 0 || inFlightFlushes.size > 0) {
+    if (!flushDirtyTablesForShutdown("beforeExit")) process.exitCode = 1;
   }
 });
 
@@ -1202,7 +1339,11 @@ process.on("exit", () => {
     return;
   }
   // Last-chance sync flush for any remaining dirty tables
-  if (dirty.size > 0 || inFlightFlushes.size > 0) {
+  if (
+    (!shutdownInProgress && shutdownHooks.size > 0) ||
+    dirty.size > 0 ||
+    inFlightFlushes.size > 0
+  ) {
     flushDirtyTablesForShutdown("exit");
   }
 });
@@ -1392,7 +1533,10 @@ module.exports = {
   preloadAll,
   flushTableSync,
   flushTablesSync,
+  prepareAtomicRowWrite,
+  commitAtomicRowWrites,
   flushAllSync,
+  registerShutdownHook,
   // Internal hooks for migration tooling and tests.
   _dataDir: DATA_DIR,
   _sqliteDbPath: SQLITE_DB_PATH,

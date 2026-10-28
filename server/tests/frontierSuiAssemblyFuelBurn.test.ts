@@ -1,3 +1,4 @@
+import { createAssemblyGrpcFixture } from "./suiAssemblyGrpcFixture";
 import assert = require("node:assert/strict");
 import { test } from "node:test";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
@@ -42,20 +43,20 @@ function fixture() {
   const requests: any[] = [];
   const childFields: any[] = [];
   const chain = createSuiAssemblyChain({ world, tenant: "dev", deriveId: address, fuelAuthority: true,
-    client: {
-      async getObject(request: any) {
+    client: createAssemblyGrpcFixture({
+      async objectRecord(request: any) {
         requests.push(request);
         return objects.has(request.id) ? { data: objects.get(request.id) } : { error: { code: "notExists" } };
       },
-      async getDynamicFieldObject(request: any) {
+      async dynamicRecord(request: any) {
         requests.push(request);
         return efficiency.value === undefined ? { error: { code: "dynamicFieldNotFound" } }
           : { data: { content: { dataType: "moveObject", fields: efficiency } } };
       },
-    } as any,
-    async execute(label, tx, ownerId, guard) {
+    }) as any,
+    async execute(label, tx, ownerId, guard, gasPayerOwnerId) {
       guard?.();
-      executions.push({ label, data: tx.getData(), ownerId });
+      executions.push({ label, data: tx.getData(), ownerId, gasPayerOwnerId });
       // Model the deployed Move rules, including its reserved active fuel unit.
       const now = BigInt(clock.timestamp_ms);
       const cycle = BigInt(fuel.burn_rate_in_ms) * BigInt(efficiency.value) / 100n;
@@ -89,7 +90,7 @@ function fixture() {
   return { assembly, chain, fuel, fields, objects, clock, efficiency, config, executions, requests, addChild, childFields };
 }
 
-test("settles the elapsed D2 unit from 499 to 498 once through the admin journal", async () => {
+test("settles the elapsed D2 unit from 499 to 498 once through the assembly journal", async () => {
   const f = fixture();
   assert.equal(await f.chain.updateFuel(f.assembly), true);
   assert.equal((await f.chain.readFuelState(f.assembly)).quantity, 498);
@@ -97,7 +98,8 @@ test("settles the elapsed D2 unit from 499 to 498 once through the admin journal
   assert.equal(f.executions.length, 1);
   const execution = f.executions[0];
   assert.equal(execution.label, `assembly:${f.assembly.itemId}:fuel-burn`);
-  assert.equal(execution.ownerId, undefined, "Settlement is admin sponsored and does not need an owner signature");
+  assert.equal(execution.ownerId, undefined, "Settlement retains the authorized admin sender");
+  assert.equal(execution.gasPayerOwnerId, f.assembly.ownerId, "NPC-owned nodes must select faction gas");
   assert.deepEqual(execution.data.commands.map((c: any) => c.MoveCall.function), ["update_fuel", "destroy_offline_assemblies"]);
   const call = execution.data.commands[0].MoveCall;
   assert.equal(call.arguments.length, 4, "TxContext is implicit");

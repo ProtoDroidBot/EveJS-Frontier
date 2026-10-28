@@ -13,6 +13,9 @@ const path = require("path");
 const itemStore = require(path.join(__dirname, "../inventory/itemStore"));
 const { buildShipResourceState, } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const creationRuntime = require(path.join(__dirname, "./creationRuntime"));
+const turretInventory = require(path.join(__dirname, "./smartTurretInventoryRuntime"));
+const fieldStorageInventory = require(path.join(__dirname, "./fieldStorageInventoryRuntime"));
+const networkNodeFuel = require(path.join(__dirname, "./networkNodeFuelRuntime"));
 const { runWithSuiAssemblyState, runWithSuiAssemblyStates, } = require("./suiAssemblyState");
 const { TABLE, readStaticRows, } = require(path.join(__dirname, "../_shared/referenceData"));
 const { ASSEMBLY_STATUS_OFFLINE, ASSEMBLY_STATUS_ONLINE, ASSEMBLY_STATUS_UNDER_CONSTRUCTION, buildAssemblyTransitionTransactionData, isAssemblyActivationPending, isValidAssemblyTransitionSignature, readConstructionState, } = require(path.join(__dirname, "./deploymentRuntime"));
@@ -132,15 +135,23 @@ function validateStorageUnit(characterID, storageUnitID, options = {}) {
 /** Keep the chain read and the inventory operation on the assembly worker queue. */
 function withAuthoritativeStorageState(options, operation) {
     const sourceStorageUnitID = toInt(options.storageUnitID, 0);
-    const destinationStorageUnitID = toInt(options.destinationStorageUnitID, 0);
+    const destinationAssemblyID = toInt(options.destinationStorageUnitID, 0);
+    const sourceLocationID = toInt(options.sourceLocationID, 0);
+    const destinationLocationID = toInt(options.destinationLocationID, 0);
     const resolveAccess = (storageUnitID, fallback) => (typeof options.resolveAccess === "function"
         ? options.resolveAccess(storageUnitID)
         : fallback);
     const currentOptions = () => ({
         ...options,
         access: resolveAccess(sourceStorageUnitID, options.access),
-        ...(destinationStorageUnitID > 0 ? {
-            destinationAccess: resolveAccess(destinationStorageUnitID, options.destinationAccess || options.access),
+        ...(sourceLocationID > 0 ? {
+            sourceAccess: resolveAccess(sourceLocationID, options.sourceAccess || options.access),
+        } : {}),
+        ...(destinationAssemblyID > 0 ? {
+            destinationAccess: resolveAccess(destinationAssemblyID, options.destinationAccess || options.access),
+        } : {}),
+        ...(destinationLocationID > 0 ? {
+            genericDestinationAccess: resolveAccess(destinationLocationID, options.genericDestinationAccess || options.access),
         } : {}),
     });
     const unavailable = (error) => ({
@@ -157,21 +168,42 @@ function withAuthoritativeStorageState(options, operation) {
         });
         if (validation.errorMsg)
             return { success: false, errorMsg: validation.errorMsg };
-        if (destinationStorageUnitID > 0) {
-            const destinationValidation = validateStorageUnit(current.characterID, destinationStorageUnitID, { access: current.destinationAccess, refreshingStatus: true });
+        const assemblyIDs = [sourceStorageUnitID];
+        if (destinationAssemblyID > 0) {
+            const destinationValidation = validateAssemblyInventory(current.characterID, destinationAssemblyID, current.destinationAccess, { refreshingStatus: true });
             if (destinationValidation.errorMsg) {
                 return {
                     success: false,
                     errorMsg: destinationValidation.errorMsg,
                 };
             }
+            if (destinationValidation.kind !== "field_storage")
+                assemblyIDs.push(destinationAssemblyID);
         }
-        const assemblyIDs = [...new Set(destinationStorageUnitID > 0
-                ? [sourceStorageUnitID, destinationStorageUnitID]
-                : [sourceStorageUnitID])];
-        const result = assemblyIDs.length === 1
-            ? runWithSuiAssemblyState(assemblyIDs[0], () => operation(currentOptions()))
-            : runWithSuiAssemblyStates(assemblyIDs, () => operation(currentOptions()));
+        for (const [candidateID, flagID, candidateAccess] of [
+            [sourceLocationID, toInt(options.sourceFlagID, -1), current.sourceAccess],
+            [destinationLocationID, toInt(options.destinationFlagID, -1), current.genericDestinationAccess],
+        ]) {
+            if (candidateID <= 0)
+                continue;
+            const candidateKind = getAssemblyInventoryKind(candidateID);
+            const expectedFlag = candidateKind === "network_node_fuel"
+                ? networkNodeFuel.NETWORK_NODE_FUEL_BAY_FLAG
+                : turretInventory.SMART_TURRET_INVENTORY_FLAG;
+            if (!candidateKind || flagID !== expectedFlag ||
+                !["turret", "field_storage", "network_node_fuel"].includes(candidateKind))
+                continue;
+            const candidateValidation = validateAssemblyInventory(current.characterID, candidateID, candidateAccess, { refreshingStatus: true });
+            if (candidateValidation.errorMsg) {
+                return { success: false, errorMsg: candidateValidation.errorMsg };
+            }
+            if (candidateKind !== "field_storage")
+                assemblyIDs.push(candidateID);
+        }
+        const uniqueAssemblyIDs = [...new Set(assemblyIDs)];
+        const result = uniqueAssemblyIDs.length === 1
+            ? runWithSuiAssemblyState(uniqueAssemblyIDs[0], () => operation(currentOptions()))
+            : runWithSuiAssemblyStates(uniqueAssemblyIDs, () => operation(currentOptions()));
         return result instanceof Promise ? result.catch(unavailable) : result;
     }
     catch (error) {
@@ -284,17 +316,62 @@ function normalizeWithdrawStacks(rawStacks) {
     }
     return Array.from(byTypeID, ([typeID, quantity]) => ({ typeID, quantity }));
 }
-function validateGenericContainer(characterID, itemID, access, errorMsg) {
+function getAssemblyInventoryKind(itemID) {
+    const item = itemStore.findItemById(toInt(itemID, 0));
+    if (!item)
+        return null;
+    if (getStorageComponent(item.typeID))
+        return "storage_unit";
+    if (turretInventory.getTurretComponent(item.typeID))
+        return "turret";
+    if (fieldStorageInventory.getFieldStorageComponent(item.typeID))
+        return "field_storage";
+    if (toInt(item.typeID, 0) === networkNodeFuel.NETWORK_NODE_TYPE_ID)
+        return "network_node_fuel";
+    return null;
+}
+function validateAssemblyInventory(characterID, itemID, access, options = {}) {
+    const kind = getAssemblyInventoryKind(itemID);
+    const result = kind === "storage_unit"
+        ? validateStorageUnit(characterID, itemID, { access, ...options })
+        : kind === "turret"
+            ? turretInventory.validateTurretInventory(characterID, itemID, { access, ...options })
+            : kind === "field_storage"
+                ? fieldStorageInventory.validateFieldStorageInventory(characterID, itemID, { access, ...options })
+                : kind === "network_node_fuel"
+                    ? networkNodeFuel.validateNetworkNodeFuelInventory(characterID, itemID, { access, ...options })
+                    : { errorMsg: "ASSEMBLY_NOT_FOUND" };
+    if (result.errorMsg)
+        return result;
+    return {
+        ...result,
+        kind,
+        flagID: kind === "storage_unit" ? SMART_STORAGE_FLAG
+            : kind === "network_node_fuel" ? networkNodeFuel.NETWORK_NODE_FUEL_BAY_FLAG : 0,
+        inventoryOwnerID: toInt(characterID, 0),
+    };
+}
+function validateTransferContainer(characterID, itemID, flagID, access, errorMsg) {
     const numericItemID = toInt(itemID, 0);
     const item = numericItemID > 0 ? itemStore.findItemById(numericItemID) : null;
     if (!item || toInt(item.ownerID, 0) !== toInt(characterID, 0)) {
         return { errorMsg };
     }
     const activeShipID = toInt(access && access.activeShipID, 0);
-    if (activeShipID <= 0 || numericItemID !== activeShipID) {
-        return { errorMsg };
+    if (activeShipID > 0 && numericItemID === activeShipID && flagID === CARGO_HOLD_FLAG) {
+        return { item, kind: "ship", flagID, inventoryOwnerID: toInt(characterID, 0) };
     }
-    return { item };
+    if (flagID === networkNodeFuel.NETWORK_NODE_FUEL_BAY_FLAG &&
+        toInt(item.typeID, 0) === networkNodeFuel.NETWORK_NODE_TYPE_ID) {
+        const assembly = validateAssemblyInventory(characterID, numericItemID, access);
+        return assembly.errorMsg ? { errorMsg: assembly.errorMsg } : assembly;
+    }
+    if (flagID !== turretInventory.SMART_TURRET_INVENTORY_FLAG ||
+        (!turretInventory.getTurretComponent(item.typeID) &&
+            !fieldStorageInventory.getFieldStorageComponent(item.typeID)))
+        return { errorMsg };
+    const assembly = validateAssemblyInventory(characterID, numericItemID, access, { requireOnline: true });
+    return assembly.errorMsg ? { errorMsg: assembly.errorMsg } : assembly;
 }
 function validateDeposit(options) {
     const unit = validateStorageUnit(options.characterID, options.storageUnitID, {
@@ -304,15 +381,48 @@ function validateDeposit(options) {
     if (unit.errorMsg) {
         return unit;
     }
+    const sourceLocationID = toInt(options.sourceLocationID, 0);
+    const sourceFlagID = toInt(options.sourceFlagID, -1);
+    const source = validateTransferContainer(options.characterID, sourceLocationID, sourceFlagID, options.sourceAccess || options.access, "INVALID_SOURCE");
+    if (source.errorMsg)
+        return { errorMsg: source.errorMsg };
+    if (source.kind === "network_node_fuel") {
+        const requestedFuel = normalizeWithdrawStacks(options.stacks);
+        if (!requestedFuel || requestedFuel.length !== 1)
+            return { errorMsg: "INVALID_QUANTITY" };
+        const [requested] = requestedFuel;
+        if (!networkNodeFuel.isAcceptedNetworkNodeFuelType(requested.typeID) ||
+            source.fuelState.typeID !== requested.typeID ||
+            source.fuelState.quantity < requested.quantity) {
+            return { errorMsg: "INSUFFICIENT_SOURCE_ITEMS" };
+        }
+        const unitVolume = Math.max(0, itemStore.getInventoryItemUnitVolume({ typeID: requested.typeID }));
+        const depositVolume = unitVolume * requested.quantity;
+        const storedRows = listStoredRows(options.characterID, options.storageUnitID);
+        const existing = aggregateStoredRows(storedRows).find(entry => entry.typeID === requested.typeID);
+        if ((existing?.quantity || 0) + requested.quantity > UINT32_MAX) {
+            return { errorMsg: "STORAGE_TYPE_QUANTITY_EXCEEDED", params: { typeID: requested.typeID } };
+        }
+        const usedVolume = getUsedVolume(storedRows);
+        if (usedVolume + depositVolume > unit.capacity + CAPACITY_EPSILON) {
+            return { errorMsg: "STORAGE_CAPACITY_EXCEEDED", params: {
+                    capacity: unit.capacity,
+                    freeVolume: Math.max(0, unit.capacity - usedVolume),
+                } };
+        }
+        return {
+            unit: unit,
+            sourceLocationID,
+            sourceFlagID,
+            sourceAssemblyKind: "network_node_fuel",
+            stacks: [{ ...requested, itemID: 0, unitVolume }],
+            depositVolume,
+            usedVolume,
+        };
+    }
     const stacks = normalizeDepositStacks(options.stacks);
     if (!stacks || stacks.length === 0) {
         return { errorMsg: "INVALID_QUANTITY" };
-    }
-    const sourceLocationID = toInt(options.sourceLocationID, 0);
-    const sourceFlagID = toInt(options.sourceFlagID, -1);
-    const source = validateGenericContainer(options.characterID, sourceLocationID, options.access, "INVALID_SOURCE");
-    if (source.errorMsg || sourceFlagID !== CARGO_HOLD_FLAG) {
-        return { errorMsg: source.errorMsg || "INVALID_SOURCE" };
     }
     let depositVolume = 0;
     const validatedStacks = [];
@@ -381,12 +491,12 @@ function validateWithdraw(options) {
     if (!stacks || stacks.length === 0) {
         return { errorMsg: "INVALID_QUANTITY" };
     }
-    const destinationStorageUnitID = toInt(options.destinationStorageUnitID, 0);
-    if (destinationStorageUnitID === toInt(options.storageUnitID, 0)) {
+    const destinationAssemblyID = toInt(options.destinationStorageUnitID, 0);
+    if (destinationAssemblyID === toInt(options.storageUnitID, 0)) {
         return { errorMsg: "INVALID_DESTINATION" };
     }
-    const destinationUnit = destinationStorageUnitID > 0
-        ? validateStorageUnit(options.characterID, destinationStorageUnitID, {
+    const destinationUnit = destinationAssemblyID > 0
+        ? validateAssemblyInventory(options.characterID, destinationAssemblyID, options.destinationAccess, {
             access: options.destinationAccess,
             requireOnline: true,
         })
@@ -394,19 +504,17 @@ function validateWithdraw(options) {
     if (destinationUnit && destinationUnit.errorMsg) {
         return destinationUnit;
     }
-    const destinationLocationID = destinationStorageUnitID > 0
-        ? destinationStorageUnitID
+    const destinationLocationID = destinationAssemblyID > 0
+        ? destinationAssemblyID
         : toInt(options.destinationLocationID, 0);
-    const destinationFlagID = destinationStorageUnitID > 0
-        ? SMART_STORAGE_FLAG
+    const destinationFlagID = destinationAssemblyID > 0
+        ? toInt(destinationUnit?.flagID, -1)
         : toInt(options.destinationFlagID, -1);
-    const destination = destinationStorageUnitID > 0
-        ? null
-        : validateGenericContainer(options.characterID, destinationLocationID, options.access, "INVALID_DESTINATION");
-    if (destinationStorageUnitID <= 0 &&
-        (destination?.errorMsg || destinationFlagID !== CARGO_HOLD_FLAG)) {
-        return { errorMsg: destination?.errorMsg || "INVALID_DESTINATION" };
-    }
+    const destination = destinationAssemblyID > 0
+        ? destinationUnit
+        : validateTransferContainer(options.characterID, destinationLocationID, destinationFlagID, options.genericDestinationAccess || options.access, "INVALID_DESTINATION");
+    if (destination?.errorMsg)
+        return { errorMsg: destination.errorMsg };
     const storedRows = listStoredRows(options.characterID, options.storageUnitID);
     const rowsByTypeID = new Map();
     for (const item of storedRows) {
@@ -442,8 +550,33 @@ function validateWithdraw(options) {
         }
     }
     const withdrawalVolume = moves.reduce((total, move) => total + (move.unitVolume * move.quantity), 0);
-    if (destinationStorageUnitID > 0) {
-        const destinationRows = listStoredRows(options.characterID, destinationStorageUnitID);
+    if (destination?.kind === "network_node_fuel") {
+        if (stacks.length !== 1 || !networkNodeFuel.isAcceptedNetworkNodeFuelType(stacks[0].typeID)) {
+            return { errorMsg: "UNSUPPORTED_FUEL_TYPE" };
+        }
+        if (destination.fuelState.quantity > 0 && destination.fuelState.typeID !== stacks[0].typeID) {
+            return { errorMsg: "MIXED_FUEL_TYPES" };
+        }
+        if (destination.usedVolume + withdrawalVolume > destination.capacity + CAPACITY_EPSILON) {
+            return { errorMsg: "FUEL_CAPACITY_EXCEEDED", params: {
+                    capacity: destination.capacity,
+                    freeVolume: Math.max(0, destination.capacity - destination.usedVolume),
+                } };
+        }
+        return {
+            unit: unit,
+            destinationUnit,
+            destinationAssemblyID: destinationLocationID,
+            destinationAssemblyKind: "network_node_fuel",
+            destinationLocationID,
+            destinationFlagID,
+            destinationStorageUnitID: 0,
+            stacks,
+            moves,
+        };
+    }
+    if (destination?.kind !== "ship") {
+        const destinationRows = itemStore.listContainerItems(destination.inventoryOwnerID, destinationLocationID, destinationFlagID);
         const destinationQuantityByTypeID = new Map(aggregateStoredRows(destinationRows).map((entry) => [
             entry.typeID,
             entry.quantity,
@@ -459,7 +592,7 @@ function validateWithdraw(options) {
             destinationQuantityByTypeID.set(stack.typeID, nextQuantity);
         }
         const destinationUsedVolume = getUsedVolume(destinationRows);
-        const destinationCapacity = destinationUnit.capacity;
+        const destinationCapacity = destination.capacity;
         if (destinationUsedVolume + withdrawalVolume >
             destinationCapacity + CAPACITY_EPSILON) {
             return {
@@ -472,10 +605,13 @@ function validateWithdraw(options) {
         }
         return {
             unit: unit,
-            destinationUnit: destinationUnit,
+            destinationUnit,
+            destinationAssemblyID: destination.kind === "turret" || destination.kind === "field_storage"
+                ? destinationLocationID : destinationAssemblyID,
+            destinationAssemblyKind: destination.kind,
             destinationLocationID,
             destinationFlagID,
-            destinationStorageUnitID,
+            destinationStorageUnitID: destination.kind === "storage_unit" ? destinationAssemblyID : 0,
             stacks,
             moves,
         };
@@ -496,6 +632,7 @@ function validateWithdraw(options) {
     }
     return {
         unit: unit,
+        destinationAssemblyID: 0,
         destinationLocationID,
         destinationFlagID,
         destinationStorageUnitID: 0,
@@ -566,10 +703,9 @@ function prepareStorageDeposit(options) {
         sourceLocationID: validation.sourceLocationID,
         sourceFlagID: validation.sourceFlagID,
         ...(options.deployment ? { deployment: options.deployment } : {}),
-        stacks: validation.stacks.map(({ itemID, quantity }) => ({
-            itemID,
-            quantity,
-        })),
+        stacks: validation.stacks.map(({ itemID, typeID, quantity }) => (validation.sourceAssemblyKind === "network_node_fuel"
+            ? { typeID, quantity }
+            : { itemID, quantity })),
     }, options.walletAddress);
     return { success: true, data: prepared };
 }
@@ -587,7 +723,9 @@ function prepareStorageWithdraw(options) {
         storageUnitID: toInt(options.storageUnitID, 0),
         destinationLocationID: validation.destinationLocationID,
         destinationFlagID: validation.destinationFlagID,
-        destinationStorageUnitID: validation.destinationStorageUnitID,
+        // The wire field is historically named for SSUs, but its assembly
+        // identifier may now point at a Smart Turret too.
+        destinationStorageUnitID: validation.destinationAssemblyID,
         ...(options.deployment ? { deployment: options.deployment } : {}),
         stacks: validation.stacks,
     }, options.walletAddress);
@@ -610,8 +748,8 @@ function aggregateNoticeItems(entries) {
     }
     return Array.from(byTypeID.values()).sort((left, right) => left.typeID - right.typeID);
 }
-function commitDeposit(transaction, access) {
-    const validation = validateDeposit({ ...transaction.request, access });
+function commitDeposit(transaction, access, sourceAccess) {
+    const validation = validateDeposit({ ...transaction.request, access, sourceAccess });
     if (validation.errorMsg) {
         return {
             success: false,
@@ -619,7 +757,33 @@ function commitDeposit(transaction, access) {
             params: validation.params,
         };
     }
-    const moved = itemStore.moveItemsToLocations(validation.stacks.map((stack) => ({
+    const deposit = validation;
+    if (deposit.sourceAssemblyKind === "network_node_fuel") {
+        const stack = deposit.stacks[0];
+        const withdrawn = networkNodeFuel.withdrawNetworkNodeFuelToInventory({
+            characterID: transaction.characterID,
+            networkNodeID: deposit.sourceLocationID,
+            fuelTypeID: stack.typeID,
+            quantity: stack.quantity,
+            destinationLocationID: transaction.storageUnitID,
+            destinationFlagID: SMART_STORAGE_FLAG,
+            publishNotice: true,
+        });
+        if (!withdrawn.success)
+            return withdrawn;
+        const itemID = toInt(withdrawn.data.grantedItems?.find(item => toInt(item.typeID, 0) === stack.typeID)?.itemID, 0);
+        return { success: true, data: {
+                action: transaction.action,
+                changes: withdrawn.data.changes,
+                characterID: transaction.characterID,
+                noticeItems: [{ itemID, typeID: stack.typeID, quantity: stack.quantity,
+                        unitVolume: stack.unitVolume }],
+                sourceAssemblyID: deposit.sourceLocationID,
+                sourceAssemblyKind: "network_node_fuel",
+                storageUnitID: transaction.storageUnitID,
+            } };
+    }
+    const moved = itemStore.moveItemsToLocations(deposit.stacks.map((stack) => ({
         itemID: stack.itemID,
         destinationLocationID: transaction.storageUnitID,
         destinationFlagID: SMART_STORAGE_FLAG,
@@ -631,7 +795,7 @@ function commitDeposit(transaction, access) {
             errorMsg: moved && moved.errorMsg ? moved.errorMsg : "STORAGE_MOVE_FAILED",
         };
     }
-    const noticeItems = aggregateNoticeItems(validation.stacks.map((stack, index) => ({
+    const noticeItems = aggregateNoticeItems(deposit.stacks.map((stack, index) => ({
         itemID: toInt(moved.data.moves[index] && moved.data.moves[index].movedItemID, 0),
         typeID: stack.typeID,
         quantity: stack.quantity,
@@ -648,11 +812,12 @@ function commitDeposit(transaction, access) {
         },
     };
 }
-function commitWithdraw(transaction, access, destinationAccess) {
+function commitWithdraw(transaction, access, destinationAccess, genericDestinationAccess) {
     const validation = validateWithdraw({
         ...transaction.request,
         access,
         destinationAccess,
+        genericDestinationAccess,
     });
     if (validation.errorMsg) {
         return {
@@ -660,6 +825,29 @@ function commitWithdraw(transaction, access, destinationAccess) {
             errorMsg: validation.errorMsg,
             params: validation.params,
         };
+    }
+    if (validation.destinationAssemblyKind === "network_node_fuel") {
+        const deposited = networkNodeFuel.depositNetworkNodeFuelFromInventory({
+            characterID: transaction.characterID,
+            networkNodeID: validation.destinationAssemblyID,
+            sourceLocationID: transaction.storageUnitID,
+            sourceFlagID: SMART_STORAGE_FLAG,
+            items: validation.moves.map(move => ({ itemID: move.itemID, quantity: move.quantity })),
+            publishNotice: true,
+        });
+        if (!deposited.success)
+            return deposited;
+        return { success: true, data: {
+                action: transaction.action,
+                changes: deposited.data.changes,
+                characterID: transaction.characterID,
+                noticeItems: aggregateNoticeItems(validation.moves),
+                destinationNoticeItems: [],
+                destinationStorageUnitID: 0,
+                destinationAssemblyID: validation.destinationAssemblyID,
+                destinationAssemblyKind: "network_node_fuel",
+                storageUnitID: transaction.storageUnitID,
+            } };
     }
     const moved = itemStore.moveItemsToLocations(validation.moves.map((move) => ({
         itemID: move.itemID,
@@ -694,11 +882,13 @@ function commitWithdraw(transaction, access, destinationAccess) {
                 ? noticeItems
                 : [],
             destinationStorageUnitID: validation.destinationStorageUnitID,
+            destinationAssemblyID: validation.destinationAssemblyID,
+            destinationAssemblyKind: validation.destinationAssemblyKind,
             storageUnitID: transaction.storageUnitID,
         },
     };
 }
-function executeStorageTransaction({ action, characterID, transactionUUID, signature, access, resolveAccess, destinationAccess, signatureVerified, walletAddress, storageUnitID, }) {
+function executeStorageTransaction({ action, characterID, transactionUUID, signature, access, resolveAccess, destinationAccess, sourceAccess, genericDestinationAccess, signatureVerified, walletAddress, storageUnitID, }) {
     // Compatibility-only envelope check: the current local Frontier profile has
     // no trusted character-to-Sui-wallet binding or canonical BCS transaction
     // verifier. Session identity, proximity, ownership, UUID/TTL binding, and
@@ -748,9 +938,18 @@ function executeStorageTransaction({ action, characterID, transactionUUID, signa
                 ? resolveAccess(destinationStorageUnitID)
                 : access))
         : undefined;
+    const sourceLocationID = toInt(transaction.request.sourceLocationID, 0);
+    const executionSourceAccess = sourceLocationID > 0
+        ? (sourceAccess || (typeof resolveAccess === "function" ? resolveAccess(sourceLocationID) : access))
+        : undefined;
+    const destinationLocationID = toInt(transaction.request.destinationLocationID, 0);
+    const executionGenericDestinationAccess = destinationLocationID > 0
+        ? (genericDestinationAccess || (typeof resolveAccess === "function"
+            ? resolveAccess(destinationLocationID) : access))
+        : undefined;
     const commit = transaction.action === "storageunit-deposit"
-        ? commitDeposit(transaction, executionAccess)
-        : commitWithdraw(transaction, executionAccess, executionDestinationAccess);
+        ? commitDeposit(transaction, executionAccess, executionSourceAccess)
+        : commitWithdraw(transaction, executionAccess, executionDestinationAccess, executionGenericDestinationAccess);
     if (commit.success === true) {
         const expiresAtMs = Date.now() + COMPLETED_TRANSACTION_TTL_MS;
         pendingTransactions.delete(normalizedUUID);
@@ -803,6 +1002,10 @@ function executeStorageTransactionWithChainState(options) {
         ...options,
         storageUnitID: transaction.storageUnitID,
         destinationStorageUnitID: transaction.request.destinationStorageUnitID,
+        destinationLocationID: transaction.request.destinationLocationID,
+        destinationFlagID: transaction.request.destinationFlagID,
+        sourceLocationID: transaction.request.sourceLocationID,
+        sourceFlagID: transaction.request.sourceFlagID,
     }, current => executeStorageTransaction(current));
 }
 module.exports = {

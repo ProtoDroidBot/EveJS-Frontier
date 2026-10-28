@@ -5,7 +5,7 @@ const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
 const { OWNER_SCOPE, assertSessionCanAccessOwner, assertSessionCanMutateOwner, getCommunityFittingsResponse, getOwnerFittingsResponse, saveFitting, saveManyFittings, updateFitting, updateFittingNameAndDescription, deleteFitting, deleteManyFittings, } = require(path.join(__dirname, "../../_secondary/fitting/fittingStore"));
 const { buildDeletedResult, buildSaveManyResult, extractKwargValue, handleStoreResult, notifyFittingMutation, resolveRequestedOwnerID, } = require(path.join(__dirname, "./fittingMgrServiceHelpers"));
-const { buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
+const { buildCachedMethodCallResultAsync: buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 class CorpFittingMgrService extends BaseService {
     constructor() {
         super("corpFittingMgr");

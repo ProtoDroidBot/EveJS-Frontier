@@ -1,3 +1,4 @@
+const { applyFrontier3640684ContractProfile } = require("./frontierContractProfile");
 const path = require("path");
 const protobuf = require("protobufjs");
 
@@ -256,6 +257,8 @@ const LOCAL_CHAT_PROTO_ROOT = protobuf.Root.fromJSON({
     },
   },
 });
+
+applyFrontier3640684ContractProfile(LOCAL_CHAT_PROTO_ROOT);
 
 const TYPES = Object.freeze({
   getMembershipListRequest: LOCAL_CHAT_PROTO_ROOT.lookupType(

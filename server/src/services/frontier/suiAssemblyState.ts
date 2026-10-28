@@ -4,6 +4,27 @@ export type SuiAssemblyStateRunner = <T>(assemblyID: number, operation: () => T)
 export type SuiAssemblyStatesRunner = <T>(assemblyIDs: readonly number[], operation: () => T) => Promise<T>;
 let runner: SuiAssemblyStateRunner | null = null;
 let statesRunner: SuiAssemblyStatesRunner | null = null;
+let stateGeneration = 0;
+let deploymentReader: (() => unknown) | null = null;
+let observedDeployment: unknown;
+
+/** Detect worker replacement and deployment changes within the same worker. */
+export function getSuiAssemblyStateGeneration(): number {
+  if (deploymentReader) {
+    const current = deploymentReader();
+    if (current !== observedDeployment) {
+      observedDeployment = current;
+      stateGeneration++;
+    }
+  }
+  return stateGeneration;
+}
+
+function nextGeneration(readDeployment?: () => unknown) {
+  deploymentReader = readDeployment || null;
+  observedDeployment = undefined;
+  stateGeneration++;
+}
 
 export function isSuiAssemblyStateAuthoritative(): boolean { return runner !== null; }
 
@@ -11,15 +32,17 @@ export function isSuiAssemblyStateAuthoritative(): boolean { return runner !== n
 export function registerSuiAssemblyStateRunner(value: SuiAssemblyStateRunner) {
   runner = value;
   statesRunner = null;
-  return () => { if (runner === value) { runner = null; statesRunner = null; } };
+  nextGeneration();
+  return () => { if (runner === value) { runner = null; statesRunner = null; nextGeneration(); } };
 }
 
 /** Single and multi-assembly requests must share one worker queue entry. */
-export function registerSuiAssemblyStatesRunner(value: SuiAssemblyStatesRunner) {
+export function registerSuiAssemblyStatesRunner(value: SuiAssemblyStatesRunner, readDeployment?: () => unknown) {
   const single: SuiAssemblyStateRunner = (assemblyID, operation) => value([assemblyID], operation);
   runner = single;
   statesRunner = value;
-  return () => { if (runner === single) { runner = null; statesRunner = null; } };
+  nextGeneration(readDeployment);
+  return () => { if (runner === single) { runner = null; statesRunner = null; nextGeneration(); } };
 }
 
 export function runWithSuiAssemblyState<T>(assemblyID: number, operation: () => T): T | Promise<T> {

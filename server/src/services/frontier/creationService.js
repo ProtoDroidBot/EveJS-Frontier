@@ -7,22 +7,74 @@ const { throwWrappedObject, } = require(path.join(__dirname, "../../common/macho
 const { buildCreationDiagnostic, buildCreationSnapshot, normalizePositiveInteger, resolveSessionCharacterID, } = require(path.join(__dirname, "./creationCompatibility"));
 const { buildDict, buildList, currentFileTime, unwrapMarshalValue, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const { commitCreationDraft, ensureCreationState, setCreationPowerState, } = require(path.join(__dirname, "./creationRuntime"));
+const { applyCreationPreset, deleteCreationPreset, listCreationPresets, previewCreationPreset, saveCreationPreset, updateCreationPresetMetadata, } = require(path.join(__dirname, "./creationPresetRuntime"));
 const { dispatchCreationAbility, normalizeAbilityId, } = require(path.join(__dirname, "./creationAbilityRuntime"));
 const { registerFallbackCreationAbilityHandlers, } = require(path.join(__dirname, "./creationAbilityHandlers"));
 const { registerCreationChargeAbilityHandlers, } = require(path.join(__dirname, "./creationChargeAbilityHandlers"));
-const { getCreationModuleChargeState, } = require(path.join(__dirname, "./creationChargeRuntime"));
+const { getCreationModuleChargeState, registerCreationLaunchBayAbilityHandler, } = require(path.join(__dirname, "./creationChargeRuntime"));
 const { registerIffAbilityHandlers, } = require(path.join(__dirname, "./iffAbilityHandlers"));
 const { registerScanningAbilityHandlers, } = require(path.join(__dirname, "./scanningAbilityHandlers"));
+const { registerCreationIndustryAbilityHandlers, } = require(path.join(__dirname, "./creationIndustryAbilityHandlers"));
+const { registerCreationActiveModuleAbilityHandlers, } = require(path.join(__dirname, "./creationActiveModuleAbilityHandlers"));
 const scanningRuntime = require(path.join(__dirname, "./scanningRuntime"));
 // Behavior handlers must be registered before any get_creation snapshot is
 // built: module ability advertisement reads the handler registry.
 registerFallbackCreationAbilityHandlers();
 registerCreationChargeAbilityHandlers();
+registerCreationLaunchBayAbilityHandler();
 registerIffAbilityHandlers();
 registerScanningAbilityHandlers();
+registerCreationIndustryAbilityHandlers();
+registerCreationActiveModuleAbilityHandlers();
 const CREATION_ERROR_CLASS = "frontier.creation.common.errors.CreationError";
 const CREATION_ERROR_GENERIC = "CreationError_Generic";
 const CREATION_ERROR_UNKNOWN = "CreationError_UnknownCreation";
+function mapAbilityFailureToCreationError(errorMsg) {
+    switch (String(errorMsg || "")) {
+        case "MODULE_NOT_IN_CREATION":
+        case "MODULE_NOT_FOUND":
+        case "FACILITY_NOT_FOUND":
+            return "CreationError_UnknownModule";
+        case "ABILITY_EMPTY":
+        case "ABILITY_NOT_ADVERTISED":
+        case "ABILITY_HANDLER_MISSING":
+            return "CreationError_UnknownAbility";
+        case "MODULE_NOT_ONLINE":
+        case "MODULE_OFFLINE":
+        case "CREATION_MODULE_OFFLINE":
+        case "FACILITY_OFFLINE":
+            return "CreationError_ModuleOffline";
+        case "CREATION_POWERED_OFF":
+        case "POWERED_OFF":
+            return "CreationError_PoweredOff";
+        case "TARGET_REQUIRED":
+        case "TARGET_NOT_FOUND":
+        case "INVALID_TARGET":
+        case "TARGET_NOT_LOCKED":
+        case "TARGET_OUT_OF_RANGE":
+            return "CreationError_NoTarget";
+        case "NO_FUEL":
+            return "CreationError_MissingFuel";
+        case "NO_AMMO":
+        case "CREATION_NO_AMMO":
+            return "CreationError_NoAmmo";
+        case "ACCESS_DENIED":
+        case "INVALID_SHIP":
+        case "FACILITY_NOT_IN_CURRENT_SYSTEM":
+            return "CreationError_AccessDenied";
+        case "MODULE_ALREADY_ACTIVE":
+        case "MODULE_REACTIVATING":
+        case "CREATION_MODULE_RELOADING":
+        case "PRODUCTION_ALREADY_RUNNING":
+            return "CreationError_ModuleBusy";
+        case "CARGO_FULL":
+        case "CREATION_CARGO_CAPACITY_EXCEEDED":
+        case "OUTPUT_CAPACITY_EXCEEDED":
+            return "CreationError_CargoFull";
+        default:
+            return "CreationError_CannotActivate";
+    }
+}
 function recordCreationModuleEmission(session, creationItemID) {
     if (!session || !session._space) {
         return;
@@ -70,6 +122,14 @@ function resolveOwnedCreationItem(requestedItemID, session) {
         return null;
     }
     return { item, characterID };
+}
+function resolveActiveOwnedCreationItem(requestedItemID, session) {
+    const owned = resolveOwnedCreationItem(requestedItemID, session);
+    const activeShipID = normalizePositiveInteger(session && session._space && session._space.shipID ||
+        session && (session.activeShipID || session.shipID || session.shipid));
+    return owned && activeShipID === normalizePositiveInteger(owned.item.itemID)
+        ? owned
+        : null;
 }
 function resolveOwnedCreation(requestedItemID, session) {
     const owned = resolveOwnedCreationItem(requestedItemID, session);
@@ -130,6 +190,90 @@ function getSessionFileTime(session) {
 function buildServerTimeResult(serverTime) {
     return buildDict([["server_time", serverTime || currentFileTime()]]);
 }
+function marshalPresetValue(value) {
+    if (Array.isArray(value)) {
+        return buildList(value.map((entry) => marshalPresetValue(entry)));
+    }
+    if (value && typeof value === "object") {
+        return buildDict(Object.entries(value)
+            .map(([key, entry]) => [key, marshalPresetValue(entry)]));
+    }
+    return value;
+}
+const MARSHAL_VALUE_TYPES = new Set([
+    "dict", "wstring", "frontier-string", "long", "real", "tuple", "list",
+    "bytes", "frontier-bytes", "rawstr", "object", "packedrow", "substruct",
+    "substream", "token", "objectex1", "objectex2", "cpicked",
+]);
+function marshalAbilityResponseValue(value) {
+    if (Array.isArray(value)) {
+        return buildList(value.map((entry) => marshalAbilityResponseValue(entry)));
+    }
+    if (value && typeof value === "object" && !Buffer.isBuffer(value)) {
+        // Scan and industry handlers already return wire-format descriptors.
+        if (MARSHAL_VALUE_TYPES.has(value.type)) {
+            return value;
+        }
+        return buildDict(Object.entries(value)
+            .map(([key, entry]) => [key, marshalAbilityResponseValue(entry)]));
+    }
+    return value;
+}
+function buildCreationAbilityResponse(data, session) {
+    const entries = [[
+            "server_time",
+            data.serverTime || getSessionFileTime(session),
+        ]];
+    for (const [key, value] of Object.entries(data)) {
+        if (key !== "serverTime") {
+            entries.push([key, marshalAbilityResponseValue(value)]);
+        }
+    }
+    return buildDict(entries);
+}
+function buildPresetResult(result) {
+    return buildDict([
+        ["success", result && result.success === true],
+        ["diagnostics", diagnosticList(result && result.diagnostics)],
+        ["data", result && result.data ? marshalPresetValue(result.data) : null],
+    ]);
+}
+function presentCreationCommit(result, owned, session) {
+    if (result.success !== true) {
+        return;
+    }
+    if (session && typeof session.sendNotification === "function") {
+        try {
+            const snapshot = buildCreationSnapshot(result.data.item, owned.characterID, result.data.state, result.data.template, {
+                getLoadedCharge(moduleItemID) {
+                    const loaded = getCreationModuleChargeState(owned.characterID, moduleItemID);
+                    if (!loaded.success || !loaded.data.item) {
+                        return null;
+                    }
+                    return {
+                        count: loaded.data.quantity,
+                        typeID: loaded.data.item.typeID,
+                    };
+                },
+            });
+            session.sendNotification("OnCreationChanged", "clientID", [owned.item.itemID, snapshot]);
+        }
+        catch (error) {
+            log.warn(`[creation] snapshot notification failed ship=${owned.item.itemID}: ` +
+                `${error && error.message ? error.message : error}`);
+        }
+    }
+    if (session && session._space) {
+        try {
+            const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
+            spaceRuntime.refreshShipDerivedState(session, { broadcast: true });
+        }
+        catch (error) {
+            log.warn(`[creation] derived-state refresh failed ship=${owned.item.itemID}: ` +
+                `${error && error.message ? error.message : error}`);
+        }
+    }
+}
 class CreationService extends BaseService {
     constructor() {
         super("creation");
@@ -152,7 +296,97 @@ class CreationService extends BaseService {
         log.info(`[creation] commit_management_draft ship=${owned.item.itemID} ` +
             `changes=${Array.isArray(changes) ? changes.length : 0} ` +
             `accepted=${result.success === true} diagnostics=${result.diagnostics.length}`);
+        presentCreationCommit(result, owned, session);
         return diagnosticList(result.diagnostics);
+    }
+    Handle_list_presets(_args, session) {
+        const characterID = resolveSessionCharacterID(session);
+        return buildList(listCreationPresets(characterID)
+            .map((preset) => marshalPresetValue(preset)));
+    }
+    Handle_get_presets(args, session) {
+        return this.Handle_list_presets(args, session);
+    }
+    Handle_save_preset(args, session) {
+        const [requestedItemID, name, description] = unpackArgs(args);
+        const owned = resolveActiveOwnedCreationItem(requestedItemID, session);
+        if (!owned) {
+            return buildPresetResult({
+                success: false,
+                diagnostics: [{
+                        code: "item_unavailable",
+                        severity: "blocker",
+                        params: { reason: "ACTIVE_CREATION_REQUIRED" },
+                    }],
+            });
+        }
+        return buildPresetResult(saveCreationPreset(owned.item, owned.characterID, name, description));
+    }
+    Handle_rename_preset(args, session) {
+        const [presetID, name, description] = unpackArgs(args);
+        const characterID = resolveSessionCharacterID(session);
+        const changes = { name };
+        if (description !== undefined && description !== null) {
+            changes.description = description;
+        }
+        const result = updateCreationPresetMetadata(characterID, String(presetID || ""), changes);
+        return buildPresetResult(result.success
+            ? { success: true, diagnostics: [], data: result.data }
+            : {
+                success: false,
+                diagnostics: [{
+                        code: "item_unavailable",
+                        severity: "blocker",
+                        params: { reason: result.errorMsg || "PRESET_RENAME_FAILED" },
+                    }],
+            });
+    }
+    Handle_delete_preset(args, session) {
+        const [presetID] = unpackArgs(args);
+        const characterID = resolveSessionCharacterID(session);
+        const result = deleteCreationPreset(characterID, String(presetID || ""));
+        return buildPresetResult(result.success
+            ? { success: true, diagnostics: [], data: result.data }
+            : {
+                success: false,
+                diagnostics: [{
+                        code: "item_unavailable",
+                        severity: "blocker",
+                        params: { reason: result.errorMsg || "PRESET_DELETE_FAILED" },
+                    }],
+            });
+    }
+    Handle_preview_preset(args, session) {
+        const [requestedItemID, presetID] = unpackArgs(args);
+        const owned = resolveActiveOwnedCreationItem(requestedItemID, session);
+        if (!owned) {
+            return buildPresetResult({
+                success: false,
+                diagnostics: [{
+                        code: "item_unavailable",
+                        severity: "blocker",
+                        params: { reason: "ACTIVE_CREATION_REQUIRED" },
+                    }],
+            });
+        }
+        return buildPresetResult(previewCreationPreset(owned.item, owned.characterID, String(presetID || "")));
+    }
+    Handle_apply_preset(args, session) {
+        const [requestedItemID, presetID, previewToken] = unpackArgs(args);
+        const owned = resolveActiveOwnedCreationItem(requestedItemID, session);
+        if (!owned) {
+            return buildPresetResult({
+                success: false,
+                diagnostics: [{
+                        code: "item_unavailable",
+                        severity: "blocker",
+                        params: { reason: "ACTIVE_CREATION_REQUIRED" },
+                    }],
+            });
+        }
+        const result = applyCreationPreset(owned.item, owned.characterID, String(presetID || ""), String(previewToken || ""), session);
+        presentCreationCommit(result, owned, session);
+        return buildPresetResult(result);
     }
     Handle_take_command(args, session) {
         const [requestedItemID] = unpackArgs(args);
@@ -165,11 +399,17 @@ class CreationService extends BaseService {
         const [requestedItemID, poweredOff] = unpackArgs(args);
         const owned = resolveOwnedCreationItem(requestedItemID, session);
         if (!owned) {
-            return false;
+            throwCreationError(CREATION_ERROR_UNKNOWN);
         }
-        const result = setCreationPowerState(owned.item, owned.characterID, poweredOff === true);
+        const result = setCreationPowerState(owned.item, owned.characterID, poweredOff === true, session);
         log.info(`[creation] set_power_state ship=${owned.item.itemID} ` +
             `poweredOff=${poweredOff === true} accepted=${result.success === true}`);
+        if (result.success === true && session && session._space) {
+            const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
+            spaceRuntime.refreshShipDerivedState(session, {
+                broadcast: true,
+            });
+        }
         return result.success === true
             ? buildServerTimeResult(getSessionFileTime(session))
             : false;
@@ -190,16 +430,22 @@ class CreationService extends BaseService {
         if (!owned) {
             log.warn(`[creation] activate_ability rejected ship=${requestedItemID} ` +
                 `module=${moduleItemID} ability=${ability || "<empty>"} reason=CREATION_NOT_FOUND`);
-            return false;
+            throwCreationError(CREATION_ERROR_UNKNOWN);
         }
         const ensured = ensureCreationState(owned.item, owned.characterID);
         if (!ensured.success) {
             log.warn(`[creation] activate_ability rejected ship=${requestedItemID} ` +
                 `module=${moduleItemID} ability=${ability} ` +
                 `reason=${ensured.errorMsg || "CREATION_STATE_UNAVAILABLE"}`);
-            return false;
+            const unknownCreation = [
+                "CREATION_ITEM_NOT_OWNED",
+                "CREATION_TEMPLATE_NOT_FOUND",
+            ].includes(String(ensured.errorMsg || ""));
+            throwCreationError(unknownCreation
+                ? CREATION_ERROR_UNKNOWN
+                : "CreationError_CannotActivate");
         }
-        const result = dispatchCreationAbility({
+        const dispatched = dispatchCreationAbility({
             ability,
             kwargs: normalizeAbilityKwargs(kwargs),
             session,
@@ -211,29 +457,30 @@ class CreationService extends BaseService {
             },
             moduleItemID,
         });
-        log.info(`[creation] activate_ability ship=${requestedItemID} ` +
-            `module=${moduleItemID} ability=${ability} accepted=${result.success === true} ` +
-            `reason=${result.success ? "OK" : result.errorMsg || "UNKNOWN"}`);
-        if (result.success !== true) {
-            return false;
-        }
-        recordCreationModuleEmission(session, requestedItemID);
-        const data = result.data || {};
-        const entries = [[
-                "server_time",
-                data.serverTime || getSessionFileTime(session),
-            ]];
-        for (const [key, value] of Object.entries(data)) {
-            if (key !== "serverTime") {
-                entries.push([key, value]);
+        const finish = (result) => {
+            log.info(`[creation] activate_ability ship=${requestedItemID} ` +
+                `module=${moduleItemID} ability=${ability} accepted=${result.success === true} ` +
+                `reason=${result.success ? "OK" : result.errorMsg || "UNKNOWN"}`);
+            if (result.success !== true) {
+                // The 3.12 Creation client translates this exception into the
+                // module-specific UI error. Returning false is not sufficient: the
+                // modular Industry controller optimistically changes RUNNING state
+                // after the RPC unless a CreationError is raised.
+                throwCreationError(mapAbilityFailureToCreationError(result.errorMsg));
             }
-        }
-        return buildDict(entries);
+            recordCreationModuleEmission(session, requestedItemID);
+            return buildCreationAbilityResponse(result.data || {}, session);
+        };
+        return dispatched && typeof dispatched.then === "function"
+            ? dispatched.then(finish)
+            : finish(dispatched);
     }
 }
 module.exports = CreationService;
+module.exports.buildCreationAbilityResponse = buildCreationAbilityResponse;
 module.exports.buildCreationSnapshot = buildCreationSnapshot;
 module.exports.resolveOwnedCreation = resolveOwnedCreation;
 module.exports.resolveOwnedCreationItem = resolveOwnedCreationItem;
+module.exports.resolveActiveOwnedCreationItem = resolveActiveOwnedCreationItem;
 module.exports.resolveSessionCharacterID = resolveSessionCharacterID;
 //# sourceMappingURL=creationService.js.map

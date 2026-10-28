@@ -15,15 +15,18 @@ test.mock.method(reference, "readStaticRows", table => table === reference.TABLE
 const itemStore = require("../src/services/inventory/itemStore");
 const config = require("../src/services/frontier/networkNodeEnergyConfig");
 const energy = require("../src/services/frontier/networkNodeEnergyRuntime");
+const energyHolds = require("../src/services/frontier/networkNodeEnergyHoldRuntime");
 const deployment = require("../src/services/frontier/deploymentRuntime");
 const fuel = require("../src/services/frontier/networkNodeFuelRuntime");
 const sync = require("../src/services/frontier/suiAssemblySync");
+const requests = require("../src/services/frontier/smartAssemblyRequestRuntime");
 const NOW = 1700000000000;
 const OWNER = 140000003;
 const SYSTEM = 30000004;
 const SESSION = { characterID: OWNER, solarsystemid2: SYSTEM };
 const SIGNATURE = Buffer.alloc(66, 7).toString("base64");
 let items = new Map<number, any>();
+let heldEnergy = 0;
 
 function assembly(itemID, typeID = 88092, options: Record<string, any> = {}) {
   const { ownerID = OWNER, systemID = SYSTEM, status = typeID === 88092 ? 2 : 1,
@@ -53,9 +56,11 @@ function status(id = 1) {
 }
 test.beforeEach(t => {
   items = new Map();
+  heldEnergy = 0;
   t.mock.method(Date, "now", () => NOW);
   t.mock.method(itemStore, "getAllItems", () => Object.fromEntries(items));
   t.mock.method(itemStore, "findItemById", id => items.get(Number(id)) || null);
+  t.mock.method(energyHolds, "getNetworkNodeHeldEnergy", () => heldEnergy);
   t.mock.method(itemStore, "updateInventoryItem", (id, updater) => {
     const previousData = items.get(Number(id));
     if (!previousData) return { success: false, errorMsg: "ITEM_NOT_FOUND" };
@@ -103,6 +108,65 @@ test("online checks use confirmed available production and do not double charge 
   assert.equal(energy.validateAssemblyOnline(items.get(2)).errorMsg, "NETWORK_NODE_ENERGY_EXCEEDED");
   energy.projectSuiNetworkNodeEnergy(1, { maxEnergy: 1000, currentEnergyProduction: 1000, energyUsed: 500, observedAtMs: NOW });
   assert.equal(energy.validateAssemblyOnline(items.get(2)).success, true, "exact capacity is allowed");
+});
+
+test("temporary scan holds reduce grid headroom without deactivating existing structures", t => {
+  assembly(1);
+  assembly(2, 77917, { status: 2 });
+  assembly(3, 77917, { status: 1 });
+  useChainEnergy(t, {
+    maxEnergy: 1000,
+    currentEnergyProduction: 1000,
+    energyUsed: 750,
+    observedAtMs: NOW,
+  });
+  heldEnergy = 100;
+  const held = status();
+  assert.equal(held.assemblyEnergyUsed, 750);
+  assert.equal(held.temporaryEnergyHeld, 100);
+  assert.equal(held.energyUsed, 850);
+  assert.equal(held.energyAvailable, 150);
+  assert.equal(held.powerUsageLevel, "high");
+  assert.equal(state(2), 2, "a temporary reservation never offlines an existing structure");
+  assert.equal(energy.validateAssemblyOnline(items.get(3)).errorMsg,
+    "NETWORK_NODE_ENERGY_EXCEEDED");
+
+  heldEnergy = 0;
+  assert.equal(status().energyAvailable, 250);
+  assert.equal(state(2), 2);
+});
+
+test("resource status classifies fuel and power independently and signals over-limit errors", t => {
+  assembly(1, 88092, { quantity: 100 });
+  assembly(2, 77917);
+  useChainEnergy(t, {
+    maxEnergy: 1000,
+    currentEnergyProduction: 1000,
+    energyUsed: 750,
+    observedAtMs: NOW,
+  });
+  const published: any[] = [];
+  t.mock.method(requests, "publishAssemblyStatusSignal", (_nodeID, type, value) => {
+    published.push({ type, value });
+    return { success: true, changed: true, data: value };
+  });
+
+  const current = status();
+  assert.equal(current.fuelLevel, "low");
+  assert.equal(current.lowFuel, true);
+  assert.equal(current.powerUsageLevel, "medium");
+  assert.equal(current.overPowerLimit, false);
+  assert.deepEqual(current.resourceSignals.activeFlags, ["FUEL_LOW", "POWER_USAGE_MEDIUM"]);
+
+  const denied = energy.validateAssemblyOnline(items.get(2));
+  assert.equal(denied.errorMsg, "NETWORK_NODE_ENERGY_EXCEEDED");
+  const overload = published.at(-1);
+  assert.equal(overload.type, "network_node.resources");
+  assert.equal(overload.value.fuel.level, "low", "the fuel dimension remains intact");
+  assert.equal(overload.value.power.usageLevel, "over_limit");
+  assert.equal(overload.value.power.overLimit, true);
+  assert.equal(overload.value.error.code, "NETWORK_NODE_ENERGY_EXCEEDED");
+  assert.ok(overload.value.activeFlags.includes("POWER_LIMIT_EXCEEDED"));
 });
 
 test("pending local online requests cannot claim energy has already been reserved", t => {

@@ -1,21 +1,51 @@
 import { bcs } from "@mysten/sui/bcs";
 import { Transaction } from "@mysten/sui/transactions";
 import { deriveObjectID, deriveDynamicFieldID, normalizeSuiAddress, isValidSuiAddress, SUI_CLOCK_OBJECT_ID } from "@mysten/sui/utils";
-import type { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
+import type { SuiGrpcClient } from "@mysten/sui/grpc";
+import { assertUnclaimedAssemblyObject, readAssemblyMoveObject } from "./suiAssemblyGrpc";
 import { suiAssemblyFields, type SuiAssemblyWorld } from "./suiAssemblyChain";
 import type { AssemblySnapshot } from "./suiAssemblySnapshot";
-import { industryU64, parseIndustryProduction, type IndustryFacilitySnapshot, type IndustrySnapshot, type IndustryProduction } from "./suiIndustrySnapshot";
+import { industryU64, parseIndustryProduction, type IndustryFacilitySnapshot, type IndustrySnapshot, type IndustryProduction, type IndustryLaneProduction, type IndustryLaneState } from "./suiIndustrySnapshot";
 
 const IndustryKey = bcs.struct("IndustryKey", { assembly_id: bcs.Address });
-export function deriveSuiIndustryId(world: Pick<SuiAssemblyWorld, "packageId" | "objectRegistryId">, assemblyId: string, typeOrigin = world.packageId) {
-  return deriveObjectID(world.objectRegistryId, `${typeOrigin}::smart_industry::IndustryKey`,
+export function deriveSuiIndustryId(
+  world: Pick<SuiAssemblyWorld, "packageId" | "objectRegistryId">,
+  assemblyId: string,
+  typeOrigin = world.packageId,
+  industryRegistryId = world.objectRegistryId,
+) {
+  return deriveObjectID(industryRegistryId, `${typeOrigin}::smart_industry::IndustryKey`,
     IndustryKey.serialize({ assembly_id: assemblyId }).toBytes());
 }
 function sameID(a: any, b: string) { return typeof a === "string" && normalizeSuiAddress(a) === normalizeSuiAddress(b); }
 function objectID(value: any): any { const field = suiAssemblyFields(value); return typeof field === "string" ? field : field?.id ?? field?.bytes; }
+function facilityProductions(facility: IndustryFacilitySnapshot): IndustryLaneProduction[] {
+  const lanes = Array.isArray(facility.productions) && facility.productions.length
+    ? facility.productions.map((lane) => ({ ...lane }))
+    : [{ lane_id: "1", production: facility.production }];
+  const laneOne = lanes.find((lane) => lane.lane_id === "1");
+  if (laneOne) laneOne.production = facility.production;
+  return lanes;
+}
+function facilityLaneStates(facility: IndustryFacilitySnapshot): IndustryLaneState[] {
+  if (Array.isArray(facility.lanes) && facility.lanes.length) {
+    return facility.lanes.map((lane) => ({
+      lane_id: lane.lane_id,
+      snapshot: lane.lane_id === "1" ? facility.snapshot : lane.snapshot,
+      production: lane.lane_id === "1" ? facility.production : lane.production,
+    }));
+  }
+  return [{ lane_id: "1", snapshot: facility.snapshot, production: facility.production }];
+}
 
 export function deriveSuiIndustryProductionId(industryId: string) {
   return deriveDynamicFieldID(industryId, "u8", bcs.u8().serialize(0).toBytes());
+}
+export function deriveSuiIndustryLaneProductionId(industryId: string) {
+  return deriveDynamicFieldID(industryId, "u8", bcs.u8().serialize(1).toBytes());
+}
+export function deriveSuiIndustryLaneStateId(industryId: string) {
+  return deriveDynamicFieldID(industryId, "u8", bcs.u8().serialize(2).toBytes());
 }
 export function appendIndustryProduction(tx: Transaction, packageId: string, production: IndustryProduction | null) {
   const value = parseIndustryProduction(production);
@@ -26,18 +56,66 @@ export function appendIndustryProduction(tx: Transaction, packageId: string, pro
     tx.pure.u64(value.run_started_at_ms), tx.pure.u64(value.run_end_at_ms), tx.pure.string(value.stop_reason ?? ""),
   ] });
 }
+export function appendIndustryLaneProductions(
+  tx: Transaction,
+  packageId: string,
+  productions: IndustryLaneProduction[],
+  typeOrigin = packageId,
+) {
+  if (!Array.isArray(productions) || productions.length === 0 || productions.length > 16) {
+    throw new Error("Smart Industry lanes are invalid");
+  }
+  let previous = 0n;
+  const elements = productions.map((lane) => {
+    const laneID = industryU64(lane.lane_id, "Industry lane ID");
+    if (BigInt(laneID) <= previous || BigInt(laneID) > 16n) throw new Error("Smart Industry lanes are not unique and sorted");
+    previous = BigInt(laneID);
+    return tx.moveCall({ target: `${packageId}::smart_industry::new_lane_production`, arguments: [
+      tx.pure.u64(laneID), appendIndustryProduction(tx, packageId, lane.production),
+    ] });
+  });
+  if (productions[0].lane_id !== "1") throw new Error("Smart Industry lane one is required");
+  return tx.makeMoveVec({ type: `${typeOrigin}::smart_industry::LaneProduction`, elements });
+}
+export function appendIndustryLaneStates(
+  tx: Transaction,
+  packageId: string,
+  lanes: IndustryLaneState[],
+  typeOrigin = packageId,
+) {
+  if (!Array.isArray(lanes) || lanes.length === 0 || lanes.length > 16) {
+    throw new Error("Smart Industry lane states are invalid");
+  }
+  let previous = 0n;
+  const elements = lanes.map((lane) => {
+    const laneID = industryU64(lane.lane_id, "Industry lane ID");
+    if (BigInt(laneID) <= previous || BigInt(laneID) > 16n) {
+      throw new Error("Smart Industry lane states are not unique and sorted");
+    }
+    previous = BigInt(laneID);
+    return tx.moveCall({ target: `${packageId}::smart_industry::new_lane_state`, arguments: [
+      tx.pure.u64(laneID),
+      appendIndustrySnapshot(tx, packageId, lane.snapshot, typeOrigin),
+      appendIndustryProduction(tx, packageId, lane.production),
+    ] });
+  });
+  if (lanes[0].lane_id !== "1") throw new Error("Smart Industry lane one is required");
+  // LaneState may have been introduced by an upgraded package, so its type
+  // origin need not match the older Snapshot/ItemStack type origin. Every
+  // vector is non-empty; let the PTB infer the element type from the
+  // new_lane_state results instead of encoding a potentially stale origin.
+  return tx.makeMoveVec({ elements });
+}
 /** The typed dynamic field is owned by this sidecar. Revision binds both RPC reads. */
-async function readProduction(client: Pick<SuiJsonRpcClient, "getObject">, industryId: string, revision: string, allowStaleRevision = false) {
-  const response = await client.getObject({ id: deriveSuiIndustryProductionId(industryId), options: { showContent: true, showOwner: true } });
-  if (response.error?.code === "notExists") return { production: null, productionMirrored: false };
-  const content = response.data?.content;
-  const owner = response.data?.owner;
-  if (response.error || content?.dataType !== "moveObject" || !owner || typeof owner !== "object" ||
-      !("ObjectOwner" in owner) || !sameID(owner.ObjectOwner, industryId) ||
-      !/^0x0*2::dynamic_field::Field<u8, 0x[0-9a-f]+::smart_industry::ProductionRecord>$/.test(content.type)) {
+async function readProduction(client: Pick<SuiGrpcClient, "getObject">, industryId: string, revision: string, allowStaleRevision = false) {
+  const object = await readAssemblyMoveObject(client, deriveSuiIndustryProductionId(industryId), true);
+  if (!object) return { production: null, productionMirrored: false };
+  const owner = object.owner;
+  if (owner?.$kind !== "ObjectOwner" || !sameID(owner.ObjectOwner, industryId) ||
+      !/^0x0*2::dynamic_field::Field<u8,0x[0-9a-f]+::smart_industry::ProductionRecord>$/.test(object.type)) {
     throw new Error("Cannot verify Smart Industry production field");
   }
-  const fields = content.fields as any;
+  const fields = object.json;
   const record = suiAssemblyFields(fields.value);
   if (Number(fields.name) !== 0) throw new Error("Cannot verify Smart Industry production field name");
   const productionMirrored = industryU64(record?.revision, "Production revision") === revision;
@@ -57,6 +135,147 @@ async function readProduction(client: Pick<SuiJsonRpcClient, "getObject">, indus
     stop_reason: raw?.stop_reason === "" ? null : raw?.stop_reason,
   });
   return { production, productionMirrored };
+}
+
+async function readLaneProductions(
+  client: Pick<SuiGrpcClient, "getObject">,
+  industryId: string,
+  revision: string,
+  allowStaleRevision = false,
+) {
+  const object = await readAssemblyMoveObject(client, deriveSuiIndustryLaneProductionId(industryId), true);
+  if (!object) {
+    const legacy = await readProduction(client, industryId, revision, allowStaleRevision);
+    return {
+      productions: [{ lane_id: "1", production: legacy.production }],
+      productionsMirrored: legacy.productionMirrored,
+      legacyProjection: true,
+    };
+  }
+  const owner = object.owner;
+  if (owner?.$kind !== "ObjectOwner" || !sameID(owner.ObjectOwner, industryId) ||
+      !/^0x0*2::dynamic_field::Field<u8,0x[0-9a-f]+::smart_industry::LaneProductionRecord>$/.test(object.type)) {
+    throw new Error("Cannot verify Smart Industry lane production field");
+  }
+  const fields = object.json;
+  const record = suiAssemblyFields(fields.value);
+  if (Number(fields.name) !== 1 || !Array.isArray(record?.lanes) ||
+      record.lanes.length === 0 || record.lanes.length > 16) {
+    throw new Error("Cannot verify Smart Industry lane production field name");
+  }
+  const productionsMirrored = industryU64(record.revision, "Lane production revision") === revision;
+  if (!productionsMirrored && !allowStaleRevision) {
+    throw new Error("Smart Industry lane production revision changed; retry current snapshot");
+  }
+  let previous = 0n;
+  const productions = record.lanes.map((rawLane: any): IndustryLaneProduction => {
+    const lane = suiAssemblyFields(rawLane);
+    const lane_id = industryU64(lane?.lane_id, "Chain lane ID");
+    if (BigInt(lane_id) <= previous || BigInt(lane_id) > 16n) {
+      throw new Error("Smart Industry chain lanes are not unique and sorted");
+    }
+    previous = BigInt(lane_id);
+    const raw = suiAssemblyFields(lane?.production);
+    const state = Number(raw?.state);
+    if (state === 0) {
+      if ([raw?.job_id, raw?.requested_runs, raw?.completed_runs, raw?.run_started_at_ms, raw?.run_end_at_ms]
+        .some((value) => industryU64(value, "Idle lane production", true) !== "0") || raw?.stop_reason !== "") {
+        throw new Error("Smart Industry idle lane production is invalid");
+      }
+      return { lane_id, production: null };
+    }
+    return { lane_id, production: parseIndustryProduction({
+      ...raw,
+      state: ({ 1: "RUNNING", 2: "DISCONTINUING", 3: "STOPPED" } as any)[state],
+      requested_runs: industryU64(raw?.requested_runs, "Requested runs", true) === "0" ? null : raw.requested_runs,
+      stop_reason: raw?.stop_reason === "" ? null : raw?.stop_reason,
+    }) };
+  });
+  if (productions[0].lane_id !== "1") throw new Error("Smart Industry chain lane one is missing");
+  return { productions, productionsMirrored, legacyProjection: false };
+}
+
+async function readLaneStates(
+  client: Pick<SuiGrpcClient, "getObject">,
+  industryId: string,
+  revision: string,
+  rootSnapshot: IndustrySnapshot,
+  allowStaleRevision = false,
+) {
+  const object = await readAssemblyMoveObject(client, deriveSuiIndustryLaneStateId(industryId), true);
+  if (!object) {
+    const legacy = await readLaneProductions(client, industryId, revision, allowStaleRevision);
+    return {
+      ...legacy,
+      lanes: legacy.productions.map((lane) => ({
+        lane_id: lane.lane_id,
+        snapshot: rootSnapshot,
+        production: lane.production,
+      })),
+      laneStatesMirrored: false,
+      legacyProjection: true,
+    };
+  }
+  const owner = object.owner;
+  if (owner?.$kind !== "ObjectOwner" || !sameID(owner.ObjectOwner, industryId) ||
+      !/^0x0*2::dynamic_field::Field<u8,0x[0-9a-f]+::smart_industry::LaneStateRecord>$/.test(object.type)) {
+    throw new Error("Cannot verify Smart Industry lane state field");
+  }
+  const fields = object.json;
+  const record = suiAssemblyFields(fields.value);
+  if (Number(fields.name) !== 2 || !Array.isArray(record?.lanes) ||
+      record.lanes.length === 0 || record.lanes.length > 16) {
+    throw new Error("Cannot verify Smart Industry lane state field name");
+  }
+  const laneStatesMirrored = industryU64(record.revision, "Lane state revision") === revision;
+  if (!laneStatesMirrored && !allowStaleRevision) {
+    throw new Error("Smart Industry lane state revision changed; retry current snapshot");
+  }
+  let previous = 0n;
+  const lanes = record.lanes.map((rawLane: any): IndustryLaneState => {
+    const lane = suiAssemblyFields(rawLane);
+    const lane_id = industryU64(lane?.lane_id, "Chain lane ID");
+    if (BigInt(lane_id) <= previous || BigInt(lane_id) > 16n) {
+      throw new Error("Smart Industry chain lane states are not unique and sorted");
+    }
+    previous = BigInt(lane_id);
+    const raw = suiAssemblyFields(lane?.production);
+    const state = Number(raw?.state);
+    let production: IndustryProduction | null;
+    if (state === 0) {
+      if ([raw?.job_id, raw?.requested_runs, raw?.completed_runs, raw?.run_started_at_ms, raw?.run_end_at_ms]
+        .some((value) => industryU64(value, "Idle lane production", true) !== "0") || raw?.stop_reason !== "") {
+        throw new Error("Smart Industry idle lane production is invalid");
+      }
+      production = null;
+    } else {
+      production = parseIndustryProduction({
+        ...raw,
+        state: ({ 1: "RUNNING", 2: "DISCONTINUING", 3: "STOPPED" } as any)[state],
+        requested_runs: industryU64(raw?.requested_runs, "Requested runs", true) === "0" ? null : raw.requested_runs,
+        stop_reason: raw?.stop_reason === "" ? null : raw?.stop_reason,
+      });
+    }
+    const snapshot = readSnapshot(lane?.snapshot);
+    if (production && snapshot.blueprint_id === "0") {
+      throw new Error("Smart Industry lane production has no blueprint");
+    }
+    return { lane_id, snapshot, production };
+  });
+  if (lanes[0].lane_id !== "1") throw new Error("Smart Industry chain lane one is missing");
+  if (JSON.stringify(lanes[0].snapshot) !== JSON.stringify(rootSnapshot)) {
+    throw new Error("Smart Industry lane-one snapshot does not match its compatibility projection");
+  }
+  const productions = lanes.map(({ lane_id, production }) => ({ lane_id, production }));
+  return {
+    lanes,
+    laneStatesMirrored,
+    productions,
+    productionsMirrored: laneStatesMirrored,
+    production: productions[0].production,
+    productionMirrored: laneStatesMirrored,
+    legacyProjection: false,
+  };
 }
 
 export function appendIndustrySnapshot(tx: Transaction, packageId: string, snapshot: IndustrySnapshot, typeOrigin = packageId) {
@@ -101,18 +320,22 @@ function readSnapshot(raw: any): IndustrySnapshot {
 }
 
 export function createSuiIndustryChain(options: {
-  client: Pick<SuiJsonRpcClient, "getObject">; world: SuiAssemblyWorld; tenant: string;
+  client: Pick<SuiGrpcClient, "getObject">; world: SuiAssemblyWorld; tenant: string;
   chain: { deriveId(itemId: string): string; readAssembly(assembly: AssemblySnapshot): Promise<any> };
-  execute(label: string, tx: Transaction, ownerId?: number, assertCurrent?: () => void): Promise<unknown>;
+  execute(label: string, tx: Transaction, ownerId?: number, assertCurrent?: () => void,
+    gasPayerOwnerId?: number): Promise<unknown>;
   assertSnapshotCurrent(facility: IndustryFacilitySnapshot): void;
   /** An upgrade can add this module while the underlying Assembly retains its original type. */
-  industryPackageId?: string; industryTypeOrigin?: string;
+  industryPackageId?: string; industryTypeOrigin?: string; industryRegistryId?: string;
   now?: () => number;
 }) {
   const { world, client, chain } = options;
   const packageId = normalizeSuiAddress(options.industryPackageId || world.packageId);
   const typeOrigin = normalizeSuiAddress(options.industryTypeOrigin || packageId);
-  if (!isValidSuiAddress(packageId) || !isValidSuiAddress(typeOrigin)) throw new Error("Invalid Smart Industry package or type origin");
+  const registryId = normalizeSuiAddress(options.industryRegistryId || world.objectRegistryId);
+  if (!isValidSuiAddress(packageId) || !isValidSuiAddress(typeOrigin) || !isValidSuiAddress(registryId)) {
+    throw new Error("Invalid Smart Industry package, type origin or registry");
+  }
   async function read(facility: IndustryFacilitySnapshot, assembly: AssemblySnapshot, repairProduction = false) {
     if (assembly.itemId !== facility.itemId || assembly.kind !== "assembly" || assembly.typeId !== facility.typeId ||
         String(assembly.ownerId) !== facility.snapshot.owner_id || String(assembly.solarSystemId) !== facility.snapshot.solar_system_id) {
@@ -122,33 +345,44 @@ export function createSuiIndustryChain(options: {
     if (!underlying) throw new Error("Industry Assembly has not synchronized yet");
     if (underlying.online !== (facility.status === 2)) throw new Error("Industry Assembly status changed; retry current snapshot");
     const assemblyId = chain.deriveId(facility.itemId);
-    const industryObjectID = deriveSuiIndustryId(world, assemblyId, typeOrigin);
-    const response = await client.getObject({ id: industryObjectID, options: { showContent: true, showType: true } });
-    if (response.error?.code === "notExists") return { industryObjectID, assemblyObjectID: assemblyId, state: null };
-    if (response.error || !response.data || response.data.type !== `${typeOrigin}::smart_industry::SmartIndustry` ||
-        response.data.content?.dataType !== "moveObject") throw new Error("Cannot verify Smart Industry object");
-    const fields = response.data.content.fields as any;
+    const industryObjectID = deriveSuiIndustryId(world, assemblyId, typeOrigin, registryId);
+    const object = await readAssemblyMoveObject(client, industryObjectID, true);
+    if (!object) {
+      await assertUnclaimedAssemblyObject(client, registryId, industryObjectID);
+      return { industryObjectID, assemblyObjectID: assemblyId, state: null };
+    }
+    if (object.type !== `${typeOrigin}::smart_industry::SmartIndustry` || object.owner?.$kind !== "Shared") {
+      throw new Error("Cannot verify Smart Industry object");
+    }
+    const fields = object.json;
     const key = suiAssemblyFields(fields.assembly_key);
     if (!sameID(objectID(fields.assembly_id), assemblyId) || String(key?.id ?? key?.item_id) !== facility.itemId || key?.tenant !== options.tenant ||
         industryU64(fields.type_id, "Chain facility type") !== String(facility.typeId)) throw new Error("Smart Industry object belongs to a different Assembly");
+    const rootSnapshot = readSnapshot(fields.snapshot);
     const state = {
       revision: industryU64(fields.revision, "Chain revision"), observedAtMs: industryU64(fields.observed_at_ms, "Chain observation time", true),
       syncedAtMs: industryU64(fields.synced_at_ms, "Chain synchronization time", true),
-      status: Number(fields.assembly_status), snapshot: readSnapshot(fields.snapshot),
-      ...await readProduction(client, industryObjectID, industryU64(fields.revision, "Chain revision"), repairProduction),
+      status: Number(fields.assembly_status), snapshot: rootSnapshot,
+      ...await readLaneStates(client, industryObjectID, industryU64(fields.revision, "Chain revision"), rootSnapshot, repairProduction),
     };
     if (![1, 2].includes(state.status)) throw new Error("Smart Industry assembly status is invalid");
     return { industryObjectID, assemblyObjectID: assemblyId, state };
   }
   const matches = (state: Awaited<ReturnType<typeof read>>["state"], facility: IndustryFacilitySnapshot) =>
-    Boolean(state && state.productionMirrored && state.status === facility.status && JSON.stringify(state.snapshot) === JSON.stringify(facility.snapshot) &&
-      JSON.stringify(state.production) === JSON.stringify(facility.production));
+    Boolean(state && state.laneStatesMirrored && state.status === facility.status &&
+      JSON.stringify(state.snapshot) === JSON.stringify(facility.snapshot) &&
+      JSON.stringify(state.lanes) === JSON.stringify(facilityLaneStates(facility)));
   async function status(facility: IndustryFacilitySnapshot, assembly: AssemblySnapshot) {
     const result = await read(facility, assembly);
     return { industryObjectID: result.industryObjectID, assemblyObjectID: result.assemblyObjectID,
       synchronized: matches(result.state, facility), ...(result.state ? {
         revision: result.state.revision, observedAtMs: result.state.observedAtMs, syncedAtMs: result.state.syncedAtMs,
-        productionMirrored: result.state.productionMirrored, chainProduction: result.state.production,
+        productionMirrored: result.state.productionsMirrored,
+        productionsMirrored: result.state.productionsMirrored,
+        laneStatesMirrored: result.state.laneStatesMirrored,
+        chainProduction: result.state.productions.find((lane) => lane.lane_id === "1")?.production ?? null,
+        chainProductions: result.state.productions,
+        chainLanes: result.state.lanes,
       } : {}) };
   }
   async function sync(facility: IndustryFacilitySnapshot, assembly: AssemblySnapshot) {
@@ -161,16 +395,15 @@ export function createSuiIndustryChain(options: {
     const observed = previous.state && now <= BigInt(previous.state.observedAtMs) ? BigInt(previous.state.observedAtMs) + 1n : now;
     if (observed > now + 30_000n) throw new Error("Smart Industry observation is ahead of the local clock");
     const tx = new Transaction();
-    const snapshot = appendIndustrySnapshot(tx, packageId, facility.snapshot, typeOrigin);
-    const production = appendIndustryProduction(tx, packageId, facility.production);
-    tx.moveCall({ target: `${packageId}::smart_industry::${previous.state ? "sync_with_production" : "create_with_production"}`,
-      arguments: [tx.object(previous.state ? previous.industryObjectID : world.objectRegistryId),
+    const lanes = appendIndustryLaneStates(tx, packageId, facilityLaneStates(facility), typeOrigin);
+    tx.moveCall({ target: `${packageId}::smart_industry::${previous.state ? "sync_with_lane_states" : "create_with_lane_states"}`,
+      arguments: [tx.object(previous.state ? previous.industryObjectID : registryId),
         tx.object(previous.assemblyObjectID), tx.object(world.adminAclId),
         ...(previous.state ? [tx.pure.u64(previous.state.revision)] : []),
-        tx.pure.u64(observed), snapshot, production, tx.object(SUI_CLOCK_OBJECT_ID)] });
+        tx.pure.u64(observed), lanes, tx.object(SUI_CLOCK_OBJECT_ID)] });
     options.assertSnapshotCurrent(facility);
     await options.execute(`industry:${facility.itemId}:${previous.state ? "sync" : "create"}`, tx, undefined,
-      () => options.assertSnapshotCurrent(facility));
+      () => options.assertSnapshotCurrent(facility), Number(facility.snapshot.owner_id));
     if (!(await status(facility, assembly)).synchronized) throw new Error("Smart Industry snapshot was not confirmed");
   }
   return { read, status, sync };

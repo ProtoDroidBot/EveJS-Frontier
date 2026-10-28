@@ -1,3 +1,4 @@
+clientbuilds/^M
 node_modules
 __pycache__/
 *.py[cod]
@@ -56,20 +57,31 @@ server/tidi_probe.log
 # JavaScript and source maps are generated next to TypeScript sources by npm run build.
 /server/**/*.js
 /server/**/*.js.map
+!/server/tests/typeListAuthority.test.js
 /scripts/**/*.js
 /scripts/**/*.js.map
 /tools/**/*.js
 /tools/**/*.mjs
 /tools/**/*.js.map
 /tools/**/*.mjs.map
+!/tools/frontier-static/type-list-audit.mjs
+!/tools/frontier-static/test/type-list-audit.test.mjs
+!/tools/frontier-static/build-type-list-registry.mjs
+!/tools/frontier-static/test/type-list-registry.test.mjs
 /docker/*.js
 /docker/*.js.map
 *.tsbuildinfo
 
 # Ignore ElysianFSD / SerenityImporter tools until further notice
 /tools/Elysian*
+!/tools/ElysianNpcDogma/
+!/tools/ElysianNpcDogma/**
 /tools/.elysian*
 /tools/Serenity*
 /tools/Launch-*
+!/tools/Launch-Elysian-NPC-Dogma.bat
 /tools/EveOnlineImporter*
 tools/FRONTIER-COMPATIBILITY.md
+decompiled___init__.py
+/.pnpm-store
+/.tmp

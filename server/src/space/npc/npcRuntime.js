@@ -452,6 +452,11 @@ function warpBatchToPoints(requests, options = {}) {
 function despawn(entityID, options = {}) {
     return npcService.destroyNpcControllerByEntityID(entityID, options);
 }
+function openHeadlessFittingWindow(actorEntityID, targetEntityID = actorEntityID) {
+    return require("./npcHeadlessFittingWindow").openNpcHeadlessFittingWindow({
+        actorEntityID, targetEntityID,
+    });
+}
 module.exports = {
     resolveNpcContext,
     wakeNpcController,
@@ -475,5 +480,6 @@ module.exports = {
     warpToEntity,
     warpBatchToPoints,
     despawn,
+    openHeadlessFittingWindow,
 };
 //# sourceMappingURL=npcRuntime.js.map

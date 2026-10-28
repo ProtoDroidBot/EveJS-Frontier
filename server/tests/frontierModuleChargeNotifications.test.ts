@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const DogmaService = require("../src/services/dogma/dogmaService");
+const characterState = require("../src/services/character/characterState");
 const spaceRuntime = require("../src/space/runtime");
 
 const {
@@ -35,6 +36,27 @@ function getAttributeChange(notification) {
 function getKeyValField(value, fieldName) {
   return value.args.entries.find(([key]) => key === fieldName)[1];
 }
+
+test("Creation charge prime uses the nine physical Godma inventory columns", () => {
+  const prime = characterState._testing.buildChargeDogmaPrimeEntry({
+    itemID: 2002,
+    typeID: 95779,
+    ownerID: 90000001,
+    locationID: 1001,
+    flagID: 184,
+    quantity: 1,
+    stacksize: 1,
+    singleton: 0,
+    groupID: 4764,
+    categoryID: 8,
+  }, { includeInvItem: true });
+  const row = getKeyValField(prime, "invItem");
+  const fields = Object.fromEntries(row.args.entries);
+  assert.equal(fields.header.length, 9);
+  assert.equal(fields.line.length, 9);
+  assert.equal(fields.line[0], 2002);
+  assert.equal(fields.line[5], 1);
+});
 
 test("weapon ammo consumption updates both the live charge row and Dogma quantity", () => {
   const { session, notifications } = buildSession();

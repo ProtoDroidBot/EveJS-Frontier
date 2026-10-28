@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+const { applyFrontier3640684ContractProfile } = require("./frontierContractProfile");
 const path = require("path");
 const protobuf = require("protobufjs");
 const { durationToMs, encodePayload, getActiveCharacterID, } = require("./gatewayServiceHelpers");
@@ -243,6 +244,7 @@ const LOCAL_CHAT_PROTO_ROOT = protobuf.Root.fromJSON({
         },
     },
 });
+applyFrontier3640684ContractProfile(LOCAL_CHAT_PROTO_ROOT);
 const TYPES = Object.freeze({
     getMembershipListRequest: LOCAL_CHAT_PROTO_ROOT.lookupType("eve_public.chat.local.api.GetMembershipListRequest"),
     getMembershipListResponse: LOCAL_CHAT_PROTO_ROOT.lookupType("eve_public.chat.local.api.GetMembershipListResponse"),

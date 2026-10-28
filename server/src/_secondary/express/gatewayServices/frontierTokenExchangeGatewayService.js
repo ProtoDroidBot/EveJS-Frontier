@@ -1,11 +1,11 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
 const { bufferFromBytes, encodePayload, } = require("./gatewayServiceHelpers");
 const { getFrontierCoreProtoTypes, } = require("./frontierCoreProto");
 const GET_EXCHANGE_RATE_REQUEST = "eve_public.token.exchange.api.GetExchangeRateRequest";
 const GET_EXCHANGE_RATE_RESPONSE = "eve_public.token.exchange.api.GetExchangeRateResponse";
 const FRONTIER_TOKEN_DENOMINATION = "EVE";
-function createFrontierTokenExchangeGatewayService() {
+function createFrontierTokenExchangeGatewayService(context = {}) {
+    const targetEconomy = require("./frontierEconomyGatewayService").createFrontierEconomyGatewayService(context);
     const types = getFrontierCoreProtoTypes();
     return {
         name: "frontier-token-exchange",
@@ -16,6 +16,9 @@ function createFrontierTokenExchangeGatewayService() {
                 : null;
         },
         handleRequest(requestTypeName, requestEnvelope) {
+            const targetResult = targetEconomy.handleRequest(requestTypeName, requestEnvelope);
+            if (targetResult !== null)
+                return targetResult;
             if (requestTypeName !== GET_EXCHANGE_RATE_REQUEST) {
                 return null;
             }

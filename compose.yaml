@@ -54,6 +54,7 @@ services:
         condition: service_healthy
     environment:
       EVEJS_GAMESTORE_DATA_DIR: /var/lib/evejs/gameStore/data
+      EVEJS_PERSISTENCE_WORKER: "1"
       EVEJS_GAME_SERVER_BIND_HOST: 0.0.0.0
       EVEJS_GAME_SERVER_HOST: 127.0.0.1
       EVEJS_IMAGE_SERVER_BIND_HOST: 0.0.0.0

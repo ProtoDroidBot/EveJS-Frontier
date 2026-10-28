@@ -18,11 +18,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 // Spatial model (parity shortcut, per the "shortcuts OK" latitude): a dungeon site occupies a
 // sphere of radius DEADSPACE_SITE_RADIUS_METERS around the instance's anchor position. Mission
 // pockets sit ~5.5e9 m off a celestial while their rooms span only ~3e7 m from the anchor, so a
-// ~1e9 m (≈6.7 AU) radius contains every room yet excludes the parent celestial and unrelated
-// grids. No new spatial index; uses the ship's dungeonCurrent* fields + dungeonRuntime instances.
+// ~1e9 m radius contains every room yet excludes the parent celestial and unrelated grids.
 const path = require("path");
 // Radius around a dungeon instance anchor that counts as "inside the site".
-const DEADSPACE_SITE_RADIUS_METERS = 1_000_000_000; // ~6.7 AU
+const DEADSPACE_SITE_RADIUS_METERS = 1_000_000_000; // ~3.34 light-seconds
 function toFiniteNumber(value, fallback = 0) {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : fallback;
@@ -80,6 +79,32 @@ function isPointInsideInstance(point, instance) {
     }
     return distanceMeters(point, anchor) <= DEADSPACE_SITE_RADIUS_METERS;
 }
+// Only gated/deadspace complexes need the intra-site warp prohibition. The
+// dungeon runtime also backs ordinary combat anomalies and other single-room
+// sites; treating every runtime instance as deadspace prevents pilots from
+// warping back to those public site beacons even though there is no gate to
+// skip. Runtime-created gated instances carry their authored gate states.
+function isWarpRestrictedInstance(instance) {
+    if (!instance || typeof instance !== "object") {
+        return false;
+    }
+    const explicit = [
+        instance.deadspaceWarpRestricted,
+        instance.metadata && instance.metadata.deadspaceWarpRestricted,
+        instance.spawnState && instance.spawnState.deadspaceWarpRestricted,
+    ].find((value) => value === true || value === false);
+    if (explicit !== undefined) {
+        return explicit === true;
+    }
+    if (instance.gateStatesByKey &&
+        typeof instance.gateStatesByKey === "object" &&
+        Object.keys(instance.gateStatesByKey).length > 0) {
+        return true;
+    }
+    const siteFamily = String(instance.siteFamily || "").trim().toLowerCase();
+    const siteKind = String(instance.siteKind || "").trim().toLowerCase();
+    return siteFamily === "mission" || siteKind === "mission";
+}
 // Evaluate a warp against the deadspace policy.
 // Returns one of:
 //   { action: "allow" }                              — no restriction applies
@@ -87,7 +112,7 @@ function isPointInsideInstance(point, instance) {
 //   { action: "clamp", point, siteInstanceID }       — redirect the warp to a site warp-in point
 //
 // options.dungeonGateTransit === true bypasses the in-pocket block (the gate warp itself).
-function evaluateDeadspaceWarp(entity, destinationPoint, options = {}) {
+function evaluateDeadspaceWarp(entity, destinationPoint, options = {}, _scene = null) {
     const point = pointFromVector(destinationPoint);
     if (!entity || !point) {
         return { action: "allow" };
@@ -105,7 +130,9 @@ function evaluateDeadspaceWarp(entity, destinationPoint, options = {}) {
     // (A) Ship is inside a pocket — block warps that stay inside the same site.
     if (currentInstanceID > 0 && dungeonRuntime && typeof dungeonRuntime.getInstance === "function") {
         const instance = dungeonRuntime.getInstance(currentInstanceID);
-        if (instance && isPointInsideInstance(point, instance)) {
+        if (instance &&
+            isWarpRestrictedInstance(instance) &&
+            isPointInsideInstance(point, instance)) {
             return {
                 action: "block",
                 errorMsg: "DunCannotWarpWithinComplex",
@@ -120,15 +147,23 @@ function evaluateDeadspaceWarp(entity, destinationPoint, options = {}) {
         const systemID = Math.max(0, toInt(entity.systemID, 0));
         if (systemID > 0) {
             let containing = null;
+            let containingDistance = Infinity;
             try {
                 const instances = dungeonRuntime.listActiveInstancesBySystem(systemID, { full: true }) || [];
                 for (const instance of instances) {
                     if (Math.max(0, toInt(instance && instance.instanceID, 0)) === currentInstanceID) {
                         continue;
                     }
+                    if (!isWarpRestrictedInstance(instance)) {
+                        continue;
+                    }
                     if (isPointInsideInstance(point, instance)) {
-                        containing = instance;
-                        break;
+                        const anchor = resolveInstanceAnchor(instance);
+                        const candidateDistance = distanceMeters(point, anchor);
+                        if (candidateDistance < containingDistance) {
+                            containing = instance;
+                            containingDistance = candidateDistance;
+                        }
                     }
                 }
             }
@@ -149,7 +184,7 @@ function evaluateDeadspaceWarp(entity, destinationPoint, options = {}) {
     }
     return { action: "allow" };
 }
-// The warp-in point of a site = its anchor (the entry-room / beacon position). Landing scatter is
+// The warp-in point of a site is its anchor (the entry-room / beacon position). Landing scatter is
 // applied downstream; this is the deterministic warp-in reference the client already uses.
 function resolveSiteWarpInPoint(instance) {
     return resolveInstanceAnchor(instance);
@@ -158,6 +193,7 @@ module.exports = {
     DEADSPACE_SITE_RADIUS_METERS,
     evaluateDeadspaceWarp,
     isPointInsideInstance,
+    isWarpRestrictedInstance,
     resolveInstanceAnchor,
     resolveSiteWarpInPoint,
 };

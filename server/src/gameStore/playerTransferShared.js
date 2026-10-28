@@ -40,6 +40,9 @@ const SIMPLE_CHAR_TABLES = [
     { table: "lpWallets", group: "characterWallets" },
     { table: "bookmarkKnownFolders", group: "recordsByCharacterID" },
     { table: "savedFittings", group: "owners" },
+    { table: "creationPresets", group: "owners" },
+    { table: "smartAssemblyConstructionTemplates", group: "owners" },
+    { table: "smartAssemblyDeploymentPlans", group: "owners" },
 ];
 // Field names (anywhere in a record) that hold a characterID self-reference.
 const CHARID_FIELDS = ["ownerID", "characterID", "creatorID", "charID"];

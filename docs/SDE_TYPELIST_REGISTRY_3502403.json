@@ -1,0 +1,2115 @@
+{
+  "version": 1,
+  "buildNumber": 3502403,
+  "typeListsSha256": "adef57d15d4163851a0e0a457d6a4a3de7b3740fba7193681d01f4b3a8d88583",
+  "policy": "Only verified direct consumers are bound; configurable faction lanes are opt-in.",
+  "counts": {
+    "bound": 13,
+    "client-only": 3,
+    "unsupported-system": 323,
+    "empty-authoring": 76,
+    "test-only": 5
+  },
+  "entries": [
+    {
+      "listID": 4,
+      "name": "ShipyardStructureTargets",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 6,
+      "name": "BehaviourStructureWeaponModules",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 7,
+      "name": "BehaviourStructureAOEWeaponModules",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 8,
+      "name": "BehaviourStructureEWarModules",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 10,
+      "name": "KillreportEligable",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 11,
+      "name": "AllowedInSMACargoholds",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 15,
+      "name": "BehaviourStructureAntiLogiEWarModules",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 18,
+      "name": "FleetEvaluationIsCapital",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 19,
+      "name": "FleetEvaluationIsFighter",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 20,
+      "name": "FleetEvaluationIsFleetShip",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 21,
+      "name": "FleetEvaluationFleetWeaponsTurrets",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 22,
+      "name": "FleetEvaluationFleetWeaponsLaunchers",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 23,
+      "name": "FleetEvaluationNeutTargetModules",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 24,
+      "name": "FleetEvaluationIsSubCapital",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 27,
+      "name": "IsPlayerPilotable",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 29,
+      "name": "ResourceWarsPirateEnemies",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 30,
+      "name": "ResourceWarsEmpireEnemies",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 32,
+      "name": "MiningLaserModules",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 34,
+      "name": "Asteroids",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 35,
+      "name": "Stargate - Stations - Structures",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 36,
+      "name": "NonTradableItems",
+      "status": "bound"
+    },
+    {
+      "listID": 37,
+      "name": "CannotBeAddedToContainer",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 38,
+      "name": "CannotBeDroppedAsLoot",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 39,
+      "name": "Ships and Drones - NOT Capsules",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 41,
+      "name": "Ships only - NOT Capsules",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 42,
+      "name": "Player Ships, Drones, Fighters & Structures, NOT Freighters",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 43,
+      "name": "Small AOEs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 44,
+      "name": "Medium AOEs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 45,
+      "name": "Large AOEs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 46,
+      "name": "AoE Point Defense Targets",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 48,
+      "name": "Medium Structure AOEs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 49,
+      "name": "Large Structure AOEs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 50,
+      "name": "Abyssal Filament Proximity Restrictions",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 51,
+      "name": "NPC Entity Drone Targets",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 52,
+      "name": "Mutaplasmid Decayed",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 53,
+      "name": "Mutaplasmid Abnormal",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 54,
+      "name": "Mutaplasmid Gravid",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 55,
+      "name": "Mutaplasmid Unstable",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 57,
+      "name": "Abyssal Deadspace Solo - Allowed Cruisers",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 58,
+      "name": "Mobile Warp Disruptor objects",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 77,
+      "name": "Capital Ships",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 85,
+      "name": "Soft Penalty",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 92,
+      "name": "Abyssal Deadspace Fleet - Allowed Frigates",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 93,
+      "name": "Skills available for purchase",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 94,
+      "name": "Frigates",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 95,
+      "name": "Pirate Stronghold Valid Targets",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 124,
+      "name": "Abyssal NPC Valid Targets",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 125,
+      "name": "Player Ships, Drones & Fighters",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 126,
+      "name": "Player Ships, Drones & Fighters, NPCs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 133,
+      "name": "RaffleTypeValidation",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 134,
+      "name": "RaffleSingletonValidation",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 135,
+      "name": "InvalidShipGroupsForRandomJump",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 136,
+      "name": "Target List for Dreadnought Dungeon Friendly Dreads",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 137,
+      "name": "Max three turret hardpoints",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 138,
+      "name": "Jita Stations",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 140,
+      "name": "RenderableTypeIDs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 142,
+      "name": "Soulbound",
+      "status": "bound"
+    },
+    {
+      "listID": 143,
+      "name": "Wormholes",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 144,
+      "name": "Ships/Drones/Fighters - NOT Capsules",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 145,
+      "name": "FittingWarningsShieldGroups",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 146,
+      "name": "FittingWarningsArmorGroups",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 147,
+      "name": "FittingWarningsHullGroups",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 148,
+      "name": "FittingWarningsBuffingModules",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 149,
+      "name": "Valid High Sec Combat Targets",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 209,
+      "name": "Target List for Invasion NPCs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 210,
+      "name": "Structure Deployment Avoidance List",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 211,
+      "name": "Invasion 3 Structure Population List",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 212,
+      "name": "Invasion 3 Mining Structures",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 213,
+      "name": "Invasion 3 Mining Rig Deployment Pieces",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 214,
+      "name": "RestrictedForRenaming",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 215,
+      "name": "BasicT1CombatAttackDisruptionCruisers",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 216,
+      "name": "FittingWarningModulesWithOptionCharges",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 217,
+      "name": "FittingWarningModulesNeedingCharges",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 218,
+      "name": "T1DestroyersNoKiki",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 219,
+      "name": "NavySlicers",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 220,
+      "name": "Basic T1 Battlecruisers",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 221,
+      "name": "BasicT1CombatAttackDisruptionFrigates",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 222,
+      "name": "CaldariT1DessyIntyFactionFrig",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 223,
+      "name": "AssaultFrigatesIncludingNergalandAT",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 224,
+      "name": "AttackBattlecruisers",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 225,
+      "name": "T1CombatAttackDisruptionNavyFrigatesAndT1DessiesNoKiki",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 227,
+      "name": "FactionandPrecursorBattlecruisers",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 231,
+      "name": "ESSLinkableShips",
+      "status": "bound"
+    },
+    {
+      "listID": 232,
+      "name": "BasicCorvettes",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 233,
+      "name": "Abyssal Deadspace two player- Allowed Destroyers",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 234,
+      "name": "ESS Encrypted Bonds",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 236,
+      "name": "T1CombatAndNavyFrigates",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 238,
+      "name": "BasicT1CombatAttackFrigates",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 240,
+      "name": "DynamicBountSystemIgnoredTypes",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 241,
+      "name": "TacticalDestroyers",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 243,
+      "name": "BasicEmpireAssaultFrigates",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 244,
+      "name": "BasicInterceptors",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 245,
+      "name": "WormholeJumpBlacklist",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 246,
+      "name": "UnusualChargelikesList",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 247,
+      "name": "Navy Frigates",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 249,
+      "name": "BasicOreCompressorChargelikes",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 250,
+      "name": "Allowed Real Item Dungeon Objects",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 251,
+      "name": "New Player Ship",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 253,
+      "name": "Mining and Compression Common Ores A1",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 254,
+      "name": "Mining and Compression Uncommon Ores A2",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 255,
+      "name": "Mining and Compression Rare Ores A3",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 256,
+      "name": "Mining and Compression Premium Ores A4",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 257,
+      "name": "Mining and Compression Abyssal Ores A5",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 258,
+      "name": "Mining and Compression Mercoxit Ores A6",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 259,
+      "name": "Mining and Compression Ubiquitous Moon ores B4",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 260,
+      "name": "Mining and Compression Common Moon ores B8",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 261,
+      "name": "Mining and Compression Uncommon Moon Ores B16",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 262,
+      "name": "Mining and Compression Rare Moon Ores B32",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 263,
+      "name": "Mining and Compression Exceptional Moon Ores B64",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 264,
+      "name": "Compression Low Grade Gases G1",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 265,
+      "name": "Compression High Grade Gases G2",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 266,
+      "name": "Compression Low Grade Fullerites G3",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 267,
+      "name": "Compression Medium Grade Fullerites G4",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 268,
+      "name": "Compression High Grade Fullerites G5",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 269,
+      "name": "Gnosis",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 270,
+      "name": "Basic T1 Battleships",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 271,
+      "name": "Local Armor/Shield Reps",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 272,
+      "name": "Compression Common Ice I1",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 273,
+      "name": "Compression Uncommon Ice I2",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 274,
+      "name": "Compression Rare Ice I3",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 277,
+      "name": "GallenteCruiserNoExequrorAndAssaultFrigate",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 278,
+      "name": "Unidentified Hostile Vessels (AIR NPE)",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 279,
+      "name": "AIR Security Types (AIR NPE)",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 280,
+      "name": "Rifter",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 281,
+      "name": "Sensor Dampener and Weapon Disruptor Range Scripts",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 282,
+      "name": "Specific Resistance Hardeners and Rigs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 283,
+      "name": "HACs Recons and Pirate Cruisers",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 284,
+      "name": "Omen",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 293,
+      "name": "T1DestroyersNoKikiOrSunesis",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 294,
+      "name": "Caldari Battlecruisers",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 295,
+      "name": "Damps and Shield Regen Modules/Rigs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 296,
+      "name": "Damps, Shield Boost Amps, and Shield Regen Modules/Rigs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 298,
+      "name": "NonTrashableItems",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 300,
+      "name": "LinkWithShip valid ships",
+      "status": "bound"
+    },
+    {
+      "listID": 301,
+      "name": "Kikimora",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 302,
+      "name": "Damps, Weapon Disruptors, and Specific Resistance Hardeners and Rigs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 303,
+      "name": "CRAB npc target typelist",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 310,
+      "name": "CRAB HostileBaiter scan blockers",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 313,
+      "name": "Shield Regen Modules/Rigs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 314,
+      "name": "Key for AEGIS Secure Capital Construction Forges site",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 315,
+      "name": "Damps, Weapon Disruptors, and Shield Regen Modules/Rigs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 316,
+      "name": "Prophecy",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 318,
+      "name": "Sensor Damps and Weapon Disruptors",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 319,
+      "name": "AEGIS Capital Ship Security Facility",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 320,
+      "name": "Sensor Damps",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 321,
+      "name": "Shield Regen Modules/Rigs, Sensor Dampener/Weapon Disruptor range scripts",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 322,
+      "name": "BasicT1EmpireCruisers",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 323,
+      "name": "BasicT1CombatAttackCruisers",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 324,
+      "name": "Filaments",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 325,
+      "name": "ExplorationFrigatesAndCovops",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 327,
+      "name": "BasicExplorationFrigates",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 329,
+      "name": "Compression ALL RESOURCES Typelist",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 330,
+      "name": "Compression ALL Moon Ore",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 331,
+      "name": "Compression ALL Ice",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 332,
+      "name": "Compression ALL Gas Types",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 333,
+      "name": "Compression ALL Mercoxit",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 334,
+      "name": "Compression ALL Asteroid Ore",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 336,
+      "name": "Compression Structure Allowed",
+      "status": "bound"
+    },
+    {
+      "listID": 337,
+      "name": "NonContractableItems",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 338,
+      "name": "CannotBeUnfitted",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 339,
+      "name": "Damps, Weapon Disruptors, Shield Regen Modules/Rigs, Boost Amps, Active Tank Rigs, and all T2 Rigs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 340,
+      "name": "Venture",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 341,
+      "name": "Capital Jump Drive Target Beacons",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 342,
+      "name": "Covert Jump Drive Target Beacons",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 343,
+      "name": "Industrial Jump Drive Target Beacons",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 348,
+      "name": "Industrial Jump Drive Target Beacons",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 349,
+      "name": "everGreenSkinCollectionCrates",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 350,
+      "name": "Damps, Weapon Disruptors, Shield Boost Amps, and Shield Regen Modules/Rigs",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 351,
+      "name": "Strategic Cruisers",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 352,
+      "name": "T3Cs and Command Ships",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 355,
+      "name": "Stargates",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 356,
+      "name": "Sunesis",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 489,
+      "name": "Combat Cruisers and Assault Frigates",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 490,
+      "name": "Thorax",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 491,
+      "name": "Athounon Edencom Factory Active",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 492,
+      "name": "Video Fragments",
+      "status": "bound"
+    },
+    {
+      "listID": 493,
+      "name": "Minmatar T1 Attack/Combat/Disruption Cruisers",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 539,
+      "name": "testNewIndustryAngelice",
+      "status": "test-only"
+    },
+    {
+      "listID": 540,
+      "name": "testNewIndustry2",
+      "status": "test-only"
+    },
+    {
+      "listID": 553,
+      "name": "Boreas",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 555,
+      "name": "Exclave Regicide Storm Operations",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 556,
+      "name": "Clan Taranaxas",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 560,
+      "name": "Clan Mother-I",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 565,
+      "name": "Synod Fabricator",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 566,
+      "name": "Notus",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 567,
+      "name": "Exclave Regicide Assault Operations",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 568,
+      "name": "Exclave Eyrie Expeditionary Branch",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 569,
+      "name": "Akrojian Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 570,
+      "name": "Exclave Eyrie Extraction Branch",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 572,
+      "name": "NPC Beacon",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 588,
+      "name": "Stargate Gatecamp Typelist",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 597,
+      "name": "Keep Clonebank Zarquis",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 598,
+      "name": "Starting System - Tower",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 599,
+      "name": "Minable Asteroids - All",
+      "status": "bound"
+    },
+    {
+      "listID": 600,
+      "name": "Frontier Minable Megastructure",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 601,
+      "name": "Frontier Minable Crude Rifts",
+      "status": "bound"
+    },
+    {
+      "listID": 603,
+      "name": "Clan Kikheros",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 604,
+      "name": "Clan Saraqael",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 605,
+      "name": "Clan Rapax",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 606,
+      "name": "Keep Clonebank Quox",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 607,
+      "name": "Keep Clonebank Astor",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 609,
+      "name": "Synod Advanced Fabricator",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 612,
+      "name": "Minable Asteroids - T1",
+      "status": "bound"
+    },
+    {
+      "listID": 613,
+      "name": "Minable Asteroids - T2",
+      "status": "bound"
+    },
+    {
+      "listID": 615,
+      "name": "Osa Reinforcement",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 616,
+      "name": "Tsikada Reinfrocement ",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 617,
+      "name": "Termit Reinforcement",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 618,
+      "name": "Okryda Reinforcements",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 619,
+      "name": "POC Hackathon Industry list",
+      "status": "test-only"
+    },
+    {
+      "listID": 623,
+      "name": "Grade 0 Generic Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 626,
+      "name": "Arctic planets",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 627,
+      "name": "Inferno planets",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 628,
+      "name": "Temperate planets",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 629,
+      "name": "Grade 1 Generic Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 635,
+      "name": "Grade 0 Generic Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 636,
+      "name": "Grade 0 Generic Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 637,
+      "name": "Grade 0 Generic Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 638,
+      "name": "Grade 1 Generic Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 639,
+      "name": "Grade 1 Generic Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 640,
+      "name": "Grade 1 Generic Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 641,
+      "name": "Grade 1 Generic Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 642,
+      "name": "Grade 0 Generic Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 643,
+      "name": "Grade 0 Generic Mining Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 644,
+      "name": "Grade 1 Generic Mining Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 645,
+      "name": "Grade 2 Generic Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 646,
+      "name": "Grade 3 Generic Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 647,
+      "name": "Grade 4 Generic Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 648,
+      "name": "Grade 5 Generic Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 649,
+      "name": "Grade 6 Generic Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 650,
+      "name": "Grade 2 Generic Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 651,
+      "name": "Grade 3 Generic Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 652,
+      "name": "Grade 4 Generic Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 653,
+      "name": "Grade 5 Generic Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 654,
+      "name": "Grade 6 Generic Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 655,
+      "name": "Grade 2 Generic Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 656,
+      "name": "Grade 3 Generic Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 657,
+      "name": "Grade 4 Generic Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 658,
+      "name": "Grade 5 Generic Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 659,
+      "name": "Grade 6 Generic Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 660,
+      "name": "Grade 2 Generic Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 661,
+      "name": "Grade 3 Generic Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 662,
+      "name": "Grade 4 Generic Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 663,
+      "name": "Grade 5 Generic Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 664,
+      "name": "Grade 6 Generic Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 665,
+      "name": "Grade 2 Generic Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 666,
+      "name": "Grade 3 Generic Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 667,
+      "name": "Grade 4 Generic Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 668,
+      "name": "Grade 5 Generic Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 669,
+      "name": "Grade 6 Generic Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 670,
+      "name": "Grade 2 Generic Mining Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 671,
+      "name": "Grade 3 Generic Mining Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 672,
+      "name": "Grade 4 Generic Mining Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 673,
+      "name": "Grade 5 Generic Mining Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 674,
+      "name": "Grade 6 Generic Mining Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 675,
+      "name": "Grade 0 Generic Clone Industry",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 676,
+      "name": "Grade 1 Generic Clone Industry",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 677,
+      "name": "Grade 2 Generic Clone Industry",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 678,
+      "name": "Grade 3 Generic Clone Industry",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 679,
+      "name": "Grade 4 Generic Clone Industry",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 680,
+      "name": "Grade 5 Generic Clone Industry",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 681,
+      "name": "Grade 6 Generic Clone Industry",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 683,
+      "name": "Free Fuel Ships",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 685,
+      "name": "All Planets",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 686,
+      "name": "Grade 0 Synod Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 687,
+      "name": "Grade 1 Synod Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 688,
+      "name": "Grade 2 Synod Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 689,
+      "name": "Grade 3 Synod Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 690,
+      "name": "Grade 4 Synod Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 691,
+      "name": "Grade 5 Synod Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 692,
+      "name": "Grade 6 Synod Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 693,
+      "name": "Grade 0 Synod Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 694,
+      "name": "Grade 1 Synod Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 695,
+      "name": "Grade 2 Synod Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 696,
+      "name": "Grade 3 Synod Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 697,
+      "name": "Grade 4 Synod Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 698,
+      "name": "Grade 5 Synod Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 699,
+      "name": "Grade 6 Synod Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 700,
+      "name": "Grade 0 Synod Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 701,
+      "name": "Grade 1 Synod Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 702,
+      "name": "Grade 2 Synod Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 703,
+      "name": "Grade 3 Synod Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 704,
+      "name": "Grade 4 Synod Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 705,
+      "name": "Grade 5 Synod Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 706,
+      "name": "Grade 6 Synod Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 707,
+      "name": "Grade 0 Synod Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 708,
+      "name": "Grade 1 Synod Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 709,
+      "name": "Grade 2 Synod Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 710,
+      "name": "Grade 3 Synod Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 711,
+      "name": "Grade 4 Synod Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 712,
+      "name": "Grade 5 Synod Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 713,
+      "name": "Grade 6 Synod Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 714,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 715,
+      "name": "Grade 1 Synod Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 716,
+      "name": "Grade 2 Synod Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 717,
+      "name": "Grade 3 Synod Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 718,
+      "name": "Grade 4 Synod Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 719,
+      "name": "Grade 5 Synod Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 720,
+      "name": "Grade 6 Synod Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 721,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 722,
+      "name": "Grade 1 Synod Mining Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 723,
+      "name": "Grade 2 Synod Mining Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 724,
+      "name": "Grade 3 Synod Mining Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 725,
+      "name": "Grade 4 Synod Mining Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 726,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 727,
+      "name": "Grade 6 Synod Mining Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 728,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 729,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 730,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 731,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 732,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 733,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 734,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 735,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 736,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 737,
+      "name": "Grade 2 Exclave Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 738,
+      "name": "Grade 3 Exclave Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 739,
+      "name": "Grade 4 Exclave Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 740,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 741,
+      "name": "Grade 6 Exclave Manufacturing Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 742,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 743,
+      "name": "Grade 1 Exclave Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 744,
+      "name": "Grade 2 Exclave Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 745,
+      "name": "Grade 3 Exclave Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 746,
+      "name": "Grade 4 Exclave Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 747,
+      "name": "Grade 5 Exclave Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 748,
+      "name": "Grade 6 Exclave Weapons Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 749,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 750,
+      "name": "Grade 1 Exclave Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 751,
+      "name": "Grade 2 Exclave Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 752,
+      "name": "Grade 3 Exclave Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 753,
+      "name": "Grade 4 Exclave Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 754,
+      "name": "Grade 5 Exclave Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 755,
+      "name": "Grade 6 Exclave Ships Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 756,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 757,
+      "name": "Grade 1 Exclave Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 758,
+      "name": "Grade 2 Exclave Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 759,
+      "name": "Grade 3 Exclave Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 760,
+      "name": "Grade 4 Exclave Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 761,
+      "name": "Grade 5 Exclave Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 762,
+      "name": "Grade 6 Exclave Defense Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 763,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 764,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 765,
+      "name": "Grade 2 Exclave Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 766,
+      "name": "Grade 3 Exclave Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 767,
+      "name": "Grade 4 Exclave Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 768,
+      "name": "Grade 5 Exclave Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 769,
+      "name": "Grade 6 Exclave Tech Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 770,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 771,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 772,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 773,
+      "name": "Grade 3 Exclave Mining Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 774,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 775,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 776,
+      "name": "Grade 6 Exclave Mining Industry",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 777,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 778,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 779,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 780,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 781,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 782,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 783,
+      "name": "",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 784,
+      "name": "Stations September - Outpost 1",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 785,
+      "name": "Stations September - Outpost 2",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 786,
+      "name": "Stations September - Exclave Defense",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 787,
+      "name": "Stations September - Exclave Weapons",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 788,
+      "name": "Stations September - Exclave HQ",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 789,
+      "name": "Stations September - Exclave Tech",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 794,
+      "name": "Frontier New Universe - Keep",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 795,
+      "name": "Frontier New Universe - Exclave",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 798,
+      "name": "Eve Universe - White Star ",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 802,
+      "name": "Keep",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 803,
+      "name": "Ukase No.1",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 804,
+      "name": "Ukase No.2",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 805,
+      "name": "Ochi Boga",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 806,
+      "name": "Ukase No.3",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 807,
+      "name": "Ukase No.4",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 808,
+      "name": "Ukase No.5",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 809,
+      "name": "Ukase No.6",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 810,
+      "name": "Stellar Constructions",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 811,
+      "name": "Assembly Protocol",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 812,
+      "name": "Hromada",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 827,
+      "name": "",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 835,
+      "name": "Tactical Grid Anchor Lines",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 839,
+      "name": "Engines",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 845,
+      "name": "Frontier - All Frigates",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 846,
+      "name": "Frontier - All Cruisers",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 847,
+      "name": "Frontier - Battleships",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 848,
+      "name": "Frontier - Destroyer",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 849,
+      "name": "Frontier - Battlecruiser",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 850,
+      "name": "Default Bracket Filter",
+      "status": "client-only"
+    },
+    {
+      "listID": 852,
+      "name": "Build Mode Bracket Filter",
+      "status": "client-only"
+    },
+    {
+      "listID": 860,
+      "name": "Frontier NPC Scannable Targets Test",
+      "status": "test-only"
+    },
+    {
+      "listID": 861,
+      "name": "Frontier NPC Lootable Targets Test",
+      "status": "bound"
+    },
+    {
+      "listID": 862,
+      "name": "Frontier NPC Asteroid Target List Test",
+      "status": "test-only"
+    },
+    {
+      "listID": 864,
+      "name": "Feral Network Node - Constructable List",
+      "status": "empty-authoring"
+    },
+    {
+      "listID": 906,
+      "name": "Feral Drone General Targets of Interest",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 916,
+      "name": "Feral Drone Combat Capable Targets and Player Structures",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 918,
+      "name": "Feral Moon TumorII Favorite TypelList 1",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 919,
+      "name": "Feral Moon Tumor Follow TypelList",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 920,
+      "name": "Feral Moon TumorII Favorite TypelList 2",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 921,
+      "name": "Feral Moon Tumor Scannable Types",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 922,
+      "name": "Brackets Distance based",
+      "status": "client-only"
+    },
+    {
+      "listID": 923,
+      "name": "Conservator Clade Inventory Items of Interest",
+      "status": "bound"
+    },
+    {
+      "listID": 924,
+      "name": "Feal Moon Tumor Exempted items from inspection",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 931,
+      "name": "Feral Moon Tumor Mining TypeList",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 935,
+      "name": "Roaming Trader Targets of Interest",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 938,
+      "name": "Hand-in Terminal Follow TypelList",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 939,
+      "name": "Portable Assemblies",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 940,
+      "name": "Xeroti interest items No.1",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 941,
+      "name": "Xeroti interest items No.2",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 942,
+      "name": "Xeroti interest items No.3",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 943,
+      "name": "Xeroti interest items all",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 957,
+      "name": "Empty Container Exempt List",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 963,
+      "name": "Conservator Clade Storage Objects",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 975,
+      "name": "L-Point Anchor Points",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 976,
+      "name": "Roaming Trader Drone Market List",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 977,
+      "name": "Large Roaming Trader Drone Market List 1",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 982,
+      "name": "Ships and Enemies of Conservator Clade",
+      "status": "unsupported-system"
+    },
+    {
+      "listID": 985,
+      "name": "Feral Drone Metamorphosis Targets of Interest",
+      "status": "bound"
+    },
+    {
+      "listID": 989,
+      "name": "CreationCriticalModules",
+      "status": "unsupported-system"
+    }
+  ]
+}

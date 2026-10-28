@@ -46,9 +46,9 @@ let messageSequence = 0;
 
 const connectedClients = new Set<any>();
 const roomMembers = new Map();
-const transcriptDir = path.join(__dirname, "../../../logs");
+const transcriptDir = process.env.EVEJS_LOG_DIR ? path.resolve(process.env.EVEJS_LOG_DIR) : path.join(__dirname, "../../../logs");
 const transcriptPath = path.join(transcriptDir, "xmpp-stub.log");
-const certDir = path.join(__dirname, "../../../certs");
+const certDir = process.env.EVEJS_RUNTIME_CERT_DIR ? path.resolve(process.env.EVEJS_RUNTIME_CERT_DIR) : path.join(__dirname, "../../../certs");
 const certPath = path.join(certDir, "xmpp-dev-cert.pem");
 const keyPath = path.join(certDir, "xmpp-dev-key.pem");
 
@@ -2424,7 +2424,7 @@ function handleGroupMessage(client, xml) {
   }
 
   if (body.startsWith("/") || body.startsWith(".")) {
-    const result = session
+    const commandResult = session
       ? executeChatCommand(session, body, null, {
           emitChatFeedback: false,
         })
@@ -2434,18 +2434,25 @@ function handleGroupMessage(client, xml) {
             "Command unavailable: no active game session matched this chat connection.",
         };
 
-    const responseMessage =
-      result.message ||
-      (result.handled
-        ? "Command executed."
-        : `Unknown command: ${body}. Use /help.`);
-
-    if (result.refreshChatRolePresence) {
-      refreshSessionChatRolePresence(session);
-    }
-
-    log.debug(`[XMPP] Command from ${client.userName}: ${body}`);
-    sendSystemMessageToClient(client, roomJid, responseMessage);
+    Promise.resolve(commandResult).then((result) => {
+      const responseMessage =
+        result.message ||
+        (result.handled
+          ? "Command executed."
+          : `Unknown command: ${body}. Use /help.`);
+      if (result.refreshChatRolePresence) {
+        refreshSessionChatRolePresence(session);
+      }
+      log.debug(`[XMPP] Command from ${client.userName}: ${body}`);
+      sendSystemMessageToClient(client, roomJid, responseMessage);
+    }).catch((error) => {
+      log.warn(`[XMPP] Command failed for ${client.userName}: ${error.message}`);
+      sendSystemMessageToClient(
+        client,
+        roomJid,
+        "Command failed before it could be completed.",
+      );
+    });
     return;
   }
 

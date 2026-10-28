@@ -1066,6 +1066,7 @@ class KeeperService extends BaseService {
 }
 
 KeeperService._testing = {
+  assertShipMayUseGate,
   assertGateItemRequirements,
   activateAccelerationGateForSession,
   clearOperationSpawnpointRecords,

@@ -2,20 +2,29 @@ const path = require("path");
 
 const log = require(path.join(__dirname, "../../utils/logger"));
 const config = require(path.join(__dirname, "../../config"));
-const serviceTaskPool = require(path.join(__dirname, "../../utils/serviceTaskPool"));
+const worldPlanningPool = require(path.join(__dirname, "../../space/worldPlanningPool"));
 const interactiveWorkloadGate = require(path.join(
   __dirname,
   "../../utils/interactiveWorkloadGate",
 ));
 const worldData = require(path.join(__dirname, "../../space/worldData"));
 const asteroidData = require(path.join(__dirname, "../../space/asteroids/asteroidData"));
+const {
+  TABLE,
+  readStaticRows,
+} = require(path.join(__dirname, "../_shared/referenceData"));
 const dungeonAuthority = require(path.join(__dirname, "./dungeonAuthority"));
 const dungeonRuntime = require(path.join(__dirname, "./dungeonRuntime"));
 const dungeonSiteAdapter = require(path.join(__dirname, "./dungeonSiteAdapter"));
 const dungeonSiteSpawnPolicy = require(path.join(__dirname, "./dungeonSiteSpawnPolicy"));
 const dungeonRuntimeState = require(path.join(__dirname, "./dungeonRuntimeState"));
 const dungeonSpawnEligibility = require(path.join(__dirname, "./dungeonSpawnEligibility"));
+const frontierDungeonSpawns = require(path.join(
+  __dirname,
+  "../../config/frontierDungeonSpawns",
+));
 const {
+  DEFAULT_AU_METERS,
   buildAnchorRelativeSignaturePlacement,
 } = require(path.join(__dirname, "../exploration/signatures/signaturePlacement"));
 const trigDrifterSpawnAuthority = require(path.join(
@@ -85,14 +94,28 @@ const SYSTEM_RECONCILE_INITIAL_DELAY_MS = 250;
 const SYSTEM_WAKE_RECONCILE_DEBOUNCE_MS = 30_000;
 const RANDOM_UNIVERSE_ALLOCATION_VERSION = 1;
 const SYSTEM_WAKE_ALLOCATION_VERSION = 1;
+const MAX_DUNGEON_SITE_PLACEMENT_ATTEMPTS = 256;
 const ALLOCATION_MODES = new Set(["baseline", "fixed", "random"]);
 const SOV_GUARANTEED_SITE_ORIGIN = "sov_hub";
+const BASELINE_UNIVERSE_DUNGEON_FAMILY = "combat_anomaly";
 const SOV_GUARANTEED_SPAWN_FAMILIES = Object.freeze([
   "sov_threat_detection",
   "sov_prospecting",
   "sov_exploration_detector",
 ]);
 const SOV_GUARANTEED_FAMILY_SET = new Set(SOV_GUARANTEED_SPAWN_FAMILIES);
+// Temporary Frontier world-spawn selection. Keep the other configured sites
+// available for direct references while restricting automatic allocation.
+const TEMPORARY_UNIVERSE_DUNGEON_IDS = new Set([
+  // Mining sites, excluding Moon Eater, Xeroti, and stacked storage content.
+  10403, 10456, 10457, 10458, 10459, 10684, 10685, 10688, 10710,
+  11100, 11101, 11102, 11128, 12230, 12686, 13118, 13294, 13295, 13316,
+  // Crude Rift sites (including the Fuel Deposit entry).
+  10460, 10690, 11081, 11082, 11083, 11084, 11085, 12338,
+  12710, 12711, 14001, 14008, 14103, 14104, 14105, 14106,
+  // Osa Surveyors only; other Surveyors factions remain configured but dormant.
+  12345,
+]);
 const DRONE_REGION_IDS = new Set([
   10000013, // Malpais
   10000018, // The Spire
@@ -311,10 +334,6 @@ const RANDOM_ALLOCATED_UNIVERSE_FAMILIES = new Set([
   "ghost",
   "combat_hacking",
 ]);
-const DUNGEON_UNIVERSE_PLANNING_TASK = path.join(
-  __dirname,
-  "dungeonUniversePlanningTask.js",
-);
 const WAKE_ALLOCATED_UNIVERSE_FAMILIES = new Set(RANDOM_ALLOCATED_UNIVERSE_FAMILIES);
 
 let universeReconcileTicker = null;
@@ -335,7 +354,6 @@ const prospectingOreTemplatesByKeyCache = new Map();
 let stargateAdjacencyCache = null;
 const stableWakeCandidateRankingsByFamilyBand = new Map();
 let frontierDungeonSpawnAuthorityIDsCache = null;
-let landscapeDungeonSpawnExclusionIDsCache = null;
 
 function toInt(value, fallback = 0) {
   const numeric = Number(value);
@@ -355,6 +373,26 @@ function resolveProfileAllocationMode(family, bandProfile = null) {
   return RANDOM_ALLOCATED_UNIVERSE_FAMILIES.has(normalizedFamily)
     ? "random"
     : "fixed";
+}
+
+function resolveUniverseDungeonSlotsPerSystem(family, systemID, bandProfile = null) {
+  const configuredSlots = Math.max(
+    0,
+    toInt(bandProfile && bandProfile.slotsPerSystem, 0),
+  );
+  if (
+    configuredSlots <= 0 ||
+    normalizeLowerText(family, "") !== BASELINE_UNIVERSE_DUNGEON_FAMILY ||
+    resolveProfileAllocationMode(family, bandProfile) !== "baseline"
+  ) {
+    return configuredSlots;
+  }
+  // All Frontier entry-beacon groups share the combat-anomaly baseline. Keep
+  // unrelated generated/resource-family mining allocation counts unchanged.
+  return Math.max(
+    configuredSlots,
+    dungeonSpawnEligibility.resolveUniverseDungeonSiteCount(systemID),
+  );
 }
 
 function firstPositiveInt(...values) {
@@ -472,32 +510,45 @@ function cloneValue(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
-function getLandscapeDungeonSpawnExclusionIDs() {
-  if (!landscapeDungeonSpawnExclusionIDsCache) {
-    const worldSnapshot = worldData.ensureLoaded();
-    landscapeDungeonSpawnExclusionIDsCache = new Set(
-      dungeonSpawnEligibility.collectLandscapeDungeonSpawnExclusionIDs(worldSnapshot),
-    );
-  }
-  return landscapeDungeonSpawnExclusionIDsCache;
-}
-
 function getFrontierDungeonSpawnAuthorityIDs() {
   if (!frontierDungeonSpawnAuthorityIDsCache) {
     const worldSnapshot = worldData.ensureLoaded();
+    const configuredDungeonIDs = new Set(
+      Object.keys(frontierDungeonSpawns.getConfig().sites || {})
+        .map((entry) => Math.max(0, toInt(entry, 0)))
+        .filter((entry) => entry > 0),
+    );
     frontierDungeonSpawnAuthorityIDsCache = new Set(
-      dungeonSpawnEligibility.collectFrontierDungeonSpawnAuthorityIDs(worldSnapshot),
+      dungeonSpawnEligibility.collectFrontierDungeonSpawnAuthorityIDs(
+        worldSnapshot,
+        readStaticRows(TABLE.ITEM_TYPES),
+      ).filter((dungeonID) => (
+        configuredDungeonIDs.has(dungeonID) &&
+        TEMPORARY_UNIVERSE_DUNGEON_IDS.has(dungeonID)
+      )),
     );
   }
   return frontierDungeonSpawnAuthorityIDsCache;
 }
 
-function isUniverseSpawnEligibleTemplate(template) {
-  return Boolean(template && template.templateID) &&
+function isUniverseSpawnEligibleTemplate(
+  template,
+  frontierDungeonIDs = getFrontierDungeonSpawnAuthorityIDs(),
+) {
+  // The extracted Frontier table describes every client dungeon/prefab which
+  // happens to use a site entry group. It is source material, not a world
+  // spawn allow-list. Only exact rows decorated from the unified config may
+  // enter automatic universe selection or reconciliation.
+  return Boolean(
+    template &&
+    template.templateID &&
+    TEMPORARY_UNIVERSE_DUNGEON_IDS.has(Math.max(0, toInt(template.sourceDungeonID, 0))) &&
+    template.frontierDungeonSpawnConfigured === true &&
+    frontierDungeonSpawns.resolveSiteConfiguration(template)
+  ) &&
     dungeonSpawnEligibility.isTemplateEligibleForUniverseSpawning(
       template,
-      getFrontierDungeonSpawnAuthorityIDs(),
-      getLandscapeDungeonSpawnExclusionIDs(),
+      frontierDungeonIDs,
     );
 }
 
@@ -974,17 +1025,31 @@ function buildBroadUniverseDescriptor(systemIDs = null) {
       continue;
     }
     const slots: Record<string, any> = {};
+    const effectiveSlotRanges: Record<string, any> = {};
     const strides: Record<string, any> = {};
     const targetSystems: Record<string, any> = {};
     const allocationModes: Record<string, any> = {};
     for (const band of ["highsec", "lowsec", "nullsec", "wormhole"]) {
       const bandProfile = profile.bands && profile.bands[band];
       const slotsPerSystem = Math.max(0, toInt(bandProfile && bandProfile.slotsPerSystem, 0));
+      const eligibleSystemIDs = listEligibleSystemIDsForBandProfile(
+        family,
+        band,
+        bandProfile,
+        systemIDs,
+      );
+      const effectiveSlotCounts = eligibleSystemIDs.map((systemID) => (
+        resolveUniverseDungeonSlotsPerSystem(family, systemID, bandProfile)
+      ));
       slots[band] = slotsPerSystem;
+      effectiveSlotRanges[band] = {
+        minimum: effectiveSlotCounts.length > 0 ? Math.min(...effectiveSlotCounts) : 0,
+        maximum: effectiveSlotCounts.length > 0 ? Math.max(...effectiveSlotCounts) : 0,
+      };
       strides[band] = Math.max(1, toInt(bandProfile && bandProfile.systemStride, 1));
       allocationModes[band] = resolveProfileAllocationMode(family, bandProfile);
-      targetSystems[band] = listEligibleSystemIDsForBandProfile(family, band, bandProfile, systemIDs).length;
-      estimatedSiteCount += slotsPerSystem * targetSystems[band];
+      targetSystems[band] = eligibleSystemIDs.length;
+      estimatedSiteCount += effectiveSlotCounts.reduce((sum, count) => sum + count, 0);
     }
     familyPolicies[family] = {
       siteLifetimeMinutes: Math.max(1, toInt(profile.siteLifetimeMinutes, 1440)),
@@ -993,6 +1058,7 @@ function buildBroadUniverseDescriptor(systemIDs = null) {
       randomAllocationVersion: RANDOM_UNIVERSE_ALLOCATION_VERSION,
       allocationModes,
       slots,
+      effectiveSlotRanges,
       strides,
       targetSystems,
     };
@@ -1012,14 +1078,13 @@ function buildBroadUniverseDescriptor(systemIDs = null) {
     spawnEligibility: {
       frontierDungeonAuthorityVersion:
         dungeonSpawnEligibility.FRONTIER_DUNGEON_SPAWN_AUTHORITY_VERSION,
+      frontierDungeonGroupIDs:
+        [...dungeonSpawnEligibility.FRONTIER_DUNGEON_SPAWN_GROUP_IDS],
       frontierDungeonIDs: [...getFrontierDungeonSpawnAuthorityIDs()],
-      landscapeExclusionVersion:
-        dungeonSpawnEligibility.LANDSCAPE_SPAWN_EXCLUSION_VERSION,
       frontierResourceFieldPolicyVersion:
         asteroidData.FRONTIER_RESOURCE_FIELD_POLICY_VERSION,
       frontierResourceFieldsEnabled:
         asteroidData.FRONTIER_SYNTHETIC_RESOURCE_FIELDS_ENABLED === true,
-      excludedLandscapeDungeonIDs: [...getLandscapeDungeonSpawnExclusionIDs()],
     },
     familyPolicies,
     estimatedSiteCount,
@@ -1200,26 +1265,87 @@ function buildUniverseAnchorCandidates(systemID, family) {
   }];
 }
 
-function buildUniverseSitePosition(systemID, family, slotIndex, rotationIndex = 0) {
-  return buildUniverseSitePlacement(systemID, family, slotIndex, rotationIndex).position;
+function normalizeSitePlacementDistanceAu(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const min = Math.max(0, toFiniteNumber(value.min, 3.65));
+  const max = Math.max(min, toFiniteNumber(value.max, 4.35));
+  return { min, max };
 }
 
-function buildUniverseSitePlacement(systemID, family, slotIndex, rotationIndex = 0) {
+function normalizeSiteSeparationLightSeconds(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const min = Math.max(0.001, toFiniteNumber(value.min, 1));
+  const max = Math.max(min, toFiniteNumber(value.max, 10));
+  return { min, max };
+}
+
+function resolveTemplatePlacementDistanceAu(template) {
+  if (!template || !template.frontierDungeonPlacementDistanceAu) {
+    return null;
+  }
+  return normalizeSitePlacementDistanceAu(
+    template && template.frontierDungeonPlacementDistanceAu,
+  );
+}
+
+function resolveTemplateSeparationLightSeconds(template) {
+  const configuredDefaults = frontierDungeonSpawns.getConfig().defaults;
+  return normalizeSiteSeparationLightSeconds(
+    template && template.frontierDungeonSeparationLightSeconds ||
+      configuredDefaults.siteSeparationLightSeconds,
+  );
+}
+
+function buildUniverseSitePosition(systemID, family, slotIndex, rotationIndex = 0, options: Record<string, any> = {}) {
+  return buildUniverseSitePlacement(systemID, family, slotIndex, rotationIndex, options).position;
+}
+
+function buildUniverseSitePlacement(
+  systemID,
+  family,
+  slotIndex,
+  rotationIndex = 0,
+  options: Record<string, any> = {},
+) {
   const anchorCandidates = buildUniverseAnchorCandidates(systemID, family);
+  const placementDistanceAu = normalizeSitePlacementDistanceAu(
+    options.placementDistanceAu,
+  );
+  const placementAttempt = Math.max(0, toInt(options.placementAttempt, 0));
+  const baseDistanceAu = placementDistanceAu
+    ? (placementDistanceAu.min + placementDistanceAu.max) / 2
+    : 4;
+  const distanceJitterAu = placementDistanceAu
+    ? (placementDistanceAu.max - placementDistanceAu.min) / 2
+    : 0.35;
+  const rangedAnchorCandidates = placementDistanceAu
+    ? anchorCandidates.map((candidate) => ({
+      ...candidate,
+      minimumDistanceMeters: placementDistanceAu.min * DEFAULT_AU_METERS,
+      maximumDistanceMeters: placementDistanceAu.max * DEFAULT_AU_METERS,
+    }))
+    : anchorCandidates;
   const placement = buildAnchorRelativeSignaturePlacement(
-    anchorCandidates,
-    `universe-site:${normalizeLowerText(family, "unknown")}:${toInt(systemID, 0)}:${Math.max(0, toInt(slotIndex, 0))}:${Math.max(0, toInt(rotationIndex, 0))}`,
+    rangedAnchorCandidates,
+    `universe-site:${normalizeLowerText(family, "unknown")}:${toInt(systemID, 0)}:${Math.max(0, toInt(slotIndex, 0))}:${Math.max(0, toInt(rotationIndex, 0))}` +
+      (placementAttempt > 0 ? `:separation-attempt:${placementAttempt}` : ""),
     {
       fallbackAnchorItemID: toInt(systemID, 0),
-      baseDistanceAu: 4,
-      distanceJitterAu: 0.35,
+      baseDistanceAu,
+      distanceJitterAu,
       verticalJitterAu: 0.14,
     },
   );
   return {
     ...placement,
+    placementDistanceAu,
     anchorDistanceMeters: toFiniteNumber(placement && placement.distanceMeters, 0),
     anchorDistanceAu: toFiniteNumber(placement && placement.distanceAu, 0),
+    placementAttempt,
   };
 }
 
@@ -2276,13 +2402,46 @@ function pickUniverseTemplateForSlotWithPolicy(
   if (eligible.length <= 0) {
     return null;
   }
-  const templateIndex = hashValue(
+  const selectionValue = hashValue(
     (toInt(systemID, 0) * 4099) +
     (slotIndex * 131) +
     (Math.max(0, toInt(rotationIndex, 0)) * 17) +
     hashText(family),
-  ) % eligible.length;
-  return eligible[templateIndex] || eligible[0] || null;
+  ) / 0x100000000;
+  return pickWeightedTemplateCandidate(eligible, selectionValue);
+}
+
+function resolveTemplateSpawnFrequency(template) {
+  const configured = Number(template && template.frontierDungeonSpawnFrequency);
+  return Number.isFinite(configured) && configured > 0 ? configured : 1;
+}
+
+function pickWeightedTemplateCandidate(entries, selectionValue) {
+  const candidates = Array.isArray(entries) ? entries : [];
+  if (candidates.length <= 0) {
+    return null;
+  }
+  const weights = candidates.map((entry) => resolveTemplateSpawnFrequency(
+    entry && entry.template ? entry.template : entry,
+  ));
+  const totalWeight = weights.reduce((total, weight) => total + weight, 0);
+  const numericSelection = Number(selectionValue);
+  const normalizedSelection = Math.max(
+    0,
+    Math.min(
+      1 - Number.EPSILON,
+      Number.isFinite(numericSelection) ? numericSelection : 0,
+    ),
+  );
+  const targetWeight = normalizedSelection * totalWeight;
+  let cumulativeWeight = 0;
+  for (let index = 0; index < candidates.length; index += 1) {
+    cumulativeWeight += weights[index];
+    if (targetWeight < cumulativeWeight) {
+      return candidates[index];
+    }
+  }
+  return candidates[candidates.length - 1] || null;
 }
 
 function pickRandomArrayIndex(length, rng = Math.random) {
@@ -2330,7 +2489,13 @@ function pickRandomUniverseTemplateForSlotWithPolicy(
   if (eligible.length <= 0) {
     return null;
   }
-  return pickRandomArrayEntry(eligible, options.rng) || eligible[0] || null;
+  const randomValue = Number(
+    typeof options.rng === "function" ? options.rng() : Math.random(),
+  );
+  return pickWeightedTemplateCandidate(
+    eligible,
+    Number.isFinite(randomValue) ? randomValue : Math.random(),
+  ) || eligible[0] || null;
 }
 
 function systemMatchesSpawnBandProfile(systemID, family, bandProfile) {
@@ -2390,7 +2555,16 @@ function buildUniverseSiteDefinition(template, family, systemID, slotIndex, opti
   const band = normalizeLowerText(options.band, getSecurityBand(systemID));
   const siteKind = normalizeLowerText(template && template.siteKind, "signature");
   const providerID = getUniverseSiteProviderID(siteKind);
-  const placement = buildUniverseSitePlacement(systemID, spawnFamilyKey, slotIndex, rotationIndex);
+  const spawnFrequency = resolveTemplateSpawnFrequency(template);
+  const placementDistanceAu = resolveTemplatePlacementDistanceAu(template);
+  const separationLightSeconds = resolveTemplateSeparationLightSeconds(template);
+  const placement = buildUniverseSitePlacement(
+    systemID,
+    spawnFamilyKey,
+    slotIndex,
+    rotationIndex,
+    { placementDistanceAu },
+  );
   const position = placement.position;
   const templateSiteFamily = normalizeLowerText(template && template.siteFamily, normalizeLowerText(family, "unknown"));
   const entryObjectTypeID = Math.max(
@@ -2407,6 +2581,25 @@ function buildUniverseSiteDefinition(template, family, systemID, slotIndex, opti
   const customMetadata = normalizeObject(options.metadata);
   const customSpawnState = normalizeObject(options.spawnState);
   const customRuntimeFlags = normalizeObject(options.runtimeFlags);
+  const dungeonTags = [...new Set([
+    ...(Array.isArray(template && template.frontierDungeonTags)
+      ? template.frontierDungeonTags
+      : Array.isArray(template && template.tags) ? template.tags : []),
+    ...(Array.isArray(customMetadata.dungeonTags) ? customMetadata.dungeonTags : []),
+    ...(Array.isArray(customSpawnState.dungeonTags) ? customSpawnState.dungeonTags : []),
+  ].map((entry) => normalizeLowerText(entry, "")).filter(Boolean))];
+  const dungeonFactionKey = normalizeLowerText(
+    customMetadata.dungeonFactionKey ||
+    customSpawnState.dungeonFactionKey ||
+    (template && template.frontierFactionKey),
+    "",
+  ) || null;
+  const dungeonFactionTag = normalizeLowerText(
+    customMetadata.dungeonFactionTag ||
+    customSpawnState.dungeonFactionTag ||
+    (template && template.frontierFactionTag),
+    "",
+  ) || null;
   const siteOrigin = normalizeLowerText(
     options.siteOrigin,
     normalizeLowerText(
@@ -2443,7 +2636,13 @@ function buildUniverseSiteDefinition(template, family, systemID, slotIndex, opti
       ],
       anchorItemID: toInt(placement && placement.anchorItemID, 0),
       anchorDistanceMeters: Math.round(toFiniteNumber(placement && placement.anchorDistanceMeters, 0)),
+      spawnFrequency,
+      placementDistanceAu,
+      separationLightSeconds,
       spawnPolicy,
+      dungeonTags,
+      dungeonFactionKey,
+      dungeonFactionTag,
       templateContentHash: hashText(JSON.stringify({
         populationHints: cloneValue(template && template.populationHints || null),
         environmentTemplates: cloneValue(template && template.environmentTemplates || null),
@@ -2463,7 +2662,15 @@ function buildUniverseSiteDefinition(template, family, systemID, slotIndex, opti
     anchorDistanceMeters: Math.round(toFiniteNumber(placement && placement.anchorDistanceMeters, 0)),
     anchorDistanceAu: Number(toFiniteNumber(placement && placement.anchorDistanceAu, 0).toFixed(3)),
     spawnPolicy,
+    frontierDungeonSpawnConfigVersion:
+      Math.max(0, toInt(template && template.frontierDungeonSpawnConfigVersion, 0)) || null,
     ...cloneValue(customMetadata),
+    spawnFrequency,
+    placementDistanceAu: cloneValue(placementDistanceAu),
+    separationLightSeconds: cloneValue(separationLightSeconds),
+    dungeonTags,
+    dungeonFactionKey,
+    dungeonFactionTag,
   };
 
   return {
@@ -2513,6 +2720,12 @@ function buildUniverseSiteDefinition(template, family, systemID, slotIndex, opti
       populationHints: cloneValue(template && template.populationHints || null),
       spawnPolicy,
       ...cloneValue(customSpawnState),
+      spawnFrequency,
+      placementDistanceAu: cloneValue(placementDistanceAu),
+      separationLightSeconds: cloneValue(separationLightSeconds),
+      dungeonTags,
+      dungeonFactionKey,
+      dungeonFactionTag,
     },
     runtimeFlags: {
       universeSeeded: true,
@@ -2522,6 +2735,192 @@ function buildUniverseSiteDefinition(template, family, systemID, slotIndex, opti
     },
     metadata,
   };
+}
+
+function squaredDistanceBetweenPositions(left, right) {
+  const dx = toFiniteNumber(left && left.x, 0) - toFiniteNumber(right && right.x, 0);
+  const dy = toFiniteNumber(left && left.y, 0) - toFiniteNumber(right && right.y, 0);
+  const dz = toFiniteNumber(left && left.z, 0) - toFiniteNumber(right && right.z, 0);
+  return (dx * dx) + (dy * dy) + (dz * dz);
+}
+
+function resolveDefinitionSeparationRange(definition) {
+  return normalizeSiteSeparationLightSeconds(
+    definition && definition.metadata && definition.metadata.separationLightSeconds ||
+    definition && definition.spawnState && definition.spawnState.separationLightSeconds ||
+    frontierDungeonSpawns.getConfig().defaults.siteSeparationLightSeconds,
+  );
+}
+
+function resolveSelectedSeparationLightSeconds(definition, range = resolveDefinitionSeparationRange(definition)) {
+  const normalizedRange = range || { min: 1, max: 10 };
+  const existing = toFiniteNumber(
+    definition && definition.metadata && definition.metadata.selectedSeparationLightSeconds,
+    0,
+  );
+  if (existing >= normalizedRange.min && existing <= normalizedRange.max) {
+    return existing;
+  }
+  const unit = hashText(
+    `${normalizeText(definition && definition.siteKey, "unknown-site")}:separation-light-seconds`,
+  ) / 0x100000000;
+  return normalizedRange.min + ((normalizedRange.max - normalizedRange.min) * unit);
+}
+
+function applySeparationPlacement(definition, placement, range, selectedLightSeconds, attempt) {
+  const position = clonePosition(placement && placement.position, definition && definition.position);
+  const anchorItemID = toInt(
+    placement && placement.anchorItemID,
+    definition && definition.metadata && definition.metadata.anchorItemID,
+  ) || null;
+  const anchorDistanceMeters = Math.round(toFiniteNumber(
+    placement && placement.anchorDistanceMeters,
+    definition && definition.metadata && definition.metadata.anchorDistanceMeters,
+  ));
+  const anchorDistanceAu = Number(toFiniteNumber(
+    placement && placement.anchorDistanceAu,
+    definition && definition.metadata && definition.metadata.anchorDistanceAu,
+  ).toFixed(3));
+  const separationMetadata = {
+    separationLightSeconds: cloneValue(range),
+    selectedSeparationLightSeconds: Number(selectedLightSeconds.toFixed(3)),
+    separationDistanceMeters: Math.round(selectedLightSeconds * dungeonSpawnEligibility.LIGHT_SECOND_METERS),
+    separationPlacementAttempt: Math.max(0, toInt(attempt, 0)),
+    separationSatisfied: true,
+  };
+  const metadata = {
+    ...normalizeObject(definition && definition.metadata),
+    anchorItemID,
+    anchorDistanceMeters,
+    anchorDistanceAu,
+    ...separationMetadata,
+  };
+  try {
+    const definitionHashPayload = JSON.parse(String(metadata.definitionHash || "{}"));
+    metadata.definitionHash = JSON.stringify({
+      ...definitionHashPayload,
+      position: [
+        Math.round(position.x),
+        Math.round(position.y),
+        Math.round(position.z),
+      ],
+      anchorItemID,
+      anchorDistanceMeters,
+      separationLightSeconds: cloneValue(range),
+      selectedSeparationLightSeconds: separationMetadata.selectedSeparationLightSeconds,
+      separationPlacementAttempt: separationMetadata.separationPlacementAttempt,
+    });
+  } catch (_) {
+    // A malformed pre-existing hash should not prevent safe placement metadata.
+  }
+  return {
+    ...definition,
+    position,
+    metadata,
+    spawnState: {
+      ...normalizeObject(definition && definition.spawnState),
+      anchorItemID,
+      anchorDistanceMeters,
+      anchorDistanceAu,
+      ...separationMetadata,
+    },
+  };
+}
+
+function enforceUniverseDungeonSiteSeparation(definitions, options: Record<string, any> = {}) {
+  const accepted: any[] = [];
+  const occupiedBySystem = new Map<any, any>();
+  const addOccupied = (entry) => {
+    const systemID = Math.max(0, toInt(entry && entry.solarSystemID, 0));
+    if (systemID <= 0 || !entry || !entry.position) {
+      return;
+    }
+    const range = resolveDefinitionSeparationRange(entry);
+    const selectedLightSeconds = resolveSelectedSeparationLightSeconds(entry, range);
+    if (!occupiedBySystem.has(systemID)) {
+      occupiedBySystem.set(systemID, []);
+    }
+    occupiedBySystem.get(systemID).push({
+      position: clonePosition(entry.position),
+      selectedLightSeconds,
+      siteKey: normalizeText(entry.siteKey, ""),
+    });
+  };
+  for (const entry of Array.isArray(options.occupiedSites) ? options.occupiedSites : []) {
+    addOccupied(entry);
+  }
+
+  for (const definition of Array.isArray(definitions) ? definitions : []) {
+    const systemID = Math.max(0, toInt(definition && definition.solarSystemID, 0));
+    const spawnFamilyKey = normalizeLowerText(
+      definition && definition.metadata && definition.metadata.spawnFamilyKey,
+      definition && definition.spawnState && definition.spawnState.spawnFamilyKey,
+    );
+    const slotIndex = Math.max(0, toInt(
+      definition && definition.metadata && definition.metadata.slotIndex,
+      definition && definition.spawnState && definition.spawnState.slotIndex,
+    ));
+    const rotationIndex = Math.max(0, toInt(
+      definition && definition.metadata && definition.metadata.rotationIndex,
+      definition && definition.spawnState && definition.spawnState.rotationIndex,
+    ));
+    const placementDistanceAu = normalizeSitePlacementDistanceAu(
+      definition && definition.metadata && definition.metadata.placementDistanceAu ||
+      definition && definition.spawnState && definition.spawnState.placementDistanceAu,
+    );
+    const range = resolveDefinitionSeparationRange(definition);
+    const selectedLightSeconds = resolveSelectedSeparationLightSeconds(definition, range);
+    const occupied = occupiedBySystem.get(systemID) || [];
+    let acceptedPlacement = null;
+    let acceptedAttempt = 0;
+    for (let attempt = 0; attempt < MAX_DUNGEON_SITE_PLACEMENT_ATTEMPTS; attempt += 1) {
+      const placement = attempt === 0
+        ? {
+          position: clonePosition(definition && definition.position),
+          anchorItemID: definition && definition.metadata && definition.metadata.anchorItemID,
+          anchorDistanceMeters: definition && definition.metadata && definition.metadata.anchorDistanceMeters,
+          anchorDistanceAu: definition && definition.metadata && definition.metadata.anchorDistanceAu,
+        }
+        : buildUniverseSitePlacement(
+          systemID,
+          spawnFamilyKey,
+          slotIndex,
+          rotationIndex,
+          { placementDistanceAu, placementAttempt: attempt },
+        );
+      const clear = occupied.every((other) => {
+        const requiredLightSeconds = Math.max(
+          selectedLightSeconds,
+          toFiniteNumber(other && other.selectedLightSeconds, selectedLightSeconds),
+        );
+        const requiredMeters = requiredLightSeconds * dungeonSpawnEligibility.LIGHT_SECOND_METERS;
+        return squaredDistanceBetweenPositions(placement.position, other.position) >=
+          (requiredMeters * requiredMeters);
+      });
+      if (clear) {
+        acceptedPlacement = placement;
+        acceptedAttempt = attempt;
+        break;
+      }
+    }
+    if (!acceptedPlacement) {
+      log.warn(
+        `[DungeonUniverse] Skipped overlapping dungeon site ${normalizeText(definition && definition.siteKey, "unknown")} ` +
+        `after ${MAX_DUNGEON_SITE_PLACEMENT_ATTEMPTS} placement attempts`,
+      );
+      continue;
+    }
+    const separatedDefinition = applySeparationPlacement(
+      definition,
+      acceptedPlacement,
+      range,
+      selectedLightSeconds,
+      acceptedAttempt,
+    );
+    accepted.push(separatedDefinition);
+    addOccupied(separatedDefinition);
+  }
+  return accepted;
 }
 
 function buildSovSpawnPolicyEvaluation(policyKey, upgradeCategory, sourceRefs, extra: Record<string, any> = {}) {
@@ -3192,10 +3591,12 @@ function buildRandomAllocatedDefinitionForSlot(
   const policyContext = buildTemplatePolicyContext(family, systemID, band);
   let template = null;
   let evaluation = null;
+  let rejectedExistingTemplateID = null;
 
   if (existing && existing.templateID) {
     template = dungeonAuthority.getTemplateByID(existing.templateID);
-    if (template && !isUniverseSpawnEligibleTemplate(template)) {
+    if (!template || !isUniverseSpawnEligibleTemplate(template)) {
+      rejectedExistingTemplateID = normalizeText(existing.templateID, "") || null;
       template = null;
     }
     if (template) {
@@ -3246,6 +3647,9 @@ function buildRandomAllocatedDefinitionForSlot(
     metadata: {
       allocationMode: "random",
       allocationVersion: RANDOM_UNIVERSE_ALLOCATION_VERSION,
+      ...(rejectedExistingTemplateID
+        ? { replaceUniverseTemplateID: rejectedExistingTemplateID }
+        : {}),
     },
     spawnState: {
       allocationMode: "random",
@@ -3367,6 +3771,9 @@ function buildRandomAllocatedUniverseDefinitionsForBand(
   const allocatedSet = new Set(plan.allocatedSystemIDs);
   const definitions: any[] = [];
   for (const systemID of plan.allocatedSystemIDs) {
+    if (getSecurityBand(systemID) !== normalizeSecurityBand(band)) {
+      continue;
+    }
     if (targetedSystemIDs.size > 0 && !targetedSystemIDs.has(systemID)) {
       continue;
     }
@@ -3601,15 +4008,33 @@ function listDesiredUniverseDungeonSiteDefinitions(systemIDs = null, nowMs = Dat
         allSystemIDs,
       );
       for (const systemID of eligibleSystemIDs) {
+        // A solar system belongs to exactly one security band. Guard the final
+        // definition boundary even if an allocation/cache input contains a
+        // cross-band system, otherwise every band can emit the same slot/site
+        // key at a different coordinate.
+        if (getSecurityBand(systemID) !== normalizeSecurityBand(band)) {
+          continue;
+        }
         const policyContext = buildTemplatePolicyContext(family, systemID, band);
         let systemDefinitionCount = 0;
-        for (let slotIndex = 0; slotIndex < Math.max(0, toInt(bandProfile.slotsPerSystem, 0)); slotIndex += 1) {
+        const slotsPerSystem = resolveUniverseDungeonSlotsPerSystem(
+          family,
+          systemID,
+          bandProfile,
+        );
+        for (let slotIndex = 0; slotIndex < slotsPerSystem; slotIndex += 1) {
           const existing = existingNonRandomBySlot.get(`${family}:${systemID}:${slotIndex}`) || null;
           const rotationIndex = existing ? getInstanceRotationIndex(existing) : 0;
+          let rejectedExistingTemplateID = null;
           let template = existing && existing.templateID
             ? dungeonAuthority.getTemplateByID(existing.templateID)
             : null;
-          if (template && !isUniverseSpawnEligibleTemplate(template)) {
+          if (
+            existing &&
+            existing.templateID &&
+            (!template || !isUniverseSpawnEligibleTemplate(template))
+          ) {
+            rejectedExistingTemplateID = normalizeText(existing.templateID, "") || null;
             template = null;
           }
           let evaluation = template
@@ -3654,6 +4079,9 @@ function listDesiredUniverseDungeonSiteDefinitions(systemIDs = null, nowMs = Dat
             spawnPolicyEvaluation: evaluation,
             metadata: {
               allocationMode,
+              ...(rejectedExistingTemplateID
+                ? { replaceUniverseTemplateID: rejectedExistingTemplateID }
+                : {}),
             },
             spawnState: {
               allocationMode,
@@ -3685,8 +4113,10 @@ function listDesiredUniverseDungeonSiteDefinitions(systemIDs = null, nowMs = Dat
     familySummaries[family] = summary;
   }
 
+  const separatedDefinitions = enforceUniverseDungeonSiteSeparation(definitions);
+
   return {
-    definitions,
+    definitions: separatedDefinitions,
     families: familySummaries,
   };
 }
@@ -4295,17 +4725,28 @@ function advanceUniversePersistentSites(options: Record<string, any> = {}) {
 
   const rotations: any[] = [];
   const affectedGeneratedMiningSystemIDs = new Set<any>();
+  const occupiedRotationSites = listUniverseSeededPersistentSiteInstances(
+    hasSystemFilter ? scopedSystemIDs : null,
+  ).filter((entry) => normalizeLowerText(entry && entry.siteOrigin, "") !== "generatedmining");
   for (const instance of candidates) {
     const isGeneratedMining =
       normalizeLowerText(instance && instance.siteOrigin, "") === "generatedmining";
     if (isGeneratedMining) {
       affectedGeneratedMiningSystemIDs.add(Math.max(0, toInt(instance && instance.solarSystemID, 0)));
     }
-    const nextDefinition = buildRotationDefinitionFromInstance(instance, nowMs, {
+    const rawNextDefinition = buildRotationDefinitionFromInstance(instance, nowMs, {
       policyOptions: options.policyOptions,
     });
+    const nextDefinition = rawNextDefinition && !isGeneratedMining
+      ? enforceUniverseDungeonSiteSeparation([rawNextDefinition], {
+        occupiedSites: occupiedRotationSites,
+      })[0] || null
+      : rawNextDefinition;
     if (!nextDefinition) {
       continue;
+    }
+    if (!isGeneratedMining) {
+      occupiedRotationSites.push(nextDefinition);
     }
     rotations.push({
       existingInstance: instance,
@@ -4599,6 +5040,165 @@ function listStartupResetMiningAnomalyInstances(systemIDs = null) {
     toInt(left && left.solarSystemID, 0) - toInt(right && right.solarSystemID, 0) ||
     toInt(left && left.instanceID, 0) - toInt(right && right.instanceID, 0)
   ));
+}
+
+function listStartupIncompleteDungeonInstances() {
+  const byInstanceID = new Map();
+  for (const lifecycleState of ["seeded", "active", "paused"]) {
+    for (const instance of dungeonRuntime.listInstancesByLifecycle(lifecycleState, { full: true })) {
+      const instanceID = Math.max(0, toInt(instance && instance.instanceID, 0));
+      if (instanceID > 0) {
+        byInstanceID.set(instanceID, instance);
+      }
+    }
+  }
+  return [...byInstanceID.values()].sort((left, right) => (
+    toInt(left && left.instanceID, 0) - toInt(right && right.instanceID, 0)
+  ));
+}
+
+function resetStartupIncompleteDungeons(options: Record<string, any> = {}) {
+  if (options.enabled === false) {
+    return {
+      skipped: true,
+      reason: "disabled",
+      scannedCount: 0,
+      rotatedCount: 0,
+      purgedCount: 0,
+      discardedCount: 0,
+      rotatedInstanceIDs: [],
+      purgedInstanceIDs: [],
+      affectedSystemIDs: [],
+      refreshedSceneCount: 0,
+      refreshedSystemIDs: [],
+    };
+  }
+
+  const nowMs = Math.max(0, toInt(options.nowMs, Date.now()));
+  const incompleteInstances = listStartupIncompleteDungeonInstances();
+  const incompleteInstanceIDs = new Set<any>(incompleteInstances.map((instance) => (
+    Math.max(0, toInt(instance && instance.instanceID, 0))
+  )));
+  const rotationBuilder = typeof options.buildRotationDefinition === "function"
+    ? options.buildRotationDefinition
+    : buildRotationDefinitionFromInstance;
+  const occupiedRotationSites = listUniverseSeededPersistentSiteInstances()
+    .filter((instance) => (
+      !incompleteInstanceIDs.has(Math.max(0, toInt(instance && instance.instanceID, 0))) &&
+      normalizeLowerText(instance && instance.siteOrigin, "") !== "generatedmining"
+    ));
+  const reservedRotationSiteKeys = new Set<any>(occupiedRotationSites
+    .map((instance) => normalizeText(instance && instance.siteKey, ""))
+    .filter(Boolean));
+  const rotations: any[] = [];
+  const purgeCandidateIDs: any[] = [];
+  const affectedSystemIDs = new Set<any>();
+  const affectedGeneratedMiningSystemIDs = new Set<any>();
+
+  for (const instance of incompleteInstances) {
+    const instanceID = Math.max(0, toInt(instance && instance.instanceID, 0));
+    const systemID = Math.max(0, toInt(instance && instance.solarSystemID, 0));
+    const runtimeFlags = getInstanceObject(instance, "runtimeFlags");
+    const isUniversePersistent = Boolean(
+      runtimeFlags.universePersistent === true &&
+      runtimeFlags.universeSeeded === true
+    );
+    if (systemID > 0) {
+      affectedSystemIDs.add(systemID);
+    }
+    if (!isUniversePersistent) {
+      purgeCandidateIDs.push(instanceID);
+      continue;
+    }
+
+    const isGeneratedMining =
+      normalizeLowerText(instance && instance.siteOrigin, "") === "generatedmining";
+    if (isGeneratedMining && systemID > 0) {
+      affectedGeneratedMiningSystemIDs.add(systemID);
+    }
+    let nextDefinition = null;
+    for (let attempt = 0; attempt < 8 && !nextDefinition; attempt += 1) {
+      const rawNextDefinition = rotationBuilder(instance, nowMs, {
+        policyOptions: options.policyOptions,
+      });
+      const candidate = rawNextDefinition && !isGeneratedMining
+        ? enforceUniverseDungeonSiteSeparation([rawNextDefinition], {
+          occupiedSites: occupiedRotationSites,
+        })[0] || null
+        : rawNextDefinition;
+      const candidateSiteKey = normalizeText(candidate && candidate.siteKey, "");
+      if (candidate && candidateSiteKey && !reservedRotationSiteKeys.has(candidateSiteKey)) {
+        nextDefinition = candidate;
+        reservedRotationSiteKeys.add(candidateSiteKey);
+      }
+    }
+    if (!nextDefinition) {
+      purgeCandidateIDs.push(instanceID);
+      continue;
+    }
+    if (!isGeneratedMining) {
+      occupiedRotationSites.push(nextDefinition);
+    }
+    rotations.push({
+      existingInstance: instance,
+      nextDefinition,
+    });
+    const nextSystemID = Math.max(0, toInt(nextDefinition && nextDefinition.solarSystemID, 0));
+    if (nextSystemID > 0) {
+      affectedSystemIDs.add(nextSystemID);
+      if (normalizeLowerText(nextDefinition && nextDefinition.siteOrigin, "") === "generatedmining") {
+        affectedGeneratedMiningSystemIDs.add(nextSystemID);
+      }
+    }
+  }
+
+  const rotationSummary = rotations.length > 0
+    ? dungeonRuntime.rotateUniversePersistentInstances(rotations, { nowMs })
+    : {
+      rotatedCount: 0,
+      removedCount: 0,
+    };
+  const purgeSummary = dungeonRuntime.purgeInstances(purgeCandidateIDs, {
+    source: "resetStartupIncompleteDungeons",
+  });
+  const purgedInstanceIDs = Array.isArray(purgeSummary && purgeSummary.removedInstanceIDs)
+    ? purgeSummary.removedInstanceIDs
+    : [];
+  const rotatedInstanceIDs = rotations.map((rotation) => (
+    Math.max(0, toInt(rotation && rotation.existingInstance && rotation.existingInstance.instanceID, 0))
+  )).filter((instanceID) => instanceID > 0);
+
+  if (affectedGeneratedMiningSystemIDs.size > 0) {
+    reconcileGeneratedMiningRuntimeState(
+      listActiveGeneratedMiningDefinitionsFromRuntime([...affectedGeneratedMiningSystemIDs]),
+      [...affectedGeneratedMiningSystemIDs],
+      nowMs,
+    );
+  }
+  const refreshed = affectedGeneratedMiningSystemIDs.size > 0
+    ? refreshLoadedGeneratedMiningScenes([...affectedGeneratedMiningSystemIDs], nowMs)
+    : {
+      refreshedCount: 0,
+      refreshedSystemIDs: [],
+    };
+
+  return {
+    skipped: false,
+    reason: "server_restart_incomplete_reset",
+    scannedCount: incompleteInstances.length,
+    rotatedCount: Math.max(0, toInt(rotationSummary && rotationSummary.rotatedCount, 0)),
+    purgedCount: purgedInstanceIDs.length,
+    discardedCount:
+      Math.max(0, toInt(rotationSummary && rotationSummary.removedCount, 0)) +
+      purgedInstanceIDs.length,
+    rotatedInstanceIDs,
+    purgedInstanceIDs,
+    affectedSystemIDs: [...affectedSystemIDs].sort((left, right) => left - right),
+    refreshedSceneCount: Math.max(0, toInt(refreshed && refreshed.refreshedCount, 0)),
+    refreshedSystemIDs: Array.isArray(refreshed && refreshed.refreshedSystemIDs)
+      ? refreshed.refreshedSystemIDs
+      : [],
+  };
 }
 
 function resetStartupMiningAnomalies(options: Record<string, any> = {}) {
@@ -5387,17 +5987,53 @@ function snapshotActiveRandomAllocationInstances(family) {
 async function buildRandomAllocatedSystemPlanForFamilyInWorker(family) {
   const activeInstances = snapshotActiveRandomAllocationInstances(family);
   try {
-    return await serviceTaskPool.run({
-      modulePath: DUNGEON_UNIVERSE_PLANNING_TASK,
-      exportName: "buildRandomAllocatedSystemPlanForFamily",
-      args: [family, { activeInstances }],
-    });
+    return await worldPlanningPool.buildRandomAllocatedSystemPlanForFamily(
+      family,
+      { activeInstances },
+    );
   } catch (error) {
     log.warn(
       `[DungeonUniverse] isolated worker planning failed for ${family}: ${error.message}`,
     );
     throw error;
   }
+}
+
+async function reconcileUniverseSeededInstancesInWorker(
+  definitions: any[] = [],
+  options: Record<string, any> = {},
+) {
+  const snapshot = dungeonRuntime.snapshotUniverseSeededReconcileState(options);
+  const workerOptions = {
+    systemIDs: Array.isArray(options.systemIDs) ? options.systemIDs : [],
+    siteFamilyFilter: Array.isArray(options.siteFamilyFilter) ? options.siteFamilyFilter : [],
+    spawnFamilyFilter: Array.isArray(options.spawnFamilyFilter) ? options.spawnFamilyFilter : [],
+    siteOriginFilter: Array.isArray(options.siteOriginFilter) ? options.siteOriginFilter : [],
+    preserveSiteKeys: Array.isArray(options.preserveSiteKeys) ? options.preserveSiteKeys : [],
+    nowMs: Math.max(0, toInt(options.nowMs, Date.now())),
+  };
+  const plan = await worldPlanningPool.buildUniverseSeededReconcilePlan(
+    definitions,
+    snapshot,
+    workerOptions,
+    {
+      timeoutMs: Math.max(1_000, toInt(options.workerTimeoutMs, 30_000)),
+    },
+  );
+  // A worker job may have started while the server was idle and finish after a
+  // login packet arrives.  Applying its plan is synchronous authority work, so
+  // re-check the foreground gate at the worker boundary instead of allowing a
+  // stale scheduling decision to block the station bootstrap.
+  if (
+    options.deferApplyWhenInteractive === true &&
+    interactiveWorkloadGate.shouldDeferBackgroundWork()
+  ) {
+    return {
+      deferred: true,
+      reason: "interactive_login",
+    };
+  }
+  return dungeonRuntime.applyUniverseSeededReconcilePlan(plan);
 }
 
 async function getBackgroundFamilyAllocationPlan(job, family) {
@@ -5460,12 +6096,21 @@ async function runBackgroundUniverseReconcileSlice() {
   const sliceStartMs = Date.now();
   if (family === "generatedmining") {
     const miningDefinitions = listDesiredGeneratedMiningDefinitions(sliceSystemIDs, job.nowMs);
-    const instanceSummary = dungeonRuntime.reconcileUniverseSeededInstances(miningDefinitions, {
+    const instanceSummary = await reconcileUniverseSeededInstancesInWorker(miningDefinitions, {
       systemIDs: sliceSystemIDs,
       nowMs: job.nowMs,
       siteOriginFilter: ["generatedmining"],
       preserveSiteKeys: listProtectedGeneratedMiningSiteKeys(sliceSystemIDs, job.nowMs),
+      deferApplyWhenInteractive: true,
     });
+    if (instanceSummary && instanceSummary.deferred === true) {
+      scheduleNextBackgroundReconcileSlice();
+      return {
+        family,
+        deferred: true,
+        reason: instanceSummary.reason || "interactive_login",
+      };
+    }
     const persistedMiningState = reconcileGeneratedMiningRuntimeState(
       listActiveGeneratedMiningDefinitionsFromRuntime(sliceSystemIDs),
       sliceSystemIDs,
@@ -5505,11 +6150,20 @@ async function runBackgroundUniverseReconcileSlice() {
         job.nowMs,
         { families: [family] },
       );
-    const instanceSummary = dungeonRuntime.reconcileUniverseSeededInstances(broadResult.definitions, {
+    const instanceSummary = await reconcileUniverseSeededInstancesInWorker(broadResult.definitions, {
       systemIDs: sliceSystemIDs,
       nowMs: job.nowMs,
       spawnFamilyFilter: [family],
+      deferApplyWhenInteractive: true,
     });
+    if (instanceSummary && instanceSummary.deferred === true) {
+      scheduleNextBackgroundReconcileSlice();
+      return {
+        family,
+        deferred: true,
+        reason: instanceSummary.reason || "interactive_login",
+      };
+    }
     job.desiredSiteCount += broadResult.definitions.length;
     job.desiredPersistentSiteCount += broadResult.definitions.length;
     job.createdInstances += instanceSummary.createdCount;
@@ -5975,9 +6629,17 @@ async function runSystemUniverseReconcileSlice() {
     !(job.allocatedSystemIDsByBand && typeof job.allocatedSystemIDsByBand === "object")
   ) {
     try {
-      const plan = typeof job.rng === "function"
-        ? buildRandomAllocatedSystemPlanForFamily(family, { rng: job.rng })
-        : await buildRandomAllocatedSystemPlanForFamilyInWorker(family);
+      // System-wake reconciliation is intentionally small and already runs in
+      // background slices. Do not send its allocation planning through the
+      // shared world-planning pool: each dungeon worker must load the full
+      // universe tables, and on a cold server those workers can occupy every
+      // slot needed by ensureSceneReady while duplicating several GiB of world
+      // data. The deterministic candidate rankings are cached in-process, so
+      // the local path is both bounded and substantially cheaper here.
+      const plan = buildRandomAllocatedSystemPlanForFamily(family, {
+        activeInstances: snapshotActiveRandomAllocationInstances(family),
+        ...(typeof job.rng === "function" ? { rng: job.rng } : {}),
+      });
       if (systemUniverseReconcileJobs.get(job.systemID) !== job) {
         return null;
       }
@@ -6334,11 +6996,28 @@ function prepareStartupUniversePersistentSites(options: Record<string, any> = {}
   const startupSystemIDs = hasExplicitStartupSystemIDs
     ? normalizeProvidedSystemIDs(options.startupSystemIDs || options.systemIDs || [])
     : normalizeSystemIDs();
-  const startupMiningReset = resetStartupMiningAnomalies({
+  // Server restarts are a hard lifecycle boundary for unfinished pockets. The
+  // reset is intentionally global rather than limited to preloaded systems so
+  // a sleeping system cannot resurrect an in-progress site on its next wake.
+  const startupIncompleteReset = resetStartupIncompleteDungeons({
     nowMs,
-    systemIDs: startupSystemIDs,
-    enabled: options.resetMiningAnomaliesOnStartup !== false,
+    enabled: options.resetIncompleteDungeonsOnStartup !== false,
+    policyOptions: options.policyOptions,
   });
+  const startupMiningReset = startupIncompleteReset.skipped !== false
+    ? resetStartupMiningAnomalies({
+      nowMs,
+      systemIDs: startupSystemIDs,
+      enabled: options.resetMiningAnomaliesOnStartup !== false,
+    })
+    : {
+      skipped: true,
+      reason: "covered_by_incomplete_dungeon_reset",
+      purgedCount: 0,
+      purgedInstanceIDs: [],
+      affectedSystemIDs: [],
+      createdInstances: 0,
+    };
   const invalidGeneratedIceCleanup = options.cleanupInvalidGeneratedIce === false
     ? {
       scannedCount: 0,
@@ -6508,6 +7187,7 @@ function prepareStartupUniversePersistentSites(options: Record<string, any> = {}
   return {
     status,
     startupSummary,
+    startupIncompleteReset,
     startupMiningReset,
     invalidGeneratedIceCleanup,
     downtimeRestore,
@@ -6580,6 +7260,7 @@ module.exports = {
   listUniverseSeededPersistentSiteInstances,
   advanceUniversePersistentSites,
   restoreGeneratedIceAfterDowntime,
+  resetStartupIncompleteDungeons,
   resetStartupMiningAnomalies,
   auditGeneratedIceAuthority,
   cleanupInvalidGeneratedIceAuthority,
@@ -6605,6 +7286,9 @@ module.exports = {
     buildUniverseSitePlacement,
     buildUniverseSiteID,
     buildUniverseSitePosition,
+    getFrontierDungeonSpawnAuthorityIDs,
+    isUniverseSpawnEligibleTemplate,
+    enforceUniverseDungeonSiteSeparation,
     buildTemplatePolicyContext,
     buildPolicyCandidateCacheKey,
     buildRotationDefinitionFromInstance,
@@ -6613,6 +7297,10 @@ module.exports = {
     listPolicyEligibleTemplatesForBand,
     pickUniverseTemplateForSlotWithPolicy,
     pickRandomUniverseTemplateForSlotWithPolicy,
+    pickWeightedTemplateCandidate,
+    resolveTemplateSpawnFrequency,
+    resolveTemplatePlacementDistanceAu,
+    resolveTemplateSeparationLightSeconds,
     clearPolicyCandidateCachesForTests,
     listDesiredSovereigntyDungeonSiteDefinitions,
     listSovereigntyGuaranteedSpawnFamilies,
@@ -6629,6 +7317,8 @@ module.exports = {
     resolveDowntimeClockUtc,
     advanceUniversePersistentSites,
     restoreGeneratedIceAfterDowntime,
+    listStartupIncompleteDungeonInstances,
+    resetStartupIncompleteDungeons,
     resetStartupMiningAnomalies,
     auditGeneratedIceAuthority,
     cleanupInvalidGeneratedIceAuthority,
@@ -6652,6 +7342,7 @@ module.exports = {
     buildRandomAllocatedSystemPlanForFamily,
     resolveProfileAllocationMode,
     resolveBandTargetSystemCount,
+    resolveUniverseDungeonSlotsPerSystem,
     systemMatchesSpawnBandProfile,
     siteSpawnPolicy: dungeonSiteSpawnPolicy,
   },

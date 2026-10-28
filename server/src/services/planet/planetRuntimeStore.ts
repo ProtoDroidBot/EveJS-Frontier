@@ -7,6 +7,7 @@ const {
   unwrapMarshalValue,
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const planetStaticData = require("./planetStaticData");
+const planetSimulationPool = require("./planetSimulationPool");
 
 const TABLE_NAME = "planetRuntimeState";
 const SCHEMA_VERSION = 1;
@@ -22,6 +23,7 @@ const HOUR_TICKS = 60 * 60 * 10000000;
 const DAY_TICKS = 24n * 60n * 60n * 10000000n;
 const FILETIME_UNIX_EPOCH_OFFSET = 116444736000000000n;
 const MAX_SIMULATION_EVENTS = 20000;
+const MAX_NETWORK_COMMANDS = 512;
 const COMMAND_CENTER_LAUNCH_CYCLE_TICKS = 60n * 10000000n;
 const PI_LAUNCH_ORBIT_DECAY_TICKS = 5n * DAY_TICKS;
 const PI_LAUNCH_CLEANUP_GRACE_TICKS = 30n * DAY_TICKS;
@@ -66,6 +68,7 @@ const DEFAULT_NEXT_IDS = Object.freeze({
   routeID: 1,
   launchID: 910000000000,
 });
+const colonyCatchupFlights = new Map();
 
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
@@ -1929,7 +1932,14 @@ function runColonySimulation(rawColony, targetFileTime = currentFileTimeString()
 
   let changed = repairedRoutes || primeReadyProcessors(colony, simulationTime);
   let eventCount = 0;
-  while (eventCount < MAX_SIMULATION_EVENTS) {
+  const maxEvents = Math.max(
+    1,
+    Math.min(
+      MAX_SIMULATION_EVENTS,
+      normalizeInteger(context.maxEvents, MAX_SIMULATION_EVENTS),
+    ),
+  );
+  while (eventCount < maxEvents) {
     const event = getNextSimulationEvent(colony, targetTime);
     if (!event) {
       break;
@@ -1960,14 +1970,17 @@ function runColonySimulation(rawColony, targetFileTime = currentFileTimeString()
     eventCount += 1;
   }
 
-  if (eventCount >= MAX_SIMULATION_EVENTS) {
+  const truncated = eventCount >= maxEvents && Boolean(
+    getNextSimulationEvent(colony, targetTime),
+  );
+  if (truncated) {
     log.warn(
       `[PlanetRuntimeStore] PI simulation event cap reached planetID=${colony.planetID} ownerID=${colony.ownerID}`,
     );
   }
 
   const targetTimeString = targetTime.toString();
-  if (colony.currentSimTime !== targetTimeString) {
+  if (!truncated && colony.currentSimTime !== targetTimeString) {
     colony.currentSimTime = targetTimeString;
     changed = true;
   }
@@ -1977,6 +1990,32 @@ function runColonySimulation(rawColony, targetFileTime = currentFileTimeString()
   return {
     colony: normalizeColony(colony, context),
     changed,
+    eventCount,
+    truncated,
+  };
+}
+
+function colonySnapshotFingerprint(rawColony, context: Record<string, any> = {}) {
+  return JSON.stringify(normalizeColony(rawColony, context));
+}
+
+function buildColonySimulationPlan(
+  rawColony,
+  targetFileTime,
+  context: Record<string, any> = {},
+  baseFingerprint = null,
+) {
+  const fingerprint = baseFingerprint || colonySnapshotFingerprint(rawColony, context);
+  const result = runColonySimulation(rawColony, targetFileTime, context);
+  return {
+    planetID: normalizeInteger(result.colony && result.colony.planetID, 0),
+    ownerID: normalizeInteger(result.colony && result.colony.ownerID, 0),
+    baseFingerprint: fingerprint,
+    targetFileTime: String(targetFileTime || ""),
+    colony: result.colony,
+    changed: result.changed === true,
+    eventCount: normalizeInteger(result.eventCount, 0),
+    truncated: result.truncated === true,
   };
 }
 
@@ -2703,10 +2742,15 @@ function installECUProgram(pin, programTypeID, headRadius, context: Record<strin
   });
 }
 
-function normalizeCommandStream(serializedChanges: any[] = []) {
+function normalizeCommandStream(serializedChanges: any[] = [], maxCommands = Infinity) {
   const stream = unwrapMarshalValue(serializedChanges);
   if (!Array.isArray(stream)) {
     return [];
+  }
+  if (stream.length > maxCommands) {
+    throw new Error(
+      `PI network command limit exceeded (${stream.length}/${maxCommands})`,
+    );
   }
 
   return stream
@@ -2815,7 +2859,15 @@ function applyUserUpdateNetwork({
     throw new Error("Cannot update PI network without a planet and owner");
   }
 
-  const commandStream = normalizeCommandStream(commands || serializedChanges);
+  const commandStream = normalizeCommandStream(
+    commands || serializedChanges,
+    MAX_NETWORK_COMMANDS,
+  );
+  if (commandStream.length > MAX_NETWORK_COMMANDS) {
+    throw new Error(
+      `PI network command limit exceeded (${commandStream.length}/${MAX_NETWORK_COMMANDS})`,
+    );
+  }
   const persistedState = readState({ repair: true });
   const state = dryRun ? cloneJson(persistedState) : persistedState;
   const key = colonyKey(normalizedPlanetID, normalizedOwnerID);
@@ -3254,6 +3306,142 @@ function abandonColony(planetID, ownerID) {
   delete state.coloniesByKey[colonyKey(normalizedPlanetID, normalizedOwnerID)];
   writeState(state);
   return true;
+}
+
+/**
+ * Simulate from an immutable snapshot in a worker, then commit only if the
+ * authoritative colony still matches that snapshot. Per-colony single-flight
+ * prevents redundant catch-up jobs while preserving unrelated state writes.
+ */
+function ensureColonyCaughtUpAsync(
+  planetID,
+  ownerID,
+  context: Record<string, any> = {},
+  targetFileTime = currentFileTimeString(),
+) {
+  const normalizedPlanetID = normalizeInteger(planetID, 0);
+  const normalizedOwnerID = normalizeInteger(ownerID, 0);
+  if (normalizedPlanetID <= 0 || normalizedOwnerID <= 0) {
+    return Promise.resolve(null);
+  }
+  const key = colonyKey(normalizedPlanetID, normalizedOwnerID);
+  if (colonyCatchupFlights.has(key)) {
+    return colonyCatchupFlights.get(key);
+  }
+
+  const catchup = (async () => {
+    let staleRetries = 0;
+    let simulationChunks = 0;
+    while (staleRetries < 4 && simulationChunks < 8) {
+      const state = readState({ repair: true });
+      const rawColony = state.coloniesByKey[key];
+      if (!rawColony) return null;
+      const simulationContext = {
+        ...context,
+        planetID: normalizedPlanetID,
+        ownerID: normalizedOwnerID,
+        maxEvents: MAX_SIMULATION_EVENTS,
+      };
+      const baseFingerprint = colonySnapshotFingerprint(
+        rawColony,
+        simulationContext,
+      );
+      const plan = await planetSimulationPool.buildColonySimulationPlan(
+        rawColony,
+        targetFileTime,
+        simulationContext,
+        baseFingerprint,
+      );
+
+      const latestState = readState({ repair: true });
+      const latestColony = latestState.coloniesByKey[key];
+      if (!latestColony) return null;
+      const latestFingerprint = colonySnapshotFingerprint(
+        latestColony,
+        simulationContext,
+      );
+      if (latestFingerprint !== plan.baseFingerprint) {
+        staleRetries += 1;
+        continue;
+      }
+      staleRetries = 0;
+      simulationChunks += 1;
+      if (plan.changed) {
+        latestState.coloniesByKey[key] = plan.colony;
+        if (!writeState(latestState)) {
+          throw new Error("Failed to commit isolated PI simulation plan");
+        }
+      }
+      if (!plan.truncated) return plan.colony;
+    }
+    const error: Error & Record<string, any> = new Error(
+      `PI catch-up limit exceeded for colony ${key}`,
+    );
+    error.code = "PI_SIMULATION_CATCHUP_LIMIT";
+    throw error;
+  })();
+
+  colonyCatchupFlights.set(key, catchup);
+  return catchup.finally(() => {
+    if (colonyCatchupFlights.get(key) === catchup) {
+      colonyCatchupFlights.delete(key);
+    }
+  });
+}
+
+function getColonyAsync(planetID, ownerID, context: Record<string, any> = {}) {
+  return ensureColonyCaughtUpAsync(planetID, ownerID, context);
+}
+
+async function listColoniesForCharacterAsync(ownerID) {
+  const normalizedOwnerID = normalizeInteger(ownerID, 0);
+  if (normalizedOwnerID <= 0) return [];
+  const state = readState({ repair: true });
+  const targets = Object.values<any>(state.coloniesByKey || {})
+    .filter((colony) => normalizeInteger(colony && colony.ownerID, 0) === normalizedOwnerID)
+    .map((colony) => normalizeInteger(colony && colony.planetID, 0))
+    .filter((planetID) => planetID > 0);
+  const colonies: any[] = [];
+  for (const targetPlanetID of targets) {
+    const colony = await ensureColonyCaughtUpAsync(targetPlanetID, normalizedOwnerID);
+    if (colony) colonies.push(colony);
+  }
+  return colonies;
+}
+
+async function listColoniesForPlanetAsync(planetID) {
+  const normalizedPlanetID = normalizeInteger(planetID, 0);
+  if (normalizedPlanetID <= 0) return [];
+  const state = readState({ repair: true });
+  const owners = Object.values<any>(state.coloniesByKey || {})
+    .filter((colony) => normalizeInteger(colony && colony.planetID, 0) === normalizedPlanetID)
+    .map((colony) => normalizeInteger(colony && colony.ownerID, 0))
+    .filter((ownerID) => ownerID > 0);
+  const colonies: any[] = [];
+  for (const targetOwnerID of owners) {
+    const colony = await ensureColonyCaughtUpAsync(normalizedPlanetID, targetOwnerID);
+    if (colony) colonies.push(colony);
+  }
+  return colonies;
+}
+
+async function getColonyByPinAsync(ownerID, pinID) {
+  const normalizedOwnerID = normalizeInteger(ownerID, 0);
+  const normalizedPinID = normalizeInteger(pinID, 0);
+  if (normalizedOwnerID <= 0 || normalizedPinID <= 0) return null;
+  const state = readState({ repair: true });
+  for (const rawColony of Object.values<any>(state.coloniesByKey || {})) {
+    if (
+      normalizeInteger(rawColony && rawColony.ownerID, 0) === normalizedOwnerID &&
+      findPin(rawColony, normalizedPinID)
+    ) {
+      return ensureColonyCaughtUpAsync(
+        rawColony.planetID,
+        normalizedOwnerID,
+      );
+    }
+  }
+  return null;
 }
 
 function getColony(planetID, ownerID) {
@@ -4094,6 +4282,8 @@ module.exports = {
   SCHEMA_VERSION,
   DEFAULT_NEXT_IDS,
   COMMAND,
+  MAX_NETWORK_COMMANDS,
+  MAX_SIMULATION_EVENTS,
   LINK_TYPE_ID,
   PLANET_RESOURCE_MAX_VALUE,
   PI_LAUNCH_ORBIT_DECAY_TICKS,
@@ -4103,9 +4293,14 @@ module.exports = {
   getResourceLayer,
   evaluateResourceValueAt,
   getColony,
+  getColonyAsync,
   getColonyByPin,
+  getColonyByPinAsync,
+  ensureColonyCaughtUpAsync,
   listColoniesForCharacter,
+  listColoniesForCharacterAsync,
   listColoniesForPlanet,
+  listColoniesForPlanetAsync,
   restartExtractorsForCharacter,
   listLaunchesForCharacter,
   hasAcceptedNetworkEdit,
@@ -4125,6 +4320,8 @@ module.exports = {
   applyUserUpdateNetwork,
   abandonColony,
   estimateProgramResult,
+  buildColonySimulationPlan,
+  colonySnapshotFingerprint,
   _testing: {
     buildPin,
     buildResourceRecord,

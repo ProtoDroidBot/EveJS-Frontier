@@ -57,20 +57,30 @@ def _evejs_install_collision_vfx_compatibility(namespace):
     namespace["_CollisionVfxManager"] = _EvejsCollisionVfxManager
 
     def OnCollisions(self, collisions):
-        current_ball_ids, complete = _evejs_collision_ball_ids(collisions)
-        if complete:
-            for ball_id, manager in list(self.activeCollisionImpacts.items()):
-                if ball_id not in current_ball_ids:
-                    _evejs_stop_collision_vfx(self, manager)
+        current_ball_ids = set()
+        try:
+            current_ball_ids, complete = _evejs_collision_ball_ids(collisions)
+            if complete:
+                for ball_id, manager in list(self.activeCollisionImpacts.items()):
+                    if ball_id not in current_ball_ids:
+                        try:
+                            _evejs_stop_collision_vfx(self, manager)
+                        except Exception:
+                            continue
+        except Exception:
+            pass
 
         result = original(self, collisions)
         for ball_id in current_ball_ids:
-            manager = self.activeCollisionImpacts.get(ball_id)
-            if manager is not None:
-                manager.duration = min(
-                    manager.duration,
-                    _EVEJS_COLLISION_CONTACT_GRACE_SECONDS,
-                )
+            try:
+                manager = self.activeCollisionImpacts.get(ball_id)
+                if manager is not None:
+                    manager.duration = min(
+                        manager.duration,
+                        _EVEJS_COLLISION_CONTACT_GRACE_SECONDS,
+                    )
+            except Exception:
+                continue
         return result
 
     OnCollisions._evejs_collision_vfx_patch = True

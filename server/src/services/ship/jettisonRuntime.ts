@@ -5,6 +5,7 @@ const {
   findItemById,
   createSpaceItemForCharacter,
   moveItemToLocation,
+  moveItemsToLocations,
   removeInventoryItem,
   listContainerItems,
 } = require(path.join(__dirname, "../inventory/itemStore"));
@@ -352,6 +353,56 @@ function broadcastJetcanLootRightsSlimUpdate(session, systemID, containerID) {
   return true;
 }
 
+function createJetcanForSession(session, context: Record<string, any> = {}) {
+  const characterID = Number(
+    context.characterID || session && (session.characterID || session.charid),
+  ) || 0;
+  const space = session && session._space;
+  const shipID = Number(context.shipID || space && space.shipID) || 0;
+  const systemID = Number(context.systemID || space && space.systemID) || 0;
+  if (!characterID || !shipID || !systemID) {
+    return { success: false as const, errorMsg: "INVALID_SESSION" };
+  }
+
+  const containerLookup = resolveItemByName(JETCAN_CONTAINER_NAME);
+  if (!containerLookup.success || !containerLookup.match) {
+    log.warn(`[Jettison] Could not resolve container type "${JETCAN_CONTAINER_NAME}"`);
+    return { success: false as const, errorMsg: "CONTAINER_TYPE_NOT_FOUND" };
+  }
+
+  const shipEntity = spaceRuntime.getEntity(session, shipID);
+  const simTimeMs = spaceRuntime.getSimulationTimeMsForSession(session, Date.now());
+  const createResult = createSpaceItemForCharacter(
+    characterID,
+    systemID,
+    containerLookup.match,
+    {
+      ...buildNearbySpawnState(shipEntity, 275),
+      createdAtMs: simTimeMs,
+      expiresAtMs: simTimeMs + JETCAN_LIFETIME_MS,
+      launcherID: shipID,
+      customInfo: buildJetcanLootCustomInfo(session),
+    },
+  );
+  if (!createResult.success || !createResult.data) {
+    log.warn(`[Jettison] Container creation failed: ${createResult.errorMsg}`);
+    return { success: false as const, errorMsg: "CONTAINER_CREATE_FAILED" };
+  }
+
+  const containerID = Number(createResult.data.itemID);
+  const presentationResult = broadcastJetcanPresentation(session, systemID, containerID);
+  if (!presentationResult || !presentationResult.success) {
+    log.warn(
+      `[Jettison] Container ${containerID} presentation failed: ` +
+      `${presentationResult && presentationResult.errorMsg || "SPAWN_FAILED"}`,
+    );
+  }
+  return {
+    success: true as const,
+    data: { characterID, shipID, systemID, containerID },
+  };
+}
+
 // --- Public API ---
 
 /**
@@ -483,48 +534,17 @@ function jettisonItemsForSession(session, itemIDs) {
     return { success: false as const, errorMsg: "NO_VALID_ITEMS" };
   }
 
-  // Resolve the container type.
-  const containerLookup = resolveItemByName(JETCAN_CONTAINER_NAME);
-  if (!containerLookup.success || !containerLookup.match) {
-    log.warn(`[Jettison] Could not resolve container type "${JETCAN_CONTAINER_NAME}"`);
-    return { success: false as const, errorMsg: "CONTAINER_TYPE_NOT_FOUND" };
-  }
-
-  // Create the container in space near the ship.
-  const shipEntity = spaceRuntime.getEntity(session, shipID);
-  const simTimeMs = spaceRuntime.getSimulationTimeMsForSession(session, Date.now());
-
-  const createResult = createSpaceItemForCharacter(
-    characterID,
-    systemID,
-    containerLookup.match,
-    {
-      ...buildNearbySpawnState(shipEntity, 275),
-      createdAtMs: simTimeMs,
-      expiresAtMs: simTimeMs + JETCAN_LIFETIME_MS,
-      launcherID: shipID,
-      customInfo: buildJetcanLootCustomInfo(session),
-    },
-  );
-
-  if (!createResult.success || !createResult.data) {
-    log.warn(`[Jettison] Container creation failed: ${createResult.errorMsg}`);
-    return { success: false as const, errorMsg: "CONTAINER_CREATE_FAILED" };
-  }
-
-  const containerID = Number(createResult.data.itemID);
-
   // Retail presents the new ball and jettison FX before the cargo row moves
   // from the ship hold into the can.
-  const presentationResult = broadcastJetcanPresentation(session, systemID, containerID);
-  if (!presentationResult || !presentationResult.success) {
-    log.warn(
-      `[Jettison] Container ${containerID} presentation failed: ` +
-      `${presentationResult && presentationResult.errorMsg || "SPAWN_FAILED"}`,
-    );
-    // Non-fatal: items are still moved into the DB container and the can can
-    // be materialized by later visibility syncs.
+  const containerResult = createJetcanForSession(session, {
+    characterID,
+    shipID,
+    systemID,
+  });
+  if (!containerResult.success) {
+    return containerResult;
   }
+  const containerID = Number(containerResult.data.containerID);
 
   // Move each valid item into the container.
   const jettisonedToCanIDs: any[] = [];
@@ -565,9 +585,136 @@ function jettisonItemsForSession(session, itemIDs) {
   };
 }
 
+/**
+ * Atomically move exact quantities from one server-authorized inventory into
+ * a new jetcan. This is intentionally separate from the ordinary ship-cargo
+ * API: Creation Industry escrow has a native "withdraw to jettison" action
+ * and must not require enough temporary ship cargo space for the output.
+ */
+function jettisonItemQuantitiesFromSourceForSession(
+  session,
+  rawMoves,
+  options: Record<string, any> = {},
+) {
+  const dependencies = options && options._dependencies || {};
+  const createContainer = typeof dependencies.createJetcanForSession === "function"
+    ? dependencies.createJetcanForSession
+    : createJetcanForSession;
+  const moveItems = typeof dependencies.moveItemsToLocations === "function"
+    ? dependencies.moveItemsToLocations
+    : moveItemsToLocations;
+  const expireEmptyContainer =
+    typeof dependencies.maybeExpireEmptySpaceContainer === "function"
+      ? dependencies.maybeExpireEmptySpaceContainer
+      : maybeExpireEmptySpaceContainer;
+  const syncChanges = typeof dependencies.syncChangesToSession === "function"
+    ? dependencies.syncChangesToSession
+    : syncChangesToSession;
+  const broadcastLootRights =
+    typeof dependencies.broadcastJetcanLootRightsSlimUpdate === "function"
+      ? dependencies.broadcastJetcanLootRightsSlimUpdate
+      : broadcastJetcanLootRightsSlimUpdate;
+  const characterID = Number(session && (session.characterID || session.charid)) || 0;
+  const space = session && session._space;
+  const shipID = Number(space && space.shipID) || 0;
+  const systemID = Number(space && space.systemID) || 0;
+  const sourceLocationID = Number(options.sourceLocationID) || 0;
+  const allowedSourceFlags = new Set(
+    (Array.isArray(options.allowedSourceFlagIDs) ? options.allowedSourceFlagIDs : [])
+      .map((value) => Number(value))
+      .filter((value) => Number.isSafeInteger(value) && value >= 0),
+  );
+  const requests = Array.isArray(rawMoves) ? rawMoves : [];
+  if (
+    !characterID || !shipID || !systemID || sourceLocationID <= 0 ||
+    allowedSourceFlags.size === 0 || requests.length === 0
+  ) {
+    return { success: false as const, errorMsg: "INVALID_SOURCE" };
+  }
+
+  const seenItemIDs = new Set<number>();
+  const moves: any[] = [];
+  for (const request of requests) {
+    const itemID = Number(request && request.itemID);
+    const quantity = Number(request && request.quantity);
+    const item = Number.isSafeInteger(itemID) && itemID > 0
+      ? findItemById(itemID)
+      : null;
+    const available = item && item.singleton
+      ? 1
+      : Number(item && (item.stacksize ?? item.quantity)) || 0;
+    if (
+      !item || seenItemIDs.has(itemID) || Number(item.ownerID) !== characterID ||
+      Number(item.locationID) !== sourceLocationID ||
+      !allowedSourceFlags.has(Number(item.flagID)) ||
+      !Number.isSafeInteger(quantity) || quantity <= 0 || quantity > available
+    ) {
+      return { success: false as const, errorMsg: "INVALID_SOURCE" };
+    }
+    seenItemIDs.add(itemID);
+    moves.push({ itemID, quantity });
+  }
+
+  const containerResult = createContainer(session, {
+    characterID,
+    shipID,
+    systemID,
+  });
+  if (!containerResult.success) {
+    return containerResult;
+  }
+  const containerID = Number(containerResult.data.containerID);
+  const moveResult = moveItems(moves.map((move) => ({
+    ...move,
+    destinationLocationID: containerID,
+    destinationFlagID: JETCAN_CONTENT_FLAG_ID,
+  })));
+  if (!moveResult.success) {
+    expireEmptyContainer(session, containerID);
+    return {
+      success: false as const,
+      errorMsg: moveResult.errorMsg || "MOVE_FAILED",
+    };
+  }
+
+  try {
+    syncChanges(session, moveResult.data.changes || [], {
+      emitItemsChanged: true,
+      idType: "charid",
+    });
+  } catch (error) {
+    log.warn(
+      `[Jettison] Post-commit inventory notification failed for container ${containerID}: ` +
+      `${error && error.message ? error.message : error}`,
+    );
+  }
+  try {
+    broadcastLootRights(session, systemID, containerID);
+  } catch (error) {
+    log.warn(
+      `[Jettison] Post-commit loot-rights presentation failed for container ${containerID}: ` +
+      `${error && error.message ? error.message : error}`,
+    );
+  }
+  const jettisonedToCanIDs = moveResult.data.moves
+    .map((move) => Number(move && move.movedItemID) || 0)
+    .filter((itemID) => itemID > 0);
+  log.info(
+    `[Jettison] char=${characterID} moved ${jettisonedToCanIDs.length} ` +
+    `authorized source stack(s) into container ${containerID}`,
+  );
+  return {
+    success: true as const,
+    jettisonedToCanIDs,
+    containerID,
+    changes: moveResult.data.changes || [],
+  };
+}
+
 module.exports = {
   JETCAN_LIFETIME_MS,
   JETTISONABLE_FLAG_IDS,
+  jettisonItemQuantitiesFromSourceForSession,
   jettisonItemsForSession,
   isDisposableJetcanRecord,
   isJettisonableShipFlag,

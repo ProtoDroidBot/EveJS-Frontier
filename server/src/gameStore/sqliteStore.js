@@ -65,6 +65,7 @@ const ROW_GROUPS = {
         "mutualWarInvites", "mutualWarInviteBlocks", "peaceTreaties",
     ],
     dungeonRuntimeState: ["instancesByID"],
+    stargateRuntimeState: ["gates"],
     industryBlueprintState: ["records"],
     industryJobs: ["jobs"],
     industryRuntime: ["monitors"],
@@ -79,6 +80,7 @@ const ROW_GROUPS = {
     moduleGroupingState: ["ships"],
     moonExtractions: ["resourcesByStructureID", "extractions"],
     npcEntities: ["entities"],
+    npcPilotIdentities: ["pilots", "slots", "factions"],
     npcModules: ["modules"],
     npcRuntimeControllers: ["controllers"],
     overviewSharedPresets: ["entries"],
@@ -89,6 +91,9 @@ const ROW_GROUPS = {
     playerBounties: ["pools", "contributions", "hunterStats"],
     rafflesRuntime: ["reservations"],
     savedFittings: ["owners"],
+    creationPresets: ["owners"],
+    smartAssemblyConstructionTemplates: ["owners", "principals"],
+    smartAssemblyDeploymentPlans: ["owners", "principals"],
     sharedSettings: ["entries"],
     shipCosmetics: ["characters", "ships"],
     shipDirt: ["ships"],
@@ -591,6 +596,19 @@ function applyChanges(table, upserts = [], deletes = []) {
     const txn = requireDb().transaction(() => applyChangeStatements(table, upserts, deletes));
     return txn();
 }
+/** Commit related owner-approved rows together; never journal these separately. */
+function applyAtomicChanges(batches) {
+    for (const batch of batches)
+        ensureSqlTable(batch.table);
+    const txn = requireDb().transaction(() => {
+        let changed = 0;
+        for (const batch of batches) {
+            changed += applyChangeStatements(batch.table, batch.upserts, batch.deletes);
+        }
+        return changed;
+    });
+    return txn.immediate();
+}
 /**
  * Replace the full contents of a table from a plain object (used by the
  * one-shot JSON → SQLite importer).
@@ -646,6 +664,7 @@ module.exports = {
     reconcilePersistenceOperation,
     recoverPersistenceOperations,
     applyChanges,
+    applyAtomicChanges,
     replaceAll,
     rowCount,
     getDatabasePath,

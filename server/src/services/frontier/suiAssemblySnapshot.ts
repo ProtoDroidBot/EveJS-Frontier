@@ -5,6 +5,7 @@ export const SUI_ASSEMBLY_VOLUME_SCALE = "1000000";
 // are encoded in micro-m³ here to preserve the client's fractional m³ volumes.
 export const SUI_ASSEMBLY_DEFAULT_MAX_ENERGY = "1000";
 const METERS_PER_LIGHT_YEAR = 9_460_730_472_580_800n;
+const CATAPULT_TYPE_IDS = new Set([95_627, 95_677]);
 const U64_MAX = (1n << 64n) - 1n;
 const U32_MAX = 0xffffffff;
 type Row = Record<string, any>;
@@ -27,6 +28,8 @@ export interface AssemblySnapshot {
   networkNodeId: string | null;
   energyRequired?: number;
   destinationGateId: string | null;
+  destinationSolarSystemId?: number | null;
+  isCatapult?: boolean;
   gateDistanceMeters: string | null;
   gateMaxDistanceMeters: string | null;
   fuel: { typeId: number; quantity: number; unitVolume: string };
@@ -205,6 +208,7 @@ export function buildSuiAssemblySnapshot(input: SuiAssemblySnapshotInput): SuiAs
         status: Number(state.assemblyStatus) as 1 | 2, solarSystemId,
         position: vector(item.spaceState?.position, "Assembly position"),
         networkNodeId: null, destinationGateId: null,
+        destinationSolarSystemId: null, isCatapult: false,
         gateDistanceMeters: null, gateMaxDistanceMeters: null,
         fuel: { typeId: 0, quantity: 0, unitVolume: "0" },
         fuelCapacity: "0", burnRateMs: "0", maxEnergy: "0", storageCapacity: "0", inventory: [],
@@ -232,9 +236,18 @@ export function buildSuiAssemblySnapshot(input: SuiAssemblySnapshotInput): SuiAs
         if (assembly.status === 2 && assembly.fuel.quantity === 0 && !chainFuel) fail("MISSING_FUEL", "An online Network Node requires fuel before chain synchronization");
       }
       if (kind === "gate") {
+        assembly.isCatapult = CATAPULT_TYPE_IDS.has(typeId);
         assembly.gateMaxDistanceMeters = decimal(component.smartGate.range, "Gate range", METERS_PER_LIGHT_YEAR);
         if (state.destinationGateID !== undefined && Number(state.destinationGateID) !== 0) assembly.destinationGateId = id(state.destinationGateID, "Destination gate ID");
-        if (assembly.status === 2 && !assembly.destinationGateId) fail("MISSING_GATE_DESTINATION", "An online gate requires a destination");
+        if (state.targetSolarSystemID !== undefined && Number(state.targetSolarSystemID) !== 0) {
+          assembly.destinationSolarSystemId = integer(state.targetSolarSystemID, "Destination solar system ID", U32_MAX);
+        }
+        if (assembly.isCatapult) {
+          if (assembly.destinationGateId) fail("INVALID_CATAPULT_LINK", "A Smart Catapult cannot require a destination gate");
+          if (assembly.status === 2 && !assembly.destinationSolarSystemId) fail("MISSING_CATAPULT_DESTINATION", "An online Smart Catapult requires a destination solar system");
+        } else if (assembly.status === 2 && !assembly.destinationGateId) {
+          fail("MISSING_GATE_DESTINATION", "An online gate requires a destination");
+        }
       }
       if (kind === "storage_unit") {
         assembly.storageCapacity = volume(component.smartStorageUnit.storageCapacity, "Storage capacity");
@@ -309,7 +322,15 @@ export function buildSuiAssemblySnapshot(input: SuiAssemblySnapshotInput): SuiAs
         if (assembly.status === 2 && selected.status !== 2) fail("OFFLINE_NETWORK_NODE", "An online assembly requires its owned Network Node online");
         assembly.networkNodeId = selected.itemId;
       }
-      if (assembly.kind === "gate" && assembly.destinationGateId) {
+      if (assembly.kind === "gate" && assembly.isCatapult && assembly.destinationSolarSystemId) {
+        if (assembly.destinationSolarSystemId === assembly.solarSystemId) fail("INVALID_CATAPULT_DESTINATION", "A Smart Catapult destination must be another solar system");
+        const sourcePosition = vector(systems.get(String(assembly.solarSystemId))?.position, "Source system position");
+        const targetPosition = vector(systems.get(String(assembly.destinationSolarSystemId))?.position, "Destination system position");
+        const distance = Math.ceil(Math.hypot(sourcePosition.x - targetPosition.x, sourcePosition.y - targetPosition.y, sourcePosition.z - targetPosition.z));
+        if (!Number.isFinite(distance) || distance < 0) fail("INVALID_CATAPULT_DISTANCE", "Smart Catapult distance is invalid");
+        assembly.gateDistanceMeters = decimal(BigInt(distance), "Catapult distance", 1n, false);
+        if (BigInt(assembly.gateDistanceMeters) > BigInt(assembly.gateMaxDistanceMeters!)) fail("CATAPULT_OUT_OF_RANGE", "Smart Catapult destination exceeds its authored range");
+      } else if (assembly.kind === "gate" && assembly.destinationGateId) {
         const target = candidates.get(assembly.destinationGateId);
         if (!target || target.kind !== "gate" || target.typeId !== assembly.typeId || target.ownerId !== assembly.ownerId || target.destinationGateId !== assembly.itemId || target.solarSystemId === assembly.solarSystemId) fail("INVALID_GATE_LINK", "Gate destination must be a reciprocal same-type owned gate in a different system");
         const sourcePosition = vector(systems.get(String(assembly.solarSystemId))?.position, "Source system position");

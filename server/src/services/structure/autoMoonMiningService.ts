@@ -161,9 +161,11 @@ function isAutoMoonMinerOutputMaterial(typeContext) {
   if (!typeContext || typeContext.typeID <= 0) {
     return false;
   }
-  return (
-    typeListAuthority.matchesTypeList(typeContext, OUTPUT_MATERIAL_TYPE_LIST_ID) ||
-    typeContext.groupID === GROUP_MOON_MATERIAL
+  return typeListAuthority.matchesTypeListWithMissingFallback(
+    typeContext,
+    OUTPUT_MATERIAL_TYPE_LIST_ID,
+    () => typeContext.groupID === GROUP_MOON_MATERIAL,
+    "auto-moon-miner-output",
   );
 }
 

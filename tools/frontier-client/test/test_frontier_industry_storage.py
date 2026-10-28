@@ -72,17 +72,18 @@ class AdapterTests(unittest.TestCase):
     def test_deposit_resolves_ssu_type_totals_instead_of_none_item_ids(self):
         controller, calls = self.controller()
         controller._deposit_input_items([row(amount=4), row(amount=8), row(35, 5)], None, False)
-        self.assertEqual(calls, [("deposit", (100, 200, {34: 7, 35: 5})), ("refresh", 100)])
+        self.assertEqual(calls, [("deposit", (100, 200, {34: 7, 35: 5}, 1)), ("refresh", 100)])
 
     def test_visitor_rows_do_not_treat_assembly_owner_as_partition_owner(self):
         controller, calls = self.controller()
+        controller._facility_instance._evejs_selected_lane_id = 2
         controller._deposit_input_items([row(owner=999)], 2, False)
-        self.assertEqual(calls[0], ("deposit", (100, 200, {34: 2})))
+        self.assertEqual(calls[0], ("deposit", (100, 200, {34: 2}, 2)))
 
     def test_quantity_prompt_and_cancel_are_honored(self):
         controller, calls = self.controller(lambda *_: 3)
         controller._deposit_input_items([row()], 8, True)
-        self.assertEqual(calls[0], ("deposit", (100, 200, {34: 3})))
+        self.assertEqual(calls[0], ("deposit", (100, 200, {34: 3}, 1)))
         controller, calls = self.controller(lambda *_: None)
         controller._deposit_input_items([row()], 8, True)
         self.assertEqual(calls, [])
@@ -104,7 +105,7 @@ class AdapterTests(unittest.TestCase):
             raise RuntimeError("notice unavailable")
         controller._service.refresh_facility_details = fail
         controller._deposit_input_items([row()], 1, False)
-        self.assertEqual(calls, [("deposit", (100, 200, {34: 1}))])
+        self.assertEqual(calls, [("deposit", (100, 200, {34: 1}, 1))])
 
     def test_closing_industry_page_disconnects_cached_storage_controllers(self):
         calls = []
@@ -390,7 +391,10 @@ class PatcherTests(unittest.TestCase):
         self.assertEqual(windows.expected_code_states(3502403, "patched"),
                          {"docking": "patched", "features": "patched", "industryStorage": "patched",
                           "mapViewLifecycle": "patched", "fittingCompatibility": "patched",
-                          "inventoryView": "patched", "collisionVfx": "patched"})
+                          "inventoryView": "patched", "collisionVfx": "patched",
+                          "creationTransform": "patched", "dungeonPropHologram": "patched",
+                          "physicsGun": "patched",
+                          "turretTracking": "patched"})
         self.assertEqual(windows.expected_code_states(3488090, "source"), {"docking": "source", "features": "source"})
         with mock.patch.object(windows, "run_python_patcher", return_value="patched") as run:
             self.assertEqual(windows.patch_code_archive(Path("unused"), 3502403), windows.expected_code_states(3502403, "patched"))
@@ -422,7 +426,7 @@ class PatcherTests(unittest.TestCase):
                 with mock.patch.object(windows, "check_stage", side_effect=check), \
                      mock.patch.object(windows, "load_stage", return_value=(marker_path, marker)), \
                      mock.patch.object(windows, "stage_paths", return_value={"code": code, "manifest": manifest}), \
-                     mock.patch.object(windows, "code_patch_states", return_value={"docking": "patched", "features": "patched", "industryStorage": "source", "mapViewLifecycle": "patched", "fittingCompatibility": "patched", "inventoryView": "patched", "collisionVfx": "patched"}), \
+                     mock.patch.object(windows, "code_patch_states", return_value={"docking": "patched", "features": "patched", "industryStorage": "source", "mapViewLifecycle": "patched", "fittingCompatibility": "patched", "inventoryView": "patched", "collisionVfx": "patched", "creationTransform": "patched", "dungeonPropHologram": "patched", "physicsGun": "patched", "turretTracking": "patched"}), \
                      mock.patch.object(windows, "resolve_profile", return_value=(None, {})), \
                      mock.patch.object(windows, "run_python_patcher", side_effect=patch), \
                      mock.patch.object(windows, "refresh_manifest_atomic", side_effect=refresh):

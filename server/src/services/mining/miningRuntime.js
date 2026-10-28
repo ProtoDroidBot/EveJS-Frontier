@@ -23,13 +23,14 @@ const { getCachedCharacterSkillMap, } = require(path.join(__dirname, "../skills/
 const { ITEM_FLAGS, findItemById, findShipItemById, getItemMutationVersion, grantItemsToCharacterLocation, listContainerItems, removeInventoryItem, updateInventoryItem, } = require(path.join(__dirname, "../inventory/itemStore"));
 const { getFittedModuleItems, getLoadedChargeByFlag, getEffectTypeRecord, isChargeCompatibleWithModule, isModuleOnline, buildShipResourceState, buildChargeTupleItemID, getTypeAttributeMap, } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const { resolveItemByTypeID, } = require(path.join(__dirname, "../inventory/itemTypeRegistry"));
+const { matchesTypeList, } = require(path.join(__dirname, "../inventory/typeListAuthority"));
 const { MINING_HOLD_FLAGS, } = require("./miningConstants");
 const { getPreferredMiningHoldFlagForType, getShipHoldCapacityByFlag, } = require("./miningInventory");
 const { computeMiningResult, } = require("./miningMath");
 const { isMiningEffectRecord, buildMiningModuleSnapshot, } = require("./miningDogma");
 const commandBurstRuntime = require(path.join(__dirname, "../../space/modules/commandBurstRuntime"));
 const { getLocationModifierSourcesForSystem, } = require(path.join(__dirname, "../exploration/wormholes/wormholeEnvironmentRuntime"));
-const { ensureSceneMiningState, getMineableState, applyMiningDelta, isMineableStaticEntity, } = require("./miningRuntimeState");
+const { ensureSceneMiningState, ensureSceneMiningStateAsync, getMineableState, applyMiningDelta, isMineableStaticEntity, respawnDepletedMineables, } = require("./miningRuntimeState");
 const { getNpcFittedModuleItems, getNpcLoadedChargeForModule, isNativeNpcEntity, } = require(path.join(__dirname, "../../space/npc/npcEquipment"));
 const { buildKeyVal, currentFileTime, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const INV_UPDATE_LOCATION = 3;
@@ -39,6 +40,21 @@ const ATTRIBUTE_STRUCTURE_HP = 9;
 const ATTRIBUTE_QUANTITY = 805;
 const ATTRIBUTE_CHARGE_SIZE = 128;
 const ATTRIBUTE_CHARGE_GROUP_1 = 604;
+const TYPE_CUTTING_LASER = 95317;
+const TYPE_PHYSICS_GUN = 99999;
+const TYPE_CRUDE_EXTRACTOR = 95503;
+const TYPE_NEEDLE = 95778;
+const CRUDE_MATTER_GROUP_ID = 4593;
+const FRONTIER_SALVAGEABLE_WRECKAGE_GROUP_ID = 5133;
+const CRUDE_LENS_TYPE_LIST_ID = 601;
+const ASTEROID_LENS_TYPE_LIST_ID = 612;
+const ASTEROID_LENS_TYPE_LIST_IDS = new Set([599, ASTEROID_LENS_TYPE_LIST_ID, 613]);
+const FRONTIER_HELD_BEAM_MINING_TYPE_IDS = new Set([
+    TYPE_CUTTING_LASER,
+    TYPE_PHYSICS_GUN,
+    TYPE_CRUDE_EXTRACTOR,
+    TYPE_NEEDLE,
+]);
 function toInt(value, fallback = 0) {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? Math.trunc(numeric) : fallback;
@@ -238,12 +254,15 @@ function buildEntityMiningSnapshot(entity, moduleItem, effectRecord, options = {
         return null;
     }
     const additionalModifierEntries = commandBurstRuntime.collectModifierEntriesForItem(entity, resolvedModuleItem, options.nowMs);
+    const chargeItem = Object.prototype.hasOwnProperty.call(options, "chargeItem")
+        ? options.chargeItem
+        : resolveEntityLoadedCharge(entity, resolvedModuleItem);
     return buildMiningModuleSnapshot({
         characterID: resolveEntityCharacterID(entity),
         shipItem,
         moduleItem: resolvedModuleItem,
         effectRecord,
-        chargeItem: resolveEntityLoadedCharge(entity, resolvedModuleItem),
+        chargeItem,
         fittedItems: resolveEntityFittedItems(entity),
         skillMap: resolveEntitySkillMap(entity),
         activeModuleContexts: resolveEntityActiveModuleContexts(entity, resolvedModuleItem.itemID),
@@ -338,6 +357,27 @@ function resolveDestinationFlagForPlayer(entity, yieldTypeID, yieldKind) {
         flagID: preferredFlag || ITEM_FLAGS.CARGO_HOLD,
         availableVolume: 0,
     };
+}
+function getVoxelPickupCapacity(entity, flagID) {
+    const snapshot = getPlayerShipStorageSnapshot(entity);
+    return flagID === ITEM_FLAGS.CARGO_HOLD
+        ? Math.max(0, Number(snapshot?.resourceState?.cargoCapacity) || 0)
+        : getShipHoldCapacityByFlag(snapshot?.resourceState, flagID);
+}
+function resolveVoxelPickupDestination(entity, fragment) {
+    if (!fragment)
+        return null;
+    const snapshot = getPlayerShipStorageSnapshot(entity);
+    const preferred = resolveDestinationFlagForPlayer(entity, fragment.yieldTypeID, "ore");
+    const required = fragment.quantity * fragment.unitVolume;
+    const flags = [preferred.flagID, MINING_HOLD_FLAGS.SPECIALIZED_ASTEROID_HOLD,
+        MINING_HOLD_FLAGS.GENERAL_MINING_HOLD, ITEM_FLAGS.CARGO_HOLD];
+    for (const flagID of [...new Set(flags)]) {
+        const availableVolume = getAvailableVolumeForFlag(snapshot, flagID);
+        if (availableVolume + 1e-8 >= required)
+            return { flagID, availableVolume };
+    }
+    return preferred;
 }
 function resolveLedgerObserverContext(scene, targetEntity) {
     const candidateIDs = [
@@ -437,6 +477,9 @@ function isChargeHeuristicallyValidForYield(chargeItem, mineableState) {
     if (!chargeItem || !mineableState) {
         return true;
     }
+    if (mineableState.yieldKind === "salvage") {
+        return true;
+    }
     if (mineableState.yieldKind !== "ore") {
         return false;
     }
@@ -444,7 +487,7 @@ function isChargeHeuristicallyValidForYield(chargeItem, mineableState) {
     if (!yieldType) {
         return false;
     }
-    const crystalName = String(chargeItem.itemName || "").trim();
+    const crystalName = String(chargeItem.itemName || chargeItem.name || "").trim();
     const crystalStem = normalizeText(stripCrystalSuffix(crystalName));
     const yieldName = normalizeText(yieldType.name);
     const yieldGroupName = normalizeText(yieldType.groupName);
@@ -466,10 +509,105 @@ function isFamilyCompatibleWithYield(snapshot, mineableState) {
     if (snapshot.family === "ice") {
         return mineableState.yieldKind === "ice";
     }
-    return mineableState.yieldKind === "ore";
+    return mineableState.yieldKind === "ore" || mineableState.yieldKind === "salvage";
 }
-function isMiningSnapshotCompatibleWithState(snapshot, mineableState) {
-    return isFamilyCompatibleWithYield(snapshot, mineableState);
+function isChargeValidForYield(chargeItem, mineableState, snapshot = null, options = {}) {
+    if (!chargeItem || !mineableState) {
+        return true;
+    }
+    const targetTypeListID = toInt(snapshot && snapshot.crystalTargetTypeListID, 0);
+    if (targetTypeListID > 0) {
+        // Frontier lenses author their supported resources through attribute 3148:
+        // The list authorizes the mined asteroid/wreckage type, which may differ
+        // from its output material (notably group-5133 salvageable wreckage).
+        const sourceTypeID = toInt(mineableState.visualTypeID, 0) ||
+            toInt(options.targetEntity && options.targetEntity.typeID, 0) ||
+            toInt(mineableState.yieldTypeID, 0);
+        const matchTypeList = options.matchesTypeList || matchesTypeList;
+        return matchTypeList({ typeID: sourceTypeID }, targetTypeListID);
+    }
+    return isChargeHeuristicallyValidForYield(chargeItem, mineableState);
+}
+function isFrontierHeldBeamMiningModuleType(moduleTypeID) {
+    return FRONTIER_HELD_BEAM_MINING_TYPE_IDS.has(toInt(moduleTypeID, 0));
+}
+function isCrudeExtractorModuleType(moduleTypeID) {
+    return toInt(moduleTypeID, 0) === TYPE_CRUDE_EXTRACTOR;
+}
+function isCrudeRiftMineableState(mineableState, targetEntity = null, options = {}) {
+    if (!mineableState) {
+        return false;
+    }
+    if (targetEntity &&
+        (targetEntity.frontierRiftResource === true ||
+            toInt(targetEntity.groupID, 0) === CRUDE_MATTER_GROUP_ID)) {
+        return true;
+    }
+    const matchTypeList = options.matchesTypeList || matchesTypeList;
+    return matchTypeList({ typeID: toInt(mineableState.yieldTypeID, 0) }, CRUDE_LENS_TYPE_LIST_ID);
+}
+/**
+ * Shared player/NPC mining compatibility. Mining must fail closed when a
+ * lens/crystal-capable ore tool has no charge, when a charge does not
+ * authorize the target, or when a Crude Rift is approached with anything
+ * other than a Crude Extractor. Basic legacy miners which have no authored
+ * charge bay remain valid without a lens; requiring one would make that
+ * entire non-skillshot equipment family unusable.
+ * Group-5133 salvageable wreckage remains an authored asteroid/mining-loop
+ * target; ordinary wreck salvaging and recovery are separate, currently-
+ * unregistered resource mechanics.
+ */
+function isMiningSnapshotCompatibleWithState(snapshot, mineableState, targetEntity = null, options = {}) {
+    if (!isFamilyCompatibleWithYield(snapshot, mineableState)) {
+        return false;
+    }
+    const yieldKind = String(mineableState && mineableState.yieldKind || "").toLowerCase();
+    if (yieldKind === "salvage" &&
+        toInt(targetEntity && targetEntity.groupID, 0) !== FRONTIER_SALVAGEABLE_WRECKAGE_GROUP_ID) {
+        return false;
+    }
+    if (snapshot.family !== "ore") {
+        return true;
+    }
+    const moduleTypeID = toInt(snapshot.moduleTypeID, 0);
+    const chargeTypeID = toInt(snapshot.chargeTypeID, 0);
+    if (moduleTypeID <= 0) {
+        return false;
+    }
+    const crudeRift = isCrudeRiftMineableState(mineableState, targetEntity, options);
+    const targetTypeListID = toInt(snapshot.crystalTargetTypeListID, 0);
+    if (crudeRift) {
+        if (!isCrudeExtractorModuleType(moduleTypeID) ||
+            targetTypeListID !== CRUDE_LENS_TYPE_LIST_ID) {
+            return false;
+        }
+    }
+    else {
+        if (isCrudeExtractorModuleType(moduleTypeID)) {
+            return false;
+        }
+        if (isFrontierHeldBeamMiningModuleType(moduleTypeID) &&
+            !ASTEROID_LENS_TYPE_LIST_IDS.has(targetTypeListID)) {
+            return false;
+        }
+    }
+    const resolveUsesCrystals = options.miningModuleUsesCrystals || miningModuleUsesCrystals;
+    const requiresCharge = isFrontierHeldBeamMiningModuleType(moduleTypeID) ||
+        resolveUsesCrystals(moduleTypeID) === true;
+    if (chargeTypeID <= 0) {
+        return !requiresCharge;
+    }
+    const validateModuleCharge = options.isChargeCompatibleWithModule || isChargeCompatibleWithModule;
+    if (validateModuleCharge(moduleTypeID, chargeTypeID) !== true) {
+        return false;
+    }
+    const resolvedCharge = options.chargeItem ||
+        resolveItemByTypeID(chargeTypeID) ||
+        { typeID: chargeTypeID, itemName: String(snapshot.chargeName || "") };
+    return isChargeValidForYield(resolvedCharge, mineableState, snapshot, {
+        ...options,
+        targetEntity,
+    });
 }
 function resolveMiningActivation(scene, entity, moduleItem, effectRecord, options = {}) {
     if (!isMiningEffectRecord(effectRecord, moduleItem)) {
@@ -499,13 +637,13 @@ function resolveMiningActivation(scene, entity, moduleItem, effectRecord, option
     if (!snapshot) {
         return { matched: true, success: false, errorMsg: "UNSUPPORTED_MODULE" };
     }
-    if (!isFamilyCompatibleWithYield(snapshot, mineableState)) {
+    const chargeItem = resolveEntityLoadedCharge(entity, moduleItem);
+    if (!isMiningSnapshotCompatibleWithState(snapshot, mineableState, targetEntity, { chargeItem })) {
         return { matched: true, success: false, errorMsg: "TARGET_INVALID_FOR_MODULE" };
     }
-    const chargeItem = resolveEntityLoadedCharge(entity, moduleItem);
     if (chargeItem &&
         !(isChargeCompatibleWithModule(moduleItem.typeID, chargeItem.typeID) &&
-            isChargeHeuristicallyValidForYield(chargeItem, mineableState))) {
+            isChargeValidForYield(chargeItem, mineableState, snapshot, { targetEntity }))) {
         return { matched: true, success: false, errorMsg: "CHARGE_NOT_COMPATIBLE" };
     }
     const commandTimeMs = scene && typeof scene.getCurrentSimTimeMs === "function"
@@ -535,7 +673,7 @@ function resolveMiningActivation(scene, entity, moduleItem, effectRecord, option
 }
 function appendNpcCargo(entity, typeID, quantity) {
     const miningNpcOperations = require("./miningNpcOperations");
-    miningNpcOperations.appendNpcMiningCargo(entity, typeID, quantity);
+    return miningNpcOperations.appendNpcMiningCargo(entity, typeID, quantity);
 }
 function applyCrystalVolatility(entity, moduleItem, snapshot, efficiency = 1) {
     if (!entity || !moduleItem || !snapshot || snapshot.chargeTypeID <= 0) {
@@ -637,7 +775,8 @@ function executeMiningCycle(scene, entity, effectState, cycleBoundaryMs, options
         !canEntitiesInteractLocally(entity, targetEntity)) {
         return { success: false, stopReason: "target" };
     }
-    if (!getTargetsForEntity(scene, entity).includes(targetID)) {
+    if (options.requireTargetLock !== false &&
+        !getTargetsForEntity(scene, entity).includes(targetID)) {
         return { success: false, stopReason: "target" };
     }
     const moduleItem = resolveEntityModuleItem(entity, effectState.moduleID, effectState.moduleFlagID);
@@ -645,26 +784,35 @@ function executeMiningCycle(scene, entity, effectState, cycleBoundaryMs, options
         return { success: false, stopReason: "module" };
     }
     const effectRecord = getEffectTypeRecord(toInt(effectState.effectID, 0));
-    const snapshot = buildEntityMiningSnapshot(entity, moduleItem, effectRecord, {
+    const snapshot = options.snapshot || buildEntityMiningSnapshot(entity, moduleItem, effectRecord, {
         nowMs: cycleBoundaryMs,
+        ...(Object.prototype.hasOwnProperty.call(options, "chargeItem")
+            ? { chargeItem: options.chargeItem }
+            : {}),
     });
-    if (!snapshot || !isFamilyCompatibleWithYield(snapshot, mineableState)) {
+    const chargeItem = Object.prototype.hasOwnProperty.call(options, "chargeItem")
+        ? options.chargeItem
+        : resolveEntityLoadedCharge(entity, moduleItem);
+    if (!snapshot ||
+        !isMiningSnapshotCompatibleWithState(snapshot, mineableState, targetEntity, { chargeItem })) {
         return { success: false, stopReason: "module" };
     }
     if (getMiningCommandSurfaceDistance(scene, entity, targetEntity, cycleBoundaryMs) >
         snapshot.maxRangeMeters + 1) {
         return { success: false, stopReason: "range" };
     }
-    const chargeItem = resolveEntityLoadedCharge(entity, moduleItem);
+    const validateChargeYield = options.isChargeValidForYield || isChargeValidForYield;
     if (chargeItem &&
         !(isChargeCompatibleWithModule(moduleItem.typeID, chargeItem.typeID) &&
-            isChargeHeuristicallyValidForYield(chargeItem, mineableState))) {
+            validateChargeYield(chargeItem, mineableState, snapshot, { targetEntity }))) {
         return { success: false, stopReason: "charge" };
     }
     effectState.chargeTypeID = snapshot.chargeTypeID;
+    const voxelRuntime = lazyRequire("./voxelMiningRuntime");
+    const composite = voxelRuntime.isComposite(scene, targetEntity, mineableState);
     let destinationFlagID = ITEM_FLAGS.CARGO_HOLD;
     let availableVolume = Number.POSITIVE_INFINITY;
-    if (!isNativeNpcEntity(entity)) {
+    if (!composite && !isNativeNpcEntity(entity)) {
         const destination = resolveDestinationFlagForPlayer(entity, mineableState.yieldTypeID, mineableState.yieldKind);
         destinationFlagID = destination.flagID;
         availableVolume = destination.availableVolume;
@@ -672,7 +820,8 @@ function executeMiningCycle(scene, entity, effectState, cycleBoundaryMs, options
             return { success: false, stopReason: "cargo" };
         }
     }
-    const miningVolume = Math.max(0, snapshot.miningAmountM3);
+    const amountMultiplier = Math.max(0, toFiniteNumber(options.amountMultiplier, 1));
+    const miningVolume = Math.max(0, snapshot.miningAmountM3 * amountMultiplier);
     const effectiveMiningVolume = miningVolume * efficiency;
     const quantityVolumeAvailable = mineableState.remainingQuantity * mineableState.unitVolume;
     const maximumTransferredQuantity = Number.isFinite(availableVolume)
@@ -710,12 +859,29 @@ function executeMiningCycle(scene, entity, effectState, cycleBoundaryMs, options
         : miningResult.criticalHitQuantity;
     miningResult.criticalHitQuantity = Math.max(0, Math.min(miningResult.criticalHitQuantity, maximumBonusQuantity));
     miningResult.criticalHitVolume = miningResult.criticalHitQuantity * mineableState.unitVolume;
-    const transferredQuantity = miningResult.getTotalTransferredQuantity();
+    let transferredQuantity = miningResult.getTotalTransferredQuantity();
     if (transferredQuantity <= 0 && miningResult.wastedQuantity <= 0) {
         return { success: false, stopReason: "cargo" };
     }
-    if (isNativeNpcEntity(entity)) {
-        appendNpcCargo(entity, mineableState.yieldTypeID, transferredQuantity);
+    let voxelResult = null;
+    if (composite) {
+        voxelResult = voxelRuntime.mine(scene, entity, targetEntity, mineableState, miningResult, {
+            nowMs: cycleBoundaryMs, moduleTypeID: moduleItem.typeID, contactPoint: options.contactPoint,
+            rayOrigin: options.rayOrigin, rayDirection: options.rayDirection,
+            maxRangeMeters: snapshot.maxRangeMeters,
+        });
+        if (!voxelResult.success)
+            return { success: false, stopReason: "target", errorMsg: voxelResult.errorMsg };
+        miningResult.normalQuantity = voxelResult.data.normalQuantity;
+        miningResult.wastedQuantity = voxelResult.data.wastedQuantity;
+        miningResult.criticalHitQuantity = voxelResult.data.criticalHitQuantity;
+        transferredQuantity = voxelResult.data.extractedQuantity;
+    }
+    else if (isNativeNpcEntity(entity)) {
+        const cargoResult = appendNpcCargo(entity, mineableState.yieldTypeID, transferredQuantity);
+        if (!cargoResult || cargoResult.success !== true) {
+            return { success: false, stopReason: "cargo" };
+        }
     }
     else {
         const grantResult = grantItemsToCharacterLocation(resolveEntityCharacterID(entity), toInt(entity.itemID, 0), destinationFlagID, [{
@@ -729,7 +895,7 @@ function executeMiningCycle(scene, entity, effectState, cycleBoundaryMs, options
             syncMinedOreChangesToSession(entity.session, toInt(entity.itemID, 0), grantResult.data.changes);
         }
     }
-    const deltaResult = applyMiningDelta(scene, targetEntity, miningResult.normalQuantity, miningResult.wastedQuantity, {
+    const deltaResult = composite ? voxelResult : applyMiningDelta(scene, targetEntity, miningResult.normalQuantity, miningResult.wastedQuantity, {
         broadcast: true,
         nowMs: cycleBoundaryMs,
         sourceEntity: entity,
@@ -741,6 +907,17 @@ function executeMiningCycle(scene, entity, effectState, cycleBoundaryMs, options
     });
     if (!deltaResult.success) {
         return { success: false, stopReason: "target" };
+    }
+    // Notify only after the authoritative extraction committed. The policy
+    // runtime also reconciles persistent stock, so a failed notification can be
+    // retried without granting ore or spawning a second encounter.
+    if (targetEntity.temporaryLandscapePolicyRevision &&
+        miningResult.normalQuantity + miningResult.wastedQuantity > 0) {
+        const landscape = lazyRequire("../../space/temporaryLandscapeRuntime");
+        landscape.notifyTemporaryLandscapeEvent(scene, "mined", { entity: targetEntity });
+        if (mineableState.remainingQuantity <= 0) {
+            landscape.notifyTemporaryLandscapeEvent(scene, "resource-depleted", { entity: targetEntity });
+        }
     }
     if (!isNativeNpcEntity(entity)) {
         const miningLedgerState = require("./miningLedgerState");
@@ -774,20 +951,139 @@ function executeMiningCycle(scene, entity, effectState, cycleBoundaryMs, options
             }
         }
     }
-    applyCrystalVolatility(entity, moduleItem, snapshot, efficiency);
+    if (options.applyCrystalVolatility !== false) {
+        applyCrystalVolatility(entity, moduleItem, snapshot, efficiency);
+    }
     return {
         success: true,
         data: {
             targetID,
             yieldTypeID: mineableState.yieldTypeID,
             transferredQuantity,
+            inventoryCreditedQuantity: composite ? 0 : transferredQuantity,
+            regolithFragments: composite ? voxelResult.data.fragments.map(fragment => fragment.itemID) : [],
             normalQuantity: miningResult.normalQuantity,
             criticalHitQuantity: miningResult.criticalHitQuantity,
             wastedQuantity: miningResult.wastedQuantity,
             efficiency,
+            amountMultiplier,
             partialCycle: options.partialCycle === true,
             depleted: Boolean(deltaResult.data && deltaResult.data.depleted),
         },
+    };
+}
+/**
+ * Resolve one manually-aimed held-beam collision as a mining/extraction
+ * cycle. Unlike ordinary mining activation this path intentionally does not
+ * require a target lock: the authoritative swept collision is the target.
+ */
+function executeSkillShotMiningCycle(scene, entity, targetEntity, moduleItem, chargeItem, cycleBoundaryMs, options = {}) {
+    if (!scene || !entity || !targetEntity || !moduleItem) {
+        return { matched: false };
+    }
+    if (isFrontierHeldBeamMiningModuleType(moduleItem.typeID) &&
+        (!chargeItem || toInt(chargeItem.typeID, 0) <= 0)) {
+        return {
+            matched: true,
+            success: false,
+            stopReason: "charge",
+        };
+    }
+    const ensureMiningState = options.ensureSceneMiningState || ensureSceneMiningState;
+    const resolveMineableState = options.getMineableState || getMineableState;
+    const buildSnapshot = options.buildEntityMiningSnapshot || buildEntityMiningSnapshot;
+    const validateModuleCharge = options.isChargeCompatibleWithModule || isChargeCompatibleWithModule;
+    const validateChargeYield = options.isChargeValidForYield || isChargeValidForYield;
+    const executeCycle = options.executeMiningCycle || executeMiningCycle;
+    ensureMiningState(scene);
+    const targetID = toInt(targetEntity.itemID, 0);
+    const mineableState = resolveMineableState(scene, targetID);
+    if (!mineableState) {
+        return { matched: false };
+    }
+    if (mineableState.remainingQuantity <= 0) {
+        return {
+            matched: true,
+            success: false,
+            stopReason: "target",
+        };
+    }
+    const snapshot = buildSnapshot(entity, moduleItem, null, {
+        nowMs: cycleBoundaryMs,
+        chargeItem,
+    });
+    if (!snapshot || !isFamilyCompatibleWithYield(snapshot, mineableState)) {
+        return {
+            matched: true,
+            success: false,
+            stopReason: "module",
+        };
+    }
+    if (chargeItem &&
+        !(validateModuleCharge(moduleItem.typeID, chargeItem.typeID) &&
+            validateChargeYield(chargeItem, mineableState, snapshot, { targetEntity }))) {
+        return {
+            matched: true,
+            success: false,
+            stopReason: "charge",
+        };
+    }
+    if (!isMiningSnapshotCompatibleWithState(snapshot, mineableState, targetEntity, {
+        chargeItem,
+        isChargeCompatibleWithModule: validateModuleCharge,
+        matchesTypeList: options.matchesTypeList,
+    })) {
+        return {
+            matched: true,
+            success: false,
+            stopReason: "module",
+        };
+    }
+    const { authoredEfficiency, rampMultiplier, amountMultiplier, } = resolveSkillShotMiningAmountMultiplier(snapshot, options.rampMultiplier);
+    if (amountMultiplier <= 0) {
+        return {
+            matched: true,
+            success: false,
+            stopReason: "cycle",
+        };
+    }
+    const cycleResult = executeCycle(scene, entity, {
+        targetID,
+        moduleID: toInt(moduleItem.itemID, 0),
+        moduleFlagID: toInt(moduleItem.flagID, 0),
+        effectID: 0,
+    }, cycleBoundaryMs, {
+        requireTargetLock: false,
+        snapshot,
+        chargeItem,
+        amountMultiplier,
+        isChargeValidForYield: validateChargeYield,
+        contactPoint: options.contactPoint,
+        rayOrigin: options.rayOrigin,
+        rayDirection: options.rayDirection,
+        // Player SkillShotRuntime applies lens volatility while consuming its
+        // authoritative resources. Session-free NPC held beams opt in here.
+        applyCrystalVolatility: options.applyCrystalVolatility === true,
+    });
+    return {
+        matched: true,
+        success: cycleResult.success === true,
+        stopReason: cycleResult.stopReason || null,
+        data: {
+            ...(cycleResult.data || {}),
+            authoredEfficiency,
+            rampMultiplier,
+            amountMultiplier,
+        },
+    };
+}
+function resolveSkillShotMiningAmountMultiplier(snapshot, rawRampMultiplier = 1) {
+    const authoredEfficiency = Math.max(0, toFiniteNumber(snapshot && snapshot.miningEfficiencyPercent, 100) / 100);
+    const rampMultiplier = Math.max(0, toFiniteNumber(rawRampMultiplier, 1));
+    return {
+        authoredEfficiency,
+        rampMultiplier,
+        amountMultiplier: authoredEfficiency * rampMultiplier,
     };
 }
 function resolveSceneForSession(session) {
@@ -880,7 +1176,12 @@ function chooseMineableTargetForFleet(scene, fleetRecord) {
 }
 function buildNpcPseudoSession(entity) {
     return {
-        characterID: toInt(entity && (entity.pilotCharacterID ?? entity.characterID), 0),
+        // Durable NPCs deliberately keep pilotCharacterID at zero on their slim
+        // entity so clients cannot mistake them for player-piloted ships.  Their
+        // server-side inventory and module actions still need the stable Phase 0
+        // character identity, however.  Prefer a real player pilot when present,
+        // then fall back to the durable NPC identity.
+        characterID: toInt(entity && (entity.pilotCharacterID || entity.characterID || entity.npcCharacterID), 0),
         corporationID: toInt(entity && entity.corporationID, 0),
         allianceID: toInt(entity && entity.allianceID, 0),
         _space: {
@@ -896,6 +1197,23 @@ function handleSceneCreated(scene) {
         miningResourceSiteService.handleSceneCreated(scene);
     }
     ensureSceneMiningState(scene);
+    lazyRequire("./voxelMiningRuntime").restoreScene(scene);
+    const miningNpcOperations = require("./miningNpcOperations");
+    if (typeof miningNpcOperations.handleSceneCreated === "function") {
+        miningNpcOperations.handleSceneCreated(scene);
+    }
+}
+async function handleSceneCreatedAsync(scene, options = {}) {
+    const miningResourceSiteService = require("./miningResourceSiteService");
+    if (options.resourceSitesPlanned !== true &&
+        miningResourceSiteService &&
+        typeof miningResourceSiteService.handleSceneCreated === "function") {
+        miningResourceSiteService.handleSceneCreated(scene);
+    }
+    await ensureSceneMiningStateAsync(scene, {
+        batchSize: options.batchSize,
+    });
+    lazyRequire("./voxelMiningRuntime").restoreScene(scene);
     const miningNpcOperations = require("./miningNpcOperations");
     if (typeof miningNpcOperations.handleSceneCreated === "function") {
         miningNpcOperations.handleSceneCreated(scene);
@@ -903,6 +1221,17 @@ function handleSceneCreated(scene) {
 }
 function tickScene(scene, now) {
     ensureSceneMiningState(scene);
+    lazyRequire("./voxelMiningRuntime").tickScene(scene, now);
+    respawnDepletedMineables(scene, Date.now());
+    try {
+        const frontierRiftSceneService = lazyRequire("../../space/frontierRiftSceneService");
+        if (frontierRiftSceneService && typeof frontierRiftSceneService.tickScene === "function") {
+            frontierRiftSceneService.tickScene(scene, Date.now());
+        }
+    }
+    catch (_) {
+        // Frontier Rift lifecycle is optional in isolated mining runtime tests.
+    }
     if (config.miningNpcFleetAutoMineEnabled !== true) {
         return;
     }
@@ -921,13 +1250,40 @@ function tickScene(scene, now) {
 }
 module.exports = {
     handleSceneCreated,
+    handleSceneCreatedAsync,
     tickScene,
     isMiningEffectRecord,
     isMiningEffectState,
     isMiningSnapshotCompatibleWithState,
+    isFrontierHeldBeamMiningModuleType,
+    isCrudeExtractorModuleType,
+    isCrudeRiftMineableState,
+    FRONTIER_SALVAGEABLE_WRECKAGE_GROUP_ID,
     resolveMiningActivation,
     executeMiningCycle,
+    executeSkillShotMiningCycle,
+    resolveVoxelPickupDestination,
+    getVoxelPickupCapacity,
+    syncMinedOreChangesToSession,
     miningModuleUsesCrystals,
     buildScanResultsForSession,
+    findMiningEffectRecordForModule,
+    buildEntityMiningSnapshot,
+    resolveMineableCandidates,
+    getSurfaceDistance,
+    getTargetsForEntity,
+    buildNpcPseudoSession,
+    _testing: {
+        isChargeValidForYield,
+        isMiningSnapshotCompatibleWithState,
+        resolveSkillShotMiningAmountMultiplier,
+        TYPE_CUTTING_LASER,
+        TYPE_PHYSICS_GUN,
+        TYPE_CRUDE_EXTRACTOR,
+        TYPE_NEEDLE,
+        FRONTIER_SALVAGEABLE_WRECKAGE_GROUP_ID,
+        CRUDE_LENS_TYPE_LIST_ID,
+        ASTEROID_LENS_TYPE_LIST_ID,
+    },
 };
 //# sourceMappingURL=miningRuntime.js.map

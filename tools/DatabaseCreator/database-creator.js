@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
 const crypto = require("crypto");
+const { NPC_CHARACTER_ID_MIN } = require("../../server/src/services/_shared/npcIdentityConstants");
 const { policyViolationCount, sanitizeAuthorityTable, } = require("./production-mission-policy");
 const { STRUCTURE_SIZE, STRUCTURE_FAMILY, STRUCTURE_GROUP_ID, DEFAULT_STRUCTURE_RADIUS, DEFAULT_STRUCTURE_TETHER_RANGE, STRUCTURE_TYPE_PRESETS, TATARA_EXCLUDED_DOCK_GROUP_NAMES, ONE_WAY_UNDOCK_TYPE_IDS, getAllowedServicesForStructureType, } = require(path.join(__dirname, "..", "..", "server", "src", "services", "structure", "structureConstants.js"));
 const DEFAULT_BUILD = 3396210;
@@ -124,6 +125,7 @@ const REQUIRED_TABLES = [
     "creationHardpointTypes",
     "creationModules",
     "creationParts",
+    "creationPresets",
     "creationTemplates",
     "corporationBills",
     "corporationGoals",
@@ -182,9 +184,11 @@ const REQUIRED_TABLES = [
     "npcLoadouts",
     "npcLootTables",
     "npcModules",
+    "npcPilotIdentities",
     "npcProfiles",
     "npcRuntimeControllers",
     "npcRuntimeState",
+    "stargateRuntimeState",
     "npcSpawnGroups",
     "npcSpawnPools",
     "npcSpawnSites",
@@ -204,6 +208,7 @@ const REQUIRED_TABLES = [
     "reprocessingClientRandomizedMaterials",
     "reprocessingFacilityState",
     "reprocessingStatic",
+    "remoteSystemScans",
     "savedFittings",
     "sharedBookmarkFolders",
     "sharedSettings",
@@ -241,6 +246,7 @@ const REQUIRED_TABLES = [
     "structures",
     "structureTetherRestrictions",
     "structureTypes",
+    "systemSignatureEvents",
     "trigDrifterSpawnAuthority",
     "typeDogma",
     "wormholeRuntimeState",
@@ -722,7 +728,38 @@ function typeRecord(raw, groups, categories) {
         radius: toNumber(raw.radius, 0),
         published: raw.published === true,
         metaGroupID: toInt(raw.metaGroupID, 0) || null,
+        tags: intArray(raw.tags),
     };
+}
+function addPhysicsGunAuthority(types, typeByID, dogmaByTypeID, creationModules) {
+    const cuttingLaserType = typeByID.get(95317);
+    const cuttingLaserDogma = dogmaByTypeID.get("95317");
+    const cuttingLaserModule = creationModules.find((row) => row.typeID === 95317);
+    if (!cuttingLaserType || !cuttingLaserDogma || !cuttingLaserModule) {
+        throw new Error("Physics Gun requires Cutting Laser (95317) type, dogma, and Creation_Modules data");
+    }
+    if (typeByID.has(99999) || dogmaByTypeID.has("99999") ||
+        creationModules.some((row) => row.typeID === 99999)) {
+        throw new Error("Physics Gun type ID 99999 collides with source SDE data");
+    }
+    const physicsGunType = {
+        ...cuttingLaserType,
+        typeID: 99999,
+        name: "Physics Gun",
+        description: "A modular held-beam weapon with the cutting and extraction behavior of the Cutting Laser.",
+    };
+    types.push(physicsGunType);
+    typeByID.set(99999, physicsGunType);
+    dogmaByTypeID.set("99999", structuredClone(cuttingLaserDogma));
+    creationModules.push({
+        ...structuredClone(cuttingLaserModule),
+        _key: 99999,
+        typeID: 99999,
+        behavior: "generic",
+        capability: "weapon",
+        placement: { compatible_hardpoints: ["weapon"] },
+        system: "weapons",
+    });
 }
 function publicTypeRecord(type, shape = "full") {
     const base = {
@@ -731,6 +768,7 @@ function publicTypeRecord(type, shape = "full") {
         categoryID: type.groupID === 0 ? null : type.categoryID,
         groupName: type.groupID === 0 ? null : type.groupName,
         name: type.name,
+        tags: intArray(type.tags),
     };
     if (shape === "skill") {
         return {
@@ -1029,6 +1067,9 @@ function intArray(value) {
 }
 function clientTypeListRecord(row) {
     return {
+        name: typeof row.name === "string" ? row.name : "",
+        description: typeof row.description === "string" ? row.description : "",
+        displayNameID: toInt(row.displayNameID, 0) || null,
         excludedTypeIDs: intArray(row.excludedTypeIDs),
         listID: toInt(row._key),
         includedCategoryIDs: intArray(row.includedCategoryIDs),
@@ -1036,6 +1077,12 @@ function clientTypeListRecord(row) {
         excludedGroupIDs: intArray(row.excludedGroupIDs),
         includedGroupIDs: intArray(row.includedGroupIDs),
         excludedCategoryIDs: intArray(row.excludedCategoryIDs),
+        includedTypeListIDs: intArray(row.includedTypeListIDs),
+        excludedTypeListIDs: intArray(row.excludedTypeListIDs),
+        includedTags: intArray(row.includedTags),
+        excludedTags: intArray(row.excludedTags),
+        filterByTags: intArray(row.filterByTags),
+        requireAllFilteredTags: toInt(row.requireAllFilteredTags, 0),
     };
 }
 function clientTypeListCounts(rows) {
@@ -1047,6 +1094,11 @@ function clientTypeListCounts(rows) {
         excludedCategoryReferenceCount: rows.reduce((sum, row) => sum + row.excludedCategoryIDs.length, 0),
         includedTypeReferenceCount: rows.reduce((sum, row) => sum + row.includedTypeIDs.length, 0),
         excludedGroupReferenceCount: rows.reduce((sum, row) => sum + row.excludedGroupIDs.length, 0),
+        includedTypeListReferenceCount: rows.reduce((sum, row) => sum + row.includedTypeListIDs.length, 0),
+        excludedTypeListReferenceCount: rows.reduce((sum, row) => sum + row.excludedTypeListIDs.length, 0),
+        includedTagReferenceCount: rows.reduce((sum, row) => sum + row.includedTags.length, 0),
+        excludedTagReferenceCount: rows.reduce((sum, row) => sum + row.excludedTags.length, 0),
+        filterTagReferenceCount: rows.reduce((sum, row) => sum + row.filterByTags.length, 0),
     };
 }
 function skillLevelRecords(skills) {
@@ -1766,6 +1818,14 @@ function dogmaEffectsFromEntry(entry) {
         .map((effect) => toInt(effect && effect.effectID, 0))
         .filter((effectID) => effectID > 0);
 }
+function dogmaEffectEntriesFromEntry(entry) {
+    return (Array.isArray(entry.dogmaEffects) ? entry.dogmaEffects : [])
+        .map((effect) => ({
+        effectID: toInt(effect && effect.effectID, 0),
+        isDefault: toInt(effect && effect.isDefault, 0),
+    }))
+        .filter((effect) => effect.effectID > 0);
+}
 function dogmaEffectsForType(typeID, dogmaByTypeID) {
     return dogmaEffectsFromEntry(dogmaByTypeID.get(String(typeID)) || {});
 }
@@ -1854,6 +1914,7 @@ function typeDogmaRecord(typeID, row, typeByID) {
     const type = typeByID.get(numericTypeID) || {};
     const attributes = dogmaAttributesFromEntry(row || {});
     const effects = dogmaEffectsFromEntry(row || {});
+    const effectEntries = dogmaEffectEntriesFromEntry(row || {});
     return {
         typeID: numericTypeID,
         typeName: type.name || row.typeName || row.name || "",
@@ -1861,6 +1922,7 @@ function typeDogmaRecord(typeID, row, typeByID) {
         effectCount: effects.length,
         attributes,
         effects,
+        effectEntries,
     };
 }
 function movementRecord(type, dogmaByTypeID) {
@@ -2508,7 +2570,7 @@ function sha256File(filePath) {
     hash.update(fs.readFileSync(filePath));
     return hash.digest("hex");
 }
-async function loadSdeAuthority(sdeDir) {
+async function loadSdeAuthority(sdeDir, options = {}) {
     const categories = new Map();
     const groups = new Map();
     const types = [];
@@ -2835,6 +2897,12 @@ async function loadSdeAuthority(sdeDir) {
     await readJsonlRecords(sdeDir, "creationModules.jsonl", (row) => {
         creationModules.push({ ...row, typeID: toInt(row._key, 0) });
     });
+    // Physics Gun is a local type until it receives an upstream SDE entry.
+    // Clone the complete Cutting Laser contract so fitting, charge groups,
+    // effects, and activation stay in sync with the source item.
+    if (options.profile === "frontier" && toInt(options.build, 0) === 3502403) {
+        addPhysicsGunAuthority(types, typeByID, dogmaByTypeID, creationModules);
+    }
     await readJsonlRecords(sdeDir, "creationParts.jsonl", (row) => {
         creationParts.push({ ...row, graphicID: toInt(row._key, 0) });
     });
@@ -3102,7 +3170,12 @@ function buildTables(authority, options) {
         characterCreationSchools: buildCharacterCreationSchools(),
         corporations: buildCorporations(authority),
         clientTypeLists: {
-            source,
+            schemaVersion: 2,
+            source: {
+                ...source,
+                typeListsSha256: sha256File(path.join(options.sdeDir, "typeLists.jsonl")),
+                typesSha256: sha256File(path.join(options.sdeDir, "types.jsonl")),
+            },
             count: clientTypeLists.length,
             typeLists: clientTypeLists,
             counts: clientTypeListCounts(clientTypeLists),
@@ -3312,6 +3385,15 @@ function defaultPlaceholderForTable(tableName) {
     if (tableName === "npcHostileUtilities") {
         return { templates: [] };
     }
+    if (tableName === "npcPilotIdentities") {
+        return {
+            version: 1,
+            nextCharacterID: NPC_CHARACTER_ID_MIN,
+            pilots: {},
+            slots: {},
+            factions: {},
+        };
+    }
     if (tableName === "playerBounties") {
         return {
             nextContributionID: 1,
@@ -3344,7 +3426,7 @@ function defaultPlaceholderForTable(tableName) {
 async function createDatabase(options) {
     assertDirectory(options.sdeDir, "SDE JSONL directory");
     ensureCleanOutDir(options.outDir, options.force);
-    const authority = await loadSdeAuthority(options.sdeDir);
+    const authority = await loadSdeAuthority(options.sdeDir, options);
     const tables = buildTables(authority, options);
     const bootstrap = resolveBootstrapProfile(authority, options);
     const local = buildLocalAccountsAndCharacters(bootstrap, options.profile);
@@ -3399,6 +3481,8 @@ async function createDatabase(options) {
         sdeUrl: options.sdeUrl,
         sdeMeta: authority.sdeMeta,
         sdeSha256: sha256File(sdeMetaPath),
+        typeListsSha256: sha256File(path.join(options.sdeDir, "typeLists.jsonl")),
+        typesSha256: sha256File(path.join(options.sdeDir, "types.jsonl")),
         outputDataDir: options.outDir,
         bootstrap,
         generatedTables,
@@ -3460,6 +3544,11 @@ module.exports = {
     buildCorporations,
     buildLocalAccountsAndCharacters,
     skillLevelRecords,
+    typeRecord,
+    publicTypeRecord,
+    addPhysicsGunAuthority,
+    clientTypeListRecord,
+    clientTypeListCounts,
     resolveBootstrapProfile,
     sanitizeAndValidateProductionMissionPolicy,
 };

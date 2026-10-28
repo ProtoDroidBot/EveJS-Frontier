@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const DEFAULT_MAX_SCENERY_PROPS = 48;
+const DEFAULT_MAX_RESOURCE_PROPS = 48;
 const DEFAULT_PATTERN_RING_RADIUS_METERS = 140_000;
 const DEFAULT_PATTERN_RING_STEP_METERS = 140_000;
 const DEFAULT_PATTERN_SLOTS_PER_RING = 6;
@@ -156,6 +157,7 @@ function flattenDungeonObjects(dungeon, source) {
                 roomID: toInt(object && object.roomID, toInt(room && room.roomID, 0)),
                 sourcePositionOffset: cloneVector(sourceTransform.positionOffset),
                 sourceYawDegrees: toFiniteNumber(sourceTransform.yawDegrees, 0),
+                temporaryLandscapeProfile: dungeon.temporaryLandscapeProfile === true,
             });
         }
     }
@@ -171,11 +173,13 @@ function scoreObject(siteID, object) {
         object.objectID,
     ].join(":"));
 }
-function selectSceneryObjects(siteID, sources, maxSceneryProps, warpClearanceMeters) {
+function selectSceneryObjects(siteID, sources, maxSceneryProps, warpClearanceMeters, classifyResourceObject = null) {
+    const isResourceObject = (object) => (typeof classifyResourceObject === "function" && Boolean(classifyResourceObject(object)));
     const entrySource = sources.find((source) => source.patternKind === "entry") || null;
     const patternSources = sources.filter((source) => source.patternKind !== "entry");
     const entryObjects = entrySource
         ? flattenDungeonObjects(entrySource.dungeon, entrySource).filter((object) => (object.role === "scenery" &&
+            !isResourceObject(object) &&
             toInt(object.objectID, 0) !== toInt(entrySource.dungeon && entrySource.dungeon.entryObjectID, 0)))
         : [];
     const selected = entryObjects.slice(0, maxSceneryProps);
@@ -185,6 +189,7 @@ function selectSceneryObjects(siteID, sources, maxSceneryProps, warpClearanceMet
     }
     const sourceCandidates = patternSources.map((source) => (flattenDungeonObjects(source.dungeon, source)
         .filter((object) => (object.role === "scenery" &&
+        !isResourceObject(object) &&
         distanceFromOrigin(object.positionOffset) >= warpClearanceMeters))
         .sort((left, right) => scoreObject(siteID, left) - scoreObject(siteID, right))));
     const quota = Math.max(1, Math.floor(remainingCapacity / sourceCandidates.length));
@@ -199,19 +204,87 @@ function selectSceneryObjects(siteID, sources, maxSceneryProps, warpClearanceMet
     selected.push(...leftovers.slice(0, Math.max(0, maxSceneryProps - selected.length)));
     return selected;
 }
+function selectResourceObjects(siteID, sources, maxResourceProps, classifyResourceObject) {
+    if (typeof classifyResourceObject !== "function") {
+        return [];
+    }
+    const candidates = sources
+        .flatMap((source) => flattenDungeonObjects(source.dungeon, source))
+        .map((object) => ({ object, profile: classifyResourceObject(object) }))
+        .filter((entry) => entry.profile)
+        .sort((left, right) => scoreObject(siteID, left.object) - scoreObject(siteID, right.object));
+    if (candidates.length <= maxResourceProps) {
+        return candidates;
+    }
+    const selected = [];
+    const selectedObjects = new Set();
+    const seenTypeIDs = new Set();
+    for (const candidate of candidates) {
+        const typeID = Math.max(0, toInt(candidate.object && candidate.object.typeID, 0));
+        if (seenTypeIDs.has(typeID)) {
+            continue;
+        }
+        seenTypeIDs.add(typeID);
+        selected.push(candidate);
+        selectedObjects.add(candidate.object);
+        if (selected.length >= maxResourceProps) {
+            return selected;
+        }
+    }
+    for (const candidate of candidates) {
+        if (!selectedObjects.has(candidate.object)) {
+            selected.push(candidate);
+        }
+        if (selected.length >= maxResourceProps) {
+            break;
+        }
+    }
+    return selected;
+}
+function buildExactEnvironmentProp(object, metadata = {}) {
+    return {
+        dunObjectID: Math.max(0, toInt(object.objectID, 0)),
+        exact: true,
+        key: [
+            "landscape",
+            object.patternKind,
+            object.dungeonID,
+            object.occurrenceIndex,
+            object.roomID,
+            object.objectID,
+        ].join(":"),
+        positionOffset: cloneVector(object.positionOffset),
+        dunRotation: object.temporaryLandscapeProfile === true
+            ? [toFiniteNumber(object.sourceYawDegrees, 0) + toFiniteNumber(object.yaw, 0),
+                toFiniteNumber(object.pitch, 0), toFiniteNumber(object.roll, 0)]
+            : [toFiniteNumber(object.sourceYawDegrees, 0), 0, 0],
+        ...(object.temporaryLandscapeProfile === true ? {
+            authoredRadius: Math.max(0, toFiniteNumber(object.radius, 0)) || undefined,
+            dungeonObjectGroupTag: String(object.groupTag || "") || undefined,
+            dungeonObjectLocalName: String(object.localName || "") || undefined,
+        } : {}),
+        suppressSlimGraphicID: true,
+        suppressSlimName: true,
+        typeID: Math.max(0, toInt(object.typeID, 0)),
+        ...metadata,
+    };
+}
 function buildLandscapeScenePlan(site, ecosystem, getDungeonByID, options = {}) {
     const siteID = Math.max(0, toInt(site && (site.itemID ?? site.siteID ?? site._key), 0));
     const maxSceneryProps = Math.max(1, Math.min(96, toInt(options.maxSceneryProps, DEFAULT_MAX_SCENERY_PROPS)));
+    const maxResourceProps = Math.max(1, Math.min(96, toInt(options.maxResourceProps, DEFAULT_MAX_RESOURCE_PROPS)));
     const warpClearanceMeters = Math.max(5_000, toFiniteNumber(options.warpClearanceMeters, DEFAULT_WARP_CLEARANCE_METERS));
     if (siteID <= 0 || !ecosystem || typeof getDungeonByID !== "function") {
         return {
             environmentProps: [],
             locators: [],
+            resourceProps: [],
             selectedPatterns: [],
         };
     }
     const natural = selectPatternOccurrences(ecosystem.naturalWorldPatterns, ecosystem.minNaturalWorldPatterns, ecosystem.maxNaturalWorldPatterns, `${siteID}:natural`).map((pattern) => ({ ...pattern, patternKind: "natural" }));
     const broken = selectPatternOccurrences(ecosystem.brokenWorldPatterns, ecosystem.minBrokenWorldPatterns, ecosystem.maxBrokenWorldPatterns, `${siteID}:broken`).map((pattern) => ({ ...pattern, patternKind: "broken" }));
+    const wild = ecosystem.temporaryLandscapeProfile === true ? selectPatternOccurrences(ecosystem.wildWorldPatterns, ecosystem.minWildWorldPatterns, ecosystem.maxWildWorldPatterns, `${siteID}:wild`).map((pattern) => ({ ...pattern, patternKind: "wild" })) : [];
     const entryDungeonID = Math.max(0, toInt(ecosystem.entryDungeonID, toInt(site && site.dungeonID, 0)));
     const sourceDefinitions = [
         ...(entryDungeonID > 0
@@ -219,6 +292,7 @@ function buildLandscapeScenePlan(site, ecosystem, getDungeonByID, options = {}) 
             : []),
         ...natural,
         ...broken,
+        ...wild,
     ];
     let patternIndex = 0;
     const sources = sourceDefinitions
@@ -239,29 +313,43 @@ function buildLandscapeScenePlan(site, ecosystem, getDungeonByID, options = {}) 
         patternIndex += 1;
         return { ...source, transform };
     });
-    const sceneryObjects = selectSceneryObjects(siteID, sources, maxSceneryProps, warpClearanceMeters);
+    const sceneryObjects = selectSceneryObjects(siteID, sources, maxSceneryProps, warpClearanceMeters, options.classifyResourceObject);
+    const resourceObjects = selectResourceObjects(siteID, sources, maxResourceProps, options.classifyResourceObject);
     const locators = sources.flatMap((source) => (flattenDungeonObjects(source.dungeon, source)
         .filter((object) => object.role !== "scenery")));
-    const environmentProps = sceneryObjects.map((object) => ({
-        dunObjectID: Math.max(0, toInt(object.objectID, 0)),
-        exact: true,
-        key: [
-            "landscape",
-            object.patternKind,
-            object.dungeonID,
-            object.occurrenceIndex,
-            object.roomID,
-            object.objectID,
-        ].join(":"),
-        positionOffset: cloneVector(object.positionOffset),
-        dunRotation: [toFiniteNumber(object.sourceYawDegrees, 0), 0, 0],
-        suppressSlimGraphicID: true,
-        suppressSlimName: true,
-        typeID: Math.max(0, toInt(object.typeID, 0)),
-    }));
+    const entryEnvironment = ecosystem.temporaryLandscapeProfile === true
+        ? ["baseCloudTypeID", "postProcessTypeID"].map((field, index) => ({
+            dunObjectID: index + 1,
+            exact: true,
+            key: `landscape:target-entry:${siteID}:${field}`,
+            typeID: toInt(ecosystem.entryPattern?.[field], 0),
+            positionOffset: { x: 0, y: 0, z: 0 },
+            dunRotation: [0, 0, 0],
+            suppressSlimGraphicID: true,
+            suppressSlimName: true,
+        })).filter(entry => entry.typeID > 0)
+        : [];
+    const profile = ecosystem.temporaryLandscapeProfile === true && site?.temporaryLandscapeRevision
+        ? require("../services/frontier/temporaryLandscapeProfile").getTemporaryLandscapeProfile() : null;
+    const resolveType = options.resolveType || (typeID => profile?.types.get(typeID) || null);
+    const environmentProps = [...entryEnvironment, ...sceneryObjects.filter(object => ecosystem.temporaryLandscapeProfile !== true || !require("../services/frontier/temporaryLandscapeNpcs")
+            .isTemporaryLandscapeNpcType(resolveType(object.typeID))).map((object) => buildExactEnvironmentProp(object))]
+        .slice(0, maxSceneryProps);
+    const resourceProps = resourceObjects.map(({ object, profile }) => (buildExactEnvironmentProp(object, {
+        landscapeResource: true,
+        miningYieldTypeID: Math.max(0, toInt(profile && profile.yieldTypeID, 0)),
+        resourceQuantity: Math.max(1, toInt(profile && profile.resourceQuantity, 1)),
+    })));
+    const temporaryPolicy = ecosystem.temporaryLandscapeProfile === true && site?.temporaryLandscapeRevision
+        ? require("../services/frontier/temporaryLandscapePolicy").buildTemporaryLandscapePolicy({
+            site, ecosystem, sources, objects: sources.flatMap(source => flattenDungeonObjects(source.dungeon, source)),
+            locators, resolveType, resourceProps,
+        }) : null;
     return {
         environmentProps,
         locators,
+        resourceProps,
+        ...(temporaryPolicy ? { temporaryPolicy } : {}),
         selectedPatterns: sources.map((source) => ({
             dungeonID: source.dungeonID,
             occurrenceIndex: source.occurrenceIndex,
@@ -274,6 +362,7 @@ function buildLandscapeScenePlan(site, ecosystem, getDungeonByID, options = {}) 
 }
 module.exports = {
     DEFAULT_MAX_SCENERY_PROPS,
+    DEFAULT_MAX_RESOURCE_PROPS,
     DEFAULT_PATTERN_RING_RADIUS_METERS,
     DEFAULT_PATTERN_RING_STEP_METERS,
     DEFAULT_PATTERN_SLOTS_PER_RING,
@@ -281,6 +370,7 @@ module.exports = {
     buildPatternTransform,
     buildLandscapeScenePlan,
     hash32,
+    selectResourceObjects,
     selectPatternOccurrences,
 };
 //# sourceMappingURL=frontierLandscapeScenePlan.js.map

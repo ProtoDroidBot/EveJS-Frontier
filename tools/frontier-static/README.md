@@ -24,6 +24,8 @@ The extractor:
   Crude Rift entry objects, resources, transforms, triggers, and events;
 - preserves modular ship templates, parts, modules, and hardpoint definitions
   used by the Frontier Creation management service;
+- copies the build's `bin64/bundle.collision` FlatBuffer without conversion,
+  verifies its sorted graphic-ID index, and records its byte hash and schema;
 - writes deterministic, build-numbered JSONL under `_local/frontier-sde`;
 - records source and output hashes in `frontier-extraction-manifest.json`.
 
@@ -74,9 +76,9 @@ recognized extractor manifest.
 npm run frontier:validate -- --snapshot _local/frontier-sde/3502403
 ```
 
-Validation checks hashes, JSONL framing, key uniqueness, type/group/category
-references, system/star relationships, map-object system references, and
-reciprocal stargate destinations.
+Validation checks hashes (including the raw collision bundle), JSONL framing,
+key uniqueness, type/group/category references, system/star relationships,
+map-object system references, and reciprocal stargate destinations.
 
 Landscape validation also checks that every site references an exported
 ecosystem and entry dungeon, every ecosystem pattern references an exported
@@ -90,6 +92,37 @@ types and placement.
 Creation validation checks that every modular hull template references known
 parts and modules, and that its initial interior placements and hardpoints are
 complete enough to reconstruct the client management model.
+
+## Audit references
+
+Run the referential-integrity audit when you need every broken relationship,
+rather than the snapshot validator's first failure:
+
+```powershell
+npm run frontier:references -- --snapshot _local/frontier-sde/3502403
+```
+
+The audit streams every JSONL table twice: once to index its `_key` values and
+once to check references. Built-in rules cover type dogma attributes/effects,
+types/groups/categories, map topology, NPC data, dungeons and landscapes,
+creation data, type lists/materials, and type-bearing space components. It also
+recognizes references encoded as object keys, such as accepted cargo type IDs.
+
+Broken references are all counted even when output examples are capped. Use
+`--max-issues 0` for summaries only, `--json` for machine-readable output, and
+`--show-unmapped` to inventory numeric ID-shaped fields that have no declared
+target in the exported SDE. `--strict-unmapped` additionally makes those
+unmapped paths fail the command. Run `--list-rules` to inspect the complete
+built-in relationship registry.
+
+Every audit also writes a complete JSON artifact containing every broken
+reference occurrence. By default it is written beside the build directories as
+`_local/frontier-sde/<build>-broken-references.json`. Use `--output <path>` to
+select another destination or `--no-output` to suppress the artifact. The
+console `--max-issues` limit does not truncate this file.
+
+The command exits with status `1` when a checked reference is broken (or strict
+unmapped coverage fails), and status `2` for malformed input or CLI errors.
 
 ## Client Contracts
 
@@ -136,6 +169,34 @@ The equivalent low-level generator invocation remains available on every
 platform; the npm wrapper derives the build-numbered output from the validated
 snapshot and applies the exact supported-build policy.
 
+Database generation installs the attested bundle at
+`<gameStore>/assets/collision/bundle.collision` and records it in the runtime
+manifest. The server reads primitive collision components lazily by graphic ID;
+mesh-only entries retain the existing sphere fallback until convex narrow-phase
+support is enabled.
+
+The same build preserves the complete Frontier typelist records (including
+nested lists and tag rules) and per-type `tags` in `clientTypeLists` and
+`itemTypes`. `clientTypeLists` schema version 2 records the source file hashes.
+Before generation, the typelist audit rejects duplicate IDs, dangling
+category/group/type/list references, nested cycles, and missing or empty
+authoritative runtime lists. It reports other empty lists, duplicate rule
+members, and optional runtime IDs missing from this build without inventing
+replacement membership. The resulting `<gameStore>/type-list-audit.json`
+and `frontier-database-validation.json` contain the diagnostics. A rebuild of
+an existing generated store also records added, removed, and changed list IDs
+before replacing it. Existing six-field readers can continue to read schema
+version 2. The server's canonical typelist evaluator now expands nested and
+tag rules with Frontier-client parity. Rebuild the generated game store to
+activate those rules; a schema-v1 store remains readable but lacks that data.
+
+For diagnostics, `EVEJS_COLLISION_BUNDLE_PATH` can point the server at an
+explicit bundle and `EVEJS_COLLISION_BUNDLE_SHA256` can pin its expected hash.
+Set `EVEJS_COLLISION_BUNDLE_REQUIRED=1` to reject a missing bundle when
+collision resolution first initializes. A present bundle that fails its
+manifest hash or structural checks is always rejected rather than silently
+reverting to type-radius collisions.
+
 Frontier-specific map data that the current EveJS generator does not yet
 consume is retained in `mapLagrangePoints.jsonl`, `mapJumps.jsonl`, and
 `locationCache.jsonl` for the compatibility layer. The three landscape tables
@@ -154,6 +215,10 @@ shadowing modules that must match the external interpreter. The pinned
 environment used by the setup workflow is `_local\frontier-python312`. The
 embedded-Python fallback continues to use the client-first `PYTHONPATH`
 required by the client's `python312.dll`.
+
+Direct Windows probing recognizes both `python312.exe` and
+`python3.12.exe` on `PATH` (as well as the Python launcher and the explicit
+`EVEJS_FRONTIER_PYTHON312` override).
 
 If required imports still fail, `frontier-python-runner-windows.c` can be
 compiled with Visual Studio 2022 Build Tools and the Windows SDK. The runner

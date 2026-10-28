@@ -504,6 +504,92 @@
 
   "miningEnabled": true,
 
+  // Local economy prices and exchange rates, with signed native wallet intents and local ledger receipts.
+  // Valid values: Object; defaults are emulator policy: 1 EVE per LUX/lens and 1 LUX per feral-data unit.
+  // Default: {"mode":"local","denomination":"EVE","luxCentsPerToken":100,"lensPriceAtoms":"1000000000","feralDataLuxCents":100,"prepareExpiryMs":300000}.
+
+  "frontierEconomyPolicy": {
+                             "mode": "local",
+                             "denomination": "EVE",
+                             "luxCentsPerToken": 100,
+                             "lensPriceAtoms": "1000000000",
+                             "feralDataLuxCents": 100,
+                             "prepareExpiryMs": 300000
+                           },
+
+  // Local pack entitlements, per-building pack requirements, and kill-report backend profile.
+  // Valid values: Object. Pack IDs are target enum values 1 through 11; local reports are not chain submissions.
+  // Default: {"packEntitlements":{},"buildingPackRequirements":{},"killReportingProfile":"local"}.
+
+  "frontierClaimsPolicy": {
+                            "packEntitlements": {},
+                            "buildingPackRequirements": {},
+                            "killReportingProfile": "local"
+                          },
+
+  // Local progression policy: activity weights, shell costs, founder entitlements, and CycleHub objectives.
+  // Valid values: Object. Activity defaults are emulator choices; empty entitlement lists grant nothing.
+  // Default: {"activityWeights":{"extraction":{"memoryCategoryID":9,"skillWeights":{"10":1},"xpPerUnit":1},"piloting":{"memoryCategoryID":2,"skillWeights":{"1":1},"xpPerUnit":1}},"shellCreation":{},"founderCharacterIDs":[],"cycleObjectives":[],"nestInteractionRangeMeters":5000}.
+
+  "frontierProgressionPolicy": {
+                                 "activityWeights": {
+                                   "extraction": {
+                                     "memoryCategoryID": 9,
+                                     "skillWeights": {
+                                       "10": 1
+                                     },
+                                     "xpPerUnit": 1
+                                   },
+                                   "piloting": {
+                                     "memoryCategoryID": 2,
+                                     "skillWeights": {
+                                       "1": 1
+                                     },
+                                     "xpPerUnit": 1
+                                   }
+                                 },
+                                 "shellCreation": {},
+                                 "founderCharacterIDs": [],
+                                 "cycleObjectives": []
+                               },
+
+  // Optional integrity-checked 3640684 landscape/ecosystem/dungeon overlay for the selected 3502403-MOD4-STUFF1 galaxy. Temporary until full era 6 cycle 7 data is supplied.
+  // Valid values: Path to a temporary landscape profile; empty disables the overlay. Only applies to client build 3640684.
+  // Default: "".
+
+  "temporaryLandscapePath": "",
+
+  // Enables composite asteroid mining and channeled regolith pickup when clientBuild is 3640684.
+  // Valid values: true or false; older client builds retain legacy mining.
+  // Default: true.
+
+  "voxelMiningEnabled": true,
+
+  // Voxel lifecycle and substrate policy. Zero expiry/respawn preserves existing stock; limits pause extraction before consuming ore.
+  // Valid values: Nonnegative millisecond timers and fragment caps; explicit substrate/material and miner-tier mappings by verified type ID.
+  // Default: {"fragmentExpiryMs":0,"respawnDelayMs":0,"maxFragmentsPerSystem":10000,"maxFragmentsPerAsteroid":1000,"materialsByTypeID":{},"minerTierByTypeID":{}}.
+
+  "voxelMiningPolicy": {
+                         "fragmentExpiryMs": 0,
+                         "respawnDelayMs": 0,
+                         "maxFragmentsPerSystem": 10000,
+                         "maxFragmentsPerAsteroid": 1000,
+                         "materialsByTypeID": {},
+                         "minerTierByTypeID": {}
+                       },
+
+  // Persistent world identity for composite depletion and loose ore. Change only when intentionally replacing the world.
+  // Valid values: Nonempty world revision string.
+  // Default: "3502403-MOD4-STUFF1/3640684-voxel-v1".
+
+  "voxelMiningWorldRevision": "3502403-MOD4-STUFF1/3640684-voxel-v1",
+
+  // Maximum regolith pickup surface distance; 2500 matches the 3640684 client public scoop action.
+  // Valid values: 800 through 2500 metres.
+  // Default: 2500.
+
+  "voxelScoopRangeMeters": 2500,
+
   // Maximum range used when the mining scan manager returns asteroid scan tuples to the client.
   // Valid values: Positive distance in meters.
   // Default: 250000.
@@ -860,6 +946,18 @@
 
   "clientCompatibilityProfile": "tranquility",
 
+  // Persist faction-keyed NPC pilot identities in Frontier mode, independently of ship lifetimes.
+  // Valid values: Boolean. Only applies to the Frontier compatibility profile.
+  // Default: true.
+
+  "npcPilotIdentitiesEnabled": true,
+
+  // Reconcile persistent NPC Characters and PlayerProfiles on the configured Sui Localnet in the background.
+  // Valid values: Boolean. Requires Frontier mode and NPC pilot identities.
+  // Default: true.
+
+  "suiNpcCharacterProvisioningEnabled": true,
+
   // UTC daily downtime start used by server-side startup reconciliation.
   // Matches the target client's zcluster DowntimeStarts value format and falls back to 11:00:00 when unset.
   // Valid values: UTC time in "HH:MM:SS" format.
@@ -1097,6 +1195,22 @@
 
   "smartAssemblyBaseDappUrl": "https://dev.dapps.evefrontier.com",
 
+  // Number of independently occupied production lanes exposed by non-portable Frontier Smart Industry assemblies.
+  // Creation-hosted Industry modules and portable Industry assemblies are always limited to lane 1.
+  // Each lane accepts at most one running or discontinuing job and has its own owner-managed access policy. Lane 1 remains the legacy client lane.
+  // Valid values: Integer lane count from 1 through 16.
+  // Default: 4.
+
+  "frontierSmartIndustryJobLaneCount": 4,
+
+  // Optional per-type lane counts for compatible Frontier Smart Industry facilities.
+  // Keys are Smart Industry type IDs and values are lane counts. Missing type IDs fall back to frontierSmartIndustryJobLaneCount.
+  // Creation-hosted Industry modules and portable Industry assemblies remain limited to lane 1 even when their type ID is present.
+  // Valid values: JSON object mapping compatible Smart Industry type IDs to integer lane counts from 1 through 16.
+  // Default: {}.
+
+  "frontierSmartIndustryJobLaneCountByTypeID": {},
+
   // Base URL sent to the client for image and icon requests.
   // Valid values: Absolute URL string ending with a slash, for example "http://127.0.0.1:26001/".
   // Default: "http://127.0.0.1:26001/".
@@ -1295,6 +1409,76 @@
 
   "tidiAutoscaler": false,
 
+  // Enables CPU- and memory-aware adjustment of the authoritative space-runtime tick interval.
+  // High resource pressure lowers the tick rate; sustained headroom raises it again within the configured bounds.
+  // Valid values: true or false.
+  // Default: false.
+
+  "adaptiveTickRateEnabled": false,
+
+  // Fastest allowed adaptive space-runtime cadence in milliseconds. 50ms is 20 ticks per second.
+  // Valid values: Number from 10 through 1000, no greater than the maximum interval.
+  // Default: 50.
+
+  "adaptiveTickRateMinIntervalMs": 50,
+
+  // Slowest allowed adaptive space-runtime cadence in milliseconds. 250ms is 4 ticks per second.
+  // Valid values: Number from 10 through 5000, no less than the minimum interval.
+  // Default: 250.
+
+  "adaptiveTickRateMaxIntervalMs": 250,
+
+  // Space-runtime tick interval used at startup and as the fixed interval when adaptive tick rate is disabled.
+  // 100ms preserves the historical 10-ticks-per-second cadence.
+  // Valid values: Number within the configured minimum and maximum interval bounds.
+  // Default: 100.
+
+  "adaptiveTickRateInitialIntervalMs": 100,
+
+  // Milliseconds added to or removed from the tick interval on each resource sample that crosses a threshold.
+  // Valid values: Number from 1 through 1000.
+  // Default: 10.
+
+  "adaptiveTickRateStepMs": 10,
+
+  // Minimum time between process CPU and memory samples used by the adaptive tick-rate controller.
+  // Valid values: Number from 250 through 60000 milliseconds.
+  // Default: 2000.
+
+  "adaptiveTickRateSampleIntervalMs": 2000,
+
+  // Process CPU level at or below which CPU is considered to have headroom.
+  // 100 percent represents one fully utilized logical CPU core; worker activity can make the measured value exceed 100.
+  // Valid values: Number from 0 through 100, below the high CPU threshold.
+  // Default: 35.
+
+  "adaptiveTickRateCpuLowPercent": 35,
+
+  // Process CPU level at or above which the controller lowers the tick rate.
+  // Valid values: Number from 0 through 100, above the low CPU threshold.
+  // Default: 75.
+
+  "adaptiveTickRateCpuHighPercent": 75,
+
+  // Process RSS level at or below which memory is considered to have headroom.
+  // Valid values: Number from 0 through 100, below the high memory threshold.
+  // Default: 60.
+
+  "adaptiveTickRateMemoryLowPercent": 60,
+
+  // Process RSS level at or above which the controller lowers the tick rate.
+  // Valid values: Number from 0 through 100, above the low memory threshold.
+  // Default: 80.
+
+  "adaptiveTickRateMemoryHighPercent": 80,
+
+  // Memory budget used to turn process RSS into a pressure percentage.
+  // Set to 0 to automatically use the lower of the V8 heap limit and any process/container memory constraint exposed by Node.js.
+  // Valid values: 0 for automatic detection, or a positive memory budget in MiB.
+  // Default: 0.
+
+  "adaptiveTickRateMemoryLimitMb": 0,
+
   // Controls which solar-system scenes are created during server startup.
   // 1 = current lazy/default boot: only Jita, New Caldari, and Manifest are preloaded so the existing startup behavior stays the same.
   // 2 = preload every high-security system by checking the solar-system security data for displayed security `0.5+` at startup, so newly added systems are picked up automatically.
@@ -1312,12 +1496,12 @@
 
   "asteroidFieldsEnabled": true,
 
-  // Clears persisted belt asteroid depletion state during server startup so every asteroid belt repopulates.
-  // Matches Tranquility, where mined-out belts come back on downtime rather than on a respawn timer. Generated ice sites keep their own respawn lifecycle and are not affected.
+  // Administrative override that clears persisted belt asteroid depletion state during server startup.
+  // Disabled by default because mined-out asteroids now retain their depletion time across restarts and respawn after 24 hours. Generated ice sites keep their own lifecycle.
   // Valid values: true or false.
-  // Default: true.
+  // Default: false.
 
-  "asteroidBeltStartupReset": true,
+  "asteroidBeltStartupReset": false,
 
   // Turns on generated default billboard props beside empire-space stargates (`0.1+`).
   // These use PublicEveJS bubble-scoped static visibility, matching the existing generated CONCORD scene style.
@@ -1426,6 +1610,258 @@
   // Default: false.
 
   "crimewatchConcordPodKillEnabled": false,
+
+  // Hull temperature at which the Frontier heat effect becomes armed and starts building grace.
+  // The critical threshold must remain greater than this warning threshold.
+  // Valid values: Non-negative temperature in kelvin below the critical threshold.
+  // Default: 500.
+
+  "frontierEnvironmentalHeatWarningThresholdKelvin": 500,
+
+  // Hull temperature at which the Frontier heat effect becomes active and its damage-delay timer starts.
+  // Valid values: Positive temperature in kelvin above the heat warning threshold.
+  // Default: 1500.
+
+  "frontierEnvironmentalHeatCriticalThresholdKelvin": 1500,
+
+  // Fraction of a ship's nominal maximum feralization that activates the feralization effect and starts its damage-delay timer.
+  // Valid values: Positive ratio. 1 activates at 100% of nominal maximum; 0.5 activates at 50%.
+  // Default: 1.
+
+  "frontierEnvironmentalFeralizationThresholdRatio": 1,
+
+  // Fraction of a ship's nominal maximum temporal drift that activates the temporal-drift effect and starts its damage-delay timer.
+  // Valid values: Positive ratio. 1 activates at 100% of nominal maximum; 0.5 activates at 50%.
+  // Default: 1.
+
+  "frontierEnvironmentalTemporalDriftThresholdRatio": 1,
+
+  // Continuous time an individual environmental effect must remain active before that effect deals vitality or ship hitpoint damage.
+  // Each heat, feralization, and temporal-drift effect tracks this grace period independently.
+  // Valid values: Non-negative number of seconds. 0 applies damage immediately.
+  // Default: 30.
+
+  "frontierEnvironmentalDamageDelaySeconds": 30,
+
+  // Delay between a confirmed hull or shell death and the session change that opens the Frontier intermediary death report.
+  // The death notification is sent immediately so the stock client can begin its explosion or shell-expiration presentation before clone locations appear.
+  // Valid values: Non-negative number of seconds. 0 opens the death report immediately.
+  // Default: 5.
+
+  "frontierCloneDeathTransitionDelaySeconds": 5,
+
+  // Shell vitality removed per second by each environmental effect after its configured damage delay.
+  // Valid values: Non-negative vitality damage per active effect per second. 0 disables vitality damage.
+  // Default: 1.
+
+  "frontierEnvironmentalVitalityDamagePerEffectPerSecond": 1,
+
+  // Raw thermal ship damage dealt per second by each environmental effect after its configured damage delay.
+  // Damage uses the normal shield, armor, structure, resistance, notification, persistence, and destruction paths.
+  // Valid values: Non-negative hitpoint damage per active effect per second. 0 disables ship damage.
+  // Default: 1.
+
+  "frontierEnvironmentalHitpointDamagePerEffectPerSecond": 1,
+
+  // Surface-distance radius around Crude Matter rifts over which temporal drift is generated.
+  // Valid values: Positive radius in meters.
+  // Default: 100000.
+
+  "frontierEnvironmentalRiftRadiusMeters": 100000,
+
+  // Multiplier applied to nominal maximum temporal drift at the center of a Crude Matter rift.
+  // Valid values: Positive multiplier.
+  // Default: 2.
+
+  "frontierEnvironmentalRiftDriftMultiplier": 2,
+
+  // Maximum distance at which Frontier directional scanning returns a contact signature.
+  // The upper bound is the build-3502403 client scanner's authored 100,000 km limit.
+  // Valid values: Positive distance in meters up to 100000000.
+  // Default: 100000000.
+
+  "frontierScanningDetectionRangeMeters": 100000000,
+
+  // Maximum distance at which a strong Frontier directional-scan contact may resolve into its real ballpark object.
+  // Contacts beyond this range can remain visible as unresolved signatures up to the detection range.
+  // Valid values: Positive distance in meters no greater than frontierScanningDetectionRangeMeters.
+  // Default: 100000000.
+
+  "frontierScanningResolutionRangeMeters": 100000000,
+
+  // Signal-to-noise ratio required for a Frontier directional-scan contact to resolve.
+  // 1 preserves the client's 100% signal threshold; larger values require a stronger return.
+  // Valid values: Positive signal-to-noise ratio.
+  // Default: 1.
+
+  "frontierScanningResolutionSnrThreshold": 1,
+
+  // Uses Frontier's delayed scan-contact visibility path to add a resolved contact's real ballpark object.
+  // Disable to keep every directional-scan contact signature-only.
+  // Valid values: true or false.
+  // Default: true.
+
+  "frontierScanningRenderResolvedObjects": true,
+
+  // Keeps contacts outside the configured resolution range in the Frontier scan response as unresolved signatures.
+  // Disable to omit those contacts instead.
+  // Valid values: true or false.
+  // Default: true.
+
+  "frontierScanningRenderOutOfRangeSignatures": true,
+
+  // Enables server-authoritative remote solar-system surveys. Network Nodes are the temporary dApp source; the scan contracts remain source-neutral.
+  // Valid values: true or false.
+  // Default: true.
+
+  "frontierRemoteScanningEnabled": true,
+
+  // Unloads any loaded solar-system scene after this much time without player activity, regardless of why the scene was loaded.
+  // Cooldown changes memory residency only: structures retain their durable operational state, NPC positions are virtualized before dematerialization, and resumed entities receive collision-safe placement.
+  // Set to 0 to disable automatic scene unloading.
+  // Valid values: Non-negative milliseconds; 0 disables automatic unloading.
+  // Default: 3600000.
+
+  "solarSystemSceneIdleUnloadMs": 3600000,
+
+  // Maximum configurable remote scanning reach from a Network Node, measured along stargate connections in solar-system hops.
+  // Valid values: Integer from 0 through 25 stargate hops.
+  // Default: 3.
+
+  "frontierNetworkNodeScanRangeJumps": 3,
+
+  // Minimum delay between new remote scan jobs from the same scanner source.
+  // Valid values: Non-negative milliseconds.
+  // Default: 5000.
+
+  "frontierRemoteScanCooldownMs": 5000,
+
+  // Duration that a remote scan reserves its energy cost on the source Network Node power grid.
+  // The hold remains for the full duration even when the scan completes or is cancelled.
+  // Valid values: Positive milliseconds.
+  // Default: 3600000.
+
+  "frontierRemoteScanEnergyHoldMs": 3600000,
+
+  // Transient Network Node energy headroom required to start a cold survey.
+  // Valid values: Non-negative energy units.
+  // Default: 25.
+
+  "frontierRemoteScanSurveyEnergyCost": 25,
+
+  // Transient Network Node energy headroom required to start a deep survey.
+  // Valid values: Non-negative energy units.
+  // Default: 75.
+
+  "frontierRemoteScanDeepEnergyCost": 75,
+
+  // Temporary Network Node remote-scanner strength for gravimetric aggregate signals.
+  // Valid values: Positive multiplier.
+  // Default: 1.
+
+  "frontierNetworkNodeScanGravimetricStrength": 1,
+
+  // Temporary Network Node remote-scanner strength for electromagnetic aggregate signals.
+  // Valid values: Positive multiplier.
+  // Default: 1.
+
+  "frontierNetworkNodeScanElectromagneticStrength": 1,
+
+  // Temporary Network Node remote-scanner strength for thermal aggregate signals.
+  // Valid values: Positive multiplier.
+  // Default: 1.
+
+  "frontierNetworkNodeScanThermalStrength": 1,
+
+  // Maximum age of a cold per-system contribution-index snapshot before it is rebuilt.
+  // Valid values: Non-negative milliseconds.
+  // Default: 15000.
+
+  "frontierRemoteScanIndexTtlMs": 15000,
+
+  // Durable retention and staleness lifetime for a completed remote scan result.
+  // Valid values: Positive milliseconds.
+  // Default: 3600000.
+
+  "frontierRemoteScanResultTtlMs": 3600000,
+
+  // Maximum sparse occupied heat-map cells serialized in one remote result.
+  // Valid values: Integer from 1 through 1024.
+  // Default: 256.
+
+  "frontierRemoteScanMaxHeatCells": 256,
+
+  // Maximum redacted dungeon-site observations serialized in one remote result.
+  // Valid values: Integer from 1 through 512.
+  // Default: 128.
+
+  "frontierRemoteScanMaxSites": 128,
+
+  // Maximum aggregate resource-field observations serialized in one remote result.
+  // Valid values: Integer from 1 through 512.
+  // Default: 128.
+
+  "frontierRemoteScanMaxResources": 128,
+
+  // Maximum serialized size of one completed remote scan result before weakest observations are removed.
+  // Valid values: Integer bytes greater than or equal to 4096.
+  // Default: 524288.
+
+  "frontierRemoteScanMaxPayloadBytes": 524288,
+
+  // Maximum sparse spatial subdivision depth for cold survey heat maps.
+  // Valid values: Integer from 1 through 8.
+  // Default: 4.
+
+  "frontierRemoteScanSurveyOctreeDepth": 4,
+
+  // Maximum sparse spatial subdivision depth for deep survey heat maps.
+  // Valid values: Integer from 1 through 8.
+  // Default: 6.
+
+  "frontierRemoteScanDeepOctreeDepth": 6,
+
+  // Allows a deep remote survey to warm a dormant target system without attaching the scanning character.
+  // Valid values: true or false.
+  // Default: true.
+
+  "frontierRemoteScanDeepWarmupEnabled": true,
+
+  // Hard timeout for target-system loading initiated by a remote survey.
+  // Valid values: Positive milliseconds.
+  // Default: 15000.
+
+  "frontierRemoteScanDeepWarmupTimeoutMs": 15000,
+
+  // Maximum number of distinct solar systems that remote scans may load concurrently.
+  // Valid values: Integer from 1 through 64.
+  // Default: 4.
+
+  "frontierRemoteScanMaxConcurrentWarmups": 4,
+
+  // Default gravimetric decay half-life for normalized travel signature blooms.
+  // Valid values: Positive milliseconds.
+  // Default: 300000.
+
+  "frontierSignatureBloomGravimetricHalfLifeMs": 300000,
+
+  // Default electromagnetic decay half-life for normalized travel signature blooms.
+  // Valid values: Positive milliseconds.
+  // Default: 180000.
+
+  "frontierSignatureBloomElectromagneticHalfLifeMs": 180000,
+
+  // Default thermal decay half-life for normalized travel signature blooms.
+  // Valid values: Positive milliseconds.
+  // Default: 120000.
+
+  "frontierSignatureBloomThermalHalfLifeMs": 120000,
+
+  // Minimum durable retention for a travel signature bloom when the publisher does not provide an expiry.
+  // Valid values: Positive milliseconds.
+  // Default: 1800000.
+
+  "frontierSignatureBloomRetentionMs": 1800000,
 
   // Proxy node ID reported to the client and used when generating bound object IDs.
   // Valid values: Integer node ID. 65450 matches the traditional 0xFFAA value.

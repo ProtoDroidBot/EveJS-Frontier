@@ -4,9 +4,11 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const itemStore = require("../src/services/inventory/itemStore");
+const characterState = require("../src/services/character/characterState");
 const spaceRuntime = require("../src/space/runtime");
 const blueprints = require("../src/services/frontier/industryBlueprints");
 const industry = require("../src/services/frontier/industryRuntime");
+const networkNodeFuel = require("../src/services/frontier/networkNodeFuelRuntime");
 const IndustryService = require("../src/services/frontier/industryService");
 const { ASSEMBLY_STATUS_UNDER_CONSTRUCTION } = require("../src/services/frontier/deploymentRuntime");
 const { INDUSTRY_INPUT_FLAG, INDUSTRY_OUTPUT_FLAG } = industry;
@@ -18,6 +20,7 @@ const FACILITY_TYPE_ID = 87119;
 const SHIP_TYPE_ID = 95276;
 const MATERIAL_A = 78423;
 const MATERIAL_B = 84180;
+const NETWORK_FUEL = 77818;
 const CARGO_FLAG = 5;
 const BLUEPRINT = {
   blueprint_id: 1,
@@ -25,11 +28,30 @@ const BLUEPRINT = {
   inputs: {
     [MATERIAL_A]: { type_id: MATERIAL_A, quantity_per_run: 3, max_storable_quantity: 1000 },
     [MATERIAL_B]: { type_id: MATERIAL_B, quantity_per_run: 2, max_storable_quantity: 1000 },
+    [NETWORK_FUEL]: { type_id: NETWORK_FUEL, quantity_per_run: 1, max_storable_quantity: 1000 },
   },
   outputs: {
     [MATERIAL_A]: { type_id: MATERIAL_A, quantity_per_run: 1, max_storable_quantity: 1000 },
   },
 };
+
+function seedCharacter(characterID) {
+  const result = characterState.writeCharacterRecord(characterID, {
+    characterID,
+    characterName: `Industry Test ${characterID}`,
+    corporationID: 1000442,
+    solarSystemID: SYSTEM_ID,
+    shipID: 0,
+    shipTypeID: 0,
+    suppressActiveShipProvisioning: true,
+  });
+  assert.equal(result.success, true, result.errorMsg);
+}
+
+test.beforeEach(() => {
+  seedCharacter(OWNER_ID);
+  seedCharacter(OTHER_OWNER_ID);
+});
 
 function grant(ownerID, locationID, flagID, typeID, quantity, options = {}) {
   const result = itemStore.grantItemsToCharacterLocation(
@@ -96,6 +118,36 @@ function fixture(t) {
       entities.set(unit.itemID, { itemID: unit.itemID, position: { x: 150, y: 0, z: 0 } });
       return result.data;
     },
+    turret(ownerID = OWNER_ID, assemblyStatus = 2) {
+      const turret = grant(ownerID, SYSTEM_ID, 0, 92279, 1, { individualItems: true, singleton: 1 });
+      const result = itemStore.updateInventoryItem(turret.itemID, current => ({ ...current,
+        customInfo: JSON.stringify({ evejsFrontierConstruction: {
+          assemblyStatus, assemblyTypeID: 92279, ownerID, solarSystemID: SYSTEM_ID,
+          createdAtMs: 1, completedAtMs: 1,
+        } }),
+      }));
+      assert.equal(result.success, true);
+      entities.set(turret.itemID, { itemID: turret.itemID, position: { x: 150, y: 0, z: 0 } });
+      return result.data;
+    },
+    networkNode(ownerID = OWNER_ID, assemblyStatus = 1) {
+      const node = grant(ownerID, SYSTEM_ID, 0, networkNodeFuel.NETWORK_NODE_TYPE_ID, 1, {
+        individualItems: true, singleton: 1,
+      });
+      const result = itemStore.updateInventoryItem(node.itemID, current => ({ ...current,
+        customInfo: JSON.stringify({ evejsFrontierConstruction: {
+          assemblyStatus,
+          assemblyTypeID: networkNodeFuel.NETWORK_NODE_TYPE_ID,
+          ownerID,
+          solarSystemID: SYSTEM_ID,
+          createdAtMs: 1,
+          completedAtMs: 1,
+        } }),
+      }));
+      assert.equal(result.success, true);
+      entities.set(node.itemID, { itemID: node.itemID, position: { x: 150, y: 0, z: 0 } });
+      return result.data;
+    },
     stored: (typeID, quantity, side = "inputs", ownerID = OWNER_ID) => grant(
       ownerID, facility.itemID,
       side === "outputs" ? INDUSTRY_OUTPUT_FLAG : INDUSTRY_INPUT_FLAG,
@@ -148,6 +200,80 @@ test("SSU inputs and Industry inputs/outputs transfer atomically without routing
   assert.equal(totalAt(storage.itemID, 66, MATERIAL_A), 38);
   assert.equal(totalAt(f.facility.itemID, INDUSTRY_OUTPUT_FLAG, MATERIAL_A), 0);
   assert.equal(totalAt(f.ship.itemID, CARGO_FLAG, MATERIAL_A), 0);
+});
+
+test("Smart Turret flag-0 cargo transfers directly to and from Industry", t => {
+  const f = fixture(t);
+  const turret = f.turret();
+  const stack = grant(OWNER_ID, turret.itemID, 0, MATERIAL_A, 40);
+  const deposited = f.deposit({ [stack.itemID]: 13 });
+  assert.equal(deposited.success, true, deposited.errorMsg);
+  assert.equal(totalAt(turret.itemID, 0, MATERIAL_A), 27);
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_INPUT_FLAG, MATERIAL_A), 13);
+  assert.equal(deposited.data.storageTransfers.length, 0,
+    "Turret cargo has no Sui StorageUnit inventory mirror");
+  assert.deepEqual(deposited.data.chain,
+    { status: "disabled", industryStatus: "disabled", storageStatus: "disabled" });
+
+  const withdrawn = f.withdraw({ [MATERIAL_A]: 5 }, "inputs", turret.itemID, 0);
+  assert.equal(withdrawn.success, true, withdrawn.errorMsg);
+  assert.equal(totalAt(turret.itemID, 0, MATERIAL_A), 32);
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_INPUT_FLAG, MATERIAL_A), 8);
+  assert.equal(totalAt(f.ship.itemID, CARGO_FLAG, MATERIAL_A), 0);
+});
+
+test("Industry deposits to and withdraws from a Network Node virtual fuel bay", async t => {
+  const f = fixture(t);
+  const node = f.networkNode();
+  f.stored(NETWORK_FUEL, 50, "outputs");
+
+  const deposited = await f.withdraw(
+    { [NETWORK_FUEL]: 30 },
+    "outputs",
+    node.itemID,
+    networkNodeFuel.NETWORK_NODE_FUEL_BAY_FLAG,
+  );
+  assert.equal(deposited.success, true, deposited.errorMsg);
+  assert.equal(deposited.data.networkNodeFuelTransfer.direction, "deposit");
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_OUTPUT_FLAG, NETWORK_FUEL), 20);
+  assert.equal(networkNodeFuel.readNetworkNodeFuelState(itemStore.findItemById(node.itemID)).quantity, 30);
+
+  const withdrawn = await industry.depositStorageInputItems(
+    f.session,
+    f.facility.itemID,
+    node.itemID,
+    { [NETWORK_FUEL]: 10 },
+  );
+  assert.equal(withdrawn.success, true, withdrawn.errorMsg);
+  assert.equal(withdrawn.data.networkNodeFuelTransfer.direction, "withdraw");
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_INPUT_FLAG, NETWORK_FUEL), 10);
+  assert.equal(networkNodeFuel.readNetworkNodeFuelState(itemStore.findItemById(node.itemID)).quantity, 20);
+
+  const emptied = await industry.emptyActiveBlueprint(f.session, f.facility.itemID, node.itemID);
+  assert.equal(emptied.success, true, emptied.errorMsg);
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_INPUT_FLAG, NETWORK_FUEL), 0);
+  assert.equal(totalAt(f.facility.itemID, INDUSTRY_OUTPUT_FLAG, NETWORK_FUEL), 0);
+  assert.equal(networkNodeFuel.readNetworkNodeFuelState(itemStore.findItemById(node.itemID)).quantity, 50);
+
+  const { createIndustryStorageOperations } = require("../src/_secondary/express/smartIndustryStorageApi");
+  const api = createIndustryStorageOperations({
+    resolve: () => ({ success: true, data: {
+      characterID: OWNER_ID,
+      walletAddress: "0x1",
+      session: f.session,
+      facilityID: f.facility.itemID,
+    } }),
+    failed: errorMsg => ({ success: false, errorMsg }),
+  });
+  const listing = await api.storage("token", f.facility.itemID);
+  assert.equal(listing.success, true, listing.errorMsg);
+  const listedNode = listing.data.storageUnits.find(unit => unit.storageUnitID === node.itemID);
+  assert.ok(listedNode, "Network Node fuel slot is exposed as an Industry endpoint");
+  assert.equal(listedNode.flagID, networkNodeFuel.NETWORK_NODE_FUEL_BAY_FLAG);
+  assert.equal(listedNode.assemblyKind, "network_node_fuel");
+  assert.deepEqual(listedNode.items.map(item => ({ typeID: item.typeID, quantity: item.quantity })), [
+    { typeID: NETWORK_FUEL, quantity: 50 },
+  ]);
 });
 
 test("SSU visitor partitions preserve ownership and do not count other partitions toward capacity", t => {
@@ -343,8 +469,12 @@ test("Industry storage API integrates real inventory listing, transfers and exac
   });
   const listed = await api.storage("token", f.facility.itemID);
   assert.equal(listed.success, true);
-  assert.deepEqual(listed.data.storageUnits.map(unit => unit.storageUnitID), [storage.itemID]);
-  const listedItems = listed.data.storageUnits[0].items;
+  const listedIDs = listed.data.storageUnits.map(unit => unit.storageUnitID);
+  assert.equal(listedIDs.includes(f.ship.itemID), true, "active ship cargo is exposed as a transfer endpoint");
+  assert.equal(listedIDs.includes(storage.itemID), true, "accessible Smart Storage is exposed as a transfer endpoint");
+  const listedStorage = listed.data.storageUnits.find(unit => unit.storageUnitID === storage.itemID);
+  assert.ok(listedStorage);
+  const listedItems = listedStorage.items;
   assert.deepEqual(listedItems.map(item => item.itemID).sort(), [own.itemID, second.itemID].sort());
   assert.equal(listedItems.some(item => item.itemID === other.itemID), false);
   assert.equal(listed.data.storageUnits.some(unit => [offline.itemID, remote.itemID].includes(unit.storageUnitID)), false);
@@ -859,9 +989,14 @@ test("empty active blueprint validates combined input/output capacity and per-ty
   f.stored(MATERIAL_A, 4, "outputs");
   const inventoryAccess = require("../src/services/frontier/industryInventoryAccess");
   const resolve = inventoryAccess.resolveIndustryInventory;
+  const resolveTransfer = inventoryAccess.resolveTransferInventory;
   let capacity = 6;
   t.mock.method(inventoryAccess, "resolveIndustryInventory", (...args) => {
     const result = resolve(...args);
+    return result.success ? { ...result, data: { ...result.data, capacity } } : result;
+  });
+  t.mock.method(inventoryAccess, "resolveTransferInventory", (...args) => {
+    const result = resolveTransfer(...args);
     return result.success ? { ...result, data: { ...result.data, capacity } } : result;
   });
   t.mock.method(itemStore, "getInventoryItemUnitVolume", () => 1);

@@ -39,6 +39,12 @@ function registerFallbackCreationAbilityHandlers() {
       if (!result.success) {
         return { success: false as const, errorMsg: result.errorMsg || "ONLINE_STATE_FAILED" };
       }
+      if (context.session && context.session._space) {
+        const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
+        spaceRuntime.refreshShipDerivedState(context.session, {
+          broadcast: true,
+        });
+      }
       return {
         success: true as const,
         data: { serverTime: result.data.serverTime },

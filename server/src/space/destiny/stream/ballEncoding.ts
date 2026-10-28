@@ -27,6 +27,9 @@ const {
   resolveFreeBallCorporationID,
 } = require("./freeBallHeader");
 const {
+  MINI_GEOMETRY_FLAG_MASK,
+  appendMiniGeometrySections,
+  getEntityMiniGeometryFlags,
   getStaticBallFlags,
   getStaticBallMode,
   resolveStaticBallTail,
@@ -45,6 +48,9 @@ const {
 const {
   ENTITY_TYPE,
 } = require("../../entityConstants");
+const {
+  resolveEntityCollisionPresentation,
+} = require("../collision/collisionBundle");
 
 const FREE_MODE_BY_NAME = Object.freeze({
   GOTO: BALL_MODE.GOTO,
@@ -359,12 +365,48 @@ function getFrontierBallOrientation(entity) {
   // the client even when the persisted server heading points elsewhere;
   // subsequent pitch/yaw/speed inputs then move the two simulations in
   // different world-space directions.
-  return {
-    w: cosineYaw * cosinePitch,
-    x: -cosineYaw * sinePitch,
-    y: sineYaw * cosinePitch,
-    z: sineYaw * sinePitch,
+  const roll = toFiniteNumber(entity && entity.manualRoll, 0) / 2;
+  const cr = Math.cos(roll);
+  const sr = Math.sin(roll);
+  const w = cosineYaw * cosinePitch;
+  const x = -cosineYaw * sinePitch;
+  const y = sineYaw * cosinePitch;
+  const z = sineYaw * sinePitch;
+  // Compose body-forward roll after yaw/pitch, including reconnect snapshots.
+  return { w: w * cr - z * sr, x: x * cr + y * sr,
+    y: y * cr - x * sr, z: w * sr + z * cr };
+}
+
+function getFrontierRigidCollisionOrientation(entity) {
+  const source = entity && (entity.collisionQuaternion || entity.collisionRotation);
+  const candidate = Array.isArray(source) && source.length >= 4
+    ? { w: source[0], x: source[1], y: source[2], z: source[3] }
+    : source && typeof source === "object"
+      ? source
+      : null;
+  if (!candidate) {
+    return { w: 1, x: 0, y: 0, z: 0 };
+  }
+  const orientation = {
+    w: toFiniteNumber(candidate.w, 1),
+    x: toFiniteNumber(candidate.x, 0),
+    y: toFiniteNumber(candidate.y, 0),
+    z: toFiniteNumber(candidate.z, 0),
   };
+  const length = Math.hypot(
+    orientation.w,
+    orientation.x,
+    orientation.y,
+    orientation.z,
+  );
+  return length > Number.EPSILON
+    ? {
+        w: orientation.w / length,
+        x: orientation.x / length,
+        y: orientation.y / length,
+        z: orientation.z / length,
+      }
+    : { w: 1, x: 0, y: 0, z: 0 };
 }
 
 function getShipWarpFactor(entity) {
@@ -547,13 +589,18 @@ function appendFrontierCommonBallTail(chunks, entity, options: Record<string, an
     entity.kind === "ship"
   )
     ? getFrontierBallOrientation(entity)
-    : { w: 1, x: 0, y: 0, z: 0 };
+    : getFrontierRigidCollisionOrientation(entity);
   pushDouble(chunks, orientation.w);
   pushDouble(chunks, orientation.x);
   pushDouble(chunks, orientation.y);
   pushDouble(chunks, orientation.z);
-  pushInt32(chunks, toInt32(entity && entity.collisionID, -1));
-  pushFloat(chunks, toFiniteNumber(entity && entity.collisionScale, 1));
+  const collision = resolveEntityCollisionPresentation(
+    entity,
+    undefined,
+    { includeProfile: false },
+  );
+  pushInt32(chunks, toInt32(collision.collisionID, -1));
+  pushFloat(chunks, collision.collisionScale);
 }
 
 function appendFrontierFreeBallConfiguration(chunks, entity) {
@@ -620,6 +667,7 @@ function encodeFrontierRigidBall(entity) {
   const chunks: any[] = [];
   const position = buildVector(entity && entity.position);
   const mode = getStaticBallMode(entity);
+  const miniGeometryFlags = getEntityMiniGeometryFlags(entity);
   pushBigInt64(
     chunks,
     requireEntityID(entity && entity.itemID, "Destiny ball itemID"),
@@ -629,10 +677,16 @@ function encodeFrontierRigidBall(entity) {
   pushDouble(chunks, position.x);
   pushDouble(chunks, position.y);
   pushDouble(chunks, position.z);
-  pushUInt8(chunks, getRigidBallFlags(entity));
+  pushUInt8(chunks, (getRigidBallFlags(entity) & ~MINI_GEOMETRY_FLAG_MASK) |
+    miniGeometryFlags);
   appendFrontierCommonBallTail(chunks, entity);
   pushInt32(chunks, toInt32(entity && entity.convexCollisionID, 0));
   pushUInt8(chunks, 0xff);
+  // Frontier carries mini geometry after the native rigid header. Derive its
+  // flags from the sections sent here, including when a legacy tail exists.
+  if (miniGeometryFlags !== 0) {
+    appendMiniGeometrySections(chunks, entity);
+  }
   appendFrontierModeData(chunks, entity, mode);
   return Buffer.concat(chunks);
 }

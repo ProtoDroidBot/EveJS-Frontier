@@ -1,11 +1,12 @@
 const BaseService = require("../baseService");
 const log = require("../../utils/logger");
-const { buildDict, buildFiletimeLong } = require("../_shared/serviceHelpers");
+const { buildDict, buildList, buildFiletimeLong } = require("../_shared/serviceHelpers");
 const itemStore = require("../inventory/itemStore");
 const { findItemById } = itemStore;
 const runtime = require("./industryRuntime");
 const blueprints = require("./industryBlueprints");
-const { publishIndustryItemsChanged, publishIndustryProductionResult, publishIndustryBlueprintChanged } = require("./industryNotifications");
+const { publishIndustryItemsChanged, publishIndustryProductionResult, publishIndustryBlueprintChanged,
+  publishIndustryJobLaneChanged } = require("./industryNotifications");
 const { settleIndustryProduction, trackIndustryProduction } = require("./industryProductionWorker");
 const { throwWrappedObject } = require("../../common/machoErrors");
 
@@ -43,10 +44,38 @@ function productionDict(production) {
   ]);
 }
 
-function buildFacilityDetails(item = null) {
+function accessPolicyDict(policy) {
+  return buildDict([
+    ["mode", policy?.mode || "owner"],
+    ["character_ids", buildList(policy?.characterIDs || [])],
+    ["tribe_ids", buildList(policy?.tribeIDs || [])],
+  ]);
+}
+
+function laneDict(lane) {
+  const items = lane.items || { inputs: {}, outputs: {} };
+  return buildDict([
+    ["lane_id", lane.laneID],
+    ["enabled", Boolean(lane.enabled)],
+    ["can_use", Boolean(lane.canUse)],
+    ["can_manage", Boolean(lane.canManage)],
+    ["access", accessPolicyDict(lane.accessPolicy)],
+    ["items", buildDict([
+      ["inputs", quantityDict(items.inputs)],
+      ["outputs", quantityDict(items.outputs)],
+    ])],
+    ["blueprint", blueprintDict(lane.blueprint)],
+    ["production", productionDict(lane.production)],
+  ]);
+}
+
+function buildFacilityDetails(item = null, session = null) {
   const items = item ? runtime.getFacilityItems(item) : { inputs: {}, outputs: {} };
+  const lanes = item ? runtime.getJobLanes(item, session) : [];
   return buildDict([
     ["production", productionDict(item ? runtime.getProduction(item) : null)],
+    ["job_lane_count", item ? runtime.getFacilityLaneCount(item) : 0],
+    ["job_lanes", buildList(lanes.map(laneDict))],
     [
       "items",
       buildDict([
@@ -94,6 +123,9 @@ const ERROR_REASONS = {
   INSUFFICIENT_INPUTS: "IndustryStartError_MissingInput",
   OUTPUT_CAPACITY_EXCEEDED: "IndustryStartError_OutputCapacity",
   FACILITY_OFFLINE: "IndustryError_FacilityOffline",
+  INVALID_JOB_LANE: "IndustryError_Generic",
+  INVALID_JOB_LANE_ACCESS: "IndustryError_Generic",
+  JOB_LANE_ACCESS_DENIED: "IndustryError_FacilityAccessDenied",
 };
 
 function requireSuccess(result) {
@@ -135,10 +167,19 @@ function publishTransferNotifications(session, result) {
       log.warn(`[industry] Inventory notification failed: ${error.message}`);
     }
   }
-  const totals = runtime.getFacilityItems(data.facility);
+  const laneID = Number(data.laneID) || 1;
+  const totals = runtime.getFacilityItems(data.facility, laneID);
   for (const side of data.side === "all" ? ["inputs", "outputs"] : [data.side]) {
-    publishIndustryItemsChanged(session, data.facility.itemID, side, totals[side]);
+    // The retail gateway notice has no lane field. Keep it as lane one's
+    // compatibility stream; lane-aware clients refresh from the event below.
+    if (laneID === 1) {
+      publishIndustryItemsChanged(session, data.facility.itemID, side, totals[side]);
+    }
   }
+  publishIndustryJobLaneChanged(session, data.facility, {
+    laneID,
+    type: "items_changed",
+  });
   for (const transfer of data.storageTransfers || []) {
     try {
       const { getStorageUnitProtoTypes } = require("../../_secondary/express/gatewayServices/assemblyStorageUnitProto");
@@ -198,46 +239,90 @@ class IndustryService extends BaseService {
       `[industry] Facility details char=${getSessionCharacterID(session)} ` +
         `facility=${facilityID} type=${typeID} state=${runtime.getProduction(latest)?.state || "IDLE"}`,
     );
-    return buildFacilityDetails(latest);
+    return buildFacilityDetails(latest, session);
   }
 
   Handle_load_blueprint(args, session) {
     settleOwnedFacility(session, args?.[0]);
-    const blueprint = requireSuccess(runtime.loadBlueprint(session, args?.[0], args?.[1]));
-    publishIndustryBlueprintChanged(session, args?.[0]);
+    const laneID = args?.[2] == null ? 1 : Number(args[2]);
+    const blueprint = requireSuccess(runtime.loadBlueprint(session, args?.[0], args?.[1], { laneID }));
+    publishIndustryBlueprintChanged(session, args?.[0], laneID);
     return blueprintDict(blueprint);
   }
 
   Handle_deposit_input_items(args, session) {
     settleOwnedFacility(session, args?.[0]);
-    return finishTransfer(session, runtime.depositInputItems(session, args?.[0], args?.[1]));
+    const options = args?.[2] == null ? undefined : { laneID: args[2] };
+    return finishTransfer(session, options
+      ? runtime.depositInputItems(session, args?.[0], args?.[1], options)
+      : runtime.depositInputItems(session, args?.[0], args?.[1]));
   }
 
   Handle_deposit_storage_input_items(args, session) {
     settleOwnedFacility(session, args?.[0]);
-    return finishTransfer(session, runtime.depositStorageInputItems(session, args?.[0], args?.[1], args?.[2]));
+    const options = args?.[3] == null ? undefined : { laneID: args[3] };
+    return finishTransfer(session, options
+      ? runtime.depositStorageInputItems(session, args?.[0], args?.[1], args?.[2], options)
+      : runtime.depositStorageInputItems(session, args?.[0], args?.[1], args?.[2]));
   }
 
   Handle_withdraw_input_items(args, session) {
     settleOwnedFacility(session, args?.[0]);
-    return finishTransfer(session, runtime.withdrawItems(session, args?.[0], args?.[1], args?.[2], args?.[3], "inputs"));
+    const options = args?.[4] == null ? undefined : { laneID: args[4] };
+    return finishTransfer(session, options
+      ? runtime.withdrawItems(session, args?.[0], args?.[1], args?.[2], args?.[3], "inputs", options)
+      : runtime.withdrawItems(session, args?.[0], args?.[1], args?.[2], args?.[3], "inputs"));
   }
 
   Handle_withdraw_output_items(args, session) {
     settleOwnedFacility(session, args?.[0]);
-    return finishTransfer(session, runtime.withdrawItems(session, args?.[0], args?.[1], args?.[2], args?.[3], "outputs"));
+    const options = args?.[4] == null ? undefined : { laneID: args[4] };
+    return finishTransfer(session, options
+      ? runtime.withdrawItems(session, args?.[0], args?.[1], args?.[2], args?.[3], "outputs", options)
+      : runtime.withdrawItems(session, args?.[0], args?.[1], args?.[2], args?.[3], "outputs"));
   }
 
   Handle_start_production(args, session) {
     settleOwnedFacility(session, args?.[0]);
+    const options = args?.[4] == null ? undefined : { laneID: args[4] };
     return finishProduction(session,
-      runtime.startProduction(session, args?.[0], args?.[1], args?.[2], args?.[3]));
+      options
+        ? runtime.startProduction(session, args?.[0], args?.[1], args?.[2], args?.[3], options)
+        : runtime.startProduction(session, args?.[0], args?.[1], args?.[2], args?.[3]));
   }
 
   Handle_discontinue_production(args, session) {
     // Mark the paid run before settling an elapsed deadline. Settling first
     // could consume another run just as the caller asks production to stop.
-    return finishProduction(session, runtime.discontinueProduction(session, args?.[0]));
+    const options = args?.[1] == null ? undefined : { laneID: args[1] };
+    return finishProduction(session, options
+      ? runtime.discontinueProduction(session, args?.[0], options)
+      : runtime.discontinueProduction(session, args?.[0]));
+  }
+
+  Handle_get_job_lanes(args, session) {
+    const facilityID = Number(args?.[0]) || 0;
+    const facility = findItemById(facilityID);
+    if (!facility || !blueprints.isIndustryFacilityType(facility.typeID) ||
+        !canReadFacility(facility, session)) return null;
+    requireSuccess(settleIndustryProduction(facilityID, session));
+    const latest = findItemById(facilityID) || facility;
+    return buildList(runtime.getJobLanes(latest, session).map(laneDict));
+  }
+
+  Handle_set_job_lane_access(args, session) {
+    const lane = requireSuccess(runtime.setLaneAccessPolicy(
+      session,
+      args?.[0],
+      args?.[1],
+      args?.[2],
+    ));
+    const facility = findItemById(Number(args?.[0]));
+    if (facility) publishIndustryJobLaneChanged(session, facility, {
+      laneID: lane.laneID,
+      type: "access_changed",
+    });
+    return laneDict(lane);
   }
 }
 
@@ -248,6 +333,8 @@ module.exports._testing = {
   buildIdleFacilityDetails: buildFacilityDetails,
   buildFacilityDetails,
   productionDict,
+  accessPolicyDict,
+  laneDict,
   canReadFacility,
   getItemSolarSystemID,
 };

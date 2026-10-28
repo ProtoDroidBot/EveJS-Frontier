@@ -11,7 +11,7 @@ const {
   normalizeText,
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const {
-  buildCachedMethodCallResult,
+  buildCachedMethodCallResultAsync: buildCachedMethodCallResult,
 } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 const structureState = require(path.join(__dirname, "./structureState"));
 const {

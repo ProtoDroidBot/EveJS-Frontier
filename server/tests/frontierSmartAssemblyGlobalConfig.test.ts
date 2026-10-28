@@ -22,7 +22,7 @@ const {
 
 const CONFIG_KEY = "smartAssemblyBaseDappUrl";
 const CLIENT_KEY = "smartAssemblyBaseDappUrl";
-const ENV_KEY = "EVEJS_smartAssemblyBaseDappUrl";
+const ENV_KEY = "EVEJS_SMART_ASSEMBLY_BASE_DAPP_URL";
 const DEFAULT_URL = "http://localhost:5174";
 const FRONTIER_MARSHAL_OPTIONS = { compatibilityProfile: "frontier" };
 

@@ -43,7 +43,7 @@ function defaultGetCharacterCorporationID(characterID) {
     const record = result && result.success ? result.data : null;
     return toInt(record && (record.corporationID || record.corpid || record.corpID), 0);
 }
-function listRuntimeCairnEntities(scene) {
+function listRuntimeCairnEntities(scene, isSupportedType = typeID => CAIRN_TYPE_IDS.has(typeID)) {
     if (!scene) {
         return [];
     }
@@ -52,7 +52,7 @@ function listRuntimeCairnEntities(scene) {
         : Array.isArray(scene.dynamicEntities)
             ? scene.dynamicEntities
             : [];
-    return dynamicEntities.filter((entity) => (CAIRN_TYPE_IDS.has(toInt(entity && entity.typeID, 0))));
+    return dynamicEntities.filter((entity) => (isSupportedType(toInt(entity && entity.typeID, 0))));
 }
 function cairnVisibleToViewer(cairn, viewer) {
     if (!cairn || !viewer) {
@@ -125,11 +125,12 @@ function listVisibleCairns(session, options = {}) {
     // Cairns are map/IFF objects, so they are intentionally considered across
     // the current scene rather than only the pilot's nearby destiny grid.  The
     // mutual tribe/code gate below is the system-wide visibility authority.
-    for (const entity of listRuntimeCairnEntities(scene)) {
+    const supported = options.isSupportedType || (typeID => CAIRN_TYPE_IDS.has(typeID));
+    for (const entity of listRuntimeCairnEntities(scene, supported)) {
         const itemID = toInt(entity && entity.itemID, 0);
         const typeID = toInt(entity && entity.typeID, 0);
         const position = normalizePosition(entity && entity.position);
-        if (itemID <= 0 || !CAIRN_TYPE_IDS.has(typeID) || !position || seenItemIDs.has(itemID)) {
+        if (itemID <= 0 || !supported(typeID) || !position || seenItemIDs.has(itemID)) {
             continue;
         }
         seenItemIDs.add(itemID);
@@ -154,8 +155,14 @@ function listVisibleCairns(session, options = {}) {
             transponderChannel: transponder && transponder.channel || null,
             transponderCode: transponder && transponder.code || null,
         };
-        if (!cairnVisibleToViewer(cairn, viewer)) {
+        const privateVisible = cairnVisibleToViewer(cairn, viewer);
+        const published = options.isPublished && options.isPublished(item);
+        if (!published && !privateVisible)
             continue;
+        // Public location discovery must not disclose a private IFF code.
+        if (published && !privateVisible) {
+            cairn.transponderChannel = null;
+            cairn.transponderCode = null;
         }
         cairn.isMine = ownerID === characterID;
         visible.push(cairn);
@@ -180,5 +187,6 @@ module.exports._testing = {
     listRuntimeCairnEntities,
     listVisibleCairns,
     normalizePosition,
+    buildCairnRow,
 };
 //# sourceMappingURL=cairnService.js.map

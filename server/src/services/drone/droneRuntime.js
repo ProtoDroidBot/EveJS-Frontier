@@ -3091,10 +3091,11 @@ function tickDroneCombat(scene, droneEntity, controllerEntity, now) {
     }
     let damageResult = null;
     let destroyResult = null;
+    let weaponDamageResult = null;
     if (shotResult &&
         shotResult.hit === true &&
         typeof droneInterop.applyWeaponDamageToTarget === "function") {
-        const weaponDamageResult = droneInterop.applyWeaponDamageToTarget(scene, droneEntity, targetEntity, shotResult.shotDamage, now);
+        weaponDamageResult = droneInterop.applyWeaponDamageToTarget(scene, droneEntity, targetEntity, shotResult.shotDamage, now);
         damageResult = weaponDamageResult && weaponDamageResult.damageResult
             ? weaponDamageResult.damageResult
             : null;
@@ -3104,9 +3105,10 @@ function tickDroneCombat(scene, droneEntity, controllerEntity, now) {
         const appliedDamageAmount = typeof droneInterop.getAppliedDamageAmount === "function"
             ? droneInterop.getAppliedDamageAmount(damageResult)
             : 0;
+        const damageTargetEntity = weaponDamageResult && weaponDamageResult.impactTargetEntity || targetEntity;
         if (appliedDamageAmount > 0 &&
             typeof droneInterop.noteKillmailDamage === "function") {
-            droneInterop.noteKillmailDamage(combatSourceEntity, targetEntity, appliedDamageAmount, {
+            droneInterop.noteKillmailDamage(combatSourceEntity, damageTargetEntity, appliedDamageAmount, {
                 whenMs: now,
                 weaponSnapshot: {
                     ...snapshot,
@@ -3119,7 +3121,7 @@ function tickDroneCombat(scene, droneEntity, controllerEntity, now) {
         if (destroyResult &&
             destroyResult.success === true &&
             typeof droneInterop.recordKillmailFromDestruction === "function") {
-            droneInterop.recordKillmailFromDestruction(targetEntity, destroyResult, {
+            droneInterop.recordKillmailFromDestruction(damageTargetEntity, destroyResult, {
                 attackerEntity: combatSourceEntity,
                 victimSession: weaponDamageResult && weaponDamageResult.victimSession,
                 whenMs: now,
@@ -3133,11 +3135,16 @@ function tickDroneCombat(scene, droneEntity, controllerEntity, now) {
         }
     }
     if (typeof droneInterop.notifyWeaponDamageMessages === "function") {
-        droneInterop.notifyWeaponDamageMessages(combatSourceEntity, targetEntity, pseudoModuleItem, shotResult && shotResult.shotDamage, typeof droneInterop.getAppliedDamageAmount === "function"
+        const damageTargetEntity = weaponDamageResult && weaponDamageResult.impactTargetEntity || targetEntity;
+        droneInterop.notifyWeaponDamageMessages(combatSourceEntity, damageTargetEntity, pseudoModuleItem, shotResult && shotResult.shotDamage, typeof droneInterop.getAppliedDamageAmount === "function"
             ? droneInterop.getAppliedDamageAmount(damageResult)
             : 0, typeof droneInterop.getCombatMessageHitQuality === "function"
             ? droneInterop.getCombatMessageHitQuality(shotResult)
-            : 0);
+            : 0, {
+            suppress: Boolean(weaponDamageResult &&
+                weaponDamageResult.occlusion &&
+                !weaponDamageResult.damageResult),
+        });
     }
     combatState.nextCycleAtMs = now + Math.max(1, toNumber(snapshot.durationMs, 1000));
     if (destroyResult && destroyResult.success === true) {
@@ -3207,7 +3214,9 @@ function tickDroneMining(scene, droneEntity, controllerEntity, now) {
     if (toNumber(miningState.nextCycleAtMs, 0) > now) {
         return;
     }
-    const destination = resolveDroneMiningDestination(controllerEntity, mineableState.yieldTypeID, mineableState.yieldKind);
+    const voxelRuntime = lazyRequire("../mining/voxelMiningRuntime");
+    const composite = voxelRuntime.isComposite(scene, targetEntity, mineableState);
+    const destination = composite ? { availableVolume: Number.POSITIVE_INFINITY } : resolveDroneMiningDestination(controllerEntity, mineableState.yieldTypeID, mineableState.yieldKind);
     const miningAmountM3 = Math.max(0, toNumber(snapshot.miningAmountM3, 0));
     const unitVolume = Math.max(0.000001, toNumber(mineableState.unitVolume, 1));
     // A mining drone can only deliver whole units of ore, so the destination hold
@@ -3256,6 +3265,20 @@ function tickDroneMining(scene, droneEntity, controllerEntity, now) {
     const yieldTypeRecord = resolveItemByTypeID(toInt(mineableState.yieldTypeID, 0)) || null;
     if (!yieldTypeRecord || transferredQuantity <= 0) {
         beginDroneMiningCycle(miningState, snapshot, now);
+        return;
+    }
+    if (composite) {
+        const result = voxelRuntime.mine(scene, droneEntity, targetEntity, mineableState, miningResult, {
+            nowMs: now, moduleTypeID: droneEntity.typeID, maxRangeMeters: maxRange,
+        });
+        if (!result.success || result.data.depleted) {
+            resetDroneToIdle(droneEntity, controllerEntity, { scene, stopMovement: true });
+        }
+        else {
+            beginDroneMiningCycle(miningState, snapshot, now);
+            emitDroneMiningCycleFx(scene, droneEntity, targetEntity, snapshot, miningState, now);
+            persistDroneEntityState(droneEntity);
+        }
         return;
     }
     const grantResult = grantItemToCharacterLocation(destination.storageSnapshot.characterID, destination.storageSnapshot.shipID, destination.flagID, yieldTypeRecord, transferredQuantity);

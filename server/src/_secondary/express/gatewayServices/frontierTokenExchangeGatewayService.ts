@@ -14,7 +14,8 @@ const GET_EXCHANGE_RATE_RESPONSE =
   "eve_public.token.exchange.api.GetExchangeRateResponse";
 const FRONTIER_TOKEN_DENOMINATION = "EVE";
 
-function createFrontierTokenExchangeGatewayService() {
+function createFrontierTokenExchangeGatewayService(context: Record<string, any> = {}) {
+  const targetEconomy = require("./frontierEconomyGatewayService").createFrontierEconomyGatewayService(context);
   const types = getFrontierCoreProtoTypes();
 
   return {
@@ -26,6 +27,8 @@ function createFrontierTokenExchangeGatewayService() {
         : null;
     },
     handleRequest(requestTypeName, requestEnvelope) {
+      const targetResult = targetEconomy.handleRequest(requestTypeName, requestEnvelope);
+      if (targetResult !== null) return targetResult;
       if (requestTypeName !== GET_EXCHANGE_RATE_REQUEST) {
         return null;
       }

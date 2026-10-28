@@ -8,9 +8,6 @@ const {
   findItemById,
 } = require(path.join(__dirname, "../inventory/itemStore"));
 const {
-  matchesTypeList,
-} = require(path.join(__dirname, "../inventory/typeListAuthority"));
-const {
   compressInventoryItem,
   decompressGasInStructure,
   getGasDecompressionCharacterEfficiency,
@@ -69,11 +66,9 @@ class StructureCompressionMgrService extends BaseService {
     if (!item || !itemIsInStructureCompressionSource(item, contextResult.data, session)) {
       return null;
     }
-    if (!matchesTypeList(item, STRUCTURE_COMPRESSIBLE_TYPE_LIST_ID)) {
-      return null;
-    }
-
-    const compressResult = compressInventoryItem(itemID);
+    const compressResult = compressInventoryItem(itemID, {
+      requiredTypeListID: STRUCTURE_COMPRESSIBLE_TYPE_LIST_ID,
+    });
     if (!compressResult.success || !compressResult.data) {
       return null;
     }

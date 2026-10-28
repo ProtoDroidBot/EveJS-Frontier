@@ -110,6 +110,24 @@ test("background production sends inventory updates to owners and full changed-s
   assert.ok(calls.every(call => call[2].character === 42));
 });
 
+test("non-legacy lanes notify native clients without corrupting the lane-1 gateway stream", () => {
+  const native = [];
+  const gateway = [];
+  const ownerSession = { characterID: 42,
+    sendNotification: (...args) => native.push(args) };
+  publishIndustryProductionResult({ success: true, data: {
+    facility: { itemID: 123, ownerID: 42 },
+    changes: [],
+    events: [{ laneID: 2, type: "started",
+      production: { runStartedAtMs: 1001, runEndAtMs: 2500 } }],
+  } }, ownerSession, {
+    sessionRegistry: { getSessions: () => [ownerSession] },
+    publishGatewayNotice: (...args) => gateway.push(args),
+  });
+  assert.deepEqual(gateway, []);
+  assert.deepEqual(native, [["OnFrontierIndustryJobLaneChanged", "clientID", [123, 2, "started"]]]);
+});
+
 function serviceFixture() {
   const facility = { itemID: 123, ownerID: 42, typeID: 87119, production: null };
   const order = [];
@@ -117,6 +135,34 @@ function serviceFixture() {
   const runtime = {
     canReadFacility: () => true, getItemSolarSystemID: () => 30000001,
     getProduction: item => item.production, getFacilityItems: () => ({ inputs: {}, outputs: {} }),
+    configuredLaneCount: () => 4,
+    getJobLanes: () => [{ laneID: 1, enabled: true, canUse: true, canManage: true,
+      accessPolicy: { mode: "owner", characterIDs: [], tribeIDs: [] }, production: facility.production }],
+    setLaneAccessPolicy: (...args) => {
+      order.push(["access", ...args]);
+      return { success: true, data: { laneID: Number(args[2]), enabled: true,
+        canUse: true, canManage: true,
+        accessPolicy: { mode: "public", characterIDs: [], tribeIDs: [] }, production: null } };
+    },
+    loadBlueprint: (...args) => {
+      order.push(["load", ...args]);
+      return { success: true, data: { blueprint_id: 1, run_time: 1, inputs: {}, outputs: {} } };
+    },
+    depositInputItems: (...args) => {
+      order.push(["deposit", ...args]);
+      return { success: true, data: { facility, characterID: 7, side: "inputs",
+        laneID: args[3]?.laneID || 1, items: {}, changes: [], storageTransfers: [] } };
+    },
+    depositStorageInputItems: (...args) => {
+      order.push(["storage-deposit", ...args]);
+      return { success: true, data: { facility, characterID: 7, side: "inputs",
+        laneID: args[4]?.laneID || 1, items: {}, changes: [], storageTransfers: [] } };
+    },
+    withdrawItems: (...args) => {
+      order.push(["withdraw", ...args]);
+      return { success: true, data: { facility, characterID: 7, side: args[5],
+        laneID: args[6]?.laneID || 1, items: {}, changes: [], storageTransfers: [] } };
+    },
     startProduction: (...args) => {
       order.push(["start", ...args]);
       return { success: false, errorMsg: "INVALID_BLUEPRINT_HASH" };
@@ -133,7 +179,9 @@ function serviceFixture() {
     "../inventory/itemStore": { findItemById: () => facility },
     "./industryRuntime": runtime,
     "./industryBlueprints": { isIndustryFacilityType: () => true, getSelectedBlueprint: () => null },
-    "./industryNotifications": { publishIndustryItemsChanged() {}, publishIndustryProductionResult() {} },
+    "./industryNotifications": { publishIndustryItemsChanged() {}, publishIndustryProductionResult() {},
+      publishIndustryBlueprintChanged: (...args) => order.push(["blueprint-notice", ...args]),
+      publishIndustryJobLaneChanged: (...args) => order.push(["lane-notice", ...args]) },
     "./industryProductionWorker": {
       settleIndustryProduction: () => { order.push(["settle"]); return { success: true, data: {} }; },
       trackIndustryProduction() {},
@@ -174,4 +222,38 @@ test("discontinue RPC marks the paid run before catch-up and encodes exact Blue 
   const stopped = Object.fromEntries(f.helpers.productionDict({ state: "STOPPED" }).entries);
   assert.equal(stopped.start_time, null);
   assert.equal(stopped.end_time, null);
+});
+
+test("job lane RPCs forward lane identity and expose per-lane access metadata", () => {
+  const f = serviceFixture();
+  assert.throws(() => f.service.Handle_start_production([123, 1, "bad-hash", 3, 2], f.session));
+  assert.deepEqual(f.order[1].slice(1, 6), [f.session, 123, 1, "bad-hash", 3]);
+  assert.equal(f.order[1][6].laneID, 2);
+  f.order.length = 0;
+  const stopped = f.service.Handle_discontinue_production([123, 2], f.session);
+  assert.deepEqual(f.order[0].slice(1, 3), [f.session, 123]);
+  assert.equal(f.order[0][3].laneID, 2);
+  assert.equal(Object.fromEntries(stopped.entries).state, "DISCONTINUING");
+  f.order.length = 0;
+  const lanes = f.service.Handle_get_job_lanes([123], f.session);
+  assert.equal(lanes.items.length, 1);
+  assert.equal(Object.fromEntries(lanes.items[0].entries).lane_id, 1);
+  const access = f.service.Handle_set_job_lane_access([123, 2, { mode: "public" }], f.session);
+  const fields = Object.fromEntries(access.entries);
+  assert.equal(fields.lane_id, 2);
+  assert.equal(Object.fromEntries(fields.access.entries).mode, "public");
+  assert.equal(f.order.some(entry => entry[0] === "lane-notice"), true);
+
+  f.order.length = 0;
+  f.service.Handle_load_blueprint([123, 1, 2], f.session);
+  assert.equal(f.order.find(entry => entry[0] === "load")[4].laneID, 2);
+  f.order.length = 0;
+  f.service.Handle_deposit_input_items([123, new Map([[77, 1]]), 2], f.session);
+  assert.equal(f.order.find(entry => entry[0] === "deposit")[4].laneID, 2);
+  f.order.length = 0;
+  f.service.Handle_deposit_storage_input_items([123, 456, new Map([[77, 1]]), 2], f.session);
+  assert.equal(f.order.find(entry => entry[0] === "storage-deposit")[5].laneID, 2);
+  f.order.length = 0;
+  f.service.Handle_withdraw_output_items([123, new Map([[77, 1]]), 456, 66, 2], f.session);
+  assert.equal(f.order.find(entry => entry[0] === "withdraw")[7].laneID, 2);
 });

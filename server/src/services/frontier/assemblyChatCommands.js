@@ -39,6 +39,7 @@ const ERROR_MESSAGES = Object.freeze({
     CONSTRUCTION_SITE_NOT_FOUND: "Construction site was not found.",
     INVALID_ASSEMBLY_STATE: "Assembly state must be offline or online.",
     INVALID_DEPLOYMENT_PLACEMENT: "The assembly placement is invalid.",
+    ASSEMBLY_PLACEMENT_OCCUPIED: "That placement overlaps an existing assembly or construction site.",
     NOT_IN_SPACE: "You must be in space to manage Smart Assemblies.",
     SHIP_NOT_IN_SPACE: "Your active ship could not be found in space.",
     SMART_GATE_ALREADY_LINKED: "One of those gates is already linked.",

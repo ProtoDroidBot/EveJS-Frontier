@@ -141,6 +141,20 @@ function buildSetYawRatePayload(entityID, yawRate) {
   return ["SetYawRate", [normalizeActionEntityID(entityID), buildMarshalReal(yawRate, 0)]];
 }
 
+function buildSetPitchRatePayload(entityID, value) {
+  return ["SetPitchRate", [normalizeActionEntityID(entityID), buildMarshalReal(value, 0)]];
+}
+function buildSetRollRatePayload(entityID, value) {
+  return ["SetRollRate", [normalizeActionEntityID(entityID), buildMarshalReal(value, 0)]];
+}
+function buildSetBrakeFractionPayload(entityID, value) {
+  return ["SetBrakeFraction", [normalizeActionEntityID(entityID), buildMarshalReal(value, 0)]];
+}
+function buildSetHeadingPayload(entityID, heading) {
+  const vector = buildMarshalRealVector(heading);
+  return ["SetHeading", [normalizeActionEntityID(entityID), [vector.x, vector.y, vector.z]]];
+}
+
 function buildSetStrafingThrustPayload(entityID, thrust) {
   const vector = buildMarshalRealVector(thrust);
   return ["SetStrafingThrust", [
@@ -426,6 +440,10 @@ module.exports = {
   buildSetMaxAngularVelocityPayload,
   buildSetMaxSpeedPayload,
   buildSetPitchPayload,
+  buildSetPitchRatePayload,
+  buildSetRollRatePayload,
+  buildSetBrakeFractionPayload,
+  buildSetHeadingPayload,
   buildSetSpeedFractionPayload,
   buildSetStrafingThrustPayload,
   buildSetYawRatePayload,

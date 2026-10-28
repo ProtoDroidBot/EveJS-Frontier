@@ -19,10 +19,6 @@ const {
   currentFileTime,
 } = require(path.join(__dirname, "./serviceHelpers"));
 const {
-  buildEmergencyWarpLogoffState,
-  shipSuppressesEmergencyWarp,
-} = require(path.join(__dirname, "./emergencyWarpRuntime"));
-const {
   broadcastStationGuestLeft,
   broadcastStructureGuestLeft,
   forgetObserverGuestLedger,
@@ -180,7 +176,7 @@ function persistCharacterLogoffState(session) {
   let persistedStationID = sessionStationID;
   let persistedStructureID = sessionStructureID;
   let persistedSolarSystemID = nextSolarSystemID;
-  const activeShip = getActiveShipRecord(characterID);
+  let activeShip = getActiveShipRecord(characterID);
   const {
     clearSafeLogoffCompletion,
     consumeSafeLogoffCompletion,
@@ -196,6 +192,25 @@ function persistCharacterLogoffState(session) {
     clearSafeLogoffCompletion(session);
   }
 
+  // Damage and capacitor state live on the runtime entity while the pilot is
+  // in space.  Checkpoint that entity before any inventory/location mutation;
+  // this is especially important for Creation hulls whose login hydration
+  // otherwise sees an older full-health item snapshot.
+  if (activeShip && session._space) {
+    const checkpointResult = spaceRuntime.persistSessionShipState(session, {
+      offlinePersistent: !completedSafeLogoff,
+      nowMs: Date.now(),
+    });
+    if (!checkpointResult || checkpointResult.success !== true) {
+      log.warn(
+        `[SessionDisconnect] Failed to checkpoint active ship ${activeShip.itemID} ` +
+          `for char=${characterID}: ${checkpointResult && checkpointResult.errorMsg || "SHIP_CHECKPOINT_FAILED"}`,
+      );
+    } else {
+      activeShip = getActiveShipRecord(characterID) || activeShip;
+    }
+  }
+
   if (!persistedStationID && !persistedStructureID && activeShip) {
     const liveSpaceState = resolveLiveShipSpaceState(
       session,
@@ -203,13 +218,13 @@ function persistCharacterLogoffState(session) {
       persistedSolarSystemID,
     );
     if (liveSpaceState) {
-      const persistedSpaceState =
-        completedSafeLogoff || shipSuppressesEmergencyWarp(characterID)
-        ? liveSpaceState
-        : buildEmergencyWarpLogoffState(liveSpaceState, {
-            characterID,
-            shipID: activeShip.itemID,
-          }) || liveSpaceState;
+      // Unsafe disconnects now leave the ship in the ballpark, so its durable
+      // coordinates must be the exact live coordinates as well.  Safe Logoff
+      // uses the same snapshot but de-instances the runtime entity below.
+      const persistedSpaceState = {
+        ...liveSpaceState,
+        offlinePersistent: !completedSafeLogoff,
+      };
       const moveResult = moveShipToSpace(
         activeShip.itemID,
         Number(persistedSpaceState.systemID || persistedSolarSystemID),
@@ -296,11 +311,21 @@ function disconnectCharacterSession(session, options: Record<string, any> = {}) 
   );
   const stationID = Number(session.stationid || session.stationID || 0);
   const structureID = Number(session.structureid || session.structureID || 0);
+  const lifecycleReason = String(options.lifecycleReason || "disconnect");
+  const controlReason = String(options.lifecycleReason || "retail_disconnect");
+  const preserveShipInSpace = lifecycleReason !== "safe_logoff";
 
   const cleanupErrors: any[] = [];
   const attemptCleanup = (label, callback) => {
     try {
-      return callback();
+      const result = callback();
+      if (result && result.success === false) {
+        cleanupErrors.push(label);
+        log.warn(
+          `[SessionDisconnect] ${label} failed for char=${characterID}: ${result.errorMsg || "CLEANUP_FAILED"}`,
+        );
+      }
+      return result;
     } catch (error) {
       cleanupErrors.push(label);
       log.warn(
@@ -320,7 +345,9 @@ function disconnectCharacterSession(session, options: Record<string, any> = {}) 
       // for logoff persistence to consume it against this character and ship.
       cancelSafeLogoff(session, { clearCompletion: false });
     });
-    attemptCleanup("logoff persistence", () => persistCharacterLogoffState(session));
+    if (characterID > 0) {
+      attemptCleanup("logoff persistence", () => persistCharacterLogoffState(session));
+    }
     // Checkpoint the daily login campaign so time played this session counts
     // toward the login milestone even when the client disconnects abruptly.
     attemptCleanup("login milestone checkpoint", () => {
@@ -350,11 +377,14 @@ function disconnectCharacterSession(session, options: Record<string, any> = {}) 
     attemptCleanup("guest-ledger cleanup", () => forgetObserverGuestLedger(session));
     attemptCleanup("space detach", () => spaceRuntime.detachSession(session, {
       broadcast: options.broadcast !== false,
-      lifecycleReason: String(options.lifecycleReason || "disconnect"),
+      lifecycleReason,
+      preserveShipInSpace,
       attemptDroneBayRecovery: true,
       attemptFighterTubeRecovery: true,
     }));
-    attemptCleanup("trade cleanup", () => abortTradesForSession(session));
+    if (characterID > 0) {
+      attemptCleanup("trade cleanup", () => abortTradesForSession(session));
+    }
     attemptCleanup("chat cleanup", () => chatHub.unregisterSession(session));
     attemptCleanup("XMPP cleanup", () => unregisterCharacterSession(session));
   } finally {
@@ -367,7 +397,7 @@ function disconnectCharacterSession(session, options: Record<string, any> = {}) 
         clearCharacterFromSession(session, {
           emitNotifications: false,
           controlTransition: options.controlTransition !== false,
-          controlReason: String(options.lifecycleReason || "retail_disconnect"),
+          controlReason,
         })
       ));
       if (!clearResult || clearResult.success !== true) {
@@ -381,7 +411,7 @@ function disconnectCharacterSession(session, options: Record<string, any> = {}) 
             ));
             characterControlRuntime.recordRetailSessionEnded(characterID, {
               session,
-              reason: String(options.lifecycleReason || "retail_disconnect"),
+              reason: controlReason,
             });
           });
         }
@@ -397,7 +427,7 @@ function disconnectCharacterSession(session, options: Record<string, any> = {}) 
           ));
           characterControlRuntime.recordRetailSessionEnded(characterID, {
             session,
-            reason: String(options.lifecycleReason || "retail_disconnect"),
+            reason: controlReason,
           });
         });
       }
@@ -405,7 +435,7 @@ function disconnectCharacterSession(session, options: Record<string, any> = {}) 
   }
 
   return {
-    success: true as const,
+    success: cleanupErrors.length === 0,
     cleanupErrors,
   };
 }

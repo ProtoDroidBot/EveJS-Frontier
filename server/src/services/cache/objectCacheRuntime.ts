@@ -12,6 +12,7 @@ const { marshalEncode } = require(path.join(
   __dirname,
   "../../network/tcp/utils/marshal",
 ));
+const objectCacheCodecPool = require(path.join(__dirname, "./objectCacheCodecPool"));
 
 const CACHE_MODE = "server";
 const CRC_HQX_POLY = 0x1021;
@@ -442,6 +443,70 @@ function buildCachedMethodCallResult(result, options: Record<string, any> = {}) 
   };
 }
 
+async function buildCachedMethodCallResultAsync(result, options: Record<string, any> = {}) {
+  const {
+    serviceName = "marketProxy",
+    method,
+    args = [],
+    versionCheck = "run",
+    sessionInfo = null,
+    sessionInfoValue = undefined,
+    proxyCache = false,
+    compatibilityProfile = config.clientCompatibilityProfile,
+  } = options;
+  const encoded = await objectCacheCodecPool.encodeCachedMethodResult(result, {
+    compatibilityProfile,
+    proxyCache,
+    crcSeed: (Number(config.machoVersion) || 0) +
+      (Number(config.eveBirthday) || CRC_HQX_SEED_OFFSET),
+  });
+  const details = buildCacheDetails({ versionCheck, sessionInfo });
+  const version = [buildSignedLong(currentFileTime()), encoded.adler32];
+  const detailsRecord = buildDetailsRecord({ versionCheck, sessionInfo });
+  const normalizedArgs = normalizeArgsArray(args);
+  const cacheRecordKey = getCachedMethodRecordKey({
+    serviceName, method, args: normalizedArgs, sessionInfoValue,
+  });
+
+  // Workers own only immutable codec inputs. The authoritative cache maps are
+  // committed here after the entire encode/checksum job succeeds.
+  methodCallCachingDetails.set(buildMethodDetailsKey(serviceName, method), detailsRecord);
+  cachedMethodCalls.set(cacheRecordKey, {
+    serviceName: normalizeText(serviceName, "marketProxy"),
+    method: normalizeText(method, ""),
+    args: normalizedArgs,
+    sessionInfoValue,
+    details: detailsRecord,
+    version: normalizeObjectVersion(version),
+    usedAtMs: Date.now(),
+  });
+
+  if (proxyCache) {
+    const methodCacheKey = buildMethodCacheKey({
+      serviceName, method, args: normalizedArgs, sessionInfoValue,
+    });
+    const cachedObjectRecord = storeCachedObjectRecord({
+      objectId: buildMethodObjectId(methodCacheKey),
+      nodeId: config.proxyNodeId,
+      objectVersion: [buildSignedLong(currentFileTime()), encoded.crcHqx],
+      shared: true,
+      pickle: encoded.pickle,
+      compressed: encoded.compressed,
+    });
+    return {
+      type: "object",
+      name: buildRawString("carbon.common.script.net.objectCaching.CachedMethodCallResult"),
+      args: [details, buildUtilCachedObjectReference(cachedObjectRecord), null],
+    };
+  }
+
+  return {
+    type: "object",
+    name: buildRawString("carbon.common.script.net.objectCaching.CachedMethodCallResult"),
+    args: [details, { type: "substream", value: result }, buildVersionList(version)],
+  };
+}
+
 function getCachedMethodCallVersion({
   serviceName,
   method,
@@ -677,6 +742,7 @@ function normalizeCacheIdentity(value) {
 
 module.exports = {
   buildCachedMethodCallResult,
+  buildCachedMethodCallResultAsync,
   getCachedMethodCallVersion,
   getCachableObjectResponse,
   getCachedObject,

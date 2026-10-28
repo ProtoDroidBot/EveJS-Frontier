@@ -3,6 +3,7 @@
 /** Run through scripts/Tests/run-isolated-tests.js against a disposable game store. */
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const database = require("../src/gameStore");
 const reference = require("../src/services/_shared/referenceData");
 const originalReadStaticRows = reference.readStaticRows;
 
@@ -67,6 +68,19 @@ function quantities(locationID, flagID = null) {
 }
 
 function fixture(t, available = { [MATERIAL_A]: 9, [MATERIAL_B]: 7 }) {
+  const createdCharacter = !database.read("characters", String(OWNER_ID)).success;
+  if (createdCharacter) {
+    const written = database.write("characters", String(OWNER_ID), {
+      characterID: OWNER_ID,
+      characterName: "Deployment Materials Test",
+      typeID: 1373,
+      corporationID: 1000442,
+      stationID: 64000001,
+      solarSystemID: SYSTEM_ID,
+      activeShipID: 0,
+    }, { transient: true });
+    assert.equal(written.success, true, written.errorMsg);
+  }
   const originalItemIDs = new Set(
     itemStore.listOwnedItems(OWNER_ID).map((item) => item.itemID),
   );
@@ -101,6 +115,10 @@ function fixture(t, available = { [MATERIAL_A]: 9, [MATERIAL_B]: 7 }) {
       ? { itemID: ship.itemID, position: { x: 0, y: 0, z: 0 } }
       : null
   ));
+  const listSystemSpaceItems = itemStore.listSystemSpaceItems;
+  t.mock.method(itemStore, "listSystemSpaceItems", (...args) => (
+    listSystemSpaceItems(...args).filter((item) => !originalItemIDs.has(item.itemID))
+  ));
   t.mock.method(energyRuntime, "reconcileNetworkNodeEnergy", () => {});
   deployment._testing.clearBuildDefinitionCache();
   deployment._testing.clearCompletionTimers();
@@ -111,6 +129,7 @@ function fixture(t, available = { [MATERIAL_A]: 9, [MATERIAL_B]: 7 }) {
         itemStore.removeInventoryItem(item.itemID, { removeContents: true });
       }
     }
+    if (createdCharacter) database.remove("characters", String(OWNER_ID));
   });
 
   return {
@@ -118,8 +137,8 @@ function fixture(t, available = { [MATERIAL_A]: 9, [MATERIAL_B]: 7 }) {
     session,
     spawn,
     notifications,
-    place(typeID) {
-      return deployment.buildDeployable(session, typeID, [100, 0, 0], [0, 0, 0]);
+    place(typeID, position = [100, 0, 0]) {
+      return deployment.buildDeployable(session, typeID, position, [0, 0, 0]);
     },
   };
 }
@@ -141,7 +160,7 @@ test("direct placement consumes each required type from ship cargo and publishes
   const result = f.place(DIRECT_TYPE_ID);
 
   assert.equal(result.success, true, result.errorMsg);
-  assert.deepEqual(quantities(f.ship.itemID), {
+  assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), {
     [MATERIAL_A]: 3, [MATERIAL_B]: 3, [OTHER_MATERIAL]: 3,
   });
   assert.equal(result.data.item.typeID, DIRECT_TYPE_ID);
@@ -175,7 +194,7 @@ test("fully consumed stacks leave the store and client inventory, and cannot fun
   const materials = itemStore.listContainerItems(OWNER_ID, f.ship.itemID, CARGO_FLAG);
   const result = f.place(DIRECT_TYPE_ID);
   assert.equal(result.success, true, result.errorMsg);
-  assert.deepEqual(quantities(f.ship.itemID), {});
+  assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), {});
   const updates = inventoryUpdates(f.notifications);
   for (const material of materials) {
     assert.equal(itemStore.findItemById(material.itemID), null);
@@ -184,7 +203,7 @@ test("fully consumed stacks leave the store and client inventory, and cannot fun
     assert.equal(removed.locationID, 6);
     assert.equal(removed.previous.get(3), f.ship.itemID);
   }
-  const retry = f.place(DIRECT_TYPE_ID);
+  const retry = f.place(DIRECT_TYPE_ID, [-2_000, 0, 0]);
   assert.equal(retry.success, false);
   assert.equal(retry.errorMsg, "INSUFFICIENT_PLACEMENT_MATERIALS");
   assert.equal(f.spawn.mock.callCount(), 1);
@@ -215,7 +234,7 @@ test("character inventory can supply the remaining cost after ship cargo", t => 
   grant(OWNER_ID, MATERIAL_B, 7, {}, 4);
   const result = f.place(DIRECT_TYPE_ID);
   assert.equal(result.success, true, result.errorMsg);
-  assert.deepEqual(quantities(f.ship.itemID), {});
+  assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), {});
   const playerInventory = quantities(OWNER_ID, 4);
   assert.equal(playerInventory[MATERIAL_A], 3);
   assert.equal(playerInventory[MATERIAL_B], 3);
@@ -244,13 +263,13 @@ test("construction-site assemblies retain their deposit-then-construct workflow 
   assert.equal(state.assemblyStatus, deployment.ASSEMBLY_STATUS_UNDER_CONSTRUCTION);
   assert.equal(state.completeAtMs, 0);
   assert.deepEqual(deployment.getDepositedItemsByType(f.session, result.data.item.itemID).data, {});
-  assert.deepEqual(quantities(f.ship.itemID), { [MATERIAL_A]: 9, [MATERIAL_B]: 7 });
+  assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), { [MATERIAL_A]: 9, [MATERIAL_B]: 7 });
 
   const siteID = result.data.item.itemID;
   f.notifications.length = 0;
   const deposited = deployment.depositItems(f.session, siteID, f.ship.itemID, COST);
   assert.equal(deposited.success, true, deposited.errorMsg);
-  assert.deepEqual(quantities(f.ship.itemID), { [MATERIAL_A]: 3, [MATERIAL_B]: 3 });
+  assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), { [MATERIAL_A]: 3, [MATERIAL_B]: 3 });
   const complete = deployment.completeConstruction(siteID, { force: true, session: f.session });
   assert.equal(complete.success, true, complete.errorMsg);
   assert.equal(complete.data.alreadyComplete, true);
@@ -264,7 +283,38 @@ test("construction-site assemblies retain their deposit-then-construct workflow 
     assert.equal(removed.previous.get(3), siteID);
   }
   assert.deepEqual(quantities(siteID), {});
-  assert.deepEqual(quantities(f.ship.itemID), { [MATERIAL_A]: 3, [MATERIAL_B]: 3 });
+  assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), { [MATERIAL_A]: 3, [MATERIAL_B]: 3 });
+});
+
+test("construction realization rechecks clearance without consuming deposited materials", t => {
+  const f = fixture(t);
+  const first = f.place(ASSEMBLY_TYPE_ID, [100, 0, 0]);
+  const second = f.place(ASSEMBLY_TYPE_ID, [1500, 0, 0]);
+  assert.equal(first.success, true, first.errorMsg);
+  assert.equal(second.success, true, second.errorMsg);
+  const originalSecondPosition = second.data.item.spaceState.position;
+  assert.equal(itemStore.updateInventoryItem(second.data.item.itemID, item => ({
+    ...item, spaceState: { ...item.spaceState, position: first.data.item.spaceState.position },
+  })).success, true);
+
+  const deposit = deployment.depositItems(
+    f.session, first.data.item.itemID, f.ship.itemID, COST,
+  );
+  assert.equal(deposit.success, false);
+  assert.equal(deposit.errorMsg, "ASSEMBLY_PLACEMENT_OCCUPIED");
+  assert.deepEqual(quantities(first.data.item.itemID), COST);
+  assert.equal(deployment.readConstructionState(
+    itemStore.findItemById(first.data.item.itemID),
+  ).assemblyStatus, deployment.ASSEMBLY_STATUS_UNDER_CONSTRUCTION);
+
+  assert.equal(itemStore.updateInventoryItem(second.data.item.itemID, item => ({
+    ...item, spaceState: { ...item.spaceState, position: originalSecondPosition },
+  })).success, true);
+  const complete = deployment.completeConstruction(first.data.item.itemID, {
+    force: true, session: f.session,
+  });
+  assert.equal(complete.success, true, complete.errorMsg);
+  assert.deepEqual(quantities(first.data.item.itemID), {});
 });
 
 test("failed deployment refunds character inventory to its original location and flag", t => {
@@ -277,7 +327,7 @@ test("failed deployment refunds character inventory to its original location and
   assert.equal(result.success, false);
   assert.equal(result.errorMsg, "TEST_SPAWN_FAILED");
   assert.deepEqual(itemStore.listOwnedItems(OWNER_ID), beforeItems);
-  assert.deepEqual(quantities(f.ship.itemID), {});
+  assert.deepEqual(quantities(f.ship.itemID, CARGO_FLAG), {});
 });
 
 test("failed item creation restores all placement materials", t => {

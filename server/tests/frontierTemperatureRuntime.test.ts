@@ -157,6 +157,45 @@ test("warp uses the client-authored zero-kelvin external temperature", () => {
   assert.equal(result.shadowed, false);
 });
 
+test("a berthed ship uses sheltered ambient temperature", () => {
+  const ship = buildThermalShip({
+    frontierBerthingHostAssemblyID: 91_001,
+    conditionState: {
+      temperature: 600,
+      externalTemperature: 1_000,
+    },
+  });
+  const scene = buildScene(ship);
+
+  const initial = temperatureRuntime.advanceShipTemperature(
+    scene,
+    ship,
+    1_000,
+    {
+      findLineOccluder() {
+        throw new Error("a berth must not query the exterior thermal path");
+      },
+    },
+  );
+  const cooled = temperatureRuntime.advanceShipTemperature(
+    scene,
+    ship,
+    16_000,
+    {
+      findLineOccluder() {
+        throw new Error("a berth must not query the exterior thermal path");
+      },
+    },
+  );
+
+  assert.equal(initial.protected, true);
+  assert.equal(initial.externalTemperature, temperatureRuntime.STATION_TEMPERATURE_K);
+  assert.equal(cooled.protected, true);
+  assert.equal(cooled.externalTemperature, temperatureRuntime.STATION_TEMPERATURE_K);
+  assert.ok(cooled.temperature < initial.temperature);
+  assert.ok(cooled.temperature > temperatureRuntime.STATION_TEMPERATURE_K);
+});
+
 test("hull temperature scales only the thermal scanning signature", () => {
   const coldShip = buildThermalShip({
     conditionState: { temperature: 147.5 },
@@ -174,7 +213,11 @@ test("hull temperature scales only the thermal scanning signature", () => {
   const signatures = scanningRuntime.buildSignatureResultsForTarget({
     baseSignature: 10,
     distanceMeters: 1_000_000,
-    multipliers: [[1, 500], [2, 500], [3, 500]],
+    multipliers: [
+      [scanningRuntime.SIGNATURE_TYPE_GRAVIMETRIC, 500],
+      [scanningRuntime.SIGNATURE_TYPE_ELECTROMAGNETIC, 500],
+      [scanningRuntime.SIGNATURE_TYPE_THERMAL, 500],
+    ],
     massKg: scanningRuntime.GRAVIMETRIC_REFERENCE_MASS_KG,
     emSignatureMultiplier: 1,
     thermalSignatureMultiplier: hotMultiplier,

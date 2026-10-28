@@ -7,7 +7,7 @@ const {
   updateCharacterRecord,
 } = require(path.join(__dirname, "./characterState"));
 const {
-  storeCharacterPortrait,
+  storeCharacterPortraitAsync,
 } = require(path.join(__dirname, "./portraitImageStore"));
 
 function toNumber(value, fallback = 0) {
@@ -50,7 +50,7 @@ class PhotoUploadService extends BaseService {
     super("photoUploadSvc");
   }
 
-  Handle_Upload(args, session) {
+  async Handle_Upload(args, session) {
     const { charId, photoBytes } = resolveUploadPayload(args, session);
     if (charId <= 0 || photoBytes.length === 0) {
       log.warn(
@@ -72,7 +72,7 @@ class PhotoUploadService extends BaseService {
       return false;
     }
 
-    const storeResult = storeCharacterPortrait(charId, photoBytes);
+    const storeResult = await storeCharacterPortraitAsync(charId, photoBytes);
     if (!storeResult.success) {
       log.warn(
         `[PhotoUploadSvc] Failed to store portrait for char=${charId}: ${storeResult.errorMsg}`,

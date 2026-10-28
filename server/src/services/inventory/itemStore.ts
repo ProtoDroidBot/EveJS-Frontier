@@ -140,6 +140,8 @@ const DEFAULT_MODULE_STATE = Object.freeze({
   incapacitated: false,
 });
 const CLIENT_INVENTORY_STACK_LIMIT = 2147483647;
+const FREE_STATION_FUEL_CUSTOM_INFO = "evejs:free-station-unstable-fuel";
+const UNSTABLE_FUEL_TYPE_ID = 77818;
 const ITEM_ID_RESERVE_BATCH_SIZE = 128;
 const PACKAGED_VOLUME_OVERRIDES_BY_GROUP_ID = Object.freeze({
   // Mirrored from packaged client inventorycommon.const.packagedVolumeOverridesPerGroup.
@@ -219,6 +221,7 @@ const PACKAGED_VOLUME_OVERRIDES_BY_TYPE_ID = Object.freeze({
 let migrationComplete = false;
 let itemMutationVersion = 1;
 let itemsTableCache = null;
+let pendingLogisticsPersistenceRollback: { snapshot: any } | null = null;
 let itemIndexesDirty = true;
 let itemIndexesCache = null;
 // itemID -> { locationID, ownerID } the item is currently filed under, so an
@@ -303,6 +306,11 @@ function readCharacters() {
 }
 
 function readItems() {
+  if (!restorePendingLogisticsRollback()) {
+    // Some callers stage mutations in the returned table before writeItems.
+    // Never let those mutations alter the authoritative rollback snapshot.
+    return cloneValue(pendingLogisticsPersistenceRollback.snapshot);
+  }
   if (itemsTableCache) {
     return itemsTableCache;
   }
@@ -313,6 +321,37 @@ function readItems() {
 
   itemsTableCache = result.data;
   return itemsTableCache;
+}
+
+function useLogisticsRollbackSnapshot(snapshot) {
+  itemsTableCache = snapshot;
+  itemIndexesDirty = true;
+  itemIndexesCache = null;
+  itemIndexKeys = new Map();
+  itemMutationVersion += 1;
+}
+
+function restorePendingLogisticsRollback() {
+  if (!pendingLogisticsPersistenceRollback) return true;
+  try {
+    const snapshot = cloneValue(pendingLogisticsPersistenceRollback.snapshot);
+    if (repo.write(ITEMS_TABLE, "/", snapshot)?.success) {
+      useLogisticsRollbackSnapshot(snapshot);
+      if (repo.flushTablesSync([ITEMS_TABLE])?.success === true) {
+        pendingLogisticsPersistenceRollback = null;
+        return true;
+      }
+    }
+  } catch (_) { /* Keep the pre-transfer state authoritative until durable restore. */ }
+  return false;
+}
+
+function rollbackLogisticsWrite(snapshot) {
+  pendingLogisticsPersistenceRollback = { snapshot: cloneValue(snapshot) };
+  // Invalidate even when the repository refuses the restoring write: a failed
+  // flush must never leave a speculative receipt visible through item indexes.
+  useLogisticsRollbackSnapshot(cloneValue(snapshot));
+  restorePendingLogisticsRollback();
 }
 
 // Derive an index delta from a mutation's existing `changes` record (the same
@@ -338,6 +377,7 @@ function indexDeltaFromChanges(changes) {
 }
 
 function writeItems(data, options: Record<string, any> = {}) {
+  if (!restorePendingLogisticsRollback()) return false;
   const { indexDelta, ...dbOptions } = options;
   const writeResult = repo.write(ITEMS_TABLE, "/", data, dbOptions);
   if (writeResult && writeResult.success) {
@@ -852,6 +892,11 @@ function normalizeSpaceState(rawValue) {
 
   return {
     systemID: toNumber(rawValue.systemID, 0),
+    // An unsafe logout/socket loss leaves the hull in the ballpark.  Persist
+    // that lifecycle bit alongside the coordinates so a scene rebuilt before
+    // the pilot reconnects can materialize the same damaged hull.  Safe
+    // Logoff deliberately writes false and therefore remains de-instanced.
+    offlinePersistent: rawValue.offlinePersistent === true,
     position: normalizeSpaceVector(rawValue.position),
     velocity: normalizeSpaceVector(rawValue.velocity),
     direction: normalizeSpaceVector(rawValue.direction, { x: 1, y: 0, z: 0 }),
@@ -1055,16 +1100,25 @@ function normalizeShipConditionState(rawValue) {
   for (const entry of rawFuelQueue) {
     const fuelTypeID = toNumber(entry && (entry.fuelTypeID ?? entry.typeID), 0);
     const quantity = Math.max(0, toFiniteNumber(entry && entry.quantity, 0));
+    const reserve = Boolean(entry && entry.reserve === true);
     if (
       Number.isSafeInteger(fuelTypeID) &&
       fuelTypeID > 0 &&
       quantity > 1e-9
     ) {
       const tail = fuelQueue[fuelQueue.length - 1];
-      if (tail && tail.fuelTypeID === fuelTypeID) {
+      if (
+        tail &&
+        tail.fuelTypeID === fuelTypeID &&
+        Boolean(tail.reserve === true) === reserve
+      ) {
         tail.quantity += quantity;
       } else {
-        fuelQueue.push({ fuelTypeID, quantity });
+        fuelQueue.push({
+          fuelTypeID,
+          quantity,
+          ...(reserve ? { reserve: true } : {}),
+        });
       }
     }
   }
@@ -1143,7 +1197,7 @@ function normalizeModuleState(rawValue) {
   const source =
     rawValue && typeof rawValue === "object" ? rawValue : DEFAULT_MODULE_STATE;
 
-  const normalizedState = {
+  const normalizedState: Record<string, any> = {
     online: Boolean(source.online),
     damage: toFiniteNumber(source.damage, DEFAULT_MODULE_STATE.damage),
     charge: toFiniteNumber(source.charge, DEFAULT_MODULE_STATE.charge),
@@ -1162,6 +1216,11 @@ function normalizeModuleState(rawValue) {
     "serviceFuelOnlineAt",
     "serviceFuelLastCycleAt",
     "serviceFuelNextCycleAt",
+    // Creation Launch Bays expose the same 20-second reload timestamp to the
+    // client after both loading and launching.  Keep the authority on the
+    // real fitted module row so reconnects and process restarts cannot bypass
+    // that window.
+    "creationLaunchBayReadyAtMs",
   ]) {
     if (Object.prototype.hasOwnProperty.call(source, key)) {
       const value = source[key];
@@ -1170,6 +1229,38 @@ function normalizeModuleState(rawValue) {
           ? null
           : toNumber(value, null);
     }
+  }
+  const reserveFuelQueue: any[] = [];
+  for (const entry of Array.isArray(source.reserveFuelQueue)
+    ? source.reserveFuelQueue
+    : []) {
+    const fuelTypeID = toNumber(entry && (entry.fuelTypeID ?? entry.typeID), 0);
+    const quantity = Math.max(0, toFiniteNumber(entry && entry.quantity, 0));
+    if (
+      Number.isSafeInteger(fuelTypeID) &&
+      fuelTypeID > 0 &&
+      quantity > 1e-9
+    ) {
+      const tail = reserveFuelQueue[reserveFuelQueue.length - 1];
+      if (tail && tail.fuelTypeID === fuelTypeID) {
+        tail.quantity += quantity;
+      } else {
+        reserveFuelQueue.push({ fuelTypeID, quantity, reserve: true });
+      }
+    }
+  }
+  if (reserveFuelQueue.length > 0) {
+    normalizedState.reserveFuelQueue = reserveFuelQueue;
+    normalizedState.reserveFuelCharge = reserveFuelQueue.reduce(
+      (total, entry) => total + entry.quantity,
+      0,
+    );
+  } else if (Object.prototype.hasOwnProperty.call(source, "reserveFuelCharge")) {
+    normalizedState.reserveFuelCharge = Math.max(
+      0,
+      toFiniteNumber(source.reserveFuelCharge, 0),
+    );
+    normalizedState.reserveFuelQueue = [];
   }
   return normalizedState;
 }
@@ -1426,6 +1517,8 @@ function buildInventoryItem({
   mobileDepotState = null,
   stackOriginID = null,
   fighterState = null,
+  assemblyCustodyReceipts = null,
+  assemblyLogisticsReceipts = null,
 }: Record<string, any>) {
   const metadata = getItemMetadata(typeID, itemName);
   const defaultSingleton = shouldItemDefaultToSingleton(metadata) ? 1 : 0;
@@ -1495,6 +1588,15 @@ function buildInventoryItem({
   const normalizedDunRotation = normalizeDunRotation(dunRotation);
   if (normalizedDunRotation) {
     item.dunRotation = normalizedDunRotation;
+  }
+  if (Array.isArray(assemblyCustodyReceipts) && assemblyCustodyReceipts.length > 0) {
+    item.assemblyCustodyReceipts = cloneValue(assemblyCustodyReceipts.slice(-16));
+  }
+  // Logistics receipts belong to the destination endpoint, not its consumable
+  // inventory stacks. Preserve every receipt across ordinary endpoint updates.
+  if (assemblyLogisticsReceipts && typeof assemblyLogisticsReceipts === "object" &&
+      !Array.isArray(assemblyLogisticsReceipts)) {
+    item.assemblyLogisticsReceipts = cloneValue(assemblyLogisticsReceipts);
   }
 
   if (item.categoryID === SHIP_CATEGORY_ID) {
@@ -1620,6 +1722,12 @@ function normalizeInventoryItem(rawItem, defaults: Record<string, any> = {}) {
     fighterState: Object.prototype.hasOwnProperty.call(rawItem, "fighterState")
       ? rawItem.fighterState
       : defaults.fighterState ?? null,
+    assemblyCustodyReceipts: Object.prototype.hasOwnProperty.call(rawItem, "assemblyCustodyReceipts")
+      ? rawItem.assemblyCustodyReceipts
+      : defaults.assemblyCustodyReceipts ?? null,
+    assemblyLogisticsReceipts: Object.prototype.hasOwnProperty.call(rawItem, "assemblyLogisticsReceipts")
+      ? rawItem.assemblyLogisticsReceipts
+      : defaults.assemblyLogisticsReceipts ?? null,
   });
 }
 
@@ -1756,13 +1864,15 @@ function applyStackableGrant({
   let splitApplied = false;
 
   while (remainingQuantity > 0) {
-    const existingStack = findStackWithAvailableCapacity(
-      stackIndex,
-      ownerID,
-      locationID,
-      flagID,
-      metadata.typeID,
-    );
+    const existingStack = options.forceNewStack === true
+      ? null
+      : findStackWithAvailableCapacity(
+        stackIndex,
+        ownerID,
+        locationID,
+        flagID,
+        metadata.typeID,
+      );
 
     if (existingStack) {
       const currentQuantity = getStackableItemQuantity(existingStack);
@@ -2124,6 +2234,9 @@ function ensureCharacterActiveShipItem(charId, existingRecord = null) {
   if (record.isDeleted === true || record.accountId === null) {
     return null;
   }
+  if (record.suppressActiveShipProvisioning === true) {
+    return null;
+  }
 
   const recordStationID = toNumber(record.stationID ?? record.stationid, 0);
   const recordStructureID = toNumber(record.structureID ?? record.structureid, 0);
@@ -2192,21 +2305,28 @@ function ensureCharacterActiveShipItem(charId, existingRecord = null) {
   }
 
   if (recordIsInSpace) {
-    const items = readItems();
-    const starterShip = buildShipItem({
-      itemID: nextItemID(numericCharId, items, record),
-      typeID: record.shipTypeID || DEFAULT_SHIP_TYPE_ID,
-      ownerID: numericCharId,
-      locationID: recordSolarSystemID,
-      flagID: 0,
-      itemName: record.shipName || null,
-      spaceState: buildStoppedSpaceStateForSystem(recordSolarSystemID),
-    });
-
-    items[String(starterShip.itemID)] = starterShip;
-    if (!writeItems(items, { indexDelta: { upsertedIDs: [starterShip.itemID] } })) {
+    const createResult = grantItemToCharacterLocation(
+      numericCharId,
+      recordSolarSystemID,
+      0,
+      record.shipTypeID || DEFAULT_SHIP_TYPE_ID,
+      1,
+      {
+        singleton: 1,
+        itemName: record.shipName || null,
+        spaceState: buildStoppedSpaceStateForSystem(recordSolarSystemID),
+      },
+    );
+    const starterShip = createResult.success
+      ? createResult.data.items[0] || null
+      : null;
+    if (!starterShip) {
+      const createError = createResult.success
+        ? "CREATED_SHIP_MISSING"
+        : createResult.errorMsg || "ITEM_CREATE_FAILED";
       log.warn(
-        `[ItemStore] Failed to provision in-space starter ship for char=${numericCharId}`,
+        `[ItemStore] Failed to provision in-space starter ship for char=${numericCharId} ` +
+          `error=${createError}`,
       );
       return null;
     }
@@ -2266,20 +2386,27 @@ function ensureCharacterActiveShipItem(charId, existingRecord = null) {
     );
   }
 
-  const items = readItems();
-  const starterShip = buildShipItem({
-    itemID: nextItemID(numericCharId, items, record),
-    typeID: record.shipTypeID || DEFAULT_SHIP_TYPE_ID,
-    ownerID: numericCharId,
-    locationID: dockedLocationID,
-    flagID: ITEM_FLAGS.HANGAR,
-    itemName: record.shipName || null,
-  });
-
-  items[String(starterShip.itemID)] = starterShip;
-  if (!writeItems(items, { indexDelta: { upsertedIDs: [starterShip.itemID] } })) {
+  const createResult = grantItemToCharacterLocation(
+    numericCharId,
+    dockedLocationID,
+    ITEM_FLAGS.HANGAR,
+    record.shipTypeID || DEFAULT_SHIP_TYPE_ID,
+    1,
+    {
+      singleton: 1,
+      itemName: record.shipName || null,
+    },
+  );
+  const starterShip = createResult.success
+    ? createResult.data.items[0] || null
+    : null;
+  if (!starterShip) {
+    const createError = createResult.success
+      ? "CREATED_SHIP_MISSING"
+      : createResult.errorMsg || "ITEM_CREATE_FAILED";
     log.warn(
-      `[ItemStore] Failed to provision starter ship for char=${numericCharId}`,
+      `[ItemStore] Failed to provision starter ship for char=${numericCharId} ` +
+        `error=${createError}`,
     );
     return null;
   }
@@ -2319,6 +2446,7 @@ function syncCharacterActiveShip(charId, shipItem) {
     shipTypeID: shipItem.typeID,
     shipName: shipItem.itemName,
   };
+  delete nextRecord.suppressActiveShipProvisioning;
 
   if (Object.prototype.hasOwnProperty.call(nextRecord, "storedShips")) {
     delete nextRecord.storedShips;
@@ -2350,6 +2478,205 @@ function resolveItemTypeReference(itemType) {
   }
 
   return getItemMetadata(itemType);
+}
+
+function initializeCreationTemplatesForGrantedItems(
+  characterID,
+  createdItems: any[] = [],
+  changes: any[] = [],
+) {
+  const createdShips = (Array.isArray(createdItems) ? createdItems : [])
+    .filter((item) => toNumber(item && item.categoryID, 0) === SHIP_CATEGORY_ID);
+  if (createdShips.length === 0) {
+    return { success: true as const, initialized: [] };
+  }
+
+  // Lazy imports keep itemStore as the inventory owner without introducing a
+  // module-load cycle: Creation initialization grants its template modules
+  // back through this file, and those non-ship grants immediately skip here.
+  const { getCreationTemplate } = require(path.join(
+    __dirname,
+    "../frontier/creationStaticData",
+  ));
+  const templateShips = createdShips.filter((item) =>
+    Boolean(getCreationTemplate(toNumber(item && item.typeID, 0))));
+  if (templateShips.length === 0) {
+    return { success: true as const, initialized: [] };
+  }
+
+  const { ensureCreationState } = require(path.join(
+    __dirname,
+    "../frontier/creationRuntime",
+  ));
+  const initialized: any[] = [];
+  for (const ship of templateShips) {
+    const result = ensureCreationState(ship, characterID);
+    if (!result.success) {
+      // Never return a bare modular hull after claiming its grant failed.
+      // ensureCreationState removes a partial module seed itself; removing the
+      // hull with contents also covers any future initialization extensions.
+      for (const createdShip of templateShips) {
+        removeInventoryItem(createdShip.itemID, { removeContents: true });
+      }
+      return {
+        success: false as const,
+        errorMsg: result.errorMsg || "CREATION_TEMPLATE_INITIALIZATION_FAILED",
+      };
+    }
+
+    const initializedShip = cloneValue(result.data.item);
+    initialized.push(initializedShip);
+    const itemIndex = createdItems.findIndex(
+      (item) => toNumber(item && item.itemID, 0) === initializedShip.itemID,
+    );
+    if (itemIndex >= 0) {
+      createdItems[itemIndex] = initializedShip;
+    }
+    const change = changes.find(
+      (candidate) =>
+        candidate &&
+        candidate.item &&
+        toNumber(candidate.item.itemID, 0) === initializedShip.itemID,
+    );
+    if (change) {
+      change.item = cloneValue(initializedShip);
+    }
+  }
+
+  return { success: true as const, initialized };
+}
+
+function initializeFuelTanksForGrantedShips(
+  characterID,
+  createdItems: any[] = [],
+  changes: any[] = [],
+) {
+  const createdShips = (Array.isArray(createdItems) ? createdItems : [])
+    .filter((item) => toNumber(item && item.categoryID, 0) === SHIP_CATEGORY_ID);
+  if (createdShips.length === 0) {
+    return { success: true as const, initialized: [] };
+  }
+  // Lazy import keeps fuelTankRuntime's itemStore dependency acyclic at module
+  // initialization time.
+  const {
+    INITIAL_FULL_FUEL_SHIP_TYPE_IDS,
+    initializeNewShipFuelTank,
+  } = require(path.join(__dirname, "../frontier/fuelTankRuntime"));
+  const targetShips = createdShips.filter((item) =>
+    INITIAL_FULL_FUEL_SHIP_TYPE_IDS.has(toNumber(item && item.typeID, 0)));
+  const initialized: any[] = [];
+  for (const ship of targetShips) {
+    const result = initializeNewShipFuelTank(ship, characterID);
+    if (!result.success) {
+      for (const targetShip of targetShips) {
+        removeInventoryItem(targetShip.itemID, { removeContents: true });
+      }
+      return {
+        success: false as const,
+        errorMsg: result.errorMsg || "INITIAL_FUEL_INITIALIZATION_FAILED",
+      };
+    }
+    if (result.skipped === true) {
+      continue;
+    }
+    const initializedShip = cloneValue(result.data.item);
+    initialized.push(initializedShip);
+    const itemIndex = createdItems.findIndex(
+      (item) => toNumber(item && item.itemID, 0) === initializedShip.itemID,
+    );
+    if (itemIndex >= 0) {
+      createdItems[itemIndex] = initializedShip;
+    }
+    const change = changes.find(
+      (candidate) =>
+        candidate &&
+        candidate.item &&
+        toNumber(candidate.item.itemID, 0) === initializedShip.itemID,
+    );
+    if (change) {
+      change.item = cloneValue(initializedShip);
+    }
+  }
+  return { success: true as const, initialized };
+}
+
+function isFreeStationFuelSupplyItem(item, options: Record<string, any> = {}) {
+  if (
+    !item ||
+    toNumber(item.typeID, 0) !== UNSTABLE_FUEL_TYPE_ID ||
+    toNumber(item.flagID, 0) !== ITEM_FLAGS.HANGAR ||
+    String(item.customInfo || "") !== FREE_STATION_FUEL_CUSTOM_INFO
+  ) {
+    return false;
+  }
+  const characterID = toNumber(options.characterID, 0);
+  const stationID = toNumber(options.stationID, 0);
+  return (
+    (characterID <= 0 || toNumber(item.ownerID, 0) === characterID) &&
+    (stationID <= 0 || toNumber(item.locationID, 0) === stationID)
+  );
+}
+
+/** Ensure the docked fuel picker always sees one inexhaustible Unstable Fuel
+ * stack. LoadFuel recognizes this marked station-hangar row and does not debit
+ * it, so its client-safe maximum quantity remains available for every load. */
+function ensureFreeStationFuelSupply(characterID, stationID) {
+  const ownerID = toNumber(characterID, 0);
+  const locationID = toNumber(stationID, 0);
+  if (ownerID <= 0 || locationID <= 0) {
+    return { success: false as const, errorMsg: "INVALID_STATION_FUEL_LOCATION" };
+  }
+  const unstableStacks = listContainerItems(
+    ownerID,
+    locationID,
+    ITEM_FLAGS.HANGAR,
+  ).filter((item) => toNumber(item && item.typeID, 0) === UNSTABLE_FUEL_TYPE_ID);
+  const existingSupply = unstableStacks.find((item) =>
+    isFreeStationFuelSupplyItem(item, {
+      characterID: ownerID,
+      stationID: locationID,
+    })) || null;
+  if (existingSupply) {
+    if (
+      toNumber(existingSupply.stacksize ?? existingSupply.quantity, 0) ===
+        CLIENT_INVENTORY_STACK_LIMIT &&
+      isFreeStationFuelSupplyItem(existingSupply, {
+        characterID: ownerID,
+        stationID: locationID,
+      })
+    ) {
+      return { success: true as const, created: false, data: { item: existingSupply } };
+    }
+    const updateResult = updateInventoryItem(existingSupply.itemID, (item) => ({
+      ...item,
+      singleton: 0,
+      quantity: CLIENT_INVENTORY_STACK_LIMIT,
+      stacksize: CLIENT_INVENTORY_STACK_LIMIT,
+      customInfo: FREE_STATION_FUEL_CUSTOM_INFO,
+    }));
+    return updateResult.success
+      ? { success: true as const, created: false, data: { item: updateResult.data } }
+      : updateResult;
+  }
+  const grantResult = grantItemToCharacterLocation(
+    ownerID,
+    locationID,
+    ITEM_FLAGS.HANGAR,
+    UNSTABLE_FUEL_TYPE_ID,
+    CLIENT_INVENTORY_STACK_LIMIT,
+    {
+      singleton: 0,
+      customInfo: FREE_STATION_FUEL_CUSTOM_INFO,
+      forceNewStack: true,
+    },
+  );
+  return grantResult.success
+    ? {
+      success: true as const,
+      created: true,
+      data: { item: grantResult.data.items[0] || null },
+    }
+    : grantResult;
 }
 
 function buildStackKey(ownerID, locationID, flagID, typeID) {
@@ -2534,6 +2861,30 @@ function grantItemsToCharacterLocation(
     }
   }
 
+  const creationInitialization = initializeCreationTemplatesForGrantedItems(
+    charId,
+    createdItems,
+    changes,
+  );
+  if (!creationInitialization.success) {
+    return {
+      success: false as const,
+      errorMsg: creationInitialization.errorMsg,
+    };
+  }
+
+  const fuelInitialization = initializeFuelTanksForGrantedShips(
+    charId,
+    createdItems,
+    changes,
+  );
+  if (!fuelInitialization.success) {
+    return {
+      success: false as const,
+      errorMsg: fuelInitialization.errorMsg,
+    };
+  }
+
   const singleEntry = entries.length === 1 ? grantedEntries[0] || null : null;
   return {
     success: true as const,
@@ -2548,6 +2899,12 @@ function grantItemsToCharacterLocation(
       grantedEntries,
       stackSplitApplied,
       stackSplitStackCount,
+      initializedCreationShipIDs: creationInitialization.initialized.map(
+        (item) => item.itemID,
+      ),
+      initializedFuelShipIDs: fuelInitialization.initialized.map(
+        (item) => item.itemID,
+      ),
     },
   };
 }
@@ -3646,6 +4003,12 @@ function consumeInventoryItemQuantity(itemId, quantity = 1, options: Record<stri
       errorMsg: "ITEM_NOT_FOUND",
     };
   }
+  if (isFreeStationFuelSupplyItem(currentItem)) {
+    return {
+      success: false as const,
+      errorMsg: "FREE_STATION_FUEL_SUPPLY_RESERVED",
+    };
+  }
 
   const availableQuantity =
     currentItem.singleton === 1
@@ -3789,6 +4152,15 @@ function stageMergeItemStacks(
     return {
       success: false as const,
       errorMsg: "ITEM_NOT_FOUND",
+    };
+  }
+  if (
+    isFreeStationFuelSupplyItem(sourceItem) ||
+    isFreeStationFuelSupplyItem(destinationItem)
+  ) {
+    return {
+      success: false as const,
+      errorMsg: "FREE_STATION_FUEL_SUPPLY_RESERVED",
     };
   }
 
@@ -3974,6 +4346,13 @@ function stageItemMoveToLocation(
     };
   }
 
+  if (isFreeStationFuelSupplyItem(currentItem)) {
+    return {
+      success: false as const,
+      errorMsg: "FREE_STATION_FUEL_SUPPLY_RESERVED",
+    };
+  }
+
   const availableQuantity =
     currentItem.singleton === 1
       ? 1
@@ -4058,6 +4437,63 @@ function stageItemMoveToLocation(
         item: cloneValue(movedItem),
       });
     }
+  } else if (
+    moveOptions.preserveMovedStackItemID === true &&
+    !convertToSingleton
+  ) {
+    // Custody transfers need a stable canonical ID even when only part of a
+    // charge stack is loaded. Keep the selected source ID on the moved stack
+    // and allocate the remainder at its original location.
+    const sourcePreviousData = cloneValue(currentItem);
+    const remainderLocationID = toNumber(
+      moveOptions.remainderLocationID,
+      currentItem.locationID,
+    );
+    const remainderFlagID = toNumber(
+      moveOptions.remainderFlagID,
+      currentItem.flagID,
+    );
+    const remainderItem = buildInventoryItem({
+      ...buildMovedItemState(currentItem, remainderLocationID, remainderFlagID),
+      itemID: nextItemID(currentItem.ownerID, items, characters[String(currentItem.ownerID)]),
+      quantity: availableQuantity - moveQuantity,
+      stacksize: availableQuantity - moveQuantity,
+      singleton: 0,
+      stackOriginID:
+        toNumber(currentItem.stackOriginID, 0) > 0
+          ? toNumber(currentItem.stackOriginID, 0)
+          : currentItem.itemID,
+    });
+    remainderItemID = remainderItem.itemID;
+    createdItemIDs.push(remainderItem.itemID);
+    items[String(remainderItem.itemID)] = remainderItem;
+    changes.push({
+      created: true,
+      removed: false,
+      previousData: buildCreatedItemNotificationPreviousState(
+        remainderItem,
+        currentItem.flagID,
+        currentItem.ownerID,
+      ),
+      item: cloneValue(remainderItem),
+    });
+    const movedItem = buildInventoryItem({
+      ...movedBase,
+      itemID: currentItem.itemID,
+      quantity: moveQuantity,
+      stacksize: moveQuantity,
+      singleton: 0,
+      stackOriginID:
+        toNumber(currentItem.stackOriginID, 0) > 0
+          ? toNumber(currentItem.stackOriginID, 0)
+          : currentItem.itemID,
+    });
+    items[String(movedItem.itemID)] = movedItem;
+    changes.push({
+      removed: false,
+      previousData: sourcePreviousData,
+      item: cloneValue(movedItem),
+    });
   } else if (
     moveOptions.preserveMovedItemID === true &&
     convertToSingleton &&
@@ -4309,6 +4745,677 @@ function moveItemsToLocations(moveRequests) {
   };
 }
 
+/** Atomically consume explicit quantities from ordinary inventory stacks. */
+function consumeInventoryItems(consumptionRequests, options: Record<string, any> = {}) {
+  ensureMigrated();
+  const requests = Array.isArray(consumptionRequests) ? consumptionRequests : [];
+  if (requests.length === 0) {
+    return { success: false as const, errorMsg: "INVALID_CONSUME_REQUEST" };
+  }
+
+  const previousItems = readItems();
+  const items = cloneValue(previousItems);
+  const seen = new Set<number>();
+  const changes: any[] = [];
+  const consumed: any[] = [];
+  for (const request of requests) {
+    const sourceItemID = Number(request && request.itemID);
+    const quantity = Number(request && request.quantity);
+    if (!Number.isSafeInteger(sourceItemID) || sourceItemID <= 0 ||
+        seen.has(sourceItemID) || !Number.isSafeInteger(quantity) || quantity <= 0) {
+      return { success: false as const, errorMsg: "INVALID_CONSUME_REQUEST" };
+    }
+    seen.add(sourceItemID);
+    const source = normalizeInventoryItem(items[String(sourceItemID)]);
+    if (!source || isFreeStationFuelSupplyItem(source)) {
+      return { success: false as const, errorMsg: "SOURCE_ITEM_NOT_FOUND" };
+    }
+    const expected = request && request.expected || {};
+    for (const [field, actual] of [
+      ["ownerID", source.ownerID],
+      ["locationID", source.locationID],
+      ["flagID", source.flagID],
+      ["typeID", source.typeID],
+    ] as Array<[string, any]>) {
+      if (expected[field] != null && Number(expected[field]) !== Number(actual)) {
+        return { success: false as const, errorMsg: "SOURCE_ITEM_CHANGED" };
+      }
+    }
+    const available = source.singleton === 1
+      ? 1
+      : normalizePositiveInteger(source.stacksize ?? source.quantity, 1);
+    if (quantity > available) {
+      return { success: false as const, errorMsg: "INSUFFICIENT_ITEMS" };
+    }
+    const previousData = cloneValue(source);
+    if (source.singleton === 1 || quantity === available) {
+      delete items[String(sourceItemID)];
+      repo.setTransientPath(ITEMS_TABLE, `/${String(sourceItemID)}`, false);
+      changes.push({ removed: true, previousData, item: null });
+    } else {
+      const next = buildInventoryItem({
+        ...source,
+        quantity: available - quantity,
+        stacksize: available - quantity,
+        singleton: 0,
+      });
+      items[String(sourceItemID)] = next;
+      changes.push({ removed: false, previousData, item: cloneValue(next) });
+    }
+    consumed.push({
+      itemID: sourceItemID,
+      ownerID: source.ownerID,
+      locationID: source.locationID,
+      flagID: source.flagID,
+      typeID: source.typeID,
+      quantity,
+    });
+  }
+
+  if (!writeItems(items, {
+    indexDelta: indexDeltaFromChanges(changes),
+    ...(options.flush === true ? { flush: true } : {}),
+  })) {
+    return { success: false as const, errorMsg: "WRITE_ERROR" };
+  }
+  notifyInsuranceInventoryMutationChanges(changes, "consumeInventoryItems");
+  return { success: true as const, data: { consumed, changes } };
+}
+
+/**
+ * Atomically consume explicit stack quantities and update one surviving item.
+ * Construction and fueling use this primitive so a crash cannot spend only a
+ * prefix of the inputs or spend inputs without persisting the resulting state.
+ */
+function consumeInventoryItemsAndUpdateItem(
+  consumptionRequests,
+  itemId,
+  updater,
+  options: Record<string, any> = {},
+) {
+  ensureMigrated();
+  const targetItemID = Number(itemId);
+  const requests = Array.isArray(consumptionRequests) ? consumptionRequests : [];
+  if (!Number.isSafeInteger(targetItemID) || targetItemID <= 0 || requests.length === 0) {
+    return { success: false as const, errorMsg: "INVALID_CONSUME_REQUEST" };
+  }
+
+  const previousItems = readItems();
+  const items = cloneValue(previousItems);
+  const target = normalizeInventoryItem(items[String(targetItemID)]);
+  if (!target) return { success: false as const, errorMsg: "ITEM_NOT_FOUND" };
+  const seen = new Set<number>();
+  const changes: any[] = [];
+  const consumed: any[] = [];
+  for (const request of requests) {
+    const sourceItemID = Number(request && request.itemID);
+    const quantity = Number(request && request.quantity);
+    if (!Number.isSafeInteger(sourceItemID) || sourceItemID <= 0 ||
+        sourceItemID === targetItemID || seen.has(sourceItemID) ||
+        !Number.isSafeInteger(quantity) || quantity <= 0) {
+      return { success: false as const, errorMsg: "INVALID_CONSUME_REQUEST" };
+    }
+    seen.add(sourceItemID);
+    const source = normalizeInventoryItem(items[String(sourceItemID)]);
+    if (!source || isFreeStationFuelSupplyItem(source)) {
+      return { success: false as const, errorMsg: "SOURCE_ITEM_NOT_FOUND" };
+    }
+    const expected = request && request.expected || {};
+    for (const [field, actual] of [
+      ["ownerID", source.ownerID],
+      ["locationID", source.locationID],
+      ["flagID", source.flagID],
+      ["typeID", source.typeID],
+    ] as Array<[string, any]>) {
+      if (expected[field] != null && Number(expected[field]) !== Number(actual)) {
+        return { success: false as const, errorMsg: "SOURCE_ITEM_CHANGED" };
+      }
+    }
+    const available = source.singleton === 1
+      ? 1
+      : normalizePositiveInteger(source.stacksize ?? source.quantity, 1);
+    if (quantity > available) {
+      return { success: false as const, errorMsg: "INSUFFICIENT_ITEMS" };
+    }
+    const previousData = cloneValue(source);
+    if (source.singleton === 1 || quantity === available) {
+      delete items[String(sourceItemID)];
+      repo.setTransientPath(ITEMS_TABLE, `/${String(sourceItemID)}`, false);
+      changes.push({ removed: true, previousData, item: null });
+    } else {
+      const next = buildInventoryItem({
+        ...source,
+        quantity: available - quantity,
+        stacksize: available - quantity,
+        singleton: 0,
+      });
+      items[String(sourceItemID)] = next;
+      changes.push({ removed: false, previousData, item: cloneValue(next) });
+    }
+    consumed.push({
+      itemID: sourceItemID,
+      ownerID: source.ownerID,
+      locationID: source.locationID,
+      flagID: source.flagID,
+      typeID: source.typeID,
+      quantity,
+    });
+  }
+
+  let updatedValue;
+  try {
+    updatedValue = typeof updater === "function"
+      ? updater(cloneValue(target), cloneValue(consumed))
+      : updater;
+  } catch (error) {
+    return {
+      success: false as const,
+      errorMsg: String(error && error.code || error && error.message || "ITEM_UPDATE_FAILED"),
+    };
+  }
+  const updatedTarget = normalizeInventoryItem(updatedValue, target);
+  if (!updatedTarget || Number(updatedTarget.itemID) !== targetItemID) {
+    return { success: false as const, errorMsg: "INVALID_ITEM_STATE" };
+  }
+  items[String(targetItemID)] = updatedTarget;
+  changes.push({ removed: false, previousData: cloneValue(target), item: cloneValue(updatedTarget) });
+  if (!writeItems(items, {
+    indexDelta: indexDeltaFromChanges(changes),
+    ...(options.flush === true ? { flush: true } : {}),
+  })) {
+    return { success: false as const, errorMsg: "WRITE_ERROR" };
+  }
+  notifyInsuranceInventoryMutationChanges(changes, "consumeInventoryItemsAndUpdateItem");
+  return {
+    success: true as const,
+    previousData: cloneValue(target),
+    data: { item: cloneValue(updatedTarget), consumed, changes },
+  };
+}
+
+/**
+ * Atomically materialize stackable virtual inventory into a normal container
+ * and update the item that owns that virtual inventory. Network Node fuel uses
+ * this for withdrawals, so a server failure can never create cargo without
+ * deducting the same quantity from the node reserve.
+ */
+function grantStackableItemsToCharacterLocationAndUpdateItem(
+  charId,
+  locationId,
+  flagId,
+  grantEntries,
+  itemId,
+  updater,
+  options: Record<string, any> = {},
+) {
+  ensureMigrated();
+  const ownerID = toNumber(charId, 0);
+  const destinationLocationID = toNumber(locationId, 0);
+  const destinationFlagID = toNumber(flagId, ITEM_FLAGS.HANGAR);
+  const targetItemID = toNumber(itemId, 0);
+  const entries = Array.isArray(grantEntries) ? grantEntries.filter(Boolean) : [];
+  if (ownerID <= 0 || destinationLocationID <= 0 || destinationFlagID < 0 ||
+      targetItemID <= 0 || entries.length === 0) {
+    return { success: false as const, errorMsg: "INVALID_GRANT_REQUEST" };
+  }
+  const entryValidationError = validateGrantEntries(entries);
+  if (entryValidationError) return entryValidationError;
+
+  const characters = readCharacters();
+  const characterRecord = characters[String(ownerID)];
+  if (!characterRecord) return { success: false as const, errorMsg: "CHARACTER_NOT_FOUND" };
+  const previousItems = readItems();
+  const items = cloneValue(previousItems);
+  const target = normalizeInventoryItem(items[String(targetItemID)]);
+  if (!target) return { success: false as const, errorMsg: "ITEM_NOT_FOUND" };
+
+  const changes: any[] = [];
+  const grantedItems: any[] = [];
+  const stackIndex = buildStackIndex(items);
+  for (const entry of entries) {
+    const metadata = resolveItemTypeReference(entry.itemType);
+    const quantity = normalizePositiveSafeInteger(entry.quantity, null);
+    applyStackableGrant({
+      ownerID,
+      locationID: destinationLocationID,
+      flagID: destinationFlagID,
+      metadata,
+      quantity,
+      options: { ...(entry.options || {}), individualItems: false, singleton: 0 },
+      items,
+      stackIndex,
+      changes,
+      createdItems: grantedItems,
+      transientCreatedItemIDs: [],
+      characterRecord,
+    });
+  }
+
+  let updatedValue;
+  try {
+    updatedValue = typeof updater === "function"
+      ? updater(cloneValue(target), cloneValue(grantedItems))
+      : updater;
+  } catch (error) {
+    return {
+      success: false as const,
+      errorMsg: String(error && error.code || error && error.message || "ITEM_UPDATE_FAILED"),
+    };
+  }
+  const updatedTarget = normalizeInventoryItem(updatedValue, target);
+  if (!updatedTarget || updatedTarget.itemID !== targetItemID) {
+    return { success: false as const, errorMsg: "INVALID_ITEM_STATE" };
+  }
+  items[String(targetItemID)] = updatedTarget;
+  changes.push({ removed: false, previousData: cloneValue(target), item: cloneValue(updatedTarget) });
+  if (!writeItems(items, {
+    indexDelta: indexDeltaFromChanges(changes),
+    ...(options.flush === true ? { flush: true } : {}),
+  })) {
+    return { success: false as const, errorMsg: "WRITE_ERROR" };
+  }
+  notifyInsuranceInventoryMutationChanges(
+    changes,
+    "grantStackableItemsToCharacterLocationAndUpdateItem",
+  );
+  return {
+    success: true as const,
+    previousData: cloneValue(target),
+    data: { item: cloneValue(updatedTarget), grantedItems, changes },
+  };
+}
+
+/** Commit a domain-authorized inventory transaction with owner-scoped receipts.
+ * Callers must resolve reachable locations and capacity from server state, never
+ * copy those authorization fields from a client payload. Row factories see the
+ * staged item IDs so job/crown receipts can refer to outputs in the same commit.
+ */
+function applyInventoryTransactionWithAtomicRows(request, additionalRows: any = []) {
+  ensureMigrated();
+  const fail = errorMsg => ({ success: false as const, errorMsg });
+  if (!restorePendingLogisticsRollback()) return fail("PERSISTENCE_FLUSH_ERROR");
+  const ownerID = Number(request && request.characterID);
+  const characterRecord = readCharacters()[String(ownerID)];
+  if (!Number.isSafeInteger(ownerID) || ownerID <= 0 || !characterRecord) return fail("CHARACTER_NOT_FOUND");
+  const consumptions = request.consumptions || [];
+  const moves = request.moves || [];
+  const updates = request.itemUpdates || [];
+  const grants = (request.grants || []).map(entry => ({ ...entry, itemType: entry.itemType ?? entry.typeID }));
+  if (![consumptions, moves, updates, grants].every(Array.isArray)) return fail("INVALID_INVENTORY_TRANSACTION");
+  const invalid = validateGrantEntries(grants);
+  if (invalid) return invalid;
+  const previousItems = readItems();
+  const expectedVersion = itemMutationVersion;
+  const items = cloneValue(previousItems);
+  const changes: any[] = [], consumed: any[] = [], grantedItems: any[] = [];
+  const changedIDs = new Set<string>(), touched = new Set<number>();
+  const sourceLocations = new Set((request.sourceLocationIDs || []).map(Number));
+  const sourceFlags = new Set((request.sourceFlagIDs || []).map(Number));
+  const sourceOwners = new Set([ownerID, ...(request.sourceOwnerIDs || []).map(Number)]);
+  const accessible = new Set([ownerID, ...[characterRecord.stationID, characterRecord.stationid, characterRecord.structureID].map(Number), ...(request.accessibleLocationIDs || []).map(Number)]);
+  const validDestination = (locationID, flagID) => {
+    if (!Number.isSafeInteger(locationID) || locationID <= 0 || !Number.isSafeInteger(flagID) || flagID < 0) return false;
+    const location = items[String(locationID)];
+    return location ? (Number(location.ownerID) === ownerID || (accessible.has(locationID) && (request.destinationOwnerIDs || []).map(Number).includes(Number(location.ownerID)))) : accessible.has(locationID);
+  };
+  const authorizedSource = source => source && sourceOwners.has(Number(source.ownerID)) &&
+    sourceLocations.has(Number(source.locationID)) && sourceFlags.has(Number(source.flagID)) && !isFreeStationFuelSupplyItem(source);
+  for (const entry of consumptions) {
+    const itemID = Number(entry.itemID), quantity = Number(entry.quantity);
+    if (!Number.isSafeInteger(itemID) || itemID <= 0 || touched.has(itemID) || !Number.isSafeInteger(quantity) || quantity <= 0) return fail("INVALID_CONSUME_REQUEST");
+    const source = normalizeInventoryItem(items[String(itemID)]);
+    if (!authorizedSource(source)) return fail("SOURCE_ITEM_NOT_ACCESSIBLE");
+    if (Number(source.singleton) !== 0 && !(entry.allowSingleton === true && quantity === 1 && Number(entry.typeID) === Number(source.typeID))) return fail("SINGLETON_CONSUMPTION_DENIED");
+    const expected = { ...(entry.expected || {}), ...(entry.typeID != null ? { typeID: entry.typeID } : {}) };
+    for (const field of ["ownerID", "locationID", "flagID", "typeID"]) {
+      if (expected[field] != null && Number(expected[field]) !== Number(source[field])) return fail("SOURCE_ITEM_CHANGED");
+    }
+    const available = Number(source.stacksize ?? source.quantity);
+    if (!Number.isSafeInteger(available) || quantity > available) return fail("INSUFFICIENT_ITEMS");
+    touched.add(itemID); changedIDs.add(String(itemID));
+    consumed.push({ itemID, typeID: source.typeID, quantity, ownerID: source.ownerID, locationID: source.locationID, flagID: source.flagID });
+    if (quantity === available) {
+      delete items[String(itemID)];
+      changes.push({ removed: true, previousData: cloneValue(source), item: null });
+    } else {
+      const next = buildInventoryItem({ ...source, quantity: available - quantity, stacksize: available - quantity });
+      items[String(itemID)] = next;
+      changes.push({ removed: false, previousData: cloneValue(source), previousState: captureItemState(source), item: cloneValue(next) });
+    }
+  }
+  for (const entry of moves) {
+    const itemID = Number(entry.itemID), source = normalizeInventoryItem(items[String(itemID)]);
+    const locationID = Number(entry.locationID ?? entry.destinationLocationID), flagID = Number(entry.flagID ?? entry.destinationFlagID);
+    if (!Number.isSafeInteger(itemID) || touched.has(itemID) || !authorizedSource(source) || Number(source.ownerID) !== ownerID) return fail("SOURCE_ITEM_NOT_ACCESSIBLE");
+    if (!validDestination(locationID, flagID)) return fail("INVALID_DESTINATION");
+    const available = Number(source.singleton) > 0 ? 1 : Number(source.quantity ?? source.stacksize);
+    if (entry.quantity != null && Number(entry.quantity) !== available) return fail("PARTIAL_MOVE_NOT_SUPPORTED");
+    const next = buildInventoryItem({ ...source, locationID, flagID });
+    items[String(itemID)] = next; touched.add(itemID); changedIDs.add(String(itemID));
+    changes.push({ removed: false, previousData: cloneValue(source), previousState: captureItemState(source), item: cloneValue(next) });
+  }
+  for (const entry of updates) {
+    const itemID = Number(entry.itemID), source = normalizeInventoryItem(items[String(itemID)]);
+    if (!Number.isSafeInteger(itemID) || touched.has(itemID) || !source || Number(source.ownerID) !== ownerID ||
+      (entry.expectedOwnerID != null && Number(entry.expectedOwnerID) !== ownerID)) return fail("SOURCE_ITEM_NOT_ACCESSIBLE");
+    const patch = entry.changes || {};
+    // Physical inventory identity is only changed through the checked paths above.
+    if (["itemID", "ownerID", "locationID", "flagID", "typeID", "quantity", "stacksize", "singleton"].some(key => Object.prototype.hasOwnProperty.call(patch, key))) return fail("INVALID_ITEM_UPDATE");
+    const next = normalizeInventoryItem({ ...source, ...cloneValue(patch) }, source);
+    if (!next) return fail("INVALID_ITEM_STATE");
+    items[String(itemID)] = next; touched.add(itemID); changedIDs.add(String(itemID));
+    changes.push({ removed: false, previousData: cloneValue(source), previousState: captureItemState(source), item: cloneValue(next) });
+  }
+  if (grants.length) {
+    const locationID = Number(request.destinationLocationID), flagID = Number(request.destinationFlagID);
+    if (!validDestination(locationID, flagID)) return fail("INVALID_DESTINATION");
+    const stackIndex = buildStackIndex(items);
+    for (const entry of grants) {
+      const metadata = resolveItemTypeReference(entry.itemType), options = { ...(entry.options || {}), ...entry };
+      if (entry.singleton || entry.individualItems) {
+        if (entry.quantity > 10000) return fail("ITEM_QUANTITY_OUT_OF_RANGE");
+        for (let count = 0; count < entry.quantity; count++) {
+          const item = buildInventoryItem({ ...options, itemID: nextItemID(ownerID, items, characterRecord), typeID: metadata.typeID,
+            ownerID, locationID, flagID, itemName: entry.itemName || metadata.name, quantity: 1, stacksize: 1, singleton: entry.singleton ? 1 : 0 });
+          items[String(item.itemID)] = item; grantedItems.push(cloneValue(item));
+          changes.push({ created: true, item: cloneValue(item), previousState: { locationID: 0, flagID: 0 } });
+          changedIDs.add(String(item.itemID));
+        }
+      } else {
+        const before = changes.length;
+        applyStackableGrant({ ownerID, locationID, flagID, items, stackIndex, changes, metadata, quantity: Number(entry.quantity),
+          options, createdItems: grantedItems, transientCreatedItemIDs: [], characterRecord });
+        for (const change of changes.slice(before)) changedIDs.add(String(change.item.itemID));
+      }
+    }
+  }
+  // Check the complete post-transaction stock, so consumed inputs release cargo.
+  const destinations = new Map<string, { locationID: number; flagID: number }>();
+  for (const change of changes) if (change.item && (change.created || change.previousData &&
+    (change.previousData.locationID !== change.item.locationID || change.previousData.flagID !== change.item.flagID))) {
+    const locationID = Number(change.item.locationID), flagID = Number(change.item.flagID);
+    destinations.set(`${locationID}:${flagID}`, { locationID, flagID });
+  }
+  // Stack merges have no `created` marker but still increase destination volume.
+  if (grants.length) destinations.set(`${request.destinationLocationID}:${request.destinationFlagID}`, { locationID: Number(request.destinationLocationID), flagID: Number(request.destinationFlagID) });
+  for (const destination of destinations.values()) {
+    const container = items[String(destination.locationID)];
+    if (!container) continue; // server-resolved station/character locations have no finite cargo container.
+    if (typeof request.getDestinationCapacity !== "function") return fail("INVALID_CAPACITY");
+    let capacity;
+    try { capacity = Number(request.getDestinationCapacity({ characterID: ownerID, shipID: destination.locationID, ...destination })); }
+    catch (_) { return fail("INVALID_CAPACITY"); }
+    if (!Number.isFinite(capacity) || capacity < 0) return fail("INVALID_CAPACITY");
+    let used = 0;
+    for (const item of Object.values<any>(items)) if (Number(item.locationID) === destination.locationID && Number(item.flagID) === destination.flagID) {
+      const volume = getInventoryItemUnitVolume(item), quantity = Number(item.singleton) > 0 ? 1 : Number(item.quantity ?? item.stacksize);
+      if (!Number.isFinite(volume) || volume < 0 || !Number.isSafeInteger(quantity) || quantity <= 0) return fail("INVALID_DESTINATION_STOCK");
+      used += volume * quantity;
+    }
+    if (!Number.isFinite(used) || used > capacity + 1e-6) return fail("NOT_ENOUGH_CARGO_SPACE");
+  }
+  const result = { items: grantedItems, grantedItems, consumed, changes };
+  let rows;
+  try { rows = typeof additionalRows === "function" ? additionalRows(cloneValue(result)) : additionalRows; }
+  catch (error) { return fail(String(error && error.code || error && error.message || "ROW_PREPARATION_FAILED")); }
+  if (!Array.isArray(rows)) return fail("INVALID_ATOMIC_ROWS");
+  if (itemMutationVersion !== expectedVersion) return fail("INVENTORY_STATE_CHANGED");
+  const itemRows = [...changedIDs].map(id => repo.prepareAtomicRowWrite(ITEMS_TABLE, id, items[id]));
+  if (!rows.length && !itemRows.length) return fail("EMPTY_INVENTORY_TRANSACTION");
+  const commit = repo.commitAtomicRowWrites([...rows, ...itemRows]);
+  if (!commit || !commit.success) return fail(commit && commit.errorMsg || "ATOMIC_WRITE_ERROR");
+  itemsTableCache = repo.read(ITEMS_TABLE, "/").data;
+  itemIndexesDirty = true; itemIndexesCache = null; itemMutationVersion += 1;
+  notifyInsuranceInventoryMutationChanges(changes, "applyInventoryTransactionWithAtomicRows");
+  return { success: true as const, data: result };
+}
+
+/**
+ * Materialize claimed world loot and consume its owning domain's receipt in
+ * one SQLite transaction. Ownership-approved row proposals are opaque tokens;
+ * inventory never gains permission to mutate the mining table directly.
+ */
+function grantStackableItemsWithAtomicRows(request, additionalRows) {
+  ensureMigrated();
+  if (!restorePendingLogisticsRollback()) {
+    return { success: false as const, errorMsg: "PERSISTENCE_FLUSH_ERROR" };
+  }
+  const ownerID = Number(request && request.characterID);
+  const locationID = Number(request && request.shipID);
+  const flagID = Number(request && request.flagID);
+  const entries = request && request.entries;
+  if (![ownerID, locationID, flagID].every(Number.isSafeInteger) ||
+      ownerID <= 0 || locationID <= 0 || flagID < 0 ||
+      !Array.isArray(entries) || entries.length === 0 ||
+      !Array.isArray(additionalRows) || additionalRows.length === 0 ||
+      typeof request.getDestinationCapacity !== "function") {
+    return { success: false as const, errorMsg: "INVALID_GRANT_REQUEST" };
+  }
+  const invalidEntry = validateGrantEntries(entries);
+  if (invalidEntry) return invalidEntry;
+  const characterRecord = readCharacters()[String(ownerID)];
+  if (!characterRecord) return { success: false as const, errorMsg: "CHARACTER_NOT_FOUND" };
+  const previousItems = readItems();
+  const destination = normalizeInventoryItem(previousItems[String(locationID)]);
+  if (!destination || destination.ownerID !== ownerID || destination.categoryID !== SHIP_CATEGORY_ID) {
+    return { success: false as const, errorMsg: "INVALID_DESTINATION" };
+  }
+  let capacity;
+  const expectedMutationVersion = itemMutationVersion;
+  try {
+    capacity = Number(request.getDestinationCapacity({ characterID: ownerID, shipID: locationID, flagID }));
+  } catch (_) {
+    return { success: false as const, errorMsg: "INVALID_CAPACITY" };
+  }
+  if (!Number.isFinite(capacity) || capacity < 0) {
+    return { success: false as const, errorMsg: "INVALID_CAPACITY" };
+  }
+  if (itemMutationVersion !== expectedMutationVersion) {
+    return { success: false as const, errorMsg: "INVENTORY_STATE_CHANGED" };
+  }
+  let usedVolume = 0;
+  for (const raw of Object.values<any>(previousItems)) {
+    if (Number(raw.locationID) !== locationID || Number(raw.flagID) !== flagID) continue;
+    const volume = getInventoryItemUnitVolume(raw);
+    const quantity = Number(raw.singleton) > 0 ? 1 : Number(raw.quantity ?? raw.stacksize);
+    if (!Number.isFinite(volume) || volume < 0 || !Number.isSafeInteger(quantity) || quantity <= 0) {
+      return { success: false as const, errorMsg: "INVALID_DESTINATION_STOCK" };
+    }
+    usedVolume += volume * quantity;
+  }
+  let incomingVolume = 0;
+  for (const entry of entries) {
+    const metadata = resolveItemTypeReference(entry.itemType);
+    const volume = getUnitVolumeForPackagingState(metadata, 0);
+    if (!Number.isFinite(volume) || volume <= 0) {
+      return { success: false as const, errorMsg: "INVALID_ITEM_VOLUME" };
+    }
+    incomingVolume += volume * Number(entry.quantity);
+  }
+  if (!Number.isFinite(usedVolume + incomingVolume) || usedVolume + incomingVolume > capacity + 1e-6) {
+    return { success: false as const, errorMsg: "NOT_ENOUGH_CARGO_SPACE" };
+  }
+  const items = cloneValue(previousItems);
+  const changes: any[] = [];
+  const grantedItems: any[] = [];
+  const stackIndex = buildStackIndex(items);
+  for (const entry of entries) {
+    applyStackableGrant({ ownerID, locationID, flagID, items, stackIndex, changes,
+      metadata: resolveItemTypeReference(entry.itemType), quantity: Number(entry.quantity),
+      options: { individualItems: false, singleton: 0 },
+      createdItems: grantedItems, transientCreatedItemIDs: [], characterRecord });
+  }
+  const changedIDs = [...new Set(changes.map(change => String(change.item.itemID)))];
+  const itemRows = changedIDs.map(id => repo.prepareAtomicRowWrite(ITEMS_TABLE, id, items[id]));
+  const commit = repo.commitAtomicRowWrites([...additionalRows, ...itemRows]);
+  if (!commit || commit.success !== true) {
+    return { success: false as const, errorMsg: commit && commit.errorMsg || "ATOMIC_WRITE_ERROR" };
+  }
+  itemsTableCache = repo.read(ITEMS_TABLE, "/").data;
+  itemIndexesDirty = true;
+  itemIndexesCache = null;
+  itemMutationVersion += 1;
+  notifyInsuranceInventoryMutationChanges(changes, "grantStackableItemsWithAtomicRows");
+  return { success: true as const, data: { items: grantedItems, grantedItems, changes,
+    quantity: entries.reduce((sum, entry) => sum + Number(entry.quantity), 0) } };
+}
+
+/**
+ * Atomically stage inventory moves and an update to one existing item against
+ * the same private item-table snapshot. Creation management uses this so the
+ * fitted module rows and the hull's serialized layout can never be persisted
+ * independently.
+ *
+ * `flush` is intended for small, user-confirmed configuration commits whose
+ * durability must be visible immediately after a server restart.
+ */
+function moveItemsToLocationsAndUpdateItem(
+  moveRequests,
+  itemId,
+  updater,
+  options: Record<string, any> = {},
+) {
+  ensureMigrated();
+  const requests = Array.isArray(moveRequests) ? moveRequests : [];
+  const numericItemID = Number(itemId);
+  if (!Number.isSafeInteger(numericItemID) || numericItemID <= 0) {
+    return { success: false as const, errorMsg: "ITEM_NOT_FOUND" };
+  }
+
+  const previousItems = readItems();
+  const items = cloneValue(previousItems);
+  const characters = readCharacters();
+  const moves: any[] = [];
+  const changes: any[] = [];
+  let affectsFitting = false;
+
+  for (const request of requests) {
+    const requestItemID = Number(request && request.itemID);
+    const destinationLocationID = Number(
+      request && request.destinationLocationID,
+    );
+    const destinationFlagID = Number(request && request.destinationFlagID);
+    const hasQuantity = Boolean(
+      request && Object.prototype.hasOwnProperty.call(request, "quantity"),
+    );
+    const quantity = hasQuantity ? Number(request.quantity) : null;
+    if (
+      !Number.isSafeInteger(requestItemID) ||
+      requestItemID <= 0 ||
+      !Number.isSafeInteger(destinationLocationID) ||
+      destinationLocationID <= 0 ||
+      !Number.isSafeInteger(destinationFlagID) ||
+      destinationFlagID < 0 ||
+      (
+        hasQuantity &&
+        (!Number.isSafeInteger(quantity) || quantity <= 0)
+      )
+    ) {
+      return { success: false as const, errorMsg: "INVALID_MOVE_REQUEST" };
+    }
+
+    const stageResult = stageItemMoveToLocation(
+      items,
+      characters,
+      requestItemID,
+      destinationLocationID,
+      destinationFlagID,
+      quantity,
+      request && request.options,
+    );
+    if (!stageResult.success) {
+      return stageResult;
+    }
+    const movedItemUpdater = request && request.options && request.options.updateMovedItem;
+    if (typeof movedItemUpdater === "function") {
+      const movedItemID = Number(stageResult.data && stageResult.data.movedItemID);
+      const currentMovedItem = normalizeInventoryItem(items[String(movedItemID)]);
+      const updatedMovedItem = normalizeInventoryItem(
+        movedItemUpdater(cloneValue(currentMovedItem)),
+        currentMovedItem,
+      );
+      if (
+        !currentMovedItem ||
+        !updatedMovedItem ||
+        updatedMovedItem.itemID !== movedItemID
+      ) {
+        return { success: false as const, errorMsg: "INVALID_ITEM_STATE" };
+      }
+      items[String(movedItemID)] = updatedMovedItem;
+      const movedChange = [...stageResult.data.changes].reverse().find(
+        (change) => Number(change && change.item && change.item.itemID) === movedItemID,
+      );
+      if (movedChange) {
+        movedChange.item = cloneValue(updatedMovedItem);
+      }
+    }
+    affectsFitting = affectsFitting || stageResult.affectsFitting;
+    moves.push(stageResult.data);
+    changes.push(...stageResult.data.changes);
+  }
+
+  const currentItem = normalizeInventoryItem(items[String(numericItemID)]);
+  if (!currentItem) {
+    return { success: false as const, errorMsg: "ITEM_NOT_FOUND" };
+  }
+  const expectedCategoryID = Number(options && options.expectedCategoryID);
+  if (
+    Number.isSafeInteger(expectedCategoryID) &&
+    expectedCategoryID > 0 &&
+    currentItem.categoryID !== expectedCategoryID
+  ) {
+    return { success: false as const, errorMsg: "INVALID_ITEM_STATE" };
+  }
+
+  const updatedValue = typeof updater === "function"
+    ? updater(cloneValue(currentItem), {
+        changes: cloneValue(changes),
+        moves: cloneValue(moves),
+      })
+    : updater;
+  const updatedItem = normalizeInventoryItem(updatedValue, currentItem);
+  if (!updatedItem || updatedItem.itemID !== numericItemID) {
+    return { success: false as const, errorMsg: "INVALID_ITEM_STATE" };
+  }
+  items[String(numericItemID)] = updatedItem;
+
+  const indexDelta = indexDeltaFromChanges(changes);
+  indexDelta.upsertedIDs.push(numericItemID);
+  indexDelta.upsertedIDs = [...new Set(indexDelta.upsertedIDs)];
+  if (!writeItems(items, { indexDelta })) {
+    return { success: false as const, errorMsg: "WRITE_ERROR" };
+  }
+
+  if (options && options.flush === true) {
+    const flushResult = repo.flushTablesSync([ITEMS_TABLE]);
+    if (!flushResult || flushResult.success !== true) {
+      // The logical transaction was staged in memory but did not become
+      // durable. Restore the previous snapshot before reporting failure so a
+      // client retry cannot duplicate an installation or removal.
+      writeItems(previousItems);
+      repo.flushTablesSync([ITEMS_TABLE]);
+      return { success: false as const, errorMsg: "PERSISTENCE_FLUSH_ERROR" };
+    }
+  }
+
+  if (affectsFitting) {
+    bumpDogmaInvalidationVersion();
+  }
+  notifyInsuranceInventoryMutationChanges(
+    changes,
+    "moveItemsToLocationsAndUpdateItem",
+  );
+  return {
+    success: true as const,
+    previousData: cloneValue(currentItem),
+    data: {
+      item: cloneValue(updatedItem),
+      changes,
+      moves,
+    },
+  };
+}
+
 /**
  * Atomically consolidate one or more stack quantities into a single stack at
  * a destination location/flag. When destinationItemID is omitted, the first
@@ -4401,7 +5508,8 @@ function moveItemStacksToLocation(
     normalizedRequests.push({ itemID, quantity });
   }
 
-  const items = cloneValue(readItems());
+  const previousItems = readItems();
+  const items = cloneValue(previousItems);
   const characters = readCharacters();
   let destinationItemID = requestedDestinationItemID;
   if (destinationItemID > 0) {
@@ -4493,11 +5601,46 @@ function moveItemStacksToLocation(
     return { success: false as const, errorMsg: "INVALID_DESTINATION_STACK" };
   }
 
+  // Some stack moves are also state transitions on a different inventory
+  // row.  Creation Launch Bay reload uses this to persist its cooldown in the
+  // same item-table commit as the charge custody change.
+  const updateItemID = Number(options && options.updateItemID) || 0;
+  let updatedItem = null;
+  let updatedItemPreviousData = null;
+  if (updateItemID > 0) {
+    const currentItem = normalizeInventoryItem(items[String(updateItemID)]);
+    if (!currentItem) {
+      return { success: false as const, errorMsg: "ITEM_NOT_FOUND" };
+    }
+    updatedItemPreviousData = cloneValue(currentItem);
+    const updatedValue = typeof options.updateItem === "function"
+      ? options.updateItem(cloneValue(currentItem))
+      : options.updateItem;
+    updatedItem = normalizeInventoryItem(updatedValue, currentItem);
+    if (!updatedItem || updatedItem.itemID !== updateItemID) {
+      return { success: false as const, errorMsg: "INVALID_ITEM_STATE" };
+    }
+    items[String(updateItemID)] = updatedItem;
+  }
+
   if (affectsFitting) {
     bumpDogmaInvalidationVersion();
   }
-  if (!writeItems(items, { indexDelta: indexDeltaFromChanges(changes) })) {
+  const indexDelta = indexDeltaFromChanges(changes);
+  if (updatedItem) {
+    indexDelta.upsertedIDs.push(updateItemID);
+    indexDelta.upsertedIDs = [...new Set(indexDelta.upsertedIDs)];
+  }
+  if (!writeItems(items, { indexDelta })) {
     return { success: false as const, errorMsg: "WRITE_ERROR" };
+  }
+  if (options && options.flush === true) {
+    const flushResult = repo.flushTablesSync([ITEMS_TABLE]);
+    if (!flushResult || flushResult.success !== true) {
+      writeItems(previousItems);
+      repo.flushTablesSync([ITEMS_TABLE]);
+      return { success: false as const, errorMsg: "PERSISTENCE_FLUSH_ERROR" };
+    }
   }
   notifyInsuranceInventoryMutationChanges(
     changes,
@@ -4512,6 +5655,8 @@ function moveItemStacksToLocation(
       moves,
       preliminaryMoves,
       quantity: totalQuantity,
+      updatedItem: updatedItem ? cloneValue(updatedItem) : null,
+      updatedItemPreviousData,
     },
   };
 }
@@ -4665,12 +5810,215 @@ function moveItemsAndSetShipPackagingState(
   };
 }
 
+/**
+ * Transfer an exact type quantity and its durable request receipt in one item
+ * table transaction. Callers authorize assembly access; this boundary validates
+ * inventory identity, quantity and capacity again immediately before mutation.
+ */
+function transferAssemblyItemType(request: Record<string, any> = {}) {
+  ensureMigrated();
+  if (!restorePendingLogisticsRollback()) {
+    return { success: false as const, errorMsg: "PERSISTENCE_FLUSH_ERROR" };
+  }
+  const integer = (value) => ["number", "string", "bigint"].includes(typeof value) &&
+    Number.isSafeInteger(Number(value)) ? Number(value) : -1;
+  const operationID = String(request.operationID || "").trim().toLowerCase();
+  const operationFingerprint = String(request.operationFingerprint || "").trim().toLowerCase();
+  const operation = {
+    sourceOwnerID: integer(request.sourceOwnerID),
+    sourceLocationID: integer(request.sourceLocationID),
+    sourceFlagID: integer(request.sourceFlagID),
+    destinationOwnerID: integer(request.destinationOwnerID),
+    destinationLocationID: integer(request.destinationLocationID),
+    destinationFlagID: integer(request.destinationFlagID),
+    typeID: integer(request.typeID),
+    quantity: integer(request.quantity),
+  };
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(operationID) ||
+      !/^[0-9a-f]{64}$/.test(operationFingerprint) ||
+      Object.entries(operation).some(([key, value]) => value < (key.endsWith("FlagID") ? 0 : 1)) ||
+      operation.sourceLocationID === operation.destinationLocationID) {
+    return { success: false as const, errorMsg: "INVALID_LOGISTICS_TRANSFER" };
+  }
+
+  // Recovery must precede all live stock, owner and capacity checks: the stock
+  // may already have been consumed and access may have changed after commit.
+  const replay = findAssemblyLogisticsReceipt(operationID);
+  if (replay) {
+    const sameOperation = Object.entries(operation).every(([key, value]) => replay.operation?.[key] === value);
+    return replay.operationFingerprint === operationFingerprint && sameOperation
+      ? { success: true as const, replayed: true, data: { ...cloneValue(replay.result), changes: [] } }
+      : { success: false as const, errorMsg: "LOGISTICS_IDEMPOTENCY_CONFLICT" };
+  }
+
+  let context = null;
+  if (request.receiptContext !== undefined) {
+    try {
+      const serialized = JSON.stringify(request.receiptContext, (_key, value) => {
+        if (["undefined", "function", "symbol", "bigint"].includes(typeof value) ||
+            (typeof value === "number" && !Number.isFinite(value))) throw new Error("Invalid receipt context");
+        return value;
+      });
+      if (Buffer.byteLength(serialized, "utf8") > 16 * 1024) throw new Error("Receipt context too large");
+      context = JSON.parse(serialized);
+    } catch (_) {
+      return { success: false as const, errorMsg: "INVALID_LOGISTICS_RECEIPT_CONTEXT" };
+    }
+  }
+
+  const previousItems = readItems();
+  const sourceEndpoint = previousItems[String(operation.sourceLocationID)];
+  const destinationEndpoint = previousItems[String(operation.destinationLocationID)];
+  if (!sourceEndpoint || !destinationEndpoint ||
+      Number(sourceEndpoint.ownerID) !== operation.sourceOwnerID ||
+      Number(destinationEndpoint.ownerID) !== operation.destinationOwnerID) {
+    return { success: false as const, errorMsg: "LOGISTICS_ENDPOINT_MISMATCH" };
+  }
+  const hasCapacity = request.destinationCapacity !== undefined;
+  const capacity = Number(request.destinationCapacity);
+  const hasMaxTypeQuantity = request.maxTypeQuantity !== undefined;
+  const maxTypeQuantity = integer(request.maxTypeQuantity);
+  if ((hasCapacity && (!Number.isFinite(capacity) || capacity < 0)) ||
+      (hasMaxTypeQuantity && (maxTypeQuantity <= 0 || maxTypeQuantity > 0xffffffff))) {
+    return { success: false as const, errorMsg: "INVALID_LOGISTICS_TRANSFER" };
+  }
+  if (hasMaxTypeQuantity && operation.quantity > maxTypeQuantity) {
+    return { success: false as const, errorMsg: "STORAGE_TYPE_QUANTITY_EXCEEDED" };
+  }
+
+  const sourceRows = Object.values<any>(previousItems).filter(item =>
+    Number(item?.ownerID) === operation.sourceOwnerID &&
+    Number(item?.locationID) === operation.sourceLocationID &&
+    Number(item?.flagID) === operation.sourceFlagID &&
+    Number(item?.typeID) === operation.typeID && Number(item?.singleton) === 0)
+    .sort((left, right) => Number(left.itemID) - Number(right.itemID));
+  const selected: { item: any; quantity: number }[] = [];
+  let remaining = operation.quantity;
+  let incomingVolume = 0;
+  for (const raw of sourceRows) {
+    const available = integer(raw.stacksize ?? raw.quantity);
+    const volume = getInventoryItemUnitVolume(raw);
+    if (integer(raw.itemID) <= 0 || available <= 0 ||
+        (raw.quantity != null && integer(raw.quantity) !== available) ||
+        !Number.isFinite(volume) || volume <= 0 || isFreeStationFuelSupplyItem(raw) ||
+        (raw.assemblyLogisticsReceipts && Object.keys(raw.assemblyLogisticsReceipts).length > 0)) {
+      return { success: false as const, errorMsg: "INVALID_LOGISTICS_SOURCE" };
+    }
+    const quantity = Math.min(available, remaining);
+    if (quantity > 0) {
+      selected.push({ item: raw, quantity });
+      incomingVolume += quantity * volume;
+      remaining -= quantity;
+    }
+  }
+  if (remaining > 0) return { success: false as const, errorMsg: "INSUFFICIENT_ITEMS" };
+  if (!Number.isFinite(incomingVolume)) {
+    return { success: false as const, errorMsg: "INVALID_LOGISTICS_SOURCE" };
+  }
+
+  let usedVolume = 0;
+  let storedTypeQuantity = 0;
+  for (const item of Object.values<any>(previousItems)) {
+    if (Number(item?.ownerID) !== operation.destinationOwnerID ||
+        Number(item?.locationID) !== operation.destinationLocationID ||
+        Number(item?.flagID) !== operation.destinationFlagID) continue;
+    const quantity = Number(item.singleton) > 0 ? 1 : integer(item.stacksize ?? item.quantity);
+    if (quantity <= 0) return { success: false as const, errorMsg: "INVALID_LOGISTICS_DESTINATION" };
+    if (Number(item.typeID) === operation.typeID) storedTypeQuantity += quantity;
+    if (hasCapacity) {
+      const volume = getInventoryItemUnitVolume(item);
+      if (!Number.isFinite(volume) || volume <= 0) {
+        return { success: false as const, errorMsg: "INVALID_LOGISTICS_DESTINATION" };
+      }
+      usedVolume += quantity * volume;
+    }
+  }
+  if (hasMaxTypeQuantity && storedTypeQuantity + operation.quantity > maxTypeQuantity) {
+    return { success: false as const, errorMsg: "STORAGE_TYPE_QUANTITY_EXCEEDED" };
+  }
+  if (hasCapacity && (!Number.isFinite(usedVolume) || usedVolume + incomingVolume > capacity + 1e-6)) {
+    return { success: false as const, errorMsg: "STORAGE_CAPACITY_EXCEEDED" };
+  }
+
+  const items = cloneValue(previousItems);
+  const characters = readCharacters();
+  const changes: any[] = [];
+  const moves: { sourceItemID: number; movedItemID: number; quantity: number }[] = [];
+  for (const { item: raw, quantity } of selected) {
+    const current = normalizeInventoryItem(raw);
+    if (!current || current.singleton !== 0 || current.stacksize !== Number(raw.stacksize ?? raw.quantity)) {
+      return { success: false as const, errorMsg: "INVALID_LOGISTICS_SOURCE" };
+    }
+    const wholeStack = quantity === current.stacksize;
+    const movedItemID = wholeStack ? current.itemID : nextItemID(
+      operation.destinationOwnerID, items, characters[String(operation.destinationOwnerID)] || null,
+    );
+    if (!wholeStack) {
+      const remainder = buildInventoryItem({ ...current,
+        quantity: current.stacksize - quantity, stacksize: current.stacksize - quantity });
+      items[String(current.itemID)] = remainder;
+      changes.push({ removed: false, previousData: cloneValue(current), item: cloneValue(remainder) });
+    }
+    const moved = buildInventoryItem({
+      ...buildMovedItemState(current, operation.destinationLocationID, operation.destinationFlagID),
+      itemID: movedItemID,
+      ownerID: operation.destinationOwnerID,
+      quantity,
+      stacksize: quantity,
+      singleton: 0,
+      assemblyLogisticsReceipts: null,
+      ...(!wholeStack ? { stackOriginID: Number(current.stackOriginID) || current.itemID } : {}),
+    });
+    items[String(movedItemID)] = moved;
+    changes.push({ removed: false, created: !wholeStack,
+      previousData: wholeStack ? cloneValue(current) : buildCreatedItemNotificationPreviousState(
+        moved, current.flagID, current.ownerID,
+      ), item: cloneValue(moved) });
+    moves.push({ sourceItemID: current.itemID, movedItemID, quantity });
+  }
+  const result = {
+    operationID,
+    ...operation,
+    movedItemIDs: moves.map(move => move.movedItemID),
+    moves,
+    context,
+    committedAtMs: Number.isSafeInteger(request.committedAtMs) && request.committedAtMs >= 0
+      ? request.committedAtMs : Date.now(),
+    gameCommitted: true,
+  };
+  const receipt = { operationID, operationFingerprint, operation, result };
+  items[String(operation.destinationLocationID)] = {
+    ...items[String(operation.destinationLocationID)],
+    assemblyLogisticsReceipts: {
+      ...(destinationEndpoint.assemblyLogisticsReceipts || {}),
+      [operationID]: cloneValue(receipt),
+    },
+  };
+  const indexDelta = indexDeltaFromChanges(changes);
+  indexDelta.upsertedIDs.push(operation.destinationLocationID);
+  let written = false;
+  try { written = writeItems(items, { indexDelta }); } catch (_) { /* Restore an ambiguous write below. */ }
+  if (!written) {
+    rollbackLogisticsWrite(previousItems);
+    return { success: false as const, errorMsg: "WRITE_ERROR" };
+  }
+  let durable = false;
+  try { durable = repo.flushTablesSync([ITEMS_TABLE])?.success === true; } catch (_) { /* Restore below. */ }
+  if (!durable) {
+    rollbackLogisticsWrite(previousItems);
+    return { success: false as const, errorMsg: "PERSISTENCE_FLUSH_ERROR" };
+  }
+  notifyInsuranceInventoryMutationChanges(changes, "transferAssemblyItemType");
+  return { success: true as const, replayed: false, data: { ...result, changes } };
+}
+
 function transferItemToOwnerLocation(
   itemId,
   destinationOwnerId,
   destinationLocationId,
   destinationFlagId,
   quantity = null,
+  options: Record<string, any> = {},
 ) {
   ensureMigrated();
   const numericItemId = toNumber(itemId, 0);
@@ -4688,7 +6036,8 @@ function transferItemToOwnerLocation(
     };
   }
 
-  const items = readItems();
+  const previousItems = readItems();
+  const items = cloneValue(previousItems);
   const characters = readCharacters();
   const currentItem = normalizeInventoryItem(items[String(numericItemId)]);
   if (!currentItem) {
@@ -4696,6 +6045,33 @@ function transferItemToOwnerLocation(
       success: false as const,
       errorMsg: "ITEM_NOT_FOUND",
     };
+  }
+
+  if (isFreeStationFuelSupplyItem(currentItem)) {
+    return {
+      success: false as const,
+      errorMsg: "FREE_STATION_FUEL_SUPPLY_RESERVED",
+    };
+  }
+
+  const operationKey = String(options.operationKey || "").trim().toLowerCase();
+  const operationFingerprint = String(options.operationFingerprint || "").trim().toLowerCase();
+  const hasReceipt = operationKey.length > 0 || operationFingerprint.length > 0;
+  if (hasReceipt &&
+      (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(operationKey) ||
+       !/^[0-9a-f]{64}$/.test(operationFingerprint))) {
+    return { success: false as const, errorMsg: "INVALID_CUSTODY_RECEIPT" };
+  }
+  if (hasReceipt) {
+    for (const rawItem of Object.values<any>(items)) {
+      const receipts = Array.isArray(rawItem && rawItem.assemblyCustodyReceipts)
+        ? rawItem.assemblyCustodyReceipts : [];
+      const replay = receipts.find(receipt => receipt && receipt.operationKey === operationKey);
+      if (!replay) continue;
+      return replay.operationFingerprint === operationFingerprint
+        ? { success: true as const, replayed: true, data: cloneValue(replay.result) }
+        : { success: false as const, errorMsg: "CUSTODY_IDEMPOTENCY_CONFLICT" };
+    }
   }
 
   const availableQuantity =
@@ -4812,11 +6188,59 @@ function transferItemToOwnerLocation(
     });
   }
 
+  let custodyResult = null;
+  if (hasReceipt) {
+    const movedItemID = movingWholeItem
+      ? currentItem.itemID
+      : toNumber(changes[changes.length - 1]?.item?.itemID, 0);
+    custodyResult = {
+      sourceItemID: currentItem.itemID,
+      movedItemID,
+      sourceOwnerID: currentItem.ownerID,
+      destinationOwnerID,
+      destinationLocationID,
+      destinationFlagID,
+      quantity: moveQuantity,
+    };
+    const receipt = {
+      operationKey,
+      operationFingerprint,
+      committedAtMs: Number(options.committedAtMs) || Date.now(),
+      chainDigest: typeof options.chainDigest === "string" ? options.chainDigest : null,
+      result: custodyResult,
+    };
+    for (const receiptItemID of new Set([currentItem.itemID, movedItemID])) {
+      const receiptItem = items[String(receiptItemID)];
+      if (!receiptItem) continue;
+      const prior = Array.isArray(receiptItem.assemblyCustodyReceipts)
+        ? receiptItem.assemblyCustodyReceipts : [];
+      items[String(receiptItemID)] = normalizeInventoryItem({
+        ...receiptItem,
+        assemblyCustodyReceipts: [...prior, receipt].slice(-16),
+      });
+    }
+    for (let index = changes.length - 1; index >= 0; index -= 1) {
+      const changedID = toNumber(changes[index]?.item?.itemID, 0);
+      if (changedID > 0 && items[String(changedID)]) {
+        changes[index].item = cloneValue(items[String(changedID)]);
+      }
+    }
+  }
+
   if (!writeItems(items, { indexDelta: indexDeltaFromChanges(changes) })) {
     return {
       success: false as const,
       errorMsg: "WRITE_ERROR",
     };
+  }
+
+  if (options.flush === true) {
+    const flush = repo.flushTablesSync([ITEMS_TABLE]);
+    if (!flush || flush.success !== true) {
+      writeItems(previousItems);
+      repo.flushTablesSync([ITEMS_TABLE]);
+      return { success: false as const, errorMsg: "PERSISTENCE_FLUSH_ERROR" };
+    }
   }
 
   notifyInsuranceInventoryMutationChanges(
@@ -4829,6 +6253,7 @@ function transferItemToOwnerLocation(
     data: {
       quantity: moveQuantity,
       changes,
+      ...(custodyResult || {}),
     },
   };
 }
@@ -4990,30 +6415,42 @@ function setItemPackagingState(itemId, packaged) {
 }
 
 function moveShipToSpace(shipId, solarSystemId, spaceState) {
-  return updateShipItem(shipId, (currentItem) => {
-    const nextSpaceState = { ...(spaceState || {}) };
-    const hasCustomInfoOverride = Object.prototype.hasOwnProperty.call(
-      nextSpaceState,
-      "customInfo",
-    );
-    const customInfo = hasCustomInfoOverride
-      ? String(nextSpaceState.customInfo || "")
-      : currentItem.customInfo;
-    if (hasCustomInfoOverride) {
-      delete nextSpaceState.customInfo;
-    }
-    return {
-      ...currentItem,
-      locationID: toNumber(solarSystemId, currentItem.locationID),
-      flagID: 0,
-      customInfo,
-      spaceState: normalizeSpaceState({
-        ...nextSpaceState,
-        systemID: toNumber(solarSystemId, currentItem.locationID),
-      }),
-      conditionState: normalizeShipConditionState(currentItem.conditionState),
+  const nextSpaceState = { ...(spaceState || {}) };
+  const hasClientCustomInfo = Object.prototype.hasOwnProperty.call(
+    nextSpaceState,
+    "customInfo",
+  );
+  const clientCustomInfo = hasClientCustomInfo
+    ? String(nextSpaceState.customInfo || "")
+    : null;
+  if (hasClientCustomInfo) {
+    delete nextSpaceState.customInfo;
+  }
+
+  const result = updateShipItem(shipId, (currentItem) => ({
+    ...currentItem,
+    locationID: toNumber(solarSystemId, currentItem.locationID),
+    flagID: 0,
+    // `spaceState.customInfo` is an inventory-notification hint (for example
+    // "Undocking:<stationID>"), not durable ship metadata. Persisting that
+    // hint used to replace Creation layout JSON on every undock, causing the
+    // next get_creation call to seed a second set of modules and lose their
+    // online/offline state along with the original layout.
+    customInfo: currentItem.customInfo,
+    spaceState: normalizeSpaceState({
+      ...nextSpaceState,
+      systemID: toNumber(solarSystemId, currentItem.locationID),
+    }),
+    conditionState: normalizeShipConditionState(currentItem.conditionState),
+  }));
+
+  if (result.success && hasClientCustomInfo) {
+    result.data = {
+      ...result.data,
+      clientCustomInfo,
     };
-  });
+  }
+  return result;
 }
 
 function dockShipToStation(shipId, stationId) {
@@ -5310,6 +6747,7 @@ function getShipConditionState(shipItem) {
 function resetInventoryStoreForTests() {
   migrationComplete = false;
   itemsTableCache = null;
+  pendingLogisticsPersistenceRollback = null;
   itemIndexesDirty = true;
   itemIndexesCache = null;
   itemIndexKeys = new Map();
@@ -5354,11 +6792,40 @@ function _resetItemIndexStatsForTest() {
   itemIndexIntegrityValidationCount = 0;
 }
 
+function findAssemblyCustodyReceipt(operationKey) {
+  const normalized = String(operationKey || "").trim().toLowerCase();
+  if (!normalized) return null;
+  for (const item of Object.values<any>(readItems())) {
+    const receipts = Array.isArray(item && item.assemblyCustodyReceipts)
+      ? item.assemblyCustodyReceipts : [];
+    const receipt = receipts.find(value => value && value.operationKey === normalized);
+    if (receipt) return cloneValue(receipt);
+  }
+  return null;
+}
+
+function findAssemblyLogisticsReceipt(operationID, destinationLocationID = undefined) {
+  ensureMigrated();
+  const normalized = String(operationID || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalized)) return null;
+  const items = readItems();
+  const endpoints = destinationLocationID === undefined
+    ? Object.values<any>(items) : [items[String(destinationLocationID)]];
+  for (const item of endpoints) {
+    const receipt = item?.assemblyLogisticsReceipts?.[normalized];
+    if (receipt?.operationID === normalized) return cloneValue(receipt);
+  }
+  return null;
+}
+
 // Owner API: write an item's customInfo metadata sub-path. Metadata only — it
 // does not change item identity/location/owner, so the derived index is
 // unaffected. Lets the dogma domain persist dynamic-item metadata without
 // writing the items table directly.
 function writeItemCustomInfo(itemID, customInfo, options: Record<string, any> = {}) {
+  if (!restorePendingLogisticsRollback()) {
+    return { success: false as const, errorMsg: "PERSISTENCE_FLUSH_ERROR" };
+  }
   return repo.write(ITEMS_TABLE, `/${String(itemID)}/customInfo`, customInfo, options);
 }
 
@@ -5378,6 +6845,8 @@ module.exports = {
   CAPSULE_TYPE_ID_GOLDEN,
   GOLDEN_CAPSULE_IMPLANT_TYPE_ID,
   CLIENT_INVENTORY_STACK_LIMIT,
+  FREE_STATION_FUEL_CUSTOM_INFO,
+  UNSTABLE_FUEL_TYPE_ID,
   ensureMigrated,
   getAllItems,
   listOwnedItems,
@@ -5389,15 +6858,20 @@ module.exports = {
   findItemById,
   findShipItemById,
   findCharacterShipByType,
+  isFreeStationFuelSupplyItem,
   isCapsuleTypeID,
   ensureCharacterActiveShipItem,
+  ensureFreeStationFuelSupply,
   getActiveShipItem,
   grantItemsToCharacterLocation,
+  grantStackableItemsWithAtomicRows,
+  applyInventoryTransactionWithAtomicRows,
   grantItemToCharacterLocation,
   grantItemsToOwnerLocation,
   grantItemToOwnerLocation,
   grantItemToCharacterStationHangar,
   grantItemsToCharacterStationHangar,
+  createShipItemForCharacter,
   createSpaceItemForCharacter,
   createSpaceItemForOwner,
   takeItemTypeFromCharacterLocation,
@@ -5407,13 +6881,20 @@ module.exports = {
   removeInventoryItem,
   commitContainerizedInventoryRemoval,
   consumeInventoryItemQuantity,
+  consumeInventoryItems,
+  consumeInventoryItemsAndUpdateItem,
+  grantStackableItemsToCharacterLocationAndUpdateItem,
   commitInventoryProduction,
   pruneExpiredSpaceItems,
   moveItemToLocation,
   moveItemStacksToLocation,
   moveItemsToLocations,
+  moveItemsToLocationsAndUpdateItem,
   moveItemsAndSetShipPackagingState,
   transferItemToOwnerLocation,
+  findAssemblyCustodyReceipt,
+  transferAssemblyItemType,
+  findAssemblyLogisticsReceipt,
   moveItemTypeFromCharacterLocation,
   mergeItemStacks,
   updateShipItem,

@@ -445,7 +445,7 @@ function blockHttpProxyRequest(req, res, targetUrl) {
     res.end();
 }
 function loadLocalTlsOptions() {
-    const certDir = path.join(__dirname, "./certs");
+    const certDir = process.env.EVEJS_RUNTIME_CERT_DIR ? path.resolve(process.env.EVEJS_RUNTIME_CERT_DIR) : path.join(__dirname, "./certs");
     const certificateResult = ensureLocalLeafCertificate({ certDir });
     const gatewayLeafCertPath = path.join(certDir, "gateway-dev-cert.pem");
     const gatewayLeafKeyPath = path.join(certDir, "gateway-dev-key.pem");
@@ -814,6 +814,8 @@ function startServer(runtimeContext) {
     mountSmartAssemblyAdminEndpoints(app);
     const { mountSmartAssemblyEnergyEndpoints } = require("./smartAssemblyEnergyEndpoints");
     mountSmartAssemblyEnergyEndpoints(app);
+    const { mountSmartFactionTaskEndpoints } = require("./smartFactionTaskEndpoints");
+    mountSmartFactionTaskEndpoints(app);
     const { mountSmartGateEndpoints } = require("./smartGateEndpoints");
     mountSmartGateEndpoints(app);
     const { mountSmartIndustryEndpoints } = require("./smartIndustryEndpoints");

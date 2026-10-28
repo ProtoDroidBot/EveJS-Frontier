@@ -1309,10 +1309,11 @@ function applySuperweaponDamage(scene, sourceEntity, targetEntity, damageVector,
         typeof callbacks.getAppliedDamageAmount === "function"
         ? callbacks.getAppliedDamageAmount(weaponDamageResult.damageResult)
         : sumDamageVector(damageVector);
+    const damageTargetEntity = weaponDamageResult.impactTargetEntity || targetEntity;
     if (appliedDamageAmount > 0 &&
         callbacks.noteKillmailDamage &&
         typeof callbacks.noteKillmailDamage === "function") {
-        callbacks.noteKillmailDamage(sourceEntity, targetEntity, appliedDamageAmount, {
+        callbacks.noteKillmailDamage(sourceEntity, damageTargetEntity, appliedDamageAmount, {
             whenMs,
             moduleItem,
         });
@@ -1321,7 +1322,7 @@ function applySuperweaponDamage(scene, sourceEntity, targetEntity, damageVector,
         weaponDamageResult.destroyResult.success &&
         callbacks.recordKillmailFromDestruction &&
         typeof callbacks.recordKillmailFromDestruction === "function") {
-        callbacks.recordKillmailFromDestruction(targetEntity, weaponDamageResult.destroyResult, {
+        callbacks.recordKillmailFromDestruction(damageTargetEntity, weaponDamageResult.destroyResult, {
             attackerEntity: sourceEntity,
             victimSession: weaponDamageResult.victimSession,
             whenMs,
@@ -1330,7 +1331,9 @@ function applySuperweaponDamage(scene, sourceEntity, targetEntity, damageVector,
     }
     if (callbacks.notifyWeaponDamageMessages &&
         typeof callbacks.notifyWeaponDamageMessages === "function") {
-        callbacks.notifyWeaponDamageMessages(sourceEntity, targetEntity, moduleItem, damageVector, appliedDamageAmount, appliedDamageAmount > 0 ? 1 : 0);
+        callbacks.notifyWeaponDamageMessages(sourceEntity, damageTargetEntity, moduleItem, damageVector, appliedDamageAmount, appliedDamageAmount > 0 ? 1 : 0, {
+            suppress: Boolean(weaponDamageResult.occlusion && !weaponDamageResult.damageResult),
+        });
     }
     return {
         success: true,

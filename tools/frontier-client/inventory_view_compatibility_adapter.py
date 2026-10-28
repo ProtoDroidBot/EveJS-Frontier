@@ -28,17 +28,16 @@ def _evejs_patch_inventory_toggle(namespace):
         return
 
     def open_inventory(invID=None):
-        current_session = _evejs_runtime_global(namespace, "session")
-        if current_session is not None and not getattr(current_session, "charid", None):
-            return original(invID)
-
-        view_state = namespace["ServiceManager"].Instance().GetService("viewState")
-        inventory_view_id = namespace["INVENTORY_VIEW_STATE_ID"]
-        if view_state.IsViewActive(inventory_view_id):
-            # The retail function closes here but then falls through and opens
-            # the same secondary view again.  Returning makes the command a
-            # real toggle, including when HangarView is the primary view.
-            return view_state.CloseSecondaryView(inventory_view_id)
+        try:
+            current_session = _evejs_runtime_global(namespace, "session")
+            if current_session is not None and getattr(current_session, "charid", None):
+                view_state = namespace["ServiceManager"].Instance().GetService("viewState")
+                inventory_view_id = namespace["INVENTORY_VIEW_STATE_ID"]
+                if view_state.IsViewActive(inventory_view_id):
+                    # The retail function otherwise closes and reopens the view.
+                    return view_state.CloseSecondaryView(inventory_view_id)
+        except Exception:
+            pass
         return original(invID)
 
     open_inventory._evejs_inventory_view_patch = True
@@ -63,15 +62,16 @@ def _evejs_patch_inventory_overlays(namespace):
     docked_overlays = normal_overlays.difference(space_only_overlays)
 
     def LoadView(self, **kwargs):
-        current_session = _evejs_runtime_global(namespace, "session")
-        is_docked = current_session is not None and (
-            getattr(current_session, "stationid", None)
-            or getattr(current_session, "structureid", None)
-        )
-        # Update the instance before ViewStateSvc.UpdateOverlays runs.  The
-        # primary station view remains inherited, while space-only overlays
-        # are requested only when the inventory was opened in space.
-        self.__overlays__ = set(docked_overlays if is_docked else normal_overlays)
+        try:
+            current_session = _evejs_runtime_global(namespace, "session")
+            is_docked = current_session is not None and (
+                getattr(current_session, "stationid", None)
+                or getattr(current_session, "structureid", None)
+            )
+            # Update the instance before ViewStateSvc.UpdateOverlays runs.
+            self.__overlays__ = set(docked_overlays if is_docked else normal_overlays)
+        except Exception:
+            pass
         return original(self, **kwargs)
 
     LoadView._evejs_inventory_view_patch = True

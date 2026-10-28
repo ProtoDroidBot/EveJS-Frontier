@@ -16,6 +16,8 @@ const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
 const database = require("../../gameStore");
+const { isNpcCharacterID } = require("../_shared/npcIdentityConstants");
+const { getNpcPilotIdentityStore } = require("../../space/npc/npcPilotIdentityStore");
 const { toClientSafeDisplayName } = require(path.join(__dirname, "../_shared/clientNameUtils"));
 const { getCharacterShips } = require(path.join(__dirname, "../character/characterState"));
 const { normalizeCharacterGender } = require(path.join(__dirname, "../character/characterIdentity"));
@@ -188,6 +190,19 @@ class ConfigService extends BaseService {
                 ]);
                 continue;
             }
+            if (isNpcCharacterID(normalizedId)) {
+                const pilot = getNpcPilotIdentityStore().get(normalizedId);
+                if (pilot) {
+                    rows.push([
+                        normalizedId,
+                        toClientSafeDisplayName(pilot.characterName, `NPC ${normalizedId}`),
+                        1373,
+                        0,
+                        null,
+                    ]);
+                    continue;
+                }
+            }
             const agentOwnerRow = normalizedId > 0
                 ? buildAgentOwnerRow(normalizedId)
                 : null;
@@ -301,6 +316,15 @@ class ConfigService extends BaseService {
             if (numericId < 0) {
                 continue;
             }
+            // Immutable universe data is authoritative for solar systems,
+            // stargates, stations, and celestials. A session may be in space with
+            // locationid equal to its solar-system ID; getStationRecord's legacy
+            // fallback then resembles a station and used to overwrite that system's
+            // real name/coordinates (and, transitively, stargate map labels).
+            if (staticRowsById.has(numericId)) {
+                rows.push(staticRowsById.get(numericId));
+                continue;
+            }
             if (locationRowsById.has(numericId)) {
                 rows.push(locationRowsById.get(numericId));
                 continue;
@@ -314,10 +338,7 @@ class ConfigService extends BaseService {
                     continue;
                 }
             }
-            if (staticRowsById.has(numericId)) {
-                rows.push(staticRowsById.get(numericId));
-            }
-            else if (shipNameById.has(numericId)) {
+            if (shipNameById.has(numericId)) {
                 rows.push(buildLocationRow(numericId, shipNameById.get(numericId), sessionSolarSystemID, null, `Ship ${numericId}`));
             }
             else if (charNameById.has(numericId)) {

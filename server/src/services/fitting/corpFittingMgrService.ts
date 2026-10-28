@@ -24,7 +24,7 @@ const {
   resolveRequestedOwnerID,
 } = require(path.join(__dirname, "./fittingMgrServiceHelpers"));
 const {
-  buildCachedMethodCallResult,
+  buildCachedMethodCallResultAsync: buildCachedMethodCallResult,
 } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 
 class CorpFittingMgrService extends BaseService {

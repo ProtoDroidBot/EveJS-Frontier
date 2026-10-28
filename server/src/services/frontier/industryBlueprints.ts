@@ -81,26 +81,48 @@ function parseCustomInfo(value) {
   return { legacyCustomInfo: text };
 }
 
-function getSelectedBlueprint(item) {
+function getSelectedBlueprint(item, requestedLaneID = 1) {
+  const laneID = Number(requestedLaneID);
+  if (!Number.isSafeInteger(laneID) || laneID <= 0) return null;
   const state = parseCustomInfo(item?.customInfo)[INDUSTRY_INFO_KEY];
-  return getBlueprintForFacility(item?.typeID, state?.blueprintID);
+  const laneBlueprintID = state?.lanes?.[String(laneID)]?.blueprintID;
+  // The original single-lane field remains the lane-one projection so older
+  // clients, dApps and chain snapshots keep their established contract.
+  return getBlueprintForFacility(item?.typeID,
+    laneBlueprintID ?? (laneID === 1 ? state?.blueprintID : null));
 }
 
 // Pure metadata update so the caller can validate access and empty input/output
 // inventories, then persist the selection in its existing item transaction.
-function withSelectedBlueprint(item, blueprintID) {
+function withSelectedBlueprint(item, blueprintID, requestedLaneID = 1) {
   const blueprint = getBlueprintForFacility(item?.typeID, blueprintID);
   if (!blueprint) {
     throw new Error("INDUSTRY_BLUEPRINT_INVALID");
   }
+  const laneID = Number(requestedLaneID);
+  if (!Number.isSafeInteger(laneID) || laneID <= 0) {
+    throw new Error("INDUSTRY_JOB_LANE_INVALID");
+  }
   const info = parseCustomInfo(item?.customInfo);
   const previous = info[INDUSTRY_INFO_KEY];
-  info[INDUSTRY_INFO_KEY] = {
+  const industry = {
     ...(previous && typeof previous === "object" && !Array.isArray(previous)
       ? previous : {}),
     version: 1,
-    blueprintID: blueprint.blueprint_id,
   };
+  const lanes = { ...(industry.lanes || {}) };
+  // Do not materialize a lane-one entry solely for recipe selection: the
+  // legacy top-level shape remains byte-for-byte compatible until lane state
+  // (production/access) actually exists. If it does exist, keep both mirrors.
+  if (laneID !== 1 || lanes[String(laneID)]) {
+    lanes[String(laneID)] = {
+      ...(lanes[String(laneID)] || {}),
+      blueprintID: blueprint.blueprint_id,
+    };
+    industry.lanes = lanes;
+  }
+  if (laneID === 1) industry.blueprintID = blueprint.blueprint_id;
+  info[INDUSTRY_INFO_KEY] = industry;
   return JSON.stringify(info);
 }
 

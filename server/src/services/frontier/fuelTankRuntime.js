@@ -13,8 +13,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *   stack sizes.
  * - The tank level is the ship Dogma attribute `fuelCharge` (5635) against
  *   `fuelCapacity` (5633); both widgets poll the godma ship item, so a plain
- *   attribute-change notification refreshes the numerator. Loading consumes
- *   the source stacks outright — the client ships no fuel-unload RPC.
+ *   attribute-change notification refreshes the numerator. Loading normally
+ *   consumes source stacks; the marked station Unstable Fuel offer is the one
+ *   non-depleting source. The client ships no fuel-unload RPC.
  * - `frontier.fuel.static_data` treats a type as fuel when its group is in
  *   inventorycommon.const.fuelGroups = [4738 crude fuel, 4598 corvette fuel].
  * - The client offers fuel from ship cargo (flag 5), the specialized fuel bay
@@ -35,23 +36,37 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const itemStore = require(path.join(__dirname, "../inventory/itemStore"));
 const { resolveItemByTypeID } = require(path.join(__dirname, "../inventory/itemTypeRegistry"));
-const { getTypeDogmaAttributes } = require(path.join(__dirname, "../fitting/liveFittingState"));
+const { applyModifierGroups, buildEffectiveItemAttributeMap, getTypeDogmaAttributes, } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const { getCreationTemplate } = require(path.join(__dirname, "./creationStaticData"));
 const ATTRIBUTE_FUEL_EFFICIENCY = 5607;
 const ATTRIBUTE_FUEL_CAPACITY = 5633;
 const ATTRIBUTE_FUEL_RATE = 5634;
 const ATTRIBUTE_FUEL_CHARGE = 5635;
+const ATTRIBUTE_FUEL_CAPACITY_ADD = 5679;
 const ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY = 6123;
 const ATTRIBUTE_FUEL_CONTAINMENT_BURDEN = 6124;
 const ATTRIBUTE_FUEL_VOLATILITY = 6311;
+const ATTRIBUTE_WARP_FUEL_RATE = 5640;
 const FUEL_PROPERTY_ATTRIBUTE_IDS = Object.freeze({
     fuelEfficiency: ATTRIBUTE_FUEL_EFFICIENCY,
     fuelThermalInefficiency: ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY,
     fuelContainmentBurden: ATTRIBUTE_FUEL_CONTAINMENT_BURDEN,
     fuelVolatility: ATTRIBUTE_FUEL_VOLATILITY,
 });
+const UNSTABLE_FUEL_TYPE_ID = 77818;
+const INITIAL_FULL_FUEL_SHIP_TYPE_IDS = new Set([
+    87698, // Wend
+    95276, // Creation
+    95735, // Refuge Ship
+]);
 const SHIP_CATEGORY_ID = 6;
 const FUEL_EPSILON = 1e-9;
+// EngineDogmaItem.add_warp_modifiers in Frontier build 3502403 applies this
+// multiplier to ship mass before dividing the authored engine warp-fuel rate
+// by the active fuel impulse. CreationDogmaItem receives its propulsion
+// module's warp-fuel rate directly and therefore does not use this factor.
+const REGULAR_ENGINE_WARP_MASS_MULTIPLIER = 1e-6;
+const TYPE_FUEL_BLISTER = 96013;
 // inventorycommon.const.fuelGroups in the staged client.
 const FUEL_GROUP_CRUDE = 4738;
 const FUEL_GROUP_CORVETTE = 4598;
@@ -160,6 +175,84 @@ function resolveShipFuelTank(shipItem, effectiveCapacity, deps = {}) {
         supported: isShip && source !== null && capacity > 0,
     };
 }
+/** Resolve the capacity contributed by the hull and the Creation layout that
+ * exists at the instant a supported starter hull is created. */
+function resolveInitialShipFuelCapacity(shipItem, characterID, deps = {}) {
+    const typeID = toInt(shipItem && shipItem.typeID, 0);
+    if (!INITIAL_FULL_FUEL_SHIP_TYPE_IDS.has(typeID)) {
+        return 0;
+    }
+    const buildAttributes = typeof deps.buildEffectiveItemAttributeMap === "function"
+        ? deps.buildEffectiveItemAttributeMap
+        : buildEffectiveItemAttributeMap;
+    const applyModifiers = typeof deps.applyModifierGroups === "function"
+        ? deps.applyModifierGroups
+        : applyModifierGroups;
+    const attributes = buildAttributes(shipItem) || {};
+    const resolveCreationTemplate = typeof deps.getCreationTemplate === "function"
+        ? deps.getCreationTemplate
+        : getCreationTemplate;
+    if (resolveCreationTemplate(typeID)) {
+        // Lazy import avoids itemStore -> fuel runtime -> Creation runtime ->
+        // itemStore initialization cycles. The grant path has already seeded the
+        // layout before this function runs.
+        const resolveCreationContext = typeof deps.getCreationDogmaContext === "function"
+            ? deps.getCreationDogmaContext
+            : require(path.join(__dirname, "./creationRuntime")).getCreationDogmaContext;
+        const contextResult = resolveCreationContext(shipItem, toInt(characterID, 0));
+        if (!contextResult || contextResult.success !== true) {
+            return 0;
+        }
+        const modifierEntries = contextResult.data &&
+            Array.isArray(contextResult.data.shipAttributeModifierEntries)
+            ? contextResult.data.shipAttributeModifierEntries
+            : [];
+        applyModifiers(attributes, modifierEntries);
+    }
+    return Math.max(0, Math.floor(toFiniteNumber(attributes[ATTRIBUTE_FUEL_CAPACITY], 0)));
+}
+function initializeNewShipFuelTank(shipItem, characterID, deps = {}) {
+    const typeID = toInt(shipItem && shipItem.typeID, 0);
+    if (!INITIAL_FULL_FUEL_SHIP_TYPE_IDS.has(typeID)) {
+        return { success: true, skipped: true, data: { item: shipItem } };
+    }
+    const capacity = resolveInitialShipFuelCapacity(shipItem, characterID, deps);
+    if (capacity <= 0) {
+        return { success: false, errorMsg: "INITIAL_FUEL_CAPACITY_MISSING" };
+    }
+    const updateShipItem = typeof deps.updateShipItem === "function"
+        ? deps.updateShipItem
+        : itemStore.updateShipItem;
+    const fuelTank = resolveShipFuelTank(shipItem, capacity, deps);
+    const reserveCapacity = resolveCreationReserveFuelCapacity(shipItem, fuelTank, deps);
+    const initialFuelQueue = partitionFuelQueueByReserveCapacity([{ fuelTypeID: UNSTABLE_FUEL_TYPE_ID, quantity: capacity }], capacity, reserveCapacity);
+    const updateResult = updateShipItem(shipItem.itemID, (currentItem) => ({
+        ...currentItem,
+        conditionState: {
+            ...(currentItem.conditionState || {}),
+            fuelCharge: capacity,
+            fuelTypeID: UNSTABLE_FUEL_TYPE_ID,
+            fuelQueue: initialFuelQueue,
+        },
+    }));
+    if (!updateResult || updateResult.success !== true) {
+        return {
+            success: false,
+            errorMsg: updateResult && updateResult.errorMsg
+                ? updateResult.errorMsg
+                : "INITIAL_FUEL_WRITE_FAILED",
+        };
+    }
+    return {
+        success: true,
+        skipped: false,
+        data: {
+            capacity,
+            fuelTypeID: UNSTABLE_FUEL_TYPE_ID,
+            item: updateResult.data,
+        },
+    };
+}
 function getConditionState(shipItem) {
     return shipItem && shipItem.conditionState && typeof shipItem.conditionState === "object"
         ? shipItem.conditionState
@@ -186,15 +279,22 @@ function normalizeFuelQueue(rawQueue) {
         const tuple = Array.isArray(entry);
         const fuelTypeID = toInt(tuple ? entry[0] : entry && (entry.fuelTypeID ?? entry.typeID), 0);
         const quantity = Math.max(0, toFiniteNumber(tuple ? entry[1] : entry && entry.quantity, 0));
+        const reserve = Boolean(!tuple && entry && entry.reserve === true);
         if (fuelTypeID <= 0 || quantity <= FUEL_EPSILON) {
             continue;
         }
         const tail = fuelQueue[fuelQueue.length - 1];
-        if (tail && tail.fuelTypeID === fuelTypeID) {
+        if (tail &&
+            tail.fuelTypeID === fuelTypeID &&
+            Boolean(tail.reserve) === reserve) {
             tail.quantity += quantity;
         }
         else {
-            fuelQueue.push({ fuelTypeID, quantity });
+            fuelQueue.push({
+                fuelTypeID,
+                quantity,
+                ...(reserve ? { reserve: true } : {}),
+            });
         }
     }
     return fuelQueue;
@@ -252,6 +352,65 @@ function getFuelProperties(fuelTypeID, deps = {}) {
 function getFuelEfficiency(fuelTypeID, deps = {}) {
     return getFuelProperties(fuelTypeID, deps).fuelEfficiency;
 }
+/**
+ * Resolve the amount of continuous generator work supplied by one unit of
+ * the active fuel.  The client uses distinct power profiles:
+ *
+ * - regular engines: clamp(2 * impulse / containment, 1, 100)
+ * - Creation: clamp(impulse / max(1, containment / reduction), 1, 100)
+ *
+ * `legacy` preserves the original direct-impulse helper contract for callers
+ * which do not represent either Frontier runtime.
+ */
+function calculateContinuousFuelPowerFactor({ fuelProperties, profile = "legacy", containmentReduction = 1, } = {}) {
+    const impulse = Math.max(0, toFiniteNumber(fuelProperties && fuelProperties.fuelEfficiency, 0));
+    if (impulse <= FUEL_EPSILON) {
+        return 0;
+    }
+    if (profile === "regular-engine") {
+        const containment = Math.max(0, toFiniteNumber(fuelProperties && fuelProperties.fuelContainmentBurden, 0));
+        if (containment <= FUEL_EPSILON) {
+            return 0;
+        }
+        return Math.min(100, Math.max(1, (2 * impulse) / containment));
+    }
+    if (profile === "creation") {
+        const containmentFactor = Math.max(1, Math.max(0, toFiniteNumber(fuelProperties && fuelProperties.fuelContainmentBurden, 0)) / Math.max(1, toFiniteNumber(containmentReduction, 1)));
+        return Math.min(100, Math.max(1, impulse / containmentFactor));
+    }
+    return impulse;
+}
+/**
+ * Return the positive units/second charged by the continuous fuel process
+ * while a ship is actually in warp.
+ *
+ * Regular Frontier engines author a negative base rate and the client turns
+ * it into:
+ *
+ *   abs(rate) * shipMass * 1e-6 / activeFuelImpulse
+ *
+ * Creation propulsion modules add their negative rate directly to the
+ * Creation ship's resource process. Keeping the two profiles explicit avoids
+ * accidentally applying jump-drive (instantaneous) containment/heat rules to
+ * in-system warp.
+ */
+function calculateWarpFuelConsumptionRate({ warpFuelRate, shipMass, fuelProperties, profile = "regular-engine", } = {}) {
+    const authoredRate = Math.max(0, -toFiniteNumber(warpFuelRate, 0));
+    if (authoredRate <= FUEL_EPSILON) {
+        return 0;
+    }
+    if (profile === "creation") {
+        return authoredRate;
+    }
+    const fuelImpulse = Math.max(0, toFiniteNumber(fuelProperties && fuelProperties.fuelEfficiency, 0));
+    if (fuelImpulse <= FUEL_EPSILON) {
+        return 0;
+    }
+    return (authoredRate *
+        Math.max(0, toFiniteNumber(shipMass, 0)) *
+        REGULAR_ENGINE_WARP_MASS_MULTIPLIER /
+        fuelImpulse);
+}
 /** Return the properties of the FIFO head (the fuel currently being burned). */
 function calculateFuelQueueProperties(fuelQueue, deps = {}) {
     const normalizedQueue = normalizeFuelQueue(fuelQueue);
@@ -278,27 +437,149 @@ function trimFuelQueueToQuantity(fuelQueue, nextTotalQuantity) {
             break;
         }
         const quantity = Math.min(entry.quantity, remaining);
-        trimmedQueue.push({ fuelTypeID: entry.fuelTypeID, quantity });
+        trimmedQueue.push({
+            fuelTypeID: entry.fuelTypeID,
+            quantity,
+            ...(entry.reserve === true ? { reserve: true } : {}),
+        });
         remaining -= quantity;
     }
     return normalizeFuelQueue(trimmedQueue);
 }
 function appendFuelQueueBatch(fuelQueue, fuelTypeID, quantity) {
-    return normalizeFuelQueue([
-        ...normalizeFuelQueue(fuelQueue),
-        { fuelTypeID, quantity },
-    ]);
+    const normalized = normalizeFuelQueue(fuelQueue);
+    const firstReserveIndex = normalized.findIndex((entry) => entry.reserve === true);
+    const insertionIndex = firstReserveIndex >= 0
+        ? firstReserveIndex
+        : normalized.length;
+    normalized.splice(insertionIndex, 0, { fuelTypeID, quantity });
+    return normalizeFuelQueue(normalized);
 }
 /**
- * Advance Frontier's fuel-driven capacitor recharge for one tick.
- *
- * One MW of unused power grid supplies one GJ/s of capacitor recharge. Each
- * unit of loaded fuel supplies `fuelEfficiency` GJ. The returned state is
- * deliberately pure so both Creation and regular fuel-tank ships use exactly
- * the same accounting. `capacitorRechargeRate` is retained in the input for
- * diagnostics/legacy callers, but Frontier's rate is the free grid headroom.
+ * Mark only the tail which physically exceeds the ordinary tank capacity as
+ * reserve fuel. Keeping that tier at the end of the FIFO makes Fuel Blisters
+ * burn after the ship's normal tanks, even after a later refuel operation.
  */
-function calculateFueledCapacitorRecharge({ currentCapacitorAmount, capacitorCapacity, capacitorRechargeRate, powerOutput, powerLoad, fuelCharge, fuelTypeID, fuelQueue, fuelComposition, deltaSeconds, }, deps = {}) {
+function partitionFuelQueueByReserveCapacity(fuelQueue, totalCapacity, reserveCapacity) {
+    const source = normalizeFuelQueue(fuelQueue);
+    const hasAuthoredReserveTier = source.some((entry) => entry.reserve === true);
+    const normalized = source.map((entry) => ({
+        fuelTypeID: entry.fuelTypeID,
+        quantity: entry.quantity,
+        ...(entry.reserve === true ? { reserve: true } : {}),
+    }));
+    const totalQuantity = getFuelQueueQuantity(normalized);
+    const capacity = Math.max(0, toFiniteNumber(totalCapacity, 0));
+    const reserveLimit = Math.min(capacity, Math.max(0, toFiniteNumber(reserveCapacity, 0)));
+    let ordinaryRemaining = Math.min(totalQuantity, Math.max(0, capacity - reserveLimit));
+    if (hasAuthoredReserveTier) {
+        const ordinaryEntries = normalized.filter((entry) => entry.reserve !== true);
+        const reserveEntries = normalized
+            .filter((entry) => entry.reserve === true)
+            .map((entry) => ({ ...entry, reserve: true }));
+        const ordinaryQuantity = getFuelQueueQuantity(ordinaryEntries);
+        const ordinaryLimit = Math.max(0, capacity - reserveLimit);
+        if (ordinaryQuantity <= ordinaryLimit + FUEL_EPSILON) {
+            return normalizeFuelQueue([...ordinaryEntries, ...reserveEntries]);
+        }
+        const split = trimFuelQueueToQuantity(ordinaryEntries, ordinaryLimit);
+        const overflow = trimFuelQueueToQuantity(ordinaryEntries, ordinaryQuantity);
+        let drop = ordinaryLimit;
+        const overflowTail = [];
+        for (const entry of overflow) {
+            const skipped = Math.min(drop, entry.quantity);
+            drop -= skipped;
+            const quantity = entry.quantity - skipped;
+            if (quantity > FUEL_EPSILON) {
+                overflowTail.push({
+                    fuelTypeID: entry.fuelTypeID,
+                    quantity,
+                    reserve: true,
+                });
+            }
+        }
+        return normalizeFuelQueue([
+            ...split,
+            ...overflowTail,
+            ...reserveEntries,
+        ]);
+    }
+    const partitioned = [];
+    for (const entry of normalized) {
+        const ordinaryQuantity = Math.min(entry.quantity, ordinaryRemaining);
+        if (ordinaryQuantity > FUEL_EPSILON) {
+            partitioned.push({
+                fuelTypeID: entry.fuelTypeID,
+                quantity: ordinaryQuantity,
+            });
+            ordinaryRemaining -= ordinaryQuantity;
+        }
+        const reserveQuantity = entry.quantity - ordinaryQuantity;
+        if (reserveQuantity > FUEL_EPSILON) {
+            partitioned.push({
+                fuelTypeID: entry.fuelTypeID,
+                quantity: reserveQuantity,
+                reserve: true,
+            });
+        }
+    }
+    return normalizeFuelQueue(partitioned);
+}
+function appendFuelQueueBatchByReserveCapacity(fuelQueue, fuelTypeID, quantity, totalCapacity, reserveCapacity) {
+    const capacity = Math.max(0, toFiniteNumber(totalCapacity, 0));
+    const reserveLimit = Math.min(capacity, Math.max(0, toFiniteNumber(reserveCapacity, 0)));
+    const ordinaryLimit = Math.max(0, capacity - reserveLimit);
+    const normalized = partitionFuelQueueByReserveCapacity(fuelQueue, capacity, reserveLimit);
+    const ordinaryEntries = normalized.filter((entry) => entry.reserve !== true);
+    const reserveEntries = normalized.filter((entry) => entry.reserve === true);
+    const ordinaryQuantity = getFuelQueueQuantity(ordinaryEntries);
+    const requested = Math.max(0, toFiniteNumber(quantity, 0));
+    const ordinaryAdded = Math.min(requested, Math.max(0, ordinaryLimit - ordinaryQuantity));
+    const reserveAdded = requested - ordinaryAdded;
+    return normalizeFuelQueue([
+        ...ordinaryEntries,
+        ...(ordinaryAdded > FUEL_EPSILON
+            ? [{ fuelTypeID, quantity: ordinaryAdded }]
+            : []),
+        ...reserveEntries,
+        ...(reserveAdded > FUEL_EPSILON
+            ? [{ fuelTypeID, quantity: reserveAdded, reserve: true }]
+            : []),
+    ]);
+}
+function resolveCreationReserveFuelCapacity(shipItem, fuelTank = null, deps = {}) {
+    const resolvedFuelTank = fuelTank || resolveShipFuelTank(shipItem, 0, deps);
+    if (!resolvedFuelTank.creationType) {
+        return 0;
+    }
+    const resolveCreationContext = typeof deps.getCreationDogmaContext === "function"
+        ? deps.getCreationDogmaContext
+        : require(path.join(__dirname, "./creationRuntime")).getCreationDogmaContext;
+    const context = resolveCreationContext(shipItem, toInt(shipItem && shipItem.ownerID, 0));
+    if (!context || context.success !== true || !context.data) {
+        return 0;
+    }
+    return Math.max(0, Math.floor((Array.isArray(context.data.moduleItems) ? context.data.moduleItems : [])
+        .filter((moduleItem) => (toInt(moduleItem && moduleItem.typeID, 0) === TYPE_FUEL_BLISTER &&
+        moduleItem.moduleState && moduleItem.moduleState.online === true))
+        .reduce((total, moduleItem) => {
+        const attributes = buildEffectiveItemAttributeMap(moduleItem) || {};
+        return total + Math.max(0, toFiniteNumber(attributes[ATTRIBUTE_FUEL_CAPACITY_ADD], 0));
+    }, 0)));
+}
+/**
+ * Advance Frontier's fuel-driven power grid and capacitor recharge for one
+ * tick.
+ *
+ * Online consumers are supplied first by the generator. Remaining generator
+ * headroom may recharge the capacitor, capped by the authored recharge rate.
+ * One MW sustained for one second consumes one GJ of generator work. Fuel
+ * impulse and containment determine how much work each unit supplies, using
+ * the distinct regular-engine and Creation formulas authored by the client.
+ * The returned state is deliberately pure so both profiles share FIFO and
+ * time accounting without conflating their power equations.
+ */
+function calculateFueledCapacitorRecharge({ currentCapacitorAmount, capacitorCapacity, capacitorRechargeRate, powerOutput, powerLoad, fuelCharge, fuelTypeID, fuelQueue, fuelComposition, deltaSeconds, isWarping = false, warpFuelRate = 0, warpFuelProfile = "regular-engine", shipMass = 0, powerFuelProfile = "legacy", fuelContainmentReduction = 1, }, deps = {}) {
     const capacity = Math.max(0, toFiniteNumber(capacitorCapacity, 0));
     const currentAmount = Math.min(capacity, Math.max(0, toFiniteNumber(currentCapacitorAmount, 0)));
     let normalizedFuelQueue = normalizeFuelQueue(Array.isArray(fuelQueue) ? fuelQueue : fuelComposition);
@@ -315,32 +596,91 @@ function calculateFueledCapacitorRecharge({ currentCapacitorAmount, capacitorCap
     const loadedFuel = getFuelQueueQuantity(normalizedFuelQueue);
     const fuelProperties = calculateFuelQueueProperties(normalizedFuelQueue, deps);
     const fuelEfficiency = fuelProperties.fuelEfficiency;
-    const powerHeadroom = Math.max(0, toFiniteNumber(powerOutput, 0) - toFiniteNumber(powerLoad, 0));
+    const normalizedPowerOutput = Math.max(0, toFiniteNumber(powerOutput, 0));
+    const normalizedPowerLoad = Math.max(0, toFiniteNumber(powerLoad, 0));
     const authoredRechargeRate = Math.max(0, toFiniteNumber(capacitorRechargeRate, 0));
-    const effectiveRechargeRate = powerHeadroom;
+    const isRegularEngineProfile = powerFuelProfile === "regular-engine";
+    const availablePowerOutput = isRegularEngineProfile
+        ? authoredRechargeRate
+        : normalizedPowerOutput;
+    const consumerGeneratorLoad = Math.min(availablePowerOutput, normalizedPowerLoad);
+    const powerHeadroom = Math.max(0, availablePowerOutput - normalizedPowerLoad);
+    // EngineDogmaItem recharges at its authored engine power even while online
+    // consumers are drawing power; that load instead raises fuel use through
+    // the squared utilization penalty below. Creation admits recharge only
+    // from unused generator headroom.
+    const effectiveRechargeRate = isRegularEngineProfile
+        ? authoredRechargeRate
+        : Math.min(powerHeadroom, authoredRechargeRate);
     const missingEnergy = Math.max(0, capacity - currentAmount);
-    const requestedEnergy = Math.min(missingEnergy, effectiveRechargeRate * Math.max(0, toFiniteNumber(deltaSeconds, 0)));
+    const normalizedDeltaSeconds = Math.max(0, toFiniteNumber(deltaSeconds, 0));
+    const requestedRechargeEnergy = Math.min(missingEnergy, effectiveRechargeRate * normalizedDeltaSeconds);
+    const requestedConsumerEnergy = consumerGeneratorLoad * normalizedDeltaSeconds;
+    const requestedEnergy = requestedConsumerEnergy + requestedRechargeEnergy;
     const nextFuelQueue = normalizedFuelQueue.map((entry) => ({ ...entry }));
-    let remainingEnergy = requestedEnergy;
+    const requestedPowerRate = normalizedDeltaSeconds > 0
+        ? requestedEnergy / normalizedDeltaSeconds
+        : 0;
+    const powerLoadPenalty = isRegularEngineProfile && authoredRechargeRate > FUEL_EPSILON
+        ? 1 + ((consumerGeneratorLoad / authoredRechargeRate) ** 2)
+        : 1;
+    let remainingSeconds = normalizedDeltaSeconds;
+    let suppliedEnergy = 0;
     let consumedFuel = 0;
-    while (remainingEnergy > FUEL_EPSILON && nextFuelQueue.length > 0) {
+    let consumedWarpFuel = 0;
+    let warpFuelSecondsSupplied = 0;
+    const initialWarpFuelRate = isWarping
+        ? calculateWarpFuelConsumptionRate({
+            warpFuelRate,
+            shipMass,
+            fuelProperties,
+            profile: warpFuelProfile,
+        })
+        : 0;
+    while (remainingSeconds > FUEL_EPSILON && nextFuelQueue.length > 0) {
         const activeBatch = nextFuelQueue[0];
-        const activeEfficiency = getFuelEfficiency(activeBatch.fuelTypeID, deps);
-        // A zero-efficiency head must block later batches to preserve strict FIFO.
-        if (activeEfficiency <= 0) {
+        const activeProperties = getFuelProperties(activeBatch.fuelTypeID, deps);
+        const activePowerFactor = calculateContinuousFuelPowerFactor({
+            fuelProperties: activeProperties,
+            profile: powerFuelProfile,
+            containmentReduction: fuelContainmentReduction,
+        });
+        const powerFuelRate = activePowerFactor > FUEL_EPSILON
+            ? (requestedPowerRate * powerLoadPenalty) / activePowerFactor
+            : 0;
+        const activeWarpFuelRate = isWarping
+            ? calculateWarpFuelConsumptionRate({
+                warpFuelRate,
+                shipMass,
+                fuelProperties: activeProperties,
+                profile: warpFuelProfile,
+            })
+            : 0;
+        const totalFuelRate = powerFuelRate + activeWarpFuelRate;
+        // A head which cannot serve either continuous load blocks later batches,
+        // preserving the client-visible FIFO fuel character.
+        if (totalFuelRate <= FUEL_EPSILON) {
             break;
         }
-        const availableEnergy = activeBatch.quantity * activeEfficiency;
-        const batchEnergy = Math.min(remainingEnergy, availableEnergy);
-        const batchFuel = batchEnergy / activeEfficiency;
+        const suppliedSeconds = Math.min(remainingSeconds, activeBatch.quantity / totalFuelRate);
+        const powerFuel = powerFuelRate * suppliedSeconds;
+        const warpFuel = activeWarpFuelRate * suppliedSeconds;
+        const batchFuel = powerFuel + warpFuel;
         consumedFuel += batchFuel;
-        remainingEnergy -= batchEnergy;
+        consumedWarpFuel += warpFuel;
+        if (activeWarpFuelRate > FUEL_EPSILON) {
+            warpFuelSecondsSupplied += suppliedSeconds;
+        }
+        suppliedEnergy += powerFuel * activePowerFactor / powerLoadPenalty;
+        remainingSeconds -= suppliedSeconds;
         activeBatch.quantity -= batchFuel;
         if (activeBatch.quantity <= FUEL_EPSILON) {
             nextFuelQueue.shift();
         }
     }
-    const rechargedEnergy = requestedEnergy - remainingEnergy;
+    suppliedEnergy = Math.min(requestedEnergy, suppliedEnergy);
+    const suppliedConsumerEnergy = Math.min(requestedConsumerEnergy, suppliedEnergy);
+    const rechargedEnergy = Math.min(requestedRechargeEnergy, Math.max(0, suppliedEnergy - suppliedConsumerEnergy));
     const rawNextFuelCharge = Math.max(0, getFuelQueueQuantity(nextFuelQueue));
     const nextFuelCharge = rawNextFuelCharge <= FUEL_EPSILON
         ? 0
@@ -351,17 +691,41 @@ function calculateFueledCapacitorRecharge({ currentCapacitorAmount, capacitorCap
     const nextCapacitorAmount = capacity - rawNextCapacitorAmount <= FUEL_EPSILON
         ? capacity
         : rawNextCapacitorAmount;
+    const admittedRechargeRate = normalizedDeltaSeconds > 0
+        ? requestedRechargeEnergy / normalizedDeltaSeconds
+        : 0;
     return {
         currentCapacitorAmount: currentAmount,
         nextCapacitorAmount,
         missingEnergy,
+        normalizedPowerOutput,
+        availablePowerOutput,
+        normalizedPowerLoad,
+        consumerGeneratorLoad,
         powerHeadroom,
         authoredRechargeRate,
         effectiveRechargeRate,
+        powerFuelProfile,
+        powerFuelFactor: calculateContinuousFuelPowerFactor({
+            fuelProperties,
+            profile: powerFuelProfile,
+            containmentReduction: fuelContainmentReduction,
+        }),
+        powerLoadPenalty,
+        generatorLoad: consumerGeneratorLoad + admittedRechargeRate,
         fuelEfficiency,
         fuelProperties,
         nextFuelProperties,
         consumedFuel,
+        consumedWarpFuel,
+        warpFuelRate: initialWarpFuelRate,
+        warpFuelSecondsSupplied,
+        isWarping: Boolean(isWarping),
+        requestedConsumerEnergy,
+        suppliedConsumerEnergy,
+        requestedRechargeEnergy,
+        requestedEnergy,
+        suppliedEnergy,
         rechargedEnergy,
         previousFuelCharge: loadedFuel,
         nextFuelCharge,
@@ -471,6 +835,9 @@ function loadFuelIntoShipTank({ characterID, shipID, fuelTypeID, quantity, fuelI
     const updateShipItem = typeof deps.updateShipItem === "function"
         ? deps.updateShipItem
         : itemStore.updateShipItem;
+    const isFreeStationFuelSupplyItem = typeof deps.isFreeStationFuelSupplyItem === "function"
+        ? deps.isFreeStationFuelSupplyItem
+        : itemStore.isFreeStationFuelSupplyItem;
     const ownerID = toInt(characterID, 0);
     const numericShipID = toInt(shipID, 0);
     const numericTypeID = toInt(fuelTypeID, 0);
@@ -508,8 +875,9 @@ function loadFuelIntoShipTank({ characterID, shipID, fuelTypeID, quantity, fuelI
             params: { allowedFuelGroupIDs, fuelGroupID },
         };
     }
+    const reserveFuelCapacity = resolveCreationReserveFuelCapacity(shipItem, fuelTank, deps);
     const previousFuelCharge = Math.min(getShipFuelCharge(shipItem), tankCapacity);
-    let previousFuelQueue = trimFuelQueueToQuantity(getShipFuelQueue(shipItem), previousFuelCharge);
+    let previousFuelQueue = partitionFuelQueueByReserveCapacity(trimFuelQueueToQuantity(getShipFuelQueue(shipItem), previousFuelCharge), tankCapacity, reserveFuelCapacity);
     // An old save can contain charge without a type. Adopt that charge as the
     // first newly loaded type, matching the prior migration behavior.
     if (previousFuelCharge > FUEL_EPSILON &&
@@ -536,6 +904,18 @@ function loadFuelIntoShipTank({ characterID, shipID, fuelTypeID, quantity, fuelI
         dockedLocationID,
         deps,
     });
+    const isFreeStationSupply = (stack) => numericTypeID === UNSTABLE_FUEL_TYPE_ID &&
+        toInt(dockedLocationID, 0) > 0 &&
+        typeof isFreeStationFuelSupplyItem === "function" &&
+        isFreeStationFuelSupplyItem(stack, {
+            characterID: ownerID,
+            stationID: toInt(dockedLocationID, 0),
+        });
+    // The station button does not identify one particular source stack. Put the
+    // service-backed offer first so an automatic fill never consumes a pilot's
+    // ordinary cargo or hangar fuel while the free station option is available.
+    sourceStacks.sort((left, right) => Number(isFreeStationSupply(right)) - Number(isFreeStationSupply(left)) ||
+        toInt(left.itemID, 0) - toInt(right.itemID, 0));
     const availableQuantity = sourceStacks.reduce((total, item) => total + getStackQuantity(item), 0);
     if (availableQuantity < requestedQuantity) {
         return {
@@ -552,6 +932,10 @@ function loadFuelIntoShipTank({ characterID, shipID, fuelTypeID, quantity, fuelI
             break;
         }
         const take = Math.min(remaining, getStackQuantity(stack));
+        if (isFreeStationSupply(stack)) {
+            remaining -= take;
+            continue;
+        }
         const result = consumeInventoryItemQuantity(stack.itemID, take);
         if (!result || result.success !== true) {
             // Restore already-drained stacks before failing so a mid-drain write
@@ -577,7 +961,7 @@ function loadFuelIntoShipTank({ characterID, shipID, fuelTypeID, quantity, fuelI
         remaining -= take;
     }
     const nextFuelCharge = Math.min(previousFuelCharge + requestedQuantity, tankCapacity);
-    const nextFuelQueue = appendFuelQueueBatch(previousFuelQueue, numericTypeID, requestedQuantity);
+    const nextFuelQueue = appendFuelQueueBatchByReserveCapacity(previousFuelQueue, numericTypeID, requestedQuantity, tankCapacity, reserveFuelCapacity);
     const nextFuelTypeID = nextFuelQueue[0]?.fuelTypeID || 0;
     const previousFuelProperties = calculateFuelQueueProperties(previousFuelQueue, deps);
     const fuelProperties = calculateFuelQueueProperties(nextFuelQueue, deps);
@@ -636,11 +1020,19 @@ module.exports = {
     ATTRIBUTE_FUEL_RATE,
     ATTRIBUTE_FUEL_THERMAL_INEFFICIENCY,
     ATTRIBUTE_FUEL_VOLATILITY,
+    ATTRIBUTE_WARP_FUEL_RATE,
     FUEL_PROPERTY_ATTRIBUTE_IDS,
     FUEL_GROUP_IDS,
+    INITIAL_FULL_FUEL_SHIP_TYPE_IDS,
+    TYPE_FUEL_BLISTER,
+    UNSTABLE_FUEL_TYPE_ID,
+    REGULAR_ENGINE_WARP_MASS_MULTIPLIER,
     appendFuelQueueBatch,
+    appendFuelQueueBatchByReserveCapacity,
+    calculateContinuousFuelPowerFactor,
     calculateFuelQueueProperties,
     calculateFueledCapacitorRecharge,
+    calculateWarpFuelConsumptionRate,
     collectFuelSourceStacks,
     getFuelEfficiency,
     getFuelProperties,
@@ -650,11 +1042,15 @@ module.exports = {
     getShipFuelQueue,
     getShipFuelProperties,
     getShipFuelTypeID,
+    initializeNewShipFuelTank,
     isSupportedFuelType,
     loadFuelIntoShipTank,
     normalizeFuelComposition,
     normalizeFuelQueue,
     normalizeRequestedFuelItemIDs,
+    partitionFuelQueueByReserveCapacity,
+    resolveCreationReserveFuelCapacity,
+    resolveInitialShipFuelCapacity,
     resolveShipFuelTank,
     trimFuelQueueToQuantity,
 };

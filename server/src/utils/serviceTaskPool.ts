@@ -12,11 +12,9 @@
 const path = require("path");
 const { Worker } = require("worker_threads");
 
-const DEFAULT_TASK_TIMEOUT_MS = 120_000;
-// One planner thread plus the authoritative main thread gives isolation
-// without duplicating the large static-world cache multiple times by default.
-// Operators can raise this with EVEJS_SERVICE_WORKER_THREADS.
-const DEFAULT_POOL_SIZE = 1;
+const DEFAULT_TASK_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_PENDING_TASKS = 256;
+const DEFAULT_POOL_SIZE = 2;
 const WORKER_PATH = path.join(__dirname, "serviceTaskPool.worker.js");
 
 function normalizePositiveInteger(value, fallback) {
@@ -43,6 +41,7 @@ class ServiceTaskPool {
   declare _createWorker: any;
   declare _idleWorkers: any[];
   declare _nextTaskID: number;
+  declare _maxPendingTasks: number;
   declare _pending: Map<number, any>;
   declare _poolSize: number;
   declare _queue: any[];
@@ -55,6 +54,10 @@ class ServiceTaskPool {
     this._taskTimeoutMs = normalizePositiveInteger(
       options.taskTimeoutMs,
       DEFAULT_TASK_TIMEOUT_MS,
+    );
+    this._maxPendingTasks = normalizePositiveInteger(
+      options.maxPendingTasks,
+      DEFAULT_MAX_PENDING_TASKS,
     );
     this._workerPath = options.workerPath || WORKER_PATH;
     this._createWorker = typeof options.createWorker === "function"
@@ -83,6 +86,13 @@ class ServiceTaskPool {
       );
     }
     const modulePath = path.resolve(rawModulePath);
+    if (this._queue.length + this._pending.size >= this._maxPendingTasks) {
+      const error: Error & Record<string, any> = new Error(
+        `service task queue is full (${this._maxPendingTasks})`,
+      );
+      error.code = "SERVICE_TASK_QUEUE_FULL";
+      return Promise.reject(error);
+    }
     const taskID = this._nextTaskID++;
     return new Promise((resolve, reject) => {
       this._queue.push({
@@ -96,6 +106,16 @@ class ServiceTaskPool {
       });
       this._drain();
     });
+  }
+
+  getStats() {
+    return {
+      workers: this._workers.size,
+      active: this._pending.size,
+      queued: this._queue.length,
+      maxPendingTasks: this._maxPendingTasks,
+      taskTimeoutMs: this._taskTimeoutMs,
+    };
   }
 
   async close() {
@@ -220,13 +240,11 @@ class ServiceTaskPool {
   }
 }
 
-const sharedPool = new ServiceTaskPool({
-  poolSize: normalizePositiveInteger(
-    process.env.EVEJS_SERVICE_WORKER_THREADS,
-    DEFAULT_POOL_SIZE,
-  ),
-});
-
-module.exports = sharedPool;
-module.exports.ServiceTaskPool = ServiceTaskPool;
-module.exports.DEFAULT_POOL_SIZE = DEFAULT_POOL_SIZE;
+// Deliberately no process-wide default pool. Every workload must choose its
+// own concurrency, deadline and admission budget so one domain cannot starve
+// codecs, persistence, or world planning.
+module.exports = {
+  ServiceTaskPool,
+  DEFAULT_POOL_SIZE,
+  DEFAULT_MAX_PENDING_TASKS,
+};

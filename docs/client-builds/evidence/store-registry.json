@@ -1,0 +1,319 @@
+{
+  "baselineBuild": 3640684,
+  "baselineRoot": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier",
+  "excludedFolders": {},
+  "folders": {
+    "EVE Frontier 3122254": {
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/EVE Frontier 3122254",
+      "profiles": [
+        {
+          "folder": "EVE Frontier 3122254",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/EVE Frontier 3122254/EVE Frontier",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/EVE Frontier 3122254/EVE Frontier/stillness"
+        }
+      ],
+      "unidentifiedInstallations": []
+    },
+    "Era5Cycle1-2814770": {
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era5Cycle1-2814770",
+      "profiles": [
+        {
+          "folder": "Era5Cycle1-2814770",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era5Cycle1-2814770/EVE Frontier",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era5Cycle1-2814770/EVE Frontier/stillness"
+        }
+      ],
+      "unidentifiedInstallations": []
+    },
+    "Era5Cycle2-2898485": {
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era5Cycle2-2898485",
+      "profiles": [
+        {
+          "folder": "Era5Cycle2-2898485",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era5Cycle2-2898485/EVE Frontier",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era5Cycle2-2898485/EVE Frontier/nova"
+        },
+        {
+          "folder": "Era5Cycle2-2898485",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era5Cycle2-2898485/EVE Frontier",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era5Cycle2-2898485/EVE Frontier/stillness"
+        }
+      ],
+      "unidentifiedInstallations": []
+    },
+    "Era6Cycle1-2973168": {
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle1-2973168",
+      "profiles": [
+        {
+          "folder": "Era6Cycle1-2973168",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle1-2973168/EVE Frontier",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle1-2973168/EVE Frontier/stillness"
+        }
+      ],
+      "unidentifiedInstallations": []
+    },
+    "Era6Cycle2-2997426": {
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle2-2997426",
+      "profiles": [
+        {
+          "folder": "Era6Cycle2-2997426",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle2-2997426/EVE Frontier",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle2-2997426/EVE Frontier/stillness"
+        }
+      ],
+      "unidentifiedInstallations": []
+    },
+    "Era6Cycle5-3388875": {
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle5-3388875",
+      "profiles": [
+        {
+          "folder": "Era6Cycle5-3388875",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle5-3388875/EVE Frontier",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle5-3388875/EVE Frontier/stillness"
+        }
+      ],
+      "unidentifiedInstallations": []
+    },
+    "Era6Cycle7x-Lim-3572727": {
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle7x-Lim-3572727",
+      "profiles": [
+        {
+          "folder": "Era6Cycle7x-Lim-3572727",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle7x-Lim-3572727/EVE Frontier",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle7x-Lim-3572727/EVE Frontier/stillness"
+        }
+      ],
+      "unidentifiedInstallations": []
+    },
+    "Era6Cycle7x-Umb-3551616": {
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle7x-Umb-3551616",
+      "profiles": [
+        {
+          "folder": "Era6Cycle7x-Umb-3551616",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle7x-Umb-3551616/EVE Frontier",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle7x-Umb-3551616/EVE Frontier/stillness"
+        },
+        {
+          "folder": "Era6Cycle7x-Umb-3551616",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle7x-Umb-3551616/EVE Frontier",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Era6Cycle7x-Umb-3551616/EVE Frontier/utopia"
+        }
+      ],
+      "unidentifiedInstallations": []
+    },
+    "Phase2": {
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase2",
+      "profiles": [
+        {
+          "folder": "Phase2",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase2/AwakenCBT - Copy",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase2/AwakenCBT - Copy/awakening"
+        }
+      ],
+      "unidentifiedInstallations": []
+    },
+    "Phase3-Final": {
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase3-Final",
+      "profiles": [
+        {
+          "folder": "Phase3-Final",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase3-Final/Project Awakening",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase3-Final/Project Awakening/nebula"
+        }
+      ],
+      "unidentifiedInstallations": []
+    },
+    "Phase4-Final": {
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Final",
+      "profiles": [
+        {
+          "folder": "Phase4-Final",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Final/EVE Frontier P4",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Final/EVE Frontier P4/Nova"
+        },
+        {
+          "folder": "Phase4-Final",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Final/EVE Frontier P4",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Final/EVE Frontier P4/nebula"
+        }
+      ],
+      "unidentifiedInstallations": []
+    },
+    "Phase4-Masstest2": {
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Masstest2",
+      "profiles": [
+        {
+          "folder": "Phase4-Masstest2",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Masstest2/EVE Frontier P4",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Masstest2/EVE Frontier P4/nebula"
+        },
+        {
+          "folder": "Phase4-Masstest2",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Masstest2/EVE Frontier P4",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Masstest2/EVE Frontier P4/nova"
+        }
+      ],
+      "unidentifiedInstallations": []
+    },
+    "Phase4-Masstest2.5": {
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Masstest2.5",
+      "profiles": [
+        {
+          "folder": "Phase4-Masstest2.5",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Masstest2.5/EVE Frontier P4",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Masstest2.5/EVE Frontier P4/nebula"
+        },
+        {
+          "folder": "Phase4-Masstest2.5",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Masstest2.5/EVE Frontier P4",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase4-Masstest2.5/EVE Frontier P4/nova"
+        }
+      ],
+      "unidentifiedInstallations": []
+    },
+    "Phase5-2763641": {
+      "path": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase5-2763641",
+      "profiles": [
+        {
+          "folder": "Phase5-2763641",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase5-2763641/EVEF",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase5-2763641/EVEF/nebula"
+        },
+        {
+          "folder": "Phase5-2763641",
+          "installRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase5-2763641/EVEF",
+          "profileRoot": "/home/ludus/EveJS-Frontier/clientbuilds/mount/store/Phase5-2763641/EVEF/nova"
+        }
+      ],
+      "unidentifiedInstallations": []
+    }
+  },
+  "publishedVersions": [
+    {
+      "build": "3122254",
+      "folder": "EVE Frontier 3122254",
+      "path": "EVE Frontier 3122254/evidence/stillness-3122254.json",
+      "profile": "stillness"
+    },
+    {
+      "build": "2814770",
+      "folder": "Era5Cycle1-2814770",
+      "path": "Era5Cycle1-2814770/evidence/stillness-2814770.json",
+      "profile": "stillness"
+    },
+    {
+      "build": "2884873",
+      "folder": "Era5Cycle2-2898485",
+      "path": "Era5Cycle2-2898485/evidence/nova-2884873.json",
+      "profile": "nova"
+    },
+    {
+      "build": "2898485",
+      "folder": "Era5Cycle2-2898485",
+      "path": "Era5Cycle2-2898485/evidence/stillness-2898485.json",
+      "profile": "stillness"
+    },
+    {
+      "build": "2973163",
+      "folder": "Era6Cycle1-2973168",
+      "path": "Era6Cycle1-2973168/evidence/stillness-2973163.json",
+      "profile": "stillness"
+    },
+    {
+      "build": "2997426",
+      "folder": "Era6Cycle2-2997426",
+      "path": "Era6Cycle2-2997426/evidence/stillness-2997426.json",
+      "profile": "stillness"
+    },
+    {
+      "build": "3388875",
+      "folder": "Era6Cycle5-3388875",
+      "path": "Era6Cycle5-3388875/evidence/stillness-3388875.json",
+      "profile": "stillness"
+    },
+    {
+      "build": "3572727",
+      "folder": "Era6Cycle7x-Lim-3572727",
+      "path": "Era6Cycle7x-Lim-3572727/evidence/stillness-3572727.json",
+      "profile": "stillness"
+    },
+    {
+      "build": "3551616",
+      "folder": "Era6Cycle7x-Umb-3551616",
+      "path": "Era6Cycle7x-Umb-3551616/evidence/stillness-3551616.json",
+      "profile": "stillness"
+    },
+    {
+      "build": "3366068",
+      "folder": "Era6Cycle7x-Umb-3551616",
+      "path": "Era6Cycle7x-Umb-3551616/evidence/utopia-3366068.json",
+      "profile": "utopia"
+    },
+    {
+      "build": "2455427",
+      "folder": "Phase2",
+      "path": "Phase2/evidence/awakening-2455427.json",
+      "profile": "awakening"
+    },
+    {
+      "build": "2615573",
+      "folder": "Phase3-Final",
+      "path": "Phase3-Final/evidence/nebula-2615573.json",
+      "profile": "nebula"
+    },
+    {
+      "build": "2702949",
+      "folder": "Phase4-Final",
+      "path": "Phase4-Final/evidence/Nova-2702949.json",
+      "profile": "Nova"
+    },
+    {
+      "build": "2703993",
+      "folder": "Phase4-Final",
+      "path": "Phase4-Final/evidence/nebula-2703993.json",
+      "profile": "nebula"
+    },
+    {
+      "build": "2726651",
+      "folder": "Phase4-Masstest2",
+      "path": "Phase4-Masstest2/evidence/nebula-2726651.json",
+      "profile": "nebula"
+    },
+    {
+      "build": "2702949",
+      "folder": "Phase4-Masstest2",
+      "path": "Phase4-Masstest2/evidence/nova-2702949.json",
+      "profile": "nova"
+    },
+    {
+      "build": "2730628",
+      "folder": "Phase4-Masstest2.5",
+      "path": "Phase4-Masstest2.5/evidence/nebula-2730628.json",
+      "profile": "nebula"
+    },
+    {
+      "build": "2702949",
+      "folder": "Phase4-Masstest2.5",
+      "path": "Phase4-Masstest2.5/evidence/nova-2702949.json",
+      "profile": "nova"
+    },
+    {
+      "build": "2763641",
+      "folder": "Phase5-2763641",
+      "path": "Phase5-2763641/evidence/nebula-2763641.json",
+      "profile": "nebula"
+    },
+    {
+      "build": "2742057",
+      "folder": "Phase5-2763641",
+      "path": "Phase5-2763641/evidence/nova-2742057.json",
+      "profile": "nova"
+    }
+  ],
+  "recordedDate": "2026-10-27",
+  "scanner": {
+    "bytes": 12601,
+    "path": "_local/store-build-audit/audit_store.py",
+    "sha256": "6e425ef410ec663a2c6daf45e56d61e7c49c3052af005d36a1cff0fe4c2d79a2"
+  }
+}

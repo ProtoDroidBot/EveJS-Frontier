@@ -22,6 +22,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 STAGE_MARKER_NAME = ".evejs-frontier-stage.json"
 STAGE_FORMAT = "evejs-frontier-stage-v2"
+BASE_SYNC_FORMAT = "evejs-frontier-base-sync-v1"
 PE_PROFILE_FORMAT = "evejs-frontier-windows-pe-patch-v1"
 DEFAULT_CA = REPO_ROOT / "server/certs/xmpp-ca-cert.pem"
 DEFAULT_XMPP_LEAF = REPO_ROOT / "server/certs/xmpp-dev-cert.pem"
@@ -34,8 +35,15 @@ FEATURE_PATCHER = SCRIPT_DIR / "patch_frontier_features.py"
 INDUSTRY_STORAGE_PATCHER = SCRIPT_DIR / "patch_frontier_industry_storage.py"
 MAP_VIEW_PATCHER = SCRIPT_DIR / "patch_frontier_map_view.py"
 FITTING_COMPATIBILITY_PATCHER = SCRIPT_DIR / "patch_frontier_fitting.py"
+TURRET_TRACKING_PATCHER = SCRIPT_DIR / "patch_frontier_turret_tracking.py"
 INVENTORY_VIEW_PATCHER = SCRIPT_DIR / "patch_frontier_inventory.py"
 COLLISION_VFX_PATCHER = SCRIPT_DIR / "patch_frontier_collision_vfx.py"
+ASTEROID_VISUAL_SCALE_PATCHER = SCRIPT_DIR / "patch_frontier_asteroid_visual_scale.py"
+CREATION_TRANSFORM_PATCHER = (
+    SCRIPT_DIR / "patch_frontier_creation_transform.py"
+)
+DUNGEON_PROP_HOLOGRAM_PATCHER = SCRIPT_DIR / "patch_frontier_dungeon_prop_hologram.py"
+PHYSICS_GUN_PATCHER = SCRIPT_DIR / "patch_frontier_physics_gun.py"
 PEM_CERTIFICATE_RE = re.compile(
     rb"-----BEGIN CERTIFICATE-----\s+([A-Za-z0-9+/=\r\n]+?)\s+"
     rb"-----END CERTIFICATE-----",
@@ -744,13 +752,41 @@ def code_patch_states(archive: Path, build: int) -> dict:
             raise FrontierWindowsError(f"Unexpected fitting compatibility state: {fitting}")
         states["fittingCompatibility"] = fitting
         inventory_view = run_python_patcher(INVENTORY_VIEW_PATCHER, archive, build, check=True)
-        if inventory_view not in {"source", "patched", "partial"}:
+        if inventory_view not in {"source", "patched", "outdated", "partial"}:
             raise FrontierWindowsError(f"Unexpected inventory-view compatibility state: {inventory_view}")
         states["inventoryView"] = inventory_view
         collision_vfx = run_python_patcher(COLLISION_VFX_PATCHER, archive, build, check=True)
         if collision_vfx not in {"source", "patched", "outdated"}:
             raise FrontierWindowsError(f"Unexpected collision VFX state: {collision_vfx}")
         states["collisionVfx"] = collision_vfx
+        asteroid_visual_scale = run_python_patcher(
+            ASTEROID_VISUAL_SCALE_PATCHER, archive, build, check=True)
+        if asteroid_visual_scale not in {"source", "patched", "outdated"}:
+            raise FrontierWindowsError(
+                f"Unexpected asteroid visual-scale state: {asteroid_visual_scale}")
+        states["asteroidVisualScale"] = asteroid_visual_scale
+        creation_transform = run_python_patcher(
+            CREATION_TRANSFORM_PATCHER, archive, build, check=True
+        )
+        if creation_transform not in {"source", "patched", "outdated"}:
+            raise FrontierWindowsError(
+                f"Unexpected Creation transform state: {creation_transform}"
+            )
+        states["creationTransform"] = creation_transform
+        dungeon_hologram = run_python_patcher(
+            DUNGEON_PROP_HOLOGRAM_PATCHER, archive, build, check=True
+        )
+        if dungeon_hologram not in {"source", "patched", "outdated"}:
+            raise FrontierWindowsError(f"Unexpected dungeon hologram state: {dungeon_hologram}")
+        states["dungeonPropHologram"] = dungeon_hologram
+        physics_gun = run_python_patcher(PHYSICS_GUN_PATCHER, archive, build, check=True)
+        if physics_gun not in {"source", "patched", "outdated"}:
+            raise FrontierWindowsError(f"Unexpected Physics Gun state: {physics_gun}")
+        states["physicsGun"] = physics_gun
+        turret_tracking = run_python_patcher(TURRET_TRACKING_PATCHER, archive, build, check=True)
+        if turret_tracking not in {"source", "patched", "outdated"}:
+            raise FrontierWindowsError(f"Unexpected turret tracking state: {turret_tracking}")
+        states["turretTracking"] = turret_tracking
     return states
 
 
@@ -762,6 +798,11 @@ def expected_code_states(build: int, state: str) -> dict:
         result["fittingCompatibility"] = state
         result["inventoryView"] = state
         result["collisionVfx"] = state
+        result["asteroidVisualScale"] = state
+        result["creationTransform"] = state
+        result["dungeonPropHologram"] = state
+        result["physicsGun"] = state
+        result["turretTracking"] = state
     return result
 
 
@@ -777,16 +818,26 @@ def patch_code_archive(archive: Path, build: int) -> dict:
         run_python_patcher(DOCKING_PATCHER, archive, build, check=False)
     if states["features"] == "source":
         run_python_patcher(FEATURE_PATCHER, archive, build, check=False)
-    if states.get("industryStorage") == "source":
+    if states.get("industryStorage") in {"source", "outdated"}:
         run_python_patcher(INDUSTRY_STORAGE_PATCHER, archive, build, check=False)
     if states.get("mapViewLifecycle") == "source":
         run_python_patcher(MAP_VIEW_PATCHER, archive, build, check=False)
     if states.get("fittingCompatibility") in {"source", "outdated"}:
         run_python_patcher(FITTING_COMPATIBILITY_PATCHER, archive, build, check=False)
-    if states.get("inventoryView") == "source":
+    if states.get("turretTracking") in {"source", "outdated"}:
+        run_python_patcher(TURRET_TRACKING_PATCHER, archive, build, check=False)
+    if states.get("inventoryView") in {"source", "outdated"}:
         run_python_patcher(INVENTORY_VIEW_PATCHER, archive, build, check=False)
     if states.get("collisionVfx") in {"source", "outdated"}:
         run_python_patcher(COLLISION_VFX_PATCHER, archive, build, check=False)
+    if states.get("asteroidVisualScale") in {"source", "outdated"}:
+        run_python_patcher(ASTEROID_VISUAL_SCALE_PATCHER, archive, build, check=False)
+    if states.get("creationTransform") in {"source", "outdated"}:
+        run_python_patcher(CREATION_TRANSFORM_PATCHER, archive, build, check=False)
+    if states.get("dungeonPropHologram") in {"source", "outdated"}:
+        run_python_patcher(DUNGEON_PROP_HOLOGRAM_PATCHER, archive, build, check=False)
+    if states.get("physicsGun") in {"source", "outdated"}:
+        run_python_patcher(PHYSICS_GUN_PATCHER, archive, build, check=False)
     patched = code_patch_states(archive, build)
     if patched != expected_code_states(build, "patched"):
         raise FrontierWindowsError(f"code.ccp did not reach the exact patched state: {patched}")
@@ -1139,19 +1190,59 @@ def verify_unpatched_stage_sources(
         raise FrontierWindowsError("Unpatched staged manifest digests do not match source files.")
 
 
-def verify_retail_unchanged(marker: dict) -> dict[str, str]:
+def base_sync_relatives(marker: dict) -> set[str]:
+    return {
+        f"bin64/{marker['nativeBlue']}",
+        "code.ccp",
+        "manifest.dat",
+        "bin64/cacert.pem",
+        "bin64/packages/certifi/cacert.pem",
+    }
+
+
+def verify_retail_unchanged(marker: dict, stage_root: Path | None = None) -> dict[str, str]:
     source_root = Path(str(marker["sourceRoot"]))
     before = retail_hashes(marker)
+    sync = marker.get("sourceSync")
+    targets = {}
+    if sync is not None:
+        if (not isinstance(sync, dict) or sync.get("format") != BASE_SYNC_FORMAT
+                or int(marker["build"]) != 3502403
+                or marker.get("patchState") != "complete"
+                or stage_root is None):
+            raise FrontierWindowsError("Invalid official client base-sync marker.")
+        targets = sync.get("targetHashes")
+        if not isinstance(targets, dict) or set(targets) != base_sync_relatives(marker):
+            raise FrontierWindowsError("Base-sync target file set is invalid.")
+        backup_base = REPO_ROOT / "_local/frontier-client-source-backups" / str(marker["build"])
+        backup_root = Path(str(sync.get("backupRoot", "")))
+        if (normalized_path(backup_root.parent) != normalized_path(backup_base)
+                or not backup_root.is_dir()):
+            raise FrontierWindowsError("Base-sync original backup location is invalid.")
+        assert_no_reparse_ancestors(backup_base, backup_root)
+        for relative, target in targets.items():
+            if not re.fullmatch(r"[0-9a-fA-F]{64}", str(target)):
+                raise FrontierWindowsError(f"Invalid base-sync hash: {relative}")
+            staged = safe_relative_path(stage_root, relative)
+            original = safe_relative_path(backup_root, relative)
+            assert_no_reparse_ancestors(stage_root, staged)
+            assert_no_reparse_ancestors(backup_root, original)
+            if (not staged.is_file() or sha256_file(staged) != str(target).lower()
+                    or str(marker.get("currentHashes", {}).get(relative, "")).lower() != str(target).lower()):
+                raise FrontierWindowsError(f"Base-sync stage hash mismatch: {relative}")
+            if not original.is_file() or sha256_file(original) != before[relative]:
+                raise FrontierWindowsError(f"Base-sync original backup hash mismatch: {relative}")
     after = {}
     failures = []
     for relative, expected in before.items():
         path = safe_relative_path(source_root, relative)
+        assert_no_reparse_ancestors(source_root, path)
         if not path.is_file():
             failures.append(f"missing:{relative}")
             continue
         actual = sha256_file(path)
         after[relative] = actual
-        if actual != expected:
+        if actual != str(targets.get(relative, expected)).lower():
             failures.append(f"changed:{relative}")
     if failures:
         raise FrontierWindowsError(
@@ -1370,8 +1461,18 @@ def check_stage(
     allow_fitting_compatibility_source: bool = False,
     allow_fitting_compatibility_outdated: bool = False,
     allow_inventory_view_source: bool = False,
+    allow_inventory_view_outdated: bool = False,
     allow_collision_vfx_source: bool = False,
     allow_collision_vfx_outdated: bool = False,
+    allow_asteroid_visual_scale_source: bool = False,
+    allow_asteroid_visual_scale_outdated: bool = False,
+    allow_creation_transform_source: bool = False,
+    allow_dungeon_prop_hologram_source: bool = False,
+    allow_dungeon_prop_hologram_outdated: bool = False,
+    allow_physics_gun_source: bool = False,
+    allow_physics_gun_outdated: bool = False,
+    allow_turret_tracking_source: bool = False,
+    allow_turret_tracking_outdated: bool = False,
 ) -> dict:
     stage_root = stage_root.resolve()
     marker_path, marker = load_stage(stage_root)
@@ -1406,12 +1507,42 @@ def check_stage(
     if (allow_inventory_view_source and build == 3502403
             and code_states.get("inventoryView") == "source"):
         expected_states["inventoryView"] = "source"
+    if (allow_inventory_view_outdated and build == 3502403
+            and code_states.get("inventoryView") == "outdated"):
+        expected_states["inventoryView"] = "outdated"
     if (allow_collision_vfx_source and build == 3502403
             and code_states.get("collisionVfx") == "source"):
         expected_states["collisionVfx"] = "source"
     if (allow_collision_vfx_outdated and build == 3502403
             and code_states.get("collisionVfx") == "outdated"):
         expected_states["collisionVfx"] = "outdated"
+    if (allow_asteroid_visual_scale_source and build == 3502403
+            and code_states.get("asteroidVisualScale") == "source"):
+        expected_states["asteroidVisualScale"] = "source"
+    if (allow_asteroid_visual_scale_outdated and build == 3502403
+            and code_states.get("asteroidVisualScale") == "outdated"):
+        expected_states["asteroidVisualScale"] = "outdated"
+    if (allow_creation_transform_source and build == 3502403
+            and code_states.get("creationTransform") in {"source", "outdated"}):
+        expected_states["creationTransform"] = code_states["creationTransform"]
+    if (allow_dungeon_prop_hologram_source and build == 3502403
+            and code_states.get("dungeonPropHologram") == "source"):
+        expected_states["dungeonPropHologram"] = "source"
+    if (allow_dungeon_prop_hologram_outdated and build == 3502403
+            and code_states.get("dungeonPropHologram") == "outdated"):
+        expected_states["dungeonPropHologram"] = "outdated"
+    if (allow_physics_gun_source and build == 3502403
+            and code_states.get("physicsGun") == "source"):
+        expected_states["physicsGun"] = "source"
+    if (allow_physics_gun_outdated and build == 3502403
+            and code_states.get("physicsGun") == "outdated"):
+        expected_states["physicsGun"] = "outdated"
+    if (allow_turret_tracking_source and build == 3502403
+            and code_states.get("turretTracking") == "source"):
+        expected_states["turretTracking"] = "source"
+    if (allow_turret_tracking_outdated and build == 3502403
+            and code_states.get("turretTracking") == "outdated"):
+        expected_states["turretTracking"] = "outdated"
     if code_states != expected_states:
         raise FrontierWindowsError(f"code.ccp patch state is not fully enabled: {code_states}")
     verify_placebo(paths["commonIni"])
@@ -1435,7 +1566,7 @@ def check_stage(
     )
     if certificate_report.get("caFingerprintSha256") != ca_fingerprint:
         raise FrontierWindowsError("Certificate verifier CA fingerprint disagrees with the PEM file.")
-    retail_after = verify_retail_unchanged(marker)
+    retail_after = verify_retail_unchanged(marker, stage_root)
     if marker.get("patchState") != "complete":
         raise FrontierWindowsError("Stage marker does not record a complete patch transaction.")
     if int(marker.get("nativeBluePatchBuild", 0)) != build:
@@ -1480,6 +1611,74 @@ def check_stage(
     }
 
 
+def upgrade_map_view_stage(stage_root: Path, profile_path: Path | None = None) -> dict:
+    """Upgrade only the map adapter in a completed 3502403 stage."""
+    stage_root = stage_root.resolve()
+    marker_path, marker = load_stage(stage_root)
+    if int(marker["build"]) != 3502403 or marker.get("patchState") != "complete":
+        raise FrontierWindowsError("Map-view upgrade requires a completed build-3502403 stage")
+    paths = stage_paths(stage_root, marker)
+    assert_protected_stage_paths(stage_root, paths)
+    _, profile = resolve_profile(3502403, str(marker["nativeBlue"]), profile_path)
+    touched = [paths["code"], paths["manifest"], marker_path]
+    current_hashes = marker.get("currentHashes")
+    if not isinstance(current_hashes, dict):
+        raise FrontierWindowsError("Stage marker has no current file hashes")
+    for path in touched[:2]:
+        relative = path.relative_to(stage_root).as_posix()
+        if current_hashes.get(relative) != sha256_file(path):
+            raise FrontierWindowsError(f"Stage marker current hash mismatch: {relative}")
+    if not manifest_hashes_match(paths["manifest"], stage_root, profile):
+        raise FrontierWindowsError("Staged manifest target digests are stale")
+
+    state = run_python_patcher(MAP_VIEW_PATCHER, paths["code"], 3502403, check=True)
+    if state == "patched":
+        return {"mapViewValid": True, "mapViewLifecycle": state, "upgraded": False}
+    if state != "source":
+        raise FrontierWindowsError(f"Unexpected map-view lifecycle state: {state}")
+
+    backup_root, original_hashes = backup_transaction_files(stage_root, touched)
+    if any(
+        sha256_file(path) != original_hashes[path.relative_to(stage_root).as_posix()]
+        for path in touched
+    ):
+        raise FrontierWindowsError("Stage changed before the map-view upgrade")
+    marker = dict(marker)
+    current_hashes = dict(current_hashes)
+    marker["currentHashes"] = current_hashes
+    try:
+        run_python_patcher(MAP_VIEW_PATCHER, paths["code"], 3502403, check=False)
+        if run_python_patcher(MAP_VIEW_PATCHER, paths["code"], 3502403, check=True) != "patched":
+            raise FrontierWindowsError("Map-view patch did not verify")
+        refresh_manifest_atomic(paths["manifest"], stage_root, profile)
+        for path in touched[:2]:
+            current_hashes[path.relative_to(stage_root).as_posix()] = sha256_file(path)
+        marker["mapViewLifecyclePatchState"] = "patched"
+        marker["mapViewLifecyclePatchBackup"] = str(backup_root)
+        marker["preMapViewLifecycleHashes"] = original_hashes
+        write_json_atomic(marker_path, marker)
+        if not manifest_hashes_match(paths["manifest"], stage_root, profile):
+            raise FrontierWindowsError("Map-view manifest verification failed")
+        if run_python_patcher(MAP_VIEW_PATCHER, paths["code"], 3502403, check=True) != "patched":
+            raise FrontierWindowsError("Map-view patch verification failed")
+        for path in touched[:2]:
+            relative = path.relative_to(stage_root).as_posix()
+            if current_hashes[relative] != sha256_file(path):
+                raise FrontierWindowsError(f"Map-view stage hash mismatch: {relative}")
+        return {"mapViewValid": True, "mapViewLifecycle": "patched", "upgraded": True,
+                "backup": str(backup_root)}
+    except BaseException as error:
+        try:
+            restore_transaction_files(stage_root, backup_root, touched, original_hashes)
+        except Exception as rollback_error:
+            raise FrontierWindowsError(
+                f"Map-view upgrade failed ({error}); rollback failed ({rollback_error})"
+            ) from rollback_error
+        raise FrontierWindowsError(
+            f"Map-view upgrade failed and was rolled back; backup: {backup_root}: {error}"
+        ) from error
+
+
 def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
     """Upgrade a verified stage with current build-specific code adapters."""
     check_stage(stage_root, allow_industry_storage_source=True,
@@ -1488,8 +1687,18 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
                 allow_fitting_compatibility_source=True,
                 allow_fitting_compatibility_outdated=True,
                 allow_inventory_view_source=True,
+                allow_inventory_view_outdated=True,
                 allow_collision_vfx_source=True,
-                allow_collision_vfx_outdated=True, **check_options)
+                allow_collision_vfx_outdated=True,
+                allow_asteroid_visual_scale_source=True,
+                allow_asteroid_visual_scale_outdated=True,
+                allow_creation_transform_source=True,
+                allow_dungeon_prop_hologram_source=True,
+                allow_dungeon_prop_hologram_outdated=True,
+                allow_physics_gun_source=True,
+                allow_physics_gun_outdated=True,
+                allow_turret_tracking_source=True,
+                allow_turret_tracking_outdated=True, **check_options)
     marker_path, marker = load_stage(stage_root)
     build = int(marker["build"])
     paths = stage_paths(stage_root, marker)
@@ -1498,18 +1707,41 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             and states.get("mapViewLifecycle") == "patched"
             and states.get("fittingCompatibility") == "patched"
             and states.get("inventoryView") == "patched"
-            and states.get("collisionVfx") == "patched"):
+            and states.get("collisionVfx") == "patched"
+            and states.get("asteroidVisualScale") == "patched"
+            and states.get("creationTransform") == "patched"
+            and states.get("dungeonPropHologram") == "patched"
+            and states.get("physicsGun") == "patched"
+            and states.get("turretTracking") == "patched"):
         return check_stage(stage_root, **check_options)
     if (build != 3502403
             or states.get("industryStorage") not in {"source", "patched", "outdated"}
             or states.get("mapViewLifecycle") not in {"source", "patched"}
             or states.get("fittingCompatibility") not in {"source", "patched", "outdated"}
-            or states.get("inventoryView") not in {"source", "patched"}
-            or states.get("collisionVfx") not in {"source", "patched", "outdated"}):
+            or states.get("inventoryView") not in {"source", "patched", "outdated"}
+            or states.get("collisionVfx") not in {"source", "patched", "outdated"}
+            or states.get("asteroidVisualScale") not in {"source", "patched", "outdated"}
+            or states.get("creationTransform") not in {"source", "patched", "outdated"}
+            or states.get("dungeonPropHologram") not in {"source", "patched", "outdated"}
+            or states.get("physicsGun") not in {"source", "patched", "outdated"}
+            or states.get("turretTracking") not in {"source", "patched", "outdated"}):
         raise FrontierWindowsError("Stage cannot receive the current code adapters")
     _, profile = resolve_profile(build, str(marker["nativeBlue"]), check_options.get("profile_path"))
     touched = [paths["code"], paths["manifest"], marker_path]
     backup_root, original_hashes = backup_transaction_files(stage_root, touched)
+    source_root = Path(str(marker["sourceRoot"])) if marker.get("sourceSync") is not None else None
+    synced_source_paths = []
+    synced_source_written = {}
+    if marker.get("sourceSync") is not None:
+        for relative in ("code.ccp", "manifest.dat"):
+            source_path = safe_relative_path(source_root, relative)
+            assert_no_reparse_ancestors(source_root, source_path)
+            if (not source_path.is_file()
+                    or sha256_file(source_path) != original_hashes[relative]):
+                raise FrontierWindowsError(
+                    f"Synced source changed before code-adapter upgrade: {relative}"
+                )
+            synced_source_paths.append((relative, source_path))
     # Recheck before entering rollback scope; a competing writer's newer state
     # must never be overwritten by our backup if this operation did not write.
     if any(sha256_file(path) != original_hashes[path.relative_to(stage_root).as_posix()] for path in touched):
@@ -1525,9 +1757,33 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             run_python_patcher(INVENTORY_VIEW_PATCHER, paths["code"], build, check=False)
         if states["collisionVfx"] != "patched":
             run_python_patcher(COLLISION_VFX_PATCHER, paths["code"], build, check=False)
+        if states["asteroidVisualScale"] != "patched":
+            run_python_patcher(ASTEROID_VISUAL_SCALE_PATCHER, paths["code"], build, check=False)
+        if states["creationTransform"] != "patched":
+            run_python_patcher(CREATION_TRANSFORM_PATCHER, paths["code"], build, check=False)
+        if states["dungeonPropHologram"] != "patched":
+            run_python_patcher(DUNGEON_PROP_HOLOGRAM_PATCHER, paths["code"], build, check=False)
+        if states["physicsGun"] != "patched":
+            run_python_patcher(PHYSICS_GUN_PATCHER, paths["code"], build, check=False)
+        if states["turretTracking"] != "patched":
+            run_python_patcher(TURRET_TRACKING_PATCHER, paths["code"], build, check=False)
         refresh_manifest_atomic(paths["manifest"], stage_root, profile)
         for path in touched[:2]:
             marker["currentHashes"][path.relative_to(stage_root).as_posix()] = sha256_file(path)
+        if synced_source_paths:
+            for relative, source_path in synced_source_paths:
+                if sha256_file(source_path) != original_hashes[relative]:
+                    raise FrontierWindowsError(
+                        f"Synced source changed during code-adapter upgrade: {relative}"
+                    )
+                synced_hash = marker["currentHashes"][relative]
+                copy_file_atomic(safe_relative_path(stage_root, relative), source_path)
+                synced_source_written[relative] = synced_hash
+                if sha256_file(source_path) != synced_hash:
+                    raise FrontierWindowsError(
+                        f"Synced source copy did not verify: {relative}"
+                    )
+                marker["sourceSync"]["targetHashes"][relative] = synced_hash
         if states["industryStorage"] != "patched":
             marker["industryStoragePatchState"] = "patched"
             marker["industryStoragePatchBackup"] = str(backup_root)
@@ -1548,10 +1804,53 @@ def upgrade_industry_storage_stage(stage_root: Path, **check_options) -> dict:
             marker["collisionVfxPatchState"] = "patched"
             marker["collisionVfxPatchBackup"] = str(backup_root)
             marker["preCollisionVfxHashes"] = original_hashes
+        if states["asteroidVisualScale"] != "patched":
+            marker["asteroidVisualScalePatchState"] = "patched"
+            marker["asteroidVisualScalePatchBackup"] = str(backup_root)
+            marker["preAsteroidVisualScaleHashes"] = original_hashes
+        if states["creationTransform"] != "patched":
+            marker["creationTransformPatchState"] = "patched"
+            marker["creationTransformPatchBackup"] = str(backup_root)
+            marker["preCreationTransformHashes"] = original_hashes
+        if states["dungeonPropHologram"] != "patched":
+            marker["dungeonPropHologramPatchState"] = "patched"
+            marker["dungeonPropHologramPatchBackup"] = str(backup_root)
+            marker["preDungeonPropHologramHashes"] = original_hashes
+        if states["physicsGun"] != "patched":
+            marker["physicsGunPatchState"] = "patched"
+            marker["physicsGunPatchBackup"] = str(backup_root)
+            marker["prePhysicsGunHashes"] = original_hashes
+        if states["turretTracking"] != "patched":
+            marker["turretTrackingPatchState"] = "patched"
+            marker["turretTrackingPatchBackup"] = str(backup_root)
+            marker["preTurretTrackingHashes"] = original_hashes
         write_json_atomic(marker_path, marker)
         return check_stage(stage_root, **check_options)
-    except BaseException:
+    except BaseException as error:
+        source_rollback_error = None
+        for relative, source_path in synced_source_paths:
+            if relative not in synced_source_written:
+                continue
+            try:
+                actual_hash = sha256_file(source_path)
+                if actual_hash not in {original_hashes[relative], synced_source_written[relative]}:
+                    raise FrontierWindowsError(
+                        f"Synced source changed during rollback: {relative}"
+                    )
+                if actual_hash != original_hashes[relative]:
+                    copy_file_atomic(backup_root / relative, source_path)
+                    if sha256_file(source_path) != original_hashes[relative]:
+                        raise FrontierWindowsError(
+                            f"Could not roll back synced source: {relative}"
+                        )
+            except BaseException as rollback_error:
+                source_rollback_error = rollback_error
         restore_transaction_files(stage_root, backup_root, touched, original_hashes)
+        if source_rollback_error is not None:
+            raise FrontierWindowsError(
+                f"Code-adapter upgrade failed ({error}); synced source rollback "
+                f"failed ({source_rollback_error})"
+            ) from source_rollback_error
         raise
 
 
@@ -1585,7 +1884,7 @@ def patch_stage(
     resolved_profile_path, profile = resolve_profile(
         build, str(marker["nativeBlue"]), profile_path
     )
-    verify_retail_unchanged(marker)
+    verify_retail_unchanged(marker, stage_root)
     verify_placebo(paths["commonIni"])
     verify_start_ini(paths["startIni"], build)
     verify_resfiles(stage_root, marker, paths)
@@ -1606,7 +1905,7 @@ def patch_stage(
             gateway_leaf,
             [paths["bundleMain"], paths["bundleCertifi"]],
         )
-        retail_after = verify_retail_unchanged(marker)
+        retail_after = verify_retail_unchanged(marker, stage_root)
         current_hashes = {
             path.relative_to(stage_root).as_posix(): sha256_file(path)
             for path in [
@@ -1629,6 +1928,11 @@ def patch_stage(
                 "fittingCompatibilityPatchState": code_states.get("fittingCompatibility"),
                 "inventoryViewPatchState": code_states.get("inventoryView"),
                 "collisionVfxPatchState": code_states.get("collisionVfx"),
+                "asteroidVisualScalePatchState": code_states.get("asteroidVisualScale"),
+                "creationTransformPatchState": code_states.get("creationTransform"),
+                "dungeonPropHologramPatchState": code_states.get("dungeonPropHologram"),
+                "physicsGunPatchState": code_states.get("physicsGun"),
+                "turretTrackingPatchState": code_states.get("turretTracking"),
                 "fileStates": {
                     "nativeBlue": "exact-target",
                     "codeCcp": "exact-patched",
@@ -1678,12 +1982,139 @@ def patch_stage(
         ) from error
 
 
+def sync_base_client(
+    stage_root: Path,
+    profile_path: Path | None = None,
+    node_path: Path | None = None,
+    ca_path: Path = DEFAULT_CA,
+    xmpp_leaf: Path = DEFAULT_XMPP_LEAF,
+    gateway_leaf: Path = DEFAULT_GATEWAY_LEAF,
+) -> dict:
+    """Install the verified stage overlay into its source with a retail backup."""
+    stage_root = stage_root.resolve()
+    options = dict(profile_path=profile_path, node_path=node_path, ca_path=ca_path,
+                   xmpp_leaf=xmpp_leaf, gateway_leaf=gateway_leaf)
+    report = check_stage(stage_root, **options)
+    marker_path, marker = load_stage(stage_root)
+    if marker.get("sourceSync") is not None:
+        report["baseSync"] = "already-current"
+        return report
+    if int(marker["build"]) != 3502403 or marker.get("patchState") != "complete":
+        raise FrontierWindowsError("Base sync requires a complete build 3502403 stage.")
+    source_root = Path(str(marker["sourceRoot"]))
+    originals = retail_hashes(marker)
+    relatives = sorted(base_sync_relatives(marker))
+    current = marker.get("currentHashes", {})
+    for relative in relatives:
+        staged = safe_relative_path(stage_root, relative)
+        source = safe_relative_path(source_root, relative)
+        assert_no_reparse_ancestors(stage_root, staged)
+        assert_no_reparse_ancestors(source_root, source)
+        if (not staged.is_file() or sha256_file(staged) != str(current.get(relative, "")).lower()
+                or not source.is_file() or sha256_file(source) != originals[relative]):
+            raise FrontierWindowsError(f"Base sync preflight hash mismatch: {relative}")
+    backup_base = REPO_ROOT / "_local/frontier-client-source-backups" / str(marker["build"])
+    backup_base.mkdir(parents=True, exist_ok=True)
+    assert_no_reparse_ancestors(REPO_ROOT, backup_base)
+    backup_root = backup_base / f"base-sync-{uuid.uuid4().hex}"
+    backup_root.mkdir()
+    marker_bytes = marker_path.read_bytes()
+    copied = []
+    try:
+        for relative in relatives:
+            source = safe_relative_path(source_root, relative)
+            original = safe_relative_path(backup_root, relative)
+            original.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, original)
+            if sha256_file(original) != originals[relative]:
+                raise FrontierWindowsError(f"Base sync backup hash mismatch: {relative}")
+        for relative in relatives:
+            staged = safe_relative_path(stage_root, relative)
+            source = safe_relative_path(source_root, relative)
+            copied.append(relative)
+            copy_file_atomic(staged, source)
+            if sha256_file(source) != str(current[relative]).lower():
+                raise FrontierWindowsError(f"Base sync copied hash mismatch: {relative}")
+        marker["sourceSync"] = {
+            "format": BASE_SYNC_FORMAT,
+            "backupRoot": str(backup_root),
+            "targetHashes": {relative: str(current[relative]).lower() for relative in relatives},
+            "timestamp": datetime.datetime.now(datetime.timezone.utc)
+            .replace(microsecond=0).isoformat(),
+        }
+        write_json_atomic(marker_path, marker)
+        report = check_stage(stage_root, **options)
+        report["baseSync"] = "installed"
+        report["baseSyncBackup"] = str(backup_root)
+        return report
+    except BaseException as error:
+        try:
+            for relative in copied:
+                source = safe_relative_path(source_root, relative)
+                original = safe_relative_path(backup_root, relative)
+                copy_file_atomic(original, source)
+                if sha256_file(source) != originals[relative]:
+                    raise FrontierWindowsError(f"Base sync rollback hash mismatch: {relative}")
+            write_bytes_atomic(marker_path, marker_bytes)
+        except BaseException as rollback_error:
+            raise FrontierWindowsError(
+                f"Base sync failed ({error}); rollback failed ({rollback_error}). "
+                f"Originals are at {backup_root}"
+            ) from rollback_error
+        raise FrontierWindowsError(
+            f"Base sync failed and was rolled back. Originals are at {backup_root}: {error}"
+        ) from error
+
+
+def restore_base_client(stage_root: Path) -> dict:
+    """Return an intentionally synced source to its recorded retail hashes."""
+    stage_root = stage_root.resolve()
+    marker_path, marker = load_stage(stage_root)
+    sync = marker.get("sourceSync")
+    if sync is None:
+        raise FrontierWindowsError("Stage has no recorded base sync to restore.")
+    verify_retail_unchanged(marker, stage_root)
+    source_root = Path(str(marker["sourceRoot"]))
+    backup_root = Path(str(sync["backupRoot"]))
+    originals = retail_hashes(marker)
+    relatives = sorted(base_sync_relatives(marker))
+    marker_bytes = marker_path.read_bytes()
+    touched = []
+    try:
+        for relative in relatives:
+            source = safe_relative_path(source_root, relative)
+            original = safe_relative_path(backup_root, relative)
+            touched.append(relative)
+            copy_file_atomic(original, source)
+            if sha256_file(source) != originals[relative]:
+                raise FrontierWindowsError(f"Base restore hash mismatch: {relative}")
+        del marker["sourceSync"]
+        write_json_atomic(marker_path, marker)
+        verify_retail_unchanged(marker, stage_root)
+        return {"baseSync": "restored", "originalBackup": str(backup_root),
+                "sourceRoot": str(source_root)}
+    except BaseException as error:
+        try:
+            for relative in touched:
+                source = safe_relative_path(source_root, relative)
+                staged = safe_relative_path(stage_root, relative)
+                copy_file_atomic(staged, source)
+                if sha256_file(source) != str(sync["targetHashes"][relative]).lower():
+                    raise FrontierWindowsError(f"Base restore rollback mismatch: {relative}")
+            write_bytes_atomic(marker_path, marker_bytes)
+        except BaseException as rollback_error:
+            raise FrontierWindowsError(
+                f"Base restore failed ({error}); rollback failed ({rollback_error})."
+            ) from rollback_error
+        raise FrontierWindowsError(f"Base restore failed and was rolled back: {error}") from error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Strict Windows EVE Frontier stage and native-blue patch verifier."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("patch", "check"):
+    for name in ("patch", "check", "sync-base", "map-upgrade", "adapters-upgrade"):
         command = subparsers.add_parser(name)
         command.add_argument("--staged-root", type=Path, required=True)
         command.add_argument("--profile", type=Path)
@@ -1697,10 +2128,35 @@ def main() -> int:
     mutate = subparsers.add_parser("blue-patch")
     mutate.add_argument("--path", type=Path, required=True)
     mutate.add_argument("--profile", type=Path, required=True)
+    restore = subparsers.add_parser("restore-base")
+    restore.add_argument("--staged-root", type=Path, required=True)
     args = parser.parse_args()
     try:
-        if args.command in {"patch", "check"}:
-            function = patch_stage if args.command == "patch" else check_stage
+        if args.command == "map-upgrade":
+            report = upgrade_map_view_stage(args.staged_root, profile_path=args.profile)
+            print(json.dumps(report, sort_keys=True))
+            return 0
+        if args.command == "adapters-upgrade":
+            report = upgrade_industry_storage_stage(
+                args.staged_root,
+                profile_path=args.profile,
+                node_path=args.node,
+                ca_path=args.ca,
+                xmpp_leaf=args.xmpp_leaf,
+                gateway_leaf=args.gateway_leaf,
+            )
+            print(json.dumps(report, sort_keys=True))
+            return 0
+        if args.command == "restore-base":
+            report = restore_base_client(args.staged_root)
+            print(json.dumps(report, sort_keys=True))
+            return 0
+        if args.command in {"patch", "check", "sync-base"}:
+            function = {
+                "patch": patch_stage,
+                "check": check_stage,
+                "sync-base": sync_base_client,
+            }[args.command]
             report = function(
                 args.staged_root,
                 profile_path=args.profile,

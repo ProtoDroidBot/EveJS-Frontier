@@ -18,7 +18,7 @@ const { marketDaemonClient } = require(path.join(
   __dirname,
   "./marketDaemonClient",
 ));
-const { buildCachedMethodCallResult } = require(path.join(
+const { buildCachedMethodCallResultAsync: buildCachedMethodCallResult } = require(path.join(
   __dirname,
   "../cache/objectCacheRuntime",
 ));

@@ -6,7 +6,7 @@ const {
   buildKeyVal,
 } = require("../_shared/serviceHelpers");
 const {
-  buildCachedMethodCallResult,
+  buildCachedMethodCallResultAsync: buildCachedMethodCallResult,
 } = require("../cache/objectCacheRuntime");
 const standingRuntime = require("./standingRuntime");
 

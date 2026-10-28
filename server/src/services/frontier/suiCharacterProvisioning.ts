@@ -36,8 +36,7 @@ const SUI_CHARACTER_TRANSACTION_INCLUDE = Object.freeze({
 
 const DEFAULT_WORLD_CONTRACTS_DIRECTORY = path.resolve(
   __dirname,
-  "../../../../..",
-  "3502403",
+  "../../../..",
   "world-contracts",
 );
 
@@ -80,25 +79,35 @@ type SuiWorldSyncConfig = {
   sourceWorkspace?: string;
   deploymentSha256?: string;
   publicationSha256?: string;
+  assemblyEnergySha256?: string;
+  assemblyEnergy?: Array<{ typeID: number; energyRequired: number }>;
 };
 
-type SuiCharacterIdentity = SuiCharacterWorld & {
-  accountId: number;
+type SuiCharacterOnChainIdentity = SuiCharacterWorld & {
   gameCharacterId: number;
   characterName: string;
   walletAddress: string;
   characterObjectId: string;
 };
 
-type SuiCharacterProvisioningResult = SuiCharacterIdentity & {
+type SuiCharacterIdentity = SuiCharacterOnChainIdentity & {
+  accountId: number;
+};
+
+type SuiCharacterProvisioningResult<
+  TIdentity extends SuiCharacterOnChainIdentity = SuiCharacterIdentity,
+> = TIdentity & {
   network: typeof SUI_GRPC_NETWORK;
   baseUrl: typeof SUI_GRPC_BASE_URL;
   playerProfileObjectId: string;
   transactionDigest: string;
   recovered: boolean;
+  chainId?: string | null;
 };
 
-type SuiCharacterProvisioningOptions = {
+type SuiCharacterProvisioningOptions<
+  TIdentity extends SuiCharacterOnChainIdentity = SuiCharacterIdentity,
+> = {
   client?: SuiCharacterClient;
   world?: Partial<SuiCharacterWorld>;
   env?: NodeJS.ProcessEnv;
@@ -106,7 +115,7 @@ type SuiCharacterProvisioningOptions = {
   adminPrivateKey?: string;
   worldContractsDirectory?: string;
   reconciliationDelaysMs?: number[];
-  transactionFactory?: (identity: SuiCharacterIdentity) => Transaction;
+  transactionFactory?: (identity: TIdentity) => Transaction;
   onTransactionPrepared?: (details: {
     transactionDigest: string;
     transactionBytesBase64?: string;
@@ -115,8 +124,20 @@ type SuiCharacterProvisioningOptions = {
   }) => void | Promise<void>;
 };
 
-type SuiCharacterProvisioningSnapshot = {
-  options: SuiCharacterProvisioningOptions;
+type SuiCharacterSubmissionInput<
+  TIdentity extends SuiCharacterOnChainIdentity = SuiCharacterIdentity,
+> = {
+  identity?: TIdentity;
+  transactionDigest?: unknown;
+  transactionBytesBase64?: unknown;
+  transactionSignature?: unknown;
+  chainId?: unknown;
+};
+
+type SuiCharacterProvisioningSnapshot<
+  TIdentity extends SuiCharacterOnChainIdentity = SuiCharacterIdentity,
+> = {
+  options: SuiCharacterProvisioningOptions<TIdentity>;
   sourceEnv: NodeJS.ProcessEnv;
   syncedConfig: SuiWorldSyncConfig | null;
 };
@@ -270,6 +291,28 @@ function readSyncedSuiWorldConfig(
   ) {
     return invalid(`does not match Frontier build ${expectedBuild}`);
   }
+  let assemblyEnergy: Array<{ typeID: number; energyRequired: number }> | undefined;
+  if (config.assemblyEnergy !== undefined) {
+    const energy = config.assemblyEnergy;
+    if (!energy || typeof energy !== "object" || Array.isArray(energy) ||
+        energy.schemaVersion !== 1 || energy.clientBuild !== expectedBuild ||
+        !Array.isArray(energy.entries) || energy.entries.length === 0) {
+      return invalid("contains an invalid assembly energy manifest");
+    }
+    const seen = new Set<number>();
+    let previousTypeID = 0;
+    assemblyEnergy = energy.entries.map((entry: any) => {
+      const typeID = entry?.typeID;
+      const energyRequired = entry?.energyRequired;
+      if (!Number.isSafeInteger(typeID) || typeID <= 0 || typeID <= previousTypeID || seen.has(typeID) ||
+          !Number.isSafeInteger(energyRequired) || energyRequired < 0) {
+        return invalid("contains an invalid assembly energy entry");
+      }
+      seen.add(typeID);
+      previousTypeID = typeID;
+      return { typeID, energyRequired };
+    });
+  }
   if (!config.world || typeof config.world !== "object" || Array.isArray(config.world)) {
     return invalid("has no world identity");
   }
@@ -292,6 +335,9 @@ function readSyncedSuiWorldConfig(
   const publicationSha256 = typeof artifacts?.publicationSha256 === "string"
     ? artifacts.publicationSha256.trim().toLowerCase()
     : "";
+  const assemblyEnergySha256 = typeof artifacts?.assemblyEnergySha256 === "string"
+    ? artifacts.assemblyEnergySha256.trim().toLowerCase()
+    : "";
   const hasArtifactSnapshot = Boolean(
     sourceWorkspace || deploymentSha256 || publicationSha256,
   );
@@ -302,6 +348,10 @@ function readSyncedSuiWorldConfig(
       !/^[0-9a-f]{64}$/.test(publicationSha256))
   ) {
     return invalid("contains incomplete deployment artifact metadata");
+  }
+  if ((assemblyEnergy !== undefined || assemblyEnergySha256) &&
+      (!sourceWorkspace || !assemblyEnergy || !/^[0-9a-f]{64}$/.test(assemblyEnergySha256))) {
+    return invalid("contains incomplete assembly energy artifact metadata");
   }
   if (hasArtifactSnapshot) {
     const deploymentPath = path.join(
@@ -337,6 +387,27 @@ function readSyncedSuiWorldConfig(
       return invalid(
         "is stale relative to its deployment artifacts; run FrontierWorld.ps1 sync",
       );
+    }
+    if (assemblyEnergySha256) {
+      const assemblyEnergyPath = path.join(
+        path.resolve(sourceWorkspace),
+        "world-contracts",
+        "config",
+        "assembly-energy.json",
+      );
+      let currentAssemblyEnergySha256: string;
+      try {
+        currentAssemblyEnergySha256 = readSha256(assemblyEnergyPath);
+      } catch (cause) {
+        throw new SuiCharacterProvisioningError(
+          "INVALID_WORLD_CONFIGURATION",
+          `Synchronized assembly energy artifact could not be read; run FrontierWorld.ps1 sync: ${configPath}`,
+          { cause },
+        );
+      }
+      if (currentAssemblyEnergySha256 !== assemblyEnergySha256) {
+        return invalid("is stale relative to its assembly energy manifest; run FrontierWorld.ps1 sync");
+      }
     }
   }
 
@@ -376,14 +447,16 @@ function readSyncedSuiWorldConfig(
           sourceWorkspace: path.resolve(sourceWorkspace),
           deploymentSha256,
           publicationSha256,
+          ...(assemblyEnergySha256 ? { assemblyEnergySha256 } : {}),
         }
       : {}),
+    ...(assemblyEnergy ? { assemblyEnergy } : {}),
   };
 }
 
-function snapshotSuiCharacterProvisioningOptions(
-  options: SuiCharacterProvisioningOptions,
-): SuiCharacterProvisioningSnapshot {
+function snapshotSuiCharacterProvisioningOptions<TIdentity extends SuiCharacterOnChainIdentity>(
+  options: SuiCharacterProvisioningOptions<TIdentity>,
+): SuiCharacterProvisioningSnapshot<TIdentity> {
   const sourceEnv = options.env || process.env;
   const world = options.world || {};
   const needsSyncedWorld = !(
@@ -428,8 +501,8 @@ function snapshotSuiCharacterProvisioningOptions(
   };
 }
 
-function assertSuiProvisioningSnapshotCurrent(
-  snapshot: SuiCharacterProvisioningSnapshot,
+function assertSuiProvisioningSnapshotCurrent<TIdentity extends SuiCharacterOnChainIdentity>(
+  snapshot: SuiCharacterProvisioningSnapshot<TIdentity>,
 ): void {
   const expected = snapshot.syncedConfig;
   if (!expected) {
@@ -565,6 +638,9 @@ function prepareSuiCharacterIdentity(
     input.gameCharacterId,
     "Game character ID",
   );
+  if (require("../_shared/npcIdentityConstants").isNpcCharacterID(gameCharacterId)) {
+    throw new SuiCharacterProvisioningError("NPC_CHARACTER_NOT_PLAYER", "Reserved NPC pilot IDs cannot be provisioned as human player characters");
+  }
   const characterName = String(input.characterName || "").trim();
   if (!characterName) {
     throw new SuiCharacterProvisioningError(
@@ -593,7 +669,7 @@ function prepareSuiCharacterIdentity(
 }
 
 function createSuiCharacterTransaction(
-  identity: SuiCharacterIdentity,
+  identity: SuiCharacterOnChainIdentity,
 ): Transaction {
   const transaction = new Transaction();
   const [character] = transaction.moveCall({
@@ -748,9 +824,9 @@ async function readLiveSuiChainIdentifier(
   return null;
 }
 
-async function assertLiveSuiChain(
+async function assertLiveSuiChain<TIdentity extends SuiCharacterOnChainIdentity>(
   client: SuiCharacterClient,
-  snapshot: SuiCharacterProvisioningSnapshot,
+  snapshot: SuiCharacterProvisioningSnapshot<TIdentity>,
   recordedChainId: unknown = null,
 ): Promise<string | null> {
   let liveChainId: string | null;
@@ -783,7 +859,7 @@ async function assertLiveSuiChain(
 
 async function assertLiveSuiWorldObjects(
   client: SuiCharacterClient,
-  identity: SuiCharacterIdentity,
+  identity: SuiCharacterOnChainIdentity,
 ): Promise<void> {
   if (typeof client.getObjects !== "function") {
     return;
@@ -867,7 +943,7 @@ function getAddressOwner(owner: any): string | null {
 
 async function findPlayerProfileObject(
   client: SuiCharacterClient,
-  identity: SuiCharacterIdentity,
+  identity: SuiCharacterOnChainIdentity,
 ): Promise<any | null> {
   const playerProfileType = `${identity.packageId}::character::PlayerProfile`;
   let cursor: string | null = null;
@@ -894,10 +970,10 @@ async function findPlayerProfileObject(
   return null;
 }
 
-async function findExistingSuiCharacter(
+async function findExistingSuiCharacter<TIdentity extends SuiCharacterOnChainIdentity>(
   client: SuiCharacterClient,
-  identity: SuiCharacterIdentity,
-): Promise<SuiCharacterProvisioningResult | null> {
+  identity: TIdentity,
+): Promise<SuiCharacterProvisioningResult<TIdentity> | null> {
   let object: any;
   try {
     ({ object } = await client.getObject({
@@ -926,7 +1002,7 @@ async function findExistingSuiCharacter(
   ) {
     throw new SuiCharacterProvisioningError(
       "CHARACTER_ID_COLLISION",
-      `Existing Sui object ${identity.characterObjectId} does not match this player character`,
+      `Existing Sui object ${identity.characterObjectId} does not match this character`,
       { ambiguous: true },
     );
   }
@@ -960,13 +1036,13 @@ async function findExistingSuiCharacter(
   };
 }
 
-async function reconcileSubmittedSuiCharacter(
+async function reconcileSubmittedSuiCharacter<TIdentity extends SuiCharacterOnChainIdentity>(
   client: SuiCharacterClient,
-  identity: SuiCharacterIdentity,
+  identity: TIdentity,
   delaysMs: number[] = [0, 150, 500, 1000],
   transactionDigest: string | null = null,
 ): Promise<{
-  result: SuiCharacterProvisioningResult | null;
+  result: SuiCharacterProvisioningResult<TIdentity> | null;
   lastError: unknown;
   definitiveError: SuiCharacterProvisioningError | null;
 }> {
@@ -1027,10 +1103,10 @@ async function reconcileSubmittedSuiCharacter(
   return { result: null, lastError, definitiveError: null };
 }
 
-function parseSuccessfulTransaction(
+function parseSuccessfulTransaction<TIdentity extends SuiCharacterOnChainIdentity>(
   result: any,
-  identity: SuiCharacterIdentity,
-): SuiCharacterProvisioningResult {
+  identity: TIdentity,
+): SuiCharacterProvisioningResult<TIdentity> {
   if (!result || !["Transaction", "FailedTransaction"].includes(result.$kind)) {
     throw new SuiCharacterProvisioningError(
       "TRANSACTION_STATUS_UNKNOWN",
@@ -1147,13 +1223,13 @@ function readPreparedTransactionSubmission(
   }
 }
 
-async function executePreparedSuiCharacterTransaction(
+async function executePreparedSuiCharacterTransaction<TIdentity extends SuiCharacterOnChainIdentity>(
   client: SuiCharacterClient,
-  identity: SuiCharacterIdentity,
+  identity: TIdentity,
   prepared: { transactionBytes: Uint8Array; signature: string },
   transactionDigest: string,
   reconciliationDelaysMs: number[],
-): Promise<SuiCharacterProvisioningResult> {
+): Promise<SuiCharacterProvisioningResult<TIdentity>> {
   if (typeof client.executeTransaction !== "function") {
     throw new SuiCharacterProvisioningError(
       "PENDING_TRANSACTION_REPLAY_UNAVAILABLE",
@@ -1249,42 +1325,44 @@ async function provisionSuiCharacter(
     accountId: unknown;
     gameCharacterId: unknown;
     characterName: unknown;
-    identity?: SuiCharacterIdentity;
-    transactionDigest?: unknown;
-    transactionBytesBase64?: unknown;
-    transactionSignature?: unknown;
-    chainId?: unknown;
-  },
+  } & SuiCharacterSubmissionInput,
   options: SuiCharacterProvisioningOptions = {},
 ): Promise<SuiCharacterProvisioningResult> {
+  return provisionSuiCharacterWithIdentity(
+    input,
+    options,
+    (operationOptions) => prepareSuiCharacterIdentity(input, operationOptions),
+  );
+}
+
+/** Shared account-independent creation/reconciliation path for players and NPCs. */
+async function provisionSuiCharacterWithIdentity<TIdentity extends SuiCharacterOnChainIdentity>(
+  input: SuiCharacterSubmissionInput<TIdentity>,
+  options: SuiCharacterProvisioningOptions<TIdentity>,
+  prepareIdentity: (options: SuiCharacterProvisioningOptions<TIdentity>) => TIdentity,
+): Promise<SuiCharacterProvisioningResult<TIdentity>> {
   const client = options.client || (suiGrpcClient as unknown as SuiCharacterClient);
   const reconciliationDelaysMs = Array.isArray(options.reconciliationDelaysMs)
     ? options.reconciliationDelaysMs
     : [0, 150, 500, 1000];
 
-  return serializeAdminSubmission(async () => {
+  let operationChainId: string | null = null;
+  const result = await serializeAdminSubmission(async () => {
     const snapshot = snapshotSuiCharacterProvisioningOptions(options);
     const operationOptions = snapshot.options;
-    const identity = prepareSuiCharacterIdentity(input, operationOptions);
+    const identity = prepareIdentity(operationOptions);
     if (input.identity) {
       const suppliedIdentity = input.identity;
       const identityMatches =
-        suppliedIdentity.accountId === identity.accountId &&
-        suppliedIdentity.gameCharacterId === identity.gameCharacterId &&
-        suppliedIdentity.characterName === identity.characterName &&
-        suppliedIdentity.tenant === identity.tenant &&
-        suppliedIdentity.tribeId === identity.tribeId &&
-        sameSuiAddress(suppliedIdentity.packageId, identity.packageId) &&
-        sameSuiAddress(
-          suppliedIdentity.objectRegistryId,
-          identity.objectRegistryId,
-        ) &&
-        sameSuiAddress(suppliedIdentity.adminAclId, identity.adminAclId) &&
-        sameSuiAddress(suppliedIdentity.walletAddress, identity.walletAddress) &&
-        sameSuiAddress(
-          suppliedIdentity.characterObjectId,
-          identity.characterObjectId,
-        );
+        Object.keys(identity).every((field) => {
+          if ([
+            "packageId", "objectRegistryId", "adminAclId", "walletAddress",
+            "characterObjectId",
+          ].includes(field)) {
+            return sameSuiAddress(suppliedIdentity[field], identity[field]);
+          }
+          return suppliedIdentity[field] === identity[field];
+        });
       if (!identityMatches) {
         throw new SuiCharacterProvisioningError(
           "INVALID_PREPARED_IDENTITY",
@@ -1314,6 +1392,7 @@ async function provisionSuiCharacter(
       snapshot,
       pendingTransactionDigest ? recordedChainId : null,
     );
+    operationChainId = liveChainId;
     assertSuiProvisioningSnapshotCurrent(snapshot);
 
     if (pendingTransactionDigest) {
@@ -1367,7 +1446,7 @@ async function provisionSuiCharacter(
     await assertLiveSuiWorldObjects(client, identity);
     assertSuiProvisioningSnapshotCurrent(snapshot);
 
-    let existing: SuiCharacterProvisioningResult | null;
+    let existing: SuiCharacterProvisioningResult<TIdentity> | null;
     try {
       existing = await findExistingSuiCharacter(client, identity);
     } catch (error) {
@@ -1541,6 +1620,7 @@ async function provisionSuiCharacter(
       );
     }
   });
+  return { ...result, chainId: operationChainId };
 }
 
 export {
@@ -1557,13 +1637,20 @@ export {
   deriveLocalPlayerSuiWalletAddress,
   deriveSuiCharacterObjectId,
   findExistingSuiCharacter,
+  isObjectNotFoundError,
   prepareSuiCharacterIdentity,
   provisionSuiCharacter,
+  provisionSuiCharacterWithIdentity,
+  readLiveSuiChainIdentifier,
   readSyncedSuiWorldConfig,
   resolveAdminSigner,
   resolveSuiCharacterWorld,
+  serializeAdminSubmission,
   type SuiCharacterIdentity,
+  type SuiCharacterOnChainIdentity,
+  type SuiCharacterProvisioningOptions,
   type SuiCharacterProvisioningResult,
+  type SuiCharacterSubmissionInput,
   type SuiCharacterWorld,
   type SuiWorldSyncConfig,
 };

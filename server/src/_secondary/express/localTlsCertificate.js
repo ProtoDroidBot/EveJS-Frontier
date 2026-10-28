@@ -6,8 +6,9 @@ const net = require("net");
 const crypto = require("crypto");
 const forge = require("node-forge");
 const ROOT_DIR = path.resolve(__dirname, "../../../..");
-const CA_CERT_PATH = path.join(ROOT_DIR, "server", "certs", "xmpp-ca-cert.pem");
-const CA_KEY_PATH = path.join(ROOT_DIR, "server", "certs", "xmpp-ca-key.pem");
+const RUNTIME_CERT_DIR = process.env.EVEJS_RUNTIME_CERT_DIR ? path.resolve(process.env.EVEJS_RUNTIME_CERT_DIR) : null;
+const CA_CERT_PATH = path.join(RUNTIME_CERT_DIR || path.join(ROOT_DIR, "server", "certs"), "xmpp-ca-cert.pem");
+const CA_KEY_PATH = path.join(RUNTIME_CERT_DIR || path.join(ROOT_DIR, "server", "certs"), "xmpp-ca-key.pem");
 const LOCAL_TLS_DNS_ALT_NAMES = Object.freeze([
     "app.launchdarkly.com",
     "clientstream.launchdarkly.com",
@@ -191,7 +192,7 @@ function hasRequiredAltNames(certPem) {
         LOCAL_TLS_IP_ALT_NAMES.every((ip) => ipAddresses.has(ip)));
 }
 function ensureLocalLeafCertificate(options = {}) {
-    const certDir = options.certDir || path.join(__dirname, "certs");
+    const certDir = options.certDir || RUNTIME_CERT_DIR || path.join(__dirname, "certs");
     const outCertPath = options.outCertPath || path.join(certDir, "gateway-dev-cert.pem");
     const outKeyPath = options.outKeyPath || path.join(certDir, "gateway-dev-key.pem");
     const caCertPath = options.caCertPath || CA_CERT_PATH;

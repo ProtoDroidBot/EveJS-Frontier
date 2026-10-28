@@ -27,7 +27,7 @@ const { getExpertSystemByTypeID, listExpertSystems, resolveExpertSystemQuery: re
 const { clearExpertSystemsForCharacter, consumeExpertSystemItem, getExpertSystemStatus, installExpertSystemForCharacter, removeExpertSystemFromCharacter, } = require("../skills/expertSystems/expertSystemRuntime");
 const { createCustomAllianceForCorporation, createCustomCorporation, findCorporationByName, getOwnerLookupRecord, joinCorporationToAllianceByName, getCorporationRecord, } = require("../corporation/corporationState");
 const { ENTITY_TYPE, } = require(path.join(__dirname, "../../space/entityConstants"));
-const { jumpSessionToSolarSystem, jumpSessionToStation, } = require("../../space/transitions");
+const { jumpSessionToSolarSystemAsync, jumpSessionToStation, } = require("../../space/transitions");
 const { destroySessionShip, spawnShipDeathTestField, } = require("../../space/shipDestruction");
 const worldData = require("../../space/worldData");
 const spaceRuntime = require("../../space/runtime");
@@ -40,6 +40,7 @@ const npcService = require("../../space/npc");
 const dungeonAuthorityForSpawnSite = require("../dungeon/dungeonAuthority");
 const { executeFrontierLandscapeCommand, } = require("./frontierLandscapeCommands");
 const { executeFrontierRiftCommand, } = require("./frontierRiftCommands");
+const { executeDungeonPropMoveCommand, } = require("./dungeonPropMoveCommand");
 const { executeFrontierAssemblyCommand, } = require("../frontier/assemblyChatCommands");
 const { CAPITAL_NPC_CHAT_COMMANDS, CAPITAL_NPC_HELP_LINES, executeCapitalNpcCommand, } = require("./capitalNpc");
 const { WORMHOLE_CHAT_COMMANDS, WORMHOLE_HELP_LINES, executeWormholeCommand, } = require("./wormhole");
@@ -50,7 +51,7 @@ const { NPCTEST_DEFAULT_AMOUNT, spawnNpcTestForSession, } = require("../../space
 const { ONE_AU_IN_METERS, findSafeWarpOriginAnchor, } = require("../../space/npc/npcWarpOrigins");
 const crimewatchState = require("../security/crimewatchState");
 const { TABLE, readStaticRows, } = require("../_shared/referenceData");
-const { CHAT_ROLE_PROFILES, DEFAULT_CHAT_COLOR, DEFAULT_CHAT_ROLE, MAX_ACCOUNT_ROLE, buildPersistedAccountRoleRecord, composeSessionRoleMask, getChatRoleProfile, normalizeRoleValue, roleToString, } = require("../account/accountRoleProfiles");
+const { CHAT_ROLE_PROFILES, DEFAULT_CHAT_COLOR, DEFAULT_CHAT_ROLE, MAX_ACCOUNT_ROLE, ROLE_GML, ROLE_LEGIONEER, ROLE_WORLDMOD, buildPersistedAccountRoleRecord, composeSessionRoleMask, getChatRoleProfile, normalizeRoleValue, roleToString, } = require("../account/accountRoleProfiles");
 const { getDockedLocationID, getDockedLocationKind, isDockedSession, } = require(path.join(__dirname, "../structure/structureLocation"));
 const { executeUpwellCommand, } = require(path.join(__dirname, "../structure/structureChatCommands"));
 const { buildStructureDeathTestUsage, parseStructureDeathTestArgs, spawnStructureDeathTestField, } = require(path.join(__dirname, "../structure/structureDeathTestRuntime"));
@@ -173,11 +174,15 @@ const AVAILABLE_SLASH_COMMANDS = [
     "motd",
     "mailme",
     "spawnsite",
+    "spawn",
+    "spawnpilot",
+    "spawnosapilot",
     "assembly",
     "assemblies",
     "landscape",
     "ecosystem",
     "rift",
+    "dungeonprop",
     "npc",
     "mnpc",
     "npctest",
@@ -253,8 +258,12 @@ const COMMANDS_HELP_TEXT = [
     "/assembly <types|list|info|spawn|state|link|unlink|complete|remove>",
     "/landscape <list [name]|inspect ecosystemID|sites|spawn ecosystemID [placement]|remove siteID|nearest|here>",
     "/rift <list [name]|inspect template|sites|spawn [template] [placement]|remove siteID|nearest|here>",
+    "/dungeonprop preview|move <entityID> <x> <y> <z> [yaw pitch roll] | detach <entityID> | stop <worldEntityID> | clear (GM)",
     "/allskills",
     "/npc [amount] [faction|profile|pool]",
+    "/spawn <NPC typeID> [count]  (GM test command)",
+    "/spawnpilot <Ship typeID> [count]  (GM test command)",
+    "/spawnosapilot <Ship typeID> [count]  (GM test command)",
     "/mnpc [amount] [faction|profile|pool]",
     ...CAPITAL_NPC_HELP_LINES,
     ...WORMHOLE_HELP_LINES,
@@ -2506,6 +2515,144 @@ function cloneSpaceVector(vector, fallback = { x: 0, y: 0, z: 0 }) {
         z: Number.isFinite(Number(vector && vector.z)) ? Number(vector.z) : fallback.z,
     };
 }
+// Keep coordinate teleports aligned with the deadspace site's spatial model.
+// Authored rooms can sit tens of millions of meters from the entry beacon.
+const TRANSPORT_DUNGEON_INITIALIZE_RANGE_METERS = 1_000_000_000;
+function resolveTransportDungeonIdentity(value) {
+    if (!value || typeof value !== "object") {
+        return null;
+    }
+    const instanceID = normalizePositiveInteger(value.destinationStaticInstanceID) ||
+        normalizePositiveInteger(value.dungeonSiteInstanceID) ||
+        normalizePositiveInteger(value.dungeonCurrentInstanceID) ||
+        normalizePositiveInteger(value.dungeonInstanceID);
+    if (!instanceID) {
+        return null;
+    }
+    return {
+        instanceID,
+        roomKey: String(value.destinationDungeonRoomKey ||
+            value.dungeonCurrentRoomKey ||
+            value.dungeonRoomKey ||
+            "room:entry").trim() || "room:entry",
+        siteID: normalizePositiveInteger(value.destinationDungeonSiteID) ||
+            normalizePositiveInteger(value.dungeonSiteID) ||
+            normalizePositiveInteger(value.dungeonCurrentSiteID) ||
+            null,
+    };
+}
+function transportDistanceSquared(left, right) {
+    const dx = Number(left && left.x || 0) - Number(right && right.x || 0);
+    const dy = Number(left && left.y || 0) - Number(right && right.y || 0);
+    const dz = Number(left && left.z || 0) - Number(right && right.z || 0);
+    return (dx * dx) + (dy * dy) + (dz * dz);
+}
+function findTransportDestinationDungeonIdentity(scene, destination) {
+    const explicitIdentity = resolveTransportDungeonIdentity(destination);
+    if (explicitIdentity) {
+        return explicitIdentity;
+    }
+    const point = destination && destination.kind === "point"
+        ? destination.point
+        : null;
+    if (!scene || !point) {
+        return null;
+    }
+    const candidates = new Map();
+    for (const entity of Array.isArray(scene.staticEntities) ? scene.staticEntities : []) {
+        if (entity && entity.itemID !== null && entity.itemID !== undefined) {
+            candidates.set(String(entity.itemID), entity);
+        }
+    }
+    if (scene.staticEntitiesByID instanceof Map) {
+        for (const entity of scene.staticEntitiesByID.values()) {
+            if (entity && entity.itemID !== null && entity.itemID !== undefined) {
+                candidates.set(String(entity.itemID), entity);
+            }
+        }
+    }
+    const maximumDistanceSquared = TRANSPORT_DUNGEON_INITIALIZE_RANGE_METERS ** 2;
+    let nearest = null;
+    let nearestDistanceSquared = Number.POSITIVE_INFINITY;
+    for (const entity of candidates.values()) {
+        const identity = resolveTransportDungeonIdentity(entity);
+        if (!identity || !entity.position) {
+            continue;
+        }
+        const candidateDistanceSquared = transportDistanceSquared(point, entity.position);
+        if (candidateDistanceSquared <= maximumDistanceSquared &&
+            candidateDistanceSquared < nearestDistanceSquared) {
+            nearest = identity;
+            nearestDistanceSquared = candidateDistanceSquared;
+        }
+    }
+    return nearest;
+}
+function initializeTransportDestinationDungeon(scene, destination, session = null, options = {}) {
+    if (!scene || !destination || destination.kind !== "point" || !destination.point) {
+        return {
+            success: false,
+            errorMsg: "DUNGEON_DESTINATION_INVALID",
+        };
+    }
+    const dependencies = options.dependencies || {};
+    const landscapeSceneService = dependencies.landscapeSceneService || require(path.join(__dirname, "../../space/frontierLandscapeSceneService"));
+    const identity = findTransportDestinationDungeonIdentity(scene, destination);
+    let universeResult = null;
+    if (identity) {
+        const dungeonService = dependencies.dungeonService || require(path.join(__dirname, "../dungeon/dungeonUniverseSiteService"));
+        if (!dungeonService || typeof dungeonService.ensureSiteContentsMaterialized !== "function") {
+            return {
+                success: false,
+                errorMsg: "DUNGEON_SITE_SERVICE_UNAVAILABLE",
+            };
+        }
+        universeResult = dungeonService.ensureSiteContentsMaterialized(scene, {
+            instanceID: identity.instanceID,
+            ...(identity.siteID ? { itemID: identity.siteID, siteID: identity.siteID } : {}),
+        }, {
+            broadcast: true,
+            excludedSession: session || null,
+            markCurrentDungeonRoom: false,
+            nowMs: options.nowMs,
+            resyncSession: false,
+            roomKey: identity.roomKey,
+            roomPosition: cloneSpaceVector(destination.point),
+            session: session || null,
+            siteID: identity.siteID,
+        });
+        if (!universeResult || universeResult.success !== true) {
+            return universeResult || {
+                success: false,
+                errorMsg: "DUNGEON_DESTINATION_INITIALIZATION_FAILED",
+            };
+        }
+    }
+    let landscapeResult = null;
+    const materializeLandscape = landscapeSceneService && (typeof landscapeSceneService.materializeNearbyLandscapeSites === "function"
+        ? landscapeSceneService.materializeNearbyLandscapeSites
+        : landscapeSceneService.materializeNearbyLandscapeSite);
+    if (typeof materializeLandscape === "function") {
+        landscapeResult = materializeLandscape(scene, { position: cloneSpaceVector(destination.point), session: session || null }, {
+            broadcast: true,
+            excludedSession: session || null,
+            nowMs: options.nowMs,
+            session: session || null,
+        });
+        if (landscapeResult && landscapeResult.success !== true) {
+            return landscapeResult;
+        }
+    }
+    return {
+        success: true,
+        data: {
+            initialized: Boolean(universeResult || landscapeResult),
+            identity,
+            landscapeResult,
+            universeResult,
+        },
+    };
+}
 function parseTransportVectorTag(token, prefix) {
     const trimmed = String(token || "").trim();
     if (!trimmed) {
@@ -2574,11 +2721,21 @@ function buildTransportPointAnchor(entity, fallbackSystemID = null) {
     if (!systemID) {
         return null;
     }
+    const dungeonIdentity = resolveTransportDungeonIdentity(entity);
     return {
         kind: "point",
         systemID,
         point: cloneSpaceVector(entity.position),
         direction: cloneSpaceVector(entity.direction, { x: 1, y: 0, z: 0 }),
+        ...(dungeonIdentity
+            ? {
+                destinationStaticInstanceID: dungeonIdentity.instanceID,
+                destinationDungeonRoomKey: dungeonIdentity.roomKey,
+                ...(dungeonIdentity.siteID
+                    ? { destinationDungeonSiteID: dungeonIdentity.siteID }
+                    : {}),
+            }
+            : {}),
         label: entity.stationName ||
             entity.stargateName ||
             entity.celestialName ||
@@ -2838,7 +2995,11 @@ function resolveTransportLocationToken(session, targetDescriptor, token) {
                     `station ${numericID}`,
             };
         }
-        return buildTransportPointAnchor(entity, scene.systemID);
+        const anchor = buildTransportPointAnchor(entity, scene.systemID);
+        return anchor && scene.dynamicEntities instanceof Map &&
+            scene.dynamicEntities.has(numericID)
+            ? { ...anchor, arrivalEntityID: numericID }
+            : anchor;
     }
     return findStaticTransportAnchorByID(numericID);
 }
@@ -2846,9 +3007,43 @@ function withTransportOffset(destination, offsetVector) {
     if (!destination || destination.kind !== "point" || !destination.point) {
         return null;
     }
+    const { arrivalEntityID, ...baseDestination } = destination;
+    return {
+        ...baseDestination,
+        point: addVectors(destination.point, offsetVector),
+    };
+}
+function resolveDynamicTransportArrival(destination, scene, session) {
+    const entityID = normalizePositiveInteger(destination && destination.arrivalEntityID);
+    if (!entityID)
+        return destination;
+    const target = scene && scene.getEntityByID(entityID);
+    if (!target || !(scene.dynamicEntities instanceof Map) ||
+        !scene.dynamicEntities.has(entityID) || !target.position) {
+        return null;
+    }
+    const egoID = normalizePositiveInteger(session && session._space && session._space.shipID);
+    if (egoID === entityID)
+        return { ...destination, point: cloneSpaceVector(target.position) };
+    const ego = egoID ? scene.getEntityByID(egoID) : null;
+    const targetPoint = cloneSpaceVector(target.position);
+    const difference = {
+        x: Number(ego && ego.position && ego.position.x || 0) - targetPoint.x,
+        y: Number(ego && ego.position && ego.position.y || 0) - targetPoint.y,
+        z: Number(ego && ego.position && ego.position.z || 0) - targetPoint.z,
+    };
+    const magnitude = Math.hypot(difference.x, difference.y, difference.z);
+    const direction = magnitude > 0
+        ? { x: difference.x / magnitude, y: difference.y / magnitude, z: difference.z / magnitude }
+        : { x: 1, y: 0, z: 0 };
+    const clearance = Math.max(2_500, Math.max(0, Number(target.radius) || 0) + Math.max(0, Number(ego && ego.radius) || 0) + 500);
     return {
         ...destination,
-        point: addVectors(destination.point, offsetVector),
+        point: addVectors(targetPoint, {
+            x: direction.x * clearance,
+            y: direction.y * clearance,
+            z: direction.z * clearance,
+        }),
     };
 }
 function formatTransportTargetLabel(targetDescriptor) {
@@ -2918,7 +3113,7 @@ function buildTransportDestinationFromSession(session) {
             `solar system ${solarSystemID}`,
     };
 }
-function executeSessionTransportTarget(requestSession, targetDescriptor, destination, chatHub, options) {
+async function executeSessionTransportTarget(requestSession, targetDescriptor, destination, chatHub, options) {
     const targetLabel = formatTransportTargetLabel(targetDescriptor);
     const destinationLabel = formatTransportDestinationLabel(destination);
     const targetSession = targetDescriptor && targetDescriptor.session;
@@ -2927,9 +3122,8 @@ function executeSessionTransportTarget(requestSession, targetDescriptor, destina
     }
     let crossedLocationBoundary = false;
     if (destination.kind === "solarSystem") {
-        const result = jumpSessionToSolarSystem(targetSession, destination.solarSystemID, 
         // A GM transport is not a jump the pilot made.
-        { countsTowardJumpGoal: false });
+        const result = await jumpSessionToSolarSystemAsync(targetSession, destination.solarSystemID, { countsTowardJumpGoal: false });
         if (!result.success) {
             return handledResult(chatHub, requestSession, options, formatTransportTransitionError(result, `Failed to transport ${targetLabel} to ${destinationLabel}.`));
         }
@@ -2952,15 +3146,25 @@ function executeSessionTransportTarget(requestSession, targetDescriptor, destina
         if (currentTargetStationID ||
             !targetSession._space ||
             currentTargetSystemID !== destinationSystemID) {
-            const jumpResult = jumpSessionToSolarSystem(targetSession, destinationSystemID, 
             // A GM transport is not a jump the pilot made.
-            { countsTowardJumpGoal: false });
+            const jumpResult = await jumpSessionToSolarSystemAsync(targetSession, destinationSystemID, { countsTowardJumpGoal: false });
             if (!jumpResult.success) {
                 return handledResult(chatHub, requestSession, options, formatTransportTransitionError(jumpResult, `Failed to transport ${targetLabel} to ${destinationLabel}.`));
             }
             crossedLocationBoundary = true;
         }
-        const teleportResult = spaceRuntime.teleportSessionShipToPoint(targetSession, destination.point, {
+        const destinationScene = spaceRuntime.getSceneForSession(targetSession);
+        const currentDestination = resolveDynamicTransportArrival(destination, destinationScene, targetSession);
+        if (!currentDestination) {
+            return handledResult(chatHub, requestSession, options, `Failed to transport ${targetLabel}: destination is no longer in space.`);
+        }
+        const dungeonInitialization = initializeTransportDestinationDungeon(destinationScene, currentDestination, targetSession, {
+            dependencies: options && options.transportDungeonInitializationDependencies,
+        });
+        if (!dungeonInitialization.success) {
+            return handledResult(chatHub, requestSession, options, `Failed to initialize the dungeon at ${destinationLabel}: ${dungeonInitialization.errorMsg || "unknown error"}.`);
+        }
+        const teleportResult = spaceRuntime.teleportSessionShipToPoint(targetSession, currentDestination.point, {
             direction: destination.direction,
             refreshOwnerSession: true,
         });
@@ -2968,6 +3172,25 @@ function executeSessionTransportTarget(requestSession, targetDescriptor, destina
             return handledResult(chatHub, requestSession, options, teleportResult.errorMsg === "NOT_IN_SPACE"
                 ? `Failed to transport ${targetLabel}: target is not in space.`
                 : `Failed to teleport ${targetLabel} in space.`);
+        }
+        const destinationDungeonIdentity = dungeonInitialization.data && dungeonInitialization.data.identity;
+        if (destinationDungeonIdentity &&
+            destinationScene &&
+            typeof destinationScene.commitAcceptedPilotWarpDungeonContext === "function") {
+            try {
+                destinationScene.commitAcceptedPilotWarpDungeonContext(teleportResult.data && teleportResult.data.entity, {
+                    destinationStaticInstanceID: destinationDungeonIdentity.instanceID,
+                    destinationDungeonRoomKey: destinationDungeonIdentity.roomKey,
+                    destinationDungeonSiteID: destinationDungeonIdentity.siteID,
+                    roomPosition: currentDestination.point,
+                });
+                if (typeof destinationScene.requestFinalSceneVisibilityReconciliation === "function") {
+                    destinationScene.requestFinalSceneVisibilityReconciliation();
+                }
+            }
+            catch (error) {
+                log.warn(`[ChatCommands] Teleport dungeon context commit failed for character=${Number(targetSession.characterID) || 0} instance=${destinationDungeonIdentity.instanceID}: ${error.message}`);
+            }
         }
     }
     else {
@@ -4821,7 +5044,7 @@ function formatNpcSpawnSummary(result, commandLabel) {
         return [
             `Spawned ${data.spawned.length} hull${data.spawned.length === 1 ? "" : "s"}${selectionText}: ${composition}.`,
             `Prepared ${totalModules} fitted weapon module${totalModules === 1 ? "" : "s"} and set preferred target to your ship.`,
-            "These command-spawned NPCs are transient and are not written to disk.",
+            "These command-spawned NPCs are durable and will be restored after a restart.",
             lootSummary,
             partialSummary.trim(),
         ]
@@ -4845,7 +5068,7 @@ function formatNpcSpawnSummary(result, commandLabel) {
         `Hull: ${data.shipItem && data.shipItem.itemName ? data.shipItem.itemName : data.definition.profile.shipNameTemplate}.`,
         `Prepared ${moduleCount} fitted weapon module${moduleCount === 1 ? "" : "s"} and set preferred target to your ship.`,
         nativeNpc
-            ? "This command-spawned NPC is native, transient, and is not written to disk."
+            ? "This command-spawned NPC is native and durable, and will be restored after a restart."
             : "This command-spawned NPC is transient and is not written to disk.",
         lootSummary,
     ].join(" ");
@@ -5076,6 +5299,69 @@ function handleNpcCommand(session, argumentText, chatHub, options) {
         return handledResult(chatHub, session, options, message);
     }
     return handledResult(chatHub, session, options, formatNpcSpawnSummary(result, "/npc"));
+}
+function handleSpawnNpcTypeCommand(session, argumentText, chatHub, options) {
+    const gmRoles = BigInt(ROLE_GML) | BigInt(ROLE_LEGIONEER) | BigInt(ROLE_WORLDMOD);
+    if ((BigInt(normalizeRoleValue(session && session.accountRole, 0n)) & gmRoles) === 0n) {
+        return handledResult(chatHub, session, options, "/spawn requires a GM account.");
+    }
+    const args = String(argumentText || "").trim().split(/\s+/).filter(Boolean);
+    if (args.length < 1 || args.length > 2 ||
+        !/^\d+$/.test(args[0]) ||
+        (args.length === 2 && !/^\d+$/.test(args[1]))) {
+        return handledResult(chatHub, session, options, "Usage: /spawn <NPC typeID> [count]");
+    }
+    const typeID = Number(args[0]);
+    const count = args.length === 2 ? Number(args[1]) : 1;
+    if (!Number.isSafeInteger(typeID) || typeID <= 0 || !Number.isSafeInteger(count) || count < 1 || count > MAX_NPC_COMMAND_SPAWN_COUNT) {
+        return handledResult(chatHub, session, options, `/spawn requires a positive NPC typeID and a count from 1 to ${MAX_NPC_COMMAND_SPAWN_COUNT}.`);
+    }
+    const result = npcService.spawnNpcTypeBatchForSession(session, typeID, count);
+    if (!result.success) {
+        const message = result.errorMsg === "NOT_IN_SPACE"
+            ? "You must be in space before using /spawn."
+            : result.errorMsg === "SHIP_NOT_FOUND"
+                ? "Active ship was not found in space."
+                : result.errorMsg === "NPC_TYPE_NOT_SPAWNABLE"
+                    ? `NPC typeID ${typeID} has no spawnable profile.`
+                    : `/spawn failed: ${result.errorMsg || "UNKNOWN_ERROR"}.`;
+        return handledResult(chatHub, session, options, message);
+    }
+    return handledResult(chatHub, session, options, `typeID ${typeID}: ${formatNpcSpawnSummary(result, "/spawn")} Spawn positions are spread around your ship.`);
+}
+function handleSpawnNpcPilotShipCommand(session, argumentText, chatHub, options, command = "spawnpilot") {
+    const commandLabel = `/${command}`;
+    const gmRoles = BigInt(ROLE_GML) | BigInt(ROLE_LEGIONEER) | BigInt(ROLE_WORLDMOD);
+    if ((BigInt(normalizeRoleValue(session && session.accountRole, 0n)) & gmRoles) === 0n) {
+        return handledResult(chatHub, session, options, `${commandLabel} requires a GM account.`);
+    }
+    const args = String(argumentText || "").trim().split(/\s+/).filter(Boolean);
+    if (args.length < 1 || args.length > 2 || !/^\d+$/.test(args[0]) ||
+        (args.length === 2 && !/^\d+$/.test(args[1]))) {
+        return handledResult(chatHub, session, options, `Usage: ${commandLabel} <Ship typeID> [count]`);
+    }
+    const typeID = Number(args[0]);
+    const count = args.length === 2 ? Number(args[1]) : 1;
+    if (!Number.isSafeInteger(typeID) || typeID <= 0 || !Number.isSafeInteger(count) ||
+        count < 1 || count > MAX_NPC_COMMAND_SPAWN_COUNT) {
+        return handledResult(chatHub, session, options, `${commandLabel} requires a positive Ship typeID and a count from 1 to ${MAX_NPC_COMMAND_SPAWN_COUNT}.`);
+    }
+    const result = command === "spawnosapilot"
+        ? npcService.spawnOsaPilotShipBatchForSession(session, typeID, count)
+        : npcService.spawnNpcPilotShipBatchForSession(session, typeID, count);
+    if (!result.success) {
+        const message = result.errorMsg === "NOT_IN_SPACE"
+            ? `You must be in space before using ${commandLabel}.`
+            : result.errorMsg === "SHIP_NOT_FOUND"
+                ? "Active ship was not found in space."
+                : result.errorMsg === "NPC_PILOT_SHIP_CATEGORY_REQUIRED"
+                    ? `TypeID ${typeID} is not a category 6 Ship.`
+                    : result.errorMsg === "NPC_PILOT_IDENTITIES_DISABLED"
+                        ? "NPC pilot identities are disabled."
+                        : `${commandLabel} failed: ${result.errorMsg || "UNKNOWN_ERROR"}.`;
+        return handledResult(chatHub, session, options, message);
+    }
+    return handledResult(chatHub, session, options, `typeID ${typeID}: ${formatNpcSpawnSummary(result, commandLabel)} Spawn positions are spread around your ship.`);
 }
 function handleMissileNpcCommand(session, argumentText, chatHub, options) {
     const parsedArguments = parseNpcSpawnArguments(argumentText, {
@@ -6438,7 +6724,7 @@ function handleGmWeaponsCommand(session, chatHub, options) {
         sample ? `Sample: ${sample}.` : null,
     ].filter(Boolean).join(" "));
 }
-function handleSolarTeleport(session, argumentText, chatHub, options) {
+async function handleSolarTeleport(session, argumentText, chatHub, options) {
     if (!session || !session.characterID) {
         return handledResult(chatHub, session, options, "Select a character before using /solar.");
     }
@@ -6453,7 +6739,7 @@ function handleSolarTeleport(session, argumentText, chatHub, options) {
         return handledResult(chatHub, session, options, message.trim());
     }
     // A GM jump command is not a jump the pilot made.
-    const result = jumpSessionToSolarSystem(session, lookup.match.solarSystemID, {
+    const result = await jumpSessionToSolarSystemAsync(session, lookup.match.solarSystemID, {
         countsTowardJumpGoal: false,
     });
     if (!result.success) {
@@ -6590,6 +6876,13 @@ function handleTransportCommand(session, argumentText, chatHub, options) {
     if (normalizePositiveInteger(destination.systemID) !==
         normalizePositiveInteger(targetDescriptor.systemID)) {
         return handledResult(chatHub, session, options, "Runtime entities can only be moved within their current solar system.");
+    }
+    const destinationScene = spaceRuntime.ensureScene(targetDescriptor.systemID);
+    const dungeonInitialization = initializeTransportDestinationDungeon(destinationScene, destination, null, {
+        dependencies: options && options.transportDungeonInitializationDependencies,
+    });
+    if (!dungeonInitialization.success) {
+        return handledResult(chatHub, session, options, `Failed to initialize the dungeon at ${destinationLabel}: ${dungeonInitialization.errorMsg || "unknown error"}.`);
     }
     const entityMoveResult = spaceRuntime.teleportDynamicEntityToPoint(targetDescriptor.systemID, targetDescriptor.entity.itemID, destination.point, {
         direction: destination.direction,
@@ -7245,12 +7538,25 @@ function executeChatCommand(session, rawMessage, chatHub, options = {}) {
         const result = executeFrontierRiftCommand(session, argumentText);
         return handledResult(chatHub, session, options, result.message);
     }
+    if (command === "dungeonprop") {
+        const result = executeDungeonPropMoveCommand(session, argumentText);
+        return handledResult(chatHub, session, options, result.message);
+    }
     if (command === "assembly" || command === "assemblies") {
         const result = executeFrontierAssemblyCommand(session, argumentText, options.assemblyCommandOptions || {});
         return handledResult(chatHub, session, options, result.message);
     }
     if (command === "npc") {
         return handleNpcCommand(session, argumentText, chatHub, options);
+    }
+    if (command === "spawn") {
+        return handleSpawnNpcTypeCommand(session, argumentText, chatHub, options);
+    }
+    if (command === "spawnpilot") {
+        return handleSpawnNpcPilotShipCommand(session, argumentText, chatHub, options);
+    }
+    if (command === "spawnosapilot") {
+        return handleSpawnNpcPilotShipCommand(session, argumentText, chatHub, options, command);
     }
     if (command === "mnpc") {
         return handleMissileNpcCommand(session, argumentText, chatHub, options);
@@ -7774,6 +8080,13 @@ module.exports = {
     executeChatCommand,
     getGmWeaponsSeedPlan,
     getPropulsionCommandItemTypes,
+    _testing: {
+        buildTransportPointAnchor,
+        executeSessionTransportTarget,
+        findTransportDestinationDungeonIdentity,
+        initializeTransportDestinationDungeon,
+        resolveTransportDungeonIdentity,
+    },
     //testing: exported for runtime.js to send TiDi notifications on system entry/leave
     sendTimeDilationNotificationToSession,
     sendTimeDilationNotificationToSystem,

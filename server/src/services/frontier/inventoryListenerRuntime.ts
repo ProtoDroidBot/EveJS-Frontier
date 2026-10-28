@@ -54,8 +54,11 @@ function normalizeRequest(request) {
   const targetKind = String(request?.targetKind || "");
   const inventory = String(request?.inventory || "");
   const targetID = requestInteger(request?.targetID);
+  const laneID = request?.laneID == null && request?.lane_id == null
+    ? 1 : requestInteger(request?.laneID ?? request?.lane_id, 16);
   const rawRequested = Array.isArray(request?.requested) ? request.requested : [];
-  if (!TARGET_KINDS.has(targetKind) || !targetID || !rawRequested.length || rawRequested.length > 100) {
+  if (!TARGET_KINDS.has(targetKind) || !targetID || !laneID ||
+      !rawRequested.length || rawRequested.length > 100) {
     return null;
   }
   if ((targetKind === "smart-assembly" && !SMART_INVENTORIES.has(inventory)) ||
@@ -71,7 +74,7 @@ function normalizeRequest(request) {
     seen.add(typeID);
     requested.push({ typeID, quantity });
   }
-  return { targetKind, inventory, targetID, requested };
+  return { targetKind, inventory, targetID, laneID, requested };
 }
 
 export function createInventoryListenerReader(overrides: Record<string, any> = {}) {
@@ -106,13 +109,15 @@ export function createInventoryListenerReader(overrides: Record<string, any> = {
       ownerID = positiveInteger(resolved.data.inventoryOwnerID) || characterID;
       capacity = Number(resolved.data.capacity) || 0;
     } else {
-      const resolved = dependencies.validateFacility(session, request.targetID);
+      const resolved = dependencies.validateFacility(session, request.targetID, {
+        laneID: request.laneID,
+      });
       if (!resolved?.success) return fail(resolved?.errorMsg || "INVALID_INVENTORY");
       target = resolved.data.facility;
       ownerID = characterID;
       flagID = request.inventory === "inputs"
-        ? industryRuntime.INDUSTRY_INPUT_FLAG
-        : industryRuntime.INDUSTRY_OUTPUT_FLAG;
+        ? industryRuntime.industryInputFlagForLane(request.laneID)
+        : industryRuntime.industryOutputFlagForLane(request.laneID);
     }
     if (!target || positiveInteger(target.itemID) !== request.targetID) {
       return fail("INVALID_INVENTORY");
@@ -147,6 +152,7 @@ export function createInventoryListenerReader(overrides: Record<string, any> = {
         targetID: request.targetID,
         targetKind: request.targetKind,
         inventory: request.inventory,
+        laneID: request.laneID,
         targetName: String(target.name || metadata.name || `Item ${request.targetID}`),
         capacity: Math.max(0, capacity),
         usedVolume,

@@ -1,3 +1,4 @@
+const { createFrontierEconomyGatewayService } = require("./frontierEconomyGatewayService");
 const { createCompatibilityGatewayService } = require("./compatibilityGatewayService");
 const {
   createAssemblyGateGatewayService,
@@ -56,9 +57,11 @@ const {
 const {
   createDailyGoalsGatewayService,
 } = require("./dailyGoalsGatewayService");
+const { createExplorationGatewayService } = require("./explorationGatewayService");
 
 function createGatewayServiceRegistry(context) {
   const services: any[] = [
+    createFrontierEconomyGatewayService(context),
     createAssemblyGateGatewayService(context),
     createAssemblyNetworkNodeGatewayService(context),
     createAssemblyStorageUnitGatewayService(context),
@@ -82,6 +85,7 @@ function createGatewayServiceRegistry(context) {
     createMapTagsGatewayService(context),
     createCampaignGatewayService(context),
     createDailyGoalsGatewayService(context),
+    createExplorationGatewayService(context),
     createCompatibilityGatewayService(context),
   ];
 

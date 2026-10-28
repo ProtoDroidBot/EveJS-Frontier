@@ -42,6 +42,14 @@ const startTCPServer = require(path.join(__dirname, "./src/network/tcp"));
 
 // database
 const database = require(path.join(__dirname, "./src/gameStore"));
+const sessionRegistry = require(path.join(__dirname, "./src/services/chat/sessionRegistry"));
+const spaceRuntime = require(path.join(__dirname, "./src/space/runtime"));
+const { disconnectCharacterSession } = require(path.join(
+  __dirname, "./src/services/_shared/sessionDisconnect",
+));
+const { shutdownWorld } = require(path.join(
+  __dirname, "./src/services/_shared/worldShutdown",
+));
 
 // main startup
 
@@ -105,10 +113,10 @@ try {
   log.line();
 }
 
-// Repopulate mined-out asteroid belts. Belt fields regenerate deterministically
-// whenever a scene is built, so this only has to drop the persisted depletion
-// state that would otherwise delete each rock again on spawn. Must run before
-// any scene exists. Ice sites respawn on their own lifecycle and are left alone.
+// Optional administrative reset for mined-out asteroid belts. Ordinary
+// depletion now survives restarts and expires after the configured 24-hour
+// lifecycle; this flag remains as an explicit operator override. Must run
+// before any scene exists. Ice sites retain their own lifecycle.
 if (config.asteroidBeltStartupReset === true) {
   try {
     const miningRuntimeState = require(path.join(
@@ -135,6 +143,13 @@ if (config.asteroidBeltStartupReset === true) {
 const serviceManager = new ServiceManager();
 const gatewayRuntime = createEvejsWebGatewayRuntime({ serviceManager });
 const runtimeContext = createRuntimeContext({ serviceManager, gatewayRuntime });
+database.registerShutdownHook((reason) => shutdownWorld(reason, {
+  gatewayRuntime,
+  sessionRegistry,
+  disconnectCharacterSession,
+  spaceRuntime,
+  log,
+}), { priority: 100 });
 
 // register services
 const servicesDir = path.join(__dirname, "./src/services");
@@ -275,6 +290,20 @@ try {
   require("./src/services/frontier/suiAssemblySync").startSuiAssemblySync();
 } catch (err) {
   log.err(`[SuiAssemblySync] Failed to start: ${err.message}`);
+}
+
+try {
+  const logistics = require("./src/services/frontier/assemblyLogisticsWorker");
+  logistics.startAssemblyLogisticsWorker();
+  database.registerShutdownHook(() => logistics.stopAssemblyLogisticsWorker(), { priority: 200 });
+} catch (err) {
+  log.err(`[AssemblyLogistics] Failed to start: ${err.message}`);
+}
+
+try {
+  require("./src/services/frontier/suiNpcIdentitySync").startSuiNpcIdentitySync();
+} catch (err) {
+  log.err(`[SuiNpcIdentitySync] Failed to start: ${err.message}`);
 }
 
 startTCPServer(serviceManager);

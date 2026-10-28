@@ -61,6 +61,9 @@ const {
   canEntitiesInteractLocally,
 } = require(path.join(__dirname, "../destiny/identity/interactionScope"));
 const {
+  findWeaponLineOccluder,
+} = require(path.join(__dirname, "../destiny/simulation/collisions"));
+const {
   applyNpcChaseMaxVelocityCommand,
 } = require(path.join(__dirname, "../destiny/commands/npc.js"));
 const {
@@ -70,6 +73,34 @@ const {
 const {
   ENTITY_TYPE,
 } = require(path.join(__dirname, "../entityConstants"));
+const {
+  resolveNpcFactionDisposition,
+  resolveNpcTargetIdentification,
+  resolveNpcUnidentifiedDisposition,
+  shouldNpcRetaliateAgainstAggressors,
+  getAdditionalAutoAggroTargetClasses,
+  isNpcFactionSdeTypeAllowed,
+} = require(path.join(__dirname, "../../config/npcFactionConfig"));
+const {
+  tickDurableNpcJob,
+} = require(path.join(__dirname, "./npcBehaviorTreeRuntime"));
+require(path.join(__dirname, "./npcResourceJobService"))
+  .registerNpcResourceJobHandlers();
+require(path.join(__dirname, "./npcConstructionJobService"))
+  .registerNpcConstructionJobHandlers();
+require(path.join(__dirname, "./npcConstructionTemplateJobService"))
+  .registerNpcConstructionTemplateJobHandler();
+require(path.join(__dirname, "./npcIndustryJobService"))
+  .registerNpcIndustryJobHandler();
+require(path.join(__dirname, "./npcStargateMaintenanceService"))
+  .registerNpcStargateMaintenanceJobHandlers();
+const npcNetworkNodeCoordinator = require(path.join(__dirname, "./npcNetworkNodeCoordinator"));
+npcNetworkNodeCoordinator.registerNpcNetworkNodeMaintenanceJobHandler();
+const {
+  requestNpcSupport,
+  registerNpcSupportJobHandlers,
+} = require(path.join(__dirname, "./npcSupportCoordinator"));
+registerNpcSupportJobHandlers();
 
 const CAPSULE_GROUP_ID = 29;
 const NPC_SYNTHETIC_PROPULSION_DURATION_MS = 60_000;
@@ -104,6 +135,7 @@ const NPC_WEAPON_MAINTENANCE_MS = 2_500;
 const NPC_HOSTILE_MAINTENANCE_MS = 3_000;
 const NPC_SELF_MODULE_MAINTENANCE_MS = 5_000;
 const NPC_ASSISTANCE_MAINTENANCE_MS = 2_000;
+const NPC_FRIENDLY_DUNGEON_ARRIVAL_RESPONSE_MS = 30_000;
 
 let npcRuntimeModule = null;
 let nativeNpcServiceModule = null;
@@ -356,7 +388,10 @@ function isDrifterEntosisPriorityEnabled(behaviorProfile = null) {
 }
 
 function isDrifterPursuitWarpEnabled(behaviorProfile = null) {
-  return !behaviorProfile || behaviorProfile.drifterEnablePursuitWarp !== false;
+  return !behaviorProfile || (
+    behaviorProfile.chaseTargets !== false &&
+    behaviorProfile.drifterEnablePursuitWarp !== false
+  );
 }
 
 function isDrifterPackRegroupEnabled(behaviorProfile = null) {
@@ -635,6 +670,14 @@ function propagateDrifterReinforcementRequestState(scene, controller, entity, no
   }
 }
 
+function filterNpcReinforcementDefinitions(entity, definitions, matcher = isNpcFactionSdeTypeAllowed) {
+  return Array.isArray(definitions) ? definitions.filter(definition => (
+    definition && definition.profile && definition.behaviorProfile &&
+    matcher(entity, "reinforcement",
+      toPositiveInt(definition.profile.shipTypeID ?? definition.profile.typeID, 0))
+  )) : [];
+}
+
 function maybeRequestDrifterReinforcements(scene, entity, controller, behaviorProfile, targetEntity, nowMs) {
   if (
     !scene ||
@@ -649,15 +692,9 @@ function maybeRequestDrifterReinforcements(scene, entity, controller, behaviorPr
     };
   }
 
-  const reinforcementDefinitions = Array.isArray(
-    behaviorProfile && behaviorProfile.reinforcementDefinitions,
-  )
-    ? behaviorProfile.reinforcementDefinitions.filter((definition) => (
-      definition &&
-      definition.profile &&
-      definition.behaviorProfile
-    ))
-    : [];
+  const reinforcementDefinitions = filterNpcReinforcementDefinitions(
+    entity, behaviorProfile && behaviorProfile.reinforcementDefinitions,
+  );
   if (reinforcementDefinitions.length <= 0) {
     return {
       requested: false,
@@ -728,6 +765,68 @@ function maybeRequestDrifterReinforcements(scene, entity, controller, behaviorPr
     };
   }
 
+  // Durable Drifters use the faction coordinator. Transient encounter packs
+  // keep the legacy direct-spawn path because they do not own durable pilot
+  // identities or resumable jobs.
+  if (entity.transient !== true && toPositiveInt(entity.npcCharacterID, 0) > 0) {
+    const coordinated = requestNpcSupport({
+      requesterEntityID: toPositiveInt(entity.itemID, 0),
+      threatTargetID: targetID,
+      threatOwnerID: toPositiveInt(targetEntity.ownerID, 0),
+      systemID: toPositiveInt(entity.systemID, 0),
+      position: entity.position,
+      scene,
+      severity: "critical",
+      requiredRoles: ["combat"],
+      supportGroupID: String(
+        controller.spawnGroupID ||
+        entity.npcFactionIdentityKey ||
+        entity.npcFactionKey ||
+        "drifter",
+      ),
+      maximumResponderCount: Math.max(
+        reinforcementDefinitions.length,
+        toPositiveInt(behaviorProfile && behaviorProfile.supportMaximumResponders, 3),
+      ),
+      responseRadiusMeters: Math.max(
+        250_000,
+        toFiniteNumber(behaviorProfile && behaviorProfile.aggressionRangeMeters, 0),
+      ),
+      ttlMs: Math.max(15_000, toFiniteNumber(behaviorProfile && behaviorProfile.supportIncidentTtlMs, 120_000)),
+      cooldownMs,
+      allowReserveSpawn: true,
+      maximumReserveSpawn: reinforcementDefinitions.length,
+      reserveDefinitions: reinforcementDefinitions,
+      reserveSpawnDistanceMeters: Math.max(
+        5_000,
+        toFiniteNumber(behaviorProfile && behaviorProfile.reinforcementSpawnDistanceMeters, 35_000),
+      ),
+      nowMs,
+    });
+    if (!coordinated || coordinated.success !== true) {
+      return {
+        requested: false,
+        errorMsg: coordinated && coordinated.errorMsg || "NPC_SUPPORT_REQUEST_FAILED",
+      };
+    }
+    const coordinatedIncident = coordinated.data && coordinated.data.incident;
+    const responderCount = coordinatedIncident && Array.isArray(coordinatedIncident.responderAssignments)
+      ? coordinatedIncident.responderAssignments.length
+      : 0;
+    if (coordinated.data.created === true) {
+      drifterState.reinforcementRequestCount =
+        toPositiveInt(drifterState.reinforcementRequestCount, 0) + 1;
+      drifterState.lastReinforcementTargetID = targetID;
+      propagateDrifterReinforcementRequestState(scene, controller, entity, nowMs);
+    }
+    return {
+      requested: coordinated.data.created === true || responderCount > 0,
+      assignedCount: responderCount,
+      spawnedCount: toPositiveInt(coordinated.data.spawnedCount, 0),
+      incidentID: coordinatedIncident && coordinatedIncident.incidentID || null,
+    };
+  }
+
   const selectionKind = String(
     controller.selectionKind ||
       behaviorProfile && behaviorProfile.reinforcementSelectionKind ||
@@ -743,6 +842,7 @@ function maybeRequestDrifterReinforcements(scene, entity, controller, behaviorPr
       behaviorProfile && behaviorProfile.reinforcementSelectionName ||
       "Drifter Reinforcements",
   ).trim() || "Drifter Reinforcements";
+  const parentIdentitySlot = String(entity.npcIdentitySlot || controller.npcIdentitySlot || "").trim();
 
   const spawnResult = getNativeNpcService().spawnNativeDefinitionsInContext(
     {
@@ -772,6 +872,9 @@ function maybeRequestDrifterReinforcements(scene, entity, controller, behaviorPr
       operatorKind: String(controller.operatorKind || "").trim() || "drifterspawn",
       preferredTargetID: targetID,
       runtimeKind: "nativeCombat",
+      ...(parentIdentitySlot
+        ? { npcIdentitySlot: `${parentIdentitySlot}:reinforcement:${toPositiveInt(drifterState.reinforcementRequestCount, 0)}` }
+        : {}),
       behaviorOverrides: {
         movementMode: "hold",
         autoAggro: true,
@@ -1401,10 +1504,92 @@ function isIgnoredInvulnerablePlayer(target) {
   return isCharacterInvulnerable(getEntityCharacterID(target));
 }
 
+function isNpcCombatActorClass(actorClass) {
+  return actorClass === ENTITY_TYPE.NPC || actorClass === ENTITY_TYPE.CONCORD;
+}
+
+function isRecordedNpcAggressor(entity, target) {
+  const controller = getControllerByEntityID(
+    toPositiveInt(entity && entity.itemID, 0),
+  );
+  if (!controller || !target) {
+    return false;
+  }
+  const targetEntityID = toPositiveInt(target.itemID, 0);
+  if (
+    targetEntityID > 0 &&
+    targetEntityID === toPositiveInt(controller.lastAggressorID, 0)
+  ) {
+    return true;
+  }
+  const targetOwnerID = resolveCombatOwnerID(target);
+  return Boolean(
+    targetOwnerID > 0 &&
+    targetOwnerID === toPositiveInt(controller.lastAggressorOwnerID, 0)
+  );
+}
+
+function resolveNpcTransponderTargetDisposition(entity, target) {
+  const sourceClass = resolveCombatActorClass(entity);
+  if (!isNpcCombatActorClass(sourceClass)) {
+    return null;
+  }
+
+  const identification = resolveNpcTargetIdentification(entity, target);
+  if (identification === "ally") {
+    return "friendly";
+  }
+  if (identification !== "unidentified") {
+    return null;
+  }
+
+  const unidentifiedDisposition = resolveNpcUnidentifiedDisposition(entity);
+  if (unidentifiedDisposition === "hostile") {
+    return "hostile";
+  }
+  if (unidentifiedDisposition === "ignore") {
+    return "friendly";
+  }
+  if (unidentifiedDisposition === "retaliate") {
+    return shouldNpcRetaliateAgainstAggressors(entity) &&
+      isRecordedNpcAggressor(entity, target)
+      ? "hostile"
+      : "friendly";
+  }
+  if (unidentifiedDisposition === "suspicious") {
+    return isRecordedNpcAggressor(entity, target)
+      ? "hostile"
+      : "suspicious";
+  }
+  return null;
+}
+
+function isSuspiciousNpcTarget(entity, target) {
+  return resolveNpcTransponderTargetDisposition(entity, target) === "suspicious";
+}
+
+function shouldAllowNpcWeaponsAgainstTarget(entity, target) {
+  return !isSuspiciousNpcTarget(entity, target);
+}
+
 function isFriendlyCombatTarget(entity, target) {
   const sourceClass = resolveCombatActorClass(entity);
   const targetClass = resolveCombatActorClass(target);
   if (!sourceClass || !targetClass) {
+    return false;
+  }
+
+  const transponderDisposition = resolveNpcTransponderTargetDisposition(
+    entity,
+    target,
+  );
+  if (transponderDisposition === "friendly") {
+    return true;
+  }
+  if (
+    transponderDisposition === "hostile" ||
+    transponderDisposition === "suspicious"
+  ) {
     return false;
   }
 
@@ -1434,6 +1619,42 @@ function isFriendlyCombatTarget(entity, target) {
       sourceOperatorKind === targetOperatorKind
     ) {
       return false;
+    }
+  }
+
+  if (isNpcCombatActorClass(sourceClass) && isNpcCombatActorClass(targetClass)) {
+    const disposition = resolveNpcFactionDisposition(entity, target);
+    if (disposition === "hostile") {
+      return false;
+    }
+    if (
+      disposition === "neutral" &&
+      shouldNpcRetaliateAgainstAggressors(entity) &&
+      isRecordedNpcAggressor(entity, target)
+    ) {
+      return false;
+    }
+    if (disposition === "friendly" || disposition === "neutral") {
+      return true;
+    }
+  }
+
+  if (
+    isNpcCombatActorClass(sourceClass) &&
+    (targetClass === ENTITY_TYPE.PLAYER || targetClass === ENTITY_TYPE.DRONE)
+  ) {
+    const unidentifiedDisposition = resolveNpcUnidentifiedDisposition(entity);
+    if (unidentifiedDisposition === "hostile") {
+      return false;
+    }
+    if (unidentifiedDisposition === "ignore") {
+      return true;
+    }
+    if (unidentifiedDisposition === "retaliate") {
+      return !(
+        shouldNpcRetaliateAgainstAggressors(entity) &&
+        isRecordedNpcAggressor(entity, target)
+      );
     }
   }
 
@@ -1502,6 +1723,13 @@ function resolveProximityAggroTargetClasses(behaviorProfile) {
   return resolveAutoAggroTargetClasses(behaviorProfile);
 }
 
+function applyNpcFactionTargetClasses(entity, targetClasses) {
+  return normalizeTargetClassList([
+    ...normalizeTargetClassList(targetClasses),
+    ...getAdditionalAutoAggroTargetClasses(entity),
+  ]);
+}
+
 function normalizeChanceFraction(value, fallback = 0) {
   const numeric = toFiniteNumber(value, fallback);
   const fraction = numeric > 1 && numeric <= 100
@@ -1526,6 +1754,16 @@ function normalizeBehaviorOverrides(overrides) {
     "useChasePropulsion",
     "allowTargetSwitching",
     "useSdeChaseVelocity",
+    "chaseTargets",
+    "mineAsteroids",
+    "guardAnchor",
+    "retainTargetLockWhenOccluded",
+    "fireThroughOccluders",
+    "passiveRoaming",
+    "passiveWarping",
+    "supportEnabled",
+    "supportCrossSystemEnabled",
+    "supportReserveSpawnEnabled",
   ];
   for (const field of booleanFields) {
     if (overrides[field] !== undefined) {
@@ -1554,6 +1792,22 @@ function normalizeBehaviorOverrides(overrides) {
     "chaseMaxDelayChance",
     "chaseMaxDurationMs",
     "chaseMaxDurationChance",
+    "passiveRoamRadiusMeters",
+    "passiveMoveMinDistanceMeters",
+    "passiveMoveMaxDistanceMeters",
+    "passiveMoveArrivalMeters",
+    "passiveMoveIntervalMinMs",
+    "passiveMoveIntervalMaxMs",
+    "passiveMoveTimeoutMs",
+    "passiveWarpIntervalMs",
+    "passiveWarpMinDistanceMeters",
+    "passiveWarpMaxDistanceMeters",
+    "supportMaximumResponders",
+    "supportResponseRadiusMeters",
+    "supportIncidentTtlMs",
+    "supportCooldownMs",
+    "supportMaximumReserveSpawn",
+    "supportReserveSpawnDistanceMeters",
   ];
   for (const field of numericFields) {
     if (overrides[field] !== undefined) {
@@ -1596,6 +1850,18 @@ function normalizeBehaviorOverrides(overrides) {
     normalized.proximityAggroTargetClasses = normalizeTargetClassList(
       overrides.proximityAggroTargetClasses,
     );
+  }
+  if (overrides.supportRequiredRoles !== undefined) {
+    normalized.supportRequiredRoles = Array.isArray(overrides.supportRequiredRoles)
+      ? [...new Set(overrides.supportRequiredRoles
+          .map((role) => String(role || "").trim().toLowerCase())
+          .filter((role) => /^[a-z][a-z0-9_-]{0,63}$/u.test(role)))]
+      : [];
+  }
+  for (const field of ["supportSeverity", "supportGroupID", "supportReserveProfileID"]) {
+    if (overrides[field] !== undefined) {
+      normalized[field] = String(overrides[field] || "").trim();
+    }
   }
   if (overrides.syntheticChasePropulsionTier !== undefined) {
     const normalizedTier = String(
@@ -1677,7 +1943,7 @@ function isValidCombatTarget(entity, target, options: Record<string, any> = {}) 
       return false;
     }
   }
-  return Boolean(
+  const eligible = Boolean(
     entity &&
     target &&
     targetClass &&
@@ -1698,6 +1964,42 @@ function isValidCombatTarget(entity, target, options: Record<string, any> = {}) 
       )
     ),
   );
+  if (!eligible) {
+    return false;
+  }
+  const scene = options.scene;
+  if (
+    scene &&
+    target.session &&
+    typeof scene.canSessionDetectDynamicEntity === "function" &&
+    !scene.canSessionDetectDynamicEntity(target.session, entity) &&
+    options.allowOccluded !== true
+  ) {
+    // A sessionless NPC must not acquire a player who could not acquire that
+    // NPC under the same ballpark scope/visibility rules.
+    return false;
+  }
+
+  return (
+    !scene ||
+    options.allowOccluded === true ||
+    !findWeaponLineOccluder(scene, entity, target)
+  );
+}
+
+function isEntityTargetLocked(scene, entity, target) {
+  if (!(scene && entity && target) || typeof scene.getTargetsForEntity !== "function") {
+    return false;
+  }
+  return scene.getTargetsForEntity(entity).includes(toPositiveInt(target.itemID, 0));
+}
+
+function canRetainOccludedCombatTarget(scene, entity, target, behaviorProfile) {
+  return Boolean(
+    behaviorProfile &&
+    behaviorProfile.retainTargetLockWhenOccluded === true &&
+    isEntityTargetLocked(scene, entity, target)
+  );
 }
 
 function isValidManualMovementTarget(entity, target) {
@@ -1705,7 +2007,10 @@ function isValidManualMovementTarget(entity, target) {
     entity &&
     target &&
     target.itemID !== entity.itemID &&
-    target.position,
+    target.position &&
+    canEntitiesInteractLocally(entity, target) &&
+    !(entity.bubbleID && target.bubbleID && entity.bubbleID !== target.bubbleID) &&
+    !isEntityInActiveWarp(target),
   );
 }
 
@@ -1725,7 +2030,7 @@ function findNearestCombatTarget(scene, entity, maxRangeMeters, options: Record<
     const candidateClass = resolveCombatActorClass(candidate);
     if (
       !allowedTargetClasses.includes(candidateClass) ||
-      !isValidCombatTarget(entity, candidate, options)
+      !isValidCombatTarget(entity, candidate, { ...options, scene })
     ) {
       continue;
     }
@@ -1843,7 +2148,10 @@ function recordNpcBehaviorTargetSelection(
 
 function resolveNpcChaseVelocityPolicy(behaviorProfile) {
   const explicit = hasOwnField(behaviorProfile, "useSdeChaseVelocity");
-  const enabled = explicit && behaviorProfile.useSdeChaseVelocity === true;
+  const enabled =
+    explicit &&
+    behaviorProfile.chaseTargets !== false &&
+    behaviorProfile.useSdeChaseVelocity === true;
   const cruiseSpeed = Math.max(
     0,
     toFiniteNumber(behaviorProfile && behaviorProfile.cruiseSpeedMetersPerSecond, 0),
@@ -1964,7 +2272,10 @@ function syncNpcChaseVelocity(scene, entity, controller, behaviorProfile, target
     return {
       active: false,
       mode: "disabled",
-      changed: false,
+      changed:
+        behaviorProfile.chaseTargets === false
+          ? applyNpcChaseVelocityMode(scene, entity, "cruise", policy)
+          : false,
     };
   }
 
@@ -2077,6 +2388,33 @@ function resolveCurrentBehaviorTargetGate(
 ) {
   const policy = resolveNpcTargetSwitchPolicy(behaviorProfile);
   if (!policy.explicit) {
+    const retainedTargetID = toPositiveInt(controller && controller.currentTargetID, 0);
+    const retainedTarget = retainedTargetID > 0 && scene
+      ? scene.getEntityByID(retainedTargetID)
+      : null;
+    if (
+      canRetainOccludedCombatTarget(
+        scene,
+        entity,
+        retainedTarget,
+        behaviorProfile,
+      ) &&
+      findWeaponLineOccluder(scene, entity, retainedTarget) &&
+      isValidBehaviorCombatTarget(
+        entity,
+        retainedTarget,
+        allowedTargetClasses,
+        maxRangeMeters,
+        { ...options, scene, allowOccluded: true },
+      )
+    ) {
+      return {
+        handled: true,
+        policy,
+        currentTarget: retainedTarget,
+        target: retainedTarget,
+      };
+    }
     return {
       handled: false,
       policy,
@@ -2094,7 +2432,18 @@ function resolveCurrentBehaviorTargetGate(
       currentTarget,
       allowedTargetClasses,
       maxRangeMeters,
-      options,
+      {
+        ...options,
+        scene,
+        allowOccluded:
+          options.allowOccluded === true ||
+          canRetainOccludedCombatTarget(
+            scene,
+            entity,
+            currentTarget,
+            behaviorProfile,
+          ),
+      },
     )
   ) {
     return {
@@ -2669,6 +3018,13 @@ function isFriendlyNpcAssistanceTarget(entity, target, sourceController = null) 
   const targetController = getControllerByEntityID(
     toPositiveInt(target && target.itemID, 0),
   );
+  const factionDisposition = resolveNpcFactionDisposition(entity, target);
+  if (factionDisposition === "hostile") {
+    return false;
+  }
+  if (factionDisposition === "friendly") {
+    return true;
+  }
   const sourceOperatorKind = String(
     resolvedSourceController && resolvedSourceController.operatorKind || "",
   ).trim();
@@ -2692,7 +3048,12 @@ function isFriendlyNpcAssistanceTarget(entity, target, sourceController = null) 
 
 function findNearestNpcAssistanceTarget(scene, entity, controller, family, maxRangeMeters = 0) {
   const normalizedRange = Math.max(0, toFiniteNumber(maxRangeMeters, 0));
+  const preferredAssistanceTargetID = toPositiveInt(
+    controller && controller.preferredAssistanceTargetID,
+    0,
+  );
   let bestTarget = null;
+  let bestIsPreferred = false;
   let bestNeedRatio = 0;
   let bestDistance = Number.POSITIVE_INFINITY;
 
@@ -2714,20 +3075,194 @@ function findNearestNpcAssistanceTarget(scene, entity, controller, family, maxRa
       continue;
     }
 
+    const candidateIsPreferred = Boolean(
+      preferredAssistanceTargetID > 0 &&
+      preferredAssistanceTargetID === toPositiveInt(candidate && candidate.itemID, 0)
+    );
     if (
-      needRatio > bestNeedRatio + 0.000001 ||
+      (candidateIsPreferred && !bestIsPreferred) ||
       (
+        candidateIsPreferred === bestIsPreferred &&
+        needRatio > bestNeedRatio + 0.000001
+      ) ||
+      (
+        candidateIsPreferred === bestIsPreferred &&
         Math.abs(needRatio - bestNeedRatio) <= 0.000001 &&
         candidateDistance < bestDistance
       )
     ) {
       bestTarget = candidate;
+      bestIsPreferred = candidateIsPreferred;
       bestNeedRatio = needRatio;
       bestDistance = candidateDistance;
     }
   }
 
   return bestTarget;
+}
+
+function resolveNpcDungeonArrivalDisposition(entity, arrivingEntity, controller = null) {
+  const sourceClass = resolveCombatActorClass(entity);
+  const arrivingClass = resolveCombatActorClass(arrivingEntity);
+  if (!isNpcCombatActorClass(sourceClass) || !arrivingClass) {
+    return null;
+  }
+
+  const transponderDisposition = resolveNpcTransponderTargetDisposition(
+    entity,
+    arrivingEntity,
+  );
+  if (transponderDisposition) {
+    return transponderDisposition;
+  }
+
+  if (isNpcCombatActorClass(arrivingClass)) {
+    return resolveNpcFactionDisposition(entity, arrivingEntity) === "hostile"
+      ? "hostile"
+      : "friendly";
+  }
+
+  if (arrivingClass === ENTITY_TYPE.PLAYER || arrivingClass === ENTITY_TYPE.DRONE) {
+    if (resolveNpcTargetIdentification(entity, arrivingEntity) === "ally") {
+      return "friendly";
+    }
+    const unidentifiedDisposition = resolveNpcUnidentifiedDisposition(entity);
+    if (unidentifiedDisposition === "hostile") {
+      return "hostile";
+    }
+    if (
+      unidentifiedDisposition === "ignore" ||
+      unidentifiedDisposition === "retaliate"
+    ) {
+      return "friendly";
+    }
+
+    const resolvedController = controller || getControllerByEntityID(
+      toPositiveInt(entity && entity.itemID, 0),
+    );
+    const behaviorProfile = resolveEffectiveBehaviorProfile(resolvedController);
+    const arrivalTargetClasses = applyNpcFactionTargetClasses(
+      entity,
+      behaviorProfile.autoAggro === false
+        ? resolveProximityAggroTargetClasses(behaviorProfile)
+        : resolveAutoAggroTargetClasses(behaviorProfile),
+    );
+    return arrivalTargetClasses.includes(arrivingClass) &&
+      !isFriendlyCombatTarget(entity, arrivingEntity)
+      ? "hostile"
+      : "friendly";
+  }
+
+  return null;
+}
+
+function noteDungeonArrivalResponse(
+  entityID,
+  arrivingEntityID,
+  disposition,
+  now = Date.now(),
+  options: Record<string, any> = {},
+) {
+  const controller = getControllerByEntityID(entityID);
+  if (!controller) {
+    return { success: false, errorMsg: "NPC_NOT_FOUND" };
+  }
+
+  const normalizedArrivingEntityID = toPositiveInt(arrivingEntityID, 0);
+  if (!normalizedArrivingEntityID) {
+    return { success: false, errorMsg: "ARRIVING_ENTITY_NOT_FOUND" };
+  }
+  const normalizedDisposition = String(disposition || "").trim().toLowerCase();
+  if (
+    normalizedDisposition !== "hostile" &&
+    normalizedDisposition !== "friendly" &&
+    normalizedDisposition !== "suspicious"
+  ) {
+    return { success: false, errorMsg: "INVALID_DUNGEON_ARRIVAL_DISPOSITION" };
+  }
+
+  const normalizedNow = Math.max(0, toFiniteNumber(now, Date.now()));
+  controller.lastDungeonArrivalEntityID = normalizedArrivingEntityID;
+  controller.lastDungeonArrivalDisposition = normalizedDisposition;
+  controller.lastDungeonArrivalAtMs = normalizedNow;
+  if (
+    normalizedDisposition === "hostile" ||
+    normalizedDisposition === "suspicious"
+  ) {
+    controller.preferredTargetID = normalizedArrivingEntityID;
+    controller.preferredTargetOwnerID = toPositiveInt(options.arrivingOwnerID, 0);
+    controller.preferredAssistanceTargetID = 0;
+    controller.friendlyDungeonArrivalEntityID = 0;
+    controller.friendlyDungeonArrivalResponseUntilMs = 0;
+    if (normalizedDisposition === "suspicious") {
+      controller.investigatingTargetID = normalizedArrivingEntityID;
+      controller.investigationStartedAtMs = normalizedNow;
+    } else {
+      controller.investigatingTargetID = 0;
+      controller.investigationStartedAtMs = 0;
+    }
+    if (String(controller.runtimeKind || "").trim() === "nativeAmbient") {
+      controller.runtimeKind = "nativeCombat";
+    }
+  } else {
+    controller.preferredAssistanceTargetID = normalizedArrivingEntityID;
+    controller.friendlyDungeonArrivalEntityID = normalizedArrivingEntityID;
+    controller.friendlyDungeonArrivalResponseUntilMs = normalizedNow + Math.max(
+      1_000,
+      toFiniteNumber(
+        options.responseDurationMs,
+        NPC_FRIENDLY_DUNGEON_ARRIVAL_RESPONSE_MS,
+      ),
+    );
+  }
+  controller.nextThinkAtMs = Math.min(
+    toFiniteNumber(controller.nextThinkAtMs, normalizedNow),
+    normalizedNow,
+  );
+  return { success: true, data: controller };
+}
+
+function syncFriendlyDungeonArrivalResponse(scene, entity, controller, behaviorProfile, now) {
+  const responseUntilMs = toFiniteNumber(
+    controller && controller.friendlyDungeonArrivalResponseUntilMs,
+    0,
+  );
+  const targetID = toPositiveInt(
+    controller && controller.friendlyDungeonArrivalEntityID,
+    0,
+  );
+  if (!targetID || responseUntilMs <= now) {
+    if (controller) {
+      controller.friendlyDungeonArrivalEntityID = 0;
+      controller.friendlyDungeonArrivalResponseUntilMs = 0;
+    }
+    return false;
+  }
+
+  const target = scene.getEntityByID(targetID);
+  if (
+    !target ||
+    !canEntitiesInteractLocally(entity, target) ||
+    !isFriendlyCombatTarget(entity, target) ||
+    (entity.bubbleID && target.bubbleID && entity.bubbleID !== target.bubbleID) ||
+    isEntityInActiveWarp(target)
+  ) {
+    return false;
+  }
+
+  clearNpcCombatState(scene, entity, controller, {
+    deactivateWeapons: true,
+    clearTargets: true,
+    stopShip: false,
+  });
+  syncNpcMovement(scene, entity, target, {
+    movementMode: "follow",
+    followRangeMeters: Math.max(
+      1_000,
+      toFiniteNumber(behaviorProfile && behaviorProfile.followRangeMeters, 2_500),
+    ),
+  });
+  return true;
 }
 
 function normalizeManualOrder(order) {
@@ -2742,8 +3277,11 @@ function normalizeManualOrder(order) {
 
   const mappedType = {
     attack: "attack",
+    approach: "approach",
+    keepatrange: "keepAtRange",
     orbit: "orbit",
     follow: "follow",
+    lock: "lock",
     holdfire: "holdFire",
     stop: "stop",
     returnhome: "returnHome",
@@ -2777,9 +3315,22 @@ function resolveBehaviorTarget(scene, controller, entity, behaviorProfile) {
     0,
     toFiniteNumber(behaviorProfile.proximityAggroRangeMeters, 0),
   );
+  const validateBehaviorTarget = (source, candidate, targetOptions: Record<string, any> = {}) =>
+    isValidCombatTarget(source, candidate, {
+      ...targetOptions,
+      scene,
+      allowOccluded:
+        targetOptions.allowOccluded === true ||
+        canRetainOccludedCombatTarget(
+          scene,
+          source,
+          candidate,
+          behaviorProfile,
+        ),
+    });
   if (behaviorProfile.autoAggro === false) {
     if (
-      isValidCombatTarget(entity, preferredTarget, {
+      validateBehaviorTarget(entity, preferredTarget, {
         allowPodKill,
         ignoreDronesBelowSignatureRadius: behaviorProfile.ignoreDronesBelowSignatureRadius,
       }) &&
@@ -2795,7 +3346,10 @@ function resolveBehaviorTarget(scene, controller, entity, behaviorProfile) {
       return null;
     }
 
-    const proximityAggroTargetClasses = resolveProximityAggroTargetClasses(behaviorProfile);
+    const proximityAggroTargetClasses = applyNpcFactionTargetClasses(
+      entity,
+      resolveProximityAggroTargetClasses(behaviorProfile),
+    );
     if (proximityAggroTargetClasses.length <= 0) {
       return null;
     }
@@ -2811,7 +3365,7 @@ function resolveBehaviorTarget(scene, controller, entity, behaviorProfile) {
           allowPodKill,
           aggressionRangeMeters: proximityAggroRangeMeters,
           allowedTargetClasses: proximityAggroTargetClasses,
-          isValidCombatTarget,
+          isValidCombatTarget: validateBehaviorTarget,
           resolveCombatActorClass,
           getSurfaceDistance,
         },
@@ -2829,7 +3383,7 @@ function resolveBehaviorTarget(scene, controller, entity, behaviorProfile) {
           allowPodKill,
           aggressionRangeMeters: proximityAggroRangeMeters,
           allowedTargetClasses: proximityAggroTargetClasses,
-          isValidCombatTarget,
+          isValidCombatTarget: validateBehaviorTarget,
           resolveCombatActorClass,
           getSurfaceDistance,
         },
@@ -2869,7 +3423,10 @@ function resolveBehaviorTarget(scene, controller, entity, behaviorProfile) {
     return target;
   }
 
-  const autoAggroTargetClasses = resolveAutoAggroTargetClasses(behaviorProfile);
+  const autoAggroTargetClasses = applyNpcFactionTargetClasses(
+    entity,
+    resolveAutoAggroTargetClasses(behaviorProfile),
+  );
   if (autoAggroTargetClasses.length === 0) {
     return null;
   }
@@ -2885,7 +3442,7 @@ function resolveBehaviorTarget(scene, controller, entity, behaviorProfile) {
         allowPodKill,
         aggressionRangeMeters,
         allowedTargetClasses: autoAggroTargetClasses,
-        isValidCombatTarget,
+        isValidCombatTarget: validateBehaviorTarget,
         resolveCombatActorClass,
         getSurfaceDistance,
       },
@@ -2903,7 +3460,7 @@ function resolveBehaviorTarget(scene, controller, entity, behaviorProfile) {
         allowPodKill,
         aggressionRangeMeters,
         allowedTargetClasses: autoAggroTargetClasses,
-        isValidCombatTarget,
+        isValidCombatTarget: validateBehaviorTarget,
         resolveCombatActorClass,
         getSurfaceDistance,
         },
@@ -2935,6 +3492,7 @@ function resolveBehaviorTarget(scene, controller, entity, behaviorProfile) {
       autoAggroTargetClasses,
       aggressionRangeMeters,
       {
+        scene,
         allowPodKill,
         ignoreDronesBelowSignatureRadius: behaviorProfile.ignoreDronesBelowSignatureRadius,
       },
@@ -2981,23 +3539,34 @@ function resolveDesiredTarget(scene, controller, entity, behaviorProfile, manual
       controller.manualOrder = null;
       return resolveBehaviorTarget(scene, controller, entity, behaviorProfile);
     }
-    return isValidCombatTarget(entity, manualTarget, { allowPodKill }) ? manualTarget : null;
+    return isValidCombatTarget(entity, manualTarget, {
+      scene,
+      allowPodKill,
+      allowOccluded: canRetainOccludedCombatTarget(
+        scene,
+        entity,
+        manualTarget,
+        behaviorProfile,
+      ),
+    })
+      ? manualTarget
+      : null;
   }
 
   if (
     manualOrder &&
     (
       manualOrder.type === "orbit" ||
-      manualOrder.type === "follow"
+      manualOrder.type === "follow" ||
+      manualOrder.type === "approach" ||
+      manualOrder.type === "keepAtRange" ||
+      manualOrder.type === "lock"
     ) &&
     manualOrder.targetID > 0
   ) {
     const manualTarget = scene.getEntityByID(manualOrder.targetID);
     if (!isValidManualMovementTarget(entity, manualTarget)) {
       return null;
-    }
-    if (manualTarget.kind === "ship") {
-      return isValidCombatTarget(entity, manualTarget, { allowPodKill }) ? manualTarget : null;
     }
     return manualTarget;
   }
@@ -3015,7 +3584,18 @@ function resolveDesiredTarget(scene, controller, entity, behaviorProfile, manual
       controller.manualOrder = null;
       return resolveBehaviorTarget(scene, controller, entity, behaviorProfile);
     }
-    return isValidCombatTarget(entity, manualTarget, { allowPodKill }) ? manualTarget : null;
+    return isValidCombatTarget(entity, manualTarget, {
+      scene,
+      allowPodKill,
+      allowOccluded: canRetainOccludedCombatTarget(
+        scene,
+        entity,
+        manualTarget,
+        behaviorProfile,
+      ),
+    })
+      ? manualTarget
+      : null;
   }
 
   return resolveBehaviorTarget(scene, controller, entity, behaviorProfile);
@@ -3035,6 +3615,9 @@ function deactivateNpcWeapons(scene, entity, options: Record<string, any> = {}) 
       .filter((moduleID) => moduleID > 0),
     ...getNpcHostileModules(entity)
       .map((entry) => toPositiveInt(entry && entry.moduleItem && entry.moduleItem.itemID, 0))
+      .filter((moduleID) => moduleID > 0),
+    ...getNpcSuperweaponModules(entity)
+      .map((moduleItem) => toPositiveInt(moduleItem && moduleItem.itemID, 0))
       .filter((moduleID) => moduleID > 0),
     ...(includeAssistanceModules
       ? getNpcAssistanceModules(entity)
@@ -3323,6 +3906,8 @@ function clearNpcCombatState(scene, entity, controller, options: Record<string, 
     stopNpcMovement(scene, entity);
   }
   controller.currentTargetID = 0;
+  controller.investigatingTargetID = 0;
+  controller.investigationStartedAtMs = 0;
   controller.returningHome = false;
 }
 
@@ -3331,14 +3916,18 @@ function resolveMovementDirective(manualOrder, behaviorProfile) {
     ? manualOrder.movementMode
     : null;
   const typeDrivenMode =
-    manualOrder && manualOrder.type === "follow"
+    manualOrder && ["follow", "approach", "keepAtRange"].includes(manualOrder.type)
       ? "follow"
       : manualOrder && manualOrder.type === "orbit"
         ? "orbit"
+        : manualOrder && manualOrder.type === "lock"
+          ? "hold"
         : null;
   return {
     movementMode: String(
-      manualMovementMode ||
+      (!manualOrder && behaviorProfile.chaseTargets === false)
+        ? "hold"
+        : manualMovementMode ||
         typeDrivenMode ||
         behaviorProfile.movementMode ||
         "orbit"
@@ -3355,7 +3944,9 @@ function resolveMovementDirective(manualOrder, behaviorProfile) {
     followRangeMeters: Math.max(
       0,
       toFiniteNumber(
-        manualOrder && manualOrder.followRangeMeters > 0
+        manualOrder && manualOrder.type === "approach"
+          ? 0
+          : manualOrder && manualOrder.followRangeMeters > 0
           ? manualOrder.followRangeMeters
           : behaviorProfile.followRangeMeters,
         0,
@@ -3868,7 +4459,14 @@ function syncNpcWeapons(scene, entity, target) {
 function syncNpcReturnHome(scene, entity, controller, behaviorProfile, now) {
   const pseudoSession = buildNpcPseudoSession(entity);
   const homePosition = controller && controller.homePosition;
-  if (!homePosition || behaviorProfile.returnToHomeWhenIdle === false) {
+  if (behaviorProfile.guardAnchor === false) {
+    controller.returningHome = false;
+    return;
+  }
+  if (
+    !homePosition ||
+    behaviorProfile.returnToHomeWhenIdle === false
+  ) {
     controller.returningHome = false;
     stopNpcMovement(scene, entity);
     return;
@@ -3945,7 +4543,10 @@ function resolveIdleAnchorOrbitDistance(entity, controller, anchorEntity, behavi
 }
 
 function syncNpcIdleAnchorOrbit(scene, entity, controller, behaviorProfile) {
-  if (behaviorProfile.idleAnchorOrbit !== true) {
+  if (
+    behaviorProfile.guardAnchor === false ||
+    behaviorProfile.idleAnchorOrbit !== true
+  ) {
     return false;
   }
 
@@ -3985,7 +4586,13 @@ function syncNpcIdleAnchorOrbit(scene, entity, controller, behaviorProfile) {
 }
 
 function tryNpcIdleAnchorWarp(scene, entity, controller, behaviorProfile, nowMs) {
-  if (!scene || !entity || !controller || behaviorProfile.idleAnchorOrbit !== true) {
+  if (
+    !scene ||
+    !entity ||
+    !controller ||
+    behaviorProfile.guardAnchor === false ||
+    behaviorProfile.idleAnchorOrbit !== true
+  ) {
     return {
       handled: false,
       nextThinkAtMs: null,
@@ -4035,7 +4642,314 @@ function tryNpcIdleAnchorWarp(scene, entity, controller, behaviorProfile, nowMs)
   );
 }
 
+function resolvePassiveRoamPolicy(behaviorProfile) {
+  const profile = behaviorProfile && typeof behaviorProfile === "object"
+    ? behaviorProfile
+    : {};
+  const moveMinDistanceMeters = Math.max(
+    250,
+    toFiniteNumber(profile.passiveMoveMinDistanceMeters, 5_000),
+  );
+  const moveMaxDistanceMeters = Math.max(
+    moveMinDistanceMeters,
+    toFiniteNumber(profile.passiveMoveMaxDistanceMeters, 25_000),
+  );
+  const warpMinDistanceMeters = Math.max(
+    NPC_IDLE_ANCHOR_WARP_MIN_DISTANCE_METERS,
+    toFiniteNumber(profile.passiveWarpMinDistanceMeters, 175_000),
+  );
+  const warpMaxDistanceMeters = Math.max(
+    warpMinDistanceMeters,
+    toFiniteNumber(profile.passiveWarpMaxDistanceMeters, 650_000),
+  );
+  const moveIntervalMinMs = Math.max(
+    0,
+    toFiniteNumber(profile.passiveMoveIntervalMinMs, 3_000),
+  );
+  const moveIntervalMaxMs = Math.max(
+    moveIntervalMinMs,
+    toFiniteNumber(profile.passiveMoveIntervalMaxMs, 12_000),
+  );
+
+  return {
+    enabled: profile.passiveRoaming === true,
+    warpingEnabled:
+      profile.passiveRoaming === true && profile.passiveWarping === true,
+    roamRadiusMeters: Math.max(
+      warpMaxDistanceMeters,
+      toFiniteNumber(profile.passiveRoamRadiusMeters, 750_000),
+    ),
+    moveMinDistanceMeters,
+    moveMaxDistanceMeters,
+    moveArrivalMeters: Math.max(
+      100,
+      toFiniteNumber(profile.passiveMoveArrivalMeters, 750),
+    ),
+    moveIntervalMinMs,
+    moveIntervalMaxMs,
+    moveTimeoutMs: Math.max(
+      5_000,
+      toFiniteNumber(profile.passiveMoveTimeoutMs, 90_000),
+    ),
+    warpIntervalMs: Math.max(
+      15_000,
+      toFiniteNumber(profile.passiveWarpIntervalMs, 60_000),
+    ),
+    warpMinDistanceMeters,
+    warpMaxDistanceMeters,
+  };
+}
+
+function getPassiveRoamRandom(entityID, sequence, salt = 0) {
+  let value = (
+    toPositiveInt(entityID, 1) ^
+    Math.imul(Math.max(1, toPositiveInt(sequence, 1)), 0x9e3779b1) ^
+    Math.imul(Math.max(1, toPositiveInt(salt, 1)), 0x85ebca6b)
+  ) >>> 0;
+  value ^= value >>> 16;
+  value = Math.imul(value, 0x7feb352d) >>> 0;
+  value ^= value >>> 15;
+  value = Math.imul(value, 0x846ca68b) >>> 0;
+  value ^= value >>> 16;
+  return value / 0x100000000;
+}
+
+function getPassiveRoamDirection(entityID, sequence, salt = 0) {
+  const vertical = (getPassiveRoamRandom(entityID, sequence, salt + 1) * 2) - 1;
+  const azimuth = getPassiveRoamRandom(entityID, sequence, salt + 2) * Math.PI * 2;
+  const horizontal = Math.sqrt(Math.max(0, 1 - (vertical ** 2)));
+  return {
+    x: horizontal * Math.cos(azimuth),
+    y: vertical,
+    z: horizontal * Math.sin(azimuth),
+  };
+}
+
+function clampPassiveRoamPointToRadius(point, homePosition, roamRadiusMeters) {
+  const fromHome = subtractVectors(point, homePosition);
+  const distanceFromHome = distance(point, homePosition);
+  if (distanceFromHome <= roamRadiusMeters) {
+    return cloneVector(point);
+  }
+  const direction = normalizeVector(fromHome);
+  return {
+    x: toFiniteNumber(homePosition && homePosition.x, 0) +
+      (direction.x * roamRadiusMeters),
+    y: toFiniteNumber(homePosition && homePosition.y, 0) +
+      (direction.y * roamRadiusMeters),
+    z: toFiniteNumber(homePosition && homePosition.z, 0) +
+      (direction.z * roamRadiusMeters),
+  };
+}
+
+function buildPassiveRoamDestination(entity, controller, policy, kind, sequence) {
+  const currentPosition = cloneVector(entity && entity.position);
+  const homePosition = cloneVector(
+    controller && controller.homePosition,
+    currentPosition,
+  );
+  const isWarp = kind === "warp";
+  const minDistanceMeters = isWarp
+    ? policy.warpMinDistanceMeters
+    : policy.moveMinDistanceMeters;
+  const maxDistanceMeters = isWarp
+    ? policy.warpMaxDistanceMeters
+    : policy.moveMaxDistanceMeters;
+  const entityID = toPositiveInt(entity && entity.itemID, 1);
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const salt = (isWarp ? 100 : 10) + (attempt * 4);
+    const direction = getPassiveRoamDirection(entityID, sequence, salt);
+    const distanceFraction = getPassiveRoamRandom(entityID, sequence, salt + 3);
+    const travelDistance = minDistanceMeters +
+      ((maxDistanceMeters - minDistanceMeters) * distanceFraction);
+    const candidate = clampPassiveRoamPointToRadius(
+      {
+        x: currentPosition.x + (direction.x * travelDistance),
+        y: currentPosition.y + (direction.y * travelDistance),
+        z: currentPosition.z + (direction.z * travelDistance),
+      },
+      homePosition,
+      policy.roamRadiusMeters,
+    );
+    const candidateDistance = distance(currentPosition, candidate);
+    if (
+      candidateDistance >= minDistanceMeters &&
+      candidateDistance <= maxDistanceMeters + 1
+    ) {
+      return candidate;
+    }
+  }
+
+  const towardHome = normalizeVector(
+    subtractVectors(homePosition, currentPosition),
+    getPassiveRoamDirection(entityID, sequence, isWarp ? 200 : 20),
+  );
+  return clampPassiveRoamPointToRadius(
+    {
+      x: currentPosition.x + (towardHome.x * minDistanceMeters),
+      y: currentPosition.y + (towardHome.y * minDistanceMeters),
+      z: currentPosition.z + (towardHome.z * minDistanceMeters),
+    },
+    homePosition,
+    policy.roamRadiusMeters,
+  );
+}
+
+function ensurePassiveRoamState(controller, nowMs) {
+  if (
+    !controller.passiveRoamState ||
+    typeof controller.passiveRoamState !== "object"
+  ) {
+    controller.passiveRoamState = {
+      sequence: 0,
+      initializedAtMs: nowMs,
+      lastWarpAtMs: nowMs,
+      lastWarpAttemptAtMs: nowMs,
+      waitUntilMs: 0,
+      waypoint: null,
+      waypointExpiresAtMs: 0,
+      lastMoveCommandAtMs: 0,
+      lastMoveDirection: null,
+    };
+  }
+  return controller.passiveRoamState;
+}
+
+function getPassiveRoamWaitMs(entity, state, policy) {
+  const waitRangeMs = Math.max(
+    0,
+    policy.moveIntervalMaxMs - policy.moveIntervalMinMs,
+  );
+  return policy.moveIntervalMinMs + Math.round(
+    waitRangeMs * getPassiveRoamRandom(
+      toPositiveInt(entity && entity.itemID, 1),
+      Math.max(1, toPositiveInt(state && state.sequence, 1)),
+      300,
+    ),
+  );
+}
+
+function syncPassiveNpcRoaming(scene, entity, controller, behaviorProfile, nowMs) {
+  const policy = resolvePassiveRoamPolicy(behaviorProfile);
+  if (!policy.enabled) {
+    return {
+      handled: false,
+      nextThinkAtMs: null,
+    };
+  }
+
+  const state = ensurePassiveRoamState(controller, nowMs);
+  if (entity.mode === "WARP" || entity.pendingWarp || entity.warpState) {
+    return {
+      handled: true,
+      nextThinkAtMs: nowMs + 1_000,
+    };
+  }
+
+  if (toFiniteNumber(state.waitUntilMs, 0) > nowMs) {
+    stopNpcMovement(scene, entity);
+    return {
+      handled: true,
+      nextThinkAtMs: state.waitUntilMs,
+    };
+  }
+
+  if (state.waypoint && typeof state.waypoint === "object") {
+    const arrived = distance(entity.position, state.waypoint) <= policy.moveArrivalMeters;
+    const expired = toFiniteNumber(state.waypointExpiresAtMs, 0) <= nowMs;
+    if (arrived || expired) {
+      state.waypoint = null;
+      state.waypointExpiresAtMs = 0;
+      state.lastMoveCommandAtMs = 0;
+      state.lastMoveDirection = null;
+      state.waitUntilMs = nowMs + getPassiveRoamWaitMs(entity, state, policy);
+      stopNpcMovement(scene, entity);
+      return {
+        handled: true,
+        nextThinkAtMs: Math.max(nowMs + 50, state.waitUntilMs),
+      };
+    }
+
+    const moveDirection = normalizeVector(
+      subtractVectors(state.waypoint, entity.position),
+      entity.direction || controller.homeDirection || { x: 1, y: 0, z: 0 },
+    );
+    if (
+      entity.mode !== "GOTO" ||
+      toFiniteNumber(state.lastMoveCommandAtMs, 0) + 1_000 <= nowMs ||
+      isDirectionChangeSignificant(state.lastMoveDirection, moveDirection)
+    ) {
+      scene.gotoDirection(buildNpcPseudoSession(entity), moveDirection, {
+        queueHistorySafeContract: true,
+        suppressFreshAcquireReplay: true,
+      });
+      state.lastMoveCommandAtMs = nowMs;
+      state.lastMoveDirection = moveDirection;
+    }
+    return {
+      handled: true,
+      nextThinkAtMs:
+        nowMs + Math.max(50, toFiniteNumber(behaviorProfile.thinkIntervalMs, 250)),
+    };
+  }
+
+  const warpDue =
+    policy.warpingEnabled &&
+    nowMs - toFiniteNumber(state.lastWarpAttemptAtMs, state.initializedAtMs) >=
+      policy.warpIntervalMs;
+  if (warpDue) {
+    state.sequence = toPositiveInt(state.sequence, 0) + 1;
+    state.lastWarpAttemptAtMs = nowMs;
+    const warpDestination = buildPassiveRoamDestination(
+      entity,
+      controller,
+      policy,
+      "warp",
+      state.sequence,
+    );
+    const warpResult = beginNpcWarpToPoint(
+      scene,
+      entity,
+      controller,
+      warpDestination,
+      {
+        stateObject: state,
+        cooldownField: "lastWarpAtMs",
+        cooldownMs: policy.warpIntervalMs,
+        nowMs,
+      },
+    );
+    if (warpResult && warpResult.handled === true) {
+      return warpResult;
+    }
+  }
+
+  state.sequence = toPositiveInt(state.sequence, 0) + 1;
+  state.waypoint = buildPassiveRoamDestination(
+    entity,
+    controller,
+    policy,
+    "move",
+    state.sequence,
+  );
+  state.waypointExpiresAtMs = nowMs + policy.moveTimeoutMs;
+  state.waitUntilMs = 0;
+  state.lastMoveCommandAtMs = 0;
+  state.lastMoveDirection = null;
+  return syncPassiveNpcRoaming(
+    scene,
+    entity,
+    controller,
+    behaviorProfile,
+    nowMs,
+  );
+}
+
 function isBeyondLeash(entity, controller, behaviorProfile) {
+  if (behaviorProfile && behaviorProfile.guardAnchor === false) {
+    return false;
+  }
   const leashRangeMeters = Math.max(
     0,
     toFiniteNumber(behaviorProfile.leashRangeMeters, 0),
@@ -4061,7 +4975,8 @@ function shouldMaintainLock(manualOrder) {
 
   return (
     manualOrder.type === "attack" ||
-    manualOrder.type === "holdFire"
+    manualOrder.type === "holdFire" ||
+    manualOrder.type === "lock"
   );
 }
 
@@ -4072,7 +4987,8 @@ function shouldAllowWeapons(manualOrder, behaviorProfile) {
   if (manualOrder && manualOrder.type === "holdFire") {
     return false;
   }
-  if (manualOrder && (manualOrder.type === "orbit" || manualOrder.type === "follow")) {
+  if (manualOrder && ["orbit", "follow", "approach", "keepAtRange", "lock"]
+    .includes(manualOrder.type)) {
     return false;
   }
   return behaviorProfile.autoActivateWeapons !== false;
@@ -4146,6 +5062,19 @@ function tickController(scene, controller, now) {
       scheduleNextThink(controller, behaviorProfile, now);
       return;
     }
+    if (
+      syncFriendlyDungeonArrivalResponse(
+        scene,
+        entity,
+        controller,
+        behaviorProfile,
+        now,
+      )
+    ) {
+      controller.returningHome = false;
+      scheduleNextThink(controller, behaviorProfile, now);
+      return;
+    }
     const drifterTravel = tryDrifterPursuitOrRegroup(
       scene,
       entity,
@@ -4162,13 +5091,30 @@ function tickController(scene, controller, now) {
       controller.returningHome = false;
       return;
     }
+    const durableJobResult = tickDurableNpcJob(
+      scene,
+      entity,
+      controller,
+      now,
+    );
+    if (durableJobResult && durableJobResult.handled === true) {
+      const durableJobWakeAtMs = toFiniteNumber(durableJobResult.nextWakeAtMs, 0);
+      controller.nextThinkAtMs = durableJobWakeAtMs > now
+        ? durableJobWakeAtMs
+        : now + Math.max(50, toFiniteNumber(behaviorProfile.thinkIntervalMs, 250));
+      controller.returningHome = false;
+      return;
+    }
     const targetOnlyManualOrder = Boolean(
       manualOrder &&
       manualOrder.targetID > 0 &&
       (
         manualOrder.type === "attack" ||
         manualOrder.type === "orbit" ||
-        manualOrder.type === "follow"
+        manualOrder.type === "follow" ||
+        manualOrder.type === "approach" ||
+        manualOrder.type === "keepAtRange" ||
+        manualOrder.type === "lock"
       ),
     );
     clearNpcCombatState(scene, entity, controller, {
@@ -4177,6 +5123,22 @@ function tickController(scene, controller, now) {
       stopShip: targetOnlyManualOrder,
     });
     if (!targetOnlyManualOrder) {
+      const passiveRoaming = syncPassiveNpcRoaming(
+        scene,
+        entity,
+        controller,
+        behaviorProfile,
+        now,
+      );
+      if (passiveRoaming && passiveRoaming.handled === true) {
+        const nextThinkAtMs = toFiniteNumber(
+          passiveRoaming.nextThinkAtMs,
+          toFiniteNumber(controller.nextThinkAtMs, now + 1_000),
+        );
+        controller.nextThinkAtMs = Math.max(now + 50, nextThinkAtMs);
+        controller.returningHome = false;
+        return;
+      }
       const idleAnchorWarp = tryNpcIdleAnchorWarp(
         scene,
         entity,
@@ -4219,7 +5181,11 @@ function tickController(scene, controller, now) {
     return;
   }
 
-  if (isBeyondLeash(entity, controller, behaviorProfile)) {
+  if (
+    !(manualOrder && ["approach", "keepAtRange", "orbit", "lock"]
+      .includes(manualOrder.type)) &&
+    isBeyondLeash(entity, controller, behaviorProfile)
+  ) {
     syncNpcChaseVelocity(scene, entity, controller, behaviorProfile, null);
     clearNpcCombatState(scene, entity, controller, {
       deactivateWeapons: true,
@@ -4255,6 +5221,12 @@ function tickController(scene, controller, now) {
       : baseMovementDirective;
   const maintainLock = shouldMaintainLock(manualOrder);
   const baseAllowWeapons = shouldAllowWeapons(manualOrder, behaviorProfile);
+  const transponderTargetDisposition = resolveNpcTransponderTargetDisposition(
+    entity,
+    desiredTarget,
+  );
+  const investigatingSuspiciousTarget =
+    transponderTargetDisposition === "suspicious";
   const capitalEngagement =
     entity && entity.capitalNpc === true && desiredTarget && desiredTarget.kind === "ship"
       ? resolveCapitalEngagementPolicy(
@@ -4270,6 +5242,7 @@ function tickController(scene, controller, now) {
       : null;
   const allowWeapons =
     baseAllowWeapons &&
+    shouldAllowNpcWeaponsAgainstTarget(entity, desiredTarget) &&
     (
       !capitalEngagement ||
       capitalEngagement.allowWeapons === true
@@ -4280,6 +5253,15 @@ function tickController(scene, controller, now) {
   }
 
   const desiredTargetID = toPositiveInt(desiredTarget.itemID, 0);
+  if (investigatingSuspiciousTarget) {
+    if (toPositiveInt(controller.investigatingTargetID, 0) !== desiredTargetID) {
+      controller.investigationStartedAtMs = now;
+    }
+    controller.investigatingTargetID = desiredTargetID;
+  } else {
+    controller.investigatingTargetID = 0;
+    controller.investigationStartedAtMs = 0;
+  }
   const combatMaintenanceTargetChanged =
     toPositiveInt(controller._npcCombatMaintenanceTargetID, 0) !== desiredTargetID;
   if (combatMaintenanceTargetChanged) {
@@ -4315,8 +5297,16 @@ function tickController(scene, controller, now) {
     syncNpcPropulsion(scene, entity, desiredTarget, behaviorProfile);
   }
 
+  // Navigation and target-lock orders are non-combat directives. In
+  // particular, drifter special systems can activate their own superweapon
+  // before the generic allowWeapons gate below, so do not run them here.
+  const passiveManualOrder = Boolean(
+    manualOrder && ["approach", "keepAtRange", "orbit", "lock"]
+      .includes(manualOrder.type),
+  );
   const drifterEngagement =
-    entity && entity.nativeNpc === true
+    entity && entity.nativeNpc === true && !investigatingSuspiciousTarget &&
+    !passiveManualOrder
       ? syncDrifterCombatSystems(
           scene,
           entity,
@@ -4412,7 +5402,7 @@ function tickController(scene, controller, now) {
     }
   }
 
-  if (maintainCombatLock && hasDesiredLock) {
+  if (maintainCombatLock && allowCombatWeapons && hasDesiredLock) {
     syncCapitalNpcSystems(scene, entity, controller, behaviorProfile, desiredTarget, {
       nowMs: now,
     });
@@ -4515,10 +5505,19 @@ function tickController(scene, controller, now) {
   });
 }
 
+function shouldSkipNpcBehaviorController(controller) {
+  return Boolean(
+    String(controller && controller.runtimeKind || "").trim() === "nativeAmbient" &&
+    resolveEffectiveBehaviorProfile(controller).passiveRoaming !== true
+  );
+}
+
 function tickScene(scene, now) {
   if (!scene) {
     return;
   }
+
+  npcNetworkNodeCoordinator.scheduleNpcNetworkNodeReconciliation(scene.systemID, now);
 
   const controllers = listControllersBySystem(scene.systemID);
   if (controllers.length <= 0) {
@@ -4549,7 +5548,7 @@ function tickScene(scene, now) {
     }
 
     const controller = controllers[controllerIndex];
-    if (String(controller && controller.runtimeKind || "").trim() === "nativeAmbient") {
+    if (shouldSkipNpcBehaviorController(controller)) {
       continue;
     }
     if (toFiniteNumber(controller.nextThinkAtMs, 0) > now) {
@@ -4583,7 +5582,7 @@ function tickControllersByEntityID(scene, entityIDs, now) {
     if (!controller) {
       continue;
     }
-    if (String(controller && controller.runtimeKind || "").trim() === "nativeAmbient") {
+    if (shouldSkipNpcBehaviorController(controller)) {
       continue;
     }
     if (toFiniteNumber(controller.nextThinkAtMs, 0) > now) {
@@ -4615,6 +5614,9 @@ function issueManualOrder(entityID, order) {
       normalizedOrder.type === "attack" ||
       normalizedOrder.type === "orbit" ||
       normalizedOrder.type === "follow" ||
+      normalizedOrder.type === "approach" ||
+      normalizedOrder.type === "keepAtRange" ||
+      normalizedOrder.type === "lock" ||
       normalizedOrder.type === "holdFire"
     )
   ) {
@@ -4631,6 +5633,9 @@ function issueManualOrder(entityID, order) {
     )
   ) {
     controller.currentTargetID = 0;
+  } else if (!normalizedOrder) {
+    controller.currentTargetID = 0;
+    controller.preferredTargetID = 0;
   }
   controller.nextThinkAtMs = 0;
   return {
@@ -4678,6 +5683,11 @@ function noteIncomingAggression(entityID, attackerEntityID, now = Date.now(), op
   controller.preferredTargetOwnerID = toPositiveInt(options.attackerOwnerID, 0);
   controller.lastAggressorOwnerID = toPositiveInt(options.attackerOwnerID, 0);
   controller.lastAggressedAtMs = toFiniteNumber(now, Date.now());
+  controller.investigatingTargetID = 0;
+  controller.investigationStartedAtMs = 0;
+  if (String(controller.runtimeKind || "").trim() === "nativeAmbient") {
+    controller.runtimeKind = "nativeCombat";
+  }
   controller.nextThinkAtMs = Math.min(
     toFiniteNumber(controller.nextThinkAtMs, controller.lastAggressedAtMs),
     controller.lastAggressedAtMs,
@@ -4695,8 +5705,22 @@ module.exports = {
   issueManualOrder,
   setBehaviorOverrides,
   noteIncomingAggression,
+  noteDungeonArrivalResponse,
+  resolveNpcDungeonArrivalDisposition,
   __testing: {
+    normalizeManualOrder,
+    shouldMaintainLock,
+    shouldAllowWeapons,
+    isValidManualMovementTarget,
+    resolveDesiredTarget,
+    maybeRequestDrifterReinforcements,
+    filterNpcReinforcementDefinitions,
     isFriendlyCombatTarget,
+    isRecordedNpcAggressor,
+    resolveNpcTransponderTargetDisposition,
+    isSuspiciousNpcTarget,
+    shouldAllowNpcWeaponsAgainstTarget,
+    applyNpcFactionTargetClasses,
     isTargetWithinEntityVisibilityScope,
     isValidCombatTarget,
     findNearestCombatTarget,
@@ -4705,6 +5729,12 @@ module.exports = {
     resolveCombatActorClass,
     resolveNpcChaseVelocityPolicy,
     resolveNpcTargetSwitchPolicy,
+    resolveMovementDirective,
+    resolvePassiveRoamPolicy,
+    buildPassiveRoamDestination,
+    syncPassiveNpcRoaming,
+    shouldSkipNpcBehaviorController,
+    isBeyondLeash,
     syncNpcChaseVelocity,
     buildNpcSyntheticPropulsionBroadcastOptions,
     buildNpcSyntheticPropulsionFxOptions,
@@ -4712,5 +5742,6 @@ module.exports = {
     syncNpcPropulsion,
     syncNpcWeapons,
     syncNpcHostileModules,
+    syncFriendlyDungeonArrivalResponse,
   },
 };

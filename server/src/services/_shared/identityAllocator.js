@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const database = require(path.join(__dirname, "../../gameStore"));
 const log = require(path.join(__dirname, "../../utils/logger"));
+const { NPC_CHARACTER_ID_MIN, NPC_CHARACTER_ID_MAX, isNpcCharacterID, } = require("./npcIdentityConstants");
 const IDENTITY_TABLE = "identityState";
 const ACCOUNT_ID_FLOOR = 1;
 const CHARACTER_ID_FLOOR = 140000001;
@@ -119,6 +120,9 @@ function collectCharacterIDConflicts(characterID) {
         return [];
     }
     const conflicts = [];
+    if (isNpcCharacterID(normalizedCharacterID)) {
+        conflicts.push("npcPilotIdentities.reservedCharacterIDRange");
+    }
     const characters = readTableRoot("characters", {});
     if (Object.prototype.hasOwnProperty.call(characters, String(normalizedCharacterID))) {
         conflicts.push("characters");
@@ -357,6 +361,9 @@ function reserveCharacterID() {
     const state = readIdentityState();
     let candidate = Math.max(toPositiveInt(state.nextCharacterID, CHARACTER_ID_FLOOR), getCharacterReferenceHighWaterMark() + 1);
     while (true) {
+        if (isNpcCharacterID(candidate)) {
+            candidate = NPC_CHARACTER_ID_MAX + 1;
+        }
         const conflicts = collectCharacterIDConflicts(candidate);
         if (conflicts.length === 0) {
             break;
@@ -373,7 +380,13 @@ function reserveItemIDs(count = 1, options = {}) {
     const amount = Math.max(1, toPositiveInt(count, 1));
     const state = readIdentityState();
     const minimumCandidate = toPositiveInt(options && options.minCandidate, ITEM_ID_FLOOR);
-    const firstItemID = Math.max(toPositiveInt(state.nextItemID, ITEM_ID_FLOOR), getItemReferenceHighWaterMark() + 1, minimumCandidate);
+    let firstItemID = Math.max(toPositiveInt(state.nextItemID, ITEM_ID_FLOOR), getItemReferenceHighWaterMark() + 1, minimumCandidate);
+    // Keep a requested contiguous block out of the permanent NPC namespace,
+    // including a block that begins below the reservation and crosses into it.
+    if (firstItemID <= NPC_CHARACTER_ID_MAX &&
+        firstItemID + amount - 1 >= NPC_CHARACTER_ID_MIN) {
+        firstItemID = NPC_CHARACTER_ID_MAX + 1;
+    }
     state.nextItemID = firstItemID + amount;
     database.write(IDENTITY_TABLE, "/", state, { force: true });
     return Array.from({ length: amount }, (_, index) => firstItemID + index);

@@ -11,7 +11,9 @@ const path = require("path");
 const crypto = require("crypto");
 const net = require("net");
 const config = require("../../config");
-const CA_CERT_PATH = path.join(__dirname, "../../../certs/xmpp-ca-cert.pem");
+const CA_CERT_PATH = process.env.EVEJS_RUNTIME_CERT_DIR
+    ? path.join(path.resolve(process.env.EVEJS_RUNTIME_CERT_DIR), "xmpp-ca-cert.pem")
+    : path.join(__dirname, "../../../certs/xmpp-ca-cert.pem");
 const CLIENT_START_INI_PATH = path.join(__dirname, "../../../../client/EVE/tq/start.ini");
 // Resolve the effective token: the in-memory value the process booted with,
 // else a live-read fallback. Split out so it can be unit-tested without global

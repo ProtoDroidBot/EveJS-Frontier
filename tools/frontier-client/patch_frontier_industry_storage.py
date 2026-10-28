@@ -18,6 +18,7 @@ ADAPTER = Path(__file__).with_name("industry_storage_adapter.py")
 PROFILES = {
     "frontier/industry/client/ui/controller.pyc": ("controller", "4d09160ff67c023c2135a2fe0306d5dec9f6f01b9afaa19ed55a43639865d423"),
     "frontier/industry/client/facility.pyc": ("facility", "af9fcccdd843b3ceb3276f235cef7de588cfa25ff1d1223d072c8fc6d3d69abe"),
+    "frontier/industry/client/modular/facility.pyc": ("modular_facility", "68aca777764c7a3646224dba9c8166bb294859e3e03129f0313f27d3cad8366d"),
     "frontier/smart_assemblies/client/storage/smart_storage_inventory.pyc": ("storage", "51c2936c149ce051a1c5c5a183a4d6a86d743832834438bf968363e9a4a3e4ce"),
     "frontier/industry/client/ui/active_blueprint_panel.pyc": ("panel", "51ee3c0ef8afd74c4247a9dac9e9c9e69611962dd451282e7ddadd4aaa36ffbd"),
     "frontier/industry/client/industry_svc.pyc": ("service", "6a75a99b60098ab4434cc9e4739e6193a301d5096d1d209a9728d4c4eb5bc40d"),
@@ -57,6 +58,38 @@ PREVIOUS_WINDOW_WRAPPER_SHA256 = {
     "service": "fd7554eb2dde79f583389f3eec20224313907fcf70537b46e98e88aaf00b9775",
     "assembly_window": "99ad0ac3f1a346e5bb83830640b8c3f4a711067cbe70429a95f5500517dfcd40",
 }
+# Exact seven-member release immediately before job-lane support. The six
+# existing modules were wrapped while the modular facility remained retail.
+PREVIOUS_JOB_LANE_WRAPPER_SHA256 = {
+    "controller": "4625df803dc242fe29244ebcc2cedad90b62947e7f9181500381a440a7b6a93d",
+    "facility": "1f15b24a49303f479a0bdf71736f3fb06c9d67bb700d533ce65ad7587e433b53",
+    "storage": "38389e7baadd9b1293e88b34cda4552c52178f6f95224ffc92b607b801193b21",
+    "panel": "ee9508c539d8ebfe408ad6a01cb4e6dcafa25567881ff43148f2789af61a8abb",
+    "service": "9f9fb81bb261a3f59d45da9c45212fe741a466d3fd15d7e92a457397f338439f",
+    "assembly_window": "b640b0466a0ce2f6b06128afab13af23c9efc3be282b59e493bf4ca3d99ecfde",
+}
+# Exact job-lane release before blueprint and escrow state became lane-scoped.
+PREVIOUS_SHARED_LANE_STATE_WRAPPER_SHA256 = {
+    "controller": "e81fc9310dadde3e9c3c5330e9f1e1f70f30e3d1519d9aea6e5bdff5d59b7176",
+    "facility": "e4cca5173f7c2bfd68a3c4d2f4a231e5fc8e7440f0043e99d004beb8f519a7f8",
+    "modular_facility": "39c542ed546904caee8320435dffe34ae01342f2e1cf4d7aae90471148bd9523",
+    "storage": "82ded21b5b79df742e50188721bf94a8494ce7130f4f7ce59caa932ed69c22cb",
+    "panel": "b38aac5916fa289824afc1dd46105ed0821181e53f1d78967dced6ae2583ed52",
+    "service": "aa30bb0bb26f7637586d71ab3d5f295efa0c693a27a803f7799619457fbf34d4",
+    "assembly_window": "cc9a415372ac1ae96152451a6ee4fb9fb40a701d040b9139d1eff263655ccd92",
+}
+# Exact seven-member stage installed before the independent-operation guards.
+# Each member was checked to contain its supported retail original and the
+# expected adapter loader before recording this generation.
+PREVIOUS_RESILIENCE_WRAPPER_SHA256 = {
+    "controller": "dbe4de9a0157e9248bf9d2ff620539032310e7cd06d8f1398e96e838125a953b",
+    "facility": "b85196513277f639f36a1d010e85c0cb84da2f5a2592402250f8072f971a7223",
+    "modular_facility": "ed377c2897ea8ae2c6fcb18b3abaf5ef10ab9e1ac68b312686e74f35376cd74a",
+    "storage": "763ab57edcf9c9d381cf36c36a89860f3f2211bac9933015d22f43d5cf9d7bb9",
+    "panel": "7084ac978ace4965880f62d4bb6b37cbc55d34cdf977b0161758b19a3f288e3d",
+    "service": "b4c2f8505cdecb1918feeda7a4c13f397eb2f78011ade6f513114917e7dc03be",
+    "assembly_window": "f07cb745af926b73f13875c0ecfdcfa201a2c7ec57140bae3988e95489049755",
+}
 SOURCE_SENTINEL = b"EVEJS_INDUSTRY_ORIGINAL_MEMBER_V1"
 ADAPTER_SENTINEL = b"EVEJS_INDUSTRY_ADAPTER_CODE_V1"
 
@@ -88,7 +121,10 @@ def inspect_member(member, kind, expected):
         return "source", member
     previous = digest in (PREVIOUS_WRAPPER_SHA256.get(kind), PREVIOUS_PANEL_WRAPPER_SHA256.get(kind),
                           PREVIOUS_BLUEPRINT_WRAPPER_SHA256.get(kind),
-                          PREVIOUS_WINDOW_WRAPPER_SHA256.get(kind))
+                          PREVIOUS_WINDOW_WRAPPER_SHA256.get(kind),
+                          PREVIOUS_JOB_LANE_WRAPPER_SHA256.get(kind),
+                          PREVIOUS_SHARED_LANE_STATE_WRAPPER_SHA256.get(kind),
+                          PREVIOUS_RESILIENCE_WRAPPER_SHA256.get(kind))
     try:
         wrapper = marshal.loads(member[16:])
         if not isinstance(wrapper, types.CodeType):
@@ -121,7 +157,10 @@ def inspect_archive(archive, build=BUILD):
             states[name], originals[name] = inspect_member(member, kind, expected)
     unique = set(states.values())
     for generation in (PREVIOUS_WRAPPER_SHA256, PREVIOUS_PANEL_WRAPPER_SHA256,
-                       PREVIOUS_BLUEPRINT_WRAPPER_SHA256, PREVIOUS_WINDOW_WRAPPER_SHA256):
+                       PREVIOUS_BLUEPRINT_WRAPPER_SHA256, PREVIOUS_WINDOW_WRAPPER_SHA256,
+                       PREVIOUS_JOB_LANE_WRAPPER_SHA256,
+                       PREVIOUS_SHARED_LANE_STATE_WRAPPER_SHA256,
+                       PREVIOUS_RESILIENCE_WRAPPER_SHA256):
         if digests == {name: generation.get(kind, expected) for name, (kind, expected) in PROFILES.items()}:
             return "outdated", states, originals
     if "outdated" in unique:

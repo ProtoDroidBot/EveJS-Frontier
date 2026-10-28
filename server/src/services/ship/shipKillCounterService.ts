@@ -6,7 +6,7 @@ const {
   getItemKillCountPlayer,
 } = require(path.join(__dirname, "./shipKillCounterState"));
 const {
-  buildCachedMethodCallResult,
+  buildCachedMethodCallResultAsync: buildCachedMethodCallResult,
 } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 
 class ShipKillCounterService extends BaseService {

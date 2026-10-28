@@ -71,11 +71,9 @@ const TRIG_TYPE_IDS = Object.freeze({
     lightEntropicDisintegratorII: 47914,
     heavyEntropicDisintegratorII: 47918,
     supratidalEntropicDisintegratorII: 47922,
-    ultratidalEntropicDisintegratorII: 92514,
     baryonExoticPlasmaS: 47924,
     baryonExoticPlasmaM: 47928,
     baryonExoticPlasmaL: 47932,
-    baryonExoticPlasmaXL: 52916,
     warpScramblerII: 448,
     stasisWebifierII: 527,
     smallEnergyNeutralizerII: 13003,
@@ -204,17 +202,6 @@ const TRIG_VARIANT_SPECS = Object.freeze([
         chargeTypeID: TRIG_TYPE_IDS.baryonExoticPlasmaL,
         spawnDistanceMeters: 12000,
         formationSpacingMeters: 220,
-    },
-    {
-        key: "liminal_zirnitra",
-        label: "Liminal Zirnitra",
-        roleLabel: "Liminal",
-        hullLabel: "Zirnitra",
-        npcShipTypeID: 52701,
-        weaponTypeID: TRIG_TYPE_IDS.ultratidalEntropicDisintegratorII,
-        chargeTypeID: TRIG_TYPE_IDS.baryonExoticPlasmaXL,
-        spawnDistanceMeters: 16000,
-        formationSpacingMeters: 260,
     },
     {
         key: "anchoring_damavik",
@@ -771,14 +758,6 @@ function buildTrigLootTable(variant, lootTableID) {
         guaranteedSurveyDatabases = 4;
         weightedEntries = [
             buildWeightedLootEntry(TRIG_LOOT_TYPE_IDS.gravidEntropicRadiationSinkMutaplasmid, 3),
-            buildWeightedLootEntry(TRIG_LOOT_TYPE_IDS.agitatedElectricalFilament, 2),
-            buildWeightedLootEntry(TRIG_LOOT_TYPE_IDS.agitatedExoticFilament, 2),
-        ];
-    }
-    else if (hullLabel === "zirnitra") {
-        guaranteedSurveyDatabases = 6;
-        weightedEntries = [
-            buildWeightedLootEntry(TRIG_LOOT_TYPE_IDS.unstableEntropicRadiationSinkMutaplasmid, 3),
             buildWeightedLootEntry(TRIG_LOOT_TYPE_IDS.agitatedElectricalFilament, 2),
             buildWeightedLootEntry(TRIG_LOOT_TYPE_IDS.agitatedExoticFilament, 2),
         ];

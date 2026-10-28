@@ -4,6 +4,7 @@ const path = require("path");
 const log = require(path.join(__dirname, "../../../utils/logger"));
 const config = require(path.join(__dirname, "../../../config"));
 const deadspaceWarpPolicy = require(path.join(__dirname, "../../../services/dungeon/deadspaceWarpPolicy.js"));
+const { resolveDungeonSiteWarpInMinimumRange, resolveDungeonWarpStopDistance, } = require(path.join(__dirname, "../../../services/dungeon/dungeonWarpSafety.js"));
 const { isFrontierProfile, } = require("../../../services/ship/destinyCompatibility.js");
 const { DESTINY_CONTRACTS, } = require("../authority/destinyContracts.js");
 const { hasDestinyStamp, normalizeDestinyStamp, selectFurthestDestinyStamp, } = require("../delivery/stamps");
@@ -148,7 +149,7 @@ function isWarpBlockedByCloak(runtime, entity) {
     return runtime.isEntityWarpBlockedByCloak(entity);
 }
 function createMovementWarpCommands(deps = {}) {
-    const { activatePendingWarp, armMovementTrace, buildDirectedMovementUpdates, buildOfficialWarpReferenceProfile, buildPendingWarpRequest, buildPreparingWarpState, buildSessionlessWarpIngressState, buildWarpPrepareDispatch, buildWarpStartUpdates, clearTrackingState, cloneVector, deactivateWarpUnsafeActiveModulesForWarpStart, getClientParityWarpInPoint, getStargateWarpLandingPoint, getStationWarpTargetPosition, getTargetMotionPosition, getWatcherWarpStartStamp, getWarpStopDistanceForTarget, gotoPointEntity, findActiveWarpDisruptorForEntity, hasPendingPilotWarpLanding = () => false, isReadyForDestiny, logMovementDebug, logWarpDebug, normalizeVector, prewarmStartupControllersForWarpDestination, primePilotWarpActivationState, persistShipEntity, resolveStargateWarpTarget, subtractVectors, summarizePendingWarp, tagUpdatesRequireExistingVisibility, toFiniteNumber = (value, fallback = 0) => {
+    const { activatePendingWarp, armMovementTrace, buildDirectedMovementUpdates, buildOfficialWarpReferenceProfile, buildPendingWarpRequest, buildPreparingWarpState, buildSessionlessWarpIngressState, buildWarpPrepareDispatch, buildWarpStartUpdates, checkWarpCapacitorAvailability = () => ({ success: true }), checkWarpFuelAvailability = () => ({ success: true, skipped: true }), clearTrackingState, cloneVector, consumeWarpCapacitor = () => ({ success: true }), deactivateWarpUnsafeActiveModulesForWarpStart, getClientParityWarpInPoint, getStargateWarpLandingPoint, getStationWarpTargetPosition, getTargetMotionPosition, getWatcherWarpStartStamp, getWarpStopDistanceForTarget, gotoPointEntity, findActiveWarpDisruptorForEntity, hasPendingPilotWarpLanding = () => false, initializeSessionlessWarpDestination, isReadyForDestiny, logMovementDebug, logWarpDebug, materializeDungeonWarpDestination, normalizeVector, prewarmStartupControllersForWarpDestination, primePilotWarpActivationState, persistShipEntity, resolveStargateWarpTarget, subtractVectors, summarizePendingWarp, tagUpdatesRequireExistingVisibility, toFiniteNumber = (value, fallback = 0) => {
         const numeric = Number(value);
         return Number.isFinite(numeric) ? numeric : fallback;
     }, toInt, DESTINY_STAMP_INTERVAL_MS, MIN_WARP_DISTANCE_METERS, PILOT_WARP_ACTIVATION_DELAY_DESTINY_TICKS, MICHELLE_POST_HELD_FUTURE_DESTINY_LEAD, } = deps;
@@ -173,7 +174,12 @@ function createMovementWarpCommands(deps = {}) {
             typeof runtime.clearPilotWarpVisibilityHandoff === "function") {
             runtime.clearPilotWarpVisibilityHandoff(entity.session);
         }
-        const routed = gotoPointEntity(runtime, entity, pendingWarp.rawDestination, {
+        const gotoDestination = pendingWarp.destinationDungeonSiteID !== null &&
+            pendingWarp.destinationDungeonSiteID !== undefined &&
+            pendingWarp.targetPoint
+            ? pendingWarp.targetPoint
+            : pendingWarp.rawDestination;
+        const routed = gotoPointEntity(runtime, entity, gotoDestination, {
             ...options,
             nowMs: now,
             commandSource: "nativeWarpFallback",
@@ -257,7 +263,7 @@ function createMovementWarpCommands(deps = {}) {
                     targetEntityID: target.itemID,
                 });
             }
-            const stopDistance = getWarpStopDistanceForTarget(entity, target, toFiniteNumber(options.minimumRange, 0));
+            const stopDistance = getWarpStopDistanceForTarget(entity, target, resolveDungeonSiteWarpInMinimumRange(target, toFiniteNumber(options.minimumRange, 0)));
             const warpTargetPoint = target && (target.kind === "station" || target.kind === "structure")
                 ? getStationWarpTargetPosition(target, {
                     shipTypeID: entity.typeID,
@@ -296,7 +302,9 @@ function createMovementWarpCommands(deps = {}) {
             if (destinationResolution.success !== true) {
                 return destinationResolution;
             }
-            const destinationStaticInstanceID = destinationResolution.instanceID;
+            let destinationStaticInstanceID = destinationResolution.instanceID;
+            let destinationDungeonRoomKey = destinationResolution.roomKey;
+            let destinationDungeonSiteID = destinationResolution.siteID;
             // Native WarpTo classifies the raw command distance before its
             // same-destination no-op. Keep that ordering distinct from the later
             // post-stop-distance 150 km service policy.
@@ -316,7 +324,7 @@ function createMovementWarpCommands(deps = {}) {
                 options.dungeonGateTransit !== true &&
                 options.ignoreDeadspaceWarpRestriction !== true) {
                 try {
-                    const decision = deadspaceWarpPolicy.evaluateDeadspaceWarp(entity, point, options);
+                    const decision = deadspaceWarpPolicy.evaluateDeadspaceWarp(entity, point, options, runtime);
                     if (decision && decision.action === "block") {
                         logMovementDebug("warp.requested.deadspace-blocked", entity);
                         return { success: false, errorMsg: decision.errorMsg || "DunCannotWarpWithinComplex" };
@@ -324,6 +332,22 @@ function createMovementWarpCommands(deps = {}) {
                     if (decision && decision.action === "clamp" && decision.point) {
                         logMovementDebug("warp.requested.deadspace-clamped", entity);
                         warpPoint = decision.point;
+                        const clampedInstanceID = normalizePersistentEntityID(decision.siteInstanceID);
+                        if (clampedInstanceID !== null) {
+                            const clampedResolution = resolveCommandDestinationStaticInstanceID(runtime, session, { destinationStaticInstanceID: clampedInstanceID });
+                            if (clampedResolution.success !== true ||
+                                clampedResolution.instanceID === null ||
+                                (destinationStaticInstanceID !== null &&
+                                    !entityIDsEqual(destinationStaticInstanceID, clampedResolution.instanceID))) {
+                                return {
+                                    success: false,
+                                    errorMsg: "DUNGEON_INSTANCE_NOT_AUTHORIZED",
+                                };
+                            }
+                            destinationStaticInstanceID = clampedResolution.instanceID;
+                            destinationDungeonRoomKey = clampedResolution.roomKey;
+                            destinationDungeonSiteID = clampedResolution.siteID;
+                        }
                     }
                 }
                 catch (error) {
@@ -350,10 +374,16 @@ function createMovementWarpCommands(deps = {}) {
                     log.warn(`[SpaceRuntime] Crimewatch warp check failed: ${error.message}`);
                 }
             }
+            const destinationDungeonSiteEntity = destinationDungeonSiteID !== null
+                ? runtime.getEntityByID(destinationDungeonSiteID)
+                : null;
+            const configuredDungeonMinimumRange = resolveDungeonSiteWarpInMinimumRange(destinationDungeonSiteEntity, options.stopDistance);
+            const stopDistance = resolveDungeonWarpStopDistance(configuredDungeonMinimumRange, destinationDungeonSiteID, options);
             const pendingWarp = buildPendingWarpRequest(entity, warpPoint, {
                 ...options,
-                destinationDungeonRoomKey: destinationResolution.roomKey,
-                destinationDungeonSiteID: destinationResolution.siteID,
+                stopDistance,
+                destinationDungeonRoomKey,
+                destinationDungeonSiteID,
                 destinationStaticInstanceID,
                 nowMs: runtime.getCurrentSimTimeMs(),
                 warpSpeedAU: options.warpSpeedAU || entity.warpSpeedAU,
@@ -361,12 +391,28 @@ function createMovementWarpCommands(deps = {}) {
             if (pendingWarp && rawCommandUsesNativeGoto) {
                 pendingWarp.nativeWarpCommand = "GOTO";
             }
+            const targetEntityID = normalizePersistentEntityID(options.targetEntityID);
+            const nativeDungeonSiteGoto = Boolean(rawCommandUsesNativeGoto &&
+                destinationStaticInstanceID !== null &&
+                destinationDungeonSiteID !== null &&
+                targetEntityID !== null &&
+                entityIDsEqual(targetEntityID, destinationDungeonSiteID));
             if (!pendingWarp ||
-                pendingWarp.totalDistance < serviceMinimumWarpDistanceMeters) {
+                (pendingWarp.totalDistance < serviceMinimumWarpDistanceMeters &&
+                    !nativeDungeonSiteGoto)) {
                 return {
                     success: false,
                     errorMsg: "WARP_DISTANCE_TOO_CLOSE",
                 };
+            }
+            if (pendingWarp.nativeWarpCommand !== "GOTO") {
+                const capacitorCheck = checkWarpCapacitorAvailability(entity);
+                if (!capacitorCheck || capacitorCheck.success !== true) {
+                    return capacitorCheck || {
+                        success: false,
+                        errorMsg: "NOT_ENOUGH_CAPACITOR",
+                    };
+                }
             }
             if (options.ignoreWarpDisruptionField !== true &&
                 typeof findActiveWarpDisruptorForEntity === "function") {
@@ -391,7 +437,34 @@ function createMovementWarpCommands(deps = {}) {
                     errorMsg: "WARP_BLOCKED_BY_CLOAK",
                 };
             }
+            if (pendingWarp.nativeWarpCommand !== "GOTO" &&
+                typeof checkWarpFuelAvailability === "function") {
+                const fuelCheck = checkWarpFuelAvailability(entity);
+                if (!fuelCheck || fuelCheck.success !== true) {
+                    return fuelCheck || {
+                        success: false,
+                        errorMsg: "NO_FUEL",
+                    };
+                }
+            }
             const now = runtime.getCurrentSimTimeMs();
+            if (pendingWarp.nativeWarpCommand !== "GOTO" &&
+                destinationStaticInstanceID !== null) {
+                if (typeof materializeDungeonWarpDestination !== "function") {
+                    return {
+                        success: false,
+                        errorMsg: "DUNGEON_SITE_SERVICE_UNAVAILABLE",
+                    };
+                }
+                const materialized = materializeDungeonWarpDestination(runtime, session, destinationStaticInstanceID, { nowMs: now });
+                if (!materialized || materialized.success !== true) {
+                    return {
+                        success: false,
+                        errorMsg: (materialized && materialized.errorMsg) ||
+                            "DUNGEON_DESTINATION_MATERIALIZATION_FAILED",
+                    };
+                }
+            }
             if (typeof runtime.cancelStargateJumpCloakBeforePilotCommand === "function") {
                 runtime.cancelStargateJumpCloakBeforePilotCommand(session, "warp", {
                     nowMs: now,
@@ -557,6 +630,43 @@ function createMovementWarpCommands(deps = {}) {
                     };
                 }
             }
+            if (pendingWarp.nativeWarpCommand !== "GOTO") {
+                const capacitorCheck = checkWarpCapacitorAvailability(entity);
+                if (!capacitorCheck || capacitorCheck.success !== true) {
+                    return capacitorCheck || {
+                        success: false,
+                        errorMsg: "NOT_ENOUGH_CAPACITOR",
+                    };
+                }
+            }
+            if (pendingWarp.nativeWarpCommand !== "GOTO" &&
+                typeof checkWarpFuelAvailability === "function") {
+                const fuelCheck = checkWarpFuelAvailability(entity);
+                if (!fuelCheck || fuelCheck.success !== true) {
+                    return fuelCheck || {
+                        success: false,
+                        errorMsg: "NO_FUEL",
+                    };
+                }
+            }
+            if (!entity.session &&
+                typeof initializeSessionlessWarpDestination === "function") {
+                const initializationResult = initializeSessionlessWarpDestination(runtime, entity, pendingWarp.rawDestination, {
+                    ...options,
+                    nowMs: now,
+                    targetEntityID: pendingWarp.targetEntityID || null,
+                    destinationStaticInstanceID: pendingWarp.destinationStaticInstanceID,
+                    destinationDungeonRoomKey: pendingWarp.destinationDungeonRoomKey,
+                    destinationDungeonSiteID: pendingWarp.destinationDungeonSiteID,
+                });
+                if (!initializationResult || initializationResult.success !== true) {
+                    return {
+                        success: false,
+                        errorMsg: (initializationResult && initializationResult.errorMsg) ||
+                            "NPC_WARP_DESTINATION_INITIALIZATION_FAILED",
+                    };
+                }
+            }
             if (pendingWarp.nativeWarpCommand === "GOTO") {
                 return routeNativeGotoFallback(runtime, entity, pendingWarp, now, options);
             }
@@ -579,6 +689,28 @@ function createMovementWarpCommands(deps = {}) {
             entity.warpState = buildPreparingWarpState(entity, pendingWarp, {
                 nowMs: now,
             });
+            if (!entity.session &&
+                typeof prewarmStartupControllersForWarpDestination === "function") {
+                const prewarmTargetEntity = pendingWarp.targetEntityID
+                    ? runtime.getEntityByID(pendingWarp.targetEntityID)
+                    : null;
+                const prewarmResult = prewarmStartupControllersForWarpDestination(runtime, {
+                    excludedSession: null,
+                    nowMs: now,
+                    relevantEntities: prewarmTargetEntity ? [prewarmTargetEntity] : [],
+                    relevantPositions: [
+                        pendingWarp.targetPoint,
+                        pendingWarp.rawDestination,
+                    ].filter(Boolean),
+                    // A sessionless arrival makes its destination relevant, but it must
+                    // not evict controllers from player-visible or other active grids.
+                    dematerializeAmbientStartup: false,
+                    dematerializeDormantCombat: false,
+                });
+                if (!prewarmResult.success) {
+                    log.warn(`[SpaceRuntime] NPC warp destination prewarm failed for system=${runtime.systemID} ship=${entity.itemID}: ${prewarmResult.errorMsg || "UNKNOWN_ERROR"}`);
+                }
+            }
             persistShipEntity(entity);
             armMovementTrace(entity, "warp", {
                 pendingWarp: summarizePendingWarp(pendingWarp),
@@ -637,6 +769,37 @@ function createMovementWarpCommands(deps = {}) {
                     errorMsg: "SHIP_NOT_FOUND",
                 };
             }
+            const activationCapacitorCheck = checkWarpCapacitorAvailability(entity);
+            if (!activationCapacitorCheck ||
+                activationCapacitorCheck.success !== true) {
+                if (typeof runtime.stopShipEntity === "function") {
+                    runtime.stopShipEntity(entity, {
+                        reason: "warpCapacitorUnavailableAtActivation",
+                    });
+                }
+                return activationCapacitorCheck || {
+                    success: false,
+                    errorMsg: "NOT_ENOUGH_CAPACITOR",
+                };
+            }
+            const activationFuelCheck = checkWarpFuelAvailability(entity);
+            if (!activationFuelCheck || activationFuelCheck.success !== true) {
+                if (typeof runtime.stopShipEntity === "function") {
+                    runtime.stopShipEntity(entity, {
+                        reason: "warpFuelUnavailableAtActivation",
+                    });
+                }
+                else {
+                    entity.pendingWarp = null;
+                    entity.warpState = null;
+                    entity.mode = "STOP";
+                    entity.speedFraction = 0;
+                }
+                return activationFuelCheck || {
+                    success: false,
+                    errorMsg: "NO_FUEL",
+                };
+            }
             const currentStamp = runtime.getCurrentDestinyStamp(now);
             if (typeof deactivateWarpUnsafeActiveModulesForWarpStart === "function") {
                 const deactivationResult = deactivateWarpUnsafeActiveModulesForWarpStart(runtime, entity, now, {
@@ -659,6 +822,16 @@ function createMovementWarpCommands(deps = {}) {
                 return {
                     success: false,
                     errorMsg: "WARP_ACTIVATION_FAILED",
+                };
+            }
+            const capacitorDebit = consumeWarpCapacitor(entity, now);
+            if (!capacitorDebit || capacitorDebit.success !== true) {
+                clearTrackingState(entity);
+                entity.mode = "STOP";
+                entity.speedFraction = 0;
+                return capacitorDebit || {
+                    success: false,
+                    errorMsg: "NOT_ENOUGH_CAPACITOR",
                 };
             }
             const warpStartStamp = entity.session && isReadyForDestiny(entity.session)

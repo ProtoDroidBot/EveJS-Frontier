@@ -5367,7 +5367,7 @@ function createEvejsWebGatewayRuntime({ serviceManager, characterCommandRuntime,
     // guest-list departure, space/trade/chat cleanup, and character-control
     // release. Calling the existing mechanic is bridge glue; nothing here
     // reimplements it.
-    function teardownBrowserSession(entry, lifecycleReason) {
+    function teardownBrowserSession(entry, lifecycleReason, options = {}) {
         browserSessions.delete(entry.bridgeSessionID);
         // Close the push stream with the session: a subscriber still attached is
         // told the session ended rather than being left on a stream that can never
@@ -5385,11 +5385,16 @@ function createEvejsWebGatewayRuntime({ serviceManager, characterCommandRuntime,
                 // Lazy require mirrors charService's evictPriorSession pattern and
                 // keeps this module's load graph unchanged for proxy-only processes.
                 const { disconnectCharacterSession } = require(path.join(__dirname, "../../services/_shared/sessionDisconnect"));
-                disconnectCharacterSession(session, {
+                const disconnectResult = disconnectCharacterSession(session, {
                     broadcast: true,
                     clearSession: true,
                     lifecycleReason,
                 });
+                if (options.requirePersistence === true &&
+                    (!disconnectResult || disconnectResult.success !== true || disconnectResult.cleanupErrors?.length > 0)) {
+                    throw new Error(`Character ${characterID} logoff persistence failed: ` +
+                        `${disconnectResult?.cleanupErrors?.join(", ") || disconnectResult?.errorMsg || "DISCONNECT_FAILED"}`);
+                }
                 log.info(`[EvejsWebGateway] Browser session ended characterID=${characterID} ` +
                     `reason=${lifecycleReason}`);
             }
@@ -6221,12 +6226,13 @@ function createEvejsWebGatewayRuntime({ serviceManager, characterCommandRuntime,
             catch {
                 // Best effort; shutdown must continue.
             }
+            const teardownErrors = [];
             for (const entry of [...browserSessions.values()]) {
                 try {
-                    teardownBrowserSession(entry, "gateway_shutdown");
+                    teardownBrowserSession(entry, "gateway_shutdown", { requirePersistence: true });
                 }
-                catch {
-                    // Shutdown must tear down every remaining browser session.
+                catch (error) {
+                    teardownErrors.push(error.message);
                 }
             }
             sessionEvents.shutdown();
@@ -6234,6 +6240,9 @@ function createEvejsWebGatewayRuntime({ serviceManager, characterCommandRuntime,
             characterCommands.shutdown();
             if (usesDefaultRuntimes && defaultCharacterRuntimes === defaults) {
                 defaultCharacterRuntimes = null;
+            }
+            if (teardownErrors.length > 0) {
+                throw new Error(teardownErrors.join("; "));
             }
         },
     });

@@ -9,6 +9,7 @@ const { getCorporationOfficeByInventoryID, } = require(path.join(__dirname, "../
 const { canTakeFromOwnerLocation, } = require(path.join(__dirname, "../industry/industryAccess"));
 const { CORP_HANGAR_FLAGS, } = require(path.join(__dirname, "../industry/industryConstants"));
 const { resolveItemByTypeID, } = require(path.join(__dirname, "../inventory/itemTypeRegistry"));
+const { matchesTypeList, } = require(path.join(__dirname, "../inventory/typeListAuthority"));
 const { getTypeAttributeValue, } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const { isInSameFleet, } = require(path.join(__dirname, "../fleets/fleetHelpers"));
 const { getDockedLocationID, getDockedLocationKind, } = require(path.join(__dirname, "../structure/structureLocation"));
@@ -448,12 +449,25 @@ function rebuildItemAsType(item, typeID, quantity) {
         singleton: item.singleton === 1 ? 1 : 0,
     });
 }
-function compressInventoryItem(itemID) {
+function isCompressionSourceAllowed(item, options = {}) {
+    const requiredTypeListID = toInt(options.requiredTypeListID, 0);
+    return requiredTypeListID <= 0 || matchesTypeList(item, requiredTypeListID);
+}
+function compressInventoryItem(itemID, options = {}) {
     const item = findItemById(itemID);
     if (!item) {
         return {
             success: false,
             errorMsg: "ITEM_NOT_FOUND",
+        };
+    }
+    // List 336 is specifically "Compression Structure Allowed". Structure
+    // callers require it here; in-space compression retains its own authored
+    // type-to-compressed-type mapping instead of inheriting structure rules.
+    if (!isCompressionSourceAllowed(item, options)) {
+        return {
+            success: false,
+            errorMsg: "ITEM_NOT_COMPRESSIBLE",
         };
     }
     const compressedTypeID = getCompressedTypeID(item.typeID);
@@ -676,6 +690,7 @@ module.exports = {
     buildReprocessingQuotesForItems: reprocessingRuntime.buildReprocessingQuotesForItems,
     reprocessItems: reprocessingRuntime.reprocessItems,
     compressInventoryItem,
+    isCompressionSourceAllowed,
     decompressGasInStructure,
     itemIsInStructureCompressionSource,
     itemIsInStructureGasDecompressionSource,

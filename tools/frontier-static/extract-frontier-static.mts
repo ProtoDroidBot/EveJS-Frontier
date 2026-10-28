@@ -21,6 +21,8 @@ import {
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "../..");
+const COLLISION_ASSET_PATH = "assets/collision/bundle.collision";
+const COLLISION_SCHEMA = "destiny.buffers.CollisionData";
 
 const REQUIRED_RESOURCES = {
   agentTypes: "res:/staticdata/agenttypes.fsdbinary",
@@ -136,6 +138,92 @@ function sha256File(filePath) {
   return hash.digest("hex");
 }
 
+function inspectCollisionBundle(filePath) {
+  const buffer = fs.readFileSync(filePath);
+  const requireRange = (offset, length, label) => {
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset + length > buffer.length) {
+      throw new Error(`Invalid collision FlatBuffer ${label}: ${offset}+${length}`);
+    }
+  };
+  const uint16 = (offset, label) => {
+    requireRange(offset, 2, label);
+    return buffer.readUInt16LE(offset);
+  };
+  const uint32 = (offset, label) => {
+    requireRange(offset, 4, label);
+    return buffer.readUInt32LE(offset);
+  };
+  const int32 = (offset, label) => {
+    requireRange(offset, 4, label);
+    return buffer.readInt32LE(offset);
+  };
+  const indirect = (offset, label) => {
+    const target = offset + uint32(offset, label);
+    requireRange(target, 4, `${label} target`);
+    return target;
+  };
+  const field = (table, index) => {
+    const vtable = table - int32(table, "vtable offset");
+    const vtableLength = uint16(vtable, "vtable length");
+    const entry = vtable + 4 + (index * 2);
+    if (entry + 2 > vtable + vtableLength) {
+      return 0;
+    }
+    const relative = uint16(entry, "vtable field");
+    return relative ? table + relative : 0;
+  };
+  const vector = (table, index) => {
+    const vectorField = field(table, index);
+    if (!vectorField) {
+      return null;
+    }
+    const position = indirect(vectorField, "vector offset");
+    const length = uint32(position, "vector length");
+    requireRange(position + 4, length * 4, "table vector");
+    return { data: position + 4, length };
+  };
+
+  requireRange(0, 4, "root offset");
+  const root = uint32(0, "root offset");
+  requireRange(root, 4, "root table");
+  const items = vector(root, 0);
+  if (!items || items.length === 0) {
+    throw new Error("Collision bundle has no CollisionData.Items entries");
+  }
+  let previousID = -Infinity;
+  let meshItems = 0;
+  let uniformItems = 0;
+  for (let index = 0; index < items.length; index += 1) {
+    const item = indirect(items.data + (index * 4), "CollisionItem offset");
+    const idField = field(item, 0);
+    if (!idField) {
+      throw new Error(`Collision item ${index} has no collisionId`);
+    }
+    const collisionID = int32(idField, "CollisionItem.collisionId");
+    if (collisionID <= previousID) {
+      throw new Error(
+        `Collision IDs are not strictly sorted at item ${index}: ` +
+        `${collisionID} follows ${previousID}`,
+      );
+    }
+    previousID = collisionID;
+    if (vector(item, 1)?.length > 0) {
+      meshItems += 1;
+    }
+    if (vector(item, 2)?.length > 0) {
+      uniformItems += 1;
+    }
+  }
+  const firstItem = indirect(items.data, "first CollisionItem");
+  return {
+    items: items.length,
+    maxCollisionID: previousID,
+    meshItems,
+    minCollisionID: int32(field(firstItem, 0), "first collisionId"),
+    uniformItems,
+  };
+}
+
 function prepareDestination(outDir, force) {
   if (!fs.existsSync(outDir)) {
     return;
@@ -177,6 +265,9 @@ function buildRequest(selected, clientRoot) {
     throw new Error(`Frontier mapObjects database not found: ${mapObjectsPath}`);
   }
 
+  const collisionBundlePath = selected.files.collisionBundle;
+  const collisionBundle = inspectCollisionBundle(collisionBundlePath);
+
   const main = selected.startIni;
   if (String(main["main.appname"] || "").toUpperCase() !== "FRONTIER") {
     throw new Error(`Selected client is not EVE Frontier: ${selected.startIniPath}`);
@@ -206,6 +297,12 @@ function buildRequest(selected, clientRoot) {
       sha256: sha256File(mapObjectsPath),
       size: fs.statSync(mapObjectsPath).size,
     },
+    collisionBundle: {
+      physicalPath: collisionBundlePath,
+      sha256: sha256File(collisionBundlePath),
+      size: fs.statSync(collisionBundlePath).size,
+      ...collisionBundle,
+    },
     resources,
   };
 }
@@ -230,6 +327,15 @@ function publicSourceRequest(request) {
     mapObjectsDb: {
       sha256: request.mapObjectsDb.sha256,
       size: request.mapObjectsDb.size,
+    },
+    collisionBundle: {
+      items: request.collisionBundle.items,
+      maxCollisionID: request.collisionBundle.maxCollisionID,
+      meshItems: request.collisionBundle.meshItems,
+      minCollisionID: request.collisionBundle.minCollisionID,
+      sha256: request.collisionBundle.sha256,
+      size: request.collisionBundle.size,
+      uniformItems: request.collisionBundle.uniformItems,
     },
     resources: Object.fromEntries(
       Object.entries<any>(request.resources).map(([key, value]) => [
@@ -319,7 +425,24 @@ function main() {
   const lines = result.stdout.trim().split(/\r?\n/).filter(Boolean);
   const report = JSON.parse(lines.at(-1));
   const outputs = outputMetadata(workDir, report.outputs);
+  const collisionAssetPath = path.join(workDir, ...COLLISION_ASSET_PATH.split("/"));
+  fs.mkdirSync(path.dirname(collisionAssetPath), { recursive: true });
+  fs.copyFileSync(request.collisionBundle.physicalPath, collisionAssetPath);
+  const collisionAsset = {
+    bytes: fs.statSync(collisionAssetPath).size,
+    items: request.collisionBundle.items,
+    maxCollisionID: request.collisionBundle.maxCollisionID,
+    meshItems: request.collisionBundle.meshItems,
+    minCollisionID: request.collisionBundle.minCollisionID,
+    path: COLLISION_ASSET_PATH,
+    schema: COLLISION_SCHEMA,
+    sha256: sha256File(collisionAssetPath),
+    uniformItems: request.collisionBundle.uniformItems,
+  };
   const manifest = {
+    assets: {
+      collisionBundle: collisionAsset,
+    },
     format: "evejs-frontier-static-v1",
     generatedAt: new Date().toISOString(),
     localization: {
@@ -329,7 +452,10 @@ function main() {
     outputs,
     source: publicSourceRequest(request),
     totals: {
-      bytes: Object.values<any>(outputs).reduce((sum, entry) => sum + entry.bytes, 0),
+      assetBytes: collisionAsset.bytes,
+      bytes:
+        Object.values<any>(outputs).reduce((sum, entry) => sum + entry.bytes, 0) +
+        collisionAsset.bytes,
       records: Object.values<any>(outputs).reduce((sum, entry) => sum + entry.records, 0),
     },
   };
@@ -359,8 +485,10 @@ if (process.argv[1] &&
 }
 
 export {
+  COLLISION_ASSET_PATH,
   REQUIRED_RESOURCES,
   discoverBuilds,
+  inspectCollisionBundle,
   parseArgs,
   selectBuild,
 };

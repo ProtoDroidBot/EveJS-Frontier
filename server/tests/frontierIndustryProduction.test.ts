@@ -7,6 +7,7 @@ const test = require("node:test");
 const itemStore = require("../src/services/inventory/itemStore");
 const database = require("../src/gameStore");
 const space = require("../src/space/runtime");
+const config = require("../src/config");
 const blueprints = require("../src/services/frontier/industryBlueprints");
 const inventory = require("../src/services/frontier/industryRuntime");
 const production = require("../src/services/frontier/industryProduction");
@@ -15,8 +16,11 @@ const OWNER = 140000003;
 const SYSTEM = 30000004;
 const FACILITY = 5000000001;
 const SHIP = 5000000002;
+const GUEST = 140000004;
+const GUEST_SHIP = 5000000003;
 const START = 1700000000000;
 const RECIPE = blueprints.getBlueprintForFacility(87119, 1026);
+const ALTERNATE_RECIPE = blueprints.getBlueprintForFacility(87119, 1027);
 
 function row(itemID, typeID, locationID, flagID, quantity, extra = {}) {
   return { itemID, typeID, locationID, flagID, quantity, stacksize: quantity,
@@ -32,14 +36,17 @@ function fixture(t, runs = 3, outputQuantity = 0) {
         ownerID: OWNER, solarSystemID: SYSTEM, completedAtMs: 1 },
       evejsFrontierIndustry: { version: 1, blueprintID: 1026 } }) });
   const ship = row(SHIP, 95276, SYSTEM, 0, 1, { singleton: 1, categoryID: 6 });
-  const rows = [facility, ship];
+  const guestShip = row(GUEST_SHIP, 95276, SYSTEM, 0, 1, {
+    singleton: 1, categoryID: 6, ownerID: GUEST,
+  });
+  const rows = [facility, ship, guestShip];
   if (runs > 0) rows.push(row(5000000011, 77803, FACILITY, 20000, 45 * runs),
     row(5000000012, 83894, FACILITY, 20000, runs));
   if (outputQuantity) rows.push(row(5000000013, 83895, FACILITY, 20001, outputQuantity));
   assert.equal(itemStore._writeItemsForTest(Object.fromEntries(rows.map(item => [item.itemID, item]))), true);
   const access = { distance: 100 };
   const session = { characterID: OWNER, solarsystemid2: SYSTEM, shipid: SHIP, sendNotification() {} };
-  t.mock.method(space, "getEntity", (_session, id) => [FACILITY, SHIP].includes(id)
+  t.mock.method(space, "getEntity", (_session, id) => [FACILITY, SHIP, GUEST_SHIP].includes(id)
     ? { itemID: id, position: { x: id === FACILITY ? 100 : 0, y: 0, z: 0 } } : null);
   t.mock.method(space, "getSceneForSession", () => ({ getCommandTimeEntitySurfaceDistance: () => access.distance }));
   return {
@@ -48,7 +55,18 @@ function fixture(t, runs = 3, outputQuantity = 0) {
     tick: (nowMs: number) => production.advanceProduction(FACILITY, { nowMs }),
     stop: (nowMs = START + 1000) => production.discontinueProduction(session, FACILITY, { nowMs }),
     state: () => production.getProduction(itemStore.findItemById(FACILITY)),
-    items: () => inventory.getFacilityItems(itemStore.findItemById(FACILITY)),
+    items: (laneID = 1) => inventory.getFacilityItems(itemStore.findItemById(FACILITY), laneID),
+    prepareLane(laneID, count = 1, recipe = RECIPE) {
+      ok(inventory.loadBlueprint(session, FACILITY, recipe.blueprint_id, { laneID }));
+      const current = itemStore.getAllItems();
+      let index = 0;
+      for (const slot of Object.values<any>(recipe.inputs)) {
+        const itemID = 5000000100 + laneID * 10 + index++;
+        current[itemID] = row(itemID, slot.type_id, FACILITY,
+          inventory.industryInputFlagForLane(laneID), slot.quantity_per_run * count);
+      }
+      assert.equal(itemStore._writeItemsForTest(current), true);
+    },
     snapshot: () => itemStore.getAllItems(),
   };
 }
@@ -77,6 +95,137 @@ test("starting consumes exactly one run; outputs appear only at each deadline an
   const completed = f.snapshot();
   ok(f.tick(START + 12000));
   assert.deepEqual(f.snapshot(), completed, "repeated completion never duplicates products");
+});
+
+test("configured job lanes remember independent blueprints and escrow", t => {
+  const f = fixture(t, 4);
+  f.prepareLane(2, 1, ALTERNATE_RECIPE);
+  ok(production.startProduction(f.session, FACILITY, 1026, RECIPE.content_hash, 1,
+    { nowMs: START, laneID: 1 }));
+  ok(production.startProduction(f.session, FACILITY, 1027, ALTERNATE_RECIPE.content_hash, 1,
+    { nowMs: START, laneID: 2 }));
+  const facility = itemStore.findItemById(FACILITY);
+  const lanes = production.getProductions(facility);
+  assert.equal(lanes.find(lane => lane.laneID === 1).production.jobID, 1);
+  assert.equal(lanes.find(lane => lane.laneID === 2).production.jobID, 2);
+  assert.equal(production.startProduction(f.session, FACILITY, 1027, ALTERNATE_RECIPE.content_hash, 1,
+    { nowMs: START, laneID: 2 }).errorMsg, "PRODUCTION_ALREADY_RUNNING");
+  assert.deepEqual(f.items(), { inputs: { 77803: 135, 83894: 3 }, outputs: {} });
+  assert.deepEqual(f.items(2), { inputs: {}, outputs: {} });
+  assert.equal(blueprints.getSelectedBlueprint(facility, 1).blueprint_id, 1026);
+  assert.equal(blueprints.getSelectedBlueprint(facility, 2).blueprint_id, 1027);
+  const stored = JSON.parse(facility.customInfo).evejsFrontierIndustry;
+  assert.deepEqual(stored.production, stored.lanes["1"].production,
+    "lane 1 stays mirrored for retail clients and chain snapshots");
+
+  const advanced = ok(production.advanceProduction(FACILITY, { nowMs: START + 3000 }));
+  assert.deepEqual(advanced.events.map(event => event.laneID), [1, 2]);
+  assert.deepEqual(f.items(), { inputs: { 77803: 135, 83894: 3 }, outputs: { 83895: 1 } });
+  assert.deepEqual(f.items(2), { inputs: {}, outputs: { 83897: 1 } });
+  assert.equal(production.getProduction(itemStore.findItemById(FACILITY), 1).state, "STOPPED");
+  assert.equal(production.getProduction(itemStore.findItemById(FACILITY), 2).state, "STOPPED");
+});
+
+test("portable Industry assemblies stay on lane 1 while non-portable facilities use the configured count", t => {
+  const f = fixture(t, 1);
+  assert.equal(production.getFacilityLaneCount(itemStore.findItemById(FACILITY)),
+    production.configuredLaneCount());
+  ok(itemStore.updateInventoryItem(FACILITY, item => {
+    const info = JSON.parse(item.customInfo);
+    info.evejsFrontierConstruction.assemblyTypeID = 87161;
+    info.evejsFrontierIndustry.blueprintID = 1184;
+    return { ...item, typeID: 87161, customInfo: JSON.stringify(info) };
+  }));
+  const portable = itemStore.findItemById(FACILITY);
+  assert.equal(production.getFacilityLaneCount(portable), 1);
+  assert.deepEqual(production.getJobLanes(portable, f.session)
+    .filter(lane => lane.enabled).map(lane => lane.laneID), [1]);
+  const recipe = blueprints.getBlueprintForFacility(87161, 1184);
+  assert.ok(recipe);
+  assert.equal(production.startProduction(f.session, FACILITY, 1184, recipe.content_hash, 1,
+    { nowMs: START, laneID: 2 }).errorMsg, "INVALID_JOB_LANE");
+  assert.equal(production.setLaneAccessPolicy(f.session, FACILITY, 2,
+    { mode: "public" }).errorMsg, "INVALID_JOB_LANE");
+});
+
+test("per-type lane counts override the global fallback without bypassing single-lane facilities", t => {
+  const previous = config.frontierSmartIndustryJobLaneCountByTypeID;
+  t.after(() => { config.frontierSmartIndustryJobLaneCountByTypeID = previous; });
+  config.frontierSmartIndustryJobLaneCountByTypeID = {
+    87119: 2,
+    87161: 9,
+  };
+  assert.equal(production.configuredLaneCountForType(87119), 2);
+  assert.equal(production.getFacilityLaneCount({ typeID: 87119 }), 2);
+  assert.equal(production.configuredLaneCountForType(88063), production.configuredLaneCount(),
+    "an unconfigured compatible type falls back to the global count");
+  assert.equal(production.getFacilityLaneCount({ typeID: 87161 }), 1,
+    "portable facilities remain hard-capped at lane 1");
+});
+
+test("per-type lane config validates compatible type IDs and bounded integer counts", () => {
+  const definition = config.getConfigDefinitions().find(entry =>
+    entry.key === "frontierSmartIndustryJobLaneCountByTypeID");
+  assert.ok(definition);
+  assert.deepEqual(definition.validateValue({ 87119: 2, 88063: 8 }), {
+    87119: 2,
+    88063: 8,
+  });
+  assert.throws(() => definition.validateValue({ 87119: 0 }),
+    /must be an integer from 1 through 16/);
+  assert.throws(() => definition.validateValue({ 34: 2 }),
+    /is not a compatible Smart Industry facility/);
+});
+
+test("owners configure each lane access independently and authorized characters can use only that lane", t => {
+  const f = fixture(t, 3);
+  f.prepareLane(2, 1);
+  ok(production.setLaneAccessPolicy(f.session, FACILITY, 2, new Map<string, any>([
+    ["mode", "allowlist"],
+    ["character_ids", { type: "list", items: [GUEST] }],
+  ])));
+  ok(production.setLaneAccessPolicy(f.session, FACILITY, 3, { mode: "public" }));
+  const latest = itemStore.findItemById(FACILITY);
+  const guestSession = { characterID: GUEST, solarsystemid2: SYSTEM, shipid: GUEST_SHIP,
+    sendNotification() {} };
+  assert.equal(production.canUseLane(latest, guestSession, 1), false);
+  assert.equal(production.canUseLane(latest, guestSession, 2), true);
+  assert.equal(production.canUseLane(latest, guestSession, 3), true);
+  assert.equal(production.getLaneAccessPolicy(latest, 2).mode, "allowlist");
+  assert.deepEqual(production.getLaneAccessPolicy(latest, 2).characterIDs, [GUEST]);
+
+  const denied = production.startProduction(guestSession, FACILITY, 1026, RECIPE.content_hash, 1,
+    { nowMs: START, laneID: 1 });
+  assert.equal(denied.errorMsg, "JOB_LANE_ACCESS_DENIED");
+  ok(production.startProduction(guestSession, FACILITY, 1026, RECIPE.content_hash, 1,
+    { nowMs: START, laneID: 2 }));
+  assert.equal(production.getProduction(itemStore.findItemById(FACILITY), 2).state, "RUNNING");
+  ok(inventory.loadBlueprint(f.session, FACILITY, 1027, { laneID: 3 }));
+  assert.equal(blueprints.getSelectedBlueprint(itemStore.findItemById(FACILITY), 3).blueprint_id,
+    1027, "another lane may select its own recipe while lane 2 is running");
+
+  const unavailableLane = production.configuredLaneCount() + 1;
+  assert.equal(production.startProduction(f.session, FACILITY, 1026, RECIPE.content_hash, 1,
+    { nowMs: START, laneID: unavailableLane }).errorMsg, "INVALID_JOB_LANE");
+});
+
+test("a paid run on a non-legacy lane blocks Smart Assembly removal with empty escrow", t => {
+  const f = fixture(t, 0);
+  f.prepareLane(2, 1);
+  ok(production.startProduction(f.session, FACILITY, 1026, RECIPE.content_hash, 1,
+    { nowMs: START, laneID: 2 }));
+  assert.deepEqual(f.items(), { inputs: {}, outputs: {} });
+  ok(itemStore.updateInventoryItem(FACILITY, item => {
+    const info = JSON.parse(item.customInfo);
+    info.evejsFrontierConstruction.assemblyStatus = 1;
+    return { ...item, customInfo: JSON.stringify(info) };
+  }));
+  const { MAX_ACCOUNT_ROLE } = require("../src/services/account/accountRoleProfiles");
+  const { adminRemoveAssembly } = require("../src/services/frontier/deploymentRuntime");
+  const result = adminRemoveAssembly({ ...f.session, accountRole: MAX_ACCOUNT_ROLE }, FACILITY);
+  assert.equal(result.success, false);
+  assert.equal(result.errorMsg, "ASSEMBLY_OCCUPIED");
+  assert.equal(production.getProduction(itemStore.findItemById(FACILITY), 2).state, "RUNNING");
 });
 
 test("the dApp start endpoint commits real escrow, notifies the game and tracks background production", async t => {
@@ -241,11 +390,11 @@ test("one run consumes split input stacks exactly and stops despite surplus mate
   const f = fixture(t, 3);
   const items = f.snapshot();
   items[5000000011].quantity = items[5000000011].stacksize = 20;
-  items[5000000021] = row(5000000021, 77803, FACILITY, 20000, 115);
+  items[5990000021] = row(5990000021, 77803, FACILITY, 20000, 115);
   assert.equal(itemStore._writeItemsForTest(items), true);
   ok(f.start(1));
   assert.equal(itemStore.findItemById(5000000011), null);
-  assert.equal(itemStore.findItemById(5000000021).stacksize, 90);
+  assert.equal(itemStore.findItemById(5990000021).stacksize, 90);
   ok(f.tick(START + 3000));
   assert.equal(f.state().completedRuns, 1);
   assert.equal(f.state().state, "STOPPED");

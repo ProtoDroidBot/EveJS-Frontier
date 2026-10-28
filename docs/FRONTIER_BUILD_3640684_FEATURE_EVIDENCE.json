@@ -1,0 +1,3139 @@
+{
+  "format": "evejs-frontier-feature-audit-v1",
+  "auditDate": "2026-10-26",
+  "targetBuild": 3640684,
+  "serverGitRevision": "bef5e3681cdfa8e1ac7b80a8a497e6eca76da746",
+  "serverReference": "Working tree includes exploration implementation and pre-existing local changes; source fingerprints bind the inspected implementation.",
+  "method": "Static Python3.12 marshal/disassembly and TypeScript inspection, plus pure offline actual-descriptor schema comparisons and notice encoding counterexample. No live client/server/native/chain validation.",
+  "target": {
+    "build": 3640684,
+    "archiveSHA256": "2f43f4b8d34632b5d5fdc7b58af93364f606bd9ba67fcada588565ee0628122c",
+    "archiveBytes": 119398148,
+    "pycCount": 11684,
+    "frontierModuleCount": 1628
+  },
+  "inventory": {
+    "frontierFamilyCounts": {
+      "frontier/__init__.pyc": 1,
+      "frontier/acessKeyModal": 2,
+      "frontier/aimed_action": 5,
+      "frontier/alpha_notice": 4,
+      "frontier/assemblies": 5,
+      "frontier/awakening": 13,
+      "frontier/base_building": 51,
+      "frontier/berthing": 8,
+      "frontier/beta.pyc": 1,
+      "frontier/brodcast_terminal": 3,
+      "frontier/cairn": 5,
+      "frontier/character": 44,
+      "frontier/character_creation": 9,
+      "frontier/character_sheet": 15,
+      "frontier/clone_selection": 22,
+      "frontier/command": 17,
+      "frontier/crdata": 54,
+      "frontier/creation": 95,
+      "frontier/cycle_hub": 11,
+      "frontier/design_gym": 6,
+      "frontier/digitalchemistry": 20,
+      "frontier/docking_point": 23,
+      "frontier/ecs": 2,
+      "frontier/feralization_system": 3,
+      "frontier/fitting": 3,
+      "frontier/focus": 72,
+      "frontier/format": 2,
+      "frontier/fps": 8,
+      "frontier/fuel": 8,
+      "frontier/gamepad": 68,
+      "frontier/heat_system": 10,
+      "frontier/help": 4,
+      "frontier/hud": 422,
+      "frontier/iff": 12,
+      "frontier/industry": 34,
+      "frontier/inspector": 3,
+      "frontier/inventory": 11,
+      "frontier/jump_drive": 8,
+      "frontier/keeper": 30,
+      "frontier/lagrange_occupancy": 8,
+      "frontier/landscape": 28,
+      "frontier/modular_ships_prototype": 180,
+      "frontier/navigation": 48,
+      "frontier/proto_client": 4,
+      "frontier/region_selection": 14,
+      "frontier/shell": 8,
+      "frontier/signatures_and_scanning": 12,
+      "frontier/skills": 13,
+      "frontier/skillshot": 15,
+      "frontier/skillshot_prototype": 8,
+      "frontier/smart_assemblies": 78,
+      "frontier/stargates": 15,
+      "frontier/starter_spawn": 7,
+      "frontier/station": 5,
+      "frontier/station_hud": 21,
+      "frontier/stats": 5,
+      "frontier/status_effect": 9,
+      "frontier/system_state": 3,
+      "frontier/tags": 3,
+      "frontier/temporal_drift_system": 3,
+      "frontier/type_hints.pyc": 1,
+      "frontier/universe_version": 1,
+      "frontier/wallet_setup": 2,
+      "frontier/warping": 4,
+      "frontier/web3": 15,
+      "frontier/welcome_popup": 4
+    },
+    "newFrontierMemberNamesAgainst3502403MOD4STUFF1": [
+      "frontier/aimed_action/client/weapon_range.pyc",
+      "frontier/awakening/__init__.pyc",
+      "frontier/awakening/client/__init__.pyc",
+      "frontier/awakening/client/backdrop_scene.pyc",
+      "frontier/awakening/client/beta.pyc",
+      "frontier/awakening/client/container.pyc",
+      "frontier/awakening/client/controller.pyc",
+      "frontier/awakening/client/demo.pyc",
+      "frontier/awakening/client/hold_model.pyc",
+      "frontier/awakening/client/moire_field_scene.pyc",
+      "frontier/awakening/client/ring_field_scene.pyc",
+      "frontier/awakening/client/screen_quad.pyc",
+      "frontier/awakening/client/static_field_scene.pyc",
+      "frontier/awakening/client/view.pyc",
+      "frontier/base_building/client/focus_adapters.pyc",
+      "frontier/character/client/components/ascension_confirmation_card.pyc",
+      "frontier/character/client/components/motion.pyc",
+      "frontier/character/client/view_resolver.pyc",
+      "frontier/character/client/weave/__init__.pyc",
+      "frontier/character/client/weave/ceremony.pyc",
+      "frontier/character/client/weave/container.pyc",
+      "frontier/character/client/weave/controller.pyc",
+      "frontier/character/client/weave/count.pyc",
+      "frontier/character/client/weave/woven_card.pyc",
+      "frontier/command/client/held_direction.pyc",
+      "frontier/command/client/holdable_command.pyc",
+      "frontier/command/client/localized_text.pyc",
+      "frontier/command/client/saved_shortcuts.pyc",
+      "frontier/command/client/shortcut_row.pyc",
+      "frontier/command/hold_loop.pyc",
+      "frontier/command/step_accumulator.pyc",
+      "frontier/command/wheel_gesture.pyc",
+      "frontier/crdata/client/cfg_universe_shim.pyc",
+      "frontier/crdata/client/discovery_ledger.pyc",
+      "frontier/crdata/client/exploration_messenger.pyc",
+      "frontier/crdata/client/insider.pyc",
+      "frontier/crdata/client/reveal_horizon.pyc",
+      "frontier/crdata/client/reveal_timeline.pyc",
+      "frontier/crdata/client/universe_index.pyc",
+      "frontier/crdata/common/objects/cr_regolith.pyc",
+      "frontier/creation/client/focus_adapters.pyc",
+      "frontier/creation/client/management/held_module.pyc",
+      "frontier/creation/client/management/view_resolver.pyc",
+      "frontier/creation/client/module_behavior.pyc",
+      "frontier/creation/client/modules/__init__.pyc",
+      "frontier/creation/client/modules/launch_bay.pyc",
+      "frontier/creation/client/rcs/__init__.pyc",
+      "frontier/creation/client/rcs/candidates.pyc",
+      "frontier/creation/client/rcs/controller.pyc",
+      "frontier/creation/client/rcs/provider.pyc",
+      "frontier/creation/client/rcs/selection.pyc",
+      "frontier/creation/client/registry.pyc",
+      "frontier/design_gym/__init__.pyc",
+      "frontier/design_gym/client/__init__.pyc",
+      "frontier/design_gym/client/constants.pyc",
+      "frontier/design_gym/client/dungeon_content.pyc",
+      "frontier/design_gym/client/hud.pyc",
+      "frontier/design_gym/client/service.pyc",
+      "frontier/digitalchemistry/__init__.pyc",
+      "frontier/digitalchemistry/client/__init__.pyc",
+      "frontier/digitalchemistry/client/const.pyc",
+      "frontier/digitalchemistry/client/local_listener.pyc",
+      "frontier/digitalchemistry/client/proto_listener.pyc",
+      "frontier/digitalchemistry/client/recipe_svc.pyc",
+      "frontier/digitalchemistry/client/ui/__init__.pyc",
+      "frontier/digitalchemistry/client/ui/controller.pyc",
+      "frontier/digitalchemistry/client/ui/page.pyc",
+      "frontier/digitalchemistry/client/ui/recipe_description.pyc",
+      "frontier/digitalchemistry/client/ui/recipe_list.pyc",
+      "frontier/digitalchemistry/client/ui/slots.pyc",
+      "frontier/digitalchemistry/client/utility.pyc",
+      "frontier/digitalchemistry/client/view.pyc",
+      "frontier/digitalchemistry/client/view_state.pyc",
+      "frontier/digitalchemistry/common/__init__.pyc",
+      "frontier/digitalchemistry/common/engine.pyc",
+      "frontier/digitalchemistry/common/errors.pyc",
+      "frontier/digitalchemistry/common/local_engine.pyc",
+      "frontier/digitalchemistry/common/model.pyc",
+      "frontier/docking_point/__init__.pyc",
+      "frontier/docking_point/client/__init__.pyc",
+      "frontier/docking_point/client/docked_frame.pyc",
+      "frontier/docking_point/client/docked_window.pyc",
+      "frontier/docking_point/client/docking_point_svc.pyc",
+      "frontier/docking_point/client/fuel_content.pyc",
+      "frontier/docking_point/client/raycast.pyc",
+      "frontier/docking_point/client/refuel_pane.pyc",
+      "frontier/docking_point/client/status_channel.pyc",
+      "frontier/docking_point/client/view.pyc",
+      "frontier/docking_point/client/view_const.pyc",
+      "frontier/docking_point/client/view_resolver.pyc",
+      "frontier/docking_point/client/view_state.pyc",
+      "frontier/docking_point/common/__init__.pyc",
+      "frontier/docking_point/common/const.pyc",
+      "frontier/docking_point/common/dev.pyc",
+      "frontier/docking_point/common/modules.pyc",
+      "frontier/docking_point/common/motion.pyc",
+      "frontier/docking_point/common/orientation.pyc",
+      "frontier/docking_point/common/point_types.pyc",
+      "frontier/docking_point/common/range.pyc",
+      "frontier/docking_point/common/refueling.pyc",
+      "frontier/docking_point/common/services.pyc",
+      "frontier/focus/__init__.pyc",
+      "frontier/focus/core/__init__.pyc",
+      "frontier/focus/core/client/__init__.pyc",
+      "frontier/focus/core/client/adapters/__init__.pyc",
+      "frontier/focus/core/client/adapters/action_hints.pyc",
+      "frontier/focus/core/client/adapters/activation.pyc",
+      "frontier/focus/core/client/adapters/assembly_cargo_focus.pyc",
+      "frontier/focus/core/client/adapters/assembly_storage.pyc",
+      "frontier/focus/core/client/adapters/assets_window.pyc",
+      "frontier/focus/core/client/adapters/base.pyc",
+      "frontier/focus/core/client/adapters/browser_window.pyc",
+      "frontier/focus/core/client/adapters/character_view.pyc",
+      "frontier/focus/core/client/adapters/chat_window.pyc",
+      "frontier/focus/core/client/adapters/chat_windows.pyc",
+      "frontier/focus/core/client/adapters/clickable.pyc",
+      "frontier/focus/core/client/adapters/combo.pyc",
+      "frontier/focus/core/client/adapters/construction_depot.pyc",
+      "frontier/focus/core/client/adapters/context_menu.pyc",
+      "frontier/focus/core/client/adapters/deferred.pyc",
+      "frontier/focus/core/client/adapters/dialog.pyc",
+      "frontier/focus/core/client/adapters/fleet_window.pyc",
+      "frontier/focus/core/client/adapters/industry_facility.pyc",
+      "frontier/focus/core/client/adapters/info_window.pyc",
+      "frontier/focus/core/client/adapters/inventory.pyc",
+      "frontier/focus/core/client/adapters/inventory_view.pyc",
+      "frontier/focus/core/client/adapters/item_slot_actions.pyc",
+      "frontier/focus/core/client/adapters/item_slot_window.pyc",
+      "frontier/focus/core/client/adapters/keeper_menu.pyc",
+      "frontier/focus/core/client/adapters/management_view.pyc",
+      "frontier/focus/core/client/adapters/notification_window.pyc",
+      "frontier/focus/core/client/adapters/scroll.pyc",
+      "frontier/focus/core/client/adapters/scroll_container.pyc",
+      "frontier/focus/core/client/adapters/scroll_tree.pyc",
+      "frontier/focus/core/client/adapters/ship_industry_view.pyc",
+      "frontier/focus/core/client/adapters/slider.pyc",
+      "frontier/focus/core/client/adapters/smart_hangar.pyc",
+      "frontier/focus/core/client/adapters/spatial_scene.pyc",
+      "frontier/focus/core/client/adapters/stargate_depot.pyc",
+      "frontier/focus/core/client/adapters/system_menu.pyc",
+      "frontier/focus/core/client/adapters/system_menu_scan.pyc",
+      "frontier/focus/core/client/adapters/tab_stop.pyc",
+      "frontier/focus/core/client/adapters/util_menu.pyc",
+      "frontier/focus/core/client/adapters/widget_tree.pyc",
+      "frontier/focus/core/client/adapters/window.pyc",
+      "frontier/focus/core/client/adapters/zone_window.pyc",
+      "frontier/focus/core/client/highlight.pyc",
+      "frontier/focus/core/client/intent.pyc",
+      "frontier/focus/core/client/keyboard_bindings/__init__.pyc",
+      "frontier/focus/core/client/keyboard_bindings/binding_map.pyc",
+      "frontier/focus/core/client/keyboard_bindings/hold.pyc",
+      "frontier/focus/core/client/keyboard_bindings/keyboard_intent_map.pyc",
+      "frontier/focus/core/client/keyboard_bindings/settings_store.pyc",
+      "frontier/focus/core/client/manager.pyc",
+      "frontier/focus/core/client/menu.pyc",
+      "frontier/focus/core/client/overlay_adoption.pyc",
+      "frontier/focus/core/client/runtime.pyc",
+      "frontier/focus/core/client/settings.pyc",
+      "frontier/focus/core/client/spatial_scene.pyc",
+      "frontier/focus/core/client/tooltip.pyc",
+      "frontier/focus/core/client/view_resolver.pyc",
+      "frontier/focus/core/client/window_eligibility.pyc",
+      "frontier/focus/interaction/__init__.pyc",
+      "frontier/focus/interaction/client/__init__.pyc",
+      "frontier/focus/interaction/client/context.pyc",
+      "frontier/focus/interaction/client/context_resolver.pyc",
+      "frontier/focus/interaction/client/focus_highlight_controller.pyc",
+      "frontier/focus/interaction/client/insider.pyc",
+      "frontier/focus/interaction/client/keyboard_router.pyc",
+      "frontier/focus/interaction/client/overlay_adoption.pyc",
+      "frontier/focus/interaction/client/scene_focus_coordinator.pyc",
+      "frontier/focus/interaction/client/service.pyc",
+      "frontier/focus/interaction/client/window_focus_policy.pyc",
+      "frontier/fps/__init__.pyc",
+      "frontier/fps/client/__init__.pyc",
+      "frontier/fps/client/frame_rate_window.pyc",
+      "frontier/fps/client/message_bus/__init__.pyc",
+      "frontier/fps/client/message_bus/fps_messenger.pyc",
+      "frontier/fps/client/report_interval.pyc",
+      "frontier/fps/client/reporter.pyc",
+      "frontier/fps/client/service.pyc",
+      "frontier/gamepad/client/cursor_arbiter.pyc",
+      "frontier/gamepad/client/disconnect_toast_queue.pyc",
+      "frontier/gamepad/client/focus/adapters/management_drag.pyc",
+      "frontier/gamepad/client/focus/intent_map.pyc",
+      "frontier/gamepad/client/gamepad_deferred_modifier.pyc",
+      "frontier/gamepad/client/gamepad_tick_loop.pyc",
+      "frontier/gamepad/client/haptic_presets.pyc",
+      "frontier/gamepad/client/ship_aim.pyc",
+      "frontier/gamepad/client/ship_cursor_state.pyc",
+      "frontier/gamepad/client/ship_lb_modal.pyc",
+      "frontier/gamepad/client/view_state_coordinator.pyc",
+      "frontier/hud/assisted_flight/__init__.pyc",
+      "frontier/hud/assisted_flight/controller.pyc",
+      "frontier/hud/assisted_flight/deadzone.pyc",
+      "frontier/hud/assisted_flight/integration.pyc",
+      "frontier/hud/assisted_flight/pattern.pyc",
+      "frontier/hud/assisted_flight/proxy.pyc",
+      "frontier/hud/assisted_flight/widget.pyc",
+      "frontier/hud/bracket/archetype.pyc",
+      "frontier/hud/bracket/filter/criteria/docking_point.pyc",
+      "frontier/hud/bracket/filter/criteria/proximate.pyc",
+      "frontier/hud/bracket/filter/criteria/regolith.pyc",
+      "frontier/hud/bracket/importance.pyc",
+      "frontier/hud/bracket/insider.pyc",
+      "frontier/hud/bracket/status.pyc",
+      "frontier/hud/bracket/ui/action_hints.pyc",
+      "frontier/hud/bracket/ui/attention.pyc",
+      "frontier/hud/bracket/ui/attention_line.pyc",
+      "frontier/hud/bracket/ui/attention_opacity.pyc",
+      "frontier/hud/bracket/ui/diamond.pyc",
+      "frontier/hud/bracket/ui/resolved_bracket.pyc",
+      "frontier/hud/bracket/ui/reveal_sequencer.pyc",
+      "frontier/hud/bracket/ui/triangle_corners.pyc",
+      "frontier/hud/camera/flight_mode_reticle.pyc",
+      "frontier/hud/camera/keyboard_zoom.pyc",
+      "frontier/hud/camera/signals.pyc",
+      "frontier/hud/clamped_setting.pyc",
+      "frontier/hud/compass/__init__.pyc",
+      "frontier/hud/compass/beta.pyc",
+      "frontier/hud/compass/contacts.pyc",
+      "frontier/hud/compass/controller.pyc",
+      "frontier/hud/compass/geometry.pyc",
+      "frontier/hud/compass/insider.pyc",
+      "frontier/hud/compass/integration.pyc",
+      "frontier/hud/compass/marker.pyc",
+      "frontier/hud/compass/proxy.pyc",
+      "frontier/hud/compass/stacking.pyc",
+      "frontier/hud/compass/stars.pyc",
+      "frontier/hud/compass/widget.pyc",
+      "frontier/hud/device_binding_hint.pyc",
+      "frontier/hud/focus_binding_hint.pyc",
+      "frontier/hud/fuel/fuel_tank_focus.pyc",
+      "frontier/hud/guidance_highlight.pyc",
+      "frontier/hud/hover_poll.pyc",
+      "frontier/hud/inventory/client/audio.pyc",
+      "frontier/hud/inventory/client/view_resolver.pyc",
+      "frontier/hud/scanner/command.pyc",
+      "frontier/hud/scanner/const.pyc",
+      "frontier/hud/scanner/keyboard_scan_angle.pyc",
+      "frontier/hud/scoop_audio.pyc",
+      "frontier/hud/scoop_beam.pyc",
+      "frontier/hud/space/interaction_state.pyc",
+      "frontier/hud/space/scene_input_guard.pyc",
+      "frontier/hud/speed/needle.pyc",
+      "frontier/hud/system_view/scene_new/area_controller/stellar_object.pyc",
+      "frontier/hud/system_view/scene_new/renderers/orbit_lod.pyc",
+      "frontier/hud/system_view/scene_new/renderers/stellar_object_renderer.pyc",
+      "frontier/hud/system_view/scene_new/scene_settings.pyc",
+      "frontier/hud/view_mode.pyc",
+      "frontier/hud/view_mode_switcher.pyc",
+      "frontier/hud/widget/boot_sequence.pyc",
+      "frontier/hud/widget/boot_sequence_debug.pyc",
+      "frontier/iff/client/beacons.pyc",
+      "frontier/iff/client/behavior.pyc",
+      "frontier/iff/client/module.pyc",
+      "frontier/iff/client/service.pyc",
+      "frontier/iff/client/verdicts.pyc",
+      "frontier/iff/common/iff.pyc",
+      "frontier/industry/client/modular/view_resolver.pyc",
+      "frontier/inventory/client/item_actions.pyc",
+      "frontier/inventory/client/panel_shortcuts.pyc",
+      "frontier/keeper/client/pixel_matrix.pyc",
+      "frontier/keeper/client/pixel_matrix_debug.pyc",
+      "frontier/keeper/client/tutorial/navigation_qa.pyc",
+      "frontier/landscape/client/composite_asteroid_tool.pyc",
+      "frontier/landscape/common/dungeon_rotation.pyc",
+      "frontier/landscape/common/regolith_properties.pyc",
+      "frontier/landscape/dev_spawn.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/generator_panel.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/catalog_ids.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/connectors/__init__.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/connectors/controller.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/connectors/mesh.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/connectors/sockets.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/module_presets.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/rendering/module_connections.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/rendering/module_editor.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/rendering/module_placement.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/rendering/voxel_grid.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/ship_model.pyc",
+      "frontier/navigation/client/aim_flight.pyc",
+      "frontier/navigation/client/aim_frame.pyc",
+      "frontier/navigation/client/clock.pyc",
+      "frontier/navigation/client/collision_telemetry.pyc",
+      "frontier/navigation/client/flight_audio.pyc",
+      "frontier/navigation/client/flight_input_telemetry.pyc",
+      "frontier/navigation/client/flight_latency.pyc",
+      "frontier/navigation/client/flight_latency_tracing.pyc",
+      "frontier/navigation/client/input_axis.pyc",
+      "frontier/navigation/client/keyboard_input.pyc",
+      "frontier/navigation/client/main_booster.pyc",
+      "frontier/navigation/client/message_bus/__init__.pyc",
+      "frontier/navigation/client/message_bus/collision_messenger.pyc",
+      "frontier/navigation/client/message_bus/flight_input_messenger.pyc",
+      "frontier/navigation/client/message_bus/throttle_messenger.pyc",
+      "frontier/navigation/client/prediction.pyc",
+      "frontier/navigation/client/rcs_driver.pyc",
+      "frontier/navigation/client/rcs_layout.pyc",
+      "frontier/navigation/client/rcs_motion.pyc",
+      "frontier/navigation/client/send.pyc",
+      "frontier/navigation/client/signals.pyc",
+      "frontier/navigation/client/speed.pyc",
+      "frontier/navigation/client/speed_ramp.pyc",
+      "frontier/navigation/client/throttle.pyc",
+      "frontier/navigation/client/throttle_telemetry.pyc",
+      "frontier/navigation/span_sink.pyc",
+      "frontier/region_selection/client/connect_button.pyc",
+      "frontier/shell/client/action.pyc",
+      "frontier/skills/__init__.pyc",
+      "frontier/skills/client/__init__.pyc",
+      "frontier/skills/client/components/__init__.pyc",
+      "frontier/skills/client/components/skills_panel.pyc",
+      "frontier/skills/client/format.pyc",
+      "frontier/skills/client/insider.pyc",
+      "frontier/skills/client/service.pyc",
+      "frontier/skills/client/sorting.pyc",
+      "frontier/skills/common/__init__.pyc",
+      "frontier/skills/common/const.pyc",
+      "frontier/skills/common/conversion.pyc",
+      "frontier/skills/common/factor.pyc",
+      "frontier/skills/common/skills.pyc",
+      "frontier/skillshot/client/skill_shot_report.pyc",
+      "frontier/skillshot/client/skill_shot_tool.pyc",
+      "frontier/smart_assemblies/client/focus_adapters.pyc",
+      "frontier/stargates/client/destination_state.pyc",
+      "frontier/stargates/client/focus_adapters.pyc",
+      "frontier/stargates/client/jump_check.pyc",
+      "frontier/starter_spawn/client/__init__.pyc",
+      "frontier/starter_spawn/client/warmup.pyc",
+      "frontier/universe_version/__init__.pyc",
+      "frontier/welcome_popup/__init__.pyc",
+      "frontier/welcome_popup/guidebook_window.pyc",
+      "frontier/welcome_popup/service.pyc",
+      "frontier/welcome_popup/welcome_window.pyc"
+    ],
+    "removedFrontierMemberNamesAgainst3502403MOD4STUFF1": [
+      "frontier/character_creation/demo.pyc",
+      "frontier/crdata/common/components/cr_entity_standings.pyc",
+      "frontier/crdata/common/components/cr_ess.pyc",
+      "frontier/crdata/common/components/cr_fighter_squadron.pyc",
+      "frontier/crdata/common/components/cr_link_with_ship.pyc",
+      "frontier/creation/client/iff_beacons.pyc",
+      "frontier/creation/client/iff_verdicts.pyc",
+      "frontier/creation/client/management/icon_button.pyc",
+      "frontier/creation/common/iff.pyc",
+      "frontier/gamepad/client/focus/adapters/assets_window.pyc",
+      "frontier/gamepad/client/focus/adapters/chat_window.pyc",
+      "frontier/gamepad/client/focus/adapters/combo.pyc",
+      "frontier/gamepad/client/focus/adapters/construction_depot.pyc",
+      "frontier/gamepad/client/focus/adapters/context_menu.pyc",
+      "frontier/gamepad/client/focus/adapters/dialog.pyc",
+      "frontier/gamepad/client/focus/adapters/fleet_window.pyc",
+      "frontier/gamepad/client/focus/adapters/industry_facility.pyc",
+      "frontier/gamepad/client/focus/adapters/info_window.pyc",
+      "frontier/gamepad/client/focus/adapters/inventory.pyc",
+      "frontier/gamepad/client/focus/adapters/inventory_view.pyc",
+      "frontier/gamepad/client/focus/adapters/item_slot_actions.pyc",
+      "frontier/gamepad/client/focus/adapters/keeper_menu.pyc",
+      "frontier/gamepad/client/focus/adapters/notification_window.pyc",
+      "frontier/gamepad/client/focus/adapters/smart_hangar.pyc",
+      "frontier/gamepad/client/focus/chat_windows.pyc",
+      "frontier/gamepad/client/focus/highlight.pyc",
+      "frontier/gamepad/client/focus/spatial_navigation.pyc",
+      "frontier/hud/action_bar/module/iff.pyc",
+      "frontier/hud/audio.pyc",
+      "frontier/keeper/const.pyc",
+      "frontier/landscape/common/output_asteroid_map.pyc",
+      "frontier/license_storage/__init__.pyc",
+      "frontier/license_storage/client/__init__.pyc",
+      "frontier/license_storage/client/licenseSvc.pyc",
+      "frontier/license_storage/common/__init__.pyc",
+      "frontier/license_storage/common/license_settings.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/area_data.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/host_shim.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/in_space/service.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/in_space/state.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/in_space/view.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/pieces/import_export.pyc",
+      "frontier/modular_ships_prototype/designer_prototype/modular_build/rendering/grid.pyc",
+      "frontier/region_selection/client/const.pyc"
+    ],
+    "caveat": "Module-name changes are inventory, not feature parity or enabled gameplay."
+  },
+  "backlog": [
+    {
+      "id": "F01",
+      "feature": "Shared gateway notice/identity schema — **incompatible**"
+    },
+    {
+      "id": "F02",
+      "feature": "Composite/voxel asteroids and material state — **absent**"
+    },
+    {
+      "id": "F03",
+      "feature": "Regolith and channeled tractor pickup — **absent target lifecycle**"
+    },
+    {
+      "id": "F04",
+      "feature": "Manual flight controls and reconciliation — **partial**"
+    },
+    {
+      "id": "F05",
+      "feature": "Magnetic docking points, port cargo/refueling — **absent**"
+    },
+    {
+      "id": "F06",
+      "feature": "Digital Chemistry recipes/jobs — **absent**"
+    },
+    {
+      "id": "F07",
+      "feature": "Frontier skill complexity and vault — **absent**"
+    },
+    {
+      "id": "F08",
+      "feature": "Memories, ascension, crowns and shell switching — **partial/stubbed**"
+    },
+    {
+      "id": "F09",
+      "feature": "Medical kits, remedies and medical traits — **partial/refused**"
+    },
+    {
+      "id": "F10",
+      "feature": "Relay-lens purchase and feral data sale — **absent**"
+    },
+    {
+      "id": "F11",
+      "feature": "LUX/token exchange and wallet balances — **partial/local substitute**"
+    },
+    {
+      "id": "F12",
+      "feature": "Celestial stargate rebuild/fuel operations — **partial contract mismatch**"
+    },
+    {
+      "id": "F13",
+      "feature": "Structure transponders — **partial method/type coverage**"
+    },
+    {
+      "id": "F14",
+      "feature": "Assembly location publication — **missing method**"
+    },
+    {
+      "id": "F15",
+      "feature": "Lagrange occupancy — **contract absent, activation unverified**"
+    },
+    {
+      "id": "F16",
+      "feature": "Claimed construction packs — **empty bootstrap**"
+    },
+    {
+      "id": "F17",
+      "feature": "Smart killmail reporting — **absent, wallet-dependent**"
+    },
+    {
+      "id": "F18",
+      "feature": "Cycle Hub founder/achievement/broadcast lifecycle — **absent/conditional**"
+    },
+    {
+      "id": "F19",
+      "feature": "Native wallet login/proof and event routing — **policy-dependent gap**"
+    },
+    {
+      "id": "F20",
+      "feature": "Exploration/resource discovery and canonical-world completeness — **implemented core, incomplete integration**"
+    },
+    {
+      "id": "F21",
+      "feature": "Exact-build launch/native patches and custom adapters — **not ported**"
+    }
+  ],
+  "startupAndFeatureFlags": [
+    {
+      "member": "const.pyc",
+      "sha256": "27fbaccaec6b2558f9ea0e6da548a2456ea5689748fbaf0636952168083ce677",
+      "assignments": []
+    },
+    {
+      "member": "appConst.pyc",
+      "sha256": "04602b2d7a4e045ff16d2a33957597f821cdb31de49ef6ed898e6894d7419c0a",
+      "assignments": []
+    },
+    {
+      "member": "frontier/beta.pyc",
+      "sha256": "c4dbeb47b26881be5e06ada78cef0b34e2a423f70b6ea6f6b359e974893d2f5f",
+      "assignments": [
+        {
+          "name": "FRONTIER_BETA_GOTO_LINE_COMMAND_ENABLED",
+          "value": false
+        },
+        {
+          "name": "FRONTIER_BETA_CLIENT_RANGE_BASED_OCCLUSION",
+          "value": false
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_RIGS_AND_SUBSYSTEMS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_FITTING_CAPACITOR_PANEL",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_SKILLS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_PLEX",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CHARACTER_INTERACTION_SECURITY_STATUS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CHARACTER_DECORATIONS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_DISABLE_WEAPON_GROUPS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CHARACTER_CLONE_STATE",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_JUMP_CLONES",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CHARACTER_SHEET_SKINS_TAB",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CHARACTER_SHEET_AUGMENTATIONS_TAB",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_PLACEHOLDER_CHARACTER_PORTRAITS_ENABLED",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_LOCAL_CHAT_BLACKOUT_ENABLED",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_DAILY_LOGIN_REWARDS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_PROJECT_DISCOVERY",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_SECURITY_OFFICE",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_HYPERNET_RELAY",
+          "value": true
+        },
+        {
+          "name": "FRNOTIER_BETA_HIDE_CYNO_JUMP",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_LEGACY_HUD",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_SHIP_STANCE",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_DISABLE_LOW_POST_PROCESSING_OPTION",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_DISABLE_LOW_SHADER_OPTION",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_DISABLE_NO_SHADOWS_OPTION",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_SAFETY_DEFAULT_OFF",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_STANDING",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_LANGUAGE_SELECTION",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_AGENTS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_SECURITY_MARKET",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_MARKET",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_SCHOOL_STATION",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CORPORATION_OFFICES",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_EMPTY_WRECKS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_TARGET_ROTATING_ARROWS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CHARACTER_INFO",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CHARACTER_DISPLAY_SETTINGS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_DISABLE_SCHOOL_STATIONS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_MAPVIEW_MARKERS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_MAPVIEW_LAYOUT",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_MAPVIEW_COLOR_BY",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CONTEXT_MENU_ITEMS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_DISABLE_CAPSULE",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_DISABLE_SAFE_LOGOFF",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_DISABLE_LOOK_AT",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_WRECK_STATUS_OPTIONS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_FLEET_RESPAWN",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_FLEET_FORMATIONS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CAPTURE_PORTRAIT_MENU_OPTION",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_GIVE_MONEY_TO_CORPORATION",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_SECURITY_CONTRACTS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_INDUSTRY_AND_REPROCESS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_LAUNCHER_HARDPOINTS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CORP_SIZE_AND_EXTENT",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CORP_TAXES",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CORP_ASSETS",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CORP_EDIT_DETAILS_REFRESH_MEMBER_LIMIT_BUTTON",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_CHARACTER_DESCRIPTION",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_HUD_SYSTEM_INFO_PANEL",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_HUD_ROUTE_PANEL",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_HUD_SEARCH_PANEL",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_BUTTON_ICON_INFO_PANEL",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_HUD_HINT_PANEL_TOP",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_BETA_HIDE_HUD_EFFECT_WIDGET",
+          "value": true
+        },
+        {
+          "name": "FRONTIER_FOG_OF_WAR_MAP_LOOK",
+          "value": true
+        }
+      ]
+    },
+    {
+      "member": "frontier/shell/common/const.pyc",
+      "sha256": "1fe75176908d8c60286efc23a17cce6d5c2f19ae66bedb156ff89b7c193e45f0",
+      "assignments": [
+        {
+          "name": "DEFAULT_SHELL_TYPE_ID",
+          "value": 91969
+        },
+        {
+          "name": "SHELL_CATEGORY_ID",
+          "value": 2153
+        },
+        {
+          "name": "NEST_TYPE_ID",
+          "value": 91871
+        },
+        {
+          "name": "CROWN_CREATION_DELAY_SECONDS",
+          "value": 1800
+        },
+        {
+          "name": "SHELL_XP_BOOSTER_IMPLANT_TYPE_ID",
+          "value": 92436
+        },
+        {
+          "name": "RAIMENT_IMPLANT_TYPE_ID",
+          "value": 93629
+        },
+        {
+          "name": "HIDE_SHELL_IMPLANT_SYSTEM",
+          "value": true
+        },
+        {
+          "name": "HIDE_SHELL_RAIMENT_SYSTEM",
+          "value": false
+        }
+      ]
+    },
+    {
+      "member": "carbon/common/lib/const.pyc",
+      "sha256": "82ecdefa27015be568392cba21b698f58db25fe57d1b2bcaa69a7949a580301c",
+      "assignments": []
+    },
+    {
+      "member": "carbon/common/script/net/machoNet.pyc",
+      "sha256": "32724e37754f37d38a749cf626d1e689d09332a7e194931ac800b9ddff929c52",
+      "assignments": []
+    },
+    {
+      "member": "carbon/common/script/net/machobase.pyc",
+      "sha256": "9bc95bd88156595515fb481e9838c8dd5ff1a80c61f1130eeff417aca160b2dd",
+      "assignments": []
+    },
+    {
+      "member": "macho.pyc",
+      "sha256": "764372c6801687fc8e365de35742112fa39be42e2e67fedaf8e432021306608d",
+      "assignments": []
+    },
+    {
+      "member": "eve/common/script/net/eveMachoNetVersion.pyc",
+      "sha256": "9326c918739a90bb7fcce28bcb643004876b5985ba1967670e3f391d8f1aef69",
+      "assignments": [
+        {
+          "name": "machoVersion",
+          "value": 489
+        }
+      ]
+    },
+    {
+      "member": "eve/common/lib/appConst.pyc",
+      "sha256": "04602b2d7a4e045ff16d2a33957597f821cdb31de49ef6ed898e6894d7419c0a",
+      "assignments": []
+    }
+  ],
+  "gatewayAudit": {
+    "auditDate": "2026-10-26",
+    "targetBuild": 3640684,
+    "codeArchiveSha256": "2f43f4b8d34632b5d5fdc7b58af93364f606bd9ba67fcada588565ee0628122c",
+    "memberSha256": {
+      "frontier/smart_assemblies/client/trader/relay_messenger.pyc": "24dfd4ff862a48ea5aeae931b68fdf4b2025946f47f7169a2f84ebea6fd5ec13",
+      "frontier/web3/client/currency/proto_messenger.pyc": "e0cb02cea00cfc36384209f32a7546a1ea178560962dc6793452fe9c213244ef",
+      "frontier/web3/client/signer/proto_messenger.pyc": "2bc36972ce1aab0270270c4e1b0056b24bb35ac3c1f696b2e6c006c3129bbf19",
+      "frontier/cycle_hub/client/message_bus/achievement_messenger.pyc": "87a7ee3cae0a5348a7562f6b2995879c42ab84b045378d5da495c59a4d6ea6eb",
+      "frontier/industry/client/proto_listener.pyc": "720098ee56b43497477b09f54efa1927d2f2e1ed7ee26df8ddb574d538f393dd",
+      "eveProto/generated/eve_public/public_pb2.pyc": "94a29219b8e598668675590c2df53b202f733b669e88310aa23537e57e40d247"
+    },
+    "serverFileSha256": {
+      "server/src/_secondary/express/publicGatewayLocal.ts": "de9a5af7dcddc388e6a2cc7ea949bf8362ebc1ea98e900a1332a169558489e10",
+      "server/src/_secondary/express/gatewayServices/index.ts": "c1cabc637a3c9899e1c79bc18b126144008ca3a622f0bd5bb6f26af1a5df41b7",
+      "server/src/_secondary/express/gatewayServices/frontierWalletGatewayService.ts": "f7f068648adb2558d888694450909a6643ad283517fc3def434aa182a0f8490f",
+      "server/src/_secondary/express/gatewayServices/frontierTokenExchangeGatewayService.ts": "9175ac0098199cb77ee5c9be4a906881d0a6f27a332a85e3df84b85e139c9651",
+      "server/src/services/frontier/industryNotifications.ts": "dd7e77a2cceaa2942da998caaac0a30b9c4ace8a8aed283df5f8621d99237185",
+      "server/src/_secondary/express/gatewayServices/skillPlanProto.ts": "a23eaecc7e6312df005f5c21eee5c446564eb95fa41c197f883f722c68302e97",
+      "server/src/_secondary/express/gatewayServices/corpSkillPlanProto.ts": "87cd5a0cb8bbfb9dadec3445d70703dcb1de45004390588cee89806f22686a44"
+    },
+    "method": "Read-only bytecode/descriptor inspection; pure offline schema checks and inert-dependency registry construction; no client/server launch",
+    "inventory": {
+      "descriptorFiles": 182,
+      "descriptorFailures": 0,
+      "requestNamedMessages": 106,
+      "registeredServices": 25,
+      "requestNamedMessagesWithDeclaredHandler": 47,
+      "requestNamedMessagesWithoutDeclaredHandler": 59,
+      "caveat": "This is not feature coverage: generic envelopes, dormant bundled APIs, disabled legacy features and admin interfaces are included; direct messenger reachability was checked separately."
+    },
+    "domainContractTests": {
+      "tests": 4,
+      "passed": 4,
+      "skipped": 0,
+      "core": [
+        18,
+        24
+      ],
+      "gate": [
+        17,
+        28
+      ],
+      "networknode": [
+        24,
+        38
+      ],
+      "storage": [
+        24,
+        42
+      ]
+    },
+    "schemaComparison": [
+      {
+        "label": "core",
+        "messagesCompared": 18,
+        "fieldsCompared": 24,
+        "mismatches": [],
+        "absentFromClient": [],
+        "clientOnlyFields": []
+      },
+      {
+        "label": "gate",
+        "messagesCompared": 17,
+        "fieldsCompared": 28,
+        "mismatches": [],
+        "absentFromClient": [],
+        "clientOnlyFields": []
+      },
+      {
+        "label": "fuel",
+        "messagesCompared": 24,
+        "fieldsCompared": 38,
+        "mismatches": [],
+        "absentFromClient": [],
+        "clientOnlyFields": []
+      },
+      {
+        "label": "storage",
+        "messagesCompared": 24,
+        "fieldsCompared": 42,
+        "mismatches": [],
+        "absentFromClient": [],
+        "clientOnlyFields": []
+      },
+      {
+        "label": "exploration",
+        "messagesCompared": 11,
+        "fieldsCompared": 28,
+        "mismatches": [],
+        "absentFromClient": [],
+        "clientOnlyFields": []
+      },
+      {
+        "label": "skillplan",
+        "messagesCompared": 36,
+        "fieldsCompared": 39,
+        "mismatches": [
+          {
+            "message": "eve_public.inventory.genericitemtype.Identifier",
+            "server": {
+              "name": "sequential",
+              "number": 1,
+              "type": "TYPE_UINT32",
+              "repeated": false,
+              "map": false
+            },
+            "client": {
+              "label": "LABEL_OPTIONAL",
+              "name": "sequential",
+              "number": 1,
+              "type": "TYPE_UINT64"
+            }
+          },
+          {
+            "message": "eve_public.skilltype.Identifier",
+            "server": {
+              "name": "sequential",
+              "number": 1,
+              "type": "TYPE_UINT32",
+              "repeated": false,
+              "map": false
+            },
+            "client": {
+              "label": "LABEL_OPTIONAL",
+              "name": "sequential",
+              "number": 1,
+              "type": "TYPE_UINT64"
+            }
+          }
+        ],
+        "absentFromClient": [],
+        "clientOnlyFields": []
+      },
+      {
+        "label": "corpSkillplan",
+        "messagesCompared": 43,
+        "fieldsCompared": 56,
+        "mismatches": [
+          {
+            "message": "eve_public.inventory.genericitemtype.Identifier",
+            "server": {
+              "name": "sequential",
+              "number": 1,
+              "type": "TYPE_UINT32",
+              "repeated": false,
+              "map": false
+            },
+            "client": {
+              "label": "LABEL_OPTIONAL",
+              "name": "sequential",
+              "number": 1,
+              "type": "TYPE_UINT64"
+            }
+          },
+          {
+            "message": "eve_public.skilltype.Identifier",
+            "server": {
+              "name": "sequential",
+              "number": 1,
+              "type": "TYPE_UINT32",
+              "repeated": false,
+              "map": false
+            },
+            "client": {
+              "label": "LABEL_OPTIONAL",
+              "name": "sequential",
+              "number": 1,
+              "type": "TYPE_UINT64"
+            }
+          }
+        ],
+        "absentFromClient": [],
+        "clientOnlyFields": []
+      },
+      {
+        "label": "gateway",
+        "messagesCompared": 24,
+        "fieldsCompared": 49,
+        "mismatches": [
+          {
+            "message": "eve_public.Notice.TargetGroup",
+            "server": {
+              "name": "user",
+              "number": 3,
+              "type": "TYPE_INT64",
+              "repeated": false,
+              "map": false
+            },
+            "client": {
+              "label": "LABEL_OPTIONAL",
+              "name": "user",
+              "number": 3,
+              "oneofIndex": 0,
+              "type": "TYPE_SINT32"
+            }
+          },
+          {
+            "message": "eve_public.Notice.TargetGroup",
+            "server": {
+              "name": "bubble_instance_uuid",
+              "number": 7,
+              "type": "TYPE_BYTES",
+              "repeated": false,
+              "map": false
+            },
+            "client": null
+          },
+          {
+            "message": "eve_public.faction.Identifier",
+            "server": {
+              "name": "sequential",
+              "number": 1,
+              "type": "TYPE_UINT32",
+              "repeated": false,
+              "map": false
+            },
+            "client": {
+              "label": "LABEL_OPTIONAL",
+              "name": "sequential",
+              "number": 1,
+              "type": "TYPE_UINT64"
+            }
+          },
+          {
+            "message": "eve_public.solarsystem.Identifier",
+            "server": {
+              "name": "sequential",
+              "number": 1,
+              "type": "TYPE_UINT32",
+              "repeated": false,
+              "map": false
+            },
+            "client": {
+              "label": "LABEL_OPTIONAL",
+              "name": "sequential",
+              "number": 1,
+              "type": "TYPE_UINT64"
+            }
+          }
+        ],
+        "absentFromClient": [
+          "eve_public.localization.cerberus.Parameter",
+          "eve_public.localization.cerberus.FormattedMessage",
+          "eve_public.color.RGB",
+          "eve_public.career.goal.api.GetDefinitionsResponse",
+          "eve_public.career.goal.api.GetDefinitionsResponse.Goal",
+          "eve_public.faction.activity.Score",
+          "eve_public.faction.activity.GetSolarSystemScoresRequest",
+          "eve_public.faction.activity.GetSolarSystemScoresResponse",
+          "eve_public.faction.activity.ScoreContributionNotice",
+          "eve_public.faction.activity.SolarSystemScoresNotice",
+          "eve_public.math.Fraction",
+          "eve_public.pirate.corruption.api.GetSystemInfoRequest",
+          "eve_public.pirate.corruption.api.GetSystemInfoResponse",
+          "eve_public.pirate.corruption.api.GetStageThresholdsRequest",
+          "eve_public.pirate.corruption.api.GetStageThresholdsResponse",
+          "eve_public.pirate.suppression.api.GetSystemInfoRequest",
+          "eve_public.pirate.suppression.api.GetSystemInfoResponse",
+          "eve_public.pirate.suppression.api.GetStageThresholdsRequest",
+          "eve_public.pirate.suppression.api.GetStageThresholdsResponse",
+          "eve_public.user.license.Identifier",
+          "eve_public.user.license.Attributes",
+          "eve_public.user.license.api.GetRequest",
+          "eve_public.user.license.api.GetResponse",
+          "eve_public.cosmetic.corporation.palette.Identifier",
+          "eve_public.cosmetic.corporation.palette.Attributes",
+          "eve_public.cosmetic.corporation.palette.api.GetRequest",
+          "eve_public.cosmetic.corporation.palette.api.GetResponse",
+          "eve_public.cosmetic.corporation.palette.api.GetOwnRequest",
+          "eve_public.cosmetic.corporation.palette.api.GetOwnResponse",
+          "eve_public.cosmetic.corporation.palette.api.SetRequest",
+          "eve_public.cosmetic.corporation.palette.api.SetResponse",
+          "eve_public.cosmetic.corporation.palette.api.CanEditRequest",
+          "eve_public.cosmetic.corporation.palette.api.CanEditResponse",
+          "eve_public.cosmetic.ship.api.GetRequest",
+          "eve_public.cosmetic.ship.api.GetResponse",
+          "eve_public.cosmetic.ship.api.GetAllInBubbleRequest",
+          "eve_public.cosmetic.ship.api.GetAllInBubbleResponse",
+          "eve_public.cosmetic.ship.api.SetNotice",
+          "eve_public.cosmetic.ship.api.SetAllInBubbleNotice",
+          "eve_public.cosmetic.ship.State",
+          "eve_public.cosmetic.ship.State.Skin",
+          "eve_public.cosmetic.ship.State.Skin.FirstParty",
+          "eve_public.cosmetic.ship.State.Skin.ThirdParty",
+          "eve_public.cosmetic.ship.skin.firstparty.Identifier",
+          "eve_public.cosmetic.ship.skin.thirdparty.Identifier",
+          "eve_public.plex.Currency",
+          "eve_public.plex.vault.transaction.Identifier",
+          "eve_public.plex.vault.transaction.Attributes",
+          "eve_public.plex.vault.transaction.invoice.Identifier",
+          "eve_public.plex.vault.transaction.invoice.Attributes",
+          "eve_public.plex.vault.transaction.api.GetAllLoggedForUserRequest",
+          "eve_public.plex.vault.transaction.api.GetAllLoggedForUserResponse",
+          "eve_public.plex.vault.transaction.api.GetLogRequest",
+          "eve_public.plex.vault.transaction.api.GetLogResponse",
+          "eve_public.plex.vault.transaction.api.GetLogResponse.Invoice",
+          "eve_public.plex.vault.transaction.api.GetStatisticsRequest",
+          "eve_public.plex.vault.transaction.api.GetStatisticsResponse",
+          "eve_public.plex.vault.transaction.api.GetStatisticsResponse.Entry",
+          "eve_public.plex.vault.api.BalanceRequest",
+          "eve_public.plex.vault.api.BalanceResponse",
+          "eve_public.plex.vault.api.BalanceChangedNotice"
+        ],
+        "clientOnlyFields": [
+          {
+            "message": "eve_public.Request",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "trace_context",
+              "number": 7,
+              "type": "TYPE_MESSAGE",
+              "typeName": ".eve_public.tracecontext.TraceContext"
+            }
+          },
+          {
+            "message": "eve_public.Response",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "trace_context",
+              "number": 9,
+              "type": "TYPE_MESSAGE",
+              "typeName": ".eve_public.tracecontext.TraceContext"
+            }
+          },
+          {
+            "message": "eve_public.Notice",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "trace_context",
+              "number": 7,
+              "type": "TYPE_MESSAGE",
+              "typeName": ".eve_public.tracecontext.TraceContext"
+            }
+          },
+          {
+            "message": "eve_public.AuthoritativeContext",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "received",
+              "number": 1,
+              "type": "TYPE_MESSAGE",
+              "typeName": ".google.protobuf.Timestamp"
+            }
+          },
+          {
+            "message": "eve_public.AuthoritativeContext",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "ip_address",
+              "number": 2,
+              "type": "TYPE_MESSAGE",
+              "typeName": ".eve_public.IPAddress"
+            }
+          },
+          {
+            "message": "eve_public.AuthoritativeContext",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "tenant",
+              "number": 3,
+              "type": "TYPE_STRING"
+            }
+          },
+          {
+            "message": "eve_public.AuthoritativeContext",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "no_authenticated_user",
+              "number": 4,
+              "oneofIndex": 0,
+              "type": "TYPE_BOOL"
+            }
+          },
+          {
+            "message": "eve_public.AuthoritativeContext",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "authenticated_user",
+              "number": 5,
+              "oneofIndex": 0,
+              "type": "TYPE_MESSAGE",
+              "typeName": ".eve_public.user.Identifier"
+            }
+          },
+          {
+            "message": "eve_public.AuthoritativeContext",
+            "field": {
+              "deprecated": true,
+              "label": "LABEL_OPTIONAL",
+              "name": "no_active_character",
+              "number": 6,
+              "oneofIndex": 1,
+              "type": "TYPE_BOOL"
+            }
+          },
+          {
+            "message": "eve_public.AuthoritativeContext",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "gateway_instance_uuid",
+              "number": 8,
+              "type": "TYPE_BYTES"
+            }
+          },
+          {
+            "message": "eve_public.AuthoritativeContext",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "no_active_identity",
+              "number": 9,
+              "oneofIndex": 2,
+              "type": "TYPE_BOOL"
+            }
+          },
+          {
+            "message": "eve_public.ActiveIdentity",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "corporation",
+              "number": 2,
+              "type": "TYPE_MESSAGE",
+              "typeName": ".eve_public.corporation.Identifier"
+            }
+          },
+          {
+            "message": "eve_public.ActiveIdentity",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "roles",
+              "number": 3,
+              "type": "TYPE_MESSAGE",
+              "typeName": ".eve_public.corporation.role.Collection"
+            }
+          },
+          {
+            "message": "eve_public.career.goal.Attributes",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "name",
+              "number": 1,
+              "type": "TYPE_MESSAGE",
+              "typeName": ".eve_public.localization.message.Identifier"
+            }
+          },
+          {
+            "message": "eve_public.career.goal.Attributes",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "description",
+              "number": 2,
+              "type": "TYPE_MESSAGE",
+              "typeName": ".eve_public.localization.message.Identifier"
+            }
+          },
+          {
+            "message": "eve_public.career.goal.Attributes",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "progress",
+              "number": 3,
+              "type": "TYPE_UINT32"
+            }
+          },
+          {
+            "message": "eve_public.career.goal.Attributes",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "reward",
+              "number": 5,
+              "type": "TYPE_MESSAGE",
+              "typeName": ".eve_public.fulfillment.offer.Identifier"
+            }
+          },
+          {
+            "message": "eve_public.career.goal.Attributes",
+            "field": {
+              "label": "LABEL_REPEATED",
+              "name": "ui_annotations",
+              "number": 6,
+              "type": "TYPE_MESSAGE",
+              "typeName": ".eve_public.ui.Annotation"
+            }
+          },
+          {
+            "message": "eve_public.career.goal.Attributes",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "completed",
+              "number": 8,
+              "type": "TYPE_BOOL"
+            }
+          },
+          {
+            "message": "eve_public.career.goal.Attributes",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "claimed",
+              "number": 11,
+              "type": "TYPE_BOOL"
+            }
+          },
+          {
+            "message": "eve_public.skill.plan.Attributes",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "name",
+              "number": 1,
+              "type": "TYPE_STRING"
+            }
+          },
+          {
+            "message": "eve_public.skill.plan.Attributes",
+            "field": {
+              "label": "LABEL_REPEATED",
+              "name": "skill_requirements",
+              "number": 2,
+              "type": "TYPE_MESSAGE",
+              "typeName": ".eve_public.skill.plan.SkillRequirement"
+            }
+          },
+          {
+            "message": "eve_public.skill.plan.Attributes",
+            "field": {
+              "label": "LABEL_OPTIONAL",
+              "name": "description",
+              "number": 3,
+              "type": "TYPE_STRING"
+            }
+          }
+        ]
+      },
+      {
+        "label": "industryNotices",
+        "messagesCompared": 7,
+        "fieldsCompared": 13,
+        "mismatches": [],
+        "absentFromClient": [],
+        "clientOnlyFields": []
+      }
+    ],
+    "findings": [
+      {
+        "id": "GW1",
+        "priority": "high",
+        "status": "wire-conflict",
+        "feature": "User-targeted notices",
+        "target": "eve_public.Notice.TargetGroup.user field3:sint32",
+        "server": "server/src/_secondary/express/publicGatewayLocal.ts:168 int64",
+        "proof": {
+          "sourceMember": "eveProto/generated/eve_public/public_pb2.pyc",
+          "sourcePath": "server/src/_secondary/express/publicGatewayLocal.ts",
+          "sourceLine": 168,
+          "user": 42,
+          "serverEncodedHex": "182a",
+          "targetEncodedHex": "1854",
+          "targetDecodesServerAs": 21,
+          "envelopes": [
+            {
+              "name": "eve_public.Request",
+              "serverFields": 6,
+              "targetFields": 7,
+              "clientOnly": [
+                {
+                  "name": "trace_context",
+                  "number": 7,
+                  "type": "TYPE_MESSAGE"
+                }
+              ],
+              "conflicts": []
+            },
+            {
+              "name": "eve_public.Response",
+              "serverFields": 8,
+              "targetFields": 9,
+              "clientOnly": [
+                {
+                  "name": "trace_context",
+                  "number": 9,
+                  "type": "TYPE_MESSAGE"
+                }
+              ],
+              "conflicts": []
+            },
+            {
+              "name": "eve_public.Notice",
+              "serverFields": 6,
+              "targetFields": 7,
+              "clientOnly": [
+                {
+                  "name": "trace_context",
+                  "number": 7,
+                  "type": "TYPE_MESSAGE"
+                }
+              ],
+              "conflicts": []
+            },
+            {
+              "name": "eve_public.Notice.TargetGroup",
+              "serverFields": 7,
+              "targetFields": 6,
+              "clientOnly": [],
+              "conflicts": [
+                {
+                  "server": {
+                    "name": "user",
+                    "number": 3,
+                    "type": "TYPE_INT64"
+                  },
+                  "target": {
+                    "label": "LABEL_OPTIONAL",
+                    "name": "user",
+                    "number": 3,
+                    "oneofIndex": 0,
+                    "type": "TYPE_SINT32"
+                  }
+                },
+                {
+                  "server": {
+                    "name": "bubble_instance_uuid",
+                    "number": 7,
+                    "type": "TYPE_BYTES"
+                  },
+                  "target": null
+                }
+              ]
+            },
+            {
+              "name": "eve_public.AuthoritativeContext",
+              "serverFields": 2,
+              "targetFields": 10,
+              "clientOnly": [
+                {
+                  "name": "received",
+                  "number": 1,
+                  "type": "TYPE_MESSAGE"
+                },
+                {
+                  "name": "ip_address",
+                  "number": 2,
+                  "type": "TYPE_MESSAGE"
+                },
+                {
+                  "name": "tenant",
+                  "number": 3,
+                  "type": "TYPE_STRING"
+                },
+                {
+                  "name": "no_authenticated_user",
+                  "number": 4,
+                  "type": "TYPE_BOOL"
+                },
+                {
+                  "name": "authenticated_user",
+                  "number": 5,
+                  "type": "TYPE_MESSAGE"
+                },
+                {
+                  "name": "no_active_character",
+                  "number": 6,
+                  "type": "TYPE_BOOL"
+                },
+                {
+                  "name": "gateway_instance_uuid",
+                  "number": 8,
+                  "type": "TYPE_BYTES"
+                },
+                {
+                  "name": "no_active_identity",
+                  "number": 9,
+                  "type": "TYPE_BOOL"
+                }
+              ],
+              "conflicts": []
+            },
+            {
+              "name": "eve_public.ActiveIdentity",
+              "serverFields": 1,
+              "targetFields": 3,
+              "clientOnly": [
+                {
+                  "name": "corporation",
+                  "number": 2,
+                  "type": "TYPE_MESSAGE"
+                },
+                {
+                  "name": "roles",
+                  "number": 3,
+                  "type": "TYPE_MESSAGE"
+                }
+              ],
+              "conflicts": []
+            }
+          ]
+        },
+        "requiredWork": "Use target envelope descriptors and test complete envelope/identity/notice routing. Unknown bubble extension is ignored; optional trace/context fields are not by themselves breaking."
+      },
+      {
+        "id": "GW2",
+        "priority": "high",
+        "status": "missing-client-reachable",
+        "feature": "Relay trader lens pricing and sponsored purchase",
+        "target": [
+          {
+            "member": "frontier/smart_assemblies/client/trader/relay_messenger.pyc",
+            "symbol": "RelayMessenger.prepare_buy_lens",
+            "line": 57
+          },
+          {
+            "member": "frontier/smart_assemblies/client/trader/relay_messenger.pyc",
+            "symbol": "RelayMessenger.execute_buy_lens",
+            "line": 79
+          },
+          {
+            "member": "frontier/smart_assemblies/client/trader/relay_messenger.pyc",
+            "symbol": "RelayMessenger.get_lens_price",
+            "line": 106
+          }
+        ],
+        "requests": [
+          "eve_public.assembly.relay.lens.api.PrepareBuyRequest",
+          "eve_public.assembly.relay.lens.api.ExecuteBuyRequest",
+          "eve_public.assembly.relay.lens.api.GetPriceRequest"
+        ],
+        "server": "Absent from all25registered services; unhandled request returns404 at publicGatewayLocal.ts2236",
+        "requiredWork": "Implement lens price and signed prepare/execute purchase including prepared transaction BCSpayload, lens inventorycredit and transaction hash, eligibility/failure semantics."
+      },
+      {
+        "id": "GW3",
+        "priority": "high",
+        "status": "partial-client-reachable",
+        "feature": "Wallet/token/LUX exchange",
+        "target": {
+          "member": "frontier/web3/client/currency/proto_messenger.pyc",
+          "symbols": {
+            "exchange_lux_to_token": 38,
+            "prepare_token_to_lux": 45,
+            "execute_token_to_lux": 52
+          }
+        },
+        "server": [
+          "frontierTokenExchangeGatewayService.ts22 handles only GetExchangeRate; lines57-60 fixed1:1",
+          "frontierWalletGatewayService.ts46-52 discards decoded walletaddress; lines62-84 localcharacterwallet.balance taggedEVE"
+        ],
+        "requiredWork": "Choose canonical local/chain currency authority, implement exchange mutation lifecycle, wallet binding, balances/notices and failure/retry semantics; schema agreement is not semanticparity."
+      },
+      {
+        "id": "GW4",
+        "priority": "medium",
+        "status": "missing-native-path-policy-dependent",
+        "feature": "Native ZKLogin signer and wallet reporting",
+        "target": {
+          "member": "frontier/web3/client/signer/proto_messenger.pyc",
+          "symbols": {
+            "get_token": 60,
+            "login": 77,
+            "proof": 99,
+            "report_wallet_address": 139
+          }
+        },
+        "requests": [
+          "eve_public.auth.zklogin.token.JWTTokenRequest",
+          "eve_public.auth.zklogin.api.CallEnokiZKLoginRequest",
+          "eve_public.auth.zklogin.api.CallEnokiZKProofRequest"
+        ],
+        "server": "No registered handlers. Events.Publish at publicGatewayLocal.ts2364 acknowledges and discards events including wallet.Reported. Existing localSui signer substitutions may intentionally replace this path.",
+        "requiredWork": "Verify3640684local-signing adapter rather than require official externalauth; if nativepath retained implement scopedidentity,verifiedwalletreporting and proof lifecycle. Distinguish telemetry from gameplayevents."
+      },
+      {
+        "id": "GW5",
+        "priority": "medium",
+        "status": "missing-conditional",
+        "feature": "Cycle Hub achievement and broadcast-upload notices",
+        "target": {
+          "member": "frontier/cycle_hub/client/message_bus/achievement_messenger.pyc",
+          "symbol": "AchievementMessenger.__init__",
+          "line": 12,
+          "notices": [
+            "eve_public.achievement.CompletedNotice",
+            "eve_public.broadcast.api.UploadSucceededNotice",
+            "eve_public.broadcast.api.UploadFailedNotice"
+          ]
+        },
+        "server": "No matching notice producers found; existing achievementTrackerMgr is different legacy contract. CycleHubService is global-config gated.",
+        "requiredWork": "Decide enablement; wire authoritative progression/upload outcomes and matching notices or explicitly disable feature untilsupported."
+      },
+      {
+        "id": "GW6",
+        "priority": "low-conditional",
+        "status": "schema-width-gap",
+        "feature": "Shared identifier widths in optional legacy skillplan and main gateway roots",
+        "target": "genericitemtype.Identifier and skilltype.Identifier uint64; main faction/solarsystem.Identifier uint64",
+        "server": "skillPlanProto.ts/corpSkillPlanProto.ts useuint32; publicGatewayLocal.ts mainroot usesuint32 for faction/solarsystem",
+        "requiredWork": "Align exact fieldwidths and boundarytests. Current legacyworld smallIDs do not demonstrate truncation; skillplan UI may bedisabled bytargetfeatureflags."
+      },
+      {
+        "id": "GW7",
+        "priority": "optional-admin",
+        "status": "missing-client-reachable-admin",
+        "feature": "Exploration admin RevealAll/ResetKnown",
+        "target": "frontier/crdata/client/exploration_messenger.pyc admin_reveal_all/admin_reset_known",
+        "requests": [
+          "eve_public.exploration.api.admin.RevealAllRequest",
+          "eve_public.exploration.api.admin.ResetKnownRequest"
+        ],
+        "server": "Only publicGetKnownUniverse/GetSystemDetail areimplemented",
+        "requiredWork": "Keepadminunsupportedunless explicitlyselected; ifimplemented require privilegedauth and state/revision/cache invalidation."
+      }
+    ],
+    "files": [
+      "gateway-contracts/frontier-contract-index.json",
+      "gateway-contracts/frontier-public-protos.json",
+      "gateway-surface.json",
+      "gateway-registry.json",
+      "gateway-schema-comparison.json",
+      "gateway-envelope-proof.json"
+    ]
+  },
+  "gatewayEnvelopeCounterexample": {
+    "sourceMember": "eveProto/generated/eve_public/public_pb2.pyc",
+    "sourcePath": "server/src/_secondary/express/publicGatewayLocal.ts",
+    "sourceLine": 168,
+    "user": 42,
+    "serverEncodedHex": "182a",
+    "targetEncodedHex": "1854",
+    "targetDecodesServerAs": 21,
+    "envelopes": [
+      {
+        "name": "eve_public.Request",
+        "serverFields": 6,
+        "targetFields": 7,
+        "clientOnly": [
+          {
+            "name": "trace_context",
+            "number": 7,
+            "type": "TYPE_MESSAGE"
+          }
+        ],
+        "conflicts": []
+      },
+      {
+        "name": "eve_public.Response",
+        "serverFields": 8,
+        "targetFields": 9,
+        "clientOnly": [
+          {
+            "name": "trace_context",
+            "number": 9,
+            "type": "TYPE_MESSAGE"
+          }
+        ],
+        "conflicts": []
+      },
+      {
+        "name": "eve_public.Notice",
+        "serverFields": 6,
+        "targetFields": 7,
+        "clientOnly": [
+          {
+            "name": "trace_context",
+            "number": 7,
+            "type": "TYPE_MESSAGE"
+          }
+        ],
+        "conflicts": []
+      },
+      {
+        "name": "eve_public.Notice.TargetGroup",
+        "serverFields": 7,
+        "targetFields": 6,
+        "clientOnly": [],
+        "conflicts": [
+          {
+            "server": {
+              "name": "user",
+              "number": 3,
+              "type": "TYPE_INT64"
+            },
+            "target": {
+              "label": "LABEL_OPTIONAL",
+              "name": "user",
+              "number": 3,
+              "oneofIndex": 0,
+              "type": "TYPE_SINT32"
+            }
+          },
+          {
+            "server": {
+              "name": "bubble_instance_uuid",
+              "number": 7,
+              "type": "TYPE_BYTES"
+            },
+            "target": null
+          }
+        ]
+      },
+      {
+        "name": "eve_public.AuthoritativeContext",
+        "serverFields": 2,
+        "targetFields": 10,
+        "clientOnly": [
+          {
+            "name": "received",
+            "number": 1,
+            "type": "TYPE_MESSAGE"
+          },
+          {
+            "name": "ip_address",
+            "number": 2,
+            "type": "TYPE_MESSAGE"
+          },
+          {
+            "name": "tenant",
+            "number": 3,
+            "type": "TYPE_STRING"
+          },
+          {
+            "name": "no_authenticated_user",
+            "number": 4,
+            "type": "TYPE_BOOL"
+          },
+          {
+            "name": "authenticated_user",
+            "number": 5,
+            "type": "TYPE_MESSAGE"
+          },
+          {
+            "name": "no_active_character",
+            "number": 6,
+            "type": "TYPE_BOOL"
+          },
+          {
+            "name": "gateway_instance_uuid",
+            "number": 8,
+            "type": "TYPE_BYTES"
+          },
+          {
+            "name": "no_active_identity",
+            "number": 9,
+            "type": "TYPE_BOOL"
+          }
+        ],
+        "conflicts": []
+      },
+      {
+        "name": "eve_public.ActiveIdentity",
+        "serverFields": 1,
+        "targetFields": 3,
+        "clientOnly": [
+          {
+            "name": "corporation",
+            "number": 2,
+            "type": "TYPE_MESSAGE"
+          },
+          {
+            "name": "roles",
+            "number": 3,
+            "type": "TYPE_MESSAGE"
+          }
+        ],
+        "conflicts": []
+      }
+    ]
+  },
+  "servicesAudit": {
+    "build": 3640684,
+    "archiveSha256": "2f43f4b8d34632b5d5fdc7b58af93364f606bd9ba67fcada588565ee0628122c",
+    "scope": "Static bytecode and TypeScript audit only; no live activation, gameplay or database validation. Client code line values are embedded co_firstlineno. Absence confirmed by exact identifier/method searches plus recursive service registration inspection.",
+    "findings": [
+      {
+        "id": "S1",
+        "feature": "Digital Chemistry recipes and jobs",
+        "status": "absent",
+        "target": [
+          {
+            "member": "frontier/digitalchemistry/client/recipe_svc.pyc",
+            "symbols": [
+              "RecipeService.Run:49",
+              "get_recipes:85",
+              "preview:96",
+              "start:121",
+              "get_jobs:147",
+              "discontinue:159"
+            ],
+            "contract": "RemoteSvc digitalChemistry; list_recipes/preview/start/get_jobs/discontinue; OnRecipeJobCompleted notice"
+          },
+          {
+            "member": "frontier/digitalchemistry/common/model.pyc",
+            "symbols": [
+              "PlanRequest:67",
+              "RecipeJob:144"
+            ],
+            "contract": "Typed input properties/traits, requested multiplier, output ranges, frozen job plan, destination, minted item IDs"
+          }
+        ],
+        "server": "No digitalChemistry service identifier or methods in server TypeScript; existing industry service handles blueprints/production, not this recipe contract. Services are recursively registered by server/index.ts:156-184.",
+        "required": "Recipe catalog/type properties and planner, preview authorization, input consumption, timed jobs/discontinue, output delivery and completion notice/persistence."
+      },
+      {
+        "id": "S2",
+        "feature": "Magnetic docking points with cargo access and port refueling",
+        "status": "absent",
+        "target": [
+          {
+            "member": "frontier/docking_point/client/docking_point_svc.pyc",
+            "symbols": [
+              "undock:179",
+              "get_capabilities:247",
+              "_manual_dock_to:425",
+              "_restore_dock_from_server:1029"
+            ],
+            "contract": "RemoteSvc dockingPointService.undock/get_docking_capabilities/manual_dock/get_docked_point; OnDockingSequenceStarted/Failed, OnShipSettlingAtPoint, OnShipDockedToPoint, OnShipUndockedFromPoint"
+          },
+          {
+            "member": "frontier/docking_point/client/refuel_pane.pyc",
+            "symbols": [
+              "_PortFuelIntegration._handle_add_fuel:90"
+            ],
+            "contract": "dockingPointService.refuel_from_port"
+          },
+          {
+            "member": "frontier/hud/primary_action.pyc",
+            "symbols": [
+              "ActionResolver._resolve_docking_point_dock:523"
+            ],
+            "contract": "Normal primary action path uses dockingPointSvc"
+          }
+        ],
+        "server": "No dockingPointService string/registration in server TypeScript. Existing server/src/services/frontier/berthingSvcService.ts:48 registers berthingSvc and SmartHangar berth contracts; not equivalent.",
+        "required": "Capabilities, dock approach/settling/cancellation/undock, movement synchronization, cargo/refuel eligibility and persisted resync."
+      },
+      {
+        "id": "S3",
+        "feature": "Frontier inherited/acquired skills complexity and vault",
+        "status": "absent",
+        "target": [
+          {
+            "member": "frontier/skills/client/service.pyc",
+            "symbols": [
+              "SkillsService.skills_manager:39",
+              "refresh:52",
+              "refresh_vault:82",
+              "OnSkillsUpdated:100",
+              "OnSessionChanged:106"
+            ],
+            "contract": "skillsMgr.get_complexity_split/get_vault_complexity; inherited/acquired maps; OnSkillsUpdated and vault cache invalidation"
+          },
+          {
+            "member": "frontier/skills/client/components/skills_panel.pyc",
+            "symbols": [
+              "SkillsVaultPanel.__init__:221",
+              "SkillsPanel.__init__:552"
+            ],
+            "contract": "User character panels consume this service"
+          }
+        ],
+        "server": "No skillsMgr/get_complexity_split/get_vault_complexity matches in server TypeScript. server/src/services/skills/skillMgrService.ts:154 registers singular skillMgr for traditional skill queue/skillbook model.",
+        "required": "Complexity catalog, inherited/acquired and vault state, updates and persistence tied to character/shell/memory progression."
+      },
+      {
+        "id": "S4",
+        "feature": "Lagrange occupancy claims and ownership queries",
+        "status": "absent-contract-activation-unverified",
+        "target": [
+          {
+            "member": "frontier/lagrange_occupancy/client/lagrange_occupancy_svc.pyc",
+            "symbols": [
+              "LagrangeOccupancyService.__init__:27",
+              "add_occupant:37",
+              "remove_occupant:41",
+              "get_occupant:45",
+              "get_all_occupants_for_solar_system:61",
+              "OnLagrangePointClaimed:79",
+              "OnLagrangePointUnclaimed:87"
+            ],
+            "contract": "lagrangeOccupancyMgr add/remove/query/is_occupied/is_occupied_by plus owner/type/system/planet filters; claim/unclaim notifications"
+          }
+        ],
+        "server": "No lagrangeOccupancyMgr/lagrangeOccupancy matches in server TypeScript. Exploration data has static Lagrange geometry only.",
+        "required": "Establish feature activation/consumer path, claim authority, collisions and ownership state, notifications/cache invalidation and persistence. Do not equate static exported points with occupancy."
+      },
+      {
+        "id": "S5",
+        "feature": "Memories, ascension, crowns and shell activation",
+        "status": "partial-explicit-stub/refusal",
+        "target": [
+          {
+            "member": "experience/client/service.pyc",
+            "symbols": [
+              "get_character_progression:87",
+              "get_memory_data_from_shell:97",
+              "get_memory_data_from_crown:111",
+              "get_memory_data_from_character:118",
+              "get_ascension_choices:163",
+              "ascend:166",
+              "implant_crown:169"
+            ],
+            "contract": "Experience/MemoryOwnerType lifecycle, memory cache notices"
+          },
+          {
+            "member": "frontier/shell/client/service.pyc",
+            "symbols": [
+              "create_crown:86",
+              "implant_crown:89",
+              "create_and_activate_shell:131",
+              "activate_shell:135"
+            ],
+            "contract": "shellManager crown/shell lifecycle"
+          }
+        ],
+        "server": "server/src/services/frontier/experienceService.ts:26-58 builds zero XP and empty memories; :160-192 read handlers return bootstrap/empty; :195-204 and :225-226 memory/ascension/crown mutations reject. shellManagerService.ts:273 returns null last crown time; :341-350 crown mutations reject; :401-406 create/activate shell reject.",
+        "required": "Persistent memory and ascension semantics, crown cooldown/create/equip/delete and shell switching; retain implemented basic shell/raiment/implant equipment behavior."
+      },
+      {
+        "id": "S6",
+        "feature": "Medical kits, status-effect remedies and medical traits",
+        "status": "partial-explicit-refusal",
+        "target": [
+          {
+            "member": "frontier/shell/client/service.pyc",
+            "symbols": [
+              "get_medical_trait_shell_points:110",
+              "clear_medical_trait_implants:113",
+              "use_medical_kit:119",
+              "use_status_effect_remedy:122"
+            ],
+            "contract": "shellManager medical trait and consumable actions"
+          }
+        ],
+        "server": "shellManagerService.ts:257 exposes vitality snapshot, :269 empty trait breakdown, :377-390 rejects clear traits/medical kit/status remedy; statusEffectMgrService.ts:16/30 advertises has_medical_traits false.",
+        "required": "Consume validated items, apply healing/remedy/traits and publish state; distinguish from already implemented environmental damage/status runtime."
+      },
+      {
+        "id": "S7",
+        "feature": "Feral data sale and relay trading",
+        "status": "absent-sale-contract",
+        "target": [
+          {
+            "member": "frontier/smart_assemblies/client/trader/controller.pyc",
+            "symbols": [
+              "FeralNetworkController.feral_network:56",
+              "sell_feral_data:136",
+              "get_feral_data_price:171",
+              "make_transaction:185"
+            ],
+            "contract": "RemoteSvc feralnetwork.sell_feral_data; checks relay cargo and balances; sibling relay lens buy uses gateway"
+          }
+        ],
+        "server": "No feralnetwork/sell_feral_data in server TypeScript. Existing inventory/industry/smart assembly services do not implement this trade. Gateway audit separately owns lens prepare/execute/price.",
+        "required": "Validated cargo sale, price and balance accounting, owner/access/range semantics and notifications; pair with relay lens purchase work."
+      },
+      {
+        "id": "S8",
+        "feature": "On-chain smart killmail reporting",
+        "status": "absent-conditional-wallet-feature",
+        "target": [
+          {
+            "member": "frontier/web3/client/kill_mail_service.pyc",
+            "symbols": [
+              "KillMailService.Run:22",
+              "is_enabled:27",
+              "report_kill:30",
+              "kill_already_reported:33"
+            ],
+            "contract": "RemoteSvc smartKillMailService.report_kill/kill_already_reported; enabled when wallet address exists"
+          }
+        ],
+        "server": "No smartKillMailService, Handle_report_kill or Handle_kill_already_reported in server TypeScript. Conventional ship destruction/killmail data does not fulfill smart reporting.",
+        "required": "Define Sui report authority, transaction/idempotency and read state; keep conditional until wallet/chain profile accepted."
+      },
+      {
+        "id": "S9",
+        "feature": "Cycle Hub founder access bridge",
+        "status": "absent-conditional-cycle-hub-feature",
+        "target": [
+          {
+            "member": "frontier/cycle_hub/client/founder_access_provider.pyc",
+            "symbols": [
+              "FounderAccessProvider._is_founder:24"
+            ],
+            "contract": "Embedded browser extension calls cycleService.is_founder"
+          },
+          {
+            "member": "frontier/cycle_hub/client/service.pyc",
+            "symbols": [
+              "CycleHubService.is_enabled:47",
+              "_get_enabled:63"
+            ],
+            "contract": "Global-config enabled cycle hub; achievements/broadcast handled by separate gateway audit"
+          }
+        ],
+        "server": "No cycleService or is_founder in server TypeScript.",
+        "required": "Explicit local founder/access eligibility or documented unsupported feature; integrate with cycle hub objective/broadcast gateway work."
+      },
+      {
+        "id": "S10",
+        "feature": "Assembly location publication",
+        "status": "absent-method-on-existing-service",
+        "target": [
+          {
+            "member": "frontier/smart_assemblies/client/smart_assembly_svc.pyc",
+            "symbols": [
+              "SmartAssemblySvc.publish_location:362"
+            ],
+            "contract": "smartAssemblyService.publish_location"
+          }
+        ],
+        "server": "smartAssemblyService.ts has full existing handlers (set_online:687,set_offline:695,get_available_systems:901,link_gates:956) but no Handle_publish_location/publish_location in server TypeScript.",
+        "required": "Determine publication/discovery contract, visibility/permission and lifecycle; avoid treating GetMyAssemblies as location publication."
+      },
+      {
+        "id": "S11",
+        "feature": "Claimed construction packs",
+        "status": "partial-empty-bootstrap",
+        "target": [
+          {
+            "member": "frontier/base_building/client/build/service.pyc",
+            "symbols": [
+              "BuildingService.get_claimed_packs:48"
+            ],
+            "contract": "deploymentMgr.get_claimed_packs"
+          }
+        ],
+        "server": "deploymentMgrService.ts:36-38 always returns empty list; build_deployable:40 and cancel_construction:68 have real runtimes.",
+        "required": "Clarify whether selected-world pack claims are needed; add persisted entitlement/claim data if enabled, without marking deployment itself missing."
+      }
+    ],
+    "supportedBaseline": [
+      {
+        "feature": "Assembly deployment/cancel, inventory, production and Creation-hosted industry",
+        "server": [
+          "server/src/services/frontier/deploymentMgrService.ts:40",
+          "server/src/services/frontier/industryService.ts:219-317",
+          "server/src/services/frontier/creationIndustryAbilityHandlers.ts:243-322"
+        ],
+        "notes": "Eight Creation industry abilities incl withdraw-to-jettison have real handlers. Do not mark these absent; target parity requires schemas/catalogs/live checks."
+      },
+      {
+        "feature": "SmartHangar berthing",
+        "server": [
+          "server/src/services/frontier/berthingSvcService.ts:48-93"
+        ],
+        "notes": "Real berth/get_contract/undock/eject actions distinct from new magnetic docking points."
+      },
+      {
+        "feature": "Clone location selection/death report and starter groups",
+        "server": [
+          "server/src/services/frontier/locationSelectionMgrService.ts:738-768",
+          "server/src/services/map/mapService.ts:643-668"
+        ],
+        "notes": "Real selection/spawn/death handling; starter groups presently one station-derived system, not proof of all target group topology."
+      },
+      {
+        "feature": "Cairn visibility/IFF and basic shell equipment",
+        "server": [
+          "server/src/services/frontier/cairnService.ts:85-140",
+          "server/src/services/frontier/iffMapService.ts:93",
+          "server/src/services/frontier/shellManagerService.ts:287-327",
+          "server/src/services/frontier/shellManagerService.ts:353-367"
+        ],
+        "notes": "Implemented local behavior; target data compatibility not live accepted."
+      },
+      {
+        "feature": "Smart assembly online/offline, gate/system jump and linking",
+        "server": [
+          "server/src/services/frontier/smartAssemblyService.ts:687-699",
+          "server/src/services/frontier/smartAssemblyService.ts:901-1054"
+        ],
+        "notes": "Real implemented APIs; review target schema/chain transactions rather than marking whole category absent."
+      }
+    ],
+    "devOnlyOrUnproven": [
+      "compositeAsteroidMgr calls observed in composite_asteroid_tool QA catalog",
+      "landscapeQABridge in landscape tester",
+      "modularShipsService in modular_ships_prototype",
+      "movementAuthoringService in authoring_tool; do not promote to mandatory player feature without enablement evidence"
+    ]
+  },
+  "spaceGameplaySymbols": {
+    "source": "/home/ludus/.var/app/com.usebottles.bottles/data/bottles/bottles/ef-devstuff1/drive_c/CCP/EVE Frontier/stillness/code.ccp",
+    "sha256": "2f43f4b8d34632b5d5fdc7b58af93364f606bd9ba67fcada588565ee0628122c",
+    "method": "Read-only marshal/disassembly of actual target Python3.12 archive; compared current server TypeScript without game/native imports or runtime launch",
+    "symbols": [
+      {
+        "feature": "composite-asteroids",
+        "module": "spacecomponents/client/components/compositeasteroid.pyc",
+        "symbol": "<module>._fetch_recipe",
+        "line": 52,
+        "names": [
+          "_recipe_by_item",
+          "sm",
+          "RemoteSvc",
+          "GetCompositeRecipe",
+          "Exception",
+          "logger",
+          "warning"
+        ],
+        "strings": [
+          "compositeAsteroidMgr",
+          "composite asteroid: recipe fetch for item %s failed"
+        ],
+        "literals": [
+          true
+        ]
+      },
+      {
+        "feature": "composite-asteroids",
+        "module": "spacecomponents/client/components/compositeasteroid.pyc",
+        "symbol": "<module>.CompositeAsteroid.OnCompositeVoxelMined",
+        "line": 1080,
+        "names": [
+          "_item_id",
+          "remove_voxel",
+          "_vol_tex",
+          "_vol_idx2cell",
+          "_lod_dirty",
+          "_carve_volume",
+          "_mesh_data",
+          "_remesh_region",
+          "_cell_by_index",
+          "pop",
+          "_occ",
+          "discard",
+          "_index_by_cell",
+          "_child_by_grid_index",
+          "_drop_child",
+          "_container",
+          "_NEIGHBORS",
+          "get",
+          "get_grid",
+          "_make_child",
+          "objects",
+          "append"
+        ],
+        "strings": [],
+        "literals": [
+          true
+        ]
+      },
+      {
+        "feature": "composite-asteroids",
+        "module": "spacecomponents/client/components/compositeasteroid.pyc",
+        "symbol": "<module>.CompositeAsteroid.OnCompositeMinedSetChanged",
+        "line": 1121,
+        "names": [
+          "_item_id",
+          "_rebuild_visuals"
+        ],
+        "strings": [],
+        "literals": []
+      },
+      {
+        "feature": "composite-asteroids",
+        "module": "spacecomponents/client/components/compositeasteroid.pyc",
+        "symbol": "<module>.CompositeAsteroid._fetch_mined_set",
+        "line": 1127,
+        "names": [
+          "sm",
+          "RemoteSvc",
+          "GetCompositeMinedSet",
+          "_item_id",
+          "Exception",
+          "logger",
+          "warning",
+          "itemID"
+        ],
+        "strings": [
+          "compositeAsteroidMgr",
+          "composite asteroid %s: mined-set fetch failed"
+        ],
+        "literals": [
+          true
+        ]
+      },
+      {
+        "feature": "composite-asteroids",
+        "module": "spacecomponents/client/components/compositeasteroid.pyc",
+        "symbol": "<module>.CompositeAsteroid._reconcile_mined_set",
+        "line": 1151,
+        "names": [
+          "_fetch_mined_set",
+          "_vol_tex",
+          "_vol_idx2cell",
+          "replay_mined",
+          "typeID",
+          "_item_id",
+          "apply_mined_blob",
+          "get_grid",
+          "_lod_dirty",
+          "zlib",
+          "decompress",
+          "_child_by_grid_index",
+          "OnCompositeVoxelMined"
+        ],
+        "strings": [],
+        "literals": [
+          true,
+          0,
+          3,
+          1,
+          7
+        ]
+      },
+      {
+        "feature": "voxel-material-state",
+        "module": "spacecomponents/common/components/compositeasteroid.pyc",
+        "symbol": "<module>.CompositeAsteroid.__init__",
+        "line": 258,
+        "names": [
+          "super",
+          "CompositeAsteroid",
+          "__init__",
+          "archetype",
+          "dim",
+          "voxel_radius",
+          "spacing",
+          "noise",
+          "seed",
+          "_profile",
+          "_prefix",
+          "_radius_scale",
+          "_grid"
+        ],
+        "strings": [
+          "cutaway"
+        ],
+        "literals": [
+          17,
+          6.0,
+          35.0,
+          1.6,
+          1.0
+        ]
+      },
+      {
+        "feature": "voxel-material-state",
+        "module": "spacecomponents/common/components/compositeasteroid.pyc",
+        "symbol": "<module>.voxel_toughness",
+        "line": 1616,
+        "names": [
+          "_material_at",
+          "float",
+          "regolith_properties",
+          "property_of",
+          "TOUGHNESS"
+        ],
+        "strings": [],
+        "literals": [
+          0.0
+        ]
+      },
+      {
+        "feature": "voxel-material-state",
+        "module": "spacecomponents/common/components/compositeasteroid.pyc",
+        "symbol": "<module>.voxel_gate_tier",
+        "line": 1626,
+        "names": [
+          "_material_at",
+          "int",
+          "regolith_properties",
+          "property_of",
+          "GATE_TIER"
+        ],
+        "strings": [],
+        "literals": [
+          0
+        ]
+      },
+      {
+        "feature": "voxel-material-state",
+        "module": "spacecomponents/common/components/compositeasteroid.pyc",
+        "symbol": "<module>.apply_mined_blob",
+        "line": 1820,
+        "names": [
+          "zlib",
+          "decompress",
+          "enumerate",
+          "_drop_from_occupancy",
+          "_drop_from_lattice",
+          "_composition_cache",
+          "pop"
+        ],
+        "strings": [],
+        "literals": [
+          0,
+          3,
+          1,
+          7
+        ]
+      },
+      {
+        "feature": "ore-fragment-record",
+        "module": "frontier/crdata/common/objects/cr_regolith.pyc",
+        "symbol": "<module>.CRRegolith",
+        "line": 5,
+        "names": [
+          "__name__",
+          "__module__",
+          "__qualname__",
+          "__slots__",
+          "_NAME",
+          "__init__",
+          "property",
+          "oreUnits",
+          "setter",
+          "__classcell__"
+        ],
+        "strings": [
+          "CRRegolith",
+          "CR Regolith"
+        ],
+        "literals": []
+      },
+      {
+        "feature": "ore-fragment-record",
+        "module": "frontier/crdata/common/objects/cr_regolith.pyc",
+        "symbol": "<module>.CRRegolith.oreUnits",
+        "line": 24,
+        "names": [
+          "_oreUnits"
+        ],
+        "strings": [],
+        "literals": []
+      },
+      {
+        "feature": "ore-fragment-record",
+        "module": "frontier/crdata/common/objects/cr_regolith.pyc",
+        "symbol": "<module>.CRRegolith.oreUnits",
+        "line": 35,
+        "names": [
+          "isinstance",
+          "int",
+          "_oreUnits",
+          "USE_TRACEBACK",
+          "log",
+          "LogTraceback",
+          "TypeError"
+        ],
+        "strings": [
+          "Incorrect oreUnits, expected an int"
+        ],
+        "literals": []
+      },
+      {
+        "feature": "scoop-channel",
+        "module": "frontier/hud/scoop_channel.pyc",
+        "symbol": "<module>.unpack_scoop_begin_result",
+        "line": 126,
+        "names": [
+          "isinstance",
+          "tuple",
+          "list",
+          "len",
+          "int"
+        ],
+        "strings": [],
+        "literals": [
+          2,
+          0,
+          1
+        ]
+      },
+      {
+        "feature": "scoop-channel",
+        "module": "frontier/hud/scoop_channel.pyc",
+        "symbol": "<module>.ScoopChannelController.begin",
+        "line": 254,
+        "names": [
+          "_item_id",
+          "cancel",
+          "_get_ship_access",
+          "_capture_visual_pose",
+          "_frozen_pose_quat",
+          "BeginScoop",
+          "Exception",
+          "log",
+          "exception",
+          "unpack_scoop_begin_result",
+          "float",
+          "appConst",
+          "SEC",
+          "_ball_id",
+          "_generation",
+          "_pull_active",
+          "on_channel_started",
+          "on_pull_started",
+          "_freeze_pull_pose",
+          "uthread",
+          "new",
+          "_apply_overlay_when_in_range"
+        ],
+        "strings": [
+          "BeginScoop failed for item %s",
+          "Scoop progress indicator failed to start",
+          "Scoop pull tether failed to start"
+        ],
+        "literals": [
+          false,
+          1,
+          0,
+          true
+        ]
+      },
+      {
+        "feature": "scoop-channel",
+        "module": "frontier/hud/scoop_channel.pyc",
+        "symbol": "<module>.ScoopChannelController._send_cancel",
+        "line": 338,
+        "names": [
+          "_get_ship_access",
+          "CancelScoop",
+          "Exception",
+          "log",
+          "exception"
+        ],
+        "strings": [
+          "CancelScoop failed for item %s"
+        ],
+        "literals": []
+      },
+      {
+        "feature": "scoop-channel",
+        "module": "frontier/hud/scoop_channel.pyc",
+        "symbol": "<module>.ScoopChannelController._wait_out_scoop_pull",
+        "line": 422,
+        "names": [
+          "blue",
+          "os",
+          "GetSimTime",
+          "appConst",
+          "SEC",
+          "_generation",
+          "_freeze_pull_pose",
+          "_ensure_dissolve_overlay",
+          "_distance_to_ship",
+          "scoopTractorCloseRange",
+          "_settle_close_range_visuals",
+          "scoopTractorStopRange",
+          "_clip_sphere_factor",
+          "_hide_mesh",
+          "synchro",
+          "SleepSim",
+          "_PULL_RANGE_POLL_MS"
+        ],
+        "strings": [],
+        "literals": [
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "feature": "scoop-channel",
+        "module": "frontier/hud/scoop_channel.pyc",
+        "symbol": "<module>.ScoopChannelController._get_ship_access",
+        "line": 911,
+        "names": [
+          "sm",
+          "StartService",
+          "GetShipAccess",
+          "Exception",
+          "log",
+          "exception"
+        ],
+        "strings": [
+          "gameui",
+          "Could not get ship access for scoop channel"
+        ],
+        "literals": []
+      },
+      {
+        "feature": "navigation",
+        "module": "frontier/navigation/client/integration.pyc",
+        "symbol": "<module>.ShipNavigationIntegration._handle_pitch_rate_request",
+        "line": 645,
+        "names": [
+          "raise_if_throttled",
+          "_pitch_rate_request_throttler",
+          "translate_throttle_errors",
+          "_get_remote_park",
+          "_get_ego_ball",
+          "_command_interpolator",
+          "park",
+          "SetPitchRate",
+          "id",
+          "CmdSetPitchRate"
+        ],
+        "strings": [],
+        "literals": []
+      },
+      {
+        "feature": "navigation",
+        "module": "frontier/navigation/client/integration.pyc",
+        "symbol": "<module>.ShipNavigationIntegration._handle_roll_rate_request",
+        "line": 700,
+        "names": [
+          "raise_if_throttled",
+          "_roll_rate_request_throttler",
+          "translate_throttle_errors",
+          "_get_remote_park",
+          "_get_ego_ball",
+          "_command_interpolator",
+          "park",
+          "SetRollRate",
+          "id",
+          "CmdSetRollRate"
+        ],
+        "strings": [],
+        "literals": []
+      },
+      {
+        "feature": "navigation",
+        "module": "frontier/navigation/client/integration.pyc",
+        "symbol": "<module>.ShipNavigationIntegration._handle_brake_request",
+        "line": 712,
+        "names": [
+          "raise_if_throttled",
+          "_brake_request_throttler",
+          "translate_throttle_errors",
+          "_get_remote_park",
+          "_get_ego_ball",
+          "_command_interpolator",
+          "park",
+          "SetBrakeFraction",
+          "id",
+          "CmdSetBrakeFraction"
+        ],
+        "strings": [],
+        "literals": []
+      },
+      {
+        "feature": "navigation",
+        "module": "frontier/navigation/client/integration.pyc",
+        "symbol": "<module>.ShipNavigationIntegration._handle_heading_request",
+        "line": 724,
+        "names": [
+          "raise_if_throttled",
+          "_heading_request_throttler",
+          "translate_throttle_errors",
+          "_get_remote_park",
+          "_get_ego_ball",
+          "_command_interpolator",
+          "park",
+          "SetHeading",
+          "id",
+          "CmdSetHeading"
+        ],
+        "strings": [],
+        "literals": []
+      },
+      {
+        "feature": "navigation",
+        "module": "frontier/navigation/client/integration.pyc",
+        "symbol": "<module>.ShipNavigationIntegration.OnSetPitchRate",
+        "line": 1302,
+        "names": [
+          "_get_ballpark_tick",
+          "logger",
+          "warning",
+          "_ship_navigation_state",
+          "handle_pitch_rate_from_server"
+        ],
+        "strings": [
+          "Ignoring a OnSetPitchRate due to missing park"
+        ],
+        "literals": []
+      },
+      {
+        "feature": "navigation",
+        "module": "frontier/navigation/client/integration.pyc",
+        "symbol": "<module>.ShipNavigationIntegration.OnSetHeading",
+        "line": 1320,
+        "names": [
+          "_get_ballpark_tick",
+          "logger",
+          "warning",
+          "_ship_navigation_state",
+          "handle_heading_from_server"
+        ],
+        "strings": [
+          "Ignoring a OnSetHeading due to missing park"
+        ],
+        "literals": []
+      },
+      {
+        "feature": "navigation",
+        "module": "frontier/navigation/client/integration.pyc",
+        "symbol": "<module>.ShipNavigationIntegration.OnSetRollRate",
+        "line": 1330,
+        "names": [
+          "_get_ballpark_tick",
+          "logger",
+          "warning",
+          "_ship_navigation_state",
+          "handle_roll_rate_from_server"
+        ],
+        "strings": [
+          "Ignoring a OnSetRollRate due to missing park"
+        ],
+        "literals": []
+      },
+      {
+        "feature": "navigation",
+        "module": "frontier/navigation/client/integration.pyc",
+        "symbol": "<module>.ShipNavigationIntegration.OnSetBrakeFraction",
+        "line": 1341,
+        "names": [
+          "_get_ballpark_tick",
+          "logger",
+          "warning",
+          "_ship_navigation_state",
+          "handle_brake_fraction_from_server"
+        ],
+        "strings": [
+          "Ignoring a OnSetBrakeFraction due to missing park"
+        ],
+        "literals": []
+      },
+      {
+        "feature": "stargate",
+        "module": "frontier/stargates/client/stargate_svc.pyc",
+        "symbol": "<module>.StargateSvc.get_rebuild_progress",
+        "line": 49,
+        "names": [
+          "_remote",
+          "get_rebuild_progress"
+        ],
+        "strings": [],
+        "literals": []
+      },
+      {
+        "feature": "stargate",
+        "module": "frontier/stargates/client/stargate_svc.pyc",
+        "symbol": "<module>.StargateSvc.deposit_rebuild_items",
+        "line": 52,
+        "names": [
+          "_remote",
+          "deposit_rebuild_items",
+          "sm",
+          "ScatterEvent",
+          "dict"
+        ],
+        "strings": [
+          "OnClientEvent_StargateRebuildItemsDeposited"
+        ],
+        "literals": []
+      },
+      {
+        "feature": "stargate",
+        "module": "frontier/stargates/client/stargate_svc.pyc",
+        "symbol": "<module>.StargateSvc.deposit_fuel_items",
+        "line": 67,
+        "names": [
+          "_remote",
+          "deposit_fuel_items"
+        ],
+        "strings": [],
+        "literals": []
+      },
+      {
+        "feature": "iff",
+        "module": "frontier/iff/client/structures.pyc",
+        "symbol": "<module>.set_structure_transponder",
+        "line": 79,
+        "names": [
+          "ServiceManager",
+          "Instance",
+          "RemoteSvc",
+          "set_structure_transponder",
+          "cairn_svc",
+          "invalidate"
+        ],
+        "strings": [
+          "iffMapService"
+        ],
+        "literals": []
+      },
+      {
+        "feature": "iff-structure-types",
+        "module": "frontier/iff/common/structures.pyc",
+        "symbol": "<module>.is_transponder_assembly",
+        "line": 20,
+        "names": [
+          "HasSmartGateComponent",
+          "is_slingshot_type",
+          "inv_const",
+          "typeNetworkNode"
+        ],
+        "strings": [],
+        "literals": [
+          false
+        ]
+      },
+      {
+        "feature": "creation-present",
+        "module": "frontier/creation/client/service.pyc",
+        "symbol": "<module>.CreationService.commit_management_draft",
+        "line": 117,
+        "names": [
+          "to_dict",
+          "_remote",
+          "commit_management_draft",
+          "Diagnostic",
+          "from_dict"
+        ],
+        "strings": [],
+        "literals": []
+      },
+      {
+        "feature": "creation-present",
+        "module": "frontier/creation/client/service.pyc",
+        "symbol": "<module>.CreationService.activate_ability",
+        "line": 124,
+        "names": [
+          "_remote",
+          "activate_ability",
+          "str"
+        ],
+        "strings": [],
+        "literals": []
+      },
+      {
+        "feature": "creation-present",
+        "module": "frontier/creation/client/service.pyc",
+        "symbol": "<module>.CreationService.get_creation",
+        "line": 135,
+        "names": [
+          "session",
+          "shipid",
+          "_active_creation",
+          "Creation",
+          "from_dict",
+          "_remote",
+          "get_creation"
+        ],
+        "strings": [],
+        "literals": []
+      },
+      {
+        "feature": "creation-present",
+        "module": "frontier/creation/client/service.pyc",
+        "symbol": "<module>.CreationService.take_command",
+        "line": 146,
+        "names": [
+          "_remote",
+          "take_command"
+        ],
+        "strings": [],
+        "literals": []
+      },
+      {
+        "feature": "creation-present",
+        "module": "frontier/creation/client/service.pyc",
+        "symbol": "<module>.CreationService.set_power_state",
+        "line": 149,
+        "names": [
+          "_remote",
+          "set_power_state"
+        ],
+        "strings": [],
+        "literals": []
+      },
+      {
+        "feature": "skillshot-present",
+        "module": "frontier/skillshot/client/controller.pyc",
+        "symbol": "<module>.SkillShotController._fire_session",
+        "line": 103,
+        "names": [
+          "_session_can_fire",
+          "session",
+          "IsItSafe",
+          "_fire_in_progress",
+          "_find_fitted_skill_shot_module_ids",
+          "_get_current_turret_aim_direction",
+          "_audio_service",
+          "SendUIEvent",
+          "Skillshot",
+          "PRESSED",
+          "_build_turret_states",
+          "_service_manager",
+          "RemoteSvc",
+          "BeginFire",
+          "datetime",
+          "now",
+          "UTC",
+          "t_first_cycle",
+          "_CYCLE_WINDOW",
+          "gametime",
+          "now_sim",
+          "uthread2",
+          "sleep",
+          "_POLL_INTERVAL_SECONDS",
+          "_should_send_turret_state",
+          "TurretStateUpdate",
+          "_session_can_end_fire",
+          "EndFire",
+          "Exception",
+          "logger",
+          "exception"
+        ],
+        "strings": [
+          "skillShot",
+          "SkillShotController: fire session failed"
+        ],
+        "literals": [
+          false
+        ]
+      },
+      {
+        "feature": "skillshot-present",
+        "module": "frontier/skillshot/client/controller.pyc",
+        "symbol": "<module>.HeldBeamController._beam_session",
+        "line": 361,
+        "names": [
+          "_session_can_fire",
+          "session",
+          "IsItSafe",
+          "_session_can_end_fire",
+          "EndHeldBeam",
+          "module_id",
+          "Exception",
+          "logger",
+          "exception",
+          "_beam_started",
+          "ramp_started_at",
+          "ramp_curve_id",
+          "ramp_duration_ms",
+          "_beam_requested",
+          "_find_fitted_held_beam_module_ids",
+          "_get_current_turret_aim_direction",
+          "_build_turret_states",
+          "_service_manager",
+          "RemoteSvc",
+          "BeginHeldBeam",
+          "_audio_service",
+          "SendUIEvent",
+          "Skillshot",
+          "FIRE",
+          "datetime",
+          "now",
+          "UTC",
+          "uthread2",
+          "sleep",
+          "_POLL_INTERVAL_SECONDS",
+          "_should_send_turret_state",
+          "_HELD_BEAM_TURRET_STATE_ANGLE_THRESHOLD_RADIANS",
+          "HeldBeamAimUpdate"
+        ],
+        "strings": [
+          "HeldBeamController: EndHeldBeam failed",
+          "skillShot",
+          "HeldBeamController: beam session failed"
+        ],
+        "literals": [
+          false,
+          true
+        ]
+      },
+      {
+        "feature": "scanner-present",
+        "module": "frontier/signatures_and_scanning/client/scanning_service.pyc",
+        "symbol": "<module>.ScannerSystemContextAdapter.send_scan_request",
+        "line": 150,
+        "names": [
+          "_remote_scanning_service",
+          "directional_scan",
+          "math",
+          "degrees",
+          "session",
+          "shipid",
+          "ScanFailureReason",
+          "UNKNOWN_ERROR",
+          "_creation_service",
+          "activate_ability",
+          "AbilityId",
+          "DIRECTIONAL_SCAN",
+          "get",
+          "UserError",
+          "msg",
+          "NOT_ENOUGH_ENERGY",
+          "str",
+          "ErrorReason",
+          "MODULE_OFFLINE",
+          "MODULE_BUSY",
+          "CreationError",
+          "Exception",
+          "ScanSuccess",
+          "SignaturesUpdate",
+          "added",
+          "removed",
+          "updated_scans",
+          "CombinedScanResult",
+          "from_state",
+          "resolved",
+          "items",
+          "datetimeutils",
+          "filetime_delta_to_timedelta",
+          "origin",
+          "duration"
+        ],
+        "strings": [
+          "scan_response",
+          "NotEnoughEnergy"
+        ],
+        "literals": []
+      },
+      {
+        "feature": "jump-present",
+        "module": "frontier/jump_drive/client/jump_drive.pyc",
+        "symbol": "<module>.try_jump_jumpdrive",
+        "line": 4,
+        "names": [
+          "_get_jump_drive_manager",
+          "cmd_jump_with_jump_drive",
+          "Exception",
+          "ServiceManager",
+          "Instance",
+          "ScatterEvent"
+        ],
+        "strings": [
+          "OnJumpDriveFailure"
+        ],
+        "literals": []
+      }
+    ]
+  },
+  "serverSourceSHA256": {
+    "StartFrontierServer.ps1": "e3dcabea4894f4207f823566dd218bde4c328638cbd547e406685ba20249a3c8",
+    "server/index.ts": "1c09c59e2800c3f724fc0c4ca799ba245376da05b8721034ef3638731ea30100",
+    "server/src/_secondary/express/gatewayServices/corpSkillPlanProto.ts": "87cd5a0cb8bbfb9dadec3445d70703dcb1de45004390588cee89806f22686a44",
+    "server/src/_secondary/express/gatewayServices/frontierTokenExchangeGatewayService.ts": "9175ac0098199cb77ee5c9be4a906881d0a6f27a332a85e3df84b85e139c9651",
+    "server/src/_secondary/express/gatewayServices/frontierWalletGatewayService.ts": "f7f068648adb2558d888694450909a6643ad283517fc3def434aa182a0f8490f",
+    "server/src/_secondary/express/gatewayServices/index.ts": "c1cabc637a3c9899e1c79bc18b126144008ca3a622f0bd5bb6f26af1a5df41b7",
+    "server/src/_secondary/express/gatewayServices/skillPlanProto.ts": "a23eaecc7e6312df005f5c21eee5c446564eb95fa41c197f883f722c68302e97",
+    "server/src/_secondary/express/publicGatewayLocal.ts": "de9a5af7dcddc388e6a2cc7ea949bf8362ebc1ea98e900a1332a169558489e10",
+    "server/src/services/baseService.ts": "d91a7e3e8f9f0bdfa464225c892aca409189e752bdf6f8bb48435ea505aa2bcc",
+    "server/src/services/frontier/berthingSvcService.ts": "cafb9feebe9d62a2962f66de6ec065e14e88b4db525c8f232bcdbceae2dcd2eb",
+    "server/src/services/frontier/creationService.ts": "1e94cfe4915e54f960c02589147f3d2071327194ce4b1c172ec1a7601f23f09a",
+    "server/src/services/frontier/deploymentMgrService.ts": "3d116e3435d4366c7d64acee2b3a065d6942812093048dd80e0744f8ef751e45",
+    "server/src/services/frontier/experienceService.ts": "0856a549de57841675a2c19526d56f32bf84d4940fd64008816a38a70c142cee",
+    "server/src/services/frontier/explorationRuntime.ts": "9d4c55594db170cc6dbe101448b07cbea872b4122d560d3d721a9479c10515e8",
+    "server/src/services/frontier/iffMapService.ts": "235b0a262b8d7fd181d854fb936018e1559045b08bbadec3bb3843ca98f4f8aa",
+    "server/src/services/frontier/industryNotifications.ts": "dd7e77a2cceaa2942da998caaac0a30b9c4ace8a8aed283df5f8621d99237185",
+    "server/src/services/frontier/jumpDriveMgrService.ts": "efb65489ea48e3603849b96790816dd0ae5b7874756030c7f6f2e80fe47afe08",
+    "server/src/services/frontier/scanningService.ts": "27b3c88657e581018611ecb18537373e289effda3496ea6dfd59cb647d468c7e",
+    "server/src/services/frontier/shellManagerService.ts": "0207ada12071ad29e22802af7be31c1f193699763f4844f96b52ccafd55e031c",
+    "server/src/services/frontier/skillShotService.ts": "4bcb1feab77ca957430803b12c7b650d8527696703bb444e7d9d0a4658089d5b",
+    "server/src/services/frontier/stargateService.ts": "41988c2b1bbb6b811a90cefc9f092a9eb36e629c6c936ff4e9a84450fa5e097d",
+    "server/src/services/frontier/statusEffectMgrService.ts": "5874ba8405486612028b5d30f9867ae55d2b54341c29d4143a7ac58fc26c2642",
+    "server/src/services/mining/miningRuntime.ts": "3c6f864be5ccd223ebd6aee0c762988fb5c45d4960892a496a3b0e4d8e7c2146",
+    "server/src/services/mining/miningRuntimeState.ts": "472b49c0fadf702536ab5920ef3f3df1776cf3891a96621c4c8720c9e5732574",
+    "server/src/services/ship/beyonceService.ts": "c4491863a6dd1a6550eaedb044b4f7c408f3e754ec0dfcb38037cb3002e785a9",
+    "server/src/services/ship/shipService.ts": "57a73156281ca4f20db75a1e720ead32c5907eea5452d33e3d8c28d3d84958c2",
+    "server/src/services/skills/skillMgrService.ts": "62a3224e156179be1280e93b334388cbe5538230430a57bb6344e66412f17b80",
+    "tools/frontier-client/frontier_windows_client.py": "77eecbbc027c348b15697d1fc21785749467ffa01152f138edc6fc05a6e3aa15"
+  },
+  "localArtifacts": {
+    "client-archive-inventory.json": {
+      "bytes": 609378,
+      "sha256": "f06eb7e0e111b28d5f12726926f7524df611a852be0b4ce1fb86576992aa1b57"
+    },
+    "gateway-audit.json": {
+      "bytes": 28261,
+      "sha256": "32ad2b8210c5b0b0e0a89f4ff2f11b682288c01de669ba992bbd9ac59b9af5d3"
+    },
+    "gateway-compare-output.json": {
+      "bytes": 14264,
+      "sha256": "a98e283b951752413f55a3c10bd8a7a9254e78659f3ecd6e5a5f7a370eec0f86"
+    },
+    "gateway-compare.cjs": {
+      "bytes": 3214,
+      "sha256": "477fef3ecb05e5fcbe41e82e214515a8d8b007455ffb2377e475dd271b926aa8"
+    },
+    "gateway-envelope-proof.cjs": {
+      "bytes": 2662,
+      "sha256": "a1baed21aab18edfd6e39f5baee15869076dd7fc60048fcbe769411960831085"
+    },
+    "gateway-envelope-proof.json": {
+      "bytes": 3189,
+      "sha256": "fdf28cd4c495f2f0c12c71570e7613706e6fd525379f7f6094c9ab403c84447a"
+    },
+    "gateway-registry.cjs": {
+      "bytes": 2818,
+      "sha256": "c1b5af98a7937fc800288b7656c9a292f2d48e15622fc0b249e5d9113d8f124c"
+    },
+    "gateway-registry.json": {
+      "bytes": 33116,
+      "sha256": "2d910ae6ace8ce7b19d900fbc5d379875a4ac87c62ed73d7d558ae92ed53a9ee"
+    },
+    "gateway-request.json": {
+      "bytes": 224,
+      "sha256": "275b23fc2901ccbb636622fb72d2976fe0aefdd24e3249095a78fd4054eb8f70"
+    },
+    "gateway-schema-comparison.json": {
+      "bytes": 14263,
+      "sha256": "7896851828fea32fa69afb71aa0e8ce59a5c25bbb4ecbdbf1175c8b1a822181d"
+    },
+    "gateway-surface.json": {
+      "bytes": 228016,
+      "sha256": "2fdf7f6406942a4c6f2c6a257d35246286a64df9802be0b072193df3e86b3786"
+    },
+    "services-client-inventory.json": {
+      "bytes": 11842647,
+      "sha256": "4e606b09292819f7a9512f43ef4fe298e7f5a6205d4bd03d61f6b823f4c93336"
+    },
+    "services-findings.json": {
+      "bytes": 14688,
+      "sha256": "1faf8fe2e732de98d5a4e0dfee04af981a23e96f7df073f519337e85baa82c5c"
+    },
+    "services-remote-calls.json": {
+      "bytes": 35027,
+      "sha256": "95fa367a7fdb79b7158c9d3217d811f3ec216fc4ba30fdebf6e3c216a7f78157"
+    },
+    "space-code-inventory.json": {
+      "bytes": 14150755,
+      "sha256": "44aa5e186ff6c43bda7a00c0bdb41a7f1104d6ed95cfdd2ce7ceeebb4690b323"
+    },
+    "space-evidence.json": {
+      "bytes": 20794,
+      "sha256": "3ce111859de3b4bd65544265d9d63a3e8ee9a1a00c40213f48f12ede6b52f277"
+    },
+    "space_dis.py": {
+      "bytes": 473,
+      "sha256": "3ff50a3bb342208c78e738f796a176fad74b7c9e5d6f0f511b5b88531440d910"
+    },
+    "space_inventory.py": {
+      "bytes": 1353,
+      "sha256": "d9bb3fdef3ef4092d4d246d9301dfb4c63b9df8ccfac6689a575edf8d6dd9ac5"
+    },
+    "startup-and-flags.json": {
+      "bytes": 8671,
+      "sha256": "e47f8a4612c5ad8821095a7de6f6174b514c1365279b615ecf2cb388b2abb2e5"
+    }
+  }
+}

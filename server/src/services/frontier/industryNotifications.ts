@@ -101,6 +101,37 @@ function publishIndustryProductionChanged(session, facilityID, event, options: R
   }
 }
 
+function publishIndustryJobLaneChanged(session, facility, event, options: Record<string, any> = {}) {
+  const facilityID = Number(facility?.itemID);
+  const laneID = Number(event?.laneID) || 1;
+  if (!Number.isSafeInteger(facilityID) || facilityID <= 0 ||
+      !Number.isSafeInteger(laneID) || laneID <= 0) return false;
+  const characterIDs = new Set<number>([Number(facility.ownerID)]);
+  const callerID = Number(session?.characterID || session?.charid);
+  if (Number.isSafeInteger(callerID) && callerID > 0) characterIDs.add(callerID);
+  const sessions = new Set<any>(session ? [session] : []);
+  try {
+    const registry = options.sessionRegistry || require("../chat/sessionRegistry");
+    for (const connected of registry.getSessions()) sessions.add(connected);
+  } catch (error) { log.warn(`[industry] Lane sessions unavailable: ${error.message}`); }
+  let published = false;
+  for (const connected of sessions) {
+    if (!characterIDs.has(Number(connected?.characterID || connected?.charid)) ||
+        typeof connected.sendNotification !== "function") continue;
+    try {
+      connected.sendNotification("OnFrontierIndustryJobLaneChanged", "clientID", [
+        facilityID,
+        laneID,
+        event?.type || "changed",
+      ]);
+      published = true;
+    } catch (error) {
+      log.warn(`[industry] Lane notification failed for facility=${facilityID}: ${error.message}`);
+    }
+  }
+  return published;
+}
+
 // Background completion has no initiating transport. Notify every connected
 // owner session and the owner's gateway streams after the inventory commits.
 function publishIndustryProductionResult(result, session = null, options: Record<string, any> = {}) {
@@ -113,12 +144,18 @@ function publishIndustryProductionResult(result, session = null, options: Record
   const ownerID = Number(facility.ownerID);
   const target = { characterID: ownerID };
   const runtime = options.runtime || require("./industryRuntime");
-  const sides = new Set<string>();
+  const laneSides = new Map<number, Set<string>>();
   for (const change of changes) {
     for (const item of [change.item, change.previousData]) {
       if (Number(item?.locationID) !== Number(facility.itemID)) continue;
-      if (Number(item.flagID) === runtime.INDUSTRY_INPUT_FLAG) sides.add("inputs");
-      if (Number(item.flagID) === runtime.INDUSTRY_OUTPUT_FLAG) sides.add("outputs");
+      const escrow = runtime.industryEscrowLaneForFlag?.(item.flagID) ||
+        (Number(item.flagID) === Number(runtime.INDUSTRY_INPUT_FLAG)
+          ? { laneID: 1, side: "inputs" }
+          : Number(item.flagID) === Number(runtime.INDUSTRY_OUTPUT_FLAG)
+            ? { laneID: 1, side: "outputs" } : null);
+      if (!escrow) continue;
+      if (!laneSides.has(escrow.laneID)) laneSides.set(escrow.laneID, new Set());
+      laneSides.get(escrow.laneID).add(escrow.side);
     }
   }
   if (changes.length) {
@@ -140,23 +177,52 @@ function publishIndustryProductionResult(result, session = null, options: Record
       }
     } catch (error) { log.warn(`[industry] Owner inventory notifications unavailable: ${error.message}`); }
   }
-  if (sides.size) {
+  if (laneSides.size) {
     try {
-      const totals = runtime.getFacilityItems(facility);
-      for (const side of sides) publishIndustryItemsChanged(target, facility.itemID, side, totals[side], options);
+      // Gateway inventory descriptors predate lanes. Only lane one may use
+      // that replacement stream; lane-aware clients refresh from lane events.
+      const sides = laneSides.get(1);
+      if (sides) {
+        const totals = runtime.getFacilityItems(facility, 1);
+        for (const side of sides) {
+          publishIndustryItemsChanged(target, facility.itemID, side, totals[side], options);
+        }
+      }
     } catch (error) { log.warn(`[industry] Production inventory snapshots unavailable: ${error.message}`); }
   }
-  for (const event of events) publishIndustryProductionChanged(target, facility.itemID, event, options);
+  for (const event of events) {
+    publishIndustryJobLaneChanged(session, facility, event, options);
+    // Retail descriptors do not carry a lane identifier. Only lane 1 is
+    // mirrored onto that legacy stream so an older client cannot mistake a
+    // delegated lane for its single production slot.
+    if ((Number(event?.laneID) || 1) === 1) {
+      publishIndustryProductionChanged(target, facility.itemID, event, options);
+    }
+  }
 }
 
 // A recipe change also invalidates slot controllers and run duration. The
 // retail gateway item notices only update quantities, so the client adapter
 // listens for this event and reloads the complete authoritative facility.
-function publishIndustryBlueprintChanged(session, facilityID, options: Record<string, any> = {}) {
+function publishIndustryBlueprintChanged(session, facilityID, requestedLaneID: any = 1,
+  options: Record<string, any> = {}) {
+  // Preserve callers from the single-lane API that supplied options third.
+  if (requestedLaneID && typeof requestedLaneID === "object") {
+    options = requestedLaneID;
+    requestedLaneID = 1;
+  }
   const characterID = Number(session && (session.characterID || session.charid));
   const numericFacilityID = Number(facilityID);
+  const laneID = Number(requestedLaneID) || 1;
   if (!Number.isSafeInteger(characterID) || characterID <= 0 ||
       !Number.isSafeInteger(numericFacilityID) || numericFacilityID <= 0) return false;
+  const store = options.itemStore || require("../inventory/itemStore");
+  const facility = store.findItemById?.(numericFacilityID);
+  if (facility) publishIndustryJobLaneChanged(session, facility, {
+    laneID,
+    type: "blueprint_changed",
+  }, options);
+  if (laneID !== 1) return true;
   const sessions = new Set<any>(session ? [session] : []);
   try {
     const registry = options.sessionRegistry || require("../chat/sessionRegistry");
@@ -235,6 +301,7 @@ module.exports = {
   publishIndustryBlueprintChanged,
   publishIndustryItemsChanged,
   publishIndustryProductionChanged,
+  publishIndustryJobLaneChanged,
   publishIndustryProductionResult,
   _testing: { getIndustryNoticeTypes },
 };

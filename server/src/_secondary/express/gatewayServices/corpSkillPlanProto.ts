@@ -1,3 +1,4 @@
+const { applyFrontier3640684ContractProfile } = require("./frontierContractProfile");
 const protobuf = require("protobufjs");
 
 // Wire definitions for the corporation skill-plan public-gateway family
@@ -7,7 +8,7 @@ const protobuf = require("protobufjs");
 // a corporation-specific Attributes/Summary plus a category Identifier. Field ids
 // are taken directly from the decompiled client protos and must not drift.
 function buildCorpSkillPlanProtoRoot() {
-  return protobuf.Root.fromJSON({
+  return applyFrontier3640684ContractProfile(protobuf.Root.fromJSON({
     nested: {
       eve_public: {
         nested: {
@@ -384,7 +385,7 @@ function buildCorpSkillPlanProtoRoot() {
         },
       },
     },
-  });
+  }));
 }
 
 module.exports = {

@@ -2,7 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { FRONTIER_SYNTHETIC_RESOURCE_FIELDS_ENABLED, buildFrontierResourceFieldDefinition, resolveFrontierResourceZone, } = require("../src/space/asteroids/frontierResourceFields");
+const { FRONTIER_RESOURCE_FIELD_POLICY_VERSION, FRONTIER_SYNTHETIC_RESOURCE_FIELDS_ENABLED, buildFrontierResourceFieldDefinition, resolveFrontierResourceZone, } = require("../src/space/asteroids/frontierResourceFields");
 test("Frontier Inner and Outer landscape fields use their authored asteroid rules", () => {
     const inner = buildFrontierResourceFieldDefinition({
         itemID: 900439959,
@@ -31,9 +31,12 @@ test("Frontier Inner and Outer landscape fields use their authored asteroid rule
     const first = buildFrontierResourceFieldDefinition(site);
     const second = buildFrontierResourceFieldDefinition(site);
     assert.equal(FRONTIER_SYNTHETIC_RESOURCE_FIELDS_ENABLED, true);
+    assert.equal(FRONTIER_RESOURCE_FIELD_POLICY_VERSION, 2);
     assert.equal(inner.resourceZone, "inner");
     assert.equal(inner.asteroidCount, 30);
     assert.equal(inner.maxAsteroidCount, 42);
+    assert.equal(inner.dungeonObjectScatterMinMeters, 18_000);
+    assert.equal(inner.dungeonObjectScatterMaxMeters, 48_000);
     assert.deepEqual(inner.resourceTypeIDs, [91374, 91375, 91376]);
     assert.equal(resolveFrontierResourceZone(site), "outer");
     assert.deepEqual(first, second);
@@ -41,6 +44,8 @@ test("Frontier Inner and Outer landscape fields use their authored asteroid rule
     assert.equal(first.fieldStyleID, "frontier_outer_resource_field");
     assert.equal(first.asteroidCount, 34);
     assert.equal(first.maxAsteroidCount, 48);
+    assert.equal(first.dungeonObjectScatterMinMeters, 22_000);
+    assert.equal(first.dungeonObjectScatterMaxMeters, 58_000);
     assert.deepEqual(first.resourceTypeIDs, [91377, 91378, 91379, 91380, 91381]);
     assert.equal(first.sourceLandscapeSiteID, site.itemID);
 });
@@ -79,6 +84,8 @@ test("Frontier Fringe and Trojan fields retain their distinct asteroid rules", (
     assert.equal(trojan.asteroidSpawnRule, "trojan");
     assert.equal(trojan.asteroidCount, 24);
     assert.equal(trojan.maxAsteroidCount, 36);
+    assert.equal(trojan.dungeonObjectScatterMinMeters, 16_000);
+    assert.equal(trojan.dungeonObjectScatterMaxMeters, 42_000);
     assert.deepEqual(trojan.resourceTypeIDs, [91374, 91375, 91376, 91379, 91380, 91381]);
     assert.equal(buildFrontierResourceFieldDefinition({
         itemID: 42,

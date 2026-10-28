@@ -6,7 +6,7 @@ const log = require(path.join(__dirname, "../../utils/logger"));
 const { throwWrappedUserError } = require(path.join(__dirname, "../../common/machoErrors"));
 const sessionRegistry = require(path.join(__dirname, "../chat/sessionRegistry"));
 const { buildDict, buildFiletimeLong, buildKeyVal, buildList, unwrapMarshalValue, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
-const { buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
+const { buildCachedMethodCallResultAsync: buildCachedMethodCallResult, } = require(path.join(__dirname, "../cache/objectCacheRuntime"));
 const assetSafetyState = require(path.join(__dirname, "./structureAssetSafetyState"));
 const structureState = require(path.join(__dirname, "./structureState"));
 function buildEmptyList() {

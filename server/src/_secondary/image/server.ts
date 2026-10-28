@@ -2,33 +2,46 @@ const http = require("http");
 const fs = require("fs");
 const config = require("../../config");
 const log = require("../../utils/logger");
-const { resolveImageRequest } = require("./imageRequestResolver");
+const { resolveImageRequestAsync } = require("./imageRequestResolver");
 
 function startImageServer() {
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     const url = String(req.url || "/");
 
     log.debug(`image request: ${url}`);
 
-    const resolved = resolveImageRequest(url);
-    const filePath = resolved.filePath;
-    const contentType = resolved.contentType;
-
-    if (!fs.existsSync(filePath)) {
-      res.writeHead(404);
+    try {
+      const resolved = await resolveImageRequestAsync(url);
+      const filePath = resolved.filePath;
+      const contentType = resolved.contentType;
+      const stat = await fs.promises.stat(filePath);
+      if (!stat.isFile()) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": contentType,
+        "Content-Length": stat.size,
+        "Cache-Control": "public, max-age=300",
+      });
+      const stream = fs.createReadStream(filePath);
+      stream.on("error", (error) => {
+        log.warn(`[ImageServer] read error for ${url}: ${error.message}`);
+        if (!res.headersSent) res.writeHead(500);
+        res.destroy(error);
+      });
+      stream.pipe(res);
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      log.warn(`[ImageServer] stat error for ${url}: ${error.message}`);
+      res.writeHead(500);
       res.end();
-      return;
     }
-
-    const data = fs.readFileSync(filePath);
-
-    res.writeHead(200, {
-      "Content-Type": contentType,
-      "Content-Length": data.length,
-      "Cache-Control": "public, max-age=300",
-    });
-
-    res.end(data);
   });
 
   const url = new URL(config.imageServerUrl);

@@ -3,10 +3,25 @@ const path = require("path");
 const { isDeepStrictEqual } = require("util");
 
 const BaseService = require(path.join(__dirname, "../baseService"));
+const serverConfig = require(path.join(__dirname, "../../config"));
 const dungeonAuthority = require(path.join(__dirname, "./dungeonAuthority"));
 const dungeonRuntime = require(path.join(__dirname, "./dungeonRuntime"));
 const dungeonTrackingRuntime = require(path.join(__dirname, "./dungeonTrackingRuntime"));
 const dungeonVisibilityPolicy = require(path.join(__dirname, "./dungeonVisibilityPolicy"));
+const frontierDungeonSpawns = require(path.join(
+  __dirname,
+  "../../config/frontierDungeonSpawns",
+));
+const frontierDungeonLoot = require(path.join(
+  __dirname,
+  "../../config/frontierDungeonLoot",
+));
+const {
+  getNpcLootTable,
+} = require(path.join(__dirname, "../../space/npc/npcData"));
+const {
+  rollNpcLootEntries,
+} = require(path.join(__dirname, "../../space/npc/npcLoot"));
 const {
   entityIDsEqual,
   getEntityIDText,
@@ -28,6 +43,9 @@ const {
   resolveItemByTypeID,
 } = require(path.join(__dirname, "../inventory/itemTypeRegistry"));
 const {
+  resolveMiningResourceIdentity,
+} = require(path.join(__dirname, "../mining/miningVisuals"));
+const {
   getTypeAttributeValue,
 } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const {
@@ -39,17 +57,52 @@ const {
   removeInventoryItem,
   updateInventoryItem,
 } = require(path.join(__dirname, "../inventory/itemStore"));
+const {
+  DEFAULT_DUNGEON_SPAWN_SEPARATION_METERS,
+  buildSeparatedSpawnPosition,
+} = require(path.join(__dirname, "../../utils/dungeonSpawnPlacement"));
 
 const COSMIC_SIGNATURE_TYPE_ID = 19_728;
 const COSMIC_SIGNATURE_GROUP_ID = 502;
 const COSMIC_ANOMALY_TYPE_ID = 28_356;
 const COSMIC_ANOMALY_GROUP_ID = 885;
+// Build 3502403 selects the CR data class from the type's static group. Only
+// these groups produce CRDungeon; incompatible authored entry objects need a
+// generic signature/anomaly presentation type for the system-view root.
+const CLIENT_CR_DUNGEON_GROUP_IDS = new Set([
+  310, // Beacon
+  COSMIC_SIGNATURE_GROUP_ID,
+  COSMIC_ANOMALY_GROUP_ID,
+  4_055, // Invisible Beacon
+  4_871, // Asteroid Site
+  4_872, // Crude Rift
+  4_873, // Wreck, Ruin & Debris
+  4_874, // Landmark
+]);
+const FRONTIER_DUNGEON_SITE_GROUP_IDS = new Set([
+  4_871, // Asteroid Site
+  4_872, // Crude Rift
+  4_873, // Wreck, Ruin & Debris
+  4_874, // Landmark
+]);
+const FRONTIER_DUNGEON_OBJECT_SPAWN_EVENT_TYPE_ID = 3;
+const FRONTIER_DUNGEON_INITIAL_TRIGGER_TYPE_ID = 8;
+const FRONTIER_DUNGEON_OBJECT_DESPAWN_EVENT_TYPE_ID = 15;
+const FRONTIER_DUNGEON_MINING_SITE_GROUP_ID = 4_871;
+const FRONTIER_DUNGEON_RESOURCE_GROUP_ID = 4_593;
+const FRONTIER_DUNGEON_MAX_RESOURCE_PROPS = 48;
+const FRONTIER_DUNGEON_MAX_STRUCTURAL_PROPS = 32;
+const FRONTIER_DUNGEON_MINING_MIN_RADIUS_SCALE = 0.75;
+const FRONTIER_DUNGEON_MINING_MAX_RADIUS_SCALE = 1.25;
+const FRONTIER_DUNGEON_MINING_MIN_RADIUS_METERS = 10_000;
+const FRONTIER_DUNGEON_MINING_MAX_RADIUS_METERS = 50_000;
 const SITE_CONTENT_CONTAINER_ID_BASE = 6_200_000_000_000;
 const SITE_CONTENT_HAZARD_ID_BASE = 6_300_000_000_000;
 const SITE_CONTENT_ENVIRONMENT_ID_BASE = 6_400_000_000_000;
 const SITE_CONTENT_GATE_ID_BASE = 6_450_000_000_000;
 const SITE_CONTENT_OBJECTIVE_ID_BASE = 6_500_000_000_000;
 const SITE_CONTENT_KILLABLE_STRUCTURE_ID_BASE = 6_700_000_000_000;
+const SITE_CONTENT_BUILDUP_COMPLETION_ID_BASE = 6_800_000_000_000;
 const SITE_CONTENT_ENCOUNTER_OFFSET_METERS = 25_000;
 const SITE_CONTENT_REWARD_OFFSET_METERS = 16_000;
 const SITE_CONTENT_CONTAINER_RING_METERS = 12_500;
@@ -67,9 +120,22 @@ const SITE_CONTENT_MINING_ROCK_ID_BASE = 6_600_000_000_000;
 // it directly in the renderable ball fields makes the retail client crash to desktop building a modelless
 // asteroid. So the shell goes in the ball/typeID fields and the ore only in slim*/miningYield* (same split
 // belt asteroids use in buildSystemOreAsteroidEntity).
-const MINING_ROCK_SHELL_TYPE_IDS = Object.freeze([
-  64063, 64064, 64065, 64066, 64067, 64068, 64069, 64070,
-  64071, 64072, 64073, 64074, 64075, 64076, 64077,
+const MINING_ROCK_SHELL_PROFILES = Object.freeze([
+  { typeID: 64063, radius: 350 },
+  { typeID: 64064, radius: 550 },
+  { typeID: 64065, radius: 600 },
+  { typeID: 64066, radius: 500 },
+  { typeID: 64067, radius: 400 },
+  { typeID: 64068, radius: 500 },
+  { typeID: 64069, radius: 700 },
+  { typeID: 64070, radius: 600 },
+  { typeID: 64071, radius: 750 },
+  { typeID: 64072, radius: 650 },
+  { typeID: 64073, radius: 200 },
+  { typeID: 64074, radius: 200 },
+  { typeID: 64075, radius: 200 },
+  { typeID: 64076, radius: 150 },
+  { typeID: 64077, radius: 135 },
 ]);
 const SITE_CONTENT_MAX_MINING_ROCK_COUNT = 64;
 const SITE_CONTENT_MAX_ENCOUNTER_NPCS = 8;
@@ -137,6 +203,31 @@ function normalizeText(value, fallback = "") {
 
 function normalizeLowerText(value, fallback = "") {
   return normalizeText(value, fallback).toLowerCase();
+}
+
+function resolveMiningRockShellTypeRecord(resourceTypeID, variantIndex = 0) {
+  const profile = MINING_ROCK_SHELL_PROFILES[
+    (
+      Math.abs(toInt(resourceTypeID, 0)) +
+      Math.abs(toInt(variantIndex, 0))
+    ) % MINING_ROCK_SHELL_PROFILES.length
+  ];
+  return {
+    // Keep a complete renderable fallback for isolated/minimal stores. The
+    // production SDE record supplies the same identifiers plus localized
+    // metadata.
+    groupID: 1975,
+    categoryID: SITE_CONTENT_SAFE_SLIM_CATEGORY_ID,
+    graphicID: 26271,
+    name: `Asteroid Shell ${profile.typeID}`,
+    ...profile,
+    ...(resolveItemByTypeID(profile.typeID) || {}),
+  };
+}
+
+function buildResourceTypeLabel(typeRecord, typeID) {
+  const normalizedTypeID = Math.max(0, toInt(typeID, 0));
+  return `${resolveTypeRecordName(typeRecord, "Asteroid")} [Type ID ${normalizedTypeID}]`;
 }
 
 function normalizeSlimNullableValue(value) {
@@ -320,6 +411,14 @@ function addVectors(left, right) {
     x: toFiniteNumber(left && left.x, 0) + toFiniteNumber(right && right.x, 0),
     y: toFiniteNumber(left && left.y, 0) + toFiniteNumber(right && right.y, 0),
     z: toFiniteNumber(left && left.z, 0) + toFiniteNumber(right && right.z, 0),
+  };
+}
+
+function subtractVectors(left, right) {
+  return {
+    x: toFiniteNumber(left && left.x, 0) - toFiniteNumber(right && right.x, 0),
+    y: toFiniteNumber(left && left.y, 0) - toFiniteNumber(right && right.y, 0),
+    z: toFiniteNumber(left && left.z, 0) - toFiniteNumber(right && right.z, 0),
   };
 }
 
@@ -1179,6 +1278,16 @@ function buildCombatLootGrantEntries(seed, tags, context: Record<string, any> = 
   return mergeLootGrantEntries(entries.slice(0, SITE_CONTENT_MAX_LOOT_ENTRIES));
 }
 
+function resolveConfiguredContainerLootTable(containerEntity) {
+  const configuredLoot = frontierDungeonLoot.resolveCargoContainerLootTable(
+    containerEntity && containerEntity.typeID,
+  );
+  if (!configuredLoot) {
+    return null;
+  }
+  return getNpcLootTable(configuredLoot.lootTableID) || configuredLoot.lootTable;
+}
+
 function buildLootGrantEntriesForContainer(containerEntity, populationHints, context: Record<string, any> = {}) {
   // Explicit, golden-derived contents (e.g. a fetch mission's cargo container seeded with the exact
   // objective item, or a hacked mission container yielding its data chip) take precedence over any
@@ -1193,6 +1302,12 @@ function buildLootGrantEntriesForContainer(containerEntity, populationHints, con
         quantity: Math.max(1, toInt(entry && entry.quantity, 1)),
       }))
       .filter((entry) => entry.itemType > 0);
+  }
+  const configuredLootTable = resolveConfiguredContainerLootTable(containerEntity);
+  if (configuredLootTable) {
+    return mergeLootGrantEntries(
+      rollNpcLootEntries(configuredLootTable).slice(0, SITE_CONTENT_MAX_LOOT_ENTRIES),
+    );
   }
   const profileKey = normalizeText(
     containerEntity &&
@@ -1725,6 +1840,701 @@ function normalizeMissionSpawnQuery(entry = null) {
   ));
 }
 
+function resolveFrontierDungeonTemplateGroupID(template) {
+  const explicitGroupID = Math.max(
+    0,
+    toInt(template && (template.entryObjectGroupID || template.entryTypeGroupID), 0),
+  );
+  if (explicitGroupID > 0) {
+    return explicitGroupID;
+  }
+  const entryTypeID = Math.max(
+    0,
+    toInt(template && (template.entryObjectTypeID || template.entryTypeID), 0),
+  );
+  const typeRecord = entryTypeID > 0 ? resolveItemByTypeID(entryTypeID) : null;
+  return Math.max(0, toInt(typeRecord && typeRecord.groupID, 0));
+}
+
+function selectEvenlySpacedEntries(entries, maximum) {
+  const candidates = normalizeArray(entries);
+  const limit = Math.max(0, Math.min(candidates.length, toInt(maximum, 0)));
+  if (limit <= 0) {
+    return [];
+  }
+  if (candidates.length <= limit) {
+    return [...candidates];
+  }
+  if (limit === 1) {
+    return [candidates[0]];
+  }
+  const selected: any[] = [];
+  const selectedIndexes = new Set<any>();
+  for (let index = 0; index < limit; index += 1) {
+    const candidateIndex = Math.round((index * (candidates.length - 1)) / (limit - 1));
+    if (!selectedIndexes.has(candidateIndex)) {
+      selectedIndexes.add(candidateIndex);
+      selected.push(candidates[candidateIndex]);
+    }
+  }
+  return selected;
+}
+
+function resolveFrontierDungeonResourceBaseRadius(entry) {
+  const authoredRadius = Math.max(
+    0,
+    toFiniteNumber(entry && entry.object && entry.object.radius, 0),
+  );
+  const sourceRadius = authoredRadius > 0
+    ? authoredRadius
+    : Math.max(500, toFiniteNumber(entry && entry.typeRecord && entry.typeRecord.radius, 1_500));
+  return Math.min(
+    FRONTIER_DUNGEON_MINING_MAX_RADIUS_METERS / FRONTIER_DUNGEON_MINING_MAX_RADIUS_SCALE,
+    Math.max(
+      FRONTIER_DUNGEON_MINING_MIN_RADIUS_METERS / FRONTIER_DUNGEON_MINING_MIN_RADIUS_SCALE,
+      sourceRadius,
+    ),
+  );
+}
+
+function resolveFrontierDungeonResourceExplicitQuantity(entry) {
+  if (Math.max(0, toInt(entry && entry.groupID, 0)) !== FRONTIER_DUNGEON_RESOURCE_GROUP_ID) {
+    return 0;
+  }
+  try {
+    const { classifyCrudeMatterResource } = require(path.join(
+      __dirname,
+      "../../space/frontierRiftAuthority",
+    ));
+    const object = entry && entry.object || {};
+    const profile = classifyCrudeMatterResource({
+      ...object,
+      itemName: resolveTypeRecordName(entry && entry.typeRecord, ""),
+      localName: normalizeText(object && object.localName, ""),
+    });
+    return Math.max(0, toInt(profile && profile.resourceQuantity, 0));
+  } catch (_error) {
+    return 0;
+  }
+}
+
+function estimateFrontierDungeonResourceQuantity(entry, radius) {
+  const explicitQuantity = resolveFrontierDungeonResourceExplicitQuantity(entry);
+  // Treat the configured maximum volume as the yield of a 50 km rock;
+  // the mining runtime's normal fallback also scales material by radius squared.
+  const areaRatio = (radius / FRONTIER_DUNGEON_MINING_MAX_RADIUS_METERS) ** 2;
+  if (explicitQuantity > 0) {
+    return Math.max(1, Math.round(explicitQuantity * areaRatio));
+  }
+  const unitVolume = Math.max(
+    0.000001,
+    toFiniteNumber(entry && entry.typeRecord && entry.typeRecord.volume, 1),
+  );
+  const minimumVolume = Math.max(
+    1,
+    toFiniteNumber(serverConfig.miningBeltMinimumAsteroidVolumeM3, 15_000),
+  );
+  const maximumVolume = Math.max(
+    minimumVolume,
+    toFiniteNumber(serverConfig.miningBeltMaximumAsteroidVolumeM3, 3_000_000),
+  );
+  const estimatedVolume = Math.min(
+    maximumVolume,
+    Math.max(minimumVolume, maximumVolume * areaRatio),
+  );
+  return Math.max(1, Math.round(estimatedVolume / unitVolume));
+}
+
+function buildFrontierDungeonMiningResourceSizing(entries, sourceDungeonID) {
+  const resources = normalizeArray(entries)
+    .filter((entry) => entry && toInt(entry.categoryID, 0) === 25);
+  if (resources.length <= 0) {
+    return new Map();
+  }
+
+  // Rank by a stable per-object hash so every materialization of the same
+  // dungeon uses the same visual sizes while repeated mineables do not all
+  // inherit one authored radius.
+  const ranked = resources
+    .map((entry) => ({
+      entry,
+      rankKey: hashText(
+        `${sourceDungeonID}:${toInt(entry.roomID, 0)}:${toInt(entry.objectID, 0)}:mining-radius`,
+      ),
+    }))
+    .sort((left, right) => (
+      left.rankKey - right.rankKey ||
+      toInt(left.entry.objectID, 0) - toInt(right.entry.objectID, 0)
+    ));
+  const radiusScaleByObjectID = new Map();
+  for (const [rank, candidate] of ranked.entries()) {
+    const scale = ranked.length === 1
+      ? 1
+      : FRONTIER_DUNGEON_MINING_MIN_RADIUS_SCALE +
+        (
+          (FRONTIER_DUNGEON_MINING_MAX_RADIUS_SCALE -
+            FRONTIER_DUNGEON_MINING_MIN_RADIUS_SCALE) *
+          (rank / (ranked.length - 1))
+        );
+    radiusScaleByObjectID.set(toInt(candidate.entry.objectID, 0), scale);
+  }
+
+  return new Map(resources.map((entry) => {
+    const objectID = toInt(entry.objectID, 0);
+    const baseRadius = resolveFrontierDungeonResourceBaseRadius(entry);
+    const radius = Math.round(baseRadius * toFiniteNumber(radiusScaleByObjectID.get(objectID), 1));
+    return [
+      objectID,
+      { radius, resourceQuantity: estimateFrontierDungeonResourceQuantity(entry, radius) },
+    ];
+  }));
+}
+
+function normalizeFrontierDungeonUsageChance(value, fallback = 100) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return Math.max(0, Math.min(100, toFiniteNumber(fallback, 100)));
+  }
+  return Math.max(0, Math.min(100, numeric));
+}
+
+function frontierDungeonChancePasses(seed, usageChance) {
+  const normalizedUsageChance = normalizeFrontierDungeonUsageChance(usageChance);
+  if (normalizedUsageChance <= 0) {
+    return false;
+  }
+  if (normalizedUsageChance >= 100) {
+    return true;
+  }
+  return ((hashText(seed) / 0x1_0000_0000) * 100) < normalizedUsageChance;
+}
+
+function resolveInitialFrontierDungeonSceneObjectIDs(
+  template,
+  flattenedObjects,
+  sourceDungeonID,
+  instance = null,
+) {
+  const configuredSpawnerTypes = normalizeObject(
+    frontierDungeonSpawns.getConfig().spawnerTypes,
+  );
+  const objectByID = new Map(
+    normalizeArray(flattenedObjects)
+      .filter((entry) => entry && toInt(entry.objectID, 0) > 0)
+      .map((entry) => [toInt(entry.objectID, 0), entry]),
+  );
+  const authoredSpawnTargets = new Set<any>();
+  const triggers = normalizeArray(template && template.triggers)
+    .filter((trigger) => trigger && typeof trigger === "object");
+  for (const trigger of triggers) {
+    for (const event of normalizeArray(trigger && trigger.triggerEvents)) {
+      if (toInt(event && event.eventTypeID, 0) !== FRONTIER_DUNGEON_OBJECT_SPAWN_EVENT_TYPE_ID) {
+        continue;
+      }
+      const targetObjectID = Math.max(0, toInt(event && event.objectID, 0));
+      if (targetObjectID > 0) {
+        authoredSpawnTargets.add(targetObjectID);
+      }
+    }
+  }
+
+  const isSceneObject = (entry) => Boolean(
+    entry &&
+    normalizeLowerText(entry.object && entry.object.role, "scenery") === "scenery" &&
+    !Object.prototype.hasOwnProperty.call(configuredSpawnerTypes, String(entry.typeID)),
+  );
+  const activeObjectIDs = new Set<any>();
+  for (const entry of objectByID.values()) {
+    if (!isSceneObject(entry)) {
+      continue;
+    }
+    const guardCommand = normalizeObject(entry.object && entry.object.guardCommand);
+    const rawTriggerSpawn = Object.prototype.hasOwnProperty.call(
+      guardCommand,
+      "objectTriggerSpawn",
+    )
+      ? toInt(guardCommand.objectTriggerSpawn, 0)
+      : null;
+    // Objects with an authored incoming spawn event start hidden unless the
+    // template explicitly marks them as initially present. A stray
+    // objectTriggerSpawn=1 without any incoming event must remain visible;
+    // otherwise malformed/partial templates would make the prop unreachable.
+    if (authoredSpawnTargets.has(entry.objectID) && rawTriggerSpawn !== 0) {
+      continue;
+    }
+    activeObjectIDs.add(entry.objectID);
+  }
+
+  const initialTriggers = triggers
+    .map((trigger, index) => ({ trigger, index }))
+    .filter(({ trigger }) => (
+      toInt(trigger && trigger.triggerTypeID, 0) === FRONTIER_DUNGEON_INITIAL_TRIGGER_TYPE_ID
+    ));
+  const triggerGroups = new Map<any, any>();
+  for (const triggerEntry of initialTriggers) {
+    const sourceObjectID = Math.max(0, toInt(triggerEntry.trigger && triggerEntry.trigger.objectID, 0));
+    const groupTag = normalizeLowerText(triggerEntry.trigger && triggerEntry.trigger.groupTag, "");
+    const groupKey = groupTag
+      ? `${sourceObjectID}:${groupTag}`
+      : `${sourceObjectID}:trigger:${toInt(triggerEntry.trigger && triggerEntry.trigger.triggerID, triggerEntry.index)}`;
+    const group = triggerGroups.get(groupKey) || [];
+    group.push(triggerEntry);
+    triggerGroups.set(groupKey, group);
+  }
+
+  const instanceSeed = normalizeText(
+    instance && (
+      instance.instanceID ||
+      instance.metadata && instance.metadata.siteID
+    ),
+    String(sourceDungeonID),
+  );
+  for (const [groupKey, group] of triggerGroups.entries()) {
+    const weightedTriggers = group.map((entry) => ({
+      ...entry,
+      usageChance: normalizeFrontierDungeonUsageChance(entry.trigger && entry.trigger.usageChance),
+    }));
+    const totalUsageChance = weightedTriggers.reduce(
+      (sum, entry) => sum + entry.usageChance,
+      0,
+    );
+    if (totalUsageChance <= 0) {
+      continue;
+    }
+    const rollRange = Math.max(100, totalUsageChance);
+    const roll = (hashText(
+      `${sourceDungeonID}:${instanceSeed}:initial-trigger-group:${groupKey}`,
+    ) / 0x1_0000_0000) * rollRange;
+    let cumulativeUsageChance = 0;
+    let selectedTrigger = null;
+    for (const entry of weightedTriggers) {
+      cumulativeUsageChance += entry.usageChance;
+      if (roll < cumulativeUsageChance) {
+        selectedTrigger = entry;
+        break;
+      }
+    }
+    if (!selectedTrigger) {
+      continue;
+    }
+
+    const triggerID = toInt(
+      selectedTrigger.trigger && selectedTrigger.trigger.triggerID,
+      selectedTrigger.index,
+    );
+    for (const [eventIndex, event] of normalizeArray(
+      selectedTrigger.trigger && selectedTrigger.trigger.triggerEvents,
+    ).entries()) {
+      const eventTypeID = toInt(event && event.eventTypeID, 0);
+      if (![
+        FRONTIER_DUNGEON_OBJECT_SPAWN_EVENT_TYPE_ID,
+        FRONTIER_DUNGEON_OBJECT_DESPAWN_EVENT_TYPE_ID,
+      ].includes(eventTypeID)) {
+        continue;
+      }
+      const targetObjectID = Math.max(0, toInt(event && event.objectID, 0));
+      const target = objectByID.get(targetObjectID) || null;
+      if (!isSceneObject(target)) {
+        continue;
+      }
+      const eventID = toInt(event && event.eventID, eventIndex);
+      if (!frontierDungeonChancePasses(
+        `${sourceDungeonID}:${instanceSeed}:initial-trigger:${triggerID}:event:${eventID}`,
+        event && event.usageChance,
+      )) {
+        continue;
+      }
+      if (eventTypeID === FRONTIER_DUNGEON_OBJECT_SPAWN_EVENT_TYPE_ID) {
+        activeObjectIDs.add(targetObjectID);
+      } else {
+        activeObjectIDs.delete(targetObjectID);
+      }
+    }
+  }
+
+  return activeObjectIDs;
+}
+
+function buildFrontierDungeonDerivedPopulationHints(template, instance = null) {
+  const entryGroupID = resolveFrontierDungeonTemplateGroupID(template);
+  const rooms = normalizeArray(template && template.rooms);
+  if (!FRONTIER_DUNGEON_SITE_GROUP_IDS.has(entryGroupID) || rooms.length <= 0) {
+    return null;
+  }
+
+  const sourceDungeonID = Math.max(
+    0,
+    toInt(template && (template.sourceDungeonID || template.dungeonID || template._key), 0),
+  );
+  const entryObjectID = Math.max(
+    0,
+    toInt(
+      template && (
+        template.entryObjectID ||
+        template.dungeonEntryObjectID ||
+        template.entryDungeonObjectID
+      ),
+      0,
+    ),
+  );
+  const flattenedObjects: any[] = [];
+  for (const [roomIndex, room] of rooms.entries()) {
+    const roomPosition = clonePosition(
+      room && room.position || {
+        x: room && room.x,
+        y: room && room.y,
+        z: room && room.z,
+      },
+    );
+    for (const [objectIndex, object] of normalizeArray(room && room.objects).entries()) {
+      const objectID = Math.max(0, toInt(object && object.objectID, 0));
+      const typeID = Math.max(0, toInt(object && object.typeID, 0));
+      if (objectID <= 0 || typeID <= 0) {
+        continue;
+      }
+      const typeRecord = resolveItemByTypeID(typeID) || null;
+      const groupID = Math.max(0, toInt(typeRecord && typeRecord.groupID, 0));
+      const categoryID = Math.max(0, toInt(typeRecord && typeRecord.categoryID, 0));
+      flattenedObjects.push({
+        absolutePosition: addVectors(roomPosition, clonePosition(object && object.position)),
+        authoredIndex: (roomIndex * 1_000_000) + objectIndex,
+        categoryID,
+        groupID,
+        object,
+        objectID,
+        roomID: Math.max(0, toInt(object && object.roomID, toInt(room && room.roomID, 0))),
+        typeID,
+        typeRecord,
+      });
+    }
+  }
+
+  const entryObject = flattenedObjects.find((entry) => entry.objectID === entryObjectID) || null;
+  const entryPosition = entryObject
+    ? clonePosition(entryObject.absolutePosition)
+    : { x: 0, y: 0, z: 0 };
+  const configuredSpawnerTypes = normalizeObject(
+    frontierDungeonSpawns.getConfig().spawnerTypes,
+  );
+  const initialSceneObjectIDs = resolveInitialFrontierDungeonSceneObjectIDs(
+    template,
+    flattenedObjects,
+    sourceDungeonID,
+    instance,
+  );
+  const initialSceneObjects = flattenedObjects.filter((entry) => (
+    entry.objectID !== entryObjectID &&
+    !Object.prototype.hasOwnProperty.call(configuredSpawnerTypes, String(entry.typeID)) &&
+    initialSceneObjectIDs.has(entry.objectID) &&
+    normalizeLowerText(entry.object && entry.object.role, "scenery") === "scenery"
+  ));
+  const lootContainerObjects = initialSceneObjects.filter((entry) => (
+    Boolean(frontierDungeonLoot.resolveCargoContainerLootTable(entry.typeID))
+  ));
+  const lootContainerObjectIDs = new Set(
+    lootContainerObjects.map((entry) => entry.objectID),
+  );
+  const nonLootSceneObjects = initialSceneObjects.filter(
+    (entry) => !lootContainerObjectIDs.has(entry.objectID),
+  );
+  const resourceObjects = nonLootSceneObjects.filter((entry) => entry.categoryID === 25);
+  const structuralObjects = nonLootSceneObjects.filter((entry) => (
+    entry.categoryID !== 25 &&
+    (
+      entry.categoryID === 11 ||
+      [226, 306, 319, 4_873, 4_874].includes(entry.groupID)
+    )
+  ));
+  const selected = [
+    ...selectEvenlySpacedEntries(resourceObjects, FRONTIER_DUNGEON_MAX_RESOURCE_PROPS),
+    ...selectEvenlySpacedEntries(structuralObjects, FRONTIER_DUNGEON_MAX_STRUCTURAL_PROPS),
+  ];
+  const selectedObjects = new Set(selected);
+  const remainingCapacity = Math.max(
+    0,
+    SITE_CONTENT_MAX_EXACT_ENVIRONMENT_PROPS - selected.length,
+  );
+  selected.push(...selectEvenlySpacedEntries(
+    nonLootSceneObjects.filter((entry) => !selectedObjects.has(entry)),
+    remainingCapacity,
+  ));
+  selected.sort((left, right) => left.authoredIndex - right.authoredIndex);
+  const miningResourceSizing = entryGroupID === FRONTIER_DUNGEON_MINING_SITE_GROUP_ID
+    ? buildFrontierDungeonMiningResourceSizing(selected, sourceDungeonID)
+    : new Map();
+
+  const environmentProps = selected.map((entry) => {
+    const object = entry.object;
+    const typeName = resolveTypeRecordName(entry.typeRecord, "");
+    const localName = normalizeText(object && object.localName, "");
+    let resourceProfile = null;
+    if (entry.groupID === FRONTIER_DUNGEON_RESOURCE_GROUP_ID) {
+      try {
+        const { classifyCrudeMatterResource } = require(path.join(
+          __dirname,
+          "../../space/frontierRiftAuthority",
+        ));
+        resourceProfile = classifyCrudeMatterResource({
+          ...object,
+          itemName: typeName,
+          localName,
+        });
+      } catch (_error) {
+        resourceProfile = null;
+      }
+    }
+    const miningSizing = miningResourceSizing.get(entry.objectID) || null;
+    return {
+      authoredRadius: Math.max(
+        0,
+        toFiniteNumber(
+          miningSizing && miningSizing.radius,
+          toFiniteNumber(object && object.radius, 0),
+        ),
+      ) || null,
+      dunObjectID: entry.objectID,
+      dunObjectNameID: object && object.objectNameID != null
+        ? object.objectNameID
+        : undefined,
+      dunRotation: [
+        toFiniteNumber(object && object.yaw, 0),
+        toFiniteNumber(object && object.pitch, 0),
+        toFiniteNumber(object && object.roll, 0),
+      ],
+      dungeonObjectGroupTag: normalizeText(object && object.groupTag, "") || null,
+      dungeonObjectLocalName: localName || null,
+      exact: true,
+      frontierDungeonResource: entry.categoryID === 25,
+      frontierRiftFormation: resourceProfile && resourceProfile.formation || null,
+      frontierRiftYieldTier: resourceProfile && resourceProfile.potential || null,
+      key: `frontier-dungeon:${sourceDungeonID}:${entry.roomID}:${entry.objectID}`,
+      miningYieldTypeID: entry.categoryID === 25 ? entry.typeID : null,
+      positionOffset: subtractVectors(entry.absolutePosition, entryPosition),
+      resourceQuantity: Math.max(
+        0,
+        toInt(
+          miningSizing && miningSizing.resourceQuantity,
+          toInt(resourceProfile && resourceProfile.resourceQuantity, 0),
+        ),
+      ) || null,
+      suppressSlimGraphicID: true,
+      suppressSlimName: true,
+      typeID: entry.typeID,
+    };
+  });
+  const containers = lootContainerObjects
+    .slice(0, SITE_CONTENT_MAX_CONTAINER_COUNT)
+    .map((entry) => {
+      const typeName = resolveTypeRecordName(entry.typeRecord, "Frontier Loot Container");
+      const localName = normalizeText(entry.object && entry.object.localName, "");
+      return {
+        count: 1,
+        dunObjectID: entry.objectID,
+        exact: true,
+        label: localName || typeName,
+        positionOffset: subtractVectors(entry.absolutePosition, entryPosition),
+        role: "loot",
+        typeID: entry.typeID,
+      };
+    });
+
+  return {
+    exactContentCaps: {
+      containers: containers.length,
+      environmentProps: environmentProps.length,
+    },
+    containers,
+    environmentProps,
+    frontierDungeonScene: true,
+    ...(template.temporaryLandscapeProfile === true ? { temporaryLandscapeProfile: true } : {}),
+    roomCount: rooms.length,
+    source: "frontier_dungeon_runtime_derived",
+  };
+}
+
+function mergeFrontierDungeonPopulationHints(baseHints, derivedHints) {
+  if (!derivedHints) {
+    return baseHints ? cloneValue(baseHints) : null;
+  }
+  const clonedBase = baseHints ? cloneValue(baseHints) : {};
+  const baseEnvironmentProps = normalizeArray(clonedBase && clonedBase.environmentProps);
+  const configuredEnvironmentProps = baseEnvironmentProps.filter((entry) => (
+    entry && entry.frontierDungeonConfiguredEntity === true
+  ));
+  const hasExactBaseEnvironment = baseEnvironmentProps.some((entry) => (
+    entry &&
+    entry.exact === true &&
+    entry.frontierDungeonConfiguredEntity !== true
+  ));
+  const environmentProps = hasExactBaseEnvironment
+    ? baseEnvironmentProps
+    : [
+      ...normalizeArray(derivedHints && derivedHints.environmentProps),
+      ...configuredEnvironmentProps,
+    ];
+  const baseContainers = normalizeArray(clonedBase && clonedBase.containers);
+  const derivedContainers = normalizeArray(derivedHints && derivedHints.containers);
+  const containers = baseContainers.length > 0 ? baseContainers : derivedContainers;
+  const baseCaps = normalizeObject(clonedBase && clonedBase.exactContentCaps);
+  const derivedCaps = normalizeObject(derivedHints && derivedHints.exactContentCaps);
+  return {
+    ...cloneValue(derivedHints),
+    ...clonedBase,
+    exactContentCaps: {
+      ...derivedCaps,
+      ...baseCaps,
+      containers: Math.max(
+        containers.length,
+        toInt(baseCaps.containers, 0),
+        toInt(derivedCaps.containers, 0),
+      ),
+      environmentProps: Math.max(
+        environmentProps.length,
+        toInt(baseCaps.environmentProps, 0),
+        toInt(derivedCaps.environmentProps, 0),
+      ),
+    },
+    containers,
+    environmentProps,
+    frontierDungeonScene: true,
+    roomCount: Math.max(
+      toInt(clonedBase && clonedBase.roomCount, 0),
+      toInt(derivedHints && derivedHints.roomCount, 0),
+    ),
+    source: normalizeText(
+      clonedBase && clonedBase.source,
+      normalizeText(derivedHints && derivedHints.source, "frontier_dungeon_runtime_derived"),
+    ),
+  };
+}
+
+const FRONTIER_DUNGEON_PRIMARY_CONTENT_CLUSTER_RADIUS_METERS = 250_000;
+
+function isAuthoredFrontierExactDescriptor(entry, options: Record<string, any> = {}) {
+  if (!entry || typeof entry !== "object") {
+    return false;
+  }
+  if (options.plan && options.plan.exact !== true) {
+    return false;
+  }
+  const key = normalizeLowerText(entry.key, "");
+  return (
+    Math.max(0, toInt(entry.dunObjectID, 0)) > 0 ||
+    Math.max(0, toInt(options.plan && options.plan.frontierDungeonObjectID, 0)) > 0 ||
+    key.startsWith("frontier-dungeon:") ||
+    key.includes(":controller-")
+  );
+}
+
+function listAuthoredFrontierExactOffsetDescriptors(populationHints) {
+  if (!populationHints || typeof populationHints !== "object") {
+    return [];
+  }
+  const descriptors: any[] = [];
+  const append = (entry, options: Record<string, any> = {}) => {
+    if (
+      !isAuthoredFrontierExactDescriptor(entry, options) ||
+      !entry.positionOffset ||
+      typeof entry.positionOffset !== "object"
+    ) {
+      return;
+    }
+    descriptors.push(entry);
+  };
+  for (const entry of normalizeArray(populationHints.environmentProps)) {
+    if (entry && entry.exact === true) {
+      append(entry);
+    }
+  }
+  for (const entry of normalizeArray(populationHints.containers)) {
+    if (entry && entry.exact === true) {
+      append(entry);
+    }
+  }
+  for (const entry of normalizeArray(populationHints.miningRocks)) {
+    if (entry && entry.exact === true) {
+      append(entry);
+    }
+  }
+  for (const plan of normalizeArray(populationHints.encounters)) {
+    if (!plan || plan.exact !== true) {
+      continue;
+    }
+    for (const entry of normalizeArray(plan.spawnEntries)) {
+      append(entry, { plan });
+    }
+  }
+  return descriptors;
+}
+
+function medianCoordinate(values: any[] = []) {
+  const sorted = values
+    .map((value) => toFiniteNumber(value, 0))
+    .sort((left, right) => left - right);
+  if (sorted.length <= 0) {
+    return 0;
+  }
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
+}
+
+function resolvePrimaryFrontierContentOrigin(offsetDescriptors: any[] = []) {
+  const candidates = normalizeArray(offsetDescriptors)
+    .map((entry) => clonePosition(entry && entry.positionOffset));
+  if (candidates.length <= 0) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const radiusSquared = FRONTIER_DUNGEON_PRIMARY_CONTENT_CLUSTER_RADIUS_METERS ** 2;
+  let primaryCluster: any[] = [];
+  for (const candidate of candidates) {
+    const cluster = candidates.filter((other) => {
+      const delta = subtractVectors(other, candidate);
+      return (
+        (delta.x * delta.x) +
+        (delta.y * delta.y) +
+        (delta.z * delta.z)
+      ) <= radiusSquared;
+    });
+    if (cluster.length > primaryCluster.length) {
+      primaryCluster = cluster;
+    }
+  }
+  const selected = primaryCluster.length > 0 ? primaryCluster : candidates;
+  return {
+    x: medianCoordinate(selected.map((entry) => entry.x)),
+    y: medianCoordinate(selected.map((entry) => entry.y)),
+    z: medianCoordinate(selected.map((entry) => entry.z)),
+  };
+}
+
+function rebaseFrontierDungeonExactContent(populationHints) {
+  if (
+    !populationHints ||
+    typeof populationHints !== "object" ||
+    populationHints.frontierDungeonScene !== true ||
+    populationHints.frontierDungeonContentRebased === true
+  ) {
+    return populationHints ? cloneValue(populationHints) : populationHints;
+  }
+  // structuredClone preserves optional authored fields whose value is
+  // explicitly undefined. JSON cloning would silently change the descriptor
+  // shape while performing this coordinate-only transform.
+  const rebased = structuredClone(populationHints);
+  const descriptors = listAuthoredFrontierExactOffsetDescriptors(rebased);
+  if (descriptors.length <= 0) {
+    return rebased;
+  }
+  const contentOrigin = resolvePrimaryFrontierContentOrigin(descriptors);
+  for (const descriptor of descriptors) {
+    descriptor.positionOffset = subtractVectors(descriptor.positionOffset, contentOrigin);
+  }
+  rebased.frontierDungeonContentOriginOffset = contentOrigin;
+  rebased.frontierDungeonContentRebased = true;
+  return rebased;
+}
+
 function buildMissionDerivedObjectiveMarkers(template) {
   const objectiveHints = normalizeArray(template && template.objectiveHints)
     .map((entry) => normalizeText(entry && (entry.label || entry.text || entry.raw || entry), ""))
@@ -1934,20 +2744,30 @@ function resolvePopulationHints(instance, template) {
     typeof instance.spawnState.populationHints === "object"
       ? instance.spawnState.populationHints
       : null;
-  if (spawnHints) {
-    return cloneValue(spawnHints);
-  }
   const templateHints =
     template &&
     template.populationHints &&
     typeof template.populationHints === "object"
       ? template.populationHints
       : null;
-  const baseHints = templateHints ? cloneValue(templateHints) : null;
+  const baseHints = spawnHints
+    ? cloneValue(spawnHints)
+    : templateHints
+      ? cloneValue(templateHints)
+      : null;
+  const frontierHints = rebaseFrontierDungeonExactContent(
+    mergeFrontierDungeonPopulationHints(
+      baseHints,
+      buildFrontierDungeonDerivedPopulationHints(template, instance),
+    ),
+  );
   if (normalizeLowerText(template && template.siteFamily, "") !== "mission") {
-    return baseHints;
+    return frontierHints;
   }
-  return mergeDerivedMissionPopulationHints(baseHints, buildDerivedMissionPopulationHints(template));
+  return mergeDerivedMissionPopulationHints(
+    frontierHints,
+    buildDerivedMissionPopulationHints(template),
+  );
 }
 
 function resolveEncounterPlans(populationHints) {
@@ -2263,6 +3083,19 @@ function isSiteObjectiveExplicitlySatisfied(instance) {
     Math.max(0, toInt(instance && instance.metadata && instance.metadata.objectiveSatisfiedAtMs, 0)) > 0;
 }
 
+function hasRecordedSitePlayerProgress(instance) {
+  return Boolean(
+    isSiteObjectiveExplicitlySatisfied(instance) ||
+    Math.max(
+      0,
+      toInt(
+        instance && instance.spawnState && instance.spawnState.lastPlayerProgressAtMs,
+        0,
+      ),
+    ) > 0
+  );
+}
+
 function isEncounterCompletionSatisfied(instance, plans, populationHints) {
   if (!instance || !Array.isArray(plans) || plans.length <= 0) {
     return false;
@@ -2446,7 +3279,11 @@ function syncEncounterStateProgress(scene, instance, plans, options: Record<stri
     if (!areSortedNumberListsEqual(encounterState && encounterState.remainingEntityIDs, aliveEntityIDs)) {
       patch.remainingEntityIDs = aliveEntityIDs;
     }
-    if (aliveEntityIDs.length <= 0 && completedAtMs <= 0) {
+    if (
+      aliveEntityIDs.length <= 0 &&
+      completedAtMs <= 0 &&
+      hasRecordedSitePlayerProgress(instance)
+    ) {
       patch.completedAtMs = nowMs;
       completedCount += 1;
     }
@@ -2789,7 +3626,7 @@ function isManagedMaterializedSiteInstance(instance) {
   return isManagedUniverseSiteInstance(instance) || isManagedMissionSiteInstance(instance);
 }
 
-function resolveEntityLabel(instance, template) {
+function resolveEntityLabel(instance, template, entryObjectTypeRecord = null) {
   const metadata = instance && instance.metadata && typeof instance.metadata === "object"
     ? instance.metadata
     : {};
@@ -2797,19 +3634,86 @@ function resolveEntityLabel(instance, template) {
     ? instance.spawnState
     : {};
   return normalizeText(
-    metadata.label,
+    resolveLocalizedTemplateName(template),
     normalizeText(
-      resolveLocalizedTemplateName(template),
+      resolveTypeRecordName(entryObjectTypeRecord),
       normalizeText(
-      spawnState.label,
-      `${resolveSiteFamilyLabel(instance && instance.siteFamily)} Site ${
-        Math.max(0, toInt(template && template.sourceDungeonID, 0)) ||
-        Math.max(0, toInt(template && template.dungeonNameID, 0)) ||
-        Math.max(0, toInt(instance && instance.instanceID, 0))
-      }`,
+        metadata.label,
+        normalizeText(
+          spawnState.label,
+          `${resolveSiteFamilyLabel(instance && instance.siteFamily)} Site ${
+            Math.max(0, toInt(template && template.sourceDungeonID, 0)) ||
+            Math.max(0, toInt(template && template.dungeonNameID, 0)) ||
+            Math.max(0, toInt(instance && instance.instanceID, 0))
+          }`,
+        ),
       ),
     ),
   );
+}
+
+function collectOccupiedDungeonSpawnPositions(scene) {
+  const occupied: any[] = [];
+  const seenEntityIDs = new Set();
+  for (const entityMap of [
+    scene && scene.staticEntitiesByID,
+    scene && scene.dynamicEntities,
+  ]) {
+    if (!(entityMap instanceof Map)) {
+      continue;
+    }
+    for (const entity of entityMap.values()) {
+      if (!entity || !entity.position || typeof entity.position !== "object") {
+        continue;
+      }
+      const entityID = toInt(entity.itemID ?? entity.entityID, 0);
+      if (entityID > 0 && seenEntityIDs.has(entityID)) {
+        continue;
+      }
+      if (entityID > 0) {
+        seenEntityIDs.add(entityID);
+      }
+      occupied.push({
+        position: clonePosition(entity.position),
+        radius: Math.max(
+          0,
+          toFiniteNumber(entity.collisionRadius ?? entity.radius, 0),
+        ),
+      });
+    }
+  }
+  return occupied;
+}
+
+function allocateSeparatedDungeonSpawnPosition(
+  scene,
+  desiredPosition,
+  reservedPositions: any[] = [],
+  options: Record<string, any> = {},
+) {
+  const candidateRadius = Math.max(0, toFiniteNumber(options.candidateRadius, 1_000));
+  const position = buildSeparatedSpawnPosition(
+    desiredPosition,
+    [
+      ...collectOccupiedDungeonSpawnPositions(scene),
+      ...(Array.isArray(reservedPositions) ? reservedPositions : []),
+    ],
+    {
+      minimumSeparationMeters: Math.max(
+        1,
+        toFiniteNumber(
+          options.minimumSeparationMeters,
+          DEFAULT_DUNGEON_SPAWN_SEPARATION_METERS,
+        ),
+      ),
+      candidateRadius,
+      seed: options.seed,
+    },
+  );
+  if (Array.isArray(reservedPositions)) {
+    reservedPositions.push({ position: clonePosition(position), radius: candidateRadius });
+  }
+  return position;
 }
 
 function buildSiteEntity(instance) {
@@ -2825,21 +3729,61 @@ function buildSiteEntity(instance) {
       template && template.entryObjectTypeID,
     ),
   ) || (siteKind === "anomaly" ? COSMIC_ANOMALY_TYPE_ID : COSMIC_SIGNATURE_TYPE_ID);
-  const typeRecord = resolveItemByTypeID(entryObjectTypeID) || null;
+  const entryObjectTypeRecord = resolveItemByTypeID(entryObjectTypeID) || null;
+  const fallbackTypeID = siteKind === "anomaly"
+    ? COSMIC_ANOMALY_TYPE_ID
+    : COSMIC_SIGNATURE_TYPE_ID;
+  const presentedTypeID = CLIENT_CR_DUNGEON_GROUP_IDS.has(
+      Math.max(0, toInt(entryObjectTypeRecord && entryObjectTypeRecord.groupID, 0)),
+    )
+    ? entryObjectTypeID
+    : fallbackTypeID;
+  const typeRecord = presentedTypeID === entryObjectTypeID
+    ? entryObjectTypeRecord
+    : resolveItemByTypeID(presentedTypeID) || null;
   const family = normalizeLowerText(instance && instance.siteFamily, "unknown");
-  const label = resolveEntityLabel(instance, template);
+  const label = resolveEntityLabel(instance, template, entryObjectTypeRecord);
   const position = clonePosition(instance && instance.position);
   const strengthAttributeID = resolveFallbackStrengthAttribute(family);
   const groupID = siteKind === "anomaly" ? COSMIC_ANOMALY_GROUP_ID : COSMIC_SIGNATURE_GROUP_ID;
   const populationHints = resolvePopulationHints(instance, template);
   const encounterPlans = resolveEncounterPlans(populationHints);
+  const instanceMetadata = normalizeObject(instance && instance.metadata);
+  const instanceSpawnState = normalizeObject(instance && instance.spawnState);
+  const dungeonTags = [...new Set([
+    ...normalizeArray(instance && instance.dungeonTags),
+    ...normalizeArray(instanceMetadata.dungeonTags),
+    ...normalizeArray(instanceSpawnState.dungeonTags),
+    ...normalizeArray(template && template.frontierDungeonTags),
+  ].map((entry) => normalizeLowerText(entry, "")).filter(Boolean))];
+  const dungeonFactionKey = normalizeLowerText(
+    instance && instance.dungeonFactionKey ||
+    instanceMetadata.dungeonFactionKey ||
+    instanceSpawnState.dungeonFactionKey ||
+    template && template.frontierFactionKey,
+    "",
+  ) || null;
+  const dungeonFactionTag = normalizeLowerText(
+    instance && instance.dungeonFactionTag ||
+    instanceMetadata.dungeonFactionTag ||
+    instanceSpawnState.dungeonFactionTag ||
+    template && template.frontierFactionTag,
+    "",
+  ) || null;
+  const dungeonWarpInDistanceMeters = Math.max(
+    10_000,
+    toFiniteNumber(
+      template && template.frontierDungeonWarpInDistanceMeters,
+      frontierDungeonSpawns.getConfig().defaults.siteWarpInDistanceMeters,
+    ),
+  );
 
   if (isManagedMissionSiteInstance(instance)) {
     return {
       kind: "missionSite" as const,
       itemID: Math.max(0, toInt(instance && instance.metadata && instance.metadata.siteID, 0)) ||
         Math.max(0, toInt(instance && instance.instanceID, 0)),
-      typeID: toInt(typeRecord && typeRecord.typeID, entryObjectTypeID),
+      typeID: toInt(typeRecord && typeRecord.typeID, presentedTypeID) || presentedTypeID,
       groupID: toInt(typeRecord && typeRecord.groupID, groupID) || groupID,
       categoryID: toInt(typeRecord && typeRecord.categoryID, 16) || 16,
       graphicID: toInt(typeRecord && typeRecord.graphicID, 0) || null,
@@ -2850,7 +3794,10 @@ function buildSiteEntity(instance) {
       velocity: { x: 0, y: 0, z: 0 },
       direction: { x: 1, y: 0, z: 0 },
       radius: Math.max(1_000, toFiniteNumber(typeRecord && typeRecord.radius, 2_000)),
-      staticVisibilityScope: "bubble",
+      // The root is a system-view navigation anchor. Encounter contents built
+      // from it remain bubble-scoped, but the root ball must reach Michelle for
+      // the client to construct a ResolvedDungeon marker before arrival.
+      staticVisibilityScope: "system",
       dungeonMaterializedSiteContent: true,
       dungeonSiteInstanceID:
         Math.max(0, toInt(instance && instance.instanceID, 0)) || null,
@@ -2862,6 +3809,10 @@ function buildSiteEntity(instance) {
       dungeonNameID: toInt(instance && instance.dungeonNameID, 0) || null,
       archetypeID: toInt(instance && instance.archetypeID, 0) || null,
       factionID: toInt(instance && instance.factionID, 0) || null,
+      dungeonTags,
+      dungeonFactionKey,
+      dungeonFactionTag,
+      dungeonWarpInDistanceMeters,
       entryObjectTypeID,
       dungeonEncounterPlanCount: encounterPlans.length,
       dungeonLootProfiles: normalizeArray(populationHints && populationHints.lootProfiles),
@@ -2877,7 +3828,8 @@ function buildSiteEntity(instance) {
     signalTrackerSiteLabel: label,
     signalTrackerSiteDifficulty: Math.max(1, toInt(instance && instance.difficulty, 1)),
     signalTrackerSiteGroupID: groupID,
-    signalTrackerSiteTypeID: toInt(typeRecord && typeRecord.typeID, entryObjectTypeID),
+    signalTrackerSiteTypeID:
+      toInt(typeRecord && typeRecord.typeID, presentedTypeID) || presentedTypeID,
     signalTrackerEntryObjectTypeID: entryObjectTypeID,
     signalTrackerStrengthAttributeID: strengthAttributeID > 0 ? strengthAttributeID : null,
     signalTrackerAllowedTypes: [],
@@ -2885,13 +3837,16 @@ function buildSiteEntity(instance) {
     signalTrackerAnomalySiteFamily: siteKind === "anomaly" ? family : undefined,
     signalTrackerSignatureSite: siteKind === "signature",
     signalTrackerSignatureSiteFamily: siteKind === "signature" ? family : undefined,
+    signalTrackerSiteTags: dungeonTags,
+    signalTrackerSiteFactionKey: dungeonFactionKey,
+    signalTrackerSiteFactionTag: dungeonFactionTag,
     dungeonSiteInstanceID: Math.max(0, toInt(instance && instance.instanceID, 0)) || null,
     dungeonSiteID: Math.max(0, toInt(instance && instance.metadata && instance.metadata.siteID, 0)) ||
       Math.max(0, toInt(instance && instance.instanceID, 0)) ||
       null,
     itemID: Math.max(0, toInt(instance && instance.metadata && instance.metadata.siteID, 0)) ||
       Math.max(0, toInt(instance && instance.instanceID, 0)),
-    typeID: toInt(typeRecord && typeRecord.typeID, entryObjectTypeID),
+    typeID: toInt(typeRecord && typeRecord.typeID, presentedTypeID) || presentedTypeID,
     groupID: toInt(typeRecord && typeRecord.groupID, groupID) || groupID,
     categoryID: toInt(typeRecord && typeRecord.categoryID, 16) || 16,
     graphicID: toInt(typeRecord && typeRecord.graphicID, 0) || null,
@@ -2902,11 +3857,17 @@ function buildSiteEntity(instance) {
     velocity: { x: 0, y: 0, z: 0 },
     direction: { x: 1, y: 0, z: 0 },
     radius: Math.max(1_000, toFiniteNumber(typeRecord && typeRecord.radius, 2_000)),
-    staticVisibilityScope: "bubble",
+    // Keep the root available as a system-view navigation anchor. The spawned
+    // room content remains bubble-scoped independently.
+    staticVisibilityScope: "system",
     dungeonID: toInt(instance && instance.sourceDungeonID, 0) || null,
     dungeonNameID: toInt(instance && instance.dungeonNameID, 0) || null,
     archetypeID: toInt(instance && instance.archetypeID, 0) || null,
     factionID: toInt(instance && instance.factionID, 0) || null,
+    dungeonTags,
+    dungeonFactionKey,
+    dungeonFactionTag,
+    dungeonWarpInDistanceMeters,
     entryObjectTypeID,
     dungeonEncounterPlanCount: encounterPlans.length,
     dungeonLootProfiles: normalizeArray(populationHints && populationHints.lootProfiles),
@@ -2934,6 +3895,9 @@ function buildStableUniverseSiteEntitySignature(entity) {
     signalTrackerAnomalySiteFamily: normalizeLowerText(entity.signalTrackerAnomalySiteFamily, ""),
     signalTrackerSignatureSite: entity.signalTrackerSignatureSite === true,
     signalTrackerSignatureSiteFamily: normalizeLowerText(entity.signalTrackerSignatureSiteFamily, ""),
+    signalTrackerSiteTags: normalizeArray(entity.signalTrackerSiteTags),
+    signalTrackerSiteFactionKey: normalizeLowerText(entity.signalTrackerSiteFactionKey, ""),
+    signalTrackerSiteFactionTag: normalizeLowerText(entity.signalTrackerSiteFactionTag, ""),
     itemID: Math.max(0, toInt(entity.itemID, 0)),
     typeID: Math.max(0, toInt(entity.typeID, 0)),
     groupID: Math.max(0, toInt(entity.groupID, 0)),
@@ -2956,6 +3920,9 @@ function buildStableUniverseSiteEntitySignature(entity) {
     dungeonNameID: Math.max(0, toInt(entity.dungeonNameID, 0)) || null,
     archetypeID: Math.max(0, toInt(entity.archetypeID, 0)) || null,
     factionID: Math.max(0, toInt(entity.factionID, 0)) || null,
+    dungeonTags: normalizeArray(entity.dungeonTags),
+    dungeonFactionKey: normalizeLowerText(entity.dungeonFactionKey, ""),
+    dungeonFactionTag: normalizeLowerText(entity.dungeonFactionTag, ""),
     entryObjectTypeID: Math.max(0, toInt(entity.entryObjectTypeID, 0)) || null,
     dungeonEncounterPlanCount: Math.max(0, toInt(entity.dungeonEncounterPlanCount, 0)),
     dungeonLootProfiles: normalizeArray(entity.dungeonLootProfiles),
@@ -3368,10 +4335,8 @@ function buildMiningRockEntities(instance, siteEntity, populationHints) {
     // (INTEGER DIVIDE BY ZERO building a modelless asteroid). So the shell goes in typeID/groupID/
     // categoryID/graphicID; the ORE rides only in slim*/miningYield* (overview + mining still show the ore,
     // matching the golden slimItem). Log-authored owner/objective fields keep the golden dungeon-object identity.
-    const shellTypeID = MINING_ROCK_SHELL_TYPE_IDS[
-      (Math.abs(toInt(rock.oreTypeID, 0)) + index) % MINING_ROCK_SHELL_TYPE_IDS.length
-    ];
-    const shellRecord = resolveItemByTypeID(shellTypeID) || {};
+    const shellRecord = resolveMiningRockShellTypeRecord(rock.oreTypeID, index);
+    const shellTypeID = Math.max(0, toInt(shellRecord.typeID, 0));
     const shellGraphicID = toInt(shellRecord.graphicID, 0) || null;
     const dunObjectID = Math.max(0, toInt(rock.dunObjectID, 0)) ||
       (800000 + (siteID % 100000) + index + 1);
@@ -3463,7 +4428,7 @@ function buildContainerEntities(instance, siteEntity, populationHints) {
   const instanceID = Math.max(0, toInt(instance && instance.instanceID, 0));
   const containerSpecs = populationHints.containers
     .filter((container) => container && typeof container === "object")
-    .flatMap((container) => {
+    .flatMap((container, sourceIndex) => {
       const count = Math.max(
         0,
         Math.min(
@@ -3492,6 +4457,10 @@ function buildContainerEntities(instance, siteEntity, populationHints) {
             quantity: Math.max(1, toInt(entry && entry.quantity, 1)),
           }))
           .filter((entry) => entry.typeID > 0),
+        dunObjectID: Math.max(0, toInt(container && container.dunObjectID, 0)) || null,
+        exact: container && container.exact === true,
+        positionOffset: clonePosition(container && container.positionOffset),
+        sourceIndex,
         ordinal: index + 1,
       }));
     })
@@ -3504,8 +4473,10 @@ function buildContainerEntities(instance, siteEntity, populationHints) {
   return containerSpecs.map((container, index) => {
     const typeRecord = resolveContainerTypeRecord(container);
     const displayName = resolveContainerDisplayName(container, typeRecord, container.ordinal);
+    const containerIdentity = container.dunObjectID ||
+      `${container.sourceIndex + 1}:${container.ordinal}`;
     const contentKey = normalizeText(
-      `container:${container.role}:${container.ordinal}:${displayName}`,
+      `container:${container.role}:${containerIdentity}:${displayName}`,
       `container:${index + 1}`,
     ).toLowerCase();
     return {
@@ -3526,8 +4497,11 @@ function buildContainerEntities(instance, siteEntity, populationHints) {
       dungeonSiteContentExplicitLoot:
         container.explicitLoot && container.explicitLoot.length > 0 ? container.explicitLoot : null,
       dungeonSiteContentHackingDifficulty: container.hackingDifficulty,
+      dunObjectID: container.dunObjectID,
       itemID: SITE_CONTENT_CONTAINER_ID_BASE + (siteID * 100) + index + 1,
-      typeID: toInt(typeRecord && typeRecord.typeID, 23) || 23,
+      typeID: typeRecord
+        ? toInt(typeRecord.typeID, Math.max(0, toInt(container.typeID, 0)) || 23) || 23
+        : Math.max(0, toInt(container.typeID, 0)) || 23,
       groupID: toInt(typeRecord && typeRecord.groupID, 12) || 12,
       categoryID: toInt(typeRecord && typeRecord.categoryID, 2) || 2,
       graphicID: toInt(typeRecord && typeRecord.graphicID, 0) || null,
@@ -3536,7 +4510,9 @@ function buildContainerEntities(instance, siteEntity, populationHints) {
       slimName: displayName,
       position: addVectors(
         clonePosition(siteEntity && siteEntity.position),
-        buildContentOffset(`${siteID}:${container.role}`, index, total),
+        container.exact === true
+          ? container.positionOffset
+          : buildContentOffset(`${siteID}:${container.role}`, index, total),
       ),
       velocity: { x: 0, y: 0, z: 0 },
       direction: { x: 1, y: 0, z: 0 },
@@ -3746,6 +4722,13 @@ function maybeCompleteClearedEncounterSite(instance, populationHints, options: R
     return false;
   }
   const latestInstance = dungeonRuntime.getInstance(instance.instanceID) || instance;
+  // Arrival/materialization is not player progress. Without this gate a failed
+  // rematerialization (or a concurrent scene rebuild) can make every persisted
+  // encounter entity appear absent and immediately complete an untouched site.
+  // Destruction, hacking, and mining paths record progress explicitly.
+  if (!hasRecordedSitePlayerProgress(latestInstance)) {
+    return false;
+  }
   let latestCompletionAtMs = 0;
   for (const plan of plans) {
     const state = getEncounterStateByKey(latestInstance, plan.key);
@@ -4210,6 +5193,233 @@ function broadcastStaticSiteContentBatch(scene, entities, options: Record<string
   return filtered.length;
 }
 
+function resolveInculcatorBuildupSnapshot(instance, buildup, nowMs = Date.now()) {
+  if (
+    normalizeLowerText(buildup && buildup.kind, "") !== "inculcator_foundation"
+  ) {
+    return null;
+  }
+  const phases = normalizeArray(buildup && buildup.phases)
+    .map((phase) => ({
+      key: normalizeLowerText(phase && phase.key, ""),
+      durationMs: Math.max(
+        1_000,
+        Math.round(toFiniteNumber(phase && phase.durationSeconds, 0) * 1_000),
+      ),
+    }))
+    .filter((phase) => phase.key && phase.durationMs > 0);
+  if (phases.length <= 0) {
+    return null;
+  }
+  const existing = normalizeObject(
+    instance && instance.environmentState && instance.environmentState.inculcatorBuildup,
+  );
+  const timers = normalizeObject(instance && instance.timers);
+  const numericNowMs = Math.max(0, toInt(nowMs, Date.now()));
+  const startedAtMs = Math.max(
+    0,
+    toInt(
+      existing.startedAtMs,
+      toInt(timers.activatedAtMs, toInt(timers.createdAtMs, numericNowMs)),
+    ),
+  ) || numericNowMs;
+  const elapsedMs = Math.max(0, numericNowMs - startedAtMs);
+  let phaseIndex = 0;
+  let elapsedBeforePhaseMs = 0;
+  while (
+    phaseIndex < phases.length &&
+    elapsedMs >= elapsedBeforePhaseMs + phases[phaseIndex].durationMs
+  ) {
+    elapsedBeforePhaseMs += phases[phaseIndex].durationMs;
+    phaseIndex += 1;
+  }
+  const completed = phaseIndex >= phases.length;
+  const lastControllingFactionKey = normalizeLowerText(
+    existing.lastControllingFactionKey || instance && instance.dungeonFactionKey,
+    "",
+  ) || null;
+  const lastControllingFactionID = Math.max(
+    0,
+    toInt(existing.lastControllingFactionID, toInt(instance && instance.factionID, 0)),
+  ) || null;
+  return {
+    ...cloneValue(existing),
+    kind: "inculcator_foundation",
+    state: completed ? "completed" : "building",
+    phaseIndex,
+    phaseCount: phases.length,
+    phaseKey: completed ? "completed" : phases[phaseIndex].key,
+    startedAtMs,
+    phaseStartedAtMs: startedAtMs + elapsedBeforePhaseMs,
+    nextPhaseAtMs: completed
+      ? null
+      : startedAtMs + elapsedBeforePhaseMs + phases[phaseIndex].durationMs,
+    completedAtMs: completed ? startedAtMs + elapsedBeforePhaseMs : null,
+    completionEntityTypeID: Math.max(
+      0,
+      toInt(buildup && buildup.completionEntity && buildup.completionEntity.typeID, 0),
+    ) || null,
+    lastControllingFactionKey,
+    lastControllingFactionID,
+  };
+}
+
+function annotateSiteEntityWithInculcatorBuildup(siteEntity, snapshot) {
+  if (!siteEntity || !snapshot) {
+    return siteEntity;
+  }
+  siteEntity.inculcatorBuildupState = snapshot.state;
+  siteEntity.inculcatorBuildupPhaseIndex = snapshot.phaseIndex;
+  siteEntity.inculcatorBuildupPhaseCount = snapshot.phaseCount;
+  siteEntity.inculcatorBuildupPhaseKey = snapshot.phaseKey;
+  siteEntity.inculcatorBuildupStartedAtMs = snapshot.startedAtMs;
+  siteEntity.inculcatorBuildupNextPhaseAtMs = snapshot.nextPhaseAtMs;
+  siteEntity.inculcatorBuildupCompletedAtMs = snapshot.completedAtMs;
+  return siteEntity;
+}
+
+function buildInculcatorCompletionEntity(instance, siteEntity, buildup, snapshot) {
+  if (!instance || !siteEntity || !snapshot || snapshot.state !== "completed") {
+    return null;
+  }
+  const completionEntity = normalizeObject(buildup && buildup.completionEntity);
+  const typeID = Math.max(0, toInt(completionEntity.typeID, 0));
+  if (typeID <= 0) {
+    return null;
+  }
+  // Keep the production SDE authoritative while retaining a complete Steel
+  // Forge presentation for minimal/test static-data stores.
+  const typeRecord = resolveItemByTypeID(typeID) || (
+    typeID === 88_090
+      ? {
+        typeID: 88_090,
+        groupID: 226,
+        categoryID: 2,
+        graphicID: 28_127,
+        name: "Steel Forge",
+        radius: 2_000,
+      }
+      : null
+  );
+  if (!typeRecord) {
+    return null;
+  }
+  const siteID = Math.max(0, toInt(siteEntity.itemID, 0));
+  const instanceID = Math.max(0, toInt(instance.instanceID, 0));
+  if (siteID <= 0 || instanceID <= 0) {
+    return null;
+  }
+  const label = normalizeText(
+    completionEntity.name,
+    resolveTypeRecordName(typeRecord, "Steel Forge"),
+  );
+  const positionOffset = clonePosition(completionEntity.positionOffset);
+  const destinyPresentation = resolveSiteEnvironmentPropDestinyPresentation(
+    { destinyBootstrapDelivery: DESTINY_BOOTSTRAP_DELIVERY_ADDBALLS2 },
+    {
+      mass: typeRecord.mass,
+      maxVelocity: getTypeAttributeValue(typeID, "maxVelocity"),
+      agility: getTypeAttributeValue(typeID, "agility"),
+    },
+  );
+  const healthState = resolveTypeHealthState(typeID);
+  return {
+    kind: "siteEnvironmentProp" as const,
+    dungeonMaterializedSiteContent: true,
+    dungeonMaterializedEnvironment: true,
+    dungeonMaterializedBuildupCompletion: true,
+    dungeonSiteID: siteID,
+    dungeonSiteInstanceID: instanceID,
+    dungeonEnvironmentSource: "inculcator_buildup_completion",
+    itemID: SITE_CONTENT_BUILDUP_COMPLETION_ID_BASE + (siteID * 100) + 1,
+    typeID,
+    groupID: Math.max(0, toInt(typeRecord.groupID, 226)) || 226,
+    categoryID: Math.max(0, toInt(typeRecord.categoryID, 2)) || 2,
+    graphicID: Math.max(0, toInt(typeRecord.graphicID, 0)) || null,
+    ownerID: SITE_CONTENT_OWNER_ID,
+    itemName: label,
+    slimName: label,
+    ...buildSafeSitePropSlimOverrides(typeRecord),
+    position: addVectors(clonePosition(siteEntity.position), positionOffset),
+    velocity: { x: 0, y: 0, z: 0 },
+    direction: { x: 1, y: 0, z: 0 },
+    radius: Math.max(1, toFiniteNumber(typeRecord.radius, 2_000)),
+    shieldCapacity: healthState.shieldCapacity,
+    armorHP: healthState.armorHP,
+    structureHP: healthState.structureHP,
+    conditionState: cloneValue(healthState.conditionState),
+    staticVisibilityScope: "site",
+    inculcatorBuildupCompletedAtMs: snapshot.completedAtMs,
+    inculcatorLastControllingFactionKey: snapshot.lastControllingFactionKey,
+    inculcatorLastControllingFactionID: snapshot.lastControllingFactionID,
+    // Captures the ownership handoff point without assigning a fabricated IFF
+    // code before the controlling-faction mechanic is implemented.
+    inculcatorTransponderBindingPending: true,
+    ...destinyPresentation,
+  };
+}
+
+function processInculcatorSiteBuildup(
+  scene,
+  instance,
+  siteEntity,
+  populationHints,
+  options: Record<string, any> = {},
+) {
+  const buildup = normalizeObject(populationHints && populationHints.frontierDungeonBuildup);
+  if (normalizeLowerText(buildup.kind, "") !== "inculcator_foundation") {
+    return { phaseChanged: false, completed: false, entitySpawned: false };
+  }
+  const nowMs = Math.max(0, toInt(options.nowMs, Date.now()));
+  const snapshot = resolveInculcatorBuildupSnapshot(instance, buildup, nowMs);
+  if (!snapshot) {
+    return { phaseChanged: false, completed: false, entitySpawned: false };
+  }
+  const runtime = options.dungeonRuntime || dungeonRuntime;
+  const existing = normalizeObject(
+    instance && instance.environmentState && instance.environmentState.inculcatorBuildup,
+  );
+  const phaseChanged = !isDeepStrictEqual(existing, snapshot);
+  if (phaseChanged && runtime && typeof runtime.mergeEnvironmentState === "function") {
+    runtime.mergeEnvironmentState(instance.instanceID, {
+      inculcatorBuildup: snapshot,
+    }, { nowMs });
+  }
+  annotateSiteEntityWithInculcatorBuildup(siteEntity, snapshot);
+  if (snapshot.state !== "completed") {
+    return { phaseChanged, completed: false, entitySpawned: false, snapshot };
+  }
+  const completion = buildInculcatorCompletionEntity(
+    instance,
+    siteEntity,
+    buildup,
+    snapshot,
+  );
+  if (!completion || !scene || typeof scene.addStaticEntity !== "function") {
+    return { phaseChanged, completed: true, entitySpawned: false, snapshot };
+  }
+  if (
+    scene.staticEntitiesByID instanceof Map &&
+    scene.staticEntitiesByID.has(Number(completion.itemID))
+  ) {
+    return { phaseChanged, completed: true, entitySpawned: false, snapshot, entity: completion };
+  }
+  const entitySpawned = scene.addStaticEntity(completion) === true;
+  if (entitySpawned) {
+    broadcastStaticSiteContentBatch(scene, [completion], {
+      broadcast: options.broadcast !== false,
+      excludedSession: options.excludedSession || null,
+    });
+  }
+  return {
+    phaseChanged,
+    completed: true,
+    entitySpawned,
+    snapshot,
+    entity: completion,
+  };
+}
+
 function buildHazardEntities(instance, siteEntity, populationHints) {
   if (!populationHints || !Array.isArray(populationHints.hazards)) {
     return [];
@@ -4443,7 +5653,49 @@ function buildGateEntities(instance, siteEntity, template) {
   });
 }
 
+function resolveEnvironmentStaticVisibilityScope(candidate) {
+  return candidate && candidate.exact === true ? "site" : "bubble";
+}
+
+function separateMiningSiteAsteroids(entities, sitePosition) {
+  const anchor = clonePosition(sitePosition);
+  // Leave a 50 km clear approach around the warp beacon. Authored mining
+  // rooms often put 100+ km rocks within a few kilometres of that beacon;
+  // reducing their radii alone still leaves the camera inside the models.
+  const clearanceMeters = 10_000;
+  const occupied = [{ position: anchor, radius: 40_000 }];
+  for (const entity of entities) {
+    if (!entity || entity.frontierDungeonResource !== true) {
+      continue;
+    }
+    const radius = Math.max(0, toFiniteNumber(entity.radius, 0));
+    if (radius <= 0) {
+      continue;
+    }
+    const position = buildSeparatedSpawnPosition(entity.position, occupied, {
+      candidateRadius: radius,
+      minimumSeparationMeters: clearanceMeters,
+      seed: `mining-site:${entity.dungeonSiteID}:${entity.dunObjectID || entity.itemID}`,
+    });
+    entity.position = position;
+    if (Array.isArray(entity.dunPosition)) {
+      entity.dunPosition = [
+        position.x - anchor.x,
+        position.y - anchor.y,
+        position.z - anchor.z,
+      ];
+    }
+    occupied.push({ position, radius });
+  }
+  return entities;
+}
+
 function buildEnvironmentEntities(instance, siteEntity, template, populationHints) {
+  const temporaryLandscapeContent = template?.temporaryLandscapeProfile === true ||
+    populationHints?.temporaryLandscapeProfile === true;
+  const isMiningAsteroidSite =
+    resolveFrontierDungeonTemplateGroupID(template) === FRONTIER_DUNGEON_MINING_SITE_GROUP_ID ||
+    toInt(siteEntity && siteEntity.groupID, 0) === FRONTIER_DUNGEON_MINING_SITE_GROUP_ID;
   const sceneProfile = resolveSiteSceneProfile(template);
   const environmentTemplates =
     template &&
@@ -4596,6 +5848,28 @@ function buildEnvironmentEntities(instance, siteEntity, template, populationHint
         : exact ? null : undefined,
       dunRotation,
       ownerID: Math.max(0, toInt(environmentProp && environmentProp.ownerID, 0)) || null,
+      authoredRadius: Math.max(
+        0,
+        toFiniteNumber(environmentProp && environmentProp.authoredRadius, 0),
+      ) || null,
+      dungeonObjectGroupTag:
+        normalizeText(environmentProp && environmentProp.dungeonObjectGroupTag, "") || null,
+      dungeonObjectLocalName:
+        normalizeText(environmentProp && environmentProp.dungeonObjectLocalName, "") || null,
+      frontierDungeonResource:
+        environmentProp && environmentProp.frontierDungeonResource === true,
+      frontierRiftFormation:
+        normalizeText(environmentProp && environmentProp.frontierRiftFormation, "") || null,
+      frontierRiftYieldTier:
+        normalizeText(environmentProp && environmentProp.frontierRiftYieldTier, "") || null,
+      miningYieldTypeID: Math.max(
+        0,
+        toInt(environmentProp && environmentProp.miningYieldTypeID, 0),
+      ) || null,
+      resourceQuantity: Math.max(
+        0,
+        toInt(environmentProp && environmentProp.resourceQuantity, 0),
+      ) || null,
       suppressSlimName: environmentProp && (environmentProp.suppressSlimName === true || exact),
       suppressSlimGraphicID: environmentProp && (environmentProp.suppressSlimGraphicID === true || exact),
       destinyBallMode: environmentProp && (
@@ -4631,19 +5905,54 @@ function buildEnvironmentEntities(instance, siteEntity, template, populationHint
     return [];
   }
 
-  return selected.map((candidate, index) => {
-    const resolvedTypeID =
+  const entities = selected.map((candidate, index) => {
+    const authoredResourceTypeID =
       toInt(candidate.typeRecord && candidate.typeRecord.typeID, candidate.typeID) || candidate.typeID;
-    const healthState = resolveTypeHealthState(resolvedTypeID);
+    const frontierDungeonResource = candidate.frontierDungeonResource === true;
+    const miningResourceIdentity = frontierDungeonResource
+      ? resolveMiningResourceIdentity(candidate.typeRecord || authoredResourceTypeID)
+      : null;
+    const carrierTypeRecord =
+      (miningResourceIdentity && miningResourceIdentity.carrierTypeRecord) ||
+      candidate.typeRecord;
+    const yieldTypeRecord =
+      (miningResourceIdentity && miningResourceIdentity.yieldTypeRecord) ||
+      candidate.typeRecord;
+    const carrierTypeID =
+      toInt(carrierTypeRecord && carrierTypeRecord.typeID, authoredResourceTypeID) ||
+      authoredResourceTypeID;
+    const yieldTypeID =
+      toInt(yieldTypeRecord && yieldTypeRecord.typeID, authoredResourceTypeID) ||
+      Math.max(0, toInt(candidate.miningYieldTypeID, 0)) ||
+      authoredResourceTypeID;
+    const shellTypeRecord = frontierDungeonResource
+      ? resolveMiningRockShellTypeRecord(carrierTypeID, index)
+      : null;
+    const presentedTypeRecord = shellTypeRecord || candidate.typeRecord;
+    const presentedTypeID =
+      toInt(presentedTypeRecord && presentedTypeRecord.typeID, authoredResourceTypeID) || authoredResourceTypeID;
+    const sourceRadius = candidate.exact && toFiniteNumber(candidate.authoredRadius, 0) > 0
+      ? Math.max(1, toFiniteNumber(candidate.authoredRadius, 1))
+      : Math.max(500, toFiniteNumber(candidate.typeRecord && candidate.typeRecord.radius, 1_500));
+    // Stored exact site hints may still contain radii from before the mining
+    // site limit. Bound those at materialization as well as at generation.
+    const authoredRadius = frontierDungeonResource && isMiningAsteroidSite
+      ? Math.min(sourceRadius, FRONTIER_DUNGEON_MINING_MAX_RADIUS_METERS)
+      : sourceRadius;
+    const resourceQuantity = Math.max(0, toInt(candidate.resourceQuantity, 0));
+    const boundedResourceQuantity = resourceQuantity > 0 && authoredRadius < sourceRadius
+      ? Math.max(1, Math.round(resourceQuantity * (authoredRadius / sourceRadius) ** 2))
+      : resourceQuantity;
+    const healthState = resolveTypeHealthState(authoredResourceTypeID);
     const destinyPresentation = resolveSiteEnvironmentPropDestinyPresentation(
       {
         ...candidate,
         destinyBootstrapDelivery: DESTINY_BOOTSTRAP_DELIVERY_ADDBALLS2,
       },
       {
-        mass: candidate.typeRecord && candidate.typeRecord.mass,
-        maxVelocity: getTypeAttributeValue(resolvedTypeID, "maxVelocity"),
-        agility: getTypeAttributeValue(resolvedTypeID, "agility"),
+        mass: presentedTypeRecord && presentedTypeRecord.mass,
+        maxVelocity: getTypeAttributeValue(presentedTypeID, "maxVelocity"),
+        agility: getTypeAttributeValue(presentedTypeID, "agility"),
       },
     );
     const exactOffset = candidate.exact && candidate.positionOffset
@@ -4658,10 +5967,18 @@ function buildEnvironmentEntities(instance, siteEntity, template, populationHint
         jitterMeters: 9_000,
       },
     );
-    const suppressSlimName = candidate.suppressSlimName === true;
-    const slimLabel = suppressSlimName
-      ? ""
-      : normalizeText(candidate.explicitLabel, "") || resolveTypeRecordName(candidate.typeRecord, "Environment Feature");
+    const suppressSlimName = frontierDungeonResource
+      ? false
+      : candidate.suppressSlimName === true;
+    const slimLabel = frontierDungeonResource
+      ? buildResourceTypeLabel(carrierTypeRecord, carrierTypeID)
+      : suppressSlimName
+        ? ""
+        : normalizeText(candidate.explicitLabel, "") || resolveTypeRecordName(candidate.typeRecord, "Environment Feature");
+    // These allocations belong to the legacy server profile. A reused native
+    // type ID does not establish the target cycle's NPC composition.
+    const hiveSpawnConfiguration = temporaryLandscapeContent ? null :
+      frontierDungeonSpawns.resolveHiveSpawnConfiguration(authoredResourceTypeID);
     return {
       kind: "siteEnvironmentProp" as const,
       dungeonMaterializedSiteContent: true,
@@ -4670,15 +5987,29 @@ function buildEnvironmentEntities(instance, siteEntity, template, populationHint
       dungeonSiteInstanceID: instanceID,
       dungeonEnvironmentTemplateID: candidate.environmentTemplateID,
       dungeonEnvironmentSource: candidate.source,
+      dungeonObjectGroupTag: candidate.dungeonObjectGroupTag || undefined,
+      dungeonObjectLocalName: candidate.dungeonObjectLocalName || undefined,
+      frontierDungeonResource,
+      frontierRiftFormation: candidate.frontierRiftFormation || undefined,
+      frontierRiftYieldTier: candidate.frontierRiftYieldTier || undefined,
       itemID: SITE_CONTENT_ENVIRONMENT_ID_BASE + (siteID * 100) + index + 1,
-      typeID: resolvedTypeID,
-      groupID: toInt(candidate.typeRecord && candidate.typeRecord.groupID, 0) || 0,
-      categoryID: toInt(candidate.typeRecord && candidate.typeRecord.categoryID, 0) || 0,
-      graphicID: toInt(candidate.typeRecord && candidate.typeRecord.graphicID, 0) || null,
+      typeID: presentedTypeID,
+      groupID: toInt(presentedTypeRecord && presentedTypeRecord.groupID, 0) || 0,
+      categoryID: toInt(presentedTypeRecord && presentedTypeRecord.categoryID, 0) || 0,
+      graphicID: toInt(presentedTypeRecord && presentedTypeRecord.graphicID, 0) || null,
+      visualTypeID: frontierDungeonResource ? presentedTypeID : undefined,
+      miningPresentationTypeID: frontierDungeonResource ? carrierTypeID : undefined,
       ownerID: Math.max(0, toInt(candidate.ownerID, 0)) || SITE_CONTENT_OWNER_ID,
       itemName: slimLabel,
       slimName: slimLabel,
-      ...buildSafeSitePropSlimOverrides(candidate.typeRecord),
+      ...buildSafeSitePropSlimOverrides(presentedTypeRecord),
+      slimTypeID: frontierDungeonResource ? carrierTypeID : undefined,
+      slimGroupID: frontierDungeonResource
+        ? toInt(carrierTypeRecord && carrierTypeRecord.groupID, 0) || undefined
+        : undefined,
+      slimCategoryID: frontierDungeonResource
+        ? toInt(carrierTypeRecord && carrierTypeRecord.categoryID, 0) || undefined
+        : undefined,
       slimGraphicID: candidate.suppressSlimGraphicID === true ? null : undefined,
       suppressSlimGraphicID: candidate.suppressSlimGraphicID === true,
       suppressSlimName,
@@ -4688,18 +6019,61 @@ function buildEnvironmentEntities(instance, siteEntity, template, populationHint
       ...(candidate.objectiveTargetGroup !== undefined ? { objectiveTargetGroup: candidate.objectiveTargetGroup } : {}),
       dunPosition: candidate.exact ? [contentOffset.x, contentOffset.y, contentOffset.z] : undefined,
       dunRotation: Array.isArray(candidate.dunRotation) ? candidate.dunRotation : undefined,
+      miningYieldTypeID: frontierDungeonResource
+        ? yieldTypeID
+        : Math.max(0, toInt(candidate.miningYieldTypeID, 0)) || undefined,
+      // Exact Frontier mining rooms already derive both quantity and radius
+      // from their authored resource allocation. Keep that presentation
+      // intact when registering the entity with mining runtime; recomputing
+      // the radius would both discard the authored size variation and force a
+      // synchronous full dogma-table load during player login.
+      skipMiningTemplateResolution: candidate.frontierDungeonResource === true,
+      preserveMiningVisualPresentation: candidate.frontierDungeonResource === true,
       position: addVectors(clonePosition(siteEntity && siteEntity.position), contentOffset),
+      resourceQuantity: boundedResourceQuantity || undefined,
       velocity: { x: 0, y: 0, z: 0 },
       direction: { x: 1, y: 0, z: 0 },
-      radius: Math.max(500, toFiniteNumber(candidate.typeRecord && candidate.typeRecord.radius, 1_500)),
+      radius: authoredRadius,
+      // The client scales the loaded asteroid graphic from this radius and
+      // its native bounding sphere, keeping it aligned with the Destiny ball.
+      dunRadius: frontierDungeonResource ? authoredRadius : undefined,
+      collisionScale: frontierDungeonResource
+        ? authoredRadius / Math.max(
+            1,
+            toFiniteNumber(presentedTypeRecord && presentedTypeRecord.radius, 1),
+          )
+        : undefined,
       shieldCapacity: healthState.shieldCapacity,
       armorHP: healthState.armorHP,
       structureHP: healthState.structureHP,
       conditionState: cloneValue(healthState.conditionState),
-      staticVisibilityScope: "bubble",
+      // Exact authored rooms can place their warp beacon hundreds of kilometres
+      // from the scenery cluster. Keep those props scoped to the authorized site
+      // rather than to one 250 km bubble so they are delivered at warp-in without
+      // changing the dungeon anchor or authored coordinates.
+      staticVisibilityScope: resolveEnvironmentStaticVisibilityScope(candidate),
+      ...(hiveSpawnConfiguration
+        ? {
+          component_activate: [true, null],
+          activate_comp_durationSeconds: 0,
+          component_linkWithShip: [null, 1, null, null],
+          frontierHiveSpawnTypeID: authoredResourceTypeID,
+          frontierHiveLinkState: {
+            active: true,
+            linkState: 1,
+            linkCompleteAtMs: 0,
+            linkedShipID: 0,
+            hiveSpawnedAtMs: 0,
+            hiveSpawnProfileIDs: [],
+          },
+        }
+        : {}),
       ...destinyPresentation,
     };
   });
+  return isMiningAsteroidSite
+    ? separateMiningSiteAsteroids(entities, siteEntity && siteEntity.position)
+    : entities;
 }
 
 function buildObjectiveEntities(instance, siteEntity, template, populationHints = null) {
@@ -5183,6 +6557,12 @@ function buildKillableStructureEntity(instance, siteEntity, encounterPlan, spawn
 
 function spawnEncounterKillableStructures(scene, instance, siteEntity, encounterPlan, spawnEntries, options: Record<string, any> = {}) {
   const structures: any[] = [];
+  const reservedSpawnPositions: any[] = [];
+  const structureAnchorPosition = clonePosition(
+    options.anchorPosition && typeof options.anchorPosition === "object"
+      ? options.anchorPosition
+      : (siteEntity && siteEntity.position),
+  );
   const total = Math.max(1, normalizeArray(spawnEntries).length);
   for (let index = 0; index < total; index += 1) {
     const spawnEntry = spawnEntries[index];
@@ -5195,6 +6575,21 @@ function spawnEncounterKillableStructures(scene, instance, siteEntity, encounter
     if (!entity) {
       continue;
     }
+    const separatedPosition = allocateSeparatedDungeonSpawnPosition(
+      scene,
+      entity.position,
+      reservedSpawnPositions,
+      {
+        candidateRadius: entity.radius,
+        seed: `${instance && instance.instanceID}:${encounterPlan && encounterPlan.key}:structure:${index}`,
+      },
+    );
+    entity.position = separatedPosition;
+    entity.dunPosition = [
+      separatedPosition.x - structureAnchorPosition.x,
+      separatedPosition.y - structureAnchorPosition.y,
+      separatedPosition.z - structureAnchorPosition.z,
+    ];
     if (scene.staticEntitiesByID && scene.staticEntitiesByID.has(Number(entity.itemID))) {
       continue;
     }
@@ -5282,6 +6677,9 @@ function spawnEncounterPlan(scene, instance, siteEntity, encounterPlan, options:
     scene._dungeonUniverseEncounterKeys = new Set<any>();
   }
   const encounterKey = `instance:${instanceID}:${planKey}`;
+  // An encounter's pilots belong to its private site instance. Re-materializing
+  // that instance can reuse them, while another player's pocket cannot.
+  const npcIdentitySlot = `dungeon:${instanceSystemID}:${siteID}:instance:${instanceID}:encounter:${encodeURIComponent(planKey)}`;
   if (scene._dungeonUniverseEncounterKeys.has(encounterKey)) {
     return 0;
   }
@@ -5292,6 +6690,11 @@ function spawnEncounterPlan(scene, instance, siteEntity, encounterPlan, options:
     dungeonSiteInstanceID: instanceID,
     dungeonSiteID: siteID,
     dungeonEncounterKey: encounterKey,
+    dungeonTags: normalizeArray(siteEntity && siteEntity.dungeonTags),
+    dungeonFactionKey:
+      normalizeLowerText(siteEntity && siteEntity.dungeonFactionKey, "") || null,
+    dungeonFactionTag:
+      normalizeLowerText(siteEntity && siteEntity.dungeonFactionTag, "") || null,
   };
   // Anchor encounter spawns to the room's position when the trigger supplies one (e.g. an
   // acceleration gate's destination point), so gate-triggered ("on_room_active") rooms spawn their
@@ -5326,11 +6729,12 @@ function spawnEncounterPlan(scene, instance, siteEntity, encounterPlan, options:
     return 0;
   }
   const aggregatedSpawns: any[] = [];
+  const reservedSpawnPositions: any[] = [];
   let lastSpawnFailure = null;
   if (identitySpawnEntries.length > 0) {
     for (let entryIndex = 0; entryIndex < identitySpawnEntries.length; entryIndex += 1) {
       const entry = identitySpawnEntries[entryIndex];
-      const entryPosition = (entry.positionOffset && typeof entry.positionOffset === "object")
+      const desiredEntryPosition = (entry.positionOffset && typeof entry.positionOffset === "object")
         ? addVectors(encounterAnchorPosition, entry.positionOffset)
         : addVectors(
             encounterAnchorPosition,
@@ -5344,8 +6748,17 @@ function spawnEncounterPlan(scene, instance, siteEntity, encounterPlan, options:
               },
             ),
           );
+      const entryPosition = allocateSeparatedDungeonSpawnPosition(
+        scene,
+        desiredEntryPosition,
+        reservedSpawnPositions,
+        {
+          seed: `${encounterKey}:entry:${normalizeText(entry.key, String(entryIndex + 1))}`,
+        },
+      );
       const singleSpawn = npcSpawnService.spawnNpcBatchInSystem(scene.systemID, {
         profileQuery: resolveSpawnIdentityProfileQuery(entry, encounterFallbackQuery),
+        npcIdentitySlot: `${npcIdentitySlot}:entry:${entryIndex}`,
         amount: 1,
         transient: true,
         position: encounterAnchorPosition,
@@ -5360,6 +6773,7 @@ function spawnEncounterPlan(scene, instance, siteEntity, encounterPlan, options:
         runtimeKind: "nativeCombat",
         entityScopeMetadata: encounterScopeMetadata,
         broadcast: options.broadcast !== false,
+        excludedSession: options.excludedSession || null,
       });
       if (singleSpawn && singleSpawn.success && singleSpawn.data && Array.isArray(singleSpawn.data.spawned)) {
         aggregatedSpawns.push(...singleSpawn.data.spawned);
@@ -5368,90 +6782,82 @@ function spawnEncounterPlan(scene, instance, siteEntity, encounterPlan, options:
       }
     }
   } else if (explicitSpawnEntries.length <= 0) {
-    const proceduralSpawnResult = npcSpawnService.spawnNpcBatchInSystem(scene.systemID, {
-      profileQuery: encounterFallbackQuery,
-      amount: Math.max(
-        1,
-        Math.min(
-          resolveEncounterSpawnEntryLimit(encounterPlan),
-          toInt(encounterPlan.amount, 3),
-        ),
+    const proceduralAmount = Math.max(
+      1,
+      Math.min(
+        resolveEncounterSpawnEntryLimit(encounterPlan),
+        toInt(encounterPlan.amount, 3),
       ),
-      transient: true,
-      position: addVectors(
-        encounterAnchorPosition,
-        buildContentOffset(
-          `${encounterKey}:encounter`,
-          Math.max(0, toInt(encounterPlan.waveIndex, 1)) - 1,
-          Math.max(1, toInt(options.totalPlans, 1)),
+    );
+    const spawnProceduralEntries = (profileQuery, seedSuffix) => {
+      let spawnedCount = 0;
+      let failure = null;
+      for (let entryIndex = 0; entryIndex < proceduralAmount; entryIndex += 1) {
+        const desiredPosition = addVectors(
+          encounterAnchorPosition,
+          buildContentOffset(
+            `${encounterKey}:${seedSuffix}`,
+            entryIndex,
+            proceduralAmount,
+            {
+              baseDistanceMeters: SITE_CONTENT_ENCOUNTER_OFFSET_METERS,
+              jitterMeters: 8_000,
+            },
+          ),
+        );
+        const entryPosition = allocateSeparatedDungeonSpawnPosition(
+          scene,
+          desiredPosition,
+          reservedSpawnPositions,
           {
-            baseDistanceMeters: SITE_CONTENT_ENCOUNTER_OFFSET_METERS,
-            jitterMeters: 8_000,
+            seed: `${encounterKey}:${seedSuffix}:${entryIndex}`,
           },
-        ),
-      ),
-      anchorName: `${normalizeText(siteEntity && siteEntity.itemName, "Site")} ${normalizeText(encounterPlan.label, "Encounter")}`,
-      spreadMeters: 8_000,
-      formationSpacingMeters: 2_500,
-      runtimeKind: "nativeCombat",
-      entityScopeMetadata: encounterScopeMetadata,
-      broadcast: options.broadcast !== false,
-    });
-    if (
-      proceduralSpawnResult &&
-      proceduralSpawnResult.success &&
-      proceduralSpawnResult.data &&
-      Array.isArray(proceduralSpawnResult.data.spawned)
-    ) {
-      aggregatedSpawns.push(...proceduralSpawnResult.data.spawned);
-    } else if (proceduralSpawnResult) {
-      lastSpawnFailure = proceduralSpawnResult;
-    }
+        );
+        const spawnResult = npcSpawnService.spawnNpcBatchInSystem(scene.systemID, {
+          profileQuery,
+          npcIdentitySlot: `${npcIdentitySlot}:entry:${entryIndex}`,
+          amount: 1,
+          transient: true,
+          position: encounterAnchorPosition,
+          spawnStateOverride: { position: entryPosition },
+          anchorName: `${normalizeText(siteEntity && siteEntity.itemName, "Site")} ${normalizeText(encounterPlan.label, "Encounter")}`,
+          runtimeKind: "nativeCombat",
+          entityScopeMetadata: encounterScopeMetadata,
+          broadcast: options.broadcast !== false,
+          excludedSession: options.excludedSession || null,
+        });
+        if (
+          spawnResult &&
+          spawnResult.success &&
+          spawnResult.data &&
+          Array.isArray(spawnResult.data.spawned)
+        ) {
+          aggregatedSpawns.push(...spawnResult.data.spawned);
+          spawnedCount += spawnResult.data.spawned.length;
+        } else if (spawnResult) {
+          failure = spawnResult;
+        }
+      }
+      return { spawnedCount, failure };
+    };
+    const proceduralResult = spawnProceduralEntries(
+      encounterFallbackQuery,
+      "encounter",
+    );
+    lastSpawnFailure = proceduralResult.failure;
     const fallbackSpawnQuery = normalizeText(encounterPlan.fallbackSpawnQuery, "");
     if (
       aggregatedSpawns.length <= 0 &&
       fallbackSpawnQuery &&
       normalizeLowerText(fallbackSpawnQuery, "") !== normalizeLowerText(encounterFallbackQuery, "")
     ) {
-      const fallbackSpawnResult = npcSpawnService.spawnNpcBatchInSystem(scene.systemID, {
-        profileQuery: fallbackSpawnQuery,
-        amount: Math.max(
-          1,
-          Math.min(
-            resolveEncounterSpawnEntryLimit(encounterPlan),
-            toInt(encounterPlan.amount, 3),
-          ),
-        ),
-        transient: true,
-        position: addVectors(
-          encounterAnchorPosition,
-          buildContentOffset(
-            `${encounterKey}:encounter:fallback`,
-            Math.max(0, toInt(encounterPlan.waveIndex, 1)) - 1,
-            Math.max(1, toInt(options.totalPlans, 1)),
-            {
-              baseDistanceMeters: SITE_CONTENT_ENCOUNTER_OFFSET_METERS,
-              jitterMeters: 8_000,
-            },
-          ),
-        ),
-        anchorName: `${normalizeText(siteEntity && siteEntity.itemName, "Site")} ${normalizeText(encounterPlan.label, "Encounter")}`,
-        spreadMeters: 8_000,
-        formationSpacingMeters: 2_500,
-        runtimeKind: "nativeCombat",
-        entityScopeMetadata: encounterScopeMetadata,
-        broadcast: options.broadcast !== false,
-      });
-      if (
-        fallbackSpawnResult &&
-        fallbackSpawnResult.success &&
-        fallbackSpawnResult.data &&
-        Array.isArray(fallbackSpawnResult.data.spawned)
-      ) {
-        aggregatedSpawns.push(...fallbackSpawnResult.data.spawned);
-      } else if (fallbackSpawnResult) {
-        lastSpawnFailure = fallbackSpawnResult;
-      }
+      // Reuse the same reserved-position authority so a fallback attempt can
+      // never land on a failed primary slot or another entity in the pocket.
+      const fallbackResult = spawnProceduralEntries(
+        fallbackSpawnQuery,
+        "encounter:fallback",
+      );
+      lastSpawnFailure = fallbackResult.failure || lastSpawnFailure;
     }
   }
   if (structureSpawnEntries.length > 0) {
@@ -5676,6 +7082,10 @@ function processEncounterPlansForTrigger(scene, instance, siteEntity, population
           break;
         }
         if (Math.max(0, toInt(prerequisiteState && prerequisiteState.completedAtMs, 0)) <= 0) {
+          if (!hasRecordedSitePlayerProgress(instance)) {
+            prerequisiteBlocked = true;
+            break;
+          }
           upsertEncounterState(instance.instanceID, prerequisiteKey, {
             remainingEntityIDs: [],
             completedAtMs: nowMs,
@@ -6331,10 +7741,6 @@ function tickSceneSiteBehaviors(scene, options: Record<string, any> = {}) {
       dungeonRuntime.getInstance(instance.instanceID) || refreshedForObjective,
       { nowMs },
     );
-    const plans = resolveEncounterPlans(populationHints);
-    if (plans.length <= 0) {
-      continue;
-    }
     const siteID = Math.max(0, toInt(instance && instance.metadata && instance.metadata.siteID, 0));
     const siteEntity = (
       scene.staticEntitiesByID &&
@@ -6346,8 +7752,44 @@ function tickSceneSiteBehaviors(scene, options: Record<string, any> = {}) {
     if (!isSceneSiteMaterialized(scene, siteID)) {
       continue;
     }
+    processInculcatorSiteBuildup(
+      scene,
+      dungeonRuntime.getInstance(instance.instanceID) || instance,
+      siteEntity,
+      populationHints,
+      { nowMs, broadcast: true },
+    );
+    const plans = resolveEncounterPlans(populationHints);
+    if (plans.length <= 0) {
+      continue;
+    }
     const progressResult = syncEncounterStateProgress(scene, instance, plans, { nowMs });
     encounterCompletions += Math.max(0, toInt(progressResult && progressResult.completedCount, 0));
+    // Retriable dungeon triggers must not be one-shot delivery events. If the
+    // NPC service was temporarily unavailable during materialization or room
+    // activation, an unspawned plan remains eligible on subsequent ticks.
+    encountersSpawned += processEncounterPlansForTrigger(
+      scene,
+      instance,
+      siteEntity,
+      populationHints,
+      "on_load",
+      { nowMs },
+    );
+    const roomStatesByKey = normalizeObject(instance && instance.roomStatesByKey);
+    for (const [roomKey, roomState] of Object.entries<any>(roomStatesByKey)) {
+      if (!["active", "completed"].includes(normalizeLowerText(roomState && roomState.state, ""))) {
+        continue;
+      }
+      encountersSpawned += processEncounterPlansForTrigger(
+        scene,
+        instance,
+        siteEntity,
+        populationHints,
+        "on_room_active",
+        { nowMs, roomKey },
+      );
+    }
     armedCount += armDeferredEncounterPlans(instance, populationHints, { nowMs });
     // Proximity-triggered encounters (e.g. "investigate the drone" ambushes) have no player action
     // to hook, so evaluate the player's distance to the target object every tick.
@@ -6702,11 +8144,18 @@ function handleEncounterEntityDestroyed(scene, entityOrID, options: Record<strin
     };
   }
 
+  const playerProgressAtMs = Math.max(0, toInt(options.nowMs, Date.now()));
   for (const instance of matchingInstances) {
     const siteID = Math.max(0, toInt(instance && instance.metadata && instance.metadata.siteID, 0));
     if (siteID > 0) {
       markSceneSiteMaterialized(scene, siteID, instance.instanceID);
     }
+    dungeonRuntime.mergeSpawnState(instance.instanceID, {
+      lastPlayerProgressAtMs: playerProgressAtMs,
+      lastDestroyedEncounterEntityID: entityID,
+    }, {
+      nowMs: playerProgressAtMs,
+    });
   }
 
   const objectiveTargetsSatisfied = markDestroyedObjectiveTargets(
@@ -6812,12 +8261,30 @@ function materializeSiteContents(scene, instance, siteEntity, template, options:
       encountersSpawned: 0,
     };
   }
+  const materializeStartedAtMs = Date.now();
+  let phaseStartedAtMs = materializeStartedAtMs;
+  const timings: Record<string, any> = {};
+  const finishPhase = (name) => {
+    const finishedAtMs = Date.now();
+    timings[name] = finishedAtMs - phaseStartedAtMs;
+    phaseStartedAtMs = finishedAtMs;
+  };
   const materializedSiteID = Math.max(
     0,
     toInt(
       siteEntity && siteEntity.itemID,
       instance && instance.metadata && instance.metadata.siteID,
     ),
+  );
+  // Read suppression before any site content or bookkeeping is changed. If the
+  // durable prop store is unavailable, materialization must fail closed.
+  const detachedSourceIDs = (options.detachedDungeonPropStore || require(path.join(
+    __dirname,
+    "../../space/detachedDungeonProps",
+  )).getDetachedDungeonPropStore()).suppressedSourceIDs(
+    scene.systemID,
+    instance.instanceID,
+    materializedSiteID,
   );
   if (materializedSiteID > 0) {
     markSceneSiteMaterialized(scene, materializedSiteID, instance.instanceID);
@@ -6828,17 +8295,21 @@ function materializeSiteContents(scene, instance, siteEntity, template, options:
       nowMs: options.nowMs,
     },
   ) || instance;
+  finishPhase("runtimeState");
   const populationHints = resolvePopulationHints(workingInstance, template);
+  finishPhase("populationHints");
   rematerializeStoredDungeonEncounterEntities(
     scene,
     workingInstance,
     siteEntity,
     { nowMs: options.nowMs },
   );
+  finishPhase("storedEncounters");
   const rehydrated = rehydrateMissingEncounterStates(scene, workingInstance, populationHints, {
     nowMs: options.nowMs,
   });
   workingInstance = rehydrated.instance || workingInstance;
+  finishPhase("encounterRehydrate");
   const contentEntities = buildContainerEntities(workingInstance, siteEntity, populationHints);
   const staticBroadcastEntities: any[] = [];
   let containersSpawned = 0;
@@ -6860,6 +8331,7 @@ function materializeSiteContents(scene, instance, siteEntity, template, options:
       containersSpawned += 1;
     }
   }
+  finishPhase("containers");
   const hazardEntities = buildHazardEntities(workingInstance, siteEntity, populationHints);
   let hazardsSpawned = 0;
   for (const entity of hazardEntities) {
@@ -6872,6 +8344,7 @@ function materializeSiteContents(scene, instance, siteEntity, template, options:
       staticBroadcastEntities.push(entity);
     }
   }
+  finishPhase("hazards");
   const gateEntities = buildGateEntities(workingInstance, siteEntity, template);
   let gatesSpawned = 0;
   for (const entity of gateEntities) {
@@ -6884,17 +8357,67 @@ function materializeSiteContents(scene, instance, siteEntity, template, options:
       staticBroadcastEntities.push(entity);
     }
   }
+  finishPhase("gates");
   const environmentEntities = buildEnvironmentEntities(workingInstance, siteEntity, template, populationHints);
+  finishPhase("environmentBuild");
+  let frontierDungeonMiningRuntimeState = null;
+  if (environmentEntities.some((entity) => entity && entity.frontierDungeonResource === true)) {
+    try {
+      frontierDungeonMiningRuntimeState = require(path.join(
+        __dirname,
+        "../mining/miningRuntimeState",
+      ));
+    } catch (_error) {
+      frontierDungeonMiningRuntimeState = null;
+    }
+  }
   let environmentPropsSpawned = 0;
+  let environmentAddMs = 0;
+  let environmentMiningRegisterMs = 0;
+  const frontierDungeonResourceEntityIDs: number[] = [];
   for (const entity of environmentEntities) {
+    if (detachedSourceIDs.has(Number(entity.itemID))) {
+      continue;
+    }
     if (scene.staticEntitiesByID && scene.staticEntitiesByID.has(Number(entity.itemID))) {
       continue;
     }
+    const environmentAddStartedAtMs = Date.now();
     scene.addStaticEntity(entity);
+    environmentAddMs += Date.now() - environmentAddStartedAtMs;
     if (scene.staticEntitiesByID && scene.staticEntitiesByID.has(Number(entity.itemID))) {
+      if (
+        entity.frontierDungeonResource === true &&
+        frontierDungeonMiningRuntimeState &&
+        typeof frontierDungeonMiningRuntimeState.registerMineableEntity === "function"
+      ) {
+        const miningRegisterStartedAtMs = Date.now();
+        try {
+          frontierDungeonMiningRuntimeState.registerMineableEntity(scene, entity, {
+            broadcast: false,
+            nowMs: options.nowMs,
+          });
+        } catch (_error) {
+          // Authored scenery still renders if mining registration is unavailable.
+        } finally {
+          environmentMiningRegisterMs += Date.now() - miningRegisterStartedAtMs;
+        }
+      }
+      if (!scene.staticEntitiesByID.has(Number(entity.itemID))) {
+        continue;
+      }
       environmentPropsSpawned += 1;
       staticBroadcastEntities.push(entity);
+      if (entity.frontierDungeonResource === true) {
+        frontierDungeonResourceEntityIDs.push(Math.max(0, toInt(entity.itemID, 0)));
+      }
     }
+  }
+  finishPhase("environmentMaterialize");
+  timings.environmentAdd = environmentAddMs;
+  timings.environmentMiningRegister = environmentMiningRegisterMs;
+  if (populationHints && populationHints.frontierDungeonScene === true) {
+    siteEntity.frontierDungeonResourceEntityIDs = frontierDungeonResourceEntityIDs;
   }
   // Mining missions: spawn the special mineable asteroids and register each one's ore quantity so
   // the existing mining systems can harvest them (Plan C). Best-effort and gated on miningRocks.
@@ -6934,6 +8457,7 @@ function materializeSiteContents(scene, instance, siteEntity, template, options:
       }
     }
   }
+  finishPhase("miningRocks");
   const objectiveEntities = buildObjectiveEntities(workingInstance, siteEntity, template, populationHints);
   let objectivesSpawned = 0;
   for (const entity of objectiveEntities) {
@@ -6946,8 +8470,31 @@ function materializeSiteContents(scene, instance, siteEntity, template, options:
       staticBroadcastEntities.push(entity);
     }
   }
+  finishPhase("objectives");
+
+  // Initialize/catch up generative construction in the same materialization
+  // transaction. A Foundation that completed while its grid was unloaded must
+  // deliver the Steel Forge with the rest of the site, not one behavior tick
+  // after the arriving client has already received the room.
+  const buildupResult = processInculcatorSiteBuildup(
+    scene,
+    workingInstance,
+    siteEntity,
+    populationHints,
+    {
+      nowMs: options.nowMs,
+      broadcast: false,
+      excludedSession: options.excludedSession || null,
+    },
+  );
+  if (buildupResult.entitySpawned === true && buildupResult.entity) {
+    environmentPropsSpawned += 1;
+    staticBroadcastEntities.push(buildupResult.entity);
+  }
+  finishPhase("buildup");
 
   broadcastStaticSiteContentBatch(scene, staticBroadcastEntities, options);
+  finishPhase("staticBroadcast");
 
   let encountersSpawned = 0;
   armDeferredEncounterPlans(workingInstance, populationHints, {
@@ -6963,6 +8510,7 @@ function materializeSiteContents(scene, instance, siteEntity, template, options:
       {
         nowMs: options.nowMs,
         session: options.session || null,
+        excludedSession: options.excludedSession || null,
       },
     );
     encountersSpawned += onLoadEncountersSpawned;
@@ -6982,6 +8530,7 @@ function materializeSiteContents(scene, instance, siteEntity, template, options:
       {
         nowMs: options.nowMs,
         session: options.session || null,
+        excludedSession: options.excludedSession || null,
       },
     );
     const afterWaveClear =
@@ -6999,10 +8548,13 @@ function materializeSiteContents(scene, instance, siteEntity, template, options:
       {
         nowMs: options.nowMs,
         session: options.session || null,
+        excludedSession: options.excludedSession || null,
       },
     );
     }
   }
+  finishPhase("encounters");
+  timings.total = Date.now() - materializeStartedAtMs;
 
   return {
     containersSpawned,
@@ -7012,6 +8564,7 @@ function materializeSiteContents(scene, instance, siteEntity, template, options:
     gatesSpawned,
     objectivesSpawned,
     encountersSpawned,
+    timings,
   };
 }
 
@@ -7094,7 +8647,7 @@ function ensureSiteContentsMaterialized(scene, instanceOrSite, options: Record<s
       siteID,
     });
   }
-  if (options.session) {
+  if (options.session && options.resyncSession !== false) {
     forceResyncSiteStaticContentForSession(scene, options.session, instance, {
       nowMs: options.nowMs,
       stampOverride: options.stampOverride,
@@ -7589,6 +9142,9 @@ function removeSceneSiteContent(scene, siteID, options: Record<string, any> = {}
     normalizedInstanceID === null ||
     entityIDsEqual(entity && entity.dungeonSiteInstanceID, normalizedInstanceID)
   ))
+    // A detached world prop is never owned by a site, even if a stale scope
+    // marker was copied onto its live ball by another scene path.
+    .filter((entity) => entity && entity.kind !== "detachedDungeonProp")
     // Site NPC wrecks carry the site's dungeonMaterializedSiteContent tag, so they land in this list
     // by default. They must survive the site: see the note in removeStoredDungeonSiteContent.
     .filter((entity) => !(entity && entity.nativeNpcWreck === true));
@@ -8247,10 +9803,31 @@ function handleSceneCreated(scene, options: Record<string, any> = {}) {
     objectivesSpawned: 0,
     encountersSpawned: 0,
   };
-  const instances = dungeonRuntime.listActiveInstancesBySystem(toInt(scene && scene.systemID, 0), {
+  const activeInstances = dungeonRuntime.listActiveInstancesBySystem(toInt(scene && scene.systemID, 0), {
     full: true,
   })
     .filter((instance) => isManagedMaterializedSiteInstance(instance));
+  // Older builds could leave several active rows for the same persistent site
+  // key. The runtime and map both retain the oldest active row as the stable
+  // authority, so scene startup must make the same choice. Materializing a
+  // newer shadow lets background reconciliation remove the only live
+  // CRDungeon ball, which leaves the system view with no site brackets and can
+  // make its map row point at a different position.
+  const instancesBySiteKey = new Map();
+  for (const instance of activeInstances) {
+    const siteKey = normalizeText(instance && instance.siteKey, "");
+    const siteID = Math.max(0, toInt(instance && instance.metadata && instance.metadata.siteID, 0));
+    const key = siteKey || (siteID > 0 ? `site:${siteID}` : `instance:${instance.instanceID}`);
+    const existing = instancesBySiteKey.get(key) || null;
+    if (
+      !existing ||
+      toInt(instance && instance.instanceID, Number.MAX_SAFE_INTEGER) <
+        toInt(existing && existing.instanceID, Number.MAX_SAFE_INTEGER)
+    ) {
+      instancesBySiteKey.set(key, instance);
+    }
+  }
+  const instances = [...instancesBySiteKey.values()];
   for (const instance of instances) {
     const entity = buildSiteEntity(instance);
     if (!entity) {
@@ -8278,7 +9855,10 @@ class DungeonUniverseSiteService extends BaseService {
 
 DungeonUniverseSiteService.buildSiteEntity = buildSiteEntity;
 DungeonUniverseSiteService.buildEnvironmentEntities = buildEnvironmentEntities;
+DungeonUniverseSiteService.buildInculcatorCompletionEntity = buildInculcatorCompletionEntity;
 DungeonUniverseSiteService.ensureSiteContentsMaterialized = ensureSiteContentsMaterialized;
+DungeonUniverseSiteService.isManagedMaterializedSiteInstance =
+  isManagedMaterializedSiteInstance;
 DungeonUniverseSiteService.handleSceneCreated = handleSceneCreated;
 DungeonUniverseSiteService.hasPendingSiteTeardownForInstance =
   hasPendingSiteTeardownForInstance;
@@ -8295,6 +9875,7 @@ DungeonUniverseSiteService.maybeSatisfyMissionHackObjective = maybeSatisfyMissio
 DungeonUniverseSiteService.startRuntimeSync = startRuntimeSync;
 DungeonUniverseSiteService.stopRuntimeSync = stopRuntimeSync;
 DungeonUniverseSiteService.tickSceneSiteBehaviors = tickSceneSiteBehaviors;
+DungeonUniverseSiteService.processInculcatorSiteBuildup = processInculcatorSiteBuildup;
 DungeonUniverseSiteService.triggerSiteEncounter = triggerSiteEncounter;
 DungeonUniverseSiteService.handleEncounterEntityDestroyed = handleEncounterEntityDestroyed;
 DungeonUniverseSiteService.maybeGrantFetchObjectiveItems = maybeGrantFetchObjectiveItems;
@@ -8303,6 +9884,9 @@ DungeonUniverseSiteService._testing = {
   applyTriggeredSiteEffects,
   buildGateEntities,
   buildEnvironmentEntities,
+  buildInculcatorCompletionEntity,
+  buildFrontierDungeonDerivedPopulationHints,
+  buildFrontierDungeonMiningResourceSizing,
   buildContainerEntities,
   buildMiningRockEntities,
   destroyMaterializedContentEntity,
@@ -8311,11 +9895,14 @@ DungeonUniverseSiteService._testing = {
   ensureSiteContentsMaterialized,
   forceResyncSiteStaticContentForSession,
   tickSceneSiteBehaviors,
+  processInculcatorSiteBuildup,
+  resolveInculcatorBuildupSnapshot,
   triggerSiteEncounter,
   handleEncounterEntityDestroyed,
   maybeGrantFetchObjectiveItems,
   materializeFetchObjectiveContainer,
   buildLootGrantEntriesForContainer,
+  resolveConfiguredContainerLootTable,
   handleRuntimeChange,
   anyPlayerShipPresentAtSite,
   drainPendingSiteTeardowns,
@@ -8330,11 +9917,18 @@ DungeonUniverseSiteService._testing = {
   materializeSiteContents,
   resolveManagedUniverseSiteInstance,
   resolveEncounterPlans,
+  spawnEncounterPlan,
+  resolveEnvironmentStaticVisibilityScope,
+  resolveInitialFrontierDungeonSceneObjectIDs,
+  rebaseFrontierDungeonExactContent,
+  resolvePrimaryFrontierContentOrigin,
   resolveSpawnIdentityProfileQuery,
   normalizeMissionSpawnQuery,
+  resolveEntityLabel,
   resolveLocalizedTemplateName,
   resolveFallbackStrengthAttribute,
   resolvePopulationHints,
+  resolveFrontierDungeonTemplateGroupID,
   buildStableUniverseSiteEntitySignature,
   maybeCompleteMaterializedDataRelicSite,
   maybeCompleteMaterializedDataRelicSiteForContainerID,

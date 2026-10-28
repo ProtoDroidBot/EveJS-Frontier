@@ -7,6 +7,11 @@ const { getCapitalNpcGeneratedRows, } = require(path.join(__dirname, "./capitals
 const { getTrigDrifterGeneratedRows, } = require(path.join(__dirname, "./trigDrifter/trigDrifterNpcCatalog"));
 const { getEmpireSecurityGeneratedRows, } = require(path.join(__dirname, "./empireSecurity/empireSecurityNpcCatalog"));
 const { augmentNpcLoadoutWithHostileUtilities, } = require(path.join(__dirname, "./npcHostileUtilityCatalog"));
+const frontierDungeonSpawns = require(path.join(__dirname, "../../config/frontierDungeonSpawns"));
+const frontierDungeonLoot = require(path.join(__dirname, "../../config/frontierDungeonLoot"));
+const frontierLandscapeSpawns = require(path.join(__dirname, "../../config/frontierLandscapeSpawns"));
+const { applyNpcBehaviorConfig, } = require(path.join(__dirname, "../../config/npcBehaviorConfig"));
+const { applyNpcFactionTypeListProfile, } = require(path.join(__dirname, "../../config/npcFactionConfig"));
 const NPC_TABLE = Object.freeze({
     PROFILES: "npcProfiles",
     LOADOUTS: "npcLoadouts",
@@ -96,12 +101,30 @@ const STANDARD_SPAWN_POOL_SPECS = Object.freeze({
     },
 });
 const RETAIL_EMPTY_NPC_ENTITY_LOADOUT_ID = "retail_empty_npc_entity_loadout";
+const NPC_PILOT_SHIP_PROFILE_PREFIX = "npc_pilot_ship_";
+const NPC_OSA_PILOT_SHIP_PROFILE_PREFIX = "npc_osa_pilot_ship_";
 const RETAIL_EMPTY_NPC_ENTITY_LOADOUT = Object.freeze({
     loadoutID: RETAIL_EMPTY_NPC_ENTITY_LOADOUT_ID,
     name: "Retail NPC Entity Native Dogma",
     description: "Empty loadout for retail NPC entity types whose combat stats and effects live on the NPC type dogma record.",
     modules: [],
     charges: [],
+});
+const NPC_PILOT_SHIP_PASSIVE_BEHAVIOR = Object.freeze({
+    behaviorProfileID: "npc_pilot_ship_passive",
+    name: "NPC Pilot Ship Passive",
+    thinkIntervalMs: 500,
+    autoAggroTargetClasses: [],
+    targetPreference: "none",
+    autoAggro: false,
+    movementMode: "orbit",
+    orbitDistanceMeters: 4000,
+    followRangeMeters: 2500,
+    aggressionRangeMeters: 0,
+    leashRangeMeters: 150000,
+    returnToHomeWhenIdle: true,
+    homeArrivalMeters: 1500,
+    autoActivateWeapons: false,
 });
 function cloneValue(value) {
     return JSON.parse(JSON.stringify(value));
@@ -172,37 +195,65 @@ function readNpcRows(tableName) {
     const index = getNpcTableIndex(tableName);
     return index.rows.map((row) => cloneValue(row));
 }
-function getRawNpcRows(tableName) {
+function readAuthoredNpcRows(tableName) {
     const result = database.read(tableName, "/");
-    const authoredRows = result.success && result.data && typeof result.data === "object"
+    return (result.success && result.data && typeof result.data === "object"
         ? result.data[ROW_KEY[tableName]]
-        : [];
+        : []);
+}
+function buildNpcRows(tableName, authoredRows) {
     const empireSecurityGeneratedRows = getEmpireSecurityGeneratedRows(tableName);
     const generatedRows = getCapitalNpcGeneratedRows(tableName);
     const trigDrifterGeneratedRows = getTrigDrifterGeneratedRows(tableName);
+    const frontierDungeonGeneratedRows = frontierDungeonSpawns.getGeneratedNpcRows(tableName);
+    const frontierDungeonLootRows = frontierDungeonLoot.getGeneratedNpcRows(tableName);
+    const frontierLandscapeGeneratedRows = frontierLandscapeSpawns.getGeneratedNpcRows(tableName);
     const normalizedAuthoredRows = tableName === NPC_TABLE.LOADOUTS
         ? ensureCanonicalNpcLoadoutRows(authoredRows)
         : (Array.isArray(authoredRows) ? authoredRows : []);
     const derivedRows = tableName === NPC_TABLE.SPAWN_POOLS
         ? buildDerivedSpawnPoolRows(normalizedAuthoredRows)
         : [];
-    return [
+    const rows = [
         ...normalizedAuthoredRows,
         ...derivedRows,
         ...(Array.isArray(empireSecurityGeneratedRows) ? empireSecurityGeneratedRows : []),
         ...(Array.isArray(generatedRows) ? generatedRows : []),
         ...(Array.isArray(trigDrifterGeneratedRows) ? trigDrifterGeneratedRows : []),
+        ...(Array.isArray(frontierDungeonGeneratedRows) ? frontierDungeonGeneratedRows : []),
+        ...(Array.isArray(frontierDungeonLootRows) ? frontierDungeonLootRows : []),
+        ...(Array.isArray(frontierLandscapeGeneratedRows) ? frontierLandscapeGeneratedRows : []),
     ];
+    if (tableName !== NPC_TABLE.PROFILES)
+        return rows;
+    return rows
+        .map((profile) => applyNpcFactionTypeListProfile(profile))
+        .filter((profile) => profile && profile.npcFactionMembershipEligible !== false);
 }
-function getNpcTableIndex(tableName) {
-    const rows = getRawNpcRows(tableName);
+function getNpcTableIndex(tableName, dependencies = {}) {
     const idFieldName = ID_FIELD[tableName];
+    const readAuthoredRows = typeof dependencies.readAuthoredNpcRows === "function"
+        ? dependencies.readAuthoredNpcRows
+        : readAuthoredNpcRows;
+    const buildCombinedRows = typeof dependencies.buildNpcRows === "function"
+        ? dependencies.buildNpcRows
+        : buildNpcRows;
+    const authoredRows = readAuthoredRows(tableName);
     const cached = TABLE_INDEX_CACHE[tableName];
     if (cached &&
-        cached.rowsRef === rows &&
+        cached.authoredRowsRef === authoredRows &&
+        cached.authoredRowsLength === (Array.isArray(authoredRows) ? authoredRows.length : 0) &&
         cached.idFieldName === idFieldName) {
         return cached;
     }
+    // Generated NPC catalogs are expensive: Frontier, Triglavian, Drifter,
+    // capital, and empire-security rows all have to be composed before an index
+    // can be built. The previous cache compared the combined array by identity,
+    // but that array was freshly allocated on every lookup, making a cache hit
+    // impossible. Key the index by the game-store-owned authored rows instead;
+    // that reference is stable until the table (or its rows collection) is
+    // replaced, while generated catalogs are immutable for the process lifetime.
+    const rows = buildCombinedRows(tableName, authoredRows);
     const byID = new Map();
     const byExactToken = new Map();
     const queryEntries = [];
@@ -223,7 +274,8 @@ function getNpcTableIndex(tableName) {
         });
     }
     const nextIndex = {
-        rowsRef: rows,
+        authoredRowsRef: authoredRows,
+        authoredRowsLength: Array.isArray(authoredRows) ? authoredRows.length : 0,
         rows,
         idFieldName,
         byID,
@@ -383,6 +435,48 @@ function resolveNpcStartupRule(query, fallbackStartupRuleID = "") {
     };
 }
 function buildNpcDefinition(profileID) {
+    const pilotShipMatch = /^npc_(osa_)?pilot_ship_(\d+)$/.exec(String(profileID || ""));
+    if (pilotShipMatch) {
+        const { resolveItemByTypeID } = require(path.join(__dirname, "../../services/inventory/itemTypeRegistry"));
+        const shipType = resolveItemByTypeID(Number(pilotShipMatch[2]));
+        if (!shipType || Number(shipType.categoryID) !== 6)
+            return null;
+        const osaFaction = pilotShipMatch[1] === "osa_"
+            ? frontierDungeonSpawns.getConfig()
+            : null;
+        const osaProfile = osaFaction ? {
+            factionID: osaFaction.defaults.npcFactionID,
+            corporationID: osaFaction.defaults.npcCorporationID,
+            frontierFactionKey: "osa",
+            npcFactionKey: "osa",
+            factionStringOnlyID: "osa",
+            frontierFactionTag: osaFaction.factions.osa.tag,
+        } : {};
+        const shipName = `${osaFaction ? "Osa " : ""}${String(shipType.name || `Ship ${shipType.typeID}`)}`;
+        const profile = {
+            profileID: `${osaFaction ? NPC_OSA_PILOT_SHIP_PROFILE_PREFIX : NPC_PILOT_SHIP_PROFILE_PREFIX}${shipType.typeID}`,
+            name: shipName,
+            shipNameTemplate: shipName,
+            entityType: "npc",
+            shipTypeID: shipType.typeID,
+            presentationTypeID: shipType.typeID,
+            hardwareFamily: "pilotedShip",
+            loadoutID: RETAIL_EMPTY_NPC_ENTITY_LOADOUT_ID,
+            behaviorProfileID: NPC_PILOT_SHIP_PASSIVE_BEHAVIOR.behaviorProfileID,
+            ...osaProfile,
+        };
+        const factionProfile = osaFaction ? applyNpcFactionTypeListProfile(profile) : profile;
+        if (osaFaction && factionProfile.npcFactionMembershipEligible !== true)
+            return null;
+        const loadout = cloneValue(RETAIL_EMPTY_NPC_ENTITY_LOADOUT);
+        const behaviorProfile = cloneValue(NPC_PILOT_SHIP_PASSIVE_BEHAVIOR);
+        return applyNpcBehaviorConfig({
+            profile: factionProfile,
+            loadout,
+            behaviorProfile,
+            lootTable: null,
+        });
+    }
     const profileRow = findRawByID(NPC_TABLE.PROFILES, profileID);
     if (!profileRow) {
         return null;
@@ -400,18 +494,17 @@ function buildNpcDefinition(profileID) {
     if (!profile) {
         return null;
     }
-    const hostileUtilityAugmentResult = augmentNpcLoadoutWithHostileUtilities({
+    const configuredDefinition = applyNpcBehaviorConfig({
         profile,
         loadout: baseLoadout,
         behaviorProfile,
         lootTable,
-    }, baseLoadout);
+    });
+    const hostileUtilityAugmentResult = augmentNpcLoadoutWithHostileUtilities(configuredDefinition, baseLoadout);
     const loadout = hostileUtilityAugmentResult.loadout;
     return {
-        profile,
+        ...configuredDefinition,
         loadout,
-        behaviorProfile,
-        lootTable,
         hostileUtilityTemplateIDs: hostileUtilityAugmentResult.appliedTemplateIDs,
     };
 }
@@ -439,5 +532,17 @@ module.exports = {
     getNpcStartupRule,
     resolveNpcStartupRule,
     buildNpcDefinition,
+    _testing: {
+        clearTableIndexCache(tableName = null) {
+            if (tableName) {
+                delete TABLE_INDEX_CACHE[tableName];
+                return;
+            }
+            for (const cachedTableName of Object.keys(TABLE_INDEX_CACHE)) {
+                delete TABLE_INDEX_CACHE[cachedTableName];
+            }
+        },
+        getNpcTableIndex,
+    },
 };
 //# sourceMappingURL=npcData.js.map

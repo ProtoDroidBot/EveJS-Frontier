@@ -30,6 +30,8 @@ $script:RuntimeMarkerKind = 'evejs-frontier-runtime'
 $script:RuntimeMarkerSchemaVersion = 1
 $script:PidMarkerKind = 'evejs-frontier-server-process'
 $script:PidMarkerSchemaVersion = 1
+$script:DappPidMarkerKind = 'evejs-frontier-dapp-process'
+$script:DappPidMarkerSchemaVersion = 1
 $script:PathComparison = [StringComparison]::OrdinalIgnoreCase
 
 $RepoRoot = [IO.Path]::GetFullPath($PSScriptRoot)
@@ -41,7 +43,10 @@ $RuntimeRoot = [IO.Path]::GetFullPath((Join-Path $RuntimeBase $Build))
 $ExpectedRuntimeRoot = [IO.Path]::GetFullPath((Join-Path $RuntimeBase $Build))
 $RuntimeMarker = Join-Path $RuntimeRoot '.evejs-frontier-runtime'
 $PidMarker = Join-Path $RuntimeRoot '.evejs-frontier-server.pid.json'
+$DappPidMarker = Join-Path $RuntimeRoot '.evejs-frontier-dapp.pid.json'
 $ServerEntry = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'server\index.js'))
+$DappRoot = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'smart-assembly-control'))
+$DappEntry = [IO.Path]::GetFullPath((Join-Path $DappRoot 'scripts\serve.mjs'))
 $WindowsRoot = [IO.Path]::GetFullPath(
     (Join-Path $env:LOCALAPPDATA 'EveJS-Frontier\windows')
 )
@@ -156,6 +161,18 @@ function Read-PidMarker {
     return $marker
 }
 
+function Remove-MatchingServerPidMarker {
+    param([Parameter(Mandatory)] [object]$Expected)
+    $current = Read-PidMarker
+    if ($null -eq $current) { return }
+    if ([int64]$current.pid -ne [int64]$Expected.pid -or
+        [int64]$current.processStartTimeUtcTicks -ne
+        [int64]$Expected.processStartTimeUtcTicks) {
+        throw 'The server PID marker changed while stopping; refusing to remove it.'
+    }
+    Remove-Item -LiteralPath $PidMarker -Force
+}
+
 function Get-OwnedProcessState {
     $marker = Read-PidMarker
     if ($null -eq $marker) {
@@ -189,6 +206,84 @@ function Get-OwnedProcessState {
     if ([string]::IsNullOrWhiteSpace([string]$cimProcess.CommandLine) -or
         ([string]$cimProcess.CommandLine).IndexOf($ServerEntry, $script:PathComparison) -lt 0) {
         throw "PID $($marker.pid) command line does not identify $ServerEntry; refusing to stop it."
+    }
+    return [pscustomobject]@{ State = 'running'; Marker = $marker; Process = $process }
+}
+
+function Get-ServerProcessLabel {
+    param([object]$Marker)
+    if ($null -ne $Marker -and
+        @($Marker.PSObject.Properties.Name) -contains 'launchMode' -and
+        [string]$Marker.launchMode -eq 'foreground') {
+        return 'Foreground server'
+    }
+    return 'Background process'
+}
+
+function Read-DappPidMarker {
+    if (-not (Test-Path -LiteralPath $DappPidMarker -PathType Leaf)) {
+        return $null
+    }
+    try {
+        $marker = Get-Content -LiteralPath $DappPidMarker -Raw | ConvertFrom-Json
+    }
+    catch {
+        throw "Smart Assembly dApp PID marker is malformed: $DappPidMarker"
+    }
+    Assert-RequiredProperties -Value $marker -Names @(
+        'kind',
+        'schemaVersion',
+        'build',
+        'runtimeRoot',
+        'pid',
+        'processStartTimeUtcTicks',
+        'nodePath',
+        'dappEntry'
+    ) -Description 'Smart Assembly dApp PID marker'
+    if ($marker.kind -ne $script:DappPidMarkerKind -or
+        [int]$marker.schemaVersion -ne $script:DappPidMarkerSchemaVersion -or
+        [string]$marker.build -ne $Build -or
+        -not (Test-SamePath -Left ([string]$marker.runtimeRoot) -Right $RuntimeRoot) -or
+        -not (Test-SamePath -Left ([string]$marker.dappEntry) -Right $DappEntry) -or
+        [int64]$marker.pid -le 0 -or
+        [int64]$marker.processStartTimeUtcTicks -le 0) {
+        throw "Smart Assembly dApp PID marker is not an exact build-owned process record: $DappPidMarker"
+    }
+    return $marker
+}
+
+function Get-OwnedDappProcessState {
+    $marker = Read-DappPidMarker
+    if ($null -eq $marker) {
+        return [pscustomobject]@{ State = 'absent'; Marker = $null; Process = $null }
+    }
+
+    $process = Get-Process -Id ([int]$marker.pid) -ErrorAction SilentlyContinue
+    if ($null -eq $process) {
+        return [pscustomobject]@{ State = 'stale'; Marker = $marker; Process = $null }
+    }
+    try {
+        $actualPath = [IO.Path]::GetFullPath($process.Path)
+        $actualStartTicks = $process.StartTime.ToUniversalTime().Ticks
+    }
+    catch {
+        throw "Cannot verify Smart Assembly dApp process identity for PID $($marker.pid): $($_.Exception.Message)"
+    }
+    if (-not (Test-SamePath -Left $actualPath -Right ([string]$marker.nodePath)) -or
+        [int64]$actualStartTicks -ne [int64]$marker.processStartTimeUtcTicks) {
+        throw "PID $($marker.pid) is not the marker-owned Smart Assembly dApp process; refusing to stop it."
+    }
+
+    $cimProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $($marker.pid)" -ErrorAction SilentlyContinue
+    if ($null -eq $cimProcess) {
+        if ($null -eq (Get-Process -Id ([int]$marker.pid) -ErrorAction SilentlyContinue)) {
+            return [pscustomobject]@{ State = 'stale'; Marker = $marker; Process = $null }
+        }
+        throw "Cannot inspect the command line for Smart Assembly dApp PID $($marker.pid); refusing to stop it."
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$cimProcess.CommandLine) -or
+        ([string]$cimProcess.CommandLine).IndexOf($DappEntry, $script:PathComparison) -lt 0) {
+        throw "PID $($marker.pid) command line does not identify $DappEntry; refusing to stop it."
     }
     return [pscustomobject]@{ State = 'running'; Marker = $marker; Process = $process }
 }
@@ -247,59 +342,102 @@ Assert-ContainedExactRuntimePath
 if (-not (Test-Path -LiteralPath $RuntimeRoot)) {
     Write-Output "[evejs-frontier] Runtime is not initialized for build $Build."
     Write-Output '[evejs-frontier] Background process: not running'
+    Write-Output '[evejs-frontier] Smart Assembly dApp: not running'
     return
 }
 
 Assert-RecognizedRuntime
 $processState = Get-OwnedProcessState
+$dappProcessState = Get-OwnedDappProcessState
 
 if ($Status) {
+    $serverLabel = Get-ServerProcessLabel -Marker $processState.Marker
     switch ($processState.State) {
         'running' {
-            Write-Output "[evejs-frontier] Background process: running pid=$($processState.Marker.pid)"
+            Write-Output "[evejs-frontier] ${serverLabel}: running pid=$($processState.Marker.pid)"
         }
         'stale' {
-            Write-Output "[evejs-frontier] Background process: stale marker pid=$($processState.Marker.pid)"
+            Write-Output "[evejs-frontier] ${serverLabel}: stale marker pid=$($processState.Marker.pid)"
         }
         default {
             Write-Output '[evejs-frontier] Background process: not running'
+        }
+    }
+    switch ($dappProcessState.State) {
+        'running' {
+            Write-Output "[evejs-frontier] Smart Assembly dApp: running pid=$($dappProcessState.Marker.pid)"
+        }
+        'stale' {
+            Write-Output "[evejs-frontier] Smart Assembly dApp: stale marker pid=$($dappProcessState.Marker.pid)"
+        }
+        default {
+            Write-Output '[evejs-frontier] Smart Assembly dApp: not running'
         }
     }
     return
 }
 
 if ($processState.State -eq 'absent') {
-    Write-Output "[evejs-frontier] No marker-owned background server is running for build $Build."
-    return
+    Write-Output "[evejs-frontier] No marker-owned server is running for build $Build."
 }
-
-if ($processState.State -eq 'stale') {
+elseif ($processState.State -eq 'stale') {
     if ($DryRun) {
         Write-Output "[evejs-frontier] Dry run: would remove stale PID marker for pid=$($processState.Marker.pid)"
-        return
     }
-    Remove-Item -LiteralPath $PidMarker -Force
-    Write-Output "[evejs-frontier] Removed stale PID marker for pid=$($processState.Marker.pid)."
-    return
+    else {
+        Remove-MatchingServerPidMarker -Expected $processState.Marker
+        Write-Output "[evejs-frontier] Removed stale PID marker for pid=$($processState.Marker.pid)."
+    }
 }
-
-if ($DryRun) {
+elseif ($DryRun) {
     Write-Output "[evejs-frontier] Dry run: would stop marker-owned pid=$($processState.Marker.pid)"
-    return
+}
+else {
+    Stop-Process -Id ([int]$processState.Marker.pid) -Force
+    try {
+        Wait-Process -Id ([int]$processState.Marker.pid) -Timeout $WaitSeconds -ErrorAction Stop
+    }
+    catch {
+        if ($null -ne (Get-Process -Id ([int]$processState.Marker.pid) -ErrorAction SilentlyContinue)) {
+            throw "Marker-owned PID $($processState.Marker.pid) did not stop within $WaitSeconds seconds."
+        }
+    }
+    if ($null -ne (Get-Process -Id ([int]$processState.Marker.pid) -ErrorAction SilentlyContinue)) {
+        throw "Marker-owned PID $($processState.Marker.pid) is still running; PID marker was retained."
+    }
+    Remove-MatchingServerPidMarker -Expected $processState.Marker
+    Write-Output "[evejs-frontier] Stopped marker-owned Frontier server pid=$($processState.Marker.pid)."
 }
 
-Stop-Process -Id ([int]$processState.Marker.pid) -Force
-try {
-    Wait-Process -Id ([int]$processState.Marker.pid) -Timeout $WaitSeconds -ErrorAction Stop
+$dappProcessState = Get-OwnedDappProcessState
+if ($dappProcessState.State -eq 'absent') {
+    Write-Output "[evejs-frontier] No marker-owned Smart Assembly dApp is running for build $Build."
 }
-catch {
-    if ($null -ne (Get-Process -Id ([int]$processState.Marker.pid) -ErrorAction SilentlyContinue)) {
-        throw "Marker-owned PID $($processState.Marker.pid) did not stop within $WaitSeconds seconds."
+elseif ($dappProcessState.State -eq 'stale') {
+    if ($DryRun) {
+        Write-Output "[evejs-frontier] Dry run: would remove stale Smart Assembly dApp PID marker for pid=$($dappProcessState.Marker.pid)"
+    }
+    else {
+        Remove-Item -LiteralPath $DappPidMarker -Force
+        Write-Output "[evejs-frontier] Removed stale Smart Assembly dApp PID marker for pid=$($dappProcessState.Marker.pid)."
     }
 }
-
-if ($null -ne (Get-Process -Id ([int]$processState.Marker.pid) -ErrorAction SilentlyContinue)) {
-    throw "Marker-owned PID $($processState.Marker.pid) is still running; PID marker was retained."
+elseif ($DryRun) {
+    Write-Output "[evejs-frontier] Dry run: would stop marker-owned Smart Assembly dApp pid=$($dappProcessState.Marker.pid)"
 }
-Remove-Item -LiteralPath $PidMarker -Force
-Write-Output "[evejs-frontier] Stopped marker-owned Frontier server pid=$($processState.Marker.pid)."
+else {
+    Stop-Process -Id ([int]$dappProcessState.Marker.pid) -Force
+    try {
+        Wait-Process -Id ([int]$dappProcessState.Marker.pid) -Timeout $WaitSeconds -ErrorAction Stop
+    }
+    catch {
+        if ($null -ne (Get-Process -Id ([int]$dappProcessState.Marker.pid) -ErrorAction SilentlyContinue)) {
+            throw "Marker-owned Smart Assembly dApp PID $($dappProcessState.Marker.pid) did not stop within $WaitSeconds seconds."
+        }
+    }
+    if ($null -ne (Get-Process -Id ([int]$dappProcessState.Marker.pid) -ErrorAction SilentlyContinue)) {
+        throw "Marker-owned Smart Assembly dApp PID $($dappProcessState.Marker.pid) is still running; PID marker was retained."
+    }
+    Remove-Item -LiteralPath $DappPidMarker -Force
+    Write-Output "[evejs-frontier] Stopped marker-owned Smart Assembly dApp pid=$($dappProcessState.Marker.pid)."
+}

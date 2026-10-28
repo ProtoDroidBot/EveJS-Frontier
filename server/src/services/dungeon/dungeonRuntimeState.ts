@@ -12,7 +12,8 @@ const {
 const {
   isRetiredOrdinaryEncounterMissionForAgent,
 } = require(path.join(__dirname, "../agent/missionAuthority"));
-const repo = createTableRepository("service:dungeon", { strict: true });
+const contentProfile = require("./dungeonContentProfile");
+const repo = contentProfile.createProfileRepository(createTableRepository("service:dungeon", { strict: true }));
 
 const DUNGEON_RUNTIME_TABLE = "dungeonRuntimeState";
 const DUNGEON_RUNTIME_VERSION = 1;
@@ -26,6 +27,7 @@ const VALID_LIFECYCLE_STATES = new Set([
 ]);
 
 let cache = null;
+let cacheProfileRevision = "";
 
 function toInt(value, fallback = 0) {
   const numeric = Number(value);
@@ -149,6 +151,12 @@ function normalizeIDList(value) {
   return [...new Set((Array.isArray(value) ? value : [value])
     .map((entry) => toInt(entry, 0))
     .filter((entry) => entry > 0))].sort((left, right) => left - right);
+}
+
+function normalizeTextList(value) {
+  return [...new Set((Array.isArray(value) ? value : [value])
+    .map((entry) => normalizeLowerText(entry, ""))
+    .filter(Boolean))];
 }
 
 function normalizeStateName(value, fallback) {
@@ -314,6 +322,9 @@ function normalizeInstanceRecord(record: Record<string, any> = {}) {
     difficulty: toOptionalInt(record.difficulty),
     entryObjectTypeID: toOptionalInt(record.entryObjectTypeID),
     dungeonNameID: toOptionalInt(record.dungeonNameID),
+    dungeonTags: normalizeTextList(record.dungeonTags),
+    dungeonFactionKey: normalizeLowerText(record.dungeonFactionKey, "") || null,
+    dungeonFactionTag: normalizeLowerText(record.dungeonFactionTag, "") || null,
     position: normalizePosition(record.position),
     ownership: normalizeOwnership(record.ownership),
     timers: normalizeTimers(record.timers || {}, lifecycleState),
@@ -326,7 +337,7 @@ function normalizeInstanceRecord(record: Record<string, any> = {}) {
     environmentState: normalizeJsonObject(record.environmentState),
     spawnState: normalizeJsonObject(record.spawnState),
     runtimeFlags: normalizeJsonObject(record.runtimeFlags),
-    metadata: normalizeJsonObject(record.metadata),
+    metadata: normalizeJsonObject(contentProfile.stampInstance(record).metadata),
   };
 }
 
@@ -401,6 +412,9 @@ function buildInstanceSummary(instance) {
     difficulty: instance.difficulty,
     entryObjectTypeID: instance.entryObjectTypeID,
     dungeonNameID: instance.dungeonNameID,
+    dungeonTags: cloneValue(instance.dungeonTags || []),
+    dungeonFactionKey: instance.dungeonFactionKey || null,
+    dungeonFactionTag: instance.dungeonFactionTag || null,
     position: instance.position,
     ownership: cloneValue(instance.ownership),
     timers: cloneValue(instance.timers),
@@ -481,9 +495,14 @@ function buildCache(sourceState = null) {
     if (instance.siteKey) {
       appendIndex(instanceIDsBySiteKey, instance.siteKey, instance.instanceID);
       const existing = instanceIDBySiteKey.get(instance.siteKey) || null;
+      const existingIsActive = isActiveLifecycleState(
+        summariesByID.get(existing) && summariesByID.get(existing).lifecycleState,
+      );
+      const candidateIsActive = isActiveLifecycleState(instance.lifecycleState);
       if (
         !existing ||
-        !isActiveLifecycleState(summariesByID.get(existing) && summariesByID.get(existing).lifecycleState)
+        (candidateIsActive && !existingIsActive) ||
+        (candidateIsActive === existingIsActive && instance.instanceID < existing)
       ) {
         instanceIDBySiteKey.set(instance.siteKey, instance.instanceID);
       }
@@ -528,8 +547,10 @@ function buildCache(sourceState = null) {
 }
 
 function ensureCache() {
-  if (!cache) {
+  const revision = contentProfile.getContentProfileRevision();
+  if (!cache || cacheProfileRevision !== revision) {
     cache = buildCache();
+    cacheProfileRevision = revision;
   }
   return cache;
 }
@@ -606,12 +627,15 @@ function refreshSiteKeyIndex(cacheState, siteKey) {
     if (!instance) {
       continue;
     }
+    const selected = cacheState.instancesByID.get(selectedInstanceID) || null;
+    const selectedIsActive = isActiveLifecycleState(
+      selected && selected.lifecycleState,
+    );
+    const candidateIsActive = isActiveLifecycleState(instance.lifecycleState);
     if (
       selectedInstanceID <= 0 ||
-      !isActiveLifecycleState(
-        cacheState.summariesByID.get(selectedInstanceID) &&
-        cacheState.summariesByID.get(selectedInstanceID).lifecycleState,
-      )
+      (candidateIsActive && !selectedIsActive) ||
+      (candidateIsActive === selectedIsActive && instanceID < selectedInstanceID)
     ) {
       selectedInstanceID = instanceID;
     }
@@ -714,9 +738,17 @@ function addInstanceToCache(cacheState, rawInstance) {
   if (instance.siteKey) {
     const existingInstanceID = cacheState.instanceIDBySiteKey.get(instance.siteKey) || 0;
     const existingSummary = cacheState.summariesByID.get(existingInstanceID) || null;
+    const existingIsActive = isActiveLifecycleState(
+      existingSummary && existingSummary.lifecycleState,
+    );
+    const candidateIsActive = isActiveLifecycleState(instance.lifecycleState);
     if (
       existingInstanceID <= 0 ||
-      !isActiveLifecycleState(existingSummary && existingSummary.lifecycleState)
+      (candidateIsActive && !existingIsActive) ||
+      (
+        candidateIsActive === existingIsActive &&
+        instanceID < existingInstanceID
+      )
     ) {
       cacheState.instanceIDBySiteKey.set(instance.siteKey, instanceID);
     }
@@ -927,6 +959,10 @@ function mutateState(mutator) {
       skippedWrite: true,
       data: cloneValue(loadState()),
     };
+  }
+  if (!result.success) {
+    cache = null;
+    return { success: false, skippedWrite: false, data: cloneValue(loadState()) };
   }
   cache = buildCache(normalizedNext);
   return {

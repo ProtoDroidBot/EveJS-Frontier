@@ -169,7 +169,7 @@ function buildCrudeRiftInfo(solarSystemID, options: Record<string, any> = {}) {
   if (numericSystemID <= 0) {
     return buildEmptyCrudeRiftInfo();
   }
-  const sites = siteStore.listSites(numericSystemID);
+  const sites = siteStore.listSites(numericSystemID, { activeOnly: true });
   const counts = new Map();
   let points = 0;
   for (const site of sites) {

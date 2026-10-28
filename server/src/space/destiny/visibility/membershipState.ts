@@ -916,6 +916,9 @@ function createVisibilityGenerationState(options: Record<string, any> = {}) {
       entry && typeof entry === "object" ? { ...entry } : entry
     ));
   return {
+    combatRevealedDynamicEntityIDs: normalizeVisibilityEntityIDSet(
+      options.combatRevealedDynamicEntityIDs,
+    ),
     freshlyVisibleDynamicEntityIDs: normalizeVisibilityEntityIDSet(
       options.freshlyVisibleDynamicEntityIDs,
     ),

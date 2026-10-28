@@ -3,7 +3,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const { normalizeDestinyStamp, resolveOptionalDestinyStamp, } = require("../delivery/stamps");
 const { normalizePersistentEntityID, } = require("../identity/entityID");
 const { getNativeWarpDropoutSpeed, getWarpAccelRateFromWarpSpeedAU, getWarpDecelRateFromWarpSpeedAU, isNativeWarpDistanceTooShort, } = require("./warp");
+const { getEntityCollisionBroadphaseRadius, } = require("./collisions");
 const INVALID_RUNTIME_PERSISTENT_IDENTITY = "invalid-persistent-identity";
+const WARP_ARRIVAL_SURFACE_CLEARANCE_METERS = 500;
 function hasPersistentIdentityValue(value) {
     return value !== null && value !== undefined && String(value).trim() !== "";
 }
@@ -569,23 +571,35 @@ function createDestinyWarpStateHelpers(deps = {}) {
         return progress;
     }
     function getWarpStopDistanceForTarget(shipEntity, targetEntity, minimumRange = 0) {
-        const targetRadius = Math.max(0, toFiniteNumber(targetEntity && targetEntity.radius, 0));
+        const targetRadius = Math.max(0, toFiniteNumber(getEntityCollisionBroadphaseRadius(targetEntity), 0));
+        const shipRadius = Math.max(0, toFiniteNumber(getEntityCollisionBroadphaseRadius(shipEntity), 0));
         const desiredRange = Math.max(0, toFiniteNumber(minimumRange, 0));
+        const safeSurfaceDistance = targetRadius + shipRadius + WARP_ARRIVAL_SURFACE_CLEARANCE_METERS;
+        let authoredDistance;
         switch (targetEntity && targetEntity.kind) {
             case "planet":
             case "moon":
-                return Math.max(targetRadius + 1000000, desiredRange) + (shipEntity.radius * 2);
+                authoredDistance = Math.max(targetRadius + 1000000, desiredRange) +
+                    (shipRadius * 2);
+                break;
             case "sun":
-                return Math.max(targetRadius + 5000000, desiredRange) + (shipEntity.radius * 2);
+                authoredDistance = Math.max(targetRadius + 5000000, desiredRange) +
+                    (shipRadius * 2);
+                break;
             case "station":
-                return targetRadius + desiredRange + (shipEntity.radius * 2);
+                authoredDistance = targetRadius + desiredRange + (shipRadius * 2);
+                break;
             case "stargate":
-                return Math.max(Math.max(2500, targetRadius * 0.3), desiredRange) + (shipEntity.radius * 2);
+                authoredDistance = Math.max(Math.max(2500, targetRadius * 0.3), desiredRange) + (shipRadius * 2);
+                break;
             case "asteroidBelt":
-                return Math.max(2500, desiredRange) + (shipEntity.radius * 2);
+                authoredDistance = Math.max(2500, desiredRange) + (shipRadius * 2);
+                break;
             default:
-                return Math.max(Math.max(1000, targetRadius), desiredRange) + (shipEntity.radius * 2);
+                authoredDistance = Math.max(Math.max(1000, targetRadius), desiredRange) + (shipRadius * 2);
+                break;
         }
+        return Math.max(authoredDistance, safeSurfaceDistance);
     }
     return {
         getWarpAccelRate,

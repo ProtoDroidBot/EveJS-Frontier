@@ -23,6 +23,10 @@ function clearTrackingState(entity) {
   entity.lastWarpDiagnosticStamp = null;
   entity.manualFlightActive = false;
   entity.manualPitch = null;
+  entity.manualPitchRate = null;
+  entity.manualRollRate = 0;
+  entity.manualBrakeFraction = 0;
+  entity.manualHeading = null;
   entity.manualYawRate = 0;
   entity.manualPitchVelocity = 0;
   entity.manualYawVelocity = 0;

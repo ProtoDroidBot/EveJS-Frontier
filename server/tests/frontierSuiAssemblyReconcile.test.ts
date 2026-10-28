@@ -369,6 +369,21 @@ test("removal only considers previously tracked identities absent from local ite
   assert.equal(linking[0].destinationGateId, null);
 });
 
+test("retiring a Smart Catapult clears both its destination and route distance", async () => {
+  const catapult = storage({
+    kind: "gate", itemId: "10003", typeId: 95627, storageCapacity: "0",
+    isCatapult: true, destinationSolarSystemId: 30000124,
+    gateDistanceMeters: "80", gateMaxDistanceMeters: "100",
+  });
+  const f = fixture({ tracked: [catapult] });
+  await reconcileSuiAssemblies(snapshot([]), f.context, new Set());
+  const linking = f.calls.get("links")![0];
+  assert.equal(linking.length, 1);
+  assert.equal(linking[0].destinationGateId, null);
+  assert.equal(linking[0].destinationSolarSystemId, null);
+  assert.equal(linking[0].gateDistanceMeters, null);
+});
+
 test("an invalid assembly still present locally is reported and never removed", async () => {
   const old = storage();
   const f = fixture({ tracked: [old] });

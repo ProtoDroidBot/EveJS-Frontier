@@ -3,8 +3,13 @@ const path = require("path");
 const config = require(path.join(__dirname, "../../config"));
 const worldData = require(path.join(__dirname, "../worldData"));
 const spaceRuntime = require(path.join(__dirname, "../runtime"));
+const { resolveItemByTypeID } = require(path.join(
+  __dirname, "../../services/inventory/itemTypeRegistry",
+));
 const {
   buildChildEntityScopeMetadata,
+  canEntitiesInteractLocally,
+  resolveEntityInteractionScope,
 } = require(path.join(__dirname, "../destiny/identity/interactionScope"));
 const wormholeAuthority = require(path.join(
   __dirname,
@@ -35,7 +40,12 @@ const {
   setBehaviorOverrides,
   normalizeBehaviorOverrides,
   noteIncomingAggression,
+  noteDungeonArrivalResponse,
+  resolveNpcDungeonArrivalDisposition,
 } = require(path.join(__dirname, "./npcBehaviorLoop"));
+const {
+  requestNpcSupport,
+} = require(path.join(__dirname, "./npcSupportCoordinator"));
 const {
   GATE_OPERATOR_KIND,
   getStartupRuleOverride,
@@ -56,6 +66,9 @@ const {
   resolveAnchors,
   resolveAnchor,
 } = require(path.join(__dirname, "./npcAnchors"));
+const { resolveSessionCharacterID } = require(path.join(
+  __dirname, "../../services/_shared/sessionIdentity",
+));
 const nativeNpcService = require(path.join(__dirname, "./nativeNpcService"));
 const {
   parseNpcCustomInfo,
@@ -76,6 +89,9 @@ const {
 const {
   ENTITY_TYPE,
 } = require(path.join(__dirname, "../entityConstants"));
+const {
+  resolveNpcTargetIdentification,
+} = require(path.join(__dirname, "../../config/npcFactionConfig"));
 
 const DRIFTER_FACTION_ID = 500024;
 
@@ -134,6 +150,25 @@ function resolveSpawnContextForSession(session) {
       contextKind: "sessionShip",
     },
   };
+}
+
+function resolveSessionSpawnScopeMetadata(session, context) {
+  const metadata = buildChildEntityScopeMetadata(context.anchorEntity);
+  const instanceID = toPositiveInt(metadata.dungeonSiteInstanceID, 0);
+  const scene = context.scene;
+  if (
+    !instanceID ||
+    !scene ||
+    typeof scene.resolveDungeonInstanceVisibilityForSession !== "function" ||
+    scene.resolveDungeonInstanceVisibilityForSession(session, instanceID)
+  ) {
+    return metadata;
+  }
+
+  // The ship can retain a dungeon marker after that site has been replaced.
+  // A command spawn beside it must not inherit an instance nobody can see.
+  const { dungeonSiteID, dungeonSiteInstanceID, ...remainingScope } = metadata;
+  return remainingScope;
 }
 
 function resolveSpawnContextForSystem(systemID, options: Record<string, any> = {}) {
@@ -217,13 +252,10 @@ function resolveBatchSelection(options: Record<string, any> = {}) {
 }
 
 function shouldUseRuntimeOnlyNpcSpawn(options: Record<string, any> = {}) {
-  if (options.transient === true) {
-    return true;
-  }
-  if (options.transient === false) {
-    return false;
-  }
-  return true;
+  // Native NPCs now share the durable identity, fitting, and respawn path.
+  // Keep the normalization boundary for older callers that still supply the
+  // historical transient flag.
+  return false;
 }
 
 function normalizeNpcSpawnOptions(options: Record<string, any> = {}) {
@@ -255,7 +287,7 @@ function spawnNpcBatchForSession(session, options: Record<string, any> = {}) {
     "entityScopeMetadata",
   )
     ? spawnOptions.entityScopeMetadata
-    : buildChildEntityScopeMetadata(contextResult.data.anchorEntity);
+    : resolveSessionSpawnScopeMetadata(session, contextResult.data);
   const batchResult = nativeNpcService.spawnNativeDefinitionsInContext(contextResult.data, selectionResult, {
     ...spawnOptions,
     entityScopeMetadata,
@@ -294,6 +326,123 @@ function spawnNpcBatchForSession(session, options: Record<string, any> = {}) {
     }
   }
   return batchResult;
+}
+
+function resolveNpcTypeProfile(typeID, profiles, typeName = "") {
+  const numericTypeID = toPositiveInt(typeID, 0);
+  const normalizedTypeName = String(typeName || "").trim().toLowerCase();
+  const matches = (Array.isArray(profiles) ? profiles : [])
+    .filter((profile) => (
+      String(profile && profile.entityType || "").toLowerCase() === ENTITY_TYPE.NPC &&
+      toPositiveInt(profile && profile.shipTypeID, 0) === numericTypeID
+    ))
+    .sort((left, right) => {
+      const score = (profile) => (
+        (String(profile.name || "").trim().toLowerCase() === normalizedTypeName ? 2 : 0) +
+        (String(profile.shipNameTemplate || "").trim().toLowerCase() === normalizedTypeName ? 1 : 0)
+      );
+      return score(right) - score(left) ||
+        String(left.profileID || "").localeCompare(String(right.profileID || ""));
+    });
+  return matches[0] || null;
+}
+
+function spawnNpcTypeBatchForSession(session, typeID, amount = 1) {
+  const numericTypeID = toPositiveInt(typeID, 0);
+  const requestedAmount = toPositiveInt(amount, 0);
+  if (!numericTypeID || requestedAmount < 1 || requestedAmount > 50) {
+    return { success: false, errorMsg: "NPC_TYPE_SPAWN_ARGUMENTS_INVALID" };
+  }
+  const itemType = resolveItemByTypeID(numericTypeID);
+  const profile = resolveNpcTypeProfile(
+    numericTypeID,
+    listNpcProfiles(),
+    itemType && itemType.name,
+  );
+  if (!profile) {
+    return { success: false, errorMsg: "NPC_TYPE_NOT_SPAWNABLE" };
+  }
+  return spawnNpcBatchForSession(session, {
+    profileQuery: profile.profileID,
+    amount: requestedAmount,
+    createNpcPilot: false,
+    preferPools: false,
+    spawnDistanceMeters: 25_000,
+    spreadMeters: 0,
+    formationSpacingMeters: 0,
+    formationStyle: "fibonacci",
+  });
+}
+
+function spawnNpcPilotShipBatchForSession(session, typeID, amount = 1, options: Record<string, any> = {}) {
+  const factionKey = String(options.factionKey || "").trim().toLowerCase();
+  if (factionKey && factionKey !== "osa") {
+    return { success: false, errorMsg: "NPC_PILOT_FACTION_UNSUPPORTED" };
+  }
+  const numericTypeID = toPositiveInt(typeID, 0);
+  const requestedAmount = toPositiveInt(amount, 0);
+  if (!numericTypeID || requestedAmount < 1 || requestedAmount > 50) {
+    return { success: false, errorMsg: "NPC_PILOT_SHIP_SPAWN_ARGUMENTS_INVALID" };
+  }
+  const shipType = resolveItemByTypeID(numericTypeID);
+  if (!shipType || toPositiveInt(shipType.categoryID, 0) !== 6) {
+    return { success: false, errorMsg: "NPC_PILOT_SHIP_CATEGORY_REQUIRED" };
+  }
+  const { npcPilotIdentitiesEnabled } = require("./npcPilotIdentityRuntime");
+  if (!npcPilotIdentitiesEnabled()) {
+    return { success: false, errorMsg: "NPC_PILOT_IDENTITIES_DISABLED" };
+  }
+  const definition = buildNpcDefinition(
+    `npc_${factionKey ? `${factionKey}_` : ""}pilot_ship_${numericTypeID}`,
+  );
+  if (!definition) {
+    return { success: false, errorMsg: factionKey
+      ? "NPC_FACTION_HULL_TYPELIST_DENIED" : "NPC_DEFINITION_INCOMPLETE" };
+  }
+  const contextResult = resolveSpawnContextForSession(session);
+  if (!contextResult.success || !contextResult.data) return contextResult;
+  const summonerCharacterID = resolveSessionCharacterID(session);
+  const batchResult = nativeNpcService.spawnNativeDefinitionsInContext(contextResult.data, {
+    success: true,
+    data: {
+      selectionKind: factionKey ? "factionPilotShip" : "pilotShip",
+      selectionID: definition.profile.profileID,
+      selectionName: definition.profile.name,
+      definitions: Array.from({ length: requestedAmount }, () => definition),
+    },
+  }, {
+    createNpcPilot: true,
+    ...(factionKey ? { factionStringOnlyID: factionKey } : {}),
+    trustedFitterCharacterIDs: summonerCharacterID > 0 ? [summonerCharacterID] : [],
+    runtimeKind: "nativeCombat",
+    skipInitialBehaviorTick: true,
+    entityScopeMetadata: resolveSessionSpawnScopeMetadata(session, contextResult.data),
+    behaviorOverrides: { passiveRoaming: false, passiveWarping: false },
+    preferredTargetID: toPositiveInt(session && session._space && session._space.shipID, 0),
+    spawnDistanceMeters: 25_000,
+    spreadMeters: 0,
+    formationSpacingMeters: 0,
+    formationStyle: "fibonacci",
+    anchorKind: contextResult.data.anchorKind,
+    anchorName: contextResult.data.anchorLabel,
+    anchorID: toPositiveInt(contextResult.data.anchorEntity && contextResult.data.anchorEntity.itemID, 0),
+  });
+  if (batchResult.success && Array.isArray(batchResult.data && batchResult.data.spawned)) {
+    const scene = contextResult.data.scene;
+    const wakeAtMs = scene.getCurrentSimTimeMs() + Math.max(
+      1000,
+      toFiniteNumber(scene._tickIntervalMs, 1000),
+    );
+    for (const entry of batchResult.data.spawned) {
+      const entityID = toPositiveInt(entry && entry.entity && entry.entity.itemID, 0);
+      if (entityID > 0) scheduleNpcController(entityID, wakeAtMs);
+    }
+  }
+  return batchResult;
+}
+
+function spawnOsaPilotShipBatchForSession(session, typeID, amount = 1) {
+  return spawnNpcPilotShipBatchForSession(session, typeID, amount, { factionKey: "osa" });
 }
 
 function spawnNpcBatchInSystem(systemID, options: Record<string, any> = {}) {
@@ -659,44 +808,64 @@ function listStartupRulesForSystem(systemID) {
   ];
 }
 
-function countExistingStartupControllers(scene, startupRuleID, anchorID) {
+function buildStartupNpcIdentitySlot(scene, startupRuleID, anchorID) {
+  return `startup:${toPositiveInt(scene && scene.systemID, 0)}:rule:${encodeURIComponent(String(startupRuleID || "").trim())}:anchor:${toPositiveInt(anchorID, 0)}`;
+}
+
+function collectExistingStartupGroupSlots(scene, startupRuleID, anchorID) {
   const normalizedSystemID = toPositiveInt(scene && scene.systemID, 0);
   const normalizedStartupRuleID = String(startupRuleID || "").trim();
   const normalizedAnchorID = toPositiveInt(anchorID, 0);
-  const matchingEntityIDs = new Set<any>();
-
-  for (const controller of listControllers()) {
+  const prefix = `${buildStartupNpcIdentitySlot(scene, startupRuleID, anchorID)}:group:`;
+  const slots = new Set<number>();
+  const visitedEntityIDs = new Set<number>();
+  const legacyGroupKeys = new Set<string>();
+  const visitController = (controller, requireLiveEntity) => {
     if (
       toPositiveInt(controller && controller.systemID, 0) !== normalizedSystemID ||
       String(controller && controller.startupRuleID || "").trim() !== normalizedStartupRuleID ||
       toPositiveInt(controller && controller.anchorID, 0) !== normalizedAnchorID
     ) {
-      continue;
+      return;
     }
     const entityID = toPositiveInt(controller && controller.entityID, 0);
-    if (!entityID) {
-      continue;
+    if (!entityID || visitedEntityIDs.has(entityID)) {
+      return;
     }
-    if (scene && !scene.getEntityByID(entityID)) {
-      continue;
+    const entity = scene && scene.getEntityByID(entityID);
+    if (requireLiveEntity && !entity) {
+      return;
     }
-    matchingEntityIDs.add(entityID);
+    visitedEntityIDs.add(entityID);
+    const entityRecord = entity || nativeNpcStore.getNativeEntity(entityID);
+    const identitySlot = String(
+      controller.npcIdentitySlot || entityRecord && entityRecord.npcIdentitySlot || "",
+    );
+    if (identitySlot.startsWith(prefix)) {
+      const ordinalText = identitySlot.slice(prefix.length).split(":")[0];
+      if (/^\d+$/.test(ordinalText)) {
+        slots.add(Number(ordinalText));
+        return;
+      }
+    }
+    // Pre-identity controllers have no reliable group ordinal. Retain their
+    // existing occupancy conservatively until their normal lifecycle ends.
+    legacyGroupKeys.add(String(controller.spawnSiteID || controller.spawnGroupInstanceID || entityID));
+  };
+  for (const controller of listControllers()) {
+    visitController(controller, true);
   }
-
-  for (const controllerRecord of nativeNpcStore.listNativeControllersForSystem(normalizedSystemID)) {
-    if (
-      String(controllerRecord && controllerRecord.startupRuleID || "").trim() !== normalizedStartupRuleID ||
-      toPositiveInt(controllerRecord && controllerRecord.anchorID, 0) !== normalizedAnchorID
-    ) {
-      continue;
-    }
-    const entityID = toPositiveInt(controllerRecord && controllerRecord.entityID, 0);
-    if (entityID > 0) {
-      matchingEntityIDs.add(entityID);
-    }
+  for (const controller of nativeNpcStore.listNativeControllersForSystem(normalizedSystemID)) {
+    visitController(controller, false);
   }
-
-  return matchingEntityIDs.size;
+  let legacyOrdinal = 0;
+  for (const _key of legacyGroupKeys) {
+    while (slots.has(legacyOrdinal)) {
+      legacyOrdinal += 1;
+    }
+    slots.add(legacyOrdinal);
+  }
+  return slots;
 }
 
 function isExactEverMoreGatePresenceRule(rule) {
@@ -894,6 +1063,7 @@ function spawnExactEverMoreGatePresenceForAnchor(scene, rule, anchor, sharedSpaw
         batchIndex: index + 1,
         batchTotal: layout.length,
         startupSlotIndex: index,
+        npcIdentitySlot: `${buildStartupNpcIdentitySlot(scene, rule && rule.startupRuleID, anchorID)}:slot:${index}`,
         selectionKind: "group",
         selectionID: String(rule && rule.spawnGroupID || "").trim() || null,
         selectionName: String(rule && rule.name || "").trim() || null,
@@ -991,9 +1161,6 @@ function spawnStartupRuleInScene(scene, rule) {
     isCombatStartupRuleDormancyEligible(scene, rule);
   for (const anchor of anchorsResult.data.anchors) {
     const anchorID = toPositiveInt(anchor && anchor.itemID, 0);
-    const existingCount = anchorID > 0
-      ? countExistingStartupControllers(scene, rule.startupRuleID, anchorID)
-      : 0;
     if (isExactEverMoreGatePresenceRule(rule)) {
       const sharedSpawnOptions = {
         ...normalizeNpcSpawnOptions({
@@ -1039,7 +1206,11 @@ function spawnStartupRuleInScene(scene, rule) {
       spawned.push(...spawnResult.data.spawned);
       continue;
     }
-    for (let groupIndex = existingCount; groupIndex < groupsPerAnchor; groupIndex += 1) {
+    const occupiedGroupSlots = collectExistingStartupGroupSlots(scene, rule.startupRuleID, anchorID);
+    for (let groupIndex = 0; groupIndex < groupsPerAnchor; groupIndex += 1) {
+      if (occupiedGroupSlots.has(groupIndex)) {
+        continue;
+      }
       const sharedSpawnOptions = {
         ...normalizeNpcSpawnOptions({
           transient: rule.transient,
@@ -1051,6 +1222,7 @@ function spawnStartupRuleInScene(scene, rule) {
         startupRuleID: String(rule.startupRuleID || "").trim() || null,
         operatorKind: String(rule.operatorKind || "").trim() || null,
         behaviorOverrides: rule.behaviorOverrides,
+        npcIdentitySlot: `${buildStartupNpcIdentitySlot(scene, rule.startupRuleID, anchorID)}:group:${groupIndex}`,
         spawnDistanceMeters: toFiniteNumber(
           selector.spawnDistanceMeters,
           0,
@@ -1138,10 +1310,12 @@ function getStartupRuleMissingCount(scene, rule) {
       missingCount += countMissingExactEverMoreSlots(scene, rule, anchor);
       continue;
     }
-    const existingCount = anchorID > 0
-      ? countExistingStartupControllers(scene, rule.startupRuleID, anchorID)
-      : 0;
-    missingCount += Math.max(0, groupsPerAnchor - existingCount);
+    const occupiedGroupSlots = collectExistingStartupGroupSlots(scene, rule.startupRuleID, anchorID);
+    for (let groupIndex = 0; groupIndex < groupsPerAnchor; groupIndex += 1) {
+      if (!occupiedGroupSlots.has(groupIndex)) {
+        missingCount += 1;
+      }
+    }
   }
 
   return {
@@ -1227,8 +1401,7 @@ function maintainStartupRulesInScene(scene, now) {
   }
 }
 
-function spawnStartupRulesForSystem(systemID) {
-  const scene = spaceRuntime.ensureScene(systemID);
+function spawnStartupRulesInScene(scene) {
   if (!scene) {
     return {
       success: false,
@@ -1249,6 +1422,10 @@ function spawnStartupRulesForSystem(systemID) {
       applied,
     },
   };
+}
+
+function spawnStartupRulesForSystem(systemID) {
+  return spawnStartupRulesInScene(spaceRuntime.ensureScene(systemID));
 }
 
 function refreshStartupRulesForScene(scene) {
@@ -1279,15 +1456,28 @@ function handleSceneCreated(scene) {
 
   scene._npcStartupInitialized = true;
   const removedLegacySyntheticNpcs = cleanupLegacySyntheticNpcShips(scene);
-  const removedStaleNativeStartupNpcs = nativeNpcService.cleanupStaleNativeStartupControllers(scene);
-  const startupResult = spawnStartupRulesForSystem(scene.systemID);
+  const activeStartupRuleIDs = listStartupRulesForSystem(scene.systemID)
+    .map((rule) => String(rule.startupRuleID || "").trim())
+    .filter(Boolean);
+  const removedStaleNativeStartupNpcs = nativeNpcService.cleanupStaleNativeStartupControllers(
+    scene,
+  );
+  const rehydrationResult = nativeNpcService.rehydrateStoredNativeControllers(scene, {
+    broadcast: false,
+    activeStartupRuleIDs,
+  });
+  // Reuse the scene being bootstrapped; ensureScene would invalidate an
+  // in-flight async bootstrap and discard its recovery work.
+  const startupResult = spawnStartupRulesInScene(scene);
   return {
-    success: startupResult.success,
-    errorMsg: startupResult.errorMsg || null,
+    success: startupResult.success && rehydrationResult.success,
+    errorMsg: startupResult.errorMsg || rehydrationResult.errorMsg || null,
     data: {
       removedLegacySyntheticNpcs,
       removedStaleNativeStartupNpcs,
-      rehydrated: [],
+      rehydrated: Array.isArray(rehydrationResult.data)
+        ? rehydrationResult.data
+        : [],
       applied:
         startupResult.success && startupResult.data && Array.isArray(startupResult.data.applied)
           ? startupResult.data.applied
@@ -1816,7 +2006,75 @@ function propagateDrifterAggressionToPack(targetEntity, attackerEntity, now) {
   return propagatedEntityIDs;
 }
 
-function noteNpcIncomingAggression(targetEntity, attackerEntity, now) {
+function propagateAggressionToTransponderAllies(
+  targetEntity,
+  attackerEntity,
+  now,
+  options: Record<string, any> = {},
+) {
+  const targetEntityID = toPositiveInt(targetEntity && targetEntity.itemID, 0);
+  const attackerEntityID = toPositiveInt(attackerEntity && attackerEntity.itemID, 0);
+  const attackerOwnerID = toPositiveInt(
+    attackerEntity && attackerEntity.ownerID,
+    toPositiveInt(
+      attackerEntity && attackerEntity.pilotCharacterID,
+      toPositiveInt(attackerEntity && attackerEntity.characterID, 0),
+    ),
+  );
+  const systemID = toPositiveInt(
+    targetEntity && targetEntity.systemID,
+    toPositiveInt(attackerEntity && attackerEntity.systemID, 0),
+  );
+  if (!targetEntityID || !attackerEntityID || !systemID) {
+    return [];
+  }
+
+  const scene = options.scene || spaceRuntime.ensureScene(systemID);
+  if (!scene || typeof scene.getEntityByID !== "function") {
+    return [];
+  }
+
+  const propagatedEntityIDs: any[] = [];
+  for (const candidateController of listControllersBySystem(systemID)) {
+    const candidateEntityID = toPositiveInt(
+      candidateController && candidateController.entityID,
+      0,
+    );
+    if (
+      !candidateEntityID ||
+      candidateEntityID === targetEntityID ||
+      candidateEntityID === attackerEntityID
+    ) {
+      continue;
+    }
+    const candidateEntity = scene.getEntityByID(candidateEntityID);
+    if (
+      !candidateEntity ||
+      !canEntitiesInteractLocally(candidateEntity, targetEntity) ||
+      resolveNpcTargetIdentification(candidateEntity, targetEntity) !== "ally"
+    ) {
+      continue;
+    }
+
+    const result = noteIncomingAggression(
+      candidateEntityID,
+      attackerEntityID,
+      now,
+      { attackerOwnerID },
+    );
+    if (result && result.success) {
+      propagatedEntityIDs.push(candidateEntityID);
+    }
+  }
+  return propagatedEntityIDs;
+}
+
+function noteNpcIncomingAggression(
+  targetEntity,
+  attackerEntity,
+  now,
+  options: Record<string, any> = {},
+) {
   const targetEntityID = toPositiveInt(targetEntity && targetEntity.itemID, 0);
   const attackerEntityID = toPositiveInt(attackerEntity && attackerEntity.itemID, 0);
   const attackerOwnerID = toPositiveInt(
@@ -1841,22 +2099,193 @@ function noteNpcIncomingAggression(targetEntity, attackerEntity, now) {
       attackerOwnerID,
     },
   );
-  if (!noteResult.success) {
+  const targetController = getControllerByEntityID(targetEntityID);
+  const supportProfile = {
+    ...(targetController && targetController.behaviorProfile || {}),
+    ...(targetController && targetController.behaviorOverrides || {}),
+  };
+  const supportResult = noteResult.success && targetEntity.transient !== true &&
+    toPositiveInt(targetEntity.npcCharacterID, 0) > 0 &&
+    supportProfile.supportEnabled !== false
+    ? requestNpcSupport({
+        requesterEntityID: targetEntityID,
+        threatTargetID: attackerEntityID,
+        threatOwnerID: attackerOwnerID,
+        systemID: toPositiveInt(targetEntity.systemID, 0),
+        position: targetEntity.position,
+        scene: options.scene || spaceRuntime.ensureScene(toPositiveInt(targetEntity.systemID, 0)),
+        severity: String(supportProfile.supportSeverity || "moderate"),
+        requiredRoles: Array.isArray(supportProfile.supportRequiredRoles)
+          ? supportProfile.supportRequiredRoles
+          : ["combat"],
+        supportGroupID: String(
+          supportProfile.supportGroupID ||
+          targetController && targetController.spawnGroupID ||
+          targetEntity.spawnGroupID ||
+          targetEntity.npcFactionIdentityKey ||
+          targetEntity.npcFactionKey ||
+          "faction",
+        ),
+        maximumResponderCount: toPositiveInt(supportProfile.supportMaximumResponders, 3),
+        responseRadiusMeters: Math.max(
+          0,
+          toFiniteNumber(supportProfile.supportResponseRadiusMeters, 250_000),
+        ),
+        ttlMs: Math.max(1_000, toFiniteNumber(supportProfile.supportIncidentTtlMs, 120_000)),
+        cooldownMs: Math.max(1_000, toFiniteNumber(supportProfile.supportCooldownMs, 60_000)),
+        allowCrossSystemResponders: supportProfile.supportCrossSystemEnabled !== false,
+        allowReserveSpawn:
+          supportProfile.supportReserveSpawnEnabled === true ||
+          Array.isArray(supportProfile.reinforcementDefinitions) &&
+            supportProfile.reinforcementDefinitions.length > 0,
+        maximumReserveSpawn: toPositiveInt(
+          supportProfile.supportMaximumReserveSpawn,
+          Array.isArray(supportProfile.reinforcementDefinitions)
+            ? supportProfile.reinforcementDefinitions.length
+            : 0,
+        ),
+        reserveDefinitions: Array.isArray(supportProfile.reinforcementDefinitions)
+          ? supportProfile.reinforcementDefinitions
+          : [],
+        reserveProfileID: String(supportProfile.supportReserveProfileID || "").trim() || null,
+        reserveSpawnDistanceMeters: Math.max(
+          5_000,
+          toFiniteNumber(supportProfile.supportReserveSpawnDistanceMeters, 35_000),
+        ),
+        nowMs: now,
+      })
+    : null;
+  const coordinatedResponderEntityIDs = supportResult && supportResult.success &&
+    supportResult.data && supportResult.data.incident
+    ? (supportResult.data.incident.responderAssignments || [])
+        .filter((assignment) => ["assigned", "engaging"].includes(String(assignment.status)))
+        .map((assignment) => toPositiveInt(assignment.responderEntityID, 0))
+        .filter(Boolean)
+    : [];
+  // Player allies and transient encounter actors have no durable NPC job to
+  // interrupt. Preserve their immediate local IFF alert path; durable NPCs use
+  // only the bounded coordinator assignments above.
+  const localTransponderResponderEntityIDs =
+    targetEntity.transient === true || toPositiveInt(targetEntity.npcCharacterID, 0) <= 0
+      ? propagateAggressionToTransponderAllies(
+          targetEntity,
+          attackerEntity,
+          now,
+          options,
+        )
+      : [];
+  const propagatedEntityIDs = [
+    ...(noteResult.success
+      ? propagateDrifterAggressionToPack(targetEntity, attackerEntity, now)
+      : []),
+    ...coordinatedResponderEntityIDs,
+    ...localTransponderResponderEntityIDs,
+  ].filter((entityID, index, values) => values.indexOf(entityID) === index);
+  if (!noteResult.success && propagatedEntityIDs.length === 0) {
     return noteResult;
   }
-
-  const propagatedEntityIDs = propagateDrifterAggressionToPack(
-    targetEntity,
-    attackerEntity,
-    now,
-  );
   return {
-    ...noteResult,
+    success: true,
     data: {
       ...(noteResult.data && typeof noteResult.data === "object"
         ? noteResult.data
         : {}),
+      directlyNoted: noteResult.success === true,
       propagatedEntityIDs,
+      supportIncidentID:
+        supportResult && supportResult.success && supportResult.data && supportResult.data.incident
+          ? supportResult.data.incident.incidentID
+          : null,
+      supportError:
+        supportResult && supportResult.success === false
+          ? supportResult.errorMsg || "NPC_SUPPORT_REQUEST_FAILED"
+          : null,
+    },
+  };
+}
+
+function notifyNpcDungeonArrival(scene, arrivingEntity, now = Date.now()) {
+  const arrivingEntityID = toPositiveInt(arrivingEntity && arrivingEntity.itemID, 0);
+  const arrivingScope = resolveEntityInteractionScope(arrivingEntity);
+  if (
+    !scene ||
+    !arrivingEntityID ||
+    !arrivingScope.valid ||
+    !arrivingScope.hasDungeonScope ||
+    arrivingScope.dungeonInstanceID === null
+  ) {
+    return {
+      success: false,
+      errorMsg: "DUNGEON_ARRIVAL_SCOPE_NOT_FOUND",
+    };
+  }
+
+  const normalizedNow = Math.max(0, toFiniteNumber(now, Date.now()));
+  const arrivingOwnerID = toPositiveInt(
+    arrivingEntity.ownerID,
+    toPositiveInt(
+      arrivingEntity.pilotCharacterID,
+      toPositiveInt(arrivingEntity.characterID, 0),
+    ),
+  );
+  const responses = [];
+  for (const controller of listControllersBySystem(scene.systemID)) {
+    const responderEntityID = toPositiveInt(controller && controller.entityID, 0);
+    if (!responderEntityID || responderEntityID === arrivingEntityID) {
+      continue;
+    }
+    const responderEntity = scene.getEntityByID(responderEntityID);
+    const responderScope = resolveEntityInteractionScope(responderEntity);
+    if (
+      !responderEntity ||
+      !responderScope.valid ||
+      !responderScope.hasDungeonScope ||
+      responderScope.dungeonInstanceID === null ||
+      !canEntitiesInteractLocally(responderEntity, arrivingEntity)
+    ) {
+      continue;
+    }
+
+    const disposition = resolveNpcDungeonArrivalDisposition(
+      responderEntity,
+      arrivingEntity,
+      controller,
+    );
+    if (
+      disposition !== "hostile" &&
+      disposition !== "friendly" &&
+      disposition !== "suspicious"
+    ) {
+      continue;
+    }
+    const response = noteDungeonArrivalResponse(
+      responderEntityID,
+      arrivingEntityID,
+      disposition,
+      normalizedNow,
+      { arrivingOwnerID },
+    );
+    if (response && response.success) {
+      responses.push({ entityID: responderEntityID, disposition });
+    }
+  }
+
+  return {
+    success: true,
+    data: {
+      arrivingEntityID,
+      dungeonInstanceID: arrivingScope.dungeonInstanceID,
+      responseCount: responses.length,
+      hostileResponseCount: responses.filter(
+        (response) => response.disposition === "hostile",
+      ).length,
+      suspiciousResponseCount: responses.filter(
+        (response) => response.disposition === "suspicious",
+      ).length,
+      friendlyResponseCount: responses.filter(
+        (response) => response.disposition === "friendly",
+      ).length,
+      responses,
     },
   };
 }
@@ -1869,6 +2298,8 @@ function getNpcOperatorSummary() {
     currentTargetID: controller.currentTargetID || 0,
     preferredTargetID: controller.preferredTargetID || 0,
     entityType: controller.entityType || ENTITY_TYPE.NPC,
+    behaviorRole: controller.behaviorRole || "authored",
+    behaviorActivity: controller.behaviorActivity || "authored",
     selectionKind: controller.selectionKind || null,
     selectionID: controller.selectionID || null,
     spawnGroupID: controller.spawnGroupID || null,
@@ -1904,6 +2335,9 @@ module.exports = {
   getGateOperatorState,
   resolveProfileDefinition,
   spawnNpcBatchForSession,
+  spawnNpcTypeBatchForSession,
+  spawnNpcPilotShipBatchForSession,
+  spawnOsaPilotShipBatchForSession,
   spawnNpcBatchInSystem,
   spawnNpcForSession,
   spawnConcordBatchForSession,
@@ -1924,13 +2358,20 @@ module.exports = {
   toggleCharacterNpcInvulnerability,
   isCharacterInvulnerable,
   noteNpcIncomingAggression,
+  notifyNpcDungeonArrival,
   getControllerByEntityID,
+  listControllersBySystem,
   destroyNpcControllerByEntityID,
   parseNpcCustomInfo,
   getNpcOperatorSummary,
   wakeNpcController,
   scheduleNpcController,
   _testing: {
+    resolveNpcTypeProfile,
     ruleAppliesToSystem,
+    collectExistingStartupGroupSlots,
+    spawnExactEverMoreGatePresenceForAnchor,
+    spawnStartupRuleInScene,
+    getStartupRuleMissingCount,
   },
 };

@@ -3,6 +3,9 @@
 const path = require("path");
 
 const config = require(path.join(__dirname, "../../config"));
+const { isNpcCharacterID } = require(path.join(
+  __dirname, "../../services/_shared/npcIdentityConstants",
+));
 const {
   buildDict,
   buildFiletimeLong,
@@ -338,6 +341,15 @@ function buildSlimItemDict(entity) {
     ["typeID", slimTypeID],
     ["ownerID", entity.ownerID || 0],
   ];
+  // Build 3640684 chooses CRRegolith from the type's group. Its oreUnits
+  // property is an integer, and drives RegolithBlock's visual growth.
+  if (entity && entity.kind === "regolith") {
+    const oreUnits = Number(entity.oreUnits);
+    if (!Number.isSafeInteger(oreUnits) || oreUnits <= 0) {
+      throw new TypeError("regolith oreUnits must be a positive safe integer");
+    }
+    entries.push(["oreUnits", oreUnits]);
+  }
   const slimNameID = buildSlimNameIDValue(entity && entity.nameID);
 
   if (slimName && !slimNameID) {
@@ -392,6 +404,10 @@ function buildSlimItemDict(entity) {
   if (hasEntityField("dunObjectNameID")) {
     entries.push(["dunObjectNameID", entity.dunObjectNameID ?? null]);
   }
+  const dunRadius = toFiniteNumber(entity && entity.dunRadius, 0);
+  if (dunRadius > 0) {
+    entries.push(["dunRadius", dunRadius]);
+  }
   if (hasEntityField("objectiveTargetGroup")) {
     entries.push(["objectiveTargetGroup", normalizeSlimNullableValue(entity.objectiveTargetGroup)]);
   }
@@ -442,16 +458,35 @@ function buildSlimItemDict(entity) {
     ]);
   }
 
-  if (entity.kind === "ship") {
+  // Native NPC vessels move and fight as runtime ships, while their SDE
+  // category is Entity. Frontier therefore constructs CREntity for them and
+  // accepts only the entity standings/signature fields, not CRShip fields.
+  if (slimCategoryID === 11) {
+    entries.push([
+      "signatureRadius",
+      Math.max(1, toFiniteNumber(entity.signatureRadius, entity.radius || 1)),
+    ]);
+  } else if (entity.kind === "ship") {
     entries.push(["corpID", entity.corporationID || 0]);
     entries.push(["allianceID", entity.allianceID || 0]);
     entries.push(["warFactionID", entity.warFactionID || 0]);
-    entries.push(["charID", entity.characterID || 0]);
+    // A category-6 NPC uses CRShip and can expose its durable pilot without
+    // adopting a player session or inventory owner in the runtime entity.
+    const npcPilotID = entity.nativeNpc === true && isNpcCharacterID(entity.npcCharacterID)
+      ? entity.npcCharacterID
+      : 0;
+    entries.push(["charID", npcPilotID || entity.characterID || 0]);
     const dirtState = resolveShipSlimDirtTime(entity);
     if (dirtState.explicit || dirtState.dirtTime > 0n) {
       entries.push(["dirtTime", buildFiletimeLong(dirtState.dirtTime)]);
     }
     entries.push(["kills", getItemKillCountPlayer(entity.itemID)]);
+    if (Object.prototype.hasOwnProperty.call(entity, "selfDestructAtMs")) {
+      entries.push([
+        "selfDestructTime",
+        buildWallclockFiletimeFromMs(entity.selfDestructAtMs),
+      ]);
+    }
     if (Array.isArray(entity.cosmeticsItems) && entity.cosmeticsItems.length > 0) {
       entries.push(["cosmeticsItems", buildList(entity.cosmeticsItems)]);
     }

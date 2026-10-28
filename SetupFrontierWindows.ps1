@@ -140,11 +140,18 @@ try {
     $snapshot = Join-Path $RepoRoot "_local\frontier-sde\$Build"
     $contracts = Join-Path $RepoRoot "_local\frontier-contracts\$Build"
     $database = Join-Path $RepoRoot "_local\frontier-gameStore\$Build\data"
+    $snapshotCollision = Join-Path $snapshot 'assets\collision\bundle.collision'
+    $databaseCollision = Join-Path (
+        Split-Path -Parent $database
+    ) 'assets\collision\bundle.collision'
 
-    if (-not (Test-Path -LiteralPath (Join-Path $snapshot 'frontier-extraction-manifest.json')) -or $ForceData) {
+    $snapshotManifest = Join-Path $snapshot 'frontier-extraction-manifest.json'
+    $upgradeSnapshot = (Test-Path -LiteralPath $snapshotManifest) -and
+        -not (Test-Path -LiteralPath $snapshotCollision -PathType Leaf)
+    if (-not (Test-Path -LiteralPath $snapshotManifest) -or $upgradeSnapshot -or $ForceData) {
         Write-SetupStep "Extracting untouched Frontier build $Build static data ..."
         $extractArgs = @('run', 'frontier:extract', '--', '--client-root', [string]$client.buildRoot, '--build', [string]$Build)
-        if ($ForceData) { $extractArgs += '--force' }
+        if ($ForceData -or $upgradeSnapshot) { $extractArgs += '--force' }
         & $npm @extractArgs
         if ($LASTEXITCODE -ne 0) { throw 'Frontier static extraction failed.' }
     }
@@ -159,10 +166,12 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Frontier contract export failed.' }
     }
 
-    if (-not (Test-Path -LiteralPath $database) -or $ForceData) {
+    $upgradeDatabase = (Test-Path -LiteralPath $database) -and
+        -not (Test-Path -LiteralPath $databaseCollision -PathType Leaf)
+    if (-not (Test-Path -LiteralPath $database) -or $upgradeDatabase -or $ForceData) {
         Write-SetupStep "Generating the isolated Frontier build $Build database ..."
         $databaseArgs = @('run', 'frontier:database', '--', '--snapshot', $snapshot)
-        if ($ForceData) { $databaseArgs += '--force' }
+        if ($ForceData -or $upgradeDatabase) { $databaseArgs += '--force' }
         & $npm @databaseArgs
         if ($LASTEXITCODE -ne 0) { throw 'Frontier database generation failed.' }
     }
@@ -170,6 +179,23 @@ try {
     if (-not $SkipStage) {
         & (Join-Path $RepoRoot 'StageFrontierClient.ps1') -SourceRoot $client.buildRoot `
             -Build $Build -CopyResFiles:$CopyResFiles -Clean:$CleanStage
+    }
+    $runtimeRoot = Join-Path $RepoRoot "_local\frontier-runtime\$Build"
+    if (Test-Path -LiteralPath $runtimeRoot -PathType Container) {
+        $runtimeMarker = Join-Path $runtimeRoot '.evejs-frontier-runtime'
+        if (-not (Test-Path -LiteralPath $runtimeMarker -PathType Leaf)) {
+            Write-Warning (
+                "An unmarked server runtime remains at $runtimeRoot. " +
+                'StartFrontierServer.ps1 will refuse it until the directory is preserved and reconciled.'
+            )
+        }
+        elseif ($ForceData) {
+            Write-Warning (
+                "-ForceData rebuilt generated data but preserved the mutable server runtime at $runtimeRoot. " +
+                "Stop the server and use .\StartFrontierServer.ps1 -Build $Build -ResetRuntime -InitializeOnly " +
+                'only if a runtime reset is intended.'
+            )
+        }
     }
     Write-SetupStep "Windows Frontier setup completed for build $Build."
 }

@@ -3,7 +3,7 @@
 /**
  * Frontier IFF transponder + Transponder Beacon runtime.
  *
- * Client contract (build 3455996 bytecode):
+ * Client contract (build 3502403 Python 3.12 bytecode):
  * - Transponder module 95988 (behavior "iff") starts/stops broadcasting via
  *   "activate_effect"/"deactivate_effect" and reconfigures a live broadcast
  *   through "iff_reconfigure". Both activation and reconfiguration carry the
@@ -27,9 +27,10 @@
  *   reconfigure call update an inactive module without implicitly activating
  *   it, while deactivation preserves the locally selected mode.
  * - Active beacons are in-memory runtime state only (30 s lifetime): entries
- *   validate live ship/scene state on every read, so docking, jumping, ship
- *   changes, logout, or destruction can never leave a stale visible beacon —
- *   reconnects start clean by construction.
+ *   validate live ship/scene and authoritative Creation power state on every
+ *   read. Structural invalidation (unfit/destroyed/jumped) releases a beacon;
+ *   reversible hull/module power loss suspends visibility and immobilization
+ *   so the remaining authored cycle can resume if authority returns.
  * - Beacon immobilization registers an activeModuleEffects entry carrying
  *   immobilizesShip (the same authority bastion-style modules use) and is
  *   released on expiry, deactivation, or entity teardown; release is also
@@ -52,6 +53,7 @@ const { getCreationModule } = require(path.join(__dirname, "./creationStaticData
 const {
   getTypeAttributeValue,
 } = require(path.join(__dirname, "../fitting/liveFittingState"));
+const npcFactionConfig = require(path.join(__dirname, "../../config/npcFactionConfig"));
 
 const IFF_INFO_KEY = "evejsFrontierIff";
 const IFF_CODE_MAX_LENGTH = 32;
@@ -73,6 +75,7 @@ const DEFAULT_BEACON_DURATION_MS = 30000;
 
 // beaconID (module itemID) -> beacon runtime state
 const activeBeacons = new Map();
+const npcTransponderCache = new WeakMap();
 
 function toInt(value, fallback = 0) {
   const numeric = Number(value);
@@ -123,6 +126,130 @@ function normalizeIffCode(value) {
     return null;
   }
   return code.length <= IFF_CODE_MAX_LENGTH ? code : undefined;
+}
+
+function normalizeNpcCodePart(value) {
+  return String(value == null ? "" : value)
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Build the client-sized code broadcast by an NPC faction. For the current
+ * test protocol its complete wire format is FACTION or FACTION:SHARED_SUFFIX;
+ * no profile, spawn-group, or other entity metadata is encoded.
+ */
+function buildNpcTransponderCode(signal, sharedSuffix = null) {
+  const normalizedSignal = normalizeNpcCodePart(signal);
+  if (!normalizedSignal) {
+    throw new TypeError("NPC faction transponder signal is required");
+  }
+  const normalizedSuffix = normalizeNpcCodePart(sharedSuffix);
+  const code = normalizedSignal + (normalizedSuffix ? `:${normalizedSuffix}` : "");
+  if (code.length > IFF_CODE_MAX_LENGTH) {
+    throw new RangeError(`NPC faction transponder code exceeds ${IFF_CODE_MAX_LENGTH} characters`);
+  }
+  return code;
+}
+
+/**
+ * Configured native NPC factions broadcast their faction signal plus one
+ * optional shared suffix. Factionless NPCs do not synthesize a code from
+ * profile or spawn metadata.
+ */
+function resolveNpcTransponder(entity) {
+  const configuration = npcFactionConfig.resolveNpcTransponderConfiguration(entity);
+  if (!configuration) {
+    return null;
+  }
+  const fingerprint = [
+    configuration.channel,
+    configuration.signal,
+    configuration.factionIdentity,
+    configuration.sharedSuffix,
+  ].join("\u0000");
+  if (entity && typeof entity === "object") {
+    const cached = npcTransponderCache.get(entity);
+    if (cached && cached.fingerprint === fingerprint) {
+      return cached.transponder;
+    }
+  }
+  const code = buildNpcTransponderCode(
+    configuration.signal,
+    configuration.sharedSuffix,
+  );
+  const transponder = {
+    channel: configuration.channel,
+    code,
+    signal: configuration.signal,
+    factionIdentity: configuration.factionIdentity,
+    source: "npc-faction",
+  };
+  if (entity && typeof entity === "object") {
+    npcTransponderCache.set(entity, { fingerprint, transponder });
+  }
+  return transponder;
+}
+
+function resolveEntityTransponder(entity, options: Record<string, any> = {}) {
+  if (!entity || typeof entity !== "object") {
+    return null;
+  }
+  const explicit = entity.iffTransponder || entity.transponder;
+  if (explicit && typeof explicit === "object") {
+    const channel = normalizeIffChannel(
+      explicit.channel,
+      IFF_TRANSPONDER_CHANNELS,
+    );
+    if (channel === IFF_CHANNEL_CODE) {
+      const code = normalizeIffCode(explicit.code);
+      if (code) {
+        return { channel, code, source: "entity" };
+      }
+    } else if (channel === IFF_CHANNEL_TRIBE) {
+      return { channel, code: null, source: "entity" };
+    }
+  }
+  if (entity.nativeNpc === true || entity.nativeNpcOccupied === true) {
+    return resolveNpcTransponder(entity);
+  }
+  const characterID = toInt(
+    entity.characterID ||
+      entity.pilotCharacterID ||
+      entity.session && (entity.session.charid || entity.session.characterID) ||
+      entity.ownerID,
+    0,
+  );
+  const shipID = toInt(entity.itemID || entity.shipID, 0);
+  const resolver = typeof options.resolveActiveTransponder === "function"
+    ? options.resolveActiveTransponder
+    : resolveActiveTransponder;
+  return characterID > 0 && shipID > 0
+    ? resolver(characterID, shipID)
+    : null;
+}
+
+function transpondersMatch(left, right, leftEntity = null, rightEntity = null) {
+  if (!left || !right || left.channel !== right.channel) {
+    return false;
+  }
+  if (left.channel === IFF_CHANNEL_CODE) {
+    return Boolean(left.code) && left.code === right.code;
+  }
+  if (left.channel === IFF_CHANNEL_TRIBE) {
+    const leftCorporationID = toInt(
+      leftEntity && (leftEntity.corporationID || leftEntity.ownerID),
+      0,
+    );
+    const rightCorporationID = toInt(
+      rightEntity && (rightEntity.corporationID || rightEntity.ownerID),
+      0,
+    );
+    return leftCorporationID > 0 && leftCorporationID === rightCorporationID;
+  }
+  return false;
 }
 
 /**
@@ -247,7 +374,11 @@ function resolveActiveTransponder(characterID, shipID, options: Record<string, a
     return null;
   }
   const state = readState(shipItem);
-  if (!state || !Array.isArray(state.modules)) {
+  if (
+    !state ||
+    state.poweredOff === true ||
+    !Array.isArray(state.modules)
+  ) {
     return null;
   }
   for (const moduleEntry of state.modules) {
@@ -272,6 +403,69 @@ function resolveActiveTransponder(characterID, shipID, options: Record<string, a
     }
   }
   return null;
+}
+
+/**
+ * Resolve the two independent parts of beacon liveness. A terminal failure
+ * means the beacon can never resume (the module was removed, the hull left
+ * the scene, or the authored duration elapsed). A reversible authority
+ * failure means the fitted module or its Creation hull is powered down.
+ */
+function resolveBeaconAvailability(
+  beacon,
+  nowMs = Date.now(),
+  options: Record<string, any> = {},
+) {
+  if (!beacon || toFiniteNumber(beacon.expiresAtMs, 0) <= nowMs) {
+    return { live: false, terminal: true, reason: "expired" };
+  }
+  const shipItem = findItemById(toInt(beacon.shipID, 0));
+  if (
+    !shipItem ||
+    toInt(shipItem.locationID, 0) !== toInt(beacon.solarSystemID, 0) ||
+    !shipItem.spaceState
+  ) {
+    return { live: false, terminal: true, reason: "ship-transition" };
+  }
+  const moduleItem = findItemById(toInt(beacon.beaconID, 0));
+  if (
+    !moduleItem ||
+    toInt(moduleItem.locationID, 0) !== toInt(beacon.shipID, 0) ||
+    !isIffBeaconModuleType(moduleItem.typeID)
+  ) {
+    return { live: false, terminal: true, reason: "module-removed" };
+  }
+
+  const creationRuntime = options.creationRuntime || require(path.join(
+    __dirname,
+    "./creationRuntime",
+  ));
+  const readState = typeof options.readCreationState === "function"
+    ? options.readCreationState
+    : creationRuntime.readCreationState;
+  const isModuleOnline = typeof options.isCreationModuleOnline === "function"
+    ? options.isCreationModuleOnline
+    : creationRuntime.isCreationModuleOnline;
+  const state = readState(shipItem);
+  const fitted = state && Array.isArray(state.modules)
+    ? state.modules.some((entry) =>
+        toInt(entry && entry.itemID, 0) === toInt(beacon.beaconID, 0) &&
+        toInt(entry && entry.typeID, 0) === toInt(moduleItem.typeID, 0))
+    : false;
+  if (!fitted) {
+    return { live: false, terminal: true, reason: "module-removed" };
+  }
+  if (state.poweredOff === true) {
+    return { live: false, terminal: false, reason: "creation-powered-off" };
+  }
+  if (!isModuleOnline(moduleItem)) {
+    return { live: false, terminal: false, reason: "module-offline" };
+  }
+  return {
+    live: true,
+    terminal: false,
+    reason: beacon.suspended === true ? "authority-restored" : "authorized",
+  };
 }
 
 function pruneExpiredBeacons(nowMs = Date.now()) {
@@ -311,6 +505,72 @@ function releaseBeacon(beaconID, reason) {
   return true;
 }
 
+function suspendBeacon(beaconID, reason = "authority-unavailable") {
+  const beacon = activeBeacons.get(toInt(beaconID, 0));
+  if (!beacon) {
+    return false;
+  }
+  if (beacon.suspended === true) {
+    return true;
+  }
+  beacon.suspended = true;
+  beacon.suspendedAtMs = Date.now();
+  beacon.suspendReason = String(reason || "authority-unavailable");
+  try {
+    if (typeof beacon.releaseImmobilizer === "function") {
+      beacon.releaseImmobilizer(beacon.suspendReason);
+    }
+  } catch (error) {
+    log.warn(
+      `[iff] beacon suspend failed beacon=${beaconID} ` +
+      `reason=${beacon.suspendReason}: ${error && error.message ? error.message : error}`,
+    );
+  }
+  try {
+    if (typeof beacon.notifyMapChanged === "function") {
+      beacon.notifyMapChanged(beacon.suspendReason);
+    }
+  } catch (_) {
+    // Presentation failure cannot restore authority that has been removed.
+  }
+  return true;
+}
+
+function resumeBeacon(beaconID, reason = "authority-restored") {
+  const beacon = activeBeacons.get(toInt(beaconID, 0));
+  if (!beacon) {
+    return false;
+  }
+  if (beacon.suspended !== true) {
+    return true;
+  }
+  try {
+    if (typeof beacon.resumeImmobilizer === "function") {
+      const result = beacon.resumeImmobilizer(reason);
+      if (result && result.success === false) {
+        return false;
+      }
+    }
+  } catch (error) {
+    log.warn(
+      `[iff] beacon resume failed beacon=${beaconID} ` +
+      `reason=${reason}: ${error && error.message ? error.message : error}`,
+    );
+    return false;
+  }
+  beacon.suspended = false;
+  beacon.suspendedAtMs = 0;
+  beacon.suspendReason = null;
+  try {
+    if (typeof beacon.notifyMapChanged === "function") {
+      beacon.notifyMapChanged(reason);
+    }
+  } catch (_) {
+    // Runtime authority is already restored; UI cache refresh is best effort.
+  }
+  return true;
+}
+
 /**
  * A beacon entry is only visible while its live state still holds: the ship
  * exists, is still in the beacon's solar system, is not docked, and the
@@ -318,22 +578,7 @@ function releaseBeacon(beaconID, reason) {
  * changes, destruction, and reconnects self-cleaning.
  */
 function isBeaconLive(beacon, nowMs = Date.now()) {
-  if (!beacon || beacon.expiresAtMs <= nowMs) {
-    return false;
-  }
-  const shipItem = findItemById(beacon.shipID);
-  if (
-    !shipItem ||
-    toInt(shipItem.locationID, 0) !== beacon.solarSystemID ||
-    !shipItem.spaceState
-  ) {
-    return false;
-  }
-  const moduleItem = findItemById(beacon.beaconID);
-  if (!moduleItem || toInt(moduleItem.locationID, 0) !== beacon.shipID) {
-    return false;
-  }
-  return true;
+  return resolveBeaconAvailability(beacon, nowMs).live === true;
 }
 
 function startBeacon({
@@ -348,6 +593,7 @@ function startBeacon({
   code,
   durationMs,
   releaseImmobilizer,
+  resumeImmobilizer,
   notifyMapChanged,
   nowMs = Date.now(),
 }: Record<string, any>) {
@@ -384,9 +630,15 @@ function startBeacon({
     releaseImmobilizer: typeof releaseImmobilizer === "function"
       ? releaseImmobilizer
       : null,
+    resumeImmobilizer: typeof resumeImmobilizer === "function"
+      ? resumeImmobilizer
+      : null,
     notifyMapChanged: typeof notifyMapChanged === "function"
       ? notifyMapChanged
       : null,
+    suspended: false,
+    suspendedAtMs: 0,
+    suspendReason: null,
   };
   activeBeacons.set(numericBeaconID, beacon);
   const holdMs = beacon.expiresAtMs - nowMs;
@@ -428,6 +680,48 @@ function clearBeaconsForCharacter(characterID, reason = "session-transition") {
   }
 }
 
+function reconcileBeaconsForCreation(shipID, reason = "creation-state-change", nowMs = Date.now()) {
+  const numericShipID = toInt(shipID, 0);
+  const result = {
+    released: 0,
+    resumed: 0,
+    suspended: 0,
+    solarSystemIDs: new Set<any>(),
+  };
+  if (numericShipID <= 0) {
+    return result;
+  }
+  for (const [beaconID, beacon] of [...activeBeacons]) {
+    if (!beacon || toInt(beacon.shipID, 0) !== numericShipID) {
+      continue;
+    }
+    const solarSystemID = toInt(beacon.solarSystemID, 0);
+    if (solarSystemID > 0) {
+      result.solarSystemIDs.add(solarSystemID);
+    }
+    const availability = resolveBeaconAvailability(beacon, nowMs);
+    if (availability.terminal) {
+      if (releaseBeacon(beaconID, availability.reason || reason)) {
+        result.released += 1;
+      }
+      continue;
+    }
+    if (!availability.live) {
+      if (beacon.suspended !== true && suspendBeacon(
+        beaconID,
+        availability.reason || reason,
+      )) {
+        result.suspended += 1;
+      }
+      continue;
+    }
+    if (beacon.suspended === true && resumeBeacon(beaconID, reason)) {
+      result.resumed += 1;
+    }
+  }
+  return result;
+}
+
 /**
  * Matching rule: own beacons are always listed (is_mine). Others require the
  * same solar system plus channel agreement — "public" is visible to every
@@ -436,7 +730,7 @@ function clearBeaconsForCharacter(characterID, reason = "session-transition") {
  * on code with the exact same code string.
  */
 function beaconVisibleToViewer(beacon, viewer) {
-  if (!beacon) {
+  if (!beacon || beacon.suspended === true) {
     return false;
   }
   if (beacon.characterID === toInt(viewer.characterID, 0)) {
@@ -473,9 +767,20 @@ function beaconVisibleToViewer(beacon, viewer) {
 function listVisibleBeacons(viewer, nowMs = Date.now()) {
   pruneExpiredBeacons(nowMs);
   const rows: any[] = [];
-  for (const beacon of activeBeacons.values()) {
-    if (!isBeaconLive(beacon, nowMs)) {
-      releaseBeacon(beacon.beaconID, "stale");
+  for (const beacon of [...activeBeacons.values()]) {
+    const availability = resolveBeaconAvailability(beacon, nowMs);
+    if (availability.terminal) {
+      releaseBeacon(beacon.beaconID, availability.reason || "stale");
+      continue;
+    }
+    if (!availability.live) {
+      suspendBeacon(beacon.beaconID, availability.reason);
+      continue;
+    }
+    if (beacon.suspended === true && !resumeBeacon(
+      beacon.beaconID,
+      "authority-restored",
+    )) {
       continue;
     }
     if (!beaconVisibleToViewer(beacon, viewer)) {
@@ -515,6 +820,7 @@ module.exports = {
   IFF_INFO_KEY,
   IFF_TRANSPONDER_CHANNELS,
   beaconVisibleToViewer,
+  buildNpcTransponderCode,
   clearBeaconsForCharacter,
   clearBeaconsForShip,
   getActiveBeacon,
@@ -525,11 +831,18 @@ module.exports = {
   normalizeIffConfiguration,
   pruneExpiredBeacons,
   readTransponderState,
+  reconcileBeaconsForCreation,
+  resolveBeaconAvailability,
   resolveActiveTransponder,
   resolveBeaconDurationMs,
+  resolveEntityTransponder,
+  resolveNpcTransponder,
   resetIffRuntimeForTests,
   setTransponderBroadcastState,
   startBeacon,
   stopBeacon,
+  suspendBeacon,
+  resumeBeacon,
+  transpondersMatch,
   writeTransponderState,
 };

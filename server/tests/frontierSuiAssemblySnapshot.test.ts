@@ -5,12 +5,14 @@ import { clearAssemblyEnergyConfig, setAssemblyEnergyConfig } from "../src/servi
 
 const OWNER = 140000005;
 function assembly(itemID: string | number, typeID = 88092, options: Record<string, any> = {}) {
-  const { status = 1, ownerID = OWNER, system = 30000004, position = { x: 0, y: 0, z: 0 }, destinationGateID = 0, fuel, energy, ...rest } = options;
+  const { status = 1, ownerID = OWNER, system = 30000004, position = { x: 0, y: 0, z: 0 },
+    destinationGateID = 0, targetSolarSystemID = 0, fuel, energy, ...rest } = options;
   return {
     itemID, typeID, ownerID, locationID: system, itemName: `Assembly ${itemID}`,
     spaceState: { position },
     customInfo: JSON.stringify({
-      evejsFrontierConstruction: { assemblyTypeID: typeID, assemblyStatus: status, ownerID, solarSystemID: system, destinationGateID },
+      evejsFrontierConstruction: { assemblyTypeID: typeID, assemblyStatus: status, ownerID, solarSystemID: system,
+        destinationGateID, targetSolarSystemID },
       ...(fuel === undefined ? {} : { evejsFrontierNetworkNodeFuel: fuel }),
       ...(energy === undefined ? {} : { evejsFrontierEnergy: energy }),
     }),
@@ -28,6 +30,7 @@ function fixture(items: any[] = []): SuiAssemblySnapshotInput {
       { typeID: 88092, smartDeployable: { createOnChain: 1 }, smartAnchor: { fuelMaxCapacity: 1000, fuelBurnRateInSeconds: 3000, maxEnergyCapacity: 777 } },
       { typeID: 77917, smartDeployable: { createOnChain: 1 }, smartStorageUnit: { storageCapacity: 1000, personalCapacity: 1 } },
       { typeID: 88086, smartDeployable: { createOnChain: 1 }, smartGate: { range: 65 } },
+      { typeID: 95627, smartDeployable: { createOnChain: 1 }, smartGate: { range: 65 } },
       { typeID: 92279, smartDeployable: { createOnChain: 1 }, smartTurret: {} },
       { typeID: 90184, smartDeployable: { createOnChain: 1 } },
       { typeID: 99999, smartDeployable: { createOnChain: 0 } },
@@ -184,6 +187,22 @@ test("validates reciprocal gates and calculates range and system distance in met
   const invalid = buildSuiAssemblySnapshot({ ...source, solarSystems: undefined });
   assert.equal(invalid.assemblies.filter((row) => row.kind === "gate").length, 0);
   assert.ok(invalid.errors.some((row) => row.code === "INVALID_POSITION"));
+});
+
+test("normalizes a one-way Smart Catapult route without requiring a destination gate", () => {
+  const result = buildSuiAssemblySnapshot(fixture([
+    assembly(1),
+    assembly(2, 95627, { targetSolarSystemID: 30000005 }),
+  ]));
+  assert.deepEqual(result.errors, []);
+  const catapult = result.assemblies.find((row) => row.itemId === "2")!;
+  assert.equal(catapult.kind, "gate");
+  assert.equal(catapult.isCatapult, true);
+  assert.equal(catapult.destinationGateId, null);
+  assert.equal(catapult.destinationSolarSystemId, 30000005);
+  assert.equal(catapult.gateDistanceMeters, "9460730472580800");
+  assert.equal(catapult.gateMaxDistanceMeters, "614947480717752000");
+  assert.equal(result.assemblies.filter((row) => row.kind === "gate").length, 1);
 });
 
 test("rejects unsafe IDs, duplicate records, invalid coordinates, and lossy volumes", () => {

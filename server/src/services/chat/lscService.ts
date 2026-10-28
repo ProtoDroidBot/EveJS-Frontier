@@ -77,7 +77,7 @@ class LSCService extends BaseService {
     return null;
   }
 
-  Handle_SendMessage(args, session) {
+  async Handle_SendMessage(args, session) {
     const rawMessage =
       args && args.length > 1 ? args[1] : args && args.length > 0 ? args[0] : "";
     const message = textValue(rawMessage).trim();
@@ -87,7 +87,7 @@ class LSCService extends BaseService {
       return null;
     }
 
-    const commandResult = executeChatCommand(session, message, chatHub, {
+    const commandResult = await executeChatCommand(session, message, chatHub, {
       serviceManager: this.serviceManager,
     });
     if (commandResult.refreshChatRolePresence) {

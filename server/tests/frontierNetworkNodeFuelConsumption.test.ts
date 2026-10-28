@@ -368,7 +368,7 @@ test("failed withdrawal restores accounted fuel and remainder without undoing co
   const prepared = prepareWithdraw(node, container, 10);
   assert.equal(prepared.success, true, prepared.errorMsg);
   setTime(START_MS + D1_UNIT_MS + 1000);
-  const grantMock = t.mock.method(itemStore, "grantItemsToCharacterLocation", () => ({
+  const grantMock = t.mock.method(itemStore, "grantStackableItemsToCharacterLocationAndUpdateItem", () => ({
     success: false, errorMsg: "WRITE_ERROR",
   }));
   const result = execute(prepared, "networknode-fuel-withdraw");

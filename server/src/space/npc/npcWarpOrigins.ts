@@ -308,6 +308,53 @@ function findSafeWarpOriginAnchor(scene, target, options: Record<string, any> = 
   };
 }
 
+function resolveCollisionSafeScenePosition(scene, target, options: Record<string, any> = {}) {
+  const position = cloneVector(target && target.position ? target.position : target);
+  const entityRadiusMeters = Math.max(
+    0,
+    toFiniteNumber(options.entityRadiusMeters, target && target.radius),
+  );
+  const clearanceMeters = Math.max(
+    1,
+    entityRadiusMeters + Math.max(0, toFiniteNumber(options.clearanceMeters, 100)),
+  );
+  const anchors = collectSceneAnchors(scene, options);
+  const nearestSurfaceDistanceMeters = measureNearestSurfaceDistanceMeters(position, anchors);
+  if (nearestSurfaceDistanceMeters >= clearanceMeters) {
+    return {
+      position,
+      relocated: false,
+      nearestSurfaceDistanceMeters,
+      clearanceMeters,
+      clearanceSatisfied: true,
+    };
+  }
+
+  const escapeDistanceMeters = Math.max(
+    0,
+    clearanceMeters - nearestSurfaceDistanceMeters,
+  );
+  const minimumSearchDistanceMeters = Math.max(
+    1_000,
+    escapeDistanceMeters + clearanceMeters,
+  );
+  const safe = findSafeWarpOriginAnchor(scene, {
+    position,
+    direction: target && target.direction,
+  }, {
+    ...options,
+    clearanceMeters,
+    minDistanceMeters: minimumSearchDistanceMeters,
+    maxDistanceMeters: Math.max(100_000, minimumSearchDistanceMeters * 2),
+    stepMeters: minimumSearchDistanceMeters,
+  });
+  return {
+    ...safe,
+    relocated: true,
+    originalPosition: position,
+  };
+}
+
 module.exports = {
   ONE_AU_IN_METERS,
   DEFAULT_CLEARANCE_METERS,
@@ -315,4 +362,5 @@ module.exports = {
   DEFAULT_MAX_DISTANCE_METERS,
   DEFAULT_STEP_METERS,
   findSafeWarpOriginAnchor,
+  resolveCollisionSafeScenePosition,
 };

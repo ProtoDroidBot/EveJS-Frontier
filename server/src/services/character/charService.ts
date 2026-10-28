@@ -10,6 +10,7 @@
 const BaseService = require("../baseService");
 const log = require("../../utils/logger");
 const config = require("../../config");
+const interactiveWorkloadGate = require("../../utils/interactiveWorkloadGate");
 // Phase 0 / 0.C: character-domain writes via the strict character repository.
 const {
   createTableRepository,
@@ -34,7 +35,7 @@ const {
   resolveCharacterCreationSchoolIDForRace,
   resolveCharacterCreationSchoolProfile,
 } = require("./characterCreationData");
-const { restoreSpaceSession } = require("../../space/transitions");
+const { restoreSpaceSessionAsync } = require("../../space/transitions");
 const {
   getCharacterSkillPointTotal,
 } = require("../skills/skillState");
@@ -1844,7 +1845,7 @@ class CharService extends BaseService {
     return null;
   }
 
-  Handle_SelectCharacterID(args, session, kwargs) {
+  async Handle_SelectCharacterID(args, session, kwargs) {
     const charId = resolveCharacterRequestId(args, kwargs, 0);
     const skipTutorial = resolveSkipTutorial(args, kwargs);
     const previousCharacterID = Number(
@@ -1983,6 +1984,12 @@ class CharService extends BaseService {
         `[CharService] Failed to select character ${charId}: ${applyResult.errorMsg}`,
       );
     } else {
+      // Applying the character makes subsequent packets look like ordinary
+      // in-session traffic, but the client is still constructing its initial
+      // station/structure/space presentation.  Protect that serial bootstrap
+      // from the cold dungeon-universe sweep started at server boot.
+      session._interactiveBootstrapUntilMs =
+        interactiveWorkloadGate.noteSessionBootstrapActivity();
       characterControlRuntime.recordRetailSessionStarted(charId, {
         session,
         previousCharacterID,
@@ -1997,7 +2004,7 @@ class CharService extends BaseService {
           `[CharService] Restoring space session for ${session.characterName || charId} ` +
           `system=${Number(session.solarsystemid2 || session.solarsystemid || 0) || 0}`,
         );
-        const restored = restoreSpaceSession(session);
+        const restored = await restoreSpaceSessionAsync(session);
         log.info(
           `[CharService] Space restore ${restored ? "completed" : "skipped"} for ` +
           `${session.characterName || charId} in ${Date.now() - restoreStartedAtMs}ms`,

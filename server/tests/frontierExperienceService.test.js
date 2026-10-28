@@ -176,7 +176,11 @@ test("shell implants and raiments persist per shell and are destroyed by lifecyc
         createdItems.push(item);
         return item;
     };
-    const shell = grantOwned(ShellManagerService._testing.DEFAULT_SHELL_TYPE_ID, "Equipment Test Shell");
+    // Frontier fixtures already grant the character a shell. Equipment APIs
+    // deliberately operate on the first (active) owned shell, so granting a
+    // second shell here makes this test assert against the wrong container when
+    // it runs with the full Frontier baseline.
+    const shell = shellEquipment.getActiveShell(CHARACTER_ID) || grantOwned(ShellManagerService._testing.DEFAULT_SHELL_TYPE_ID, "Equipment Test Shell");
     const implant = grantOwned(IMPLANT_TYPE_ID, "Test Neural Implant");
     const secondImplant = grantOwned(SECOND_IMPLANT_TYPE_ID, "Second Neural Implant");
     const raiment = grantOwned(RAIMENT_TYPE_ID, "Test Raiment");

@@ -121,6 +121,7 @@ run_market() {
 
 run_server() {
   cd /app/server
+  export EVEJS_PERSISTENCE_WORKER="${EVEJS_PERSISTENCE_WORKER:-1}"
   exec node \
     --enable-source-maps \
     --report-on-fatalerror \

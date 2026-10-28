@@ -6,6 +6,7 @@ function createIndustryProductionWorker(overrides: Record<string, any> = {}) {
   const deps = {
     getAllItems: () => require("../inventory/itemStore").getAllItems(),
     getProduction: facility => require("./industryRuntime").getProduction(facility),
+    hasActiveProduction: facility => require("./industryRuntime").hasActiveProduction(facility),
     advanceProduction: (facilityID, options) => require("./industryRuntime").advanceProduction(facilityID, options),
     publishResult: (result, session) => require("./industryNotifications").publishIndustryProductionResult(result, session),
     now: Date.now,
@@ -20,7 +21,14 @@ function createIndustryProductionWorker(overrides: Record<string, any> = {}) {
     const facilityID = Number(facility?.itemID);
     if (!Number.isSafeInteger(facilityID) || facilityID <= 0) return;
     const state = deps.getProduction(facility)?.state;
-    if (state === "RUNNING" || state === "DISCONTINUING") active.add(facilityID);
+    // Legacy worker unit adapters only override getProduction. Preserve that
+    // seam while the live worker scans every configured/persisted lane.
+    const hasActive = typeof overrides.hasActiveProduction === "function"
+      ? overrides.hasActiveProduction(facility)
+      : typeof overrides.getProduction === "function"
+        ? state === "RUNNING" || state === "DISCONTINUING"
+        : deps.hasActiveProduction(facility);
+    if (hasActive) active.add(facilityID);
     else active.delete(facilityID);
   }
   function settle(facilityID, session = null, options: Record<string, any> = {}) {

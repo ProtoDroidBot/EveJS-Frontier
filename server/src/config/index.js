@@ -10,8 +10,11 @@ const fs = require("fs");
 const path = require("path");
 let nextBoundId = 1;
 const rootDir = path.resolve(__dirname, "../../..");
-const localConfigPath = path.join(rootDir, "evejs.config.local.json");
-const sharedConfigPath = path.join(rootDir, "evejs.config.json");
+// An explicitly selected runtime keeps both configuration persistence and
+// data under its own ownership boundary. Existing launches retain repo config.
+const configDir = process.env.EVEJS_CONFIG_DIR ? path.resolve(process.env.EVEJS_CONFIG_DIR) : rootDir;
+const localConfigPath = path.join(configDir, "evejs.config.local.json");
+const sharedConfigPath = path.join(configDir, "evejs.config.json");
 const REMOVED_CONFIG_KEYS = new Set([
     "clientPath",
     "autoLaunch",
@@ -761,6 +764,70 @@ const CONFIG_ENTRY_DEFINITIONS = [
         validValues: "true or false.",
     },
     {
+        key: "frontierEconomyPolicy",
+        defaultValue: { mode: "local", denomination: "EVE", luxCentsPerToken: 100, lensPriceAtoms: "1000000000", feralDataLuxCents: 100, prepareExpiryMs: 300000 },
+        description: "Local economy prices and exchange rates, with signed native wallet intents and local ledger receipts.",
+        validValues: "Object; defaults are emulator policy: 1 EVE per LUX/lens and 1 LUX per feral-data unit.",
+    },
+    {
+        key: "frontierClaimsPolicy",
+        defaultValue: { packEntitlements: {}, buildingPackRequirements: {}, killReportingProfile: "local" },
+        description: "Local pack entitlements, per-building pack requirements, and kill-report backend profile.",
+        validValues: "Object. Pack IDs are target enum values 1 through 11; local reports are not chain submissions.",
+    },
+    {
+        key: "frontierProgressionPolicy",
+        defaultValue: {
+            activityWeights: {
+                extraction: { memoryCategoryID: 9, skillWeights: { "10": 1 }, xpPerUnit: 1 },
+                piloting: { memoryCategoryID: 2, skillWeights: { "1": 1 }, xpPerUnit: 1 },
+            },
+            shellCreation: {}, founderCharacterIDs: [], cycleObjectives: [], nestInteractionRangeMeters: 5000,
+        },
+        description: "Local progression policy: activity weights, shell costs, founder entitlements, and CycleHub objectives.",
+        validValues: "Object. Activity defaults are emulator choices; empty entitlement lists grant nothing.",
+    },
+    {
+        key: "temporaryLandscapePath",
+        defaultValue: "",
+        envVar: "EVEJS_TEMPORARY_LANDSCAPE_PATH",
+        envType: "string",
+        description: "Optional integrity-checked 3640684 landscape/ecosystem/dungeon overlay for the selected 3502403-MOD4-STUFF1 galaxy. Temporary until full era 6 cycle 7 data is supplied.",
+        validValues: "Path to a temporary landscape profile; empty disables the overlay. Only applies to client build 3640684.",
+    },
+    {
+        key: "voxelMiningEnabled",
+        defaultValue: true,
+        envVar: "EVEJS_VOXEL_MINING_ENABLED",
+        envType: "boolean",
+        description: "Enables composite asteroid mining and channeled regolith pickup when clientBuild is 3640684.",
+        validValues: "true or false; older client builds retain legacy mining.",
+    },
+    {
+        key: "voxelMiningPolicy",
+        defaultValue: { fragmentExpiryMs: 0, respawnDelayMs: 0, maxFragmentsPerSystem: 10000, maxFragmentsPerAsteroid: 1000, materialsByTypeID: {}, minerTierByTypeID: {} },
+        description: "Voxel lifecycle and substrate policy. Zero expiry/respawn preserves existing stock; limits pause extraction before consuming ore.",
+        validValues: "Nonnegative millisecond timers and fragment caps; explicit substrate/material and miner-tier mappings by verified type ID.",
+    },
+    {
+        key: "voxelMiningWorldRevision",
+        defaultValue: "3502403-MOD4-STUFF1/3640684-voxel-v1",
+        envVar: "EVEJS_VOXEL_MINING_WORLD_REVISION",
+        envType: "string",
+        description: "Persistent world identity for composite depletion and loose ore. Change only when intentionally replacing the world.",
+        validValues: "Nonempty world revision string.",
+    },
+    {
+        key: "voxelScoopRangeMeters",
+        defaultValue: 2500,
+        envVar: "EVEJS_VOXEL_SCOOP_RANGE_METERS",
+        envType: "number",
+        minValue: 800,
+        maxValue: 2500,
+        description: "Maximum regolith pickup surface distance; 2500 matches the 3640684 client public scoop action.",
+        validValues: "800 through 2500 metres.",
+    },
+    {
         key: "miningSurveyScanDistanceMeters",
         defaultValue: 250000,
         envVar: "EVEJS_MINING_SURVEY_SCAN_DISTANCE_METERS",
@@ -1249,6 +1316,22 @@ const CONFIG_ENTRY_DEFINITIONS = [
         validValues: '"tranquility" or "frontier".',
     },
     {
+        key: "npcPilotIdentitiesEnabled",
+        defaultValue: true,
+        envVar: "EVEJS_NPC_PILOT_IDENTITIES_ENABLED",
+        envType: "boolean",
+        description: "Persist faction-keyed NPC pilot identities in Frontier mode, independently of ship lifetimes.",
+        validValues: "Boolean. Only applies to the Frontier compatibility profile.",
+    },
+    {
+        key: "suiNpcCharacterProvisioningEnabled",
+        defaultValue: true,
+        envVar: "EVEJS_SUI_NPC_CHARACTER_PROVISIONING_ENABLED",
+        envType: "boolean",
+        description: "Reconcile persistent NPC Characters and PlayerProfiles on the configured Sui Localnet in the background.",
+        validValues: "Boolean. Requires Frontier mode and NPC pilot identities.",
+    },
+    {
         key: "clusterDowntimeStarts",
         defaultValue: "11:00:00",
         envVar: "EVEJS_CLUSTER_DOWNTIME_STARTS",
@@ -1598,6 +1681,40 @@ const CONFIG_ENTRY_DEFINITIONS = [
         validValues: 'Absolute HTTP(S) base URL without a query or fragment, for example "http://localhost:5174". Trailing slashes are removed before advertising it.',
     },
     {
+        key: "frontierSmartIndustryJobLaneCount",
+        defaultValue: 4,
+        envVar: "EVEJS_FRONTIER_SMART_INDUSTRY_JOB_LANE_COUNT",
+        envType: "number",
+        minValue: 1,
+        maxValue: 16,
+        description: [
+            "Number of independently occupied production lanes exposed by non-portable Frontier Smart Industry assemblies.",
+            "Creation-hosted Industry modules and portable Industry assemblies are always limited to lane 1.",
+            "Each lane accepts at most one running or discontinuing job and has its own owner-managed access policy. Lane 1 remains the legacy client lane.",
+        ],
+        validValues: "Integer lane count from 1 through 16.",
+        validateValue(value) {
+            if (!Number.isInteger(value)) {
+                throw new Error("frontierSmartIndustryJobLaneCount must be a whole number.");
+            }
+            return value;
+        },
+    },
+    {
+        key: "frontierSmartIndustryJobLaneCountByTypeID",
+        defaultValue: {},
+        envVar: "EVEJS_FRONTIER_SMART_INDUSTRY_JOB_LANE_COUNT_BY_TYPE_ID",
+        envType: "json",
+        valueType: "json",
+        description: [
+            "Optional per-type lane counts for compatible Frontier Smart Industry facilities.",
+            "Keys are Smart Industry type IDs and values are lane counts. Missing type IDs fall back to frontierSmartIndustryJobLaneCount.",
+            "Creation-hosted Industry modules and portable Industry assemblies remain limited to lane 1 even when their type ID is present.",
+        ],
+        validValues: "JSON object mapping compatible Smart Industry type IDs to integer lane counts from 1 through 16.",
+        validateValue: validateFrontierSmartIndustryJobLaneCountByTypeID,
+    },
+    {
         key: "imageServerUrl",
         defaultValue: "http://127.0.0.1:26001/",
         envVar: "EVEJS_IMAGE_SERVER_URL",
@@ -1859,6 +1976,129 @@ const CONFIG_ENTRY_DEFINITIONS = [
         validValues: "true or false.",
     },
     {
+        key: "adaptiveTickRateEnabled",
+        // Dynamic cadence is opt-in. Destiny stamps and combat presentation are
+        // authored against a stable scene cadence; automatically accelerating an
+        // idle server before a dungeon login can double the amount of work just as
+        // the active grid and its NPCs are restored.
+        defaultValue: false,
+        envVar: "EVEJS_ADAPTIVE_TICK_RATE_ENABLED",
+        envType: "boolean",
+        description: [
+            "Enables CPU- and memory-aware adjustment of the authoritative space-runtime tick interval.",
+            "High resource pressure lowers the tick rate; sustained headroom raises it again within the configured bounds.",
+        ],
+        validValues: "true or false.",
+    },
+    {
+        key: "adaptiveTickRateMinIntervalMs",
+        defaultValue: 50,
+        envVar: "EVEJS_ADAPTIVE_TICK_RATE_MIN_INTERVAL_MS",
+        envType: "number",
+        minValue: 10,
+        maxValue: 1000,
+        description: "Fastest allowed adaptive space-runtime cadence in milliseconds. 50ms is 20 ticks per second.",
+        validValues: "Number from 10 through 1000, no greater than the maximum interval.",
+    },
+    {
+        key: "adaptiveTickRateMaxIntervalMs",
+        defaultValue: 250,
+        envVar: "EVEJS_ADAPTIVE_TICK_RATE_MAX_INTERVAL_MS",
+        envType: "number",
+        minValue: 10,
+        maxValue: 5000,
+        description: "Slowest allowed adaptive space-runtime cadence in milliseconds. 250ms is 4 ticks per second.",
+        validValues: "Number from 10 through 5000, no less than the minimum interval.",
+    },
+    {
+        key: "adaptiveTickRateInitialIntervalMs",
+        defaultValue: 100,
+        envVar: "EVEJS_ADAPTIVE_TICK_RATE_INITIAL_INTERVAL_MS",
+        envType: "number",
+        minValue: 10,
+        maxValue: 5000,
+        description: [
+            "Space-runtime tick interval used at startup and as the fixed interval when adaptive tick rate is disabled.",
+            "100ms preserves the historical 10-ticks-per-second cadence.",
+        ],
+        validValues: "Number within the configured minimum and maximum interval bounds.",
+    },
+    {
+        key: "adaptiveTickRateStepMs",
+        defaultValue: 10,
+        envVar: "EVEJS_ADAPTIVE_TICK_RATE_STEP_MS",
+        envType: "number",
+        minValue: 1,
+        maxValue: 1000,
+        description: "Milliseconds added to or removed from the tick interval on each resource sample that crosses a threshold.",
+        validValues: "Number from 1 through 1000.",
+    },
+    {
+        key: "adaptiveTickRateSampleIntervalMs",
+        defaultValue: 2000,
+        envVar: "EVEJS_ADAPTIVE_TICK_RATE_SAMPLE_INTERVAL_MS",
+        envType: "number",
+        minValue: 250,
+        maxValue: 60000,
+        description: "Minimum time between process CPU and memory samples used by the adaptive tick-rate controller.",
+        validValues: "Number from 250 through 60000 milliseconds.",
+    },
+    {
+        key: "adaptiveTickRateCpuLowPercent",
+        defaultValue: 35,
+        envVar: "EVEJS_ADAPTIVE_TICK_RATE_CPU_LOW_PERCENT",
+        envType: "number",
+        minValue: 0,
+        maxValue: 100,
+        description: [
+            "Process CPU level at or below which CPU is considered to have headroom.",
+            "100 percent represents one fully utilized logical CPU core; worker activity can make the measured value exceed 100.",
+        ],
+        validValues: "Number from 0 through 100, below the high CPU threshold.",
+    },
+    {
+        key: "adaptiveTickRateCpuHighPercent",
+        defaultValue: 75,
+        envVar: "EVEJS_ADAPTIVE_TICK_RATE_CPU_HIGH_PERCENT",
+        envType: "number",
+        minValue: 0,
+        maxValue: 100,
+        description: "Process CPU level at or above which the controller lowers the tick rate.",
+        validValues: "Number from 0 through 100, above the low CPU threshold.",
+    },
+    {
+        key: "adaptiveTickRateMemoryLowPercent",
+        defaultValue: 60,
+        envVar: "EVEJS_ADAPTIVE_TICK_RATE_MEMORY_LOW_PERCENT",
+        envType: "number",
+        minValue: 0,
+        maxValue: 100,
+        description: "Process RSS level at or below which memory is considered to have headroom.",
+        validValues: "Number from 0 through 100, below the high memory threshold.",
+    },
+    {
+        key: "adaptiveTickRateMemoryHighPercent",
+        defaultValue: 80,
+        envVar: "EVEJS_ADAPTIVE_TICK_RATE_MEMORY_HIGH_PERCENT",
+        envType: "number",
+        minValue: 0,
+        maxValue: 100,
+        description: "Process RSS level at or above which the controller lowers the tick rate.",
+        validValues: "Number from 0 through 100, above the low memory threshold.",
+    },
+    {
+        key: "adaptiveTickRateMemoryLimitMb",
+        defaultValue: 0,
+        envVar: "EVEJS_ADAPTIVE_TICK_RATE_MEMORY_LIMIT_MB",
+        envType: "number",
+        minValue: 0,
+        description: [
+            "Memory budget used to turn process RSS into a pressure percentage.",
+            "Set to 0 to automatically use the lower of the V8 heap limit and any process/container memory constraint exposed by Node.js.",
+        ],
+        validValues: "0 for automatic detection, or a positive memory budget in MiB.",
+    },
+    {
         key: "NewEdenSystemLoading",
         defaultValue: 1,
         allowedValues: [1, 2, 3, 4],
@@ -1886,12 +2126,12 @@ const CONFIG_ENTRY_DEFINITIONS = [
     },
     {
         key: "asteroidBeltStartupReset",
-        defaultValue: true,
+        defaultValue: false,
         envVar: "EVEJS_ASTEROID_BELT_STARTUP_RESET",
         envType: "boolean",
         description: [
-            "Clears persisted belt asteroid depletion state during server startup so every asteroid belt repopulates.",
-            "Matches Tranquility, where mined-out belts come back on downtime rather than on a respawn timer. Generated ice sites keep their own respawn lifecycle and are not affected.",
+            "Administrative override that clears persisted belt asteroid depletion state during server startup.",
+            "Disabled by default because mined-out asteroids now retain their depletion time across restarts and respawn after 24 hours. Generated ice sites keep their own lifecycle.",
         ],
         validValues: "true or false.",
     },
@@ -2057,6 +2297,416 @@ const CONFIG_ENTRY_DEFINITIONS = [
             "This does not affect passive startup/default CONCORD presence.",
         ],
         validValues: "true or false.",
+    },
+    {
+        key: "frontierEnvironmentalHeatWarningThresholdKelvin",
+        defaultValue: 500,
+        envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_HEAT_WARNING_THRESHOLD_KELVIN",
+        envType: "number",
+        minValue: 0,
+        description: [
+            "Hull temperature at which the Frontier heat effect becomes armed and starts building grace.",
+            "The critical threshold must remain greater than this warning threshold.",
+        ],
+        validValues: "Non-negative temperature in kelvin below the critical threshold.",
+    },
+    {
+        key: "frontierEnvironmentalHeatCriticalThresholdKelvin",
+        defaultValue: 1500,
+        envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_HEAT_CRITICAL_THRESHOLD_KELVIN",
+        envType: "number",
+        minValue: 0,
+        exclusiveMinValue: true,
+        description: "Hull temperature at which the Frontier heat effect becomes active and its damage-delay timer starts.",
+        validValues: "Positive temperature in kelvin above the heat warning threshold.",
+    },
+    {
+        key: "frontierEnvironmentalFeralizationThresholdRatio",
+        defaultValue: 1,
+        envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_FERALIZATION_THRESHOLD_RATIO",
+        envType: "number",
+        minValue: 0,
+        exclusiveMinValue: true,
+        description: "Fraction of a ship's nominal maximum feralization that activates the feralization effect and starts its damage-delay timer.",
+        validValues: "Positive ratio. 1 activates at 100% of nominal maximum; 0.5 activates at 50%.",
+    },
+    {
+        key: "frontierEnvironmentalTemporalDriftThresholdRatio",
+        defaultValue: 1,
+        envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_TEMPORAL_DRIFT_THRESHOLD_RATIO",
+        envType: "number",
+        minValue: 0,
+        exclusiveMinValue: true,
+        description: "Fraction of a ship's nominal maximum temporal drift that activates the temporal-drift effect and starts its damage-delay timer.",
+        validValues: "Positive ratio. 1 activates at 100% of nominal maximum; 0.5 activates at 50%.",
+    },
+    {
+        key: "frontierEnvironmentalDamageDelaySeconds",
+        defaultValue: 30,
+        envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_DAMAGE_DELAY_SECONDS",
+        envType: "number",
+        minValue: 0,
+        description: [
+            "Continuous time an individual environmental effect must remain active before that effect deals vitality or ship hitpoint damage.",
+            "Each heat, feralization, and temporal-drift effect tracks this grace period independently.",
+        ],
+        validValues: "Non-negative number of seconds. 0 applies damage immediately.",
+    },
+    {
+        key: "frontierCloneDeathTransitionDelaySeconds",
+        defaultValue: 5,
+        envVar: "EVEJS_FRONTIER_CLONE_DEATH_TRANSITION_DELAY_SECONDS",
+        envType: "number",
+        minValue: 0,
+        description: [
+            "Delay between a confirmed hull or shell death and the session change that opens the Frontier intermediary death report.",
+            "The death notification is sent immediately so the stock client can begin its explosion or shell-expiration presentation before clone locations appear.",
+        ],
+        validValues: "Non-negative number of seconds. 0 opens the death report immediately.",
+    },
+    {
+        key: "frontierEnvironmentalVitalityDamagePerEffectPerSecond",
+        defaultValue: 1,
+        envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_VITALITY_DAMAGE_PER_EFFECT_PER_SECOND",
+        envType: "number",
+        minValue: 0,
+        description: "Shell vitality removed per second by each environmental effect after its configured damage delay.",
+        validValues: "Non-negative vitality damage per active effect per second. 0 disables vitality damage.",
+    },
+    {
+        key: "frontierEnvironmentalHitpointDamagePerEffectPerSecond",
+        defaultValue: 1,
+        envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_HITPOINT_DAMAGE_PER_EFFECT_PER_SECOND",
+        envType: "number",
+        minValue: 0,
+        description: [
+            "Raw thermal ship damage dealt per second by each environmental effect after its configured damage delay.",
+            "Damage uses the normal shield, armor, structure, resistance, notification, persistence, and destruction paths.",
+        ],
+        validValues: "Non-negative hitpoint damage per active effect per second. 0 disables ship damage.",
+    },
+    {
+        key: "frontierEnvironmentalRiftRadiusMeters",
+        defaultValue: 100_000,
+        envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_RIFT_RADIUS_METERS",
+        envType: "number",
+        minValue: 0,
+        exclusiveMinValue: true,
+        description: "Surface-distance radius around Crude Matter rifts over which temporal drift is generated.",
+        validValues: "Positive radius in meters.",
+    },
+    {
+        key: "frontierEnvironmentalRiftDriftMultiplier",
+        defaultValue: 2,
+        envVar: "EVEJS_FRONTIER_ENVIRONMENTAL_RIFT_DRIFT_MULTIPLIER",
+        envType: "number",
+        minValue: 0,
+        exclusiveMinValue: true,
+        description: "Multiplier applied to nominal maximum temporal drift at the center of a Crude Matter rift.",
+        validValues: "Positive multiplier.",
+    },
+    {
+        key: "frontierScanningDetectionRangeMeters",
+        defaultValue: 100_000_000,
+        envVar: "EVEJS_FRONTIER_SCANNING_DETECTION_RANGE_METERS",
+        envType: "number",
+        minValue: 0,
+        exclusiveMinValue: true,
+        maxValue: 100_000_000,
+        description: [
+            "Maximum distance at which Frontier directional scanning returns a contact signature.",
+            "The upper bound is the build-3502403 client scanner's authored 100,000 km limit.",
+        ],
+        validValues: "Positive distance in meters up to 100000000.",
+    },
+    {
+        key: "frontierScanningResolutionRangeMeters",
+        defaultValue: 100_000_000,
+        envVar: "EVEJS_FRONTIER_SCANNING_RESOLUTION_RANGE_METERS",
+        envType: "number",
+        minValue: 0,
+        exclusiveMinValue: true,
+        maxValue: 100_000_000,
+        description: [
+            "Maximum distance at which a strong Frontier directional-scan contact may resolve into its real ballpark object.",
+            "Contacts beyond this range can remain visible as unresolved signatures up to the detection range.",
+        ],
+        validValues: "Positive distance in meters no greater than frontierScanningDetectionRangeMeters.",
+    },
+    {
+        key: "frontierScanningResolutionSnrThreshold",
+        defaultValue: 1,
+        envVar: "EVEJS_FRONTIER_SCANNING_RESOLUTION_SNR_THRESHOLD",
+        envType: "number",
+        minValue: 0,
+        exclusiveMinValue: true,
+        description: [
+            "Signal-to-noise ratio required for a Frontier directional-scan contact to resolve.",
+            "1 preserves the client's 100% signal threshold; larger values require a stronger return.",
+        ],
+        validValues: "Positive signal-to-noise ratio.",
+    },
+    {
+        key: "frontierScanningRenderResolvedObjects",
+        defaultValue: true,
+        envVar: "EVEJS_FRONTIER_SCANNING_RENDER_RESOLVED_OBJECTS",
+        envType: "boolean",
+        description: [
+            "Uses Frontier's delayed scan-contact visibility path to add a resolved contact's real ballpark object.",
+            "Disable to keep every directional-scan contact signature-only.",
+        ],
+        validValues: "true or false.",
+    },
+    {
+        key: "frontierScanningRenderOutOfRangeSignatures",
+        defaultValue: true,
+        envVar: "EVEJS_FRONTIER_SCANNING_RENDER_OUT_OF_RANGE_SIGNATURES",
+        envType: "boolean",
+        description: [
+            "Keeps contacts outside the configured resolution range in the Frontier scan response as unresolved signatures.",
+            "Disable to omit those contacts instead.",
+        ],
+        validValues: "true or false.",
+    },
+    {
+        key: "frontierRemoteScanningEnabled",
+        defaultValue: true,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCANNING_ENABLED",
+        envType: "boolean",
+        description: "Enables server-authoritative remote solar-system surveys. Network Nodes are the temporary dApp source; the scan contracts remain source-neutral.",
+        validValues: "true or false.",
+    },
+    {
+        key: "solarSystemSceneIdleUnloadMs",
+        defaultValue: 3_600_000,
+        envVar: "EVEJS_SOLAR_SYSTEM_SCENE_IDLE_UNLOAD_MS",
+        envType: "number",
+        minValue: 0,
+        description: [
+            "Unloads any loaded solar-system scene after this much time without player activity, regardless of why the scene was loaded.",
+            "Cooldown changes memory residency only: structures retain their durable operational state, NPC positions are virtualized before dematerialization, and resumed entities receive collision-safe placement.",
+            "Set to 0 to disable automatic scene unloading.",
+        ],
+        validValues: "Non-negative milliseconds; 0 disables automatic unloading.",
+    },
+    {
+        key: "frontierNetworkNodeScanRangeJumps",
+        defaultValue: 3,
+        envVar: "EVEJS_FRONTIER_NETWORK_NODE_SCAN_RANGE_JUMPS",
+        envType: "number",
+        minValue: 0,
+        maxValue: 25,
+        description: "Maximum configurable remote scanning reach from a Network Node, measured along stargate connections in solar-system hops.",
+        validValues: "Integer from 0 through 25 stargate hops.",
+    },
+    {
+        key: "frontierRemoteScanCooldownMs",
+        defaultValue: 5_000,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_COOLDOWN_MS",
+        envType: "number",
+        minValue: 0,
+        description: "Minimum delay between new remote scan jobs from the same scanner source.",
+        validValues: "Non-negative milliseconds.",
+    },
+    {
+        key: "frontierRemoteScanEnergyHoldMs",
+        defaultValue: 3_600_000,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_ENERGY_HOLD_MS",
+        envType: "number",
+        minValue: 1,
+        description: [
+            "Duration that a remote scan reserves its energy cost on the source Network Node power grid.",
+            "The hold remains for the full duration even when the scan completes or is cancelled.",
+        ],
+        validValues: "Positive milliseconds.",
+    },
+    {
+        key: "frontierRemoteScanSurveyEnergyCost",
+        defaultValue: 25,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_SURVEY_ENERGY_COST",
+        envType: "number",
+        minValue: 0,
+        description: "Transient Network Node energy headroom required to start a cold survey.",
+        validValues: "Non-negative energy units.",
+    },
+    {
+        key: "frontierRemoteScanDeepEnergyCost",
+        defaultValue: 75,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_DEEP_ENERGY_COST",
+        envType: "number",
+        minValue: 0,
+        description: "Transient Network Node energy headroom required to start a deep survey.",
+        validValues: "Non-negative energy units.",
+    },
+    {
+        key: "frontierNetworkNodeScanGravimetricStrength",
+        defaultValue: 1,
+        envVar: "EVEJS_FRONTIER_NETWORK_NODE_SCAN_GRAVIMETRIC_STRENGTH",
+        envType: "number",
+        minValue: 0,
+        exclusiveMinValue: true,
+        description: "Temporary Network Node remote-scanner strength for gravimetric aggregate signals.",
+        validValues: "Positive multiplier.",
+    },
+    {
+        key: "frontierNetworkNodeScanElectromagneticStrength",
+        defaultValue: 1,
+        envVar: "EVEJS_FRONTIER_NETWORK_NODE_SCAN_ELECTROMAGNETIC_STRENGTH",
+        envType: "number",
+        minValue: 0,
+        exclusiveMinValue: true,
+        description: "Temporary Network Node remote-scanner strength for electromagnetic aggregate signals.",
+        validValues: "Positive multiplier.",
+    },
+    {
+        key: "frontierNetworkNodeScanThermalStrength",
+        defaultValue: 1,
+        envVar: "EVEJS_FRONTIER_NETWORK_NODE_SCAN_THERMAL_STRENGTH",
+        envType: "number",
+        minValue: 0,
+        exclusiveMinValue: true,
+        description: "Temporary Network Node remote-scanner strength for thermal aggregate signals.",
+        validValues: "Positive multiplier.",
+    },
+    {
+        key: "frontierRemoteScanIndexTtlMs",
+        defaultValue: 15_000,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_INDEX_TTL_MS",
+        envType: "number",
+        minValue: 0,
+        description: "Maximum age of a cold per-system contribution-index snapshot before it is rebuilt.",
+        validValues: "Non-negative milliseconds.",
+    },
+    {
+        key: "frontierRemoteScanResultTtlMs",
+        defaultValue: 3_600_000,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_RESULT_TTL_MS",
+        envType: "number",
+        minValue: 1,
+        description: "Durable retention and staleness lifetime for a completed remote scan result.",
+        validValues: "Positive milliseconds.",
+    },
+    {
+        key: "frontierRemoteScanMaxHeatCells",
+        defaultValue: 256,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_MAX_HEAT_CELLS",
+        envType: "number",
+        minValue: 1,
+        maxValue: 1024,
+        description: "Maximum sparse occupied heat-map cells serialized in one remote result.",
+        validValues: "Integer from 1 through 1024.",
+    },
+    {
+        key: "frontierRemoteScanMaxSites",
+        defaultValue: 128,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_MAX_SITES",
+        envType: "number",
+        minValue: 1,
+        maxValue: 512,
+        description: "Maximum redacted dungeon-site observations serialized in one remote result.",
+        validValues: "Integer from 1 through 512.",
+    },
+    {
+        key: "frontierRemoteScanMaxResources",
+        defaultValue: 128,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_MAX_RESOURCES",
+        envType: "number",
+        minValue: 1,
+        maxValue: 512,
+        description: "Maximum aggregate resource-field observations serialized in one remote result.",
+        validValues: "Integer from 1 through 512.",
+    },
+    {
+        key: "frontierRemoteScanMaxPayloadBytes",
+        defaultValue: 524_288,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_MAX_PAYLOAD_BYTES",
+        envType: "number",
+        minValue: 4_096,
+        description: "Maximum serialized size of one completed remote scan result before weakest observations are removed.",
+        validValues: "Integer bytes greater than or equal to 4096.",
+    },
+    {
+        key: "frontierRemoteScanSurveyOctreeDepth",
+        defaultValue: 4,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_SURVEY_OCTREE_DEPTH",
+        envType: "number",
+        minValue: 1,
+        maxValue: 8,
+        description: "Maximum sparse spatial subdivision depth for cold survey heat maps.",
+        validValues: "Integer from 1 through 8.",
+    },
+    {
+        key: "frontierRemoteScanDeepOctreeDepth",
+        defaultValue: 6,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_DEEP_OCTREE_DEPTH",
+        envType: "number",
+        minValue: 1,
+        maxValue: 8,
+        description: "Maximum sparse spatial subdivision depth for deep survey heat maps.",
+        validValues: "Integer from 1 through 8.",
+    },
+    {
+        key: "frontierRemoteScanDeepWarmupEnabled",
+        defaultValue: true,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_DEEP_WARMUP_ENABLED",
+        envType: "boolean",
+        description: "Allows a deep remote survey to warm a dormant target system without attaching the scanning character.",
+        validValues: "true or false.",
+    },
+    {
+        key: "frontierRemoteScanDeepWarmupTimeoutMs",
+        defaultValue: 15_000,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_DEEP_WARMUP_TIMEOUT_MS",
+        envType: "number",
+        minValue: 1,
+        description: "Hard timeout for target-system loading initiated by a remote survey.",
+        validValues: "Positive milliseconds.",
+    },
+    {
+        key: "frontierRemoteScanMaxConcurrentWarmups",
+        defaultValue: 4,
+        envVar: "EVEJS_FRONTIER_REMOTE_SCAN_MAX_CONCURRENT_WARMUPS",
+        envType: "number",
+        minValue: 1,
+        maxValue: 64,
+        description: "Maximum number of distinct solar systems that remote scans may load concurrently.",
+        validValues: "Integer from 1 through 64.",
+    },
+    {
+        key: "frontierSignatureBloomGravimetricHalfLifeMs",
+        defaultValue: 300_000,
+        envVar: "EVEJS_FRONTIER_SIGNATURE_BLOOM_GRAVIMETRIC_HALF_LIFE_MS",
+        envType: "number",
+        minValue: 1,
+        description: "Default gravimetric decay half-life for normalized travel signature blooms.",
+        validValues: "Positive milliseconds.",
+    },
+    {
+        key: "frontierSignatureBloomElectromagneticHalfLifeMs",
+        defaultValue: 180_000,
+        envVar: "EVEJS_FRONTIER_SIGNATURE_BLOOM_ELECTROMAGNETIC_HALF_LIFE_MS",
+        envType: "number",
+        minValue: 1,
+        description: "Default electromagnetic decay half-life for normalized travel signature blooms.",
+        validValues: "Positive milliseconds.",
+    },
+    {
+        key: "frontierSignatureBloomThermalHalfLifeMs",
+        defaultValue: 120_000,
+        envVar: "EVEJS_FRONTIER_SIGNATURE_BLOOM_THERMAL_HALF_LIFE_MS",
+        envType: "number",
+        minValue: 1,
+        description: "Default thermal decay half-life for normalized travel signature blooms.",
+        validValues: "Positive milliseconds.",
+    },
+    {
+        key: "frontierSignatureBloomRetentionMs",
+        defaultValue: 1_800_000,
+        envVar: "EVEJS_FRONTIER_SIGNATURE_BLOOM_RETENTION_MS",
+        envType: "number",
+        minValue: 1,
+        description: "Minimum durable retention for a travel signature bloom when the publisher does not provide an expiry.",
+        validValues: "Positive milliseconds.",
     },
     {
         key: "proxyNodeId",
@@ -2538,7 +3188,60 @@ function buildValidatedConfigValues(rawValues = {}, options = {}) {
             : baseValues[entry.key];
         nextValues[entry.key] = coerceConfigValue(entry, candidateValue);
     }
+    if (nextValues.frontierEnvironmentalHeatCriticalThresholdKelvin <=
+        nextValues.frontierEnvironmentalHeatWarningThresholdKelvin) {
+        throw new Error("frontierEnvironmentalHeatCriticalThresholdKelvin must be greater than " +
+            "frontierEnvironmentalHeatWarningThresholdKelvin.");
+    }
+    if (nextValues.frontierScanningResolutionRangeMeters >
+        nextValues.frontierScanningDetectionRangeMeters) {
+        throw new Error("frontierScanningResolutionRangeMeters must be less than or equal to " +
+            "frontierScanningDetectionRangeMeters.");
+    }
+    if (nextValues.adaptiveTickRateMinIntervalMs >
+        nextValues.adaptiveTickRateMaxIntervalMs) {
+        throw new Error("adaptiveTickRateMinIntervalMs must be less than or equal to " +
+            "adaptiveTickRateMaxIntervalMs.");
+    }
+    if (nextValues.adaptiveTickRateInitialIntervalMs <
+        nextValues.adaptiveTickRateMinIntervalMs ||
+        nextValues.adaptiveTickRateInitialIntervalMs >
+            nextValues.adaptiveTickRateMaxIntervalMs) {
+        throw new Error("adaptiveTickRateInitialIntervalMs must be within the configured " +
+            "adaptive tick-rate interval bounds.");
+    }
+    if (nextValues.adaptiveTickRateCpuLowPercent >=
+        nextValues.adaptiveTickRateCpuHighPercent) {
+        throw new Error("adaptiveTickRateCpuLowPercent must be less than " +
+            "adaptiveTickRateCpuHighPercent.");
+    }
+    if (nextValues.adaptiveTickRateMemoryLowPercent >=
+        nextValues.adaptiveTickRateMemoryHighPercent) {
+        throw new Error("adaptiveTickRateMemoryLowPercent must be less than " +
+            "adaptiveTickRateMemoryHighPercent.");
+    }
     return nextValues;
+}
+function validateFrontierSmartIndustryJobLaneCountByTypeID(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("frontierSmartIndustryJobLaneCountByTypeID must be a JSON object.");
+    }
+    const compatibleTypeIDs = new Set(Object.keys(require("../services/frontier/industryStaticData.json").facilities || {}));
+    const normalized = {};
+    for (const [rawTypeID, laneCount] of Object.entries(value)) {
+        const typeID = String(rawTypeID).trim();
+        if (!/^[1-9][0-9]*$/.test(typeID) || !Number.isSafeInteger(Number(typeID))) {
+            throw new Error(`frontierSmartIndustryJobLaneCountByTypeID key ${JSON.stringify(rawTypeID)} must be a positive integer type ID.`);
+        }
+        if (!compatibleTypeIDs.has(typeID)) {
+            throw new Error(`frontierSmartIndustryJobLaneCountByTypeID type ID ${typeID} is not a compatible Smart Industry facility.`);
+        }
+        if (!Number.isInteger(laneCount) || laneCount < 1 || laneCount > 16) {
+            throw new Error(`frontierSmartIndustryJobLaneCountByTypeID[${typeID}] must be an integer from 1 through 16.`);
+        }
+        normalized[typeID] = laneCount;
+    }
+    return normalized;
 }
 function saveLocalConfig(rawValues = {}) {
     const currentLocalRawConfig = normalizePersistedConfig(readJsonConfig(localConfigPath));

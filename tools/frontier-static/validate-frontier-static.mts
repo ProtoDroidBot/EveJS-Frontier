@@ -6,6 +6,10 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
+import {
+  inspectCollisionBundle,
+} from "./extract-frontier-static.mjs";
+
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "../..");
 
@@ -122,6 +126,51 @@ async function validateSnapshot(snapshot) {
   assert(fs.existsSync(manifestPath), `Snapshot manifest not found: ${manifestPath}`);
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   assert(manifest.format === "evejs-frontier-static-v1", "Unrecognized snapshot format");
+
+  const collisionAsset = manifest.assets && manifest.assets.collisionBundle;
+  assert(collisionAsset, "Manifest is missing the collision bundle asset");
+  assert(
+    collisionAsset.schema === "destiny.buffers.CollisionData",
+    "Collision bundle declares an unexpected schema",
+  );
+  const collisionPath = path.resolve(snapshot, String(collisionAsset.path || ""));
+  const collisionRelativePath = path.relative(snapshot, collisionPath);
+  assert(
+    collisionRelativePath &&
+      !collisionRelativePath.startsWith("..") &&
+      !path.isAbsolute(collisionRelativePath),
+    "Collision bundle path escapes the snapshot",
+  );
+  assert(fs.existsSync(collisionPath), "Snapshot collision bundle is missing");
+  assert(
+    fs.statSync(collisionPath).size === collisionAsset.bytes,
+    "Collision bundle byte size mismatch",
+  );
+  assert(
+    sha256File(collisionPath) === collisionAsset.sha256,
+    "Collision bundle SHA-256 mismatch",
+  );
+  assert(
+    collisionAsset.sha256 === manifest.source.collisionBundle.sha256,
+    "Collision bundle does not match the selected client source",
+  );
+  assert(
+    collisionAsset.items === manifest.source.collisionBundle.items,
+    "Collision bundle item count does not match the selected client source",
+  );
+  const observedCollision = inspectCollisionBundle(collisionPath);
+  for (const fieldName of [
+    "items",
+    "maxCollisionID",
+    "meshItems",
+    "minCollisionID",
+    "uniformItems",
+  ]) {
+    assert(
+      observedCollision[fieldName] === collisionAsset[fieldName],
+      `Collision bundle ${fieldName} does not match its manifest`,
+    );
+  }
 
   for (const fileName of REQUIRED_FILES) {
     const metadata = manifest.outputs[fileName];
@@ -393,6 +442,7 @@ async function validateSnapshot(snapshot) {
   const checked = {
     build: manifest.source.client.build,
     categories: categoryIDs.size,
+    collisionItems: collisionAsset.items,
     frontierDungeons: frontierDungeonIDs.size,
     groups: groups.count,
     landscapeDungeons: landscapeDungeonIDs.size,

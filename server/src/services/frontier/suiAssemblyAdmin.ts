@@ -23,8 +23,10 @@ function sameID(left: any, right: any) {
 /** Only fields affecting ownership, topology, status, or transaction fuel are frozen. */
 function fingerprint(assembly: any) {
   if (!assembly) return "missing";
-  const { itemId, typeId, ownerId, kind, status, solarSystemId, position, networkNodeId, destinationGateId, fuel } = assembly;
-  return JSON.stringify({ itemId, typeId, ownerId, kind, status, solarSystemId, position, networkNodeId, destinationGateId, fuel });
+  const { itemId, typeId, ownerId, kind, status, solarSystemId, position, networkNodeId,
+    destinationGateId, destinationSolarSystemId, isCatapult, fuel } = assembly;
+  return JSON.stringify({ itemId, typeId, ownerId, kind, status, solarSystemId, position, networkNodeId,
+    destinationGateId, destinationSolarSystemId, isCatapult, fuel });
 }
 export async function verifySponsoredAssemblySignature(bytes: string, signature: string, walletAddress: string) {
   if (typeof signature !== "string" || signature.length > 16384) return false;
@@ -113,7 +115,10 @@ export function createSponsoredAssemblyAdmin(options: {
         const targetStatus = request.action === "online" ? 2 : 1;
         if (assembly.status === targetStatus) fail("ALREADY_IN_STATE");
         if (targetStatus === 2 && assembly.kind === "network_node" && assembly.fuel.quantity <= 0) fail("NETWORK_NODE_FUEL_REQUIRED");
-        if (targetStatus === 2 && assembly.kind === "gate" && !assembly.destinationGateId) fail("SMART_GATE_DESTINATION_REQUIRED");
+        if (targetStatus === 2 && assembly.kind === "gate" &&
+            !(assembly.isCatapult ? assembly.destinationSolarSystemId : assembly.destinationGateId)) {
+          fail(assembly.isCatapult ? "SMART_CATAPULT_DESTINATION_REQUIRED" : "SMART_GATE_DESTINATION_REQUIRED");
+        }
         const state = await context.chain.readAssembly(assembly);
         if (!state || state.online !== (assembly.status === 2)) fail("ASSEMBLY_STATE_CHANGED");
         context.setSnapshotItemIds?.(new Set(snapshot.assemblies.map((value: any) => value.itemId)), snapshot.assemblies);

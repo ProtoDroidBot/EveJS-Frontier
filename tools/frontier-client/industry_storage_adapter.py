@@ -75,10 +75,14 @@ def _evejs_install_industry_storage(namespace, kind):
         _evejs_patch_industry_refresh_loop(namespace)
     elif kind == "facility":
         _evejs_patch_industry_nearby(namespace)
+        _evejs_patch_industry_lane_strategy(namespace)
+    elif kind == "modular_facility":
+        _evejs_patch_industry_modular_lane_strategy(namespace)
     elif kind == "storage":
         _evejs_patch_industry_drop(namespace)
     elif kind == "panel":
         _evejs_patch_industry_panel(namespace)
+        _evejs_patch_industry_lane_panel(namespace)
     elif kind == "service":
         _evejs_patch_industry_service(namespace)
     elif kind == "assembly_window":
@@ -123,9 +127,77 @@ def _evejs_patch_industry_window(namespace):
 
 def _evejs_patch_industry_service(namespace):
     service_type = namespace["IndustryService"]
-    event = "OnFrontierIndustryBlueprintChanged"
-    service_type.__notifyevents__ = list(dict.fromkeys(list(service_type.__notifyevents__) + [event]))
+    events = ["OnFrontierIndustryBlueprintChanged", "OnFrontierIndustryJobLaneChanged"]
+    service_type.__notifyevents__ = list(dict.fromkeys(list(service_type.__notifyevents__) + events))
     threads = namespace["uthread2"]
+
+    def apply_lane_state(facility, lane, info):
+        lane_id = int((lane or {}).get("lane_id") or 1)
+        lane_items = (lane or {}).get("items")
+        lane_blueprint = (lane or {}).get("blueprint")
+        # Older servers only expose the lane-one projection at the top level.
+        if lane_id == 1 and lane_items is None:
+            lane_items = info.get("items", {})
+        if lane_id == 1 and "blueprint" not in (lane or {}):
+            lane_blueprint = info.get("blueprint")
+        lane_items = lane_items or {}
+        facility.update_production((lane or {}).get("production", info.get("production")))
+        facility.update_item_stacks(input_items=lane_items.get("inputs", {}),
+                                    output_items=lane_items.get("outputs", {}))
+        old_blueprint = facility.blueprint
+        facility.update_blueprint(lane_blueprint)
+        if (old_blueprint is not None and facility.blueprint is not None and
+                old_blueprint.blueprint_id == facility.blueprint.blueprint_id and
+                old_blueprint != facility.blueprint):
+            facility.on_blueprint_changed()
+
+    def apply_lanes(self, facility, info):
+        lanes = list(info.get("job_lanes") or [])
+        facility._evejs_job_lane_count = int(info.get("job_lane_count") or len(lanes) or 1)
+        facility._evejs_job_lanes = lanes
+        selected_id = int(getattr(facility, "_evejs_selected_lane_id", 1) or 1)
+        selected = next((lane for lane in lanes
+                         if int(lane.get("lane_id", 0)) == selected_id
+                         and lane.get("enabled", True) and lane.get("can_use", False)), None)
+        if selected is None:
+            selected = next((lane for lane in lanes
+                             if lane.get("enabled", True) and lane.get("can_use", False)), None)
+        if selected is not None:
+            facility._evejs_selected_lane_id = int(selected.get("lane_id") or 1)
+            apply_lane_state(facility, selected, info)
+        else:
+            facility._evejs_selected_lane_id = 1
+            apply_lane_state(facility, {}, info)
+
+    def get_lanes(self, facility_id):
+        facility = self._facilities.get(facility_id)
+        return list(getattr(facility, "_evejs_job_lanes", []) or []) if facility is not None else []
+
+    def select_lane(self, facility_id, lane_id):
+        facility = self._facilities.get(facility_id)
+        if facility is None:
+            return False
+        try:
+            lane_id = int(lane_id)
+        except (TypeError, ValueError):
+            return False
+        lane = next((candidate for candidate in get_lanes(self, facility_id)
+                     if int(candidate.get("lane_id", 0)) == lane_id
+                     and candidate.get("enabled", True) and candidate.get("can_use", False)), None)
+        if lane is None:
+            return False
+        facility._evejs_selected_lane_id = lane_id
+        strategy = self.get_facility_strategy(facility_id)
+        strategy._evejs_selected_lane_id = lane_id
+        apply_lane_state(facility, lane, {})
+        return True
+
+    def configure_lane(self, facility_id, lane_id, mode="owner", character_ids=None, tribe_ids=None):
+        policy = {"mode": mode, "character_ids": list(character_ids or []),
+                  "tribe_ids": list(tribe_ids or [])}
+        result = self._remote_service.set_job_lane_access(facility_id, int(lane_id), policy)
+        self.refresh_facility_details(facility_id)
+        return result
 
     def refresh(self, facility_id):
         facility = self._facilities.get(facility_id)
@@ -143,6 +215,9 @@ def _evejs_patch_industry_service(namespace):
             return
         # Invalidate a read already in flight before asking for the new recipe.
         facility._evejs_blueprint_revision = getattr(facility, "_evejs_blueprint_revision", 0) + 1
+        self.refresh_facility_details(facility_id)
+
+    def lane_changed(self, facility_id, lane_id=None, change=None):
         self.refresh_facility_details(facility_id)
 
     def request(self, facility_id, expected=None):
@@ -188,14 +263,7 @@ def _evejs_patch_industry_service(namespace):
                 return
             facility.set_details_state(loading=False, error=False)
             if info is not None:
-                facility.update_production(info.get("production"))
-                items = info.get("items", {})
-                facility.update_item_stacks(input_items=items.get("inputs", {}), output_items=items.get("outputs", {}))
-                old_blueprint = facility.blueprint
-                facility.update_blueprint(info.get("blueprint"))
-                if old_blueprint is not None and facility.blueprint is not None and \
-                        old_blueprint.blueprint_id == facility.blueprint.blueprint_id and old_blueprint != facility.blueprint:
-                    facility.on_blueprint_changed()
+                apply_lanes(self, facility, info)
         finally:
             facility._evejs_details_running = False
             if self._facilities.get(facility_id) is facility and getattr(facility, "_evejs_refresh_pending", False):
@@ -210,8 +278,14 @@ def _evejs_patch_industry_service(namespace):
         return original_changed(self, facility_id, blueprint)
 
     original_load = service_type.load_blueprint
+    original_start = service_type.start_production
+    original_discontinue = service_type.discontinue_production
 
     def load(self, facility_id, blueprint_id):
+        facility = self._facilities.get(facility_id)
+        if facility is not None:
+            self.get_facility_strategy(facility_id)._evejs_selected_lane_id = int(
+                getattr(facility, "_evejs_selected_lane_id", 1) or 1)
         try:
             return original_load(self, facility_id, blueprint_id)
         finally:
@@ -219,11 +293,89 @@ def _evejs_patch_industry_service(namespace):
             if facility is not None and getattr(facility, "_evejs_refresh_pending", False):
                 self.refresh_facility_details(facility_id)
 
+    def start(self, facility_id):
+        facility = self._facilities.get(facility_id)
+        if facility is not None:
+            self.get_facility_strategy(facility_id)._evejs_selected_lane_id = int(
+                getattr(facility, "_evejs_selected_lane_id", 1) or 1)
+        return original_start(self, facility_id)
+
+    def discontinue(self, facility_id):
+        facility = self._facilities.get(facility_id)
+        if facility is not None:
+            self.get_facility_strategy(facility_id)._evejs_selected_lane_id = int(
+                getattr(facility, "_evejs_selected_lane_id", 1) or 1)
+        return original_discontinue(self, facility_id)
+
     service_type.refresh_facility_details = refresh
     service_type.OnFrontierIndustryBlueprintChanged = changed
+    service_type.OnFrontierIndustryJobLaneChanged = lane_changed
     service_type._request_facility_details = request
     service_type._on_blueprint_changed = local_changed
     service_type.load_blueprint = load
+    service_type.start_production = start
+    service_type.discontinue_production = discontinue
+    service_type.get_job_lanes = get_lanes
+    service_type.select_job_lane = select_lane
+    service_type.set_job_lane_access = configure_lane
+
+
+def _evejs_patch_industry_lane_strategy(namespace):
+    facility_type = namespace["AssemblyClientFacility"]
+
+    def lane_id(self):
+        return int(getattr(self, "_evejs_selected_lane_id", 1) or 1)
+
+    def load(self, blueprint_id):
+        return self._remote_service.load_blueprint(self.facility_id, blueprint_id,
+                                                   lane_id(self))
+
+    def deposit(self, items):
+        return self._remote_service.deposit_input_items(self.facility_id, items,
+                                                        lane_id(self))
+
+    def withdraw_inputs(self, items, inventory_id, inventory_flag):
+        return self._remote_service.withdraw_input_items(
+            self.facility_id, items, inventory_id, inventory_flag, lane_id(self))
+
+    def withdraw_outputs(self, items, inventory_id, inventory_flag):
+        return self._remote_service.withdraw_output_items(
+            self.facility_id, items, inventory_id, inventory_flag, lane_id(self))
+
+    def start(self, blueprint_id, blueprint_hash):
+        selected_lane_id = lane_id(self)
+        return self._remote_service.start_production(
+            self.facility_id, blueprint_id, blueprint_hash, None, selected_lane_id)
+
+    def discontinue(self):
+        return self._remote_service.discontinue_production(self.facility_id, lane_id(self))
+
+    facility_type.load_blueprint = load
+    facility_type.deposit_input_items = deposit
+    facility_type.withdraw_input_items = withdraw_inputs
+    facility_type.withdraw_output_items = withdraw_outputs
+    facility_type.start_production = start
+    facility_type.discontinue_production = discontinue
+
+
+def _evejs_patch_industry_modular_lane_strategy(namespace):
+    facility_type = namespace["CreationModuleClientFacility"]
+
+    def lane_id(self):
+        return int(getattr(self, "_evejs_selected_lane_id", 1) or 1)
+
+    def start(self, blueprint_id, blueprint_hash):
+        selected_lane_id = lane_id(self)
+        return self._activate(namespace["AbilityId"].INDUSTRY_START_PRODUCTION,
+                              blueprint_id=blueprint_id, blueprint_hash=blueprint_hash,
+                              lane_id=selected_lane_id)
+
+    def discontinue(self):
+        return self._activate(namespace["AbilityId"].INDUSTRY_DISCONTINUE_PRODUCTION,
+                              lane_id=lane_id(self))
+
+    facility_type.start_production = start
+    facility_type.discontinue_production = discontinue
 
 
 def _evejs_patch_industry_refresh_loop(namespace):
@@ -258,20 +410,27 @@ def _evejs_patch_industry_refresh_loop(namespace):
 
 def _evejs_patch_industry_panel(namespace):
     panel_type = namespace["ActiveBlueprintPanel"]
+    original = panel_type._construct_cargo
 
     def construct_cargo(self):
-        from frontier.smart_assemblies.client.storage.location import SmartStorageLocation
+        try:
+            from frontier.smart_assemblies.client.storage.location import SmartStorageLocation
+            inventories = self._controller.get_nearby_inventories()
+        except Exception:
+            return original(self)
         locations = []
-        for inventory in self._controller.get_nearby_inventories():
-            storage_controller = getattr(inventory, "smart_storage_controller", None)
-            if storage_controller is not None:
-                _evejs_patch_industry_storage_grid()
-                # The standard location reconstructs controllers from invControllers
-                # by class name and item ID. SSUs require their existing controller
-                # and SMART_STORAGE container kind for rendering and notifications.
-                locations.append(SmartStorageLocation(storage_controller))
-            else:
-                locations.append(namespace["StandardInventoryLocation"](inventory.GetInvID()))
+        for inventory in inventories:
+            try:
+                storage_controller = getattr(inventory, "smart_storage_controller", None)
+                if storage_controller is not None:
+                    _evejs_patch_industry_storage_grid()
+                    # SSUs need their existing controller and SMART_STORAGE kind.
+                    locations.append(SmartStorageLocation(storage_controller))
+                else:
+                    locations.append(namespace["StandardInventoryLocation"](inventory.GetInvID()))
+            except Exception:
+                # One unavailable inventory must not hide every cargo location.
+                continue
         if not locations:
             return
         # Preserve build 3502403's cargo layout, coupling and shortcut lifecycle.
@@ -293,6 +452,47 @@ def _evejs_patch_industry_panel(namespace):
             self.activate_shortcuts()
 
     panel_type._construct_cargo = construct_cargo
+
+
+def _evejs_patch_industry_lane_panel(namespace):
+    panel_type = namespace["ActiveBlueprintPanel"]
+    original = panel_type._construct_center
+
+    def construct_center(self):
+        original(self)
+        try:
+            service = self._controller._service
+            facility_id = self._controller._facility_id
+            lanes = [lane for lane in service.get_job_lanes(facility_id)
+                     if lane.get("enabled", True)]
+            if len(lanes) <= 1:
+                return
+            from eve.client.script.ui.control.floatingToggleButtonGroup import FloatingToggleButtonGroup
+            group = FloatingToggleButtonGroup(
+                parent=self,
+                align=namespace["Align"].CENTERTOP,
+                width=min(760, max(260, len(lanes) * 120)),
+                callback=lambda lane_id, *args, **kwargs: service.select_job_lane(
+                    facility_id, lane_id),
+            )
+            for lane in lanes:
+                try:
+                    lane_id = int(lane.get("lane_id") or 1)
+                    state = (lane.get("production") or {}).get("state")
+                    label = "LANE {}{}".format(lane_id, " [ACTIVE]" if state in ("RUNNING", "DISCONTINUING") else "")
+                    group.AddButton(lane_id, label, isDisabled=not lane.get("can_use", False))
+                except Exception:
+                    continue
+            group.SelectByID(int(getattr(self._controller.facility_instance,
+                                         "_evejs_selected_lane_id", 1) or 1))
+            self._evejs_lane_group = group
+        except Exception:
+            # Lane RPCs remain usable by ROOT/custom clients even if a future
+            # retail UI revision removes this optional selector primitive.
+            namespace.get("logger", __import__("logging").getLogger(__name__)).exception(
+                "Unable to construct Industry lane selector")
+
+    panel_type._construct_center = construct_center
 
 
 def _evejs_patch_industry_storage_grid():
@@ -355,7 +555,9 @@ def _evejs_patch_industry_inputs(namespace):
         try:
             # Quantities are by type, scoped to one SSU and the authenticated
             # character's partition. The server resolves actual source rows.
-            remote.deposit_storage_input_items(self._facility_id, items[0].locationID, requested)
+            lane_id = int(getattr(self._facility_instance, "_evejs_selected_lane_id", 1) or 1)
+            remote.deposit_storage_input_items(
+                self._facility_id, items[0].locationID, requested, lane_id)
         except IndustryError as error:
             namespace["prompt_error_message"](error.msg, namespace["ErrorHeaders"].DEPOSIT)
             return
@@ -387,51 +589,66 @@ def _evejs_patch_industry_nearby(namespace):
 
     def nearby(self, include_ship_hangars, include_nest):
         inventories = original(self, include_ship_hangars, include_nest)
-        from spacecomponents.common import componentConst
-        from spacecomponents.common.data import get_space_component_for_type
-        from frontier.smart_assemblies.client.storage.controller import StorageController
-        from frontier.smart_assemblies.client.storage.smart_storage_inventory import SmartStorageUnitInventory
-        # sm/session are native client builtins, also used by the stock module.
-        ballpark = sm.GetService("michelle").GetBallpark()
+        try:
+            from spacecomponents.common import componentConst
+            from spacecomponents.common.data import get_space_component_for_type
+            from frontier.smart_assemblies.client.storage.controller import StorageController
+            from frontier.smart_assemblies.client.storage.smart_storage_inventory import SmartStorageUnitInventory
+            # sm/session are native client builtins, also used by the stock module.
+            ballpark = sm.GetService("michelle").GetBallpark()
+        except Exception:
+            return inventories
         if ballpark is None:
             return inventories
         cache = getattr(self, "_evejs_industry_storage_cache", {})
         self._evejs_industry_storage_cache = cache
         visible = set()
-        existing = {getattr(inventory, "itemID", None) for inventory in inventories}
-        for row in ballpark.GetCrDataByFilter().values():
-            if row.itemID == self.facility_id:
-                continue
-            if not get_space_component_for_type(row.typeID, componentConst.SMART_STORAGE_UNIT):
-                continue
+        existing = set()
+        for inventory in inventories:
             try:
+                existing.add(getattr(inventory, "itemID", None))
+            except Exception:
+                continue
+        try:
+            rows = ballpark.GetCrDataByFilter().values()
+        except Exception:
+            return inventories
+        row_failed = False
+        for row in rows:
+            try:
+                if row.itemID == self.facility_id:
+                    continue
+                if not get_space_component_for_type(row.typeID, componentConst.SMART_STORAGE_UNIT):
+                    continue
                 distance = ballpark.DistanceBetween(session.shipid, row.ballID)
                 if not 0 <= distance <= 5000 or not self._smart_assembly_svc.is_online(row.itemID):
                     continue
+                key = (row.typeID, row.ownerID)
+                cached = cache.get(row.itemID)
+                if cached is not None and cached[0] != key:
+                    cached[1].smart_storage_controller._disconnect_event_handlers()
+                    cached = None
+                if cached is None:
+                    controller = StorageController(row.itemID, row.typeID, row.ownerID)
+                    # Load the initial item snapshot using the native SSU loader.
+                    controller._fetching_items = True
+                    controller._fetch_items_background()
+                    cached = (key, SmartStorageUnitInventory(ss_controller=controller, itemID=row.itemID, typeID=row.typeID))
+                    cache[row.itemID] = cached
+                if row.itemID not in existing:
+                    inventories.append(cached[1])
+                    existing.add(row.itemID)
+                visible.add(row.itemID)
             except Exception:
+                row_failed = True
                 continue
-            visible.add(row.itemID)
-            key = (row.typeID, row.ownerID)
-            cached = cache.get(row.itemID)
-            if cached is not None and cached[0] != key:
-                cached[1].smart_storage_controller._disconnect_event_handlers()
-                cached = None
-            if cached is None:
-                controller = StorageController(row.itemID, row.typeID, row.ownerID)
-                # The stock items property initially returns [] and loads in a
-                # background task. Industry menus only listen to OnItemChanged,
-                # so that first empty result otherwise stays cached. This is the
-                # same cooperative RPC loader used by the native storage panel.
-                controller._fetching_items = True
-                controller._fetch_items_background()
-                cached = (key, SmartStorageUnitInventory(ss_controller=controller, itemID=row.itemID, typeID=row.typeID))
-                cache[row.itemID] = cached
-            if row.itemID not in existing:
-                inventories.append(cached[1])
-                existing.add(row.itemID)
-        for item_id in list(cache):
-            if item_id not in visible:
-                cache.pop(item_id)[1].smart_storage_controller._disconnect_event_handlers()
+        if not row_failed:
+            for item_id in list(cache):
+                if item_id not in visible:
+                    try:
+                        cache.pop(item_id)[1].smart_storage_controller._disconnect_event_handlers()
+                    except Exception:
+                        continue
         return inventories
 
     facility_type.get_nearby_inventories = nearby
@@ -460,16 +677,22 @@ def _evejs_patch_industry_drop(namespace):
         item_type._evejs_item_ids_installed = True
 
         def get_items(self):
-            return [item_type(
-                item.type_id,
-                item.quantity,
-                item.is_singleton,
-                self.smart_storage_controller.assembly_owner_id,
-                self.locationFlag,
-                self.smart_storage_controller.assembly_id,
-                self.smart_storage_controller.is_owner,
-                item_id=getattr(item, "item_id", None),
-            ) for item in self.smart_storage_controller.items]
+            rows = []
+            for item in self.smart_storage_controller.items:
+                try:
+                    rows.append(item_type(
+                        item.type_id,
+                        item.quantity,
+                        item.is_singleton,
+                        self.smart_storage_controller.assembly_owner_id,
+                        self.locationFlag,
+                        self.smart_storage_controller.assembly_id,
+                        self.smart_storage_controller.is_owner,
+                        item_id=getattr(item, "item_id", None),
+                    ))
+                except Exception:
+                    continue
+            return rows
 
         inventory_type._GetItems = get_items
 

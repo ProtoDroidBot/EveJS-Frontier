@@ -285,6 +285,16 @@ function createMovementSubwarpCommands(deps = {}) {
                 entity.targetEntityID === target.itemID &&
                 entity.dockingTargetID === dockingTargetID &&
                 Math.abs(toFiniteNumber(entity.followRange, 0) - normalizedRange) < 1) {
+                // Even an idempotent follow request is a new command for ownership
+                // purposes.  Refresh the trace so an older automated controller cannot
+                // later stop this explicitly reissued command merely because it points
+                // at the same target and range.
+                armMovementTrace(entity, "follow-duplicate", {
+                    followTargetID: target.itemID,
+                    followRange: roundNumber(normalizedRange),
+                    dockingTargetID: dockingTargetID || 0,
+                    source: options.source || null,
+                }, now);
                 logMovementDebug("cmd.follow.duplicate", entity, {
                     followTargetID: target.itemID,
                     followRange: roundNumber(normalizedRange),

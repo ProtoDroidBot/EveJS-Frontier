@@ -148,7 +148,7 @@ class SlashService extends BaseService {
         appendSlashDebug(`ReportSlashCommandUsage user=${session ? session.userid : "?"} char=${session ? session.characterID : "?"} command=${JSON.stringify(command)} args=${JSON.stringify(summarizeValue(args))} kwargs=${JSON.stringify(summarizeValue(kwargs))}`);
         return null;
     }
-    Handle_SlashCmd(args, session, kwargs) {
+    async Handle_SlashCmd(args, session, kwargs) {
         const command = extractCommand(args, kwargs).trim();
         const feedbackChannel = extractFeedbackChannel(args, kwargs);
         log.debug(`[SlashService] SlashCmd: ${command}`);
@@ -160,7 +160,7 @@ class SlashService extends BaseService {
             if (!command) {
                 this._throwCommandListError();
             }
-            const result = executeChatCommand(session, command, chatHub, {
+            const result = await executeChatCommand(session, command, chatHub, {
                 emitChatFeedback: true,
                 feedbackChannel,
                 serviceManager: this.serviceManager,

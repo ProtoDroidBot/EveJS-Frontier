@@ -3,12 +3,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { ObjectError } from "@mysten/sui/client";
 import { Transaction, TransactionDataBuilder } from "@mysten/sui/transactions";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { createAssemblyTransactionExecutor } from "../src/services/frontier/suiAssemblyTransactions";
 
 const admin = normalizeSuiAddress("0xa");
 const player = normalizeSuiAddress("0xb");
+const faction = normalizeSuiAddress("0x99");
+const npcOwnerId = 1_500_000_001;
 const gas6744 = {
   objectId: "0x71d5ee936b9f9c64463d3c9e8c7bd91608ccca8b63e6747b20e253b6e2c7d74a",
   version: "6744", digest: "B6W2nvxdKsSh3SK12kkiU6jLtmkr5fJkoQb4wvic1vM3",
@@ -39,17 +42,32 @@ function locationTransaction(gas = gas6744) {
   return transaction;
 }
 
+function nativeResponse(transaction: any): any {
+  return transaction.status.success
+    ? { $kind: "Transaction", Transaction: transaction }
+    : { $kind: "FailedTransaction", FailedTransaction: transaction };
+}
+function nativeResult(digest: string, success = true, gas?: any): any {
+  const status = { success, error: success ? null : { message: "NoFuel" } };
+  return nativeResponse({ digest, status, events: [], effects: {
+    transactionDigest: digest, status, changedObjects: [],
+    gasObject: gas ? { objectId: gas.objectId, outputState: "ObjectWrite",
+      outputVersion: gas.version, outputDigest: gas.digest,
+      outputOwner: { $kind: "AddressOwner", AddressOwner: admin } } : null,
+  } });
+}
+
 function fixture(t: any) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "evejs-sui-journal-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const bytes = Uint8Array.from([0, 1, 2, 3]);
   const digest = TransactionDataBuilder.getDigestFromBytes(bytes);
-  const success: any = { digest, effects: { status: { status: "success" } } };
+  const success: any = nativeResult(digest);
   let submitted = 0;
   const options = {
     client: {
-      async getTransactionBlock(): Promise<any> { throw new Error("not found"); },
-      async executeTransactionBlock(_input: any): Promise<any> { submitted++; return success; },
+      async getTransaction(): Promise<any> { throw new Error("not found"); },
+      async executeTransaction(_input: any): Promise<any> { submitted++; return success; },
       async waitForTransaction(_input: any): Promise<any> { return success; },
       async getObject(_input: any): Promise<any> { throw new Error("object not found"); },
     },
@@ -65,15 +83,15 @@ function fixture(t: any) {
 test("lost transaction response is reconciled after restart without applying the delta again", async t => {
   const f = fixture(t);
   let submitted: any;
-  f.options.client.executeTransactionBlock = async input => { submitted = input; throw new Error("connection lost after commit"); };
+  f.options.client.executeTransaction = async input => { submitted = input; throw new Error("connection lost after commit"); };
   const first = createAssemblyTransactionExecutor(f.options);
   await assert.rejects(first.execute("deposit", f.transaction, 9), /connection lost/);
   const pending = JSON.parse(fs.readFileSync(f.options.journalPath, "utf8")).pending;
   assert.equal(pending.digest, f.digest);
   assert.deepEqual(pending.signatures, ["player-signature", "admin-signature"]);
-  assert.equal(Buffer.from(submitted.transactionBlock).toString("base64"), pending.bytes);
-  f.options.client.getTransactionBlock = async () => f.success;
-  f.options.client.executeTransactionBlock = async () => { assert.fail("must not submit again after confirmed commit"); };
+  assert.equal(Buffer.from(submitted.transaction).toString("base64"), pending.bytes);
+  f.options.client.getTransaction = async () => f.success;
+  f.options.client.executeTransaction = async () => { assert.fail("must not submit again after confirmed commit"); };
   const restarted = createAssemblyTransactionExecutor(f.options);
   await restarted.recover();
   assert.equal(restarted.hasPending(), false);
@@ -83,7 +101,7 @@ test("lost transaction response is reconciled after restart without applying the
 test("unconfirmed retries replay identical signed bytes", async t => {
   const f = fixture(t);
   const calls: any[] = [];
-  f.options.client.executeTransactionBlock = async input => {
+  f.options.client.executeTransaction = async input => {
     calls.push(input);
     if (calls.length === 1) throw new Error("offline");
     return f.success;
@@ -91,8 +109,8 @@ test("unconfirmed retries replay identical signed bytes", async t => {
   const executor = createAssemblyTransactionExecutor(f.options);
   await assert.rejects(executor.execute("fuel", f.transaction), /offline/);
   await createAssemblyTransactionExecutor(f.options).recover();
-  assert.deepEqual(calls[0].transactionBlock, calls[1].transactionBlock);
-  assert.deepEqual(calls[0].signature, calls[1].signature);
+  assert.deepEqual(calls[0].transaction, calls[1].transaction);
+  assert.deepEqual(calls[0].signatures, calls[1].signatures);
 });
 
 test("failed fuel acknowledgement remains pending and recovers idempotently without rebuilding or resubmitting", async t => {
@@ -124,8 +142,8 @@ test("failed fuel acknowledgement remains pending and recovers idempotently with
   assert.equal(pending.label, label);
   assert.equal(pending.digest, f.digest);
   assert.equal(committed, 0);
-  options.client.getTransactionBlock = async () => f.success;
-  options.client.executeTransactionBlock = async () => assert.fail("confirmed fuel transaction must not be resubmitted");
+  options.client.getTransaction = async () => f.success;
+  options.client.executeTransaction = async () => assert.fail("confirmed fuel transaction must not be resubmitted");
   const restarted = createAssemblyTransactionExecutor(options);
   await assert.rejects(restarted.execute("another fuel intent", f.transaction), /Recovered a pending assembly transaction/);
   assert.equal(restarted.hasPending(), false);
@@ -146,7 +164,7 @@ test("committed reconciliation follows sponsored reconciliation before clearing 
     pending: { label, digest: f.digest, bytes: Buffer.from(f.bytes).toString("base64"),
       signatures: ["player-signature", "admin-signature"], sponsored },
   }));
-  f.options.client.getTransactionBlock = async () => f.success;
+  f.options.client.getTransaction = async () => f.success;
   const reconciled: string[] = [];
   const executor = createAssemblyTransactionExecutor({
     ...f.options,
@@ -188,8 +206,8 @@ test("cannot send a transaction before its journal is persisted", async t => {
 
 test("definitive failure clears pending state and reports the Move error", async t => {
   const f = fixture(t);
-  const failure = { digest: f.digest, effects: { status: { status: "failure", error: "NoFuel" } } };
-  f.options.client.executeTransactionBlock = async () => failure;
+  const failure = nativeResult(f.digest, false);
+  f.options.client.executeTransaction = async () => failure;
   f.options.client.waitForTransaction = async () => failure;
   const executor = createAssemblyTransactionExecutor({ ...f.options,
     reconcileCommitted: async () => assert.fail("failed transactions must not acknowledge a committed intent"),
@@ -224,13 +242,13 @@ test("a fuel snapshot changed while building is rejected before journaling or su
 test("a saved fuel submission is recovered even after its live snapshot changes", async t => {
   const f = fixture(t);
   let checks = 0;
-  f.options.client.executeTransactionBlock = async () => { throw new Error("response lost"); };
+  f.options.client.executeTransaction = async () => { throw new Error("response lost"); };
   const executor = createAssemblyTransactionExecutor(f.options);
   await assert.rejects(executor.execute("fuel", f.transaction, undefined, () => {
     if (++checks > 1) throw new Error("fuel snapshot changed");
   }), /response lost/);
   assert.equal(executor.hasPending(), true);
-  f.options.client.getTransactionBlock = async () => f.success;
+  f.options.client.getTransaction = async () => f.success;
   await executor.recover();
   assert.equal(checks, 1);
   assert.equal(executor.hasPending(), false);
@@ -241,10 +259,10 @@ for (const status of ["success", "failure"] as const) {
     const f = fixture(t);
     const enteredWait = deferred<void>();
     const visible = deferred<any>();
-    const result = { digest: f.digest, effects: { status: { status, error: status === "failure" ? "NoFuel" : undefined } } };
+    const result = nativeResult(f.digest, status === "success");
     let committed = 0;
     let settled = false;
-    f.options.client.executeTransactionBlock = async input => {
+    f.options.client.executeTransaction = async input => {
       assert.equal("requestType" in input, false, "the installed SDK does not support requestType");
       return result;
     };
@@ -272,6 +290,95 @@ for (const status of ["success", "failure"] as const) {
   });
 }
 
+for (const defect of ["missing result kind", "contradictory result kind", "contradictory effects status", "wrong effects digest"]) {
+  test(`native confirmation with ${defect} leaves the signed transaction pending`, async t => {
+    const f = fixture(t);
+    const result = nativeResult(f.digest);
+    if (defect === "missing result kind") delete result.$kind;
+    if (defect === "contradictory result kind") result.$kind = "FailedTransaction";
+    if (defect === "contradictory effects status") result.Transaction.effects.status = { success: false, error: { message: "NoFuel" } };
+    if (defect === "wrong effects digest") result.Transaction.effects.transactionDigest = nameDigest;
+    f.options.client.waitForTransaction = async () => result;
+    const executor = createAssemblyTransactionExecutor(f.options);
+    await assert.rejects(executor.execute("fuel", f.transaction), /invalid native gRPC result|no definitive effects/);
+    assert.equal(executor.hasPending(), true);
+    assert.equal(JSON.parse(fs.readFileSync(f.options.journalPath, "utf8")).pending.digest, f.digest);
+    assert.equal(f.submissions(), 1);
+  });
+}
+
+test("NPC-owned transactions use only the confirmed faction wallet for sender and gas", async t => {
+  const f = fixture(t);
+  const assigned: Record<string, string> = {};
+  let submitted: any;
+  const tx = { ...f.transaction,
+    setSender(value: string) { assigned.sender = value; },
+    setGasOwner(value: string) { assigned.gasOwner = value; },
+  };
+  const executor = createAssemblyTransactionExecutor({ ...f.options,
+    getSigner: () => ({ toSuiAddress: () => faction, signTransaction: async () => ({ signature: "faction-signature" }) }),
+    getFactionGasSigner: () => ({ toSuiAddress: () => faction, signTransaction: async () => ({ signature: "faction-signature" }) }),
+    client: { ...f.options.client, async executeTransaction(input: any) { submitted = input; return f.success; } },
+  });
+  await executor.execute("npc inventory", tx, npcOwnerId);
+  assert.deepEqual(assigned, { sender: faction, gasOwner: faction });
+  assert.deepEqual(submitted.signatures, ["faction-signature"]);
+});
+
+test("NPC Industry mirror keeps its authorized sender but the faction pays gas", async t => {
+  const f = fixture(t);
+  const assigned: Record<string, string> = {};
+  let submitted: any;
+  const tx = { ...f.transaction,
+    setSender(value: string) { assigned.sender = value; },
+    setGasOwner(value: string) { assigned.gasOwner = value; },
+  };
+  const executor = createAssemblyTransactionExecutor({ ...f.options,
+    getFactionGasSigner: () => ({ toSuiAddress: () => faction, signTransaction: async () => ({ signature: "faction-signature" }) }),
+    client: { ...f.options.client, async executeTransaction(input: any) { submitted = input; return f.success; } },
+  });
+  await executor.execute("industry:5000000001:sync", tx, undefined, undefined, npcOwnerId);
+  assert.deepEqual(assigned, { sender: admin, gasOwner: faction });
+  assert.deepEqual(submitted.signatures, ["admin-signature", "faction-signature"]);
+});
+
+test("missing NPC faction signer fails closed without an admin-paid submission", async t => {
+  const f = fixture(t);
+  const executor = createAssemblyTransactionExecutor(f.options);
+  await assert.rejects(executor.execute("npc industry", f.transaction, undefined, undefined, npcOwnerId),
+    /no distinct confirmed gas signer/);
+  assert.equal(f.submissions(), 0);
+  assert.equal(fs.existsSync(f.options.journalPath), false);
+});
+
+test("one NPC faction cannot be selected as the gas payer for another owner", async t => {
+  const f = fixture(t);
+  const executor = createAssemblyTransactionExecutor({ ...f.options,
+    getFactionGasSigner: () => ({ toSuiAddress: () => faction, signTransaction: async () => ({ signature: "faction-signature" }) }),
+  });
+  await assert.rejects(executor.execute("wrong faction", f.transaction, npcOwnerId, undefined, npcOwnerId + 1),
+    /must match the NPC transaction owner/);
+  assert.equal(f.submissions(), 0);
+});
+
+test("an unfunded faction transaction is not retried with admin gas", async t => {
+  const f = fixture(t);
+  let adminSignatures = 0;
+  const executor = createAssemblyTransactionExecutor({ ...f.options,
+    adminSigner: { toSuiAddress: () => admin, async signTransaction() {
+      adminSignatures++; return { signature: "admin-signature" };
+    } },
+    getSigner: () => ({ toSuiAddress: () => faction, signTransaction: async () => ({ signature: "faction-signature" }) }),
+    getFactionGasSigner: () => ({ toSuiAddress: () => faction, signTransaction: async () => ({ signature: "faction-signature" }) }),
+  });
+  await assert.rejects(executor.execute("npc industry", { ...f.transaction,
+    async build() { throw new Error("InsufficientGas"); },
+  }, npcOwnerId), /InsufficientGas/);
+  assert.equal(adminSignatures, 0);
+  assert.equal(f.submissions(), 0);
+  assert.equal(fs.existsSync(f.options.journalPath), false);
+});
+
 test("a visibility timeout survives restart and waits again without resubmitting a committed transaction", async t => {
   const f = fixture(t);
   f.options.client.waitForTransaction = async () => { throw new Error("visibility timeout"); };
@@ -279,11 +386,11 @@ test("a visibility timeout survives restart and waits again without resubmitting
   await assert.rejects(executor.execute("anchor", f.transaction), /visibility timeout/);
   assert.equal(executor.hasPending(), true);
   assert.equal(f.submissions(), 1);
-  f.options.client.getTransactionBlock = async () => f.success;
+  f.options.client.getTransaction = async () => f.success;
   const enteredWait = deferred<void>();
   const visible = deferred<any>();
   f.options.client.waitForTransaction = async () => { enteredWait.resolve(); return visible.promise; };
-  f.options.client.executeTransactionBlock = async () => assert.fail("confirmed transaction must not be submitted again");
+  f.options.client.executeTransaction = async () => assert.fail("confirmed transaction must not be submitted again");
   const restarted = createAssemblyTransactionExecutor(f.options);
   const recovery = restarted.recover();
   await enteredWait.promise;
@@ -306,7 +413,7 @@ test("a failed journal replacement after confirmation keeps the original transac
     return renameSync(source, destination);
   });
   let committed = 0;
-  f.options.client.executeTransactionBlock = async () => {
+  f.options.client.executeTransaction = async () => {
     assert.equal(JSON.parse(fs.readFileSync(f.options.journalPath, "utf8")).pending.digest, f.digest);
     failNextRename = true;
     return f.success;
@@ -317,8 +424,8 @@ test("a failed journal replacement after confirmation keeps the original transac
   assert.equal(executor.hasPending(), true);
   assert.equal(JSON.parse(fs.readFileSync(f.options.journalPath, "utf8")).pending.digest, f.digest);
   assert.equal(committed, 0);
-  f.options.client.getTransactionBlock = async () => f.success;
-  f.options.client.executeTransactionBlock = async () => assert.fail("the confirmed transaction must not be resubmitted");
+  f.options.client.getTransaction = async () => f.success;
+  f.options.client.executeTransaction = async () => assert.fail("the confirmed transaction must not be resubmitted");
   await executor.recover();
   assert.equal(executor.hasPending(), false);
   assert.equal(committed, 1);
@@ -348,19 +455,17 @@ test("confirmed gas waits for a current balance read before chaining across rest
   let signatures = 0;
   f.options.adminSigner.signTransaction = async () => { signatures++; return { signature: "admin-signature" }; };
   const submittedPayments: any[] = [];
-  f.options.client.executeTransactionBlock = async input => {
-    const bytes = new Uint8Array(input.transactionBlock);
+  f.options.client.executeTransaction = async input => {
+    const bytes = new Uint8Array(input.transaction);
     const transaction = Transaction.from(bytes).getData();
     submittedPayments.push(transaction.gasData.payment);
     const ref = submittedPayments.length === 1 ? gas6745 : { ...gas6745, version: "6746" };
-    latest = { digest: TransactionDataBuilder.getDigestFromBytes(bytes), effects: {
-      status: { status: "success" }, gasObject: { reference: ref, owner: { AddressOwner: admin } },
-    } };
+    latest = nativeResult(TransactionDataBuilder.getDigestFromBytes(bytes), true, ref);
     return latest;
   };
   f.options.client.waitForTransaction = async () => latest;
-  f.options.client.getObject = async () => ({ data: { ...gas6744, owner: { AddressOwner: admin },
-    content: { dataType: "moveObject", fields: { balance: "1000000000" } },
+  f.options.client.getObject = async () => ({ object: { ...gas6744, owner: { AddressOwner: admin },
+    json: { balance: "1000000000" },
   } });
   await createAssemblyTransactionExecutor(f.options).execute("assembly:9988400000137:name", locationTransaction());
   const restarted = createAssemblyTransactionExecutor(f.options);
@@ -372,8 +477,8 @@ test("confirmed gas waits for a current balance read before chaining across rest
   assert.deepEqual(JSON.parse(fs.readFileSync(f.options.journalPath, "utf8")).confirmedGas, gas6745);
   // Once the current balance is visible, confirmed effects replace the old
   // reference returned by transaction coin selection without downgrading it.
-  f.options.client.getObject = async () => ({ data: { ...gas6745, owner: { AddressOwner: admin },
-    content: { dataType: "moveObject", fields: { balance: "1000000000" } },
+  f.options.client.getObject = async () => ({ object: { ...gas6745, owner: { AddressOwner: admin },
+    json: { balance: "1000000000" },
   } });
   await restarted.execute("assembly:9988400000137:location", locationTransaction());
   assert.deepEqual(submittedPayments, [[gas6744], [gas6745]]);
@@ -385,25 +490,69 @@ test("a depleted confirmed gas coin allows a different funded gas coin to be sel
     digest: TransactionDataBuilder.getDigestFromBytes(new Uint8Array([7])) };
   const submittedPayments: any[] = [];
   let latest: any;
-  f.options.client.executeTransactionBlock = async input => {
-    const bytes = new Uint8Array(input.transactionBlock);
+  f.options.client.executeTransaction = async input => {
+    const bytes = new Uint8Array(input.transaction);
     submittedPayments.push(Transaction.from(bytes).getData().gasData.payment);
     const ref = submittedPayments.length === 1 ? gas6745 : { ...fundedGas, version: "8" };
-    latest = { digest: TransactionDataBuilder.getDigestFromBytes(bytes), effects: {
-      status: { status: "success" }, gasObject: { reference: ref, owner: { AddressOwner: admin } },
-    } };
+    latest = nativeResult(TransactionDataBuilder.getDigestFromBytes(bytes), true, ref);
     return latest;
   };
   f.options.client.waitForTransaction = async () => latest;
-  f.options.client.getObject = async () => ({ data: { ...gas6745, owner: { AddressOwner: admin },
-    content: { dataType: "moveObject", fields: { balance: "99999999" } },
+  f.options.client.getObject = async () => ({ object: { ...gas6745, owner: { AddressOwner: admin },
+    json: { balance: "99999999" },
   } });
   const executor = createAssemblyTransactionExecutor(f.options);
   await executor.execute("assembly:9988400000137:name", locationTransaction());
   await executor.execute("assembly:9988400000137:location", locationTransaction(fundedGas));
   assert.deepEqual(submittedPayments, [[gas6744], [fundedGas]]);
   assert.equal(executor.hasPending(), false);
-  assert.equal(JSON.parse(fs.readFileSync(f.options.journalPath, "utf8")).lastTransaction.digest, latest.digest);
+  assert.equal(JSON.parse(fs.readFileSync(f.options.journalPath, "utf8")).lastTransaction.digest, latest.Transaction.digest);
+});
+
+test("native NOT_FOUND for merged cached gas permits a new transaction to select another coin", async t => {
+  const f = fixture(t);
+  const fundedGas = { objectId: normalizeSuiAddress("0xfed"), version: "7",
+    digest: TransactionDataBuilder.getDigestFromBytes(new Uint8Array([7])) };
+  fs.writeFileSync(f.options.journalPath, JSON.stringify({
+    version: 1, chainId: "local", packageId: "world", confirmedGas: gas6745,
+  }));
+  f.options.client.getObject = async () => {
+    throw new ObjectError("notExists", "Object not found", { reason: "notFound", objectId: gas6745.objectId });
+  };
+  const tx = locationTransaction(fundedGas);
+  let latest: any;
+  f.options.client.executeTransaction = async input => {
+    const bytes = new Uint8Array(input.transaction);
+    assert.deepEqual(Transaction.from(bytes).getData().gasData.payment, [fundedGas]);
+    latest = nativeResult(TransactionDataBuilder.getDigestFromBytes(bytes), true, { ...fundedGas, version: "8" });
+    return latest;
+  };
+  f.options.client.waitForTransaction = async () => latest;
+  const executor = createAssemblyTransactionExecutor(f.options);
+  await executor.execute("new assembly transaction", tx);
+  assert.equal(executor.hasPending(), false);
+  assert.equal(JSON.parse(fs.readFileSync(f.options.journalPath, "utf8")).confirmedGas.objectId, fundedGas.objectId);
+});
+
+test("cached gas lookup outages stop before building or signing a new transaction", async t => {
+  const f = fixture(t);
+  fs.writeFileSync(f.options.journalPath, JSON.stringify({
+    version: 1, chainId: "local", packageId: "world", confirmedGas: gas6745,
+  }));
+  let builds = 0, signatures = 0;
+  f.transaction.build = async () => { builds++; return f.bytes; };
+  f.options.adminSigner.signTransaction = async () => { signatures++; return { signature: "admin-signature" }; };
+  const executor = createAssemblyTransactionExecutor(f.options);
+  for (const error of [new ObjectError("UNAVAILABLE", "Object service unavailable", { reason: "unknown" }),
+    new Error("Object not found")]) {
+    f.options.client.getObject = async () => { throw error; };
+    await assert.rejects(executor.execute("new assembly transaction", f.transaction), actual => actual === error);
+  }
+  assert.equal(builds, 0);
+  assert.equal(signatures, 0);
+  assert.equal(f.submissions(), 0);
+  assert.equal(executor.hasPending(), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.options.journalPath, "utf8")).confirmedGas, gas6745);
 });
 
 async function staleLocationFixture(t: any) {
@@ -414,27 +563,28 @@ async function staleLocationFixture(t: any) {
   fs.writeFileSync(f.options.journalPath, JSON.stringify({ version: 1, chainId: "local", packageId: "world", pending }));
   const prior: any = {
     digest: nameDigest,
-    transaction: { data: { gasData: { payment: [{ ...gas6744 }], owner: admin, price: "1000", budget: "100000000" } } },
+    status: { success: true, error: null },
+    transaction: { gasData: { payment: [{ ...gas6744 }], owner: admin, price: "1000", budget: "100000000" }, inputs: [] },
     effects: {
-      transactionDigest: nameDigest, status: { status: "success" },
-      modifiedAtVersions: [{ objectId: gas6744.objectId, sequenceNumber: gas6744.version }],
-      gasObject: { reference: gas6745, owner: { AddressOwner: admin } },
+      transactionDigest: nameDigest, status: { success: true, error: null },
+      changedObjects: [{ objectId: gas6744.objectId, inputState: "Exists", inputVersion: gas6744.version, inputDigest: gas6744.digest }],
+      gasObject: null,
     },
   };
-  const current: any = { data: { ...gas6745, previousTransaction: nameDigest, owner: { AddressOwner: admin },
-    type: "0x2::coin::Coin<0x2::sui::SUI>", content: { dataType: "moveObject", fields: { balance: "1000000000" } },
+  const current: any = { object: { ...gas6745, previousTransaction: nameDigest, owner: { AddressOwner: admin },
+    type: "0x2::coin::Coin<0x2::sui::SUI>", json: { balance: "1000000000" },
   } };
   let submitted = 0;
   f.options.client.getObject = async () => current;
-  f.options.client.getTransactionBlock = async function (input?: any) {
-    if (input?.digest === nameDigest) return prior;
+  f.options.client.getTransaction = async function (input?: any) {
+    if (input?.digest === nameDigest) return nativeResponse(prior);
     throw new Error("Could not find the referenced transaction");
   };
   f.options.client.waitForTransaction = async input => {
-    if (input.digest === nameDigest) return prior;
+    if (input.digest === nameDigest) return nativeResponse(prior);
     throw new Error("Could not find the referenced transaction");
   };
-  f.options.client.executeTransactionBlock = async () => {
+  f.options.client.executeTransaction = async () => {
     submitted++;
     throw new Error(`Transaction needs to be rebuilt because object ${gas6744.objectId} version 0x1a58 (${gas6744.digest}) is unavailable for consumption, current version: 0x1a59`);
   };
@@ -444,7 +594,7 @@ async function staleLocationFixture(t: any) {
 for (const status of ["success", "failure"] as const) {
   test(`confirmed ${status} effects consuming gas 6744 prove the pending location cannot execute`, async t => {
     const f = await staleLocationFixture(t);
-    f.prior.effects.status.status = status;
+    f.prior.status = f.prior.effects.status = { success: status === "success", error: status === "success" ? null : { message: "failed" } };
     const executor = createAssemblyTransactionExecutor(f.options);
     await assert.rejects(executor.recover(), /superseded.*rescan/i);
     assert.equal(executor.hasPending(), false);
@@ -459,12 +609,12 @@ for (const status of ["success", "failure"] as const) {
 for (const missingProof of ["previousTransaction", "input digest", "matching input digest", "effects digest", "matching effects digest", "consumed version"] as const) {
   test(`stale gas stays pending without ${missingProof} proof`, async t => {
     const f = await staleLocationFixture(t);
-    if (missingProof === "previousTransaction") delete f.current.data.previousTransaction;
-    if (missingProof === "input digest") delete f.prior.transaction.data.gasData.payment[0].digest;
-    if (missingProof === "matching input digest") f.prior.transaction.data.gasData.payment[0] = { ...gas6744, digest: gas6745.digest };
+    if (missingProof === "previousTransaction") delete f.current.object.previousTransaction;
+    if (missingProof === "input digest") delete f.prior.transaction.gasData.payment[0].digest;
+    if (missingProof === "matching input digest") f.prior.transaction.gasData.payment[0] = { ...gas6744, digest: gas6745.digest };
     if (missingProof === "effects digest") delete f.prior.effects.transactionDigest;
     if (missingProof === "matching effects digest") f.prior.effects.transactionDigest = f.pending.digest;
-    if (missingProof === "consumed version") f.prior.effects.modifiedAtVersions = [];
+    if (missingProof === "consumed version") f.prior.effects.changedObjects = [];
     const executor = createAssemblyTransactionExecutor(f.options);
     await assert.rejects(executor.recover());
     assert.equal(executor.hasPending(), true);
@@ -474,7 +624,7 @@ for (const missingProof of ["previousTransaction", "input digest", "matching inp
 
 test("an object naming the pending transaction as its previous transaction cannot prove supersession", async t => {
   const f = await staleLocationFixture(t);
-  f.current.data.previousTransaction = f.pending.digest;
+  f.current.object.previousTransaction = f.pending.digest;
   const executor = createAssemblyTransactionExecutor(f.options);
   await assert.rejects(executor.recover(), /unavailable for consumption/);
   assert.equal(executor.hasPending(), true);
@@ -490,15 +640,13 @@ test("a proven obsolete location transaction can be rebuilt with current gas and
   await assert.rejects(executor.recover(), /superseded.*rescan/i);
   let latest: any;
   let freshSubmissions = 0;
-  f.options.client.executeTransactionBlock = async input => {
+  f.options.client.executeTransaction = async input => {
     freshSubmissions++;
-    const bytes = new Uint8Array(input.transactionBlock);
+    const bytes = new Uint8Array(input.transaction);
     assert.deepEqual(Transaction.from(bytes).getData().gasData.payment, [gas6745]);
     const digest = TransactionDataBuilder.getDigestFromBytes(bytes);
     assert.notEqual(digest, f.pending.digest);
-    latest = { digest, effects: { status: { status: "success" },
-      gasObject: { reference: { ...gas6745, version: "6746" }, owner: { AddressOwner: admin } },
-    } };
+    latest = nativeResult(digest, true, { ...gas6745, version: "6746" });
     return latest;
   };
   f.options.client.waitForTransaction = async () => latest;
@@ -507,7 +655,7 @@ test("a proven obsolete location transaction can be rebuilt with current gas and
   assert.equal(executor.hasPending(), false);
   const journal = JSON.parse(fs.readFileSync(f.options.journalPath, "utf8"));
   assert.equal(journal.pending, undefined);
-  assert.equal(journal.lastTransaction.digest, latest.digest);
+  assert.equal(journal.lastTransaction.digest, latest.Transaction.digest);
   assert.equal(journal.lastTransaction.status, "success");
   assert.equal(journal.rejectedTransactions[0].digest, f.pending.digest);
 });
