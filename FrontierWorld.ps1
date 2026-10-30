@@ -391,6 +391,53 @@ function Enter-WorldOperationLock {
     }
 }
 
+function Resolve-DockerDesktopLinuxMountSource {
+    param(
+        [Parameter(Mandatory)] [string]$DockerPath,
+        [Parameter(Mandatory)] [string]$MountSource
+    )
+    if (-not $IsLinux) { throw 'Docker Desktop Linux host-path mapping requires a native Linux host.' }
+    if ($MountSource -cmatch '^/host_mnt/(.+)$') {
+        $nativeSource = '/' + $matches[1]
+    }
+    elseif ($MountSource -cmatch '^/run/desktop/mnt/host/(.+)$') {
+        $nativeSource = '/' + $matches[1]
+    }
+    else { throw 'Unrecognized Docker Desktop Linux host-path alias.' }
+    if ($nativeSource -cne [IO.Path]::GetFullPath($nativeSource)) {
+        throw 'Docker Desktop returned a noncanonical host-path alias; ownership cannot be proven.'
+    }
+
+    # Desktop rewrites both Mounts.Source and HostConfig.Binds into its VM
+    # namespace. Only qualify that translation against the current user's
+    # native Desktop context/socket and the connected daemon's identity.
+    $desktopSocket = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.docker/desktop/docker.sock'
+    $desktopEndpoint = 'unix://' + [IO.Path]::GetFullPath($desktopSocket)
+    if ((-not [string]::IsNullOrWhiteSpace($env:DOCKER_CONTEXT) -and $env:DOCKER_CONTEXT -cne 'desktop-linux') -or
+        (-not [string]::IsNullOrWhiteSpace($env:DOCKER_HOST) -and $env:DOCKER_HOST -cne $desktopEndpoint)) {
+        throw 'Docker endpoint overrides do not prove the native Docker Desktop Linux context.'
+    }
+    $context = @(& $DockerPath context show 2>$null)
+    if ($LASTEXITCODE -ne 0 -or [string]::Join('', $context).Trim() -cne 'desktop-linux') {
+        throw 'A Docker Desktop host-path alias requires the native desktop-linux context.'
+    }
+    $endpointJson = @(& $DockerPath context inspect desktop-linux --format '{{json .Endpoints.docker.Host}}' 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not verify the Docker Desktop context endpoint.' }
+    try { $endpoint = [string]::Join('', $endpointJson) | ConvertFrom-Json }
+    catch { throw 'Docker Desktop context returned malformed endpoint metadata.' }
+    if ($endpoint -isnot [string] -or $endpoint -cne $desktopEndpoint) {
+        throw 'Docker Desktop context does not use the current user''s native Desktop Unix socket.'
+    }
+    $osJson = @(& $DockerPath info --format '{{json .OperatingSystem}}' 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not verify the Docker Desktop daemon identity.' }
+    try { $daemonOS = [string]::Join('', $osJson) | ConvertFrom-Json }
+    catch { throw 'Docker Desktop returned malformed daemon identity metadata.' }
+    if ($daemonOS -isnot [string] -or $daemonOS -cne 'Docker Desktop') {
+        throw 'The connected daemon does not identify as Docker Desktop; host-path alias rejected.'
+    }
+    return $nativeSource
+}
+
 function Assert-DockerWorkspaceOwnership {
     if ($SkipDockerOwnershipCheck) {
         return
@@ -430,16 +477,21 @@ function Assert-DockerWorkspaceOwnership {
     catch {
         throw 'Docker returned malformed mount data for the existing sui-playground container.'
     }
-    $worldMount = @($mounts | Where-Object {
-        [string]$_.Type -eq 'bind' -and
-        [string]$_.Destination -eq '/workspace/world-contracts'
-    }) | Select-Object -First 1
-    if ($null -eq $worldMount -or [string]::IsNullOrWhiteSpace([string]$worldMount.Source)) {
+    $worldMounts = @($mounts | Where-Object {
+        [string]$_.Type -ceq 'bind' -and
+        [string]$_.Destination -ceq '/workspace/world-contracts'
+    })
+    if ($worldMounts.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$worldMounts[0].Source)) {
         throw 'An existing sui-playground container has no provable /workspace/world-contracts bind mount.'
     }
-    $mountSource = [string]$worldMount.Source
+    $mountSource = [string]$worldMounts[0].Source
     if ($IsWindows -and $mountSource -match '^/(?:run/desktop/mnt/host|host_mnt)/([a-zA-Z])/(.+)$') {
         $mountSource = '{0}:\{1}' -f $matches[1].ToUpperInvariant(), $matches[2].Replace('/', '\')
+    }
+    if ($IsLinux -and -not (Test-SamePath -Left $mountSource -Right $WorldContractsRoot) -and
+        ($mountSource.StartsWith('/host_mnt/', [StringComparison]::Ordinal) -or
+         $mountSource.StartsWith('/run/desktop/mnt/host/', [StringComparison]::Ordinal))) {
+        $mountSource = Resolve-DockerDesktopLinuxMountSource -DockerPath $docker.Source -MountSource $mountSource
     }
     if (-not (Test-SamePath -Left $mountSource -Right $WorldContractsRoot)) {
         throw (

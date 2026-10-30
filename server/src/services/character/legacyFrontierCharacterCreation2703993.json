@@ -1,0 +1,220 @@
+{
+  "source": {
+    "buildNumber": 2703993,
+    "logicalPath": "res:/staticdata/schools.fsdbinary",
+    "sourceSha256": "f9efef95b325b23865dd6e22a4e7d5880f601a3be6670aa80afc80b482082935",
+    "sourceBytes": 1140
+  },
+  "schools": [
+    {
+      "schoolID": 11,
+      "careerID": 41,
+      "characterDescriptionID": 572211,
+      "corporationID": 1000424,
+      "descriptionID": 59989,
+      "iconID": 1447,
+      "nameID": 60004,
+      "raceID": 4,
+      "startingStations": [
+        60000086
+      ],
+      "titleID": 572103
+    },
+    {
+      "schoolID": 12,
+      "careerID": 44,
+      "characterDescriptionID": 572213,
+      "corporationID": 1000424,
+      "descriptionID": 59990,
+      "iconID": 1448,
+      "nameID": 60005,
+      "raceID": 4,
+      "startingStations": [
+        60000086
+      ],
+      "titleID": 572104
+    },
+    {
+      "schoolID": 13,
+      "careerID": 47,
+      "characterDescriptionID": 572214,
+      "corporationID": 1000424,
+      "descriptionID": 59991,
+      "iconID": 1449,
+      "nameID": 60006,
+      "raceID": 4,
+      "startingStations": [
+        60000086
+      ],
+      "titleID": 572105
+    },
+    {
+      "schoolID": 14,
+      "careerID": 21,
+      "characterDescriptionID": 572216,
+      "corporationID": 1000170,
+      "descriptionID": 59992,
+      "iconID": 1450,
+      "nameID": 60007,
+      "raceID": 2,
+      "startingStations": [
+        60000063
+      ],
+      "titleID": 572106
+    },
+    {
+      "schoolID": 15,
+      "careerID": 27,
+      "characterDescriptionID": 572217,
+      "corporationID": 1000171,
+      "descriptionID": 59993,
+      "iconID": 1451,
+      "nameID": 60008,
+      "raceID": 2,
+      "startingStations": [
+        60000063
+      ],
+      "titleID": 572107
+    },
+    {
+      "schoolID": 16,
+      "careerID": 24,
+      "characterDescriptionID": 572218,
+      "corporationID": 1000172,
+      "descriptionID": 59994,
+      "iconID": 1458,
+      "nameID": 60009,
+      "raceID": 2,
+      "startingStations": [
+        60000063
+      ],
+      "titleID": 572108
+    },
+    {
+      "schoolID": 17,
+      "careerID": 11,
+      "characterDescriptionID": 572219,
+      "corporationID": 1000167,
+      "descriptionID": 59995,
+      "iconID": 1452,
+      "nameID": 60010,
+      "raceID": 1,
+      "startingStations": [
+        60000069
+      ],
+      "titleID": 572109
+    },
+    {
+      "schoolID": 18,
+      "careerID": 14,
+      "characterDescriptionID": 572220,
+      "corporationID": 1000045,
+      "descriptionID": 59996,
+      "iconID": 1453,
+      "nameID": 60011,
+      "raceID": 1,
+      "startingStations": [
+        60000069
+      ],
+      "titleID": 572110
+    },
+    {
+      "schoolID": 19,
+      "careerID": 17,
+      "characterDescriptionID": 572221,
+      "corporationID": 1000044,
+      "descriptionID": 59997,
+      "iconID": 1455,
+      "nameID": 60012,
+      "raceID": 1,
+      "startingStations": [
+        60000069
+      ],
+      "titleID": 572111
+    },
+    {
+      "schoolID": 20,
+      "careerID": 81,
+      "characterDescriptionID": 572222,
+      "corporationID": 1000168,
+      "descriptionID": 59998,
+      "iconID": 1454,
+      "nameID": 60013,
+      "raceID": 8,
+      "startingStations": [
+        60000071
+      ],
+      "titleID": 572112
+    },
+    {
+      "schoolID": 21,
+      "careerID": 84,
+      "characterDescriptionID": 572223,
+      "corporationID": 1000115,
+      "descriptionID": 59999,
+      "iconID": 1456,
+      "nameID": 60014,
+      "raceID": 8,
+      "startingStations": [
+        60000071
+      ],
+      "titleID": 572113
+    },
+    {
+      "schoolID": 22,
+      "careerID": 87,
+      "characterDescriptionID": 572224,
+      "corporationID": 1000169,
+      "descriptionID": 60000,
+      "iconID": 1457,
+      "nameID": 60015,
+      "raceID": 8,
+      "startingStations": [
+        60000071
+      ],
+      "titleID": 572114
+    },
+    {
+      "schoolID": 23,
+      "careerID": 161,
+      "corporationID": 1000424,
+      "descriptionID": 60001,
+      "nameID": 60016,
+      "raceID": 16
+    },
+    {
+      "schoolID": 24,
+      "careerID": 164,
+      "corporationID": 1000424,
+      "descriptionID": 60002,
+      "nameID": 60017,
+      "raceID": 16
+    },
+    {
+      "schoolID": 25,
+      "careerID": 167,
+      "corporationID": 1000424,
+      "descriptionID": 60003,
+      "nameID": 60018,
+      "raceID": 16
+    }
+  ],
+  "starterShips": {
+    "1": {
+      "starterShipTypeID": 84213,
+      "starterShipName": "Crawler"
+    },
+    "2": {
+      "starterShipTypeID": 84213,
+      "starterShipName": "Crawler"
+    },
+    "4": {
+      "starterShipTypeID": 83930,
+      "starterShipName": "Hackathon Flegel"
+    },
+    "8": {
+      "starterShipTypeID": 84213,
+      "starterShipName": "Crawler"
+    }
+  }
+}

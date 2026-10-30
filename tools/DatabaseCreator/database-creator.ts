@@ -2342,6 +2342,7 @@ function solarSystemRecord(raw, constellationsByID, regionsByID, starsByID) {
   const constellation = constellationsByID.get(toInt(raw.constellationID)) || {};
   const region = regionsByID.get(toInt(raw.regionID)) || {};
   const star = starsByID.get(toInt(raw.starID)) || {};
+  const starless = raw.sourceHasStar === false;
   return {
     regionID: toInt(raw.regionID),
     constellationID: toInt(raw.constellationID),
@@ -2355,14 +2356,17 @@ function solarSystemRecord(raw, constellationsByID, regionsByID, starsByID) {
     habitableZone: Array.isArray(raw.habitableZone)
       ? raw.habitableZone.map((value) => toNumber(value, 0))
       : [],
-    starTemperature: Math.max(
+    starTemperature: starless ? 0 : Math.max(
       150,
       toNumber(
         raw.starTemperature,
         toNumber(star.statistics && star.statistics.temperature, 5778),
       ),
     ),
-    sunTypeID: toInt(star.typeID, 0),
+    sunTypeID: starless ? 0 : toInt(star.typeID, 0),
+    ...(typeof raw.sourceHasStar === "boolean" ? { sourceHasStar: raw.sourceHasStar } : {}),
+    ...(Array.isArray(raw.disallowedAnchorCategories) ? { disallowedAnchorCategories: [...raw.disallowedAnchorCategories] } : {}),
+    ...(Array.isArray(raw.disallowedAnchorGroups) ? { disallowedAnchorGroups: [...raw.disallowedAnchorGroups] } : {}),
     securityClass: raw.securityClass || "",
     ...(raw.visualEffect ? { visualEffect: raw.visualEffect } : {}),
   };
@@ -3822,6 +3826,7 @@ module.exports = {
   buildLocalAccountsAndCharacters,
   skillLevelRecords,
   typeRecord,
+  solarSystemRecord,
   publicTypeRecord,
   addPhysicsGunAuthority,
   clientTypeListRecord,

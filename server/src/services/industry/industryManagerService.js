@@ -5,6 +5,7 @@ const BaseService = require(path.join(__dirname, "../baseService"));
 const { buildDict, buildList, unwrapMarshalValue, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const { buildJobPayload, parseIndustryRequest, } = require(path.join(__dirname, "./industryPayloads"));
 const { cancelIndustryJob, deliverIndustryJob, getJobByID, getJobCountsByInstaller, installIndustryJob, listJobsByOwner, } = require(path.join(__dirname, "./industryRuntimeState"));
+const legacy = require("./legacyIndustryRuntime");
 function toInt(value, fallback = 0) {
     const numeric = Number(unwrapMarshalValue(value));
     return Number.isFinite(numeric) ? Math.trunc(numeric) : fallback;
@@ -27,14 +28,16 @@ class IndustryManagerService extends BaseService {
     constructor() {
         super("industryManager");
     }
-    Handle_GetJob(args) {
+    Handle_GetJob(args, session) {
         const jobID = args && args.length > 0 ? args[0] : null;
-        return buildJobPayload(getJobByID(jobID) || {});
+        const job = getJobByID(jobID);
+        return buildJobPayload(legacy.isLegacyIndustryJob(job)
+            ? legacy.getLegacyIndustryJobByID(jobID, session) : job || {});
     }
-    Handle_GetJobsByOwner(args) {
+    Handle_GetJobsByOwner(args, session) {
         const ownerID = args && args.length > 0 ? args[0] : null;
         const includeCompleted = Boolean(args && args.length > 1 ? args[1] : false);
-        return buildList(listJobsByOwner(ownerID, includeCompleted).map((job) => buildJobPayload(job)));
+        return buildList(listJobsByOwner(ownerID, includeCompleted).map(job => buildJobPayload(legacy.isLegacyIndustryJob(job) ? legacy.getLegacyIndustryJobByID(job.jobID, session) : job)));
     }
     Handle_InstallJob(args, session) {
         const request = parseIndustryRequest(args && args.length > 0 ? args[0] : null);
@@ -43,6 +46,9 @@ class IndustryManagerService extends BaseService {
     }
     Handle_CompleteJob(args, session) {
         const jobID = args && args.length > 0 ? args[0] : null;
+        if (legacy.isLegacyIndustryJob(getJobByID(jobID))) {
+            return buildJobPayload(legacy.completeLegacyIndustryJob(session, jobID).data);
+        }
         const result = deliverIndustryJob(session, jobID);
         return result && result.data ? buildJobPayload(result.data) : null;
     }
@@ -54,6 +60,10 @@ class IndustryManagerService extends BaseService {
             if (jobID <= 0) {
                 continue;
             }
+            if (legacy.isLegacyIndustryJob(getJobByID(jobID))) {
+                delivered.push(buildJobPayload(legacy.completeLegacyIndustryJob(session, jobID).data));
+                continue;
+            }
             const result = deliverIndustryJob(session, jobID);
             if (result && result.data) {
                 delivered.push(buildJobPayload(result.data));
@@ -63,6 +73,9 @@ class IndustryManagerService extends BaseService {
     }
     Handle_CancelJob(args, session) {
         const jobID = args && args.length > 0 ? args[0] : null;
+        if (legacy.isLegacyIndustryJob(getJobByID(jobID))) {
+            return buildJobPayload(legacy.cancelLegacyIndustryJob(session, jobID).data);
+        }
         const result = cancelIndustryJob(session, jobID);
         return result && result.data ? buildJobPayload(result.data) : null;
     }

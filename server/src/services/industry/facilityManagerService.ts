@@ -4,6 +4,7 @@ const BaseService = require(path.join(__dirname, "../baseService"));
 const {
   buildDict,
   buildList,
+  unwrapMarshalValue,
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const {
   buildFacilityPayload,
@@ -28,6 +29,18 @@ const {
 const {
   notifyFacilitiesUpdated,
 } = require(path.join(__dirname, "./industryNotifications"));
+const config = require("../../config");
+const { usesLegacyFrontierDogmaProfile } = require("../dogma/dogmaInfoCompatibility");
+const { getLegacyIndustryFactoryByStationID } = require("./legacyIndustryStaticData");
+const { throwWrappedUserError } = require("../../common/machoErrors");
+
+function supportedFacility(facility, session) {
+  const legacy = usesLegacyFrontierDogmaProfile(
+    session?.compatibilityProfile ?? config.clientCompatibilityProfile, Number(config.clientBuild));
+  if (!legacy) return true;
+  try { return Boolean(getLegacyIndustryFactoryByStationID(Number(facility?.facilityID))); }
+  catch (_) { throwWrappedUserError("CustomNotify", { notify: "The native station industry catalog is unavailable." }); }
+}
 
 function toInt(value, fallback = 0) {
   const numeric = Number(value);
@@ -41,22 +54,24 @@ class FacilityManagerService extends BaseService {
 
   Handle_GetFacilities(args, session) {
     return buildList(
-      listFacilitiesForSession(session).map((facility) => buildFacilityPayload(facility)),
+      listFacilitiesForSession(session).filter(facility => supportedFacility(facility, session))
+        .map((facility) => buildFacilityPayload(facility, session)),
     );
   }
 
   Handle_GetFacility(args, session) {
     const facilityID = args && args.length > 0 ? args[0] : null;
-    return buildFacilityPayload(getFacilityPayloadByID(facilityID, session) || {});
+    return buildFacilityPayload(getFacilityPayloadByID(facilityID, session) || {}, session);
   }
 
   Handle_GetFacilitiesByID(args, session) {
-    const facilityIDs = Array.isArray(args && args[0]) ? args[0] : [];
+    const requested = unwrapMarshalValue(args && args[0]);
+    const facilityIDs = Array.isArray(requested) ? requested : [];
     return buildList(
       facilityIDs
         .map((facilityID) => getFacilityPayloadByID(facilityID, session))
-        .filter(Boolean)
-        .map((facility) => buildFacilityPayload(facility)),
+        .filter(facility => facility && supportedFacility(facility, session))
+        .map((facility) => buildFacilityPayload(facility, session)),
     );
   }
 

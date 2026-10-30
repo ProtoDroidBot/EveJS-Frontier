@@ -77,6 +77,7 @@ def verify(exefile, ca, *, install=False, dapp_cert=None):
     wintrust = ctypes.WinDLL("wintrust")
     wintrust.WinVerifyTrust.argtypes = [wintypes.HWND, ctypes.POINTER(GUID), ctypes.POINTER(TRUST_DATA)]
     wintrust.WinVerifyTrust.restype = wintypes.LONG
+    tampered_executable_rejected = False
     if not install:
         result = wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(trust_data))
         if result != 0:
@@ -90,6 +91,7 @@ def verify(exefile, ca, *, install=False, dapp_cert=None):
             file_info.pcwszFilePath = str(negative)
             if wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(trust_data)) == 0:
                 raise RuntimeError("Wine accepted a tampered signed executable; signature trust cannot be established.")
+            tampered_executable_rejected = True
 
     class BLOB(ctypes.Structure):
         _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
@@ -151,6 +153,7 @@ def verify(exefile, ca, *, install=False, dapp_cert=None):
             crypt.CertFreeCertificateContext(context)
         crypt.CertCloseStore(store, 0)
     return {"valid": True, "authenticode": "not-probed; mandatory on launch" if install else "Valid", "caTrustedRoot": True,
+            "tamperedExecutableRejected": tampered_executable_rejected,
             "dappTrustedRoot": bool(install), "dappFingerprintSha256": hashlib.sha256(dapp_der).hexdigest() if install else None,
             "trustInstalled": bool(install),
             "caFingerprintSha256": hashlib.sha256(der).hexdigest(),

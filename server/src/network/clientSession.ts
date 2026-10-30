@@ -29,6 +29,9 @@ const { encodeAddress } = require(
   path.join(__dirname, "../common/machoAddress"),
 );
 const config = require(path.join(__dirname, "../config"));
+const { normalizeDogmaNotificationForProfile } = require(path.join(
+  __dirname, "../services/dogma/dogmaInfoCompatibility",
+));
 const {
   composeSessionRoleMask,
 } = require(path.join(
@@ -789,6 +792,14 @@ class ClientSession {
       });
       return;
     }
+
+    payloadTuple = normalizeDogmaNotificationForProfile(
+      notifyType,
+      payloadTuple,
+      this.compatibilityProfile,
+      Number(config.clientBuild),
+    );
+    if (payloadTuple === null) return;
 
     // Source address: Node
     // C++: packet->source.type = PyAddress::Node; packet->source.objectID = m_services.GetNodeID();

@@ -932,10 +932,18 @@ function Assert-ListenerPortsAvailable {
 
 function Get-ServerEnvironment {
     $logLevel = if ($Quiet) { '1' } else { '2' }
+    $collisionRequired = '1'
+    if ($Build -eq '2703993') {
+        $policyModule = Join-Path $RepoRoot 'tools/frontier-host/data.mjs'
+        $collisionRequired = & $NodePath -e 'const {collisionRequirement}=require(process.argv[1]); process.stdout.write(collisionRequirement(process.argv[2],process.argv[3]));' $policyModule $RepoRoot $Build
+        if ($LASTEXITCODE -ne 0 -or $collisionRequired -ne '0') {
+            throw 'The legacy collision policy requires matching, attested Phase 4 data.'
+        }
+    }
     $environment = [ordered]@{
         EVEJS_GAMESTORE_DATA_DIR = $RuntimeData
         EVEJS_PERSISTENCE_WORKER = '1'
-        EVEJS_COLLISION_BUNDLE_REQUIRED = '1'
+        EVEJS_COLLISION_BUNDLE_REQUIRED = $collisionRequired
         EVEJS_STATIC_JSONL_ROOT = $StaticRoot
         EVEJS_CLIENT_COMPATIBILITY_PROFILE = 'frontier'
         EVEJS_CLIENT_VERSION = $ClientVersion

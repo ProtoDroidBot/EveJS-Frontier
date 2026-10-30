@@ -27,6 +27,6 @@ export function runNative(program: string, args: string[], options: { cwd?: stri
     timeout: options.timeout, encoding: "utf8", stdio: options.capture ? "pipe" : "inherit",
   });
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`${program} exited ${result.status}${options.capture ? `: ${(result.stderr || result.stdout || "").trim().slice(0, 800)}` : ""}`);
+  if (result.status !== 0) throw Object.assign(new Error(`${program} exited ${result.status}${options.capture ? `: ${(result.stderr || result.stdout || "").trim().slice(0, 800)}` : ""}`), { exitCode: result.status || 1 });
   return result.stdout?.trim() || "";
 }

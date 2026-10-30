@@ -84,6 +84,88 @@ test("World Docker ownership accepts only the native workspace path",
     }
   });
 
+test("World Docker ownership qualifies Linux Desktop VM aliases without admitting foreign workspaces",
+  { skip: !canRunPowerShell || process.platform !== "linux" }, (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "evejs Docker Desktop ownership "));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const expected = path.join(root, "World-Contracts");
+    fs.mkdirSync(expected);
+    const endpoint = `unix://${path.join(os.homedir(), ".docker", "desktop", "docker.sock")}`;
+    const mockDocker = path.join(root, "docker-mock.ps1");
+    fs.writeFileSync(mockDocker, `
+      $global:LASTEXITCODE = 0
+      if ($args[0] -eq 'ps') { Write-Output 'sui-playground'; return }
+      if ($args[0] -eq 'inspect') {
+        $items = @(for ($index = 0; $index -lt [int]$env:EVEJS_TEST_MOUNT_COUNT; $index++) {
+          @{ Type = 'bind'; Destination = '/workspace/world-contracts'; Source = $env:EVEJS_TEST_MOUNT_SOURCE }
+        })
+        ConvertTo-Json -Compress -InputObject $items
+        return
+      }
+      if ($args[0] -eq 'context' -and $args[1] -eq 'show') {
+        Write-Output $env:EVEJS_TEST_DOCKER_CONTEXT; return
+      }
+      if ($args[0] -eq 'context' -and $args[1] -eq 'inspect' -and $args[2] -eq 'desktop-linux') {
+        if ($env:EVEJS_TEST_BAD_ENDPOINT_JSON -eq '1') { Write-Output '{bad'; return }
+        ConvertTo-Json -Compress -InputObject $env:EVEJS_TEST_DOCKER_ENDPOINT
+        return
+      }
+      if ($args[0] -eq 'info') {
+        if ($env:EVEJS_TEST_BAD_OS_JSON -eq '1') { Write-Output '{bad'; return }
+        ConvertTo-Json -Compress -InputObject $env:EVEJS_TEST_DOCKER_OS
+        return
+      }
+      throw 'Unexpected Docker operation'
+    `);
+    const body = `
+      $SkipDockerOwnershipCheck = $false
+      $WorldContractsRoot = $env:EVEJS_TEST_WORLD_CONTRACTS
+      function Get-Command {
+        param($Name)
+        if ($Name -cne 'docker') { throw "Non-native Docker command: $Name" }
+        return [pscustomobject]@{ Source = $env:EVEJS_TEST_DOCKER_MOCK_PATH }
+      }
+      Assert-DockerWorkspaceOwnership
+      Write-Output 'ownership-verified'
+    `;
+    const functions = ["Test-SamePath", "Resolve-DockerDesktopLinuxMountSource", "Assert-DockerWorkspaceOwnership"];
+    const defaults = {
+      DOCKER_HOST: "", DOCKER_CONTEXT: "",
+      EVEJS_TEST_WORLD_CONTRACTS: expected,
+      EVEJS_TEST_DOCKER_MOCK_PATH: mockDocker,
+      EVEJS_TEST_MOUNT_SOURCE: `/host_mnt${expected}`,
+      EVEJS_TEST_MOUNT_COUNT: "1",
+      EVEJS_TEST_DOCKER_CONTEXT: "desktop-linux",
+      EVEJS_TEST_DOCKER_ENDPOINT: endpoint,
+      EVEJS_TEST_DOCKER_OS: "Docker Desktop",
+    };
+    for (const prefix of ["/host_mnt", "/run/desktop/mnt/host"]) {
+      const result = runWorldFunctions(functions, body, { ...defaults, EVEJS_TEST_MOUNT_SOURCE: `${prefix}${expected}` });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /ownership-verified/);
+    }
+    for (const [changes, failure] of [
+      [{ EVEJS_TEST_MOUNT_SOURCE: `/host_mnt${path.join(root, "other-workspace")}` }, /belongs to.*not/s],
+      [{ EVEJS_TEST_MOUNT_SOURCE: `/host_mnt${expected.toLowerCase()}` }, /belongs to.*not/s],
+      [{ EVEJS_TEST_MOUNT_SOURCE: `/host_mnt${expected}/../World-Contracts` }, /noncanonical/],
+      [{ EVEJS_TEST_MOUNT_SOURCE: `/arbitrary/host_mnt${expected}` }, /belongs to.*not/s],
+      [{ EVEJS_TEST_DOCKER_CONTEXT: "default" }, /desktop-linux context/],
+      [{ EVEJS_TEST_DOCKER_OS: "Ubuntu 24.04" }, /does not identify as Docker Desktop/],
+      [{ EVEJS_TEST_DOCKER_ENDPOINT: "tcp://127.0.0.1:2375" }, /native Desktop Unix socket/],
+      [{ EVEJS_TEST_DOCKER_ENDPOINT: "unix:///home/other/.docker/desktop/docker.sock" }, /native Desktop Unix socket/],
+      [{ DOCKER_HOST: "tcp://127.0.0.1:2375" }, /endpoint overrides/],
+      [{ DOCKER_CONTEXT: "another-context" }, /endpoint overrides/],
+      [{ EVEJS_TEST_BAD_ENDPOINT_JSON: "1" }, /malformed endpoint/],
+      [{ EVEJS_TEST_BAD_OS_JSON: "1" }, /malformed daemon/],
+      [{ EVEJS_TEST_MOUNT_COUNT: "0" }, /no provable/],
+      [{ EVEJS_TEST_MOUNT_COUNT: "2" }, /no provable/],
+    ]) {
+      const result = runWorldFunctions(functions, body, { ...defaults, ...changes });
+      assert.notEqual(result.status, 0, JSON.stringify(changes));
+      assert.match(result.stderr, failure, JSON.stringify(changes));
+    }
+  });
+
 test("Linux world credentials are replaced atomically with private modes and refuse symlinks",
   { skip: !canRunPowerShell || process.platform !== "linux" }, (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "evejs private world files "));
@@ -758,7 +840,7 @@ test("Linux world shell wrapper resolves native efctl and preserves paths contai
       "up", "-SourceRoot", source, "-DestinationRoot", destination,
       "-SkipDockerOwnershipCheck", "-DryRun", "--with-graphql"], {
       encoding: "utf8",
-      env: { ...process.env, PATH: `${root}${path.delimiter}${process.env.PATH}`,
+      env: { ...process.env, PATH: `${root}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH}`,
         FAKE_EFCTL_LOG: log },
       timeout: 15000,
     });

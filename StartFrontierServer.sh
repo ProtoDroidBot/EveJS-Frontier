@@ -87,6 +87,13 @@ fi
 echo "[evejs-frontier] Compiling TypeScript ..."
 npm --prefix "$REPO_ROOT" run build
 
+COLLISION_REQUIRED="1"
+if [[ "$BUILD" == "2703993" ]]; then
+  COLLISION_REQUIRED="$(node -e 'const {collisionRequirement}=require(process.argv[1]); process.stdout.write(collisionRequirement(process.argv[2],process.argv[3]));' \
+    "$REPO_ROOT/tools/frontier-host/data.mjs" "$REPO_ROOT" "$BUILD")"
+  [[ "$COLLISION_REQUIRED" == "0" ]] || { echo '[evejs-frontier] Invalid legacy collision policy.' >&2; exit 1; }
+fi
+
 # Exact EVM profiles own their historical handshake fields. Their backend
 # configuration is prepared locally; a missing world never starts Docker.
 EVM_PROFILE_INFO="$(node -e '
@@ -175,7 +182,7 @@ cd "$REPO_ROOT"
 exec env \
   "${LEGACY_EVM_ENV[@]}" \
   EVEJS_GAMESTORE_DATA_DIR="$RUNTIME_DATA" \
-  EVEJS_COLLISION_BUNDLE_REQUIRED="1" \
+  EVEJS_COLLISION_BUNDLE_REQUIRED="$COLLISION_REQUIRED" \
   EVEJS_STATIC_JSONL_ROOT="$STATIC_ROOT" \
   EVEJS_CLIENT_COMPATIBILITY_PROFILE="frontier" \
   EVEJS_CLIENT_VERSION="$CLIENT_VERSION" \

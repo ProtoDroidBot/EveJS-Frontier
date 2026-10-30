@@ -1,0 +1,107 @@
+{
+  "format": "evejs-frontier-native-verifier-evidence-v1",
+  "build": 2703993,
+  "recordedDate": "2026-10-29",
+  "source": {
+    "relativeClientPath": "nebula/bin64/blue.pyd",
+    "size": 8708168,
+    "sha256": "bbb482acbd968513107b3755e08e8bb54796d1d498e62034c64e841a17f1aa81",
+    "md5": "da208efe4ae5b16a5fa29d238363fdd2"
+  },
+  "derivation": "Locate the unique UnpackManifest invalid-signature string and its RIP-relative reference in this binary. PE exception entries bound that caller. Its direct verifier call leads to the separately bounded wrapper, whose call/test/jns and result-byte store identify the normalization instruction. Confirm the unique instruction sequence, source hash, resource-cache index and deterministic target independently. No offsets were copied from a different build.",
+  "functions": [
+    {
+      "name": "VerifySignature wrapper",
+      "startRvaHex": "0x2a0440",
+      "endRvaHex": "0x2a06f6",
+      "sha256": "6284f3c1ac59998c5aa932e8b0535a3371cfffc86c9e961fed66baca3094dc40"
+    },
+    {
+      "name": "UnpackManifest",
+      "startRvaHex": "0x2a70a0",
+      "endRvaHex": "0x2a7cf3",
+      "sha256": "97611ded56432da7760aac9b19e74873daef56ee345178a551e79d817054c01c"
+    }
+  ],
+  "instructions": [
+    {
+      "rvaHex": "0x2a047c",
+      "bytesHex": "41c6042400",
+      "meaning": "Initialize result byte to false before any verification operation."
+    },
+    {
+      "rvaHex": "0x2a05c0",
+      "bytesHex": "e80bfd1f00",
+      "displacementOffset": 1,
+      "relativeTargetRvaHex": "0x4a02d0",
+      "meaning": "Call the binary's cryptographic verifier."
+    },
+    {
+      "rvaHex": "0x2a05c5",
+      "bytesHex": "85c0",
+      "meaning": "Test verifier result eax."
+    },
+    {
+      "rvaHex": "0x2a05c7",
+      "bytesHex": "0f8999000000",
+      "displacementOffset": 2,
+      "relativeTargetRvaHex": "0x2a0666",
+      "meaning": "Only nonnegative results jump to normalization; negative results retain the error-string path."
+    },
+    {
+      "rvaHex": "0x2a0664",
+      "bytesHex": "eb72",
+      "meaning": "The negative-result error path jumps to the existing epilogue, bypassing normalization."
+    },
+    {
+      "rvaHex": "0x2a0666",
+      "bytesHex": "0f95c041880424",
+      "meaning": "Normalize to al then store the result through r12; replace only setne al."
+    },
+    {
+      "rvaHex": "0x2a7c2d",
+      "bytesHex": "e80e88ffff",
+      "displacementOffset": 1,
+      "relativeTargetRvaHex": "0x2a0440",
+      "meaning": "UnpackManifest invokes this exact verifier wrapper."
+    },
+    {
+      "rvaHex": "0x2a7c32",
+      "bytesHex": "4883781000750b807c243000740432dbeb02b301",
+      "meaning": "Require an empty error string and true result byte; otherwise set the failure flag bl."
+    },
+    {
+      "rvaHex": "0x2a7c60",
+      "bytesHex": "84db7426",
+      "meaning": "Skip the invalid-signature message only when the combined failure flag is false."
+    },
+    {
+      "rvaHex": "0x2a7c6a",
+      "bytesHex": "488d1547fb4100",
+      "displacementOffset": 3,
+      "relativeTargetRvaHex": "0x6c77b8",
+      "meaning": "Load the exact UnpackManifest invalid-signature message."
+    }
+  ],
+  "invalidSignatureString": {
+    "rvaHex": "0x6c77b8",
+    "text": "UnpackManifest: Invalid manifest signature"
+  },
+  "disassembly": {
+    "path": "blue-pyd.2703993.disassembly.txt",
+    "tool": "GNU objdump -d -M intel",
+    "ranges": [
+      "0x1802a0440-0x1802a06f6",
+      "0x1802a7c14-0x1802a7c97"
+    ]
+  },
+  "verificationReport": "blue-pyd.2703993.verification.json",
+  "acceptance": {
+    "nativeProfileScope": "Manifest result normalization and deterministic PE checksum/certificate-overlay cleanup on copies.",
+    "sourceAuthenticodeTrustValidated": false,
+    "windowsOrWineLaunchValidated": false,
+    "fullClientStageValidated": false,
+    "gameplayValidated": false,
+    "trustPolicy": "This profile does not alter source Authenticode validation, Windows/Wine trust probes or client launch requirements."
+  }
+}

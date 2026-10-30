@@ -16,6 +16,8 @@ const BaseService = require(path.join(__dirname, "../baseService"));
 
 const log = require(path.join(__dirname, "../../utils/logger"));
 const database = require("../../gameStore")
+const config = require("../../config");
+const { usesLegacyFrontierDogmaProfile } = require("../dogma/dogmaInfoCompatibility");
 const { isNpcCharacterID } = require("../_shared/npcIdentityConstants");
 const { getNpcPilotIdentityStore } = require("../../space/npc/npcPilotIdentityStore");
 const { toClientSafeDisplayName } = require(path.join(
@@ -38,7 +40,7 @@ const {
   TABLE,
   readStaticRows,
 } = require(path.join(__dirname, "../_shared/referenceData"));
-const { buildKeyVal, buildList } = require(path.join(
+const { buildDict, buildKeyVal, buildList } = require(path.join(
   __dirname,
   "../_shared/serviceHelpers",
 ));
@@ -691,7 +693,14 @@ class ConfigService extends BaseService {
 
   Handle_GetAverageMarketPrices(args, session) {
     log.debug("[ConfigService] GetAverageMarketPrices");
-    return getAverageMarketPricesPayload();
+    const prices = getAverageMarketPricesPayload();
+    if (!usesLegacyFrontierDogmaProfile(
+      session?.compatibilityProfile ?? config.clientCompatibilityProfile, Number(config.clientBuild))) return prices;
+    // Adjusted prices are the native industry valuation input. Zero makes
+    // Frontier jobs free for every clone grade, including Alpha's additive
+    // modifier. Keep ordinary market averages and the cached base rows intact.
+    return buildDict(prices.entries.map(([typeID, entry]) => [typeID,
+      buildAveragePriceEntry(entry.args.entries.find(([key]) => key === "averagePrice")[1], 0)]));
   }
 }
 

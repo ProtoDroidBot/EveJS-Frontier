@@ -1,0 +1,21 @@
+{
+  "format": "evejs-frontier-native-profile-verification-v1",
+  "build": 2703993,
+  "sourceSha256": "bbb482acbd968513107b3755e08e8bb54796d1d498e62034c64e841a17f1aa81",
+  "targetSha256": "3813f926df48ac4de69a71771678a57f77fdeb1ec0cc2237ac267ea827c22bc3",
+  "controlFlow": {
+    "instructionReferencesVerified": 10,
+    "functionBoundsAndHashesVerified": 2,
+    "negativeErrorPathPreserved": true
+  },
+  "copiedPairPatchCheckRestore": true,
+  "idempotent": true,
+  "tamperedSourceAndTargetRejected": true,
+  "partialPatchRejected": true,
+  "sourceInputsUnchanged": true,
+  "sourceManifestTargetsMatch": true,
+  "sourceAuthenticodeTrustValidated": false,
+  "fullClientStageValidated": false,
+  "nativeLaunchValidated": false,
+  "scope": "Offline exact-build PE and launcher-cache copies; Windows/Wine trust and gameplay remain untested."
+}

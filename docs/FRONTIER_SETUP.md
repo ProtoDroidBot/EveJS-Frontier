@@ -5,8 +5,15 @@ order is **prepare server data and client → prepare the dApp → deploy and sy
 the world → start the server → launch the client**. Client setup alone does
 not prepare the chain or start either server.
 
-This walkthrough uses the native Windows workflow and its current default
-build, `3502403`. That build is an exact-build candidate; see its
+Windows and Linux use the same `frontier:setup`, `frontier:world`,
+`frontier:sync`, `frontier:server`, `frontier:stage`, and `frontier:launch` npm
+commands. They dispatch through `frontier:host` with an explicit build; native
+PowerShell and Wine/Python adapters retain their platform checks. The existing
+PowerShell, batch, and Linux shell entry points remain available. Conventional
+EVE Online keeps its separate setup and launchers.
+
+This walkthrough uses native Windows with exact build `3502403`, an
+exact-build candidate; see its
 [acceptance status](FRONTIER_BUILD_3502403.md). Run everything on the same
 Windows computer, from **PowerShell 7.2 or newer in the repository root**.
 Each new PowerShell window must also start in that directory.
@@ -14,8 +21,8 @@ Each new PowerShell window must also start in that directory.
 Native Linux backend and Windows-client Wine/Bottles helpers are now implemented
 as an experimental host workflow; see [Linux setup below](#native-linux-backend-and-winebottles-client).
 Actual Windows/Wine gameplay acceptance remains build-specific and incomplete.
-The original `.sh` client launchers remain macOS-specific; the new Linux client
-entry points have `Linux` in their names. For macOS, use the
+`StageFrontierClient.sh` and `PlayFrontier.sh` select the Linux adapters on
+Linux; their macOS implementations remain available. For macOS, use the
 [README's macOS quickstart](../README.md#frontier-macos-quickstart-build-3467658).
 
 ## 1. Prepare the checkout and prerequisites
@@ -59,57 +66,64 @@ if pnpm is missing and the declared version is still `11.19.0`, install it with
 Use the Frontier scripts below. `SetupEveJS.bat`, `StartServer.bat`, and
 `Play.bat` belong to the conventional EVE Online workflow.
 
+On a fresh source checkout, install the root compiler and compile the shared
+host tools before invoking the npm workflow:
+
+```powershell
+npm ci --include=dev --ignore-scripts
+npm run build:tools
+```
+
+`SetupFrontierWindows.ps1` can instead bootstrap those tools and missing
+Windows prerequisites itself, then delegates to the same setup workflow.
+
 ## 2. Generate server data and stage the client
 
 Replace the source path with the installed build directory:
 
 ```powershell
-.\SetupFrontierWindows.ps1 -Build 3502403 -NonInteractive `
-  -SourceRoot 'C:\CCP\EVE Frontier\stillness'
+npm run frontier:setup -- --build 3502403 `
+  --client-root 'C:\CCP\EVE Frontier\stillness'
 ```
 
 Wait for setup to complete successfully before continuing. It installs the
 locked root and server npm packages, compiles TypeScript, checks the SQLite
 binding, creates `_local\frontier-python312`, generates/reuses the game TLS
-certificates, extracts and validates the client data, exports public client
-contracts, generates the database, and creates a patched, isolated client stage.
+and dApp TLS certificates, installs the pinned dApp packages, extracts and
+validates the client data, exports public client contracts, generates the
+database, and creates a patched, isolated client stage.
 It does not synchronize Sui or start the game server.
 
 The stage defaults to
 `%LOCALAPPDATA%\EveJS-Frontier\windows\staged-client\3502403`. Its large
 `ResFiles` cache is shared with the source through a junction. Add
-`-CopyResFiles` to setup for a separate cache copy. The retail executable and
+`--copy-resfiles` to setup for a separate cache copy. The retail executable and
 other patched inputs are copied before modification.
 
 Verify the stage without launching it:
 
 ```powershell
 $stage = "$env:LOCALAPPDATA\EveJS-Frontier\windows\staged-client\3502403"
-.\PatchFrontierClientTrust.ps1 -StagedRoot $stage -Check
+npm run frontier:host -- client check --build 3502403 --staged-root $stage
 ```
 
-For discovery or a dry run *before* full setup on a fresh checkout, first run
-`npm ci --include=dev` so the discovery tools are compiled, then use
-`SetupFrontierWindows.ps1 -Status` or `-DryRun` with the same `-Build` and
-`-SourceRoot`. See [Windows setup](FRONTIER_WINDOWS_SETUP.md) for staging and
+Add `--dry-run` to the npm setup command to inspect its plan, or use
+`SetupFrontierWindows.ps1 -Status` for Windows discovery status. See
+[Windows setup](FRONTIER_WINDOWS_SETUP.md) for staging and
 extraction diagnostics. Visual Studio C++ Build Tools and the Windows SDK are
 needed only if extraction must compile the embedded-Python fallback runner.
 
 ## 3. Prepare the Smart Assembly dApp
 
-The Windows server launcher builds and starts this dApp alongside EveJS, so
-prepare it before starting the game server:
+Shared setup installs the pinned dApp dependencies and creates or verifies
+`smart-assembly-control\.certs\localhost.pem` and `localhost-key.pem`.
+The server launcher builds and starts the dApp alongside EveJS. Existing valid
+TLS identities are reused. `--skip-dapp` skips dependency installation; use
+`npm run frontier:dapp:install` later if that option was selected.
 
-```powershell
-npm run frontier:dapp:install
-npm run frontier:dapp:setup:https
-```
-
-HTTPS setup creates `smart-assembly-control\.certs\localhost.pem` and
-`localhost-key.pem`. Run it once for a new installation; it refuses to overwrite
-existing files. Reuse an existing valid certificate/key pair. If replacement is
-intentional, `npm run frontier:dapp:setup:https -- -Force` replaces both files,
-and the replacement public certificate must be trusted again.
+If certificate replacement is intentional,
+`npm run frontier:dapp:setup:https -- -Force` replaces both dApp files, and the
+replacement public certificate must be trusted again.
 
 Certificate generation does **not** install browser trust or change name
 resolution. For the configured `https://dev.dapps.evefrontier.com` address:
@@ -138,7 +152,7 @@ by world sync in the next step; do not fill in package IDs by hand.
 With no running localnet or synced world, use **`up`**:
 
 ```powershell
-.\FrontierWorld.ps1 up -Build 3502403
+npm run frontier:world -- up --build 3502403
 ```
 
 Wait for the entire command to succeed. It invokes efctl to start the Docker
@@ -154,7 +168,7 @@ The normal efctl setup generates the local development keys and
 deployment should be retained, use `sync` instead:
 
 ```powershell
-.\FrontierWorld.ps1 sync -Build 3502403
+npm run frontier:sync -- --build 3502403
 ```
 
 `sync` alone cannot create a missing chain. After a deployment succeeds but a
@@ -164,7 +178,7 @@ running chain.
 Check the result:
 
 ```powershell
-.\FrontierWorld.ps1 status -Build 3502403
+npm run frontier:world -- status --build 3502403
 ```
 
 Expect the environment to be running and EveJS sync state to be `ready` for
@@ -191,7 +205,7 @@ and recovery details.
 In the first PowerShell window:
 
 ```powershell
-.\StartFrontierServer.ps1 -Build 3502403
+npm run frontier:server -- start --build 3502403
 ```
 
 Keep this window open. The launcher initializes/reuses the build's mutable
@@ -203,7 +217,7 @@ In a second PowerShell window at the repository root, check the processes and
 listeners before opening the client:
 
 ```powershell
-.\StartFrontierServer.ps1 -Build 3502403 -Status
+npm run frontier:server -- status --build 3502403
 Get-NetTCPConnection -State Listen -LocalPort 443,5222,26000,26101,26102,26103,26401 |
   Select-Object LocalAddress, LocalPort, OwningProcess
 (Invoke-WebRequest 'https://dev.dapps.evefrontier.com/').StatusCode
@@ -232,7 +246,7 @@ required by this Frontier workflow.
 After the server checks pass, run in the second window:
 
 ```powershell
-.\PlayFrontier.ps1 -Build 3502403
+npm run frontier:launch -- --build 3502403
 ```
 
 The launcher repeats the stage verification and selects loopback game/gateway
@@ -245,7 +259,7 @@ that official client, and replay the protected session file:
 
 ```powershell
 .\CaptureFrontierSession.ps1 -SourceRoot 'C:\CCP\EVE Frontier\stillness'
-.\PlayFrontier.ps1 -Build 3502403 -UseCapturedSession
+npm run frontier:launch -- --build 3502403 --use-captured-session
 ```
 
 New Frontier characters provision their Sui identity on the synchronized local
@@ -258,18 +272,18 @@ wallet. These predictable local wallets are for the disposable localnet.
 
 Close the game normally, then press `Ctrl+C` in the foreground server window;
 the launcher also cleans up its dApp process. To run without an open server
-window, use `StartFrontierServer.ps1 -Build 3502403 -Background` and stop its
-recorded processes with `StopFrontier.ps1 -Build 3502403 -ServerOnly`.
+window, use `npm run frontier:server -- start --build 3502403 --background` and stop its
+recorded processes with `npm run frontier:server -- stop --build 3502403`.
 
 Stopping EveJS leaves the chain running. For the next session, check
-`FrontierWorld.ps1 status -Build 3502403`, run `sync` if needed, then repeat
+`npm run frontier:world -- status --build 3502403`, run `sync` if needed, then repeat
 steps 5 and 6. Skip the one-time installs, extraction, and staging when their
 inputs have not changed.
 
 To stop the chain too, stop the client/server first, then run:
 
 ```powershell
-.\FrontierWorld.ps1 down -Build 3502403
+npm run frontier:world -- down --build 3502403
 ```
 
 The next `up`, or `restart`, redeploys a disposable chain with new package and
@@ -326,6 +340,17 @@ For `3640684` and cross-cycle world candidates, first follow the selected
 [build-specific data preparation](FRONTIER_3640684_IMPLEMENTATION.md) and
 [world configuration](EXPLORATION_API.md). The generic extractor/database
 workflow does not replace that work or expand its supported-build policy.
+Discovery accepts older layouts without `bin64/bundle.collision`. This does
+not establish static extraction support. Exact Phase 4 build `2703993` now has
+a [pinned legacy conversion](client-builds/Phase4-Final/nebula-2703993.md#schema-conversion-and-native-profile-update)
+that preserves its older geography and SQLite blueprint cache. Its absent
+collision, Creation and landscape resources remain explicitly unavailable.
+Other older builds still require their own schema profile. Exact `2703993`
+now also has verified native, docking and feature profiles and passes full
+offline staging on Linux with a copied resource cache. Its docking code stays
+native; only the audited legacy skills switch changes. Use `--copy-resfiles`
+to keep its staged cache separate from the installed cache. Wine prefix trust
+and live client launch remain separate acceptance steps.
 
 ```bash
 build=3502403
@@ -383,14 +408,14 @@ wine_args=(--build "$build" --staged-root "/path/to/evejs-staged-client/$build"
   --wine-runner '/path/to/game-runner/bin/wine'
   --wine-prefix '/path/to/game-prefix'
   --wine-python '/path/to/windows-python312/python.exe')
-bash TrustFrontierClientLinux.sh "${wine_args[@]}" \
+npm run frontier:host -- client trust "${wine_args[@]}" \
   --dapp-cert "$PWD/smart-assembly-control/.certs/localhost.pem"
 
-npm run frontier:host -- world up --build "$build"
-npm run frontier:host -- server start --build "$build" --background
-npm run frontier:host -- server status --build "$build"
+npm run frontier:world -- up --build "$build"
+npm run frontier:server -- start --build "$build" --background
+npm run frontier:server -- status --build "$build"
 NODE_USE_SYSTEM_CA=1 npm run frontier:doctor -- --build "$build" --server-only --live
-bash PlayFrontierLinux.sh "${wine_args[@]}"
+npm run frontier:launch -- "${wine_args[@]}"
 ```
 
 `up` creates a disposable chain. Use `world sync` to retain an already running
@@ -419,10 +444,10 @@ checks, starts the dApp with the same synchronized deployment, and records
 process boot/start/command identity. Stop only its owned processes:
 
 ```bash
-bash StopFrontierClientLinux.sh --build "$build" \
+npm run frontier:host -- client stop --build "$build" \
   --staged-root "/path/to/evejs-staged-client/$build"
-npm run frontier:host -- server stop --build "$build"
-npm run frontier:host -- world down --build "$build"
+npm run frontier:server -- stop --build "$build"
+npm run frontier:world -- down --build "$build"
 ```
 
 Client stop requests termination and retains its marker until exit; repeat

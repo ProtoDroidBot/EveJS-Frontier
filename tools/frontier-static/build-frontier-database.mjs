@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { findLatestSnapshot, validateSnapshot, } from "./validate-frontier-static.mjs";
 import { auditTypeListSnapshot, compareTypeListSnapshotToGenerated, } from "./type-list-audit.mjs";
+import { databaseStaticSchema, snapshotStaticSchema } from "./lib/static-schema.mjs";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "../..");
 const RIFT_AUTHORITY_BUILDS = new Set([
@@ -65,6 +66,18 @@ function sha256File(filePath) {
     hash.update(fs.readFileSync(filePath));
     return hash.digest("hex");
 }
+function auditBuildTypeLists(snapshot, snapshotManifest) {
+    const schema = snapshotStaticSchema(snapshotManifest);
+    const report = auditTypeListSnapshot(snapshot, snapshotManifest);
+    const unsupported = new Set(schema.unsupportedRuntimeTypeListIDs);
+    const unavailable = report.errors.filter(issue => issue.code === "missing-runtime-list" && unsupported.has(issue.listID));
+    if (!unavailable.length)
+        return report;
+    const errors = report.errors.filter(issue => !unavailable.includes(issue));
+    const warnings = [...report.warnings, ...unavailable.map(issue => ({ ...issue,
+            policy: schema.id, detail: "This newer NPC capability is unavailable in the audited source; no type-list remapping is applied." }))];
+    return { ...report, errors, warnings, counts: { ...report.counts, errors: errors.length, warnings: warnings.length } };
+}
 function installCollisionBundle(snapshot, snapshotManifest, dataDir) {
     const metadata = snapshotManifest.assets && snapshotManifest.assets.collisionBundle;
     if (!metadata || typeof metadata.path !== "string") {
@@ -101,6 +114,12 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
     if (databaseManifest.build !== snapshotManifest.source.client.build) {
         throw new Error("Generated database build does not match the static snapshot");
     }
+    const schema = databaseStaticSchema(snapshotManifest, databaseManifest);
+    for (const fileName of schema.emptyOutputs) {
+        if (snapshotManifest.outputs?.[fileName]?.records !== 0) {
+            throw new Error(`Static schema ${schema.id} requires an empty unavailable output: ${fileName}`);
+        }
+    }
     const systems = readTable(dataDir, "solarSystems", "solarSystems");
     const stargates = readTable(dataDir, "stargates", "stargates");
     const celestials = readTable(dataDir, "celestials", "celestials");
@@ -121,11 +140,13 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
     const componentTypesByID = new Map(spaceComponentsByType.map((row) => [Number(row.typeID ?? row._key), row]));
     const relay = componentTypesByID.get(90184);
     const relaySite = componentTypesByID.get(91717);
-    if (Number(relay?.smartDeployable?.constructionSite) !== 91717) {
-        throw new Error("Generated Relay component data does not map to construction site 91717");
-    }
-    if (!relaySite?.assemblyConstruction) {
-        throw new Error("Generated Relay construction site lacks assemblyConstruction");
+    if (schema.relayConstruction) {
+        if (Number(relay?.smartDeployable?.constructionSite) !== 91717) {
+            throw new Error("Generated Relay component data does not map to construction site 91717");
+        }
+        if (!relaySite?.assemblyConstruction) {
+            throw new Error("Generated Relay construction site lacks assemblyConstruction");
+        }
     }
     const expectedCelestials = [
         "mapStars.jsonl",
@@ -172,6 +193,12 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
             throw new Error(`Generated ${key} count mismatch: expected ${expected[key]}, found ${actual[key]}`);
         }
     }
+    if (schema.id === "frontier-phase4-2703993-v1") {
+        const blueprints = readTable(dataDir, "industryBlueprints", "blueprintDefinitions");
+        if (!Array.isArray(blueprints) || blueprints.length !== snapshotManifest.outputs["blueprints.jsonl"]?.records) {
+            throw new Error("Generated legacy blueprint count differs from its attested static snapshot");
+        }
+    }
     if (localPhysicsGunCount) {
         const sourceType = itemTypes.find((entry) => Number(entry.typeID) === 95317);
         const physicsGunTypes = itemTypes.filter((entry) => Number(entry.typeID) === 99999);
@@ -206,7 +233,7 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
         throw new Error("Generated client type-list or item-tag data is not schema-v2 complete");
     }
     const clientTypeListIDs = new Set(clientTypeLists.map((entry) => Number(entry.listID)));
-    for (const requiredListID of [861, 923, 985]) {
+    for (const requiredListID of [861, 923, 985].filter(listID => !schema.unsupportedRuntimeTypeListIDs.includes(listID))) {
         if (!clientTypeListIDs.has(requiredListID)) {
             throw new Error(`Generated client type-list authority is missing list ${requiredListID}`);
         }
@@ -252,6 +279,15 @@ function validateDatabase(dataDir, snapshotManifest, databaseManifest) {
     }
     return {
         ...actual,
+        schemaProfile: schema.id,
+        ...(schema.id === "frontier-phase4-2703993-v1" ? { legacyBlueprints: {
+                sourceRecords: snapshotManifest.outputs["legacyBlueprintsSource.jsonl"].records,
+                projectedRecords: snapshotManifest.outputs["blueprints.jsonl"].records,
+                excludedActivities: snapshotManifest.outputs["legacyBlueprintDiagnostics.jsonl"].records,
+                sourceSha256: snapshotManifest.outputs["legacyBlueprintsSource.jsonl"].sha256,
+                projectedSha256: snapshotManifest.outputs["blueprints.jsonl"].sha256,
+                diagnosticsSha256: snapshotManifest.outputs["legacyBlueprintDiagnostics.jsonl"].sha256,
+            } } : {}),
         bootstrap,
         characters: Object.keys(characters).length,
         lagrangePoints: lagrangePoints.length,
@@ -267,10 +303,11 @@ async function main() {
     const checked = await validateSnapshot(snapshot);
     const snapshotManifestPath = path.join(snapshot, "frontier-extraction-manifest.json");
     const snapshotManifest = JSON.parse(fs.readFileSync(snapshotManifestPath, "utf8"));
+    const schema = snapshotStaticSchema(snapshotManifest);
     const build = snapshotManifest.source.client.build;
     const dataDir = options.outDir ||
         path.join(REPO_ROOT, "_local", "frontier-gameStore", String(build), "data");
-    const typeListAudit = auditTypeListSnapshot(snapshot, snapshotManifest);
+    const typeListAudit = auditBuildTypeLists(snapshot, snapshotManifest);
     const previousStoreDelta = compareTypeListSnapshotToGenerated(snapshot, dataDir);
     if (typeListAudit.errors.length > 0) {
         throw new Error(`Type-list integrity audit failed: ${JSON.stringify(typeListAudit.errors.slice(0, 8))}`);
@@ -305,11 +342,12 @@ async function main() {
     }
     const databaseManifestPath = path.resolve(dataDir, "../manifest.json");
     const databaseManifest = JSON.parse(fs.readFileSync(databaseManifestPath, "utf8"));
-    const collisionBundle = installCollisionBundle(snapshot, snapshotManifest, dataDir);
+    const collisionBundle = schema.collisionBundle ? installCollisionBundle(snapshot, snapshotManifest, dataDir) : null;
     databaseManifest.assets = {
         ...(databaseManifest.assets || {}),
-        collisionBundle,
+        ...(collisionBundle ? { collisionBundle } : {}),
     };
+    databaseManifest.schemaProfile = schema.id;
     fs.writeFileSync(databaseManifestPath, `${JSON.stringify(databaseManifest, null, 2)}\n`, "utf8");
     const report = validateDatabase(dataDir, snapshotManifest, databaseManifest);
     const typeListAuditPath = path.resolve(dataDir, "../type-list-audit.json");
@@ -353,5 +391,5 @@ if (process.argv[1] &&
         process.exitCode = 1;
     });
 }
-export { installCollisionBundle, parseArgs, RIFT_AUTHORITY_BUILDS, validateDatabase, };
+export { auditBuildTypeLists, installCollisionBundle, parseArgs, RIFT_AUTHORITY_BUILDS, validateDatabase, };
 //# sourceMappingURL=build-frontier-database.mjs.map

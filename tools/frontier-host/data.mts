@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { assertNoSymlink, resolveHostPaths } from "./config.mjs";
+import { databaseStaticSchema } from "../frontier-static/lib/static-schema.mjs";
 
 export function readBuildManifest(file: string, build: string, kind: "static" | "contracts" | "database") {
   assertNoSymlink(file);
@@ -31,6 +32,29 @@ export function validateContracts(root: string, build: string) {
   return manifest;
 }
 
+export function validateCollisionAssets(root: string, snapshot: any, database: any) {
+  const schema = databaseStaticSchema(snapshot, database);
+  if (!schema.collisionBundle) {
+    const unexpected = path.join(root, "assets/collision/bundle.collision");
+    assertNoSymlink(unexpected);
+    if (fs.existsSync(unexpected)) throw new Error("Legacy game store contains an undeclared collision bundle.");
+    return null;
+  }
+  const collision = database.assets?.collisionBundle;
+  verifyAttestedFile(root, collision?.path, collision);
+  if (String(collision.sha256).toLowerCase() !== String(snapshot.assets?.collisionBundle?.sha256).toLowerCase()) {
+    throw new Error("Generated collision asset differs from the selected snapshot.");
+  }
+  return collision.sha256;
+}
+
+export function collisionRequirement(repoRoot: string, build: string) {
+  const paths = resolveHostPaths(repoRoot, build);
+  const snapshot = readBuildManifest(path.join(paths.staticRoot, "frontier-extraction-manifest.json"), build, "static");
+  const database = readBuildManifest(path.join(paths.generatedRoot, "manifest.json"), build, "database");
+  return validateCollisionAssets(paths.generatedRoot, snapshot, database) === null ? "0" : "1";
+}
+
 export async function validatePreparedData(repoRoot: string, build: string) {
   const paths = resolveHostPaths(repoRoot, build);
   const snapshot = readBuildManifest(path.join(paths.staticRoot, "frontier-extraction-manifest.json"), build, "static");
@@ -38,10 +62,8 @@ export async function validatePreparedData(repoRoot: string, build: string) {
   await validateSnapshot(paths.staticRoot);
   validateContracts(paths.contractsRoot, build);
   const database = readBuildManifest(path.join(paths.generatedRoot, "manifest.json"), build, "database");
-  const collision = database.assets?.collisionBundle;
-  verifyAttestedFile(paths.generatedRoot, collision?.path, collision);
-  if (collision.sha256 !== snapshot.assets?.collisionBundle?.sha256) throw new Error("Generated collision asset differs from the selected snapshot");
+  const collisionSha256 = validateCollisionAssets(paths.generatedRoot, snapshot, database);
   const { validateDatabase } = await import("../frontier-static/build-frontier-database.mjs");
   const result = validateDatabase(paths.generatedData, snapshot, database);
-  return { build, systems: result.systems, itemTypes: result.itemTypes, collisionSha256: collision.sha256 };
+  return { build, systems: result.systems, itemTypes: result.itemTypes, collisionSha256 };
 }

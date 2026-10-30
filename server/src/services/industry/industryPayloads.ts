@@ -13,7 +13,49 @@ const {
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const {
   INDUSTRY_ERROR_NAME,
+  INDUSTRY_REFERENCE,
 } = require(path.join(__dirname, "./industryConstants"));
+const config = require("../../config");
+const { usesLegacyFrontierDogmaProfile } = require("../dogma/dogmaInfoCompatibility");
+const { getLegacyIndustryFactoryByStationID } = require("./legacyIndustryStaticData");
+const { throwWrappedUserError } = require("../../common/machoErrors");
+
+function usesLegacyIndustryWire(session = null) {
+  return usesLegacyFrontierDogmaProfile(
+    session?.compatibilityProfile ?? config.clientCompatibilityProfile,
+    Number(config.clientBuild),
+  );
+}
+
+function facilityForWire(facility, session) {
+  if (!usesLegacyIndustryWire(session)) return facility;
+  const unsupported = () => {
+    throwWrappedUserError("CustomNotify", { notify: "This facility does not support the build 2703993 station industry protocol." });
+    throw new Error("LEGACY_INDUSTRY_FACILITY_UNSUPPORTED");
+  };
+  let factory;
+  try { factory = getLegacyIndustryFactoryByStationID(Number(facility?.facilityID)); }
+  catch (_) { unsupported(); }
+  if (!factory) unsupported();
+  const activities = Object.fromEntries(Object.entries<any>(facility.activities || {}).map(([id, activity]) => {
+    if (!Array.isArray(activity) || activity.length !== 6 ||
+        !Array.isArray(activity[5]) || activity[5].length > 0) unsupported();
+    const modifiers = activity.slice(0, 3).map(rows => {
+      if (!Array.isArray(rows)) unsupported();
+      return rows.map(row => {
+        // 2703993 has no per-product type filter in a modifier. Never widen
+        // an unrepresentable filter while projecting the modern tuple.
+        if (!Array.isArray(row) || row.length !== 5 || row[3] != null) unsupported();
+        return [row[0], row[1], row[2], row[4]];
+      });
+    });
+    // Frontier station manufacturing has no ISK fee. The zero SYSTEM cost
+    // modifier makes both native quote paths agree with the free job policy.
+    modifiers[2] = [[0, null, null, INDUSTRY_REFERENCE.SYSTEM]];
+    return [id, [...modifiers, activity[3], activity[4]]];
+  }));
+  return { ...facility, activities };
+}
 
 function toInt(value, fallback = 0) {
   const numeric = Number(value);
@@ -137,7 +179,8 @@ function buildJobPayload(job) {
   ]);
 }
 
-function buildFacilityPayload(facility) {
+function buildFacilityPayload(facility, session = null) {
+  facility = facilityForWire(facility, session);
   const taxValue =
     facility && Object.prototype.hasOwnProperty.call(facility, "tax")
       ? facility.tax

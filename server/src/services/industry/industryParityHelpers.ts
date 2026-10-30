@@ -1,4 +1,15 @@
 const path = require("path");
+const { isLegacyIndustryProfile } = require("./legacyIndustryStaticData");
+
+function roundIndustryValue(value) {
+  if (isLegacyIndustryProfile()) {
+    // Native 2703993 uses Python's int(round(...)): exact halves go to the
+    // nearest even integer. Do not change the rounding of other profiles.
+    const lower = Math.floor(value);
+    if (value - lower === 0.5) return lower % 2 === 0 ? lower : lower + 1;
+  }
+  return Math.round(value);
+}
 
 const {
   TABLE,
@@ -384,7 +395,7 @@ function resolveIndustryJobTimeSeconds(
     requiredSkillModifier;
   return Math.max(
     1,
-    Math.round(totalSeconds),
+    roundIndustryValue(totalSeconds),
   );
 }
 
@@ -394,6 +405,7 @@ function clearIndustryParityCaches() {
 }
 
 module.exports = {
+  roundIndustryValue,
   buildIndustryActivityMaterials,
   clearIndustryParityCaches,
   getIndustryActivity,

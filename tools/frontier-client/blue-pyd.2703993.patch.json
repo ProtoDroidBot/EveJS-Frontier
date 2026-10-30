@@ -1,0 +1,70 @@
+{
+  "format": "evejs-frontier-windows-pe-patch-v1",
+  "name": "blue.pyd",
+  "description": "Exact build 2703993 manifest verifier normalization, independently derived from the supplied Phase4-Final nebula PE. Negative verifier errors retain their original error path. Offline copied-input verification does not establish Windows/Wine trust or gameplay acceptance.",
+  "build": 2703993,
+  "platform": "windows",
+  "architecture": {
+    "machine": "AMD64",
+    "machineHex": "0x8664",
+    "peFormat": "PE32+",
+    "imageBaseHex": "0x180000000"
+  },
+  "source": {
+    "size": 8708168,
+    "sha256": "bbb482acbd968513107b3755e08e8bb54796d1d498e62034c64e841a17f1aa81",
+    "authenticode": {
+      "state": "present-not-trust-validated",
+      "securityDirectoryOffsetHex": "0x84b200",
+      "securityDirectorySizeHex": "0x2e48",
+      "certificateRevisionHex": "0x200",
+      "certificateTypeHex": "0x2",
+      "certificateOverlayEndsAtEof": true
+    }
+  },
+  "target": {
+    "size": 8696320,
+    "sha256": "3813f926df48ac4de69a71771678a57f77fdeb1ec0cc2237ac267ea827c22bc3",
+    "peChecksumHex": "0x852d02",
+    "authenticode": {
+      "state": "stripped-after-content-mutation",
+      "securityDirectoryOffset": 0,
+      "securityDirectorySize": 0
+    }
+  },
+  "patches": [
+    {
+      "fileOffset": 2751078,
+      "fileOffsetHex": "0x29fa66",
+      "rvaHex": "0x2a0666",
+      "description": "Replace setne al with mov al,1 plus nop on the nonnegative verifier-result path; preserve the following result-byte store and original negative-error handling.",
+      "beforeHex": "0f95c0",
+      "afterHex": "b00190",
+      "contextBeforeHex": "1f7607ff15517a3500cce863f03100904885f67409488bcee86dea1f0090eb72",
+      "contextAfterHex": "41880424660f6f052bd24200f30f7f45e8c645d800488d55d8488bcfe8161bde"
+    }
+  ],
+  "verifierEvidence": {
+    "verifySignatureFunctionRva": "0x002a0440-0x002a06f6",
+    "unpackManifestFunctionRva": "0x002a70a0-0x002a7cf3",
+    "unpackManifestCallRva": "0x002a7c2d",
+    "invalidSignatureStringRva": "0x006c77b8",
+    "uniquePatchedInstructionSequence": "0f95c041880424",
+    "uniquePatchedInstructionSequenceOccurrences": 1,
+    "semantics": "The supplied binary calls its verifier at RVA 0x2a05c0, tests eax at 0x2a05c5, and branches jns at 0x2a05c7 to setne al at 0x2a0666. Negative results continue through the existing error-string path and bypass the patched instruction. UnpackManifest calls this wrapper at 0x2a7c2d, requires an empty error string and a true result byte, and otherwise loads the invalid-manifest-signature message at 0x6c77b8.",
+    "reproduction": "python3 tools/frontier-client/verify_2703993_native.py --client-root <Phase4-Final/nebula> --report <output.json>",
+    "evidencePath": "evidence/blue-pyd.2703993.json"
+  },
+  "resourceCache": {
+    "logicalPath": "app:/bin64/blue.pyd",
+    "cachePath": "5b/5baa6098ac19f0c6_da208efe4ae5b16a5fa29d238363fdd2",
+    "sourceMd5": "da208efe4ae5b16a5fa29d238363fdd2"
+  },
+  "manifestTargets": [
+    "root:\\code.ccp",
+    "root:/bin64/packages/certifi\\cacert.pem",
+    "root:/bin64\\blue.pyd",
+    "root:/bin64\\cacert.pem",
+    "root:/bin64\\exefile.exe"
+  ]
+}

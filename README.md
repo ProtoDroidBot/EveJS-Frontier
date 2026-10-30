@@ -135,6 +135,25 @@ Use `npm run frontier:doctor -- --build <exact-build>` for read-only host checks
 and `npm run test:frontier-host` for the host compatibility fixtures.
 Live Windows/Wine gameplay acceptance remains separate from these checks.
 
+Windows and Linux share one host workflow with an explicit exact build:
+
+```sh
+npm run frontier:setup -- --build 3502403 --client-root '<installed build path>'
+npm run frontier:world -- up --build 3502403
+# For a deployment already running, use frontier:sync instead of world up.
+npm run frontier:server -- start --build 3502403
+npm run frontier:launch -- --build 3502403
+```
+
+Linux setup additionally needs the extraction Wine parameters and an isolated
+staging directory; launch needs the selected stage and gameplay Wine runtime.
+The [setup guide](docs/FRONTIER_SETUP.md) gives the complete platform arguments
+and certificate trust steps. `frontier:stage` reruns only client staging;
+`frontier:host -- client --help` lists patch, check, trust and process commands.
+The existing Windows and Linux wrappers use these shared stages and preserve
+the native platform checks. The macOS and conventional EVE Online workflows
+below retain their separate client implementations.
+
 ### Frontier Windows quickstart (build 3502403 candidate)
 
 The Windows workflow is native: the server and staged client run on the same
@@ -159,8 +178,8 @@ HTTPS preparation are required before the Windows server launcher can start.
 Follow the complete setup guide above before the daily-use commands below.
 
 Open PowerShell 7 in the repository root. For a fresh source checkout, run
-`npm ci --include=dev` before the read-only status and dry-run commands so the
-discovery tools are compiled. Full setup installs and compiles them itself.
+`npm ci --include=dev --ignore-scripts` and `npm run build:tools` before the
+read-only status and dry-run commands so the discovery tools are compiled. Full setup installs and compiles them itself.
 Discovery is automatic, or pass the actual build directory explicitly with
 `-SourceRoot`:
 

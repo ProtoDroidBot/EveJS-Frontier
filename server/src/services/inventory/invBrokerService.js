@@ -1,9 +1,11 @@
+"use strict";
 /**
  * Inventory Broker Service (invbroker)
  *
  * Handles inventory/item queries from the client.
  * Called after character selection to load inventory data.
  */
+Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
@@ -13,6 +15,7 @@ const { throwWrappedUserError } = require(path.join(__dirname, "../../common/mac
 const { ROLE_GML, ROLE_LEGIONEER, ROLE_WORLDMOD, normalizeRoleValue, } = require(path.join(__dirname, "../account/accountRoleProfiles"));
 const { resolveShipByTypeID } = require(path.join(__dirname, "../chat/shipTypeRegistry"));
 const { getCharacterShips, findCharacterShip, getActiveShipRecord, shouldFlushDeferredDockedShipSessionChange, flushDeferredDockedShipSessionChange, completeDockedFittingBootstrap, syncInventoryItemForSession, syncShipFittingStateForSession, emitStripFittingDogmaMultiEventForSession, emitItemsChangedBatchForSession, emitFittingTransactionForSession, buildInventoryDogmaPrimeEntry, } = require(path.join(__dirname, "../character/characterState"));
+const { getCharacterInventoryCategoryIDForProfile, } = require(path.join(__dirname, "../dogma/dogmaInfoCompatibility"));
 const { ITEM_FLAGS, FIGHTER_TUBE_FLAGS, ensureFreeStationFuelSupply, listContainerItems, findItemById, findShipItemById, getItemMetadata, getInventoryItemUnitVolume, grantItemToCharacterLocation, moveItemToLocation, removeInventoryItem, takeItemTypeFromCharacterLocation, transferItemToOwnerLocation, mergeItemStacks, updateInventoryItem, } = require(path.join(__dirname, "./itemStore"));
 const { SHELL_EQUIPMENT_FLAG_ID, SHELL_EQUIPMENT_KIND, getShellEquipmentKind, listActiveShellEquipment, } = require(path.join(__dirname, "../frontier/shellEquipmentRuntime"));
 const { CORP_ROLE_DIRECTOR, toRoleMaskBigInt, getCorporationOfficeByInventoryID, getCorporationOffices, } = require(path.join(__dirname, "../corporation/corporationRuntimeState"));
@@ -61,7 +64,6 @@ const CONTAINER_STRUCTURE_ID = 10014;
 const CONTAINER_CAPSULEER_DELIVERIES_ID = 10015;
 const CHARACTER_TYPE_ID = 1373;
 const CHARACTER_GROUP_ID = 1;
-const CHARACTER_CATEGORY_ID = 3;
 const STATION_TYPE_ID = DEFAULT_STATION.stationTypeID;
 const STATION_GROUP_ID = 15;
 const STATION_CATEGORY_ID = 3;
@@ -3642,7 +3644,7 @@ class InvBrokerService extends BaseService {
             flagID: 0,
             quantity: -1,
             groupID: CHARACTER_GROUP_ID,
-            categoryID: CHARACTER_CATEGORY_ID,
+            categoryID: getCharacterInventoryCategoryIDForProfile(session && session.compatibilityProfile, Number(require("../../config").clientBuild)),
             customInfo: "",
             singleton: 1,
             stacksize: 1,

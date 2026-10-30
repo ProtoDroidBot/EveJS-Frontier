@@ -3,6 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string]$StagedRoot,
+    [ValidateRange(0, 2147483647)] [int]$Build = 0,
     [switch]$Check,
     [switch]$DryRun
 )
@@ -14,7 +15,7 @@ if ($env:OS -ne 'Windows_NT') { throw 'PatchFrontierClientTrust.ps1 supports Win
 $RepoRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 Import-Module (Join-Path $RepoRoot 'tools\frontier-client\FrontierWindows.Common.psm1') -Force
 $StagedRoot = [IO.Path]::GetFullPath($StagedRoot)
-$marker = Read-FrontierStageMarker -StageRoot $StagedRoot
+$marker = Read-FrontierStageMarker -StageRoot $StagedRoot -ExpectedBuild $Build
 $node = Get-FrontierNodePath
 $python = Get-FrontierPython312Path -RepoRoot $RepoRoot
 $ca = Join-Path $RepoRoot 'server\certs\xmpp-ca-cert.pem'

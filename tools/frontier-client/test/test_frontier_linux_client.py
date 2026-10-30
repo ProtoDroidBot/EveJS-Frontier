@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -260,6 +261,8 @@ class LinuxClientTests(unittest.TestCase):
         args.ca = self.root / "ca.pem"
         args.ca.write_bytes(pem(b"fixture"))
         trust = {"valid": True, "caFingerprintSha256": "expected",
+                 "authenticode": "Valid", "caTrustedRoot": True, "trustInstalled": False,
+                 "tamperedExecutableRejected": True,
                  "exefileSha256": core.sha256_file(self.stage / "bin64/exefile.exe")}
         with mock.patch.object(core, "read_ca", return_value=(b"pem", b"der", "expected")), \
                 mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(trust), "")) as run:
@@ -267,6 +270,50 @@ class LinuxClientTests(unittest.TestCase):
         invocation = run.call_args.args[0]
         self.assertIn(linux.windows_path(linux.TRUST_PROBE), invocation)
         self.assertEqual(run.call_args.kwargs["env"]["WINEPREFIX"], str(args.wine_prefix))
+
+    def test_launch_rejects_install_only_report_even_with_matching_fingerprints(self):
+        args = self.runtime_args()
+        args.ca = self.root / "ca.pem"
+        args.ca.write_bytes(pem(b"fixture"))
+        install_report = {"valid": True, "authenticode": "not-probed; mandatory on launch",
+                          "caTrustedRoot": True, "trustInstalled": True, "dappTrustedRoot": True,
+                          "tamperedExecutableRejected": False, "caFingerprintSha256": "expected",
+                          "exefileSha256": core.sha256_file(self.stage / "bin64/exefile.exe")}
+        with mock.patch.object(core, "check_stage", return_value={"valid": True}), \
+                mock.patch.object(core, "read_ca", return_value=(b"pem", b"der", "expected")), \
+                mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(install_report), "")), \
+                mock.patch.object(subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(linux.LinuxClientError, "Authenticode validity"):
+                linux.launch(args)
+        popen.assert_not_called()
+        self.assertFalse((self.stage / ".linux-runtime").exists())
+
+    def test_verification_rejects_missing_or_false_signature_and_root_proof(self):
+        args = self.runtime_args()
+        args.ca = self.root / "ca.pem"
+        args.ca.write_bytes(pem(b"fixture"))
+        good = {"valid": True, "authenticode": "Valid", "caTrustedRoot": True,
+                "trustInstalled": False, "tamperedExecutableRejected": True,
+                "caFingerprintSha256": "expected", "exefileSha256": core.sha256_file(self.stage / "bin64/exefile.exe")}
+        failures = [None, [], "not a report", {**good, "authenticode": "Unknown"},
+                    {**good, "trustInstalled": True}, {**good, "caTrustedRoot": False},
+                    {**good, "caTrustedRoot": 1}, {**good, "tamperedExecutableRejected": False},
+                    {key: value for key, value in good.items() if key != "tamperedExecutableRejected"}]
+        for report in failures:
+            with self.subTest(report=report), \
+                    mock.patch.object(core, "read_ca", return_value=(b"pem", b"der", "expected")), \
+                    mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(report), "")):
+                with self.assertRaisesRegex(linux.LinuxClientError, "trust evidence"):
+                    linux.verify_runtime_trust(args, self.stage)
+
+    def test_failed_authenticode_process_cannot_supply_success_evidence(self):
+        args = self.runtime_args()
+        args.ca = self.root / "ca.pem"
+        args.ca.write_bytes(pem(b"fixture"))
+        with mock.patch.object(core, "read_ca", return_value=(b"pem", b"der", "expected")), \
+                mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 1, '{"valid":true}', "Authenticode verification failed: 0x800b0101")):
+            with self.assertRaisesRegex(linux.LinuxClientError, "0x800b0101"):
+                linux.verify_runtime_trust(args, self.stage)
 
     def test_real_process_receives_exact_argv_and_windows_environment_paths(self):
         args = self.runtime_args()
@@ -294,6 +341,8 @@ class LinuxClientTests(unittest.TestCase):
         args.dapp_cert = self.root / "dapp.pem"
         args.dapp_cert.write_bytes(pem(b"dapp"))
         report = {"valid": True, "caFingerprintSha256": core.sha256_bytes(b"game"),
+            "authenticode": "not-probed; mandatory on launch", "caTrustedRoot": True,
+            "dappTrustedRoot": True, "trustInstalled": True, "tamperedExecutableRejected": False,
             "dappFingerprintSha256": core.sha256_bytes(b"dapp"),
             "exefileSha256": core.sha256_file(self.stage / "bin64/exefile.exe")}
         with mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(report), "")) as run:
@@ -306,6 +355,22 @@ class LinuxClientTests(unittest.TestCase):
             with self.assertRaisesRegex(linux.LinuxClientError, "never private keys"):
                 linux.verify_runtime_trust(args, self.stage, install=True)
         run.assert_not_called()
+
+    def test_installation_requires_its_own_root_and_mode_proof(self):
+        args = self.runtime_args()
+        args.ca = self.root / "ca.pem"
+        args.ca.write_bytes(pem(b"game"))
+        args.dapp_cert = self.root / "dapp.pem"
+        args.dapp_cert.write_bytes(pem(b"dapp"))
+        good = {"valid": True, "authenticode": "not-probed; mandatory on launch", "caTrustedRoot": True,
+                "dappTrustedRoot": True, "trustInstalled": True, "tamperedExecutableRejected": False,
+                "caFingerprintSha256": core.sha256_bytes(b"game"), "dappFingerprintSha256": core.sha256_bytes(b"dapp"),
+                "exefileSha256": core.sha256_file(self.stage / "bin64/exefile.exe")}
+        for changed in ({"authenticode": "Valid"}, {"trustInstalled": False}, {"dappTrustedRoot": False},
+                        {"tamperedExecutableRejected": True}, {"dappFingerprintSha256": "wrong"}):
+            with self.subTest(changed=changed), mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps({**good, **changed}), "")):
+                with self.assertRaisesRegex(linux.LinuxClientError, "trust .*evidence"):
+                    linux.verify_runtime_trust(args, self.stage, install=True)
 
     def test_status_and_stop_handle_reused_pid_without_signalling(self):
         self.make_stage()
@@ -361,7 +426,7 @@ class LinuxClientTests(unittest.TestCase):
         self.addCleanup(lambda: self.reap_child(report["pid"]))
         self.assertEqual(linux.runtime_status(self.stage, self.build)[0]["state"], "running")
         with mock.patch.object(linux, "boot_id", return_value="different-boot"):
-            self.assertEqual(linux.runtime_status(self.stage, self.build)[0]["state"], "stale")
+            self.assertEqual(linux.runtime_status(self.stage, self.build)[0]["state"], "untracked-running")
         stop_args = linux.parser().parse_args(["stop", "--build", str(self.build), "--staged-root", str(self.stage)])
         self.assertEqual(linux.stop_client(stop_args)["state"], "stop-requested")
         os.waitpid(report["pid"], 0)
@@ -375,6 +440,223 @@ class LinuxClientTests(unittest.TestCase):
         except (ProcessLookupError, ChildProcessError):
             pass
         linux.reap_background_children()
+
+
+class FlatpakProcessTrackingTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="flatpak process ownership ")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.stage = self.root / "stages/2703993"
+        (self.stage / ".linux-runtime").mkdir(parents=True)
+        self.prefix = self.root / "prefix"
+        self.runner = self.root / "runner/bin/wine"
+        self.app = "com.usebottles.bottles"
+        self.pid, self.child_pid = 100, 102
+        self.argv = ["bwrap", "--args", "81", "--", "env", "-u", "WINELOADER", "-u", "WINESERVER", "-u", "WINEDLLPATH",
+                     f"WINEPREFIX={self.prefix}", "FRONTIER_PUBLIC_GATEWAY_ADDRESS=127.0.0.1:26103",
+                     "JSONL-LOGPATH=" + linux.windows_path(self.stage / ".linux-runtime/logs"),
+                     str(self.runner), linux.windows_path(self.stage / "bin64/exefile.exe"), "/noconsole"]
+        self.parent = {"pid": self.pid, "parentPid": 1, "uid": os.getuid(), "processStartTicks": "parent-start",
+                       "processExecutable": "/usr/bin/bwrap", "cwd": str(self.stage / "bin64"),
+                       "commandSha256": "parent-command", "argv": self.argv, "environment": []}
+        self.child = {"pid": self.child_pid, "parentPid": 101, "uid": os.getuid(), "processStartTicks": "child-start",
+                      "processExecutable": str(self.root / "runner/lib/wine/x86_64-unix/wine-preloader"),
+                      "cwd": str(self.stage / "bin64"), "commandSha256": "child-command",
+                      "argv": [linux.windows_path(self.stage / "bin64/exefile.exe"), "/noconsole"],
+                      "environment": [f"WINEPREFIX={self.prefix}", f"FLATPAK_ID={self.app}"]}
+        self.record = {"format": linux.PROCESS_FORMAT, "stage": str(self.stage), "build": 2703993,
+                       "pid": self.pid, "prefix": str(self.prefix), "runner": str(self.runner), "background": True,
+                       "bootId": "boot", "flatpakApp": self.app, "processKind": "flatpak-bwrap-v1",
+                       **{key: self.parent[key] for key in ("processStartTicks", "processExecutable", "cwd", "commandSha256")},
+                       "flatpakClient": linux.captured_client_identity(self.child)}
+        self.pidfile = self.stage / ".linux-runtime/client.pid.json"
+        self.args = argparse.Namespace(staged_root=self.stage, build=2703993, dry_run=False)
+
+    def context(self, *, parent=True, child=True):
+        stack = ExitStack()
+        starts = {self.pid: "parent-start" if parent else None, self.child_pid: "child-start" if child else None}
+        stack.enter_context(mock.patch.object(linux, "load_owned_stage", return_value={}))
+        stack.enter_context(mock.patch.object(linux, "boot_id", return_value="boot"))
+        stack.enter_context(mock.patch.object(linux, "process_start", side_effect=lambda pid: starts.get(pid)))
+        stack.enter_context(mock.patch.object(linux, "process_snapshot", side_effect=lambda pid: self.parent if pid == self.pid else self.child))
+        stack.enter_context(mock.patch.object(linux, "known_bwrap_executable", side_effect=lambda value: value == "/usr/bin/bwrap"))
+        stack.enter_context(mock.patch.object(linux, "stage_processes", return_value=[]))
+        return stack
+
+    def save_marker(self):
+        core.write_json_atomic(self.pidfile, self.record)
+
+    def test_canonical_selector_accepts_hyphenated_log_name_and_rejects_spoofing(self):
+        self.assertTrue(linux.flatpak_selector_matches(self.argv, self.stage, self.prefix, self.runner))
+        for changed in ([*self.argv[:11], "WINEPREFIX=/other", *self.argv[12:]],
+                        [*self.argv[:12], "WINEPREFIX=/other", *self.argv[12:]],
+                        [*self.argv[:12], "LD_PRELOAD=/other", *self.argv[12:]],
+                        [*self.argv[:14], "/other/wine", *self.argv[15:]],
+                        ["sh", *self.argv[1:]]):
+            with self.subTest(argv=changed):
+                self.assertFalse(linux.flatpak_selector_matches(changed, self.stage, self.prefix, self.runner))
+
+    def test_only_a_known_system_bwrap_can_supply_supervisor_argv_proof(self):
+        fake = self.root / "bwrap"
+        fake.write_text("fake")
+        self.assertFalse(linux.known_bwrap_executable(str(fake)))
+        with self.context(), mock.patch.object(linux, "known_bwrap_executable", return_value=False):
+            with self.assertRaisesRegex(linux.LinuxClientError, "Flatpak supervisor"):
+                linux.process_identity(self.pid, self.stage, self.prefix, flatpak_app=self.app, runner=self.runner)
+
+    def test_captured_child_requires_its_own_exact_prefix_app_cwd_executable_and_uid(self):
+        self.assertTrue(linux.bound_flatpak_client(self.child, self.stage, self.prefix, self.runner, self.app))
+        for change in ({"environment": ["WINEPREFIX=/other", f"FLATPAK_ID={self.app}"]},
+                       {"environment": [f"WINEPREFIX={self.prefix}", "FLATPAK_ID=org.other.App"]},
+                       {"environment": [*self.child["environment"], "WINEPREFIX=/other"]},
+                       {"cwd": str(self.root)}, {"uid": os.getuid() + 1},
+                       {"processExecutable": "/other/wine-preloader"},
+                       {"argv": ["start.exe", self.child["argv"][0]]}):
+            with self.subTest(change=change):
+                self.assertFalse(linux.bound_flatpak_client({**self.child, **change}, self.stage, self.prefix, self.runner, self.app))
+
+    def test_descendant_proof_checks_parent_links_and_fails_on_depth_truncation(self):
+        middle = {**self.parent, "pid": 101, "parentPid": self.pid}
+        with mock.patch.object(linux, "process_children", side_effect=lambda pid: {100: [101], 101: [102]}.get(pid, [])), \
+                mock.patch.object(linux, "process_snapshot", side_effect=lambda pid: middle if pid == 101 else self.child):
+            self.assertEqual(linux.flatpak_client_identity(self.pid, self.stage, self.prefix, self.runner, self.app), self.record["flatpakClient"])
+        with mock.patch.object(linux, "process_children", side_effect=lambda pid: [pid + 1]), \
+                mock.patch.object(linux, "process_snapshot", side_effect=lambda pid: {**middle, "pid": pid, "parentPid": pid - 1}):
+            with self.assertRaisesRegex(linux.LinuxClientError, "verification bound"):
+                linux.flatpak_client_identity(self.pid, self.stage, self.prefix, self.runner, self.app)
+
+    def test_wait_never_captures_temporary_flatpak_before_bwrap_and_client_exist(self):
+        temporary = {**self.parent, "processExecutable": "/usr/bin/flatpak", "environment": [f"WINEPREFIX={self.prefix}"]}
+        process = mock.Mock(pid=self.pid)
+        process.poll.return_value = None
+        with self.context(), mock.patch.object(linux, "process_snapshot", side_effect=[temporary, self.parent, self.parent]), \
+                mock.patch.object(linux, "flatpak_client_identity", return_value=self.record["flatpakClient"]), \
+                mock.patch.object(linux.time, "sleep"):
+            result = linux.wait_for_process_identity(process, self.stage, self.prefix, flatpak_app=self.app, runner=self.runner)
+        self.assertEqual(result["processExecutable"], "/usr/bin/bwrap")
+        self.assertEqual(result["flatpakClient"], self.record["flatpakClient"])
+
+    def test_status_and_stop_keep_a_surviving_captured_child_after_supervisor_exit(self):
+        self.save_marker()
+        with self.context(parent=False), mock.patch.object(os, "kill") as kill, mock.patch.object(os, "killpg") as killpg:
+            status, _ = linux.runtime_status(self.stage, 2703993)
+            self.assertEqual((status["state"], status["pid"], status["supervisorRunning"], status["clientRunning"]), ("running", self.child_pid, False, True))
+            self.assertEqual(linux.stop_client_locked(self.args, self.stage)["state"], "stop-requested")
+        kill.assert_called_once_with(self.child_pid, linux.signal.SIGTERM)
+        killpg.assert_not_called()
+        self.assertTrue(self.pidfile.exists())
+        with self.context(parent=False, child=False):
+            self.assertEqual(linux.stop_client_locked(self.args, self.stage)["state"], "stopped")
+        self.assertFalse(self.pidfile.exists())
+
+    def test_exited_child_leaves_truthful_supervisor_state_and_marker_until_exit(self):
+        self.save_marker()
+        with self.context(child=False), mock.patch.object(os, "kill") as kill, \
+                mock.patch.object(os, "killpg") as killpg, mock.patch.object(os, "getpgid", return_value=self.pid):
+            self.assertEqual(linux.runtime_status(self.stage, 2703993)[0]["state"], "client-exited")
+            self.assertEqual(linux.stop_client_locked(self.args, self.stage)["state"], "stop-requested")
+        kill.assert_not_called()
+        killpg.assert_called_once_with(self.pid, linux.signal.SIGTERM)
+        self.assertTrue(self.pidfile.exists())
+
+    def test_changed_live_child_identity_fails_before_any_signal(self):
+        self.save_marker()
+        self.child["commandSha256"] = "changed"
+        with self.context(parent=False), mock.patch.object(os, "kill") as kill, mock.patch.object(os, "killpg") as killpg:
+            with self.assertRaisesRegex(linux.LinuxClientError, "Captured Wine client identity changed"):
+                linux.stop_client_locked(self.args, self.stage)
+        kill.assert_not_called()
+        killpg.assert_not_called()
+        self.assertTrue(self.pidfile.exists())
+
+    def test_missing_or_stale_marker_never_adopts_or_signals_untracked_stage_process(self):
+        for has_marker in (False, True):
+            with self.subTest(has_marker=has_marker):
+                if has_marker:
+                    self.save_marker()
+                with self.context(parent=False, child=False), mock.patch.object(linux, "stage_processes", return_value=[999]), \
+                        mock.patch.object(os, "kill") as kill, mock.patch.object(os, "killpg") as killpg:
+                    status = linux.stop_client_locked(self.args, self.stage)
+                    self.assertEqual(status["state"], "untracked-running")
+                kill.assert_not_called()
+                killpg.assert_not_called()
+                self.assertEqual(self.pidfile.exists(), has_marker)
+
+
+class WineTrustApiControlFlowTests(unittest.TestCase):
+    """Mock API decisions only; real ABI/cryptographic acceptance is separate."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="wine trust API decisions ")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.exe = self.root / "signed fixture.exe"
+        self.original = make_pe_source()
+        self.exe.write_bytes(self.original)
+        self.ca = self.root / "public.pem"
+        self.ca.write_bytes(pem(b"game"))
+
+    def windows_probe(self, dll):
+        stack = ExitStack()
+        stack.enter_context(mock.patch.object(probe.sys, "platform", "win32"))
+        stack.enter_context(mock.patch.object(probe.sys, "version_info", (3, 12, 10)))
+        stack.enter_context(mock.patch.object(probe.ctypes, "WinDLL", dll, create=True))
+        return stack
+
+    def test_authenticode_failure_does_not_continue_to_root_lookup(self):
+        api = mock.Mock()
+        api.WinVerifyTrust.side_effect = [0x800b0101]
+        dll = mock.Mock(return_value=api)
+        with self.windows_probe(dll), self.assertRaisesRegex(RuntimeError, "0x800b0101"):
+            probe.verify(self.exe, self.ca)
+        self.assertEqual(api.WinVerifyTrust.call_count, 1)
+        dll.assert_called_once_with("wintrust")
+        self.assertEqual(self.exe.read_bytes(), self.original)
+
+    def test_success_stub_is_rejected_by_actual_section_negative_control(self):
+        seen = []
+        def accepts_everything(_window, _action, data):
+            info = data._obj
+            self.assertEqual(info.dwProvFlags, 0)
+            seen.append(Path(info.pFile.contents.pcwszFilePath).read_bytes())
+            return 0
+        api = mock.Mock()
+        api.WinVerifyTrust.side_effect = accepts_everything
+        dll = mock.Mock(return_value=api)
+        with self.windows_probe(dll), self.assertRaisesRegex(RuntimeError, "accepted a tampered"):
+            probe.verify(self.exe, self.ca)
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(seen[0], self.original)
+        self.assertEqual(sum(a != b for a, b in zip(*seen)), 1)
+        dll.assert_called_once_with("wintrust")
+        self.assertEqual(self.exe.read_bytes(), self.original)
+
+    def test_root_success_report_requires_valid_original_and_rejected_tampered_copy(self):
+        trust = mock.Mock()
+        trust.WinVerifyTrust.side_effect = [0, 0x80096010]
+        crypt = mock.Mock()
+        crypt.CertOpenSystemStoreW.return_value = 1
+        references = []
+        def find_exact_root(*_args):
+            context = crypt.CertFindCertificateInStore.restype._type_()
+            data = (ctypes.c_ubyte * 4).from_buffer_copy(b"game")
+            context.pbCertEncoded = data
+            context.cbCertEncoded = len(data)
+            references.extend([context, data])
+            return ctypes.pointer(context)
+        crypt.CertFindCertificateInStore.side_effect = find_exact_root
+        dll = mock.Mock(side_effect=[trust, crypt])
+        with self.windows_probe(dll):
+            report = probe.verify(self.exe, self.ca)
+        self.assertEqual(trust.WinVerifyTrust.call_count, 2)
+        self.assertIs(report["tamperedExecutableRejected"], True)
+        self.assertEqual(report["authenticode"], "Valid")
+        self.assertIs(report["caTrustedRoot"], True)
+        self.assertIs(report["trustInstalled"], False)
+        crypt.CertAddEncodedCertificateToStore.assert_not_called()
+        crypt.CertFreeCertificateContext.assert_called_once()
+        crypt.CertCloseStore.assert_called_once_with(1, 0)
+        self.assertEqual(self.exe.read_bytes(), self.original)
 
 
 if __name__ == "__main__":

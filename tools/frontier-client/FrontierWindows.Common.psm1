@@ -42,7 +42,19 @@ function Get-FrontierNpmPath {
 }
 
 function Get-FrontierPython312Path {
-    param([string]$RepoRoot)
+    param([string]$RepoRoot, [string]$PythonPath)
+
+    $selected = if ($PythonPath) { $PythonPath } else { $env:EVEJS_FRONTIER_NATIVE_PYTHON312 }
+    if ($selected) {
+        $command = Get-Command $selected -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if (-not $command) { throw "The selected native Python executable was not found: $selected" }
+        $facts = & $command.Source -c 'import platform,struct,sys; print(platform.python_implementation(),str(sys.version_info.major)+"."+str(sys.version_info.minor),struct.calcsize("P")*8,sep="|")'
+        if ($LASTEXITCODE -ne 0 -or $facts.Trim() -ne 'CPython|3.12|64') {
+            throw "The selected native interpreter is not CPython 3.12 x64: $selected ($facts)"
+        }
+        return [IO.Path]::GetFullPath($command.Source)
+    }
 
     if ($RepoRoot) {
         $venv = Join-Path $RepoRoot '_local\frontier-python312\Scripts\python.exe'

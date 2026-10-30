@@ -3,6 +3,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$(uname -s)" == "Linux" ]]; then
+  exec bash "$SCRIPT_DIR/StageFrontierClientLinux.sh" "$@"
+fi
 BUILD="3467658"
 SOURCE_ROOT="${HOME}/Library/Application Support/EVE Frontier"
 STAGED_BASE="${HOME}/Library/Application Support/evejs-frontier/macos/staged-client"

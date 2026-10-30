@@ -7,6 +7,7 @@ const { getCharacterRecord } = require(path.join(
   "../character/characterState",
 ));
 const {
+  buildDict,
   buildKeyVal,
   buildList,
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
@@ -156,6 +157,20 @@ function buildSingleRankInfo(characterID, charData, session) {
 class FacWarMgrService extends BaseService {
   constructor() {
     super("facWarMgr");
+  }
+
+  Handle_GetFacWarSystems() {
+    // The local warfare runtime has no configured theaters, matching
+    // fwWarzoneSolarsystem's empty occupation state. General map factionID
+    // ownership does not designate a system as a faction-warfare system.
+    // The client caches and tests membership in this collection; None fails.
+    return buildList([]);
+  }
+
+  Handle_GetAllSystemOccupiers() {
+    // No warfare systems means no warfare occupiers. Keep the dictionary
+    // contract used by map consumers without inventing classic-EVE occupancy.
+    return buildDict([]);
   }
 
   Handle_GetMyCharacterRankOverview(args, session) {

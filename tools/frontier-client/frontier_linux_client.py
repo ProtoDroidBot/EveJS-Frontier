@@ -129,20 +129,129 @@ def boot_id() -> str:
     return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 
 
-def process_identity(pid: int, stage: Path, prefix: Path) -> dict:
+def process_snapshot(pid: int) -> dict:
     proc = Path("/proc") / str(pid)
+    started = process_start(pid)
+    if started is None:
+        raise FileNotFoundError(f"Process {pid} is no longer live.")
     argv_bytes = (proc / "cmdline").read_bytes()
-    argv = argv_bytes.decode(errors="replace").split("\0")
+    argv = argv_bytes.decode(errors="replace").rstrip("\0").split("\0")
     environment = (proc / "environ").read_bytes().decode(errors="replace").split("\0")
-    expected = {str(stage / "bin64/exefile.exe"), windows_path(stage / "bin64/exefile.exe")}
     cwd = os.readlink(proc / "cwd")
-    checks = {"user": proc.stat().st_uid == os.getuid(), "staged executable": bool(expected.intersection(argv)),
-              "working directory": cwd == str(stage / "bin64"), "prefix": f"WINEPREFIX={prefix}" in environment}
+    executable = os.readlink(proc / "exe")
+    fields = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+    if process_start(pid) != started:
+        raise LinuxClientError("Process identity changed while inspecting /proc.")
+    return {"pid": pid, "parentPid": int(fields[1]), "uid": proc.stat().st_uid,
+            "processStartTicks": started, "processExecutable": executable, "cwd": cwd,
+            "commandSha256": hashlib.sha256(argv_bytes).hexdigest(),
+            "argv": argv, "environment": environment}
+
+
+def known_bwrap_executable(executable: str) -> bool:
+    # Do not recognize a user-created executable merely named bwrap, or a
+    # PATH override. These are the system locations used by Flatpak packages.
+    for system_path in ("/usr/bin/bwrap", "/bin/bwrap", "/usr/libexec/flatpak-bwrap",
+                        "/usr/lib/flatpak/flatpak-bwrap"):
+        try:
+            if os.path.samefile(executable, system_path):
+                return True
+        except FileNotFoundError:
+            continue
+    return False
+
+
+def flatpak_selector_matches(argv: list[str], stage: Path, prefix: Path, runner: Path) -> bool:
+    if (len(argv) < 12 or Path(argv[0]).name not in {"bwrap", "flatpak-bwrap"}
+            or argv[1] != "--args" or not argv[2].isdigit() or argv[3:11] != [
+                "--", "env", "-u", "WINELOADER", "-u", "WINESERVER", "-u", "WINEDLLPATH"]):
+        return False
+    index, environment = 11, {}
+    allowed = {"WINEPREFIX", "EO_REMOTEFILECACHEFOLDER", "FRONTIER_PUBLIC_GATEWAY_ADDRESS",
+               "FRONTIER_PUBLIC_GATEWAY_IS_SECURE", "JSONL-LOGPATH"}
+    while index < len(argv) and re.match(r"^[A-Za-z_][A-Za-z0-9_-]*=", argv[index]):
+        name, value = argv[index].split("=", 1)
+        if name not in allowed or name in environment:
+            return False
+        environment[name] = value
+        index += 1
+    expected = {str(stage / "bin64/exefile.exe"), windows_path(stage / "bin64/exefile.exe")}
+    return (environment.get("WINEPREFIX") == str(prefix) and index + 1 < len(argv)
+            and argv[index] == str(runner) and argv[index + 1] in expected)
+
+
+def process_children(pid: int) -> list[int]:
+    return [int(value) for value in (Path("/proc") / str(pid) / "task" / str(pid) / "children").read_text().split()]
+
+
+def bound_flatpak_client(snapshot: dict, stage: Path, prefix: Path, runner: Path, app: str) -> bool:
+    expected = {str(stage / "bin64/exefile.exe"), windows_path(stage / "bin64/exefile.exe")}
+    environment = snapshot["environment"]
+    executable = Path(snapshot["processExecutable"]).resolve()
+    return (snapshot["uid"] == os.getuid() and snapshot["argv"] and snapshot["argv"][0] in expected
+            and snapshot["cwd"] == str(stage / "bin64")
+            and [value for value in environment if value.startswith("WINEPREFIX=")] == [f"WINEPREFIX={prefix}"]
+            and [value for value in environment if value.startswith("FLATPAK_ID=")] == [f"FLATPAK_ID={app}"]
+            and executable.is_relative_to(runner.parent.parent.resolve())
+            and executable.name in {"wine", "wine64", "wine-preloader", "wine64-preloader"})
+
+
+def captured_client_identity(snapshot: dict) -> dict:
+    return {key: snapshot[key] for key in ("pid", "processStartTicks", "processExecutable", "cwd", "commandSha256")}
+
+
+def flatpak_client_identity(pid: int, stage: Path, prefix: Path, runner: Path, app: str) -> dict:
+    """Prove a live client descendant, independently of supervisor argv/env."""
+    pending, visited, matches = [(pid, 0)], set(), []
+    while pending:
+        parent, depth = pending.pop(0)
+        if parent in visited:
+            continue
+        visited.add(parent)
+        if len(visited) > 256:
+            raise LinuxClientError("Flatpak client process tree exceeds the verification bound.")
+        try:
+            children = process_children(parent)
+        except FileNotFoundError:
+            continue
+        if (depth >= 8 and children) or len(visited) + len(pending) + len(children) > 256:
+            raise LinuxClientError("Flatpak client process tree exceeds the verification bound.")
+        for child_pid in children:
+            try:
+                child = process_snapshot(child_pid)
+            except FileNotFoundError:
+                continue
+            if child["parentPid"] != parent or child["uid"] != os.getuid():
+                continue
+            if depth < 8:
+                pending.append((child_pid, depth + 1))
+            if bound_flatpak_client(child, stage, prefix, runner, app):
+                matches.append(captured_client_identity(child))
+    if len(matches) != 1:
+        raise LinuxClientError("Cannot prove one live staged Wine client in the selected Flatpak prefix.")
+    return matches[0]
+
+
+def process_identity(pid: int, stage: Path, prefix: Path, *, flatpak_app=None, runner=None, include_flatpak_client=True) -> dict:
+    snapshot = process_snapshot(pid)
+    expected = {str(stage / "bin64/exefile.exe"), windows_path(stage / "bin64/exefile.exe")}
+    checks = {"user": snapshot["uid"] == os.getuid(), "staged executable": bool(expected.intersection(snapshot["argv"])),
+              "working directory": snapshot["cwd"] == str(stage / "bin64")}
+    if flatpak_app:
+        checks["Flatpak application"] = isinstance(flatpak_app, str) and bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+){2,}", flatpak_app))
+        checks["Flatpak supervisor"] = known_bwrap_executable(snapshot["processExecutable"])
+        checks["prefix and runner selector"] = runner is not None and flatpak_selector_matches(snapshot["argv"], stage, prefix, runner)
+    else:
+        checks["prefix"] = [value for value in snapshot["environment"] if value.startswith("WINEPREFIX=")] == [f"WINEPREFIX={prefix}"]
     if not all(checks.values()):
         raise LinuxClientError("Live PID no longer identifies this stage: " + ", ".join(key for key, valid in checks.items() if not valid))
-    return {"bootId": boot_id(), "processStartTicks": process_start(pid),
-            "processExecutable": os.readlink(proc / "exe"), "cwd": cwd,
-            "commandSha256": hashlib.sha256(argv_bytes).hexdigest()}
+    identity = {"bootId": boot_id(), **{key: snapshot[key] for key in (
+        "processStartTicks", "processExecutable", "cwd", "commandSha256")}}
+    if flatpak_app:
+        identity.update({"flatpakApp": flatpak_app, "processKind": "flatpak-bwrap-v1"})
+        if include_flatpak_client:
+            identity["flatpakClient"] = flatpak_client_identity(pid, stage, prefix, runner, flatpak_app)
+    return identity
 
 
 def remove_matching_process_marker(path: Path, record: dict) -> None:
@@ -152,15 +261,15 @@ def remove_matching_process_marker(path: Path, record: dict) -> None:
             path.unlink()
 
 
-def wait_for_process_identity(process, stage: Path, prefix: Path) -> dict:
+def wait_for_process_identity(process, stage: Path, prefix: Path, *, flatpak_app=None, runner=None) -> dict:
     """Let exec/loader transitions settle before recording a strict /proc snapshot."""
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + (10 if flatpak_app else 2)
     previous = None
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise LinuxClientError("Wine exited before the client process could be recorded.")
         try:
-            identity = process_identity(process.pid, stage, prefix)
+            identity = process_identity(process.pid, stage, prefix, flatpak_app=flatpak_app, runner=runner)
             if identity == previous and identity["processStartTicks"] is not None:
                 return identity
             previous = identity
@@ -175,7 +284,6 @@ def windows_path(path: Path) -> str:
 
 
 def assert_not_running(stage: Path) -> None:
-    expected = {str(stage / "bin64/exefile.exe"), windows_path(stage / "bin64/exefile.exe")}
     marker_path = stage / ".linux-runtime/client.pid.json"
     if marker_path.exists():
         owner_file(marker_path)
@@ -184,21 +292,33 @@ def assert_not_running(stage: Path) -> None:
             raise LinuxClientError("Cannot verify the Linux client process marker.")
         if record.get("bootId") == boot_id() and process_start(int(record["pid"])) == record.get("processStartTicks"):
             raise LinuxClientError("The stage's marker-owned client is running.")
+    live = stage_processes(stage)
+    if live:
+        raise LinuxClientError(f"The staged executable is running (pid={live[0]}).")
+
+
+def stage_processes(stage: Path) -> list[int]:
+    """Read-only census; exact argv matches never confer signal ownership."""
+    expected = {str(stage / "bin64/exefile.exe"), windows_path(stage / "bin64/exefile.exe")}
+    live = []
     for process in Path("/proc").iterdir():
         if not process.name.isdigit():
             continue
+        uid = None
         try:
+            uid = process.stat().st_uid
             args = (process / "cmdline").read_bytes().decode(errors="replace").split("\0")
         except FileNotFoundError:
             continue
         except PermissionError as error:
             # Other users cannot own our private stage, but an unreadable process
             # from this user prevents proving that cleanup is safe.
-            if process.stat().st_uid == os.getuid():
+            if uid is None or uid == os.getuid():
                 raise LinuxClientError(f"Cannot inspect same-user process {process.name}.") from error
             continue
-        if expected.intersection(args):
-            raise LinuxClientError(f"The staged executable is running (pid={process.name}).")
+        if uid == os.getuid() and expected.intersection(args) and process_start(int(process.name)) is not None:
+            live.append(int(process.name))
+    return sorted(live)
 
 
 def options(args) -> dict:
@@ -379,11 +499,21 @@ def verify_runtime_trust(args, stage: Path, *, install: bool = False) -> dict:
         report = json.loads(result.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError) as error:
         raise LinuxClientError("Wine trust probe did not return valid JSON.") from error
-    if (report.get("valid") is not True or report.get("caFingerprintSha256") != fingerprint
+    if (not isinstance(report, dict) or report.get("valid") is not True or report.get("caFingerprintSha256") != fingerprint
             or report.get("exefileSha256") != core.sha256_file(exefile)):
         raise LinuxClientError("Wine trust evidence does not match this CA and staged executable.")
-    if install and report.get("dappFingerprintSha256") != dapp_fingerprint:
-        raise LinuxClientError("Wine trust evidence does not match the selected dApp public certificate.")
+    if report.get("caTrustedRoot") is not True:
+        raise LinuxClientError("Wine trust evidence does not prove the exact game CA is trusted in ROOT.")
+    if install:
+        if (report.get("trustInstalled") is not True or report.get("dappTrustedRoot") is not True
+                or report.get("authenticode") != "not-probed; mandatory on launch"
+                or report.get("tamperedExecutableRejected") is not False):
+            raise LinuxClientError("Wine trust installation evidence does not match the requested install-only operation.")
+        if report.get("dappFingerprintSha256") != dapp_fingerprint:
+            raise LinuxClientError("Wine trust evidence does not match the selected dApp public certificate.")
+    elif (report.get("authenticode") != "Valid" or report.get("trustInstalled") is not False
+          or report.get("tamperedExecutableRejected") is not True):
+        raise LinuxClientError("Wine trust evidence does not prove Authenticode validity and tampered-executable rejection for this launch.")
     return report
 
 
@@ -454,7 +584,8 @@ def launch(args) -> dict:
             ticks = process_start(process.pid)
             if ticks is None or process.poll() is not None:
                 raise LinuxClientError("Wine exited before the client process could be recorded.")
-            identity = wait_for_process_identity(process, stage, absolute(args.wine_prefix))
+            identity = wait_for_process_identity(process, stage, absolute(args.wine_prefix),
+                flatpak_app=args.flatpak_app, runner=absolute(args.wine_runner).resolve())
             record = {"format": PROCESS_FORMAT, "pid": process.pid,
                 **identity, "stage": str(stage), "prefix": str(absolute(args.wine_prefix)),
                 "runner": str(absolute(args.wine_runner).resolve()), "build": args.build,
@@ -494,6 +625,9 @@ def runtime_status(stage: Path, build: int) -> tuple[dict, dict | None]:
     load_owned_stage(stage, build)
     pidfile = stage / ".linux-runtime/client.pid.json"
     if not pidfile.exists():
+        untracked = stage_processes(stage)
+        if untracked:
+            return {"state": "untracked-running", "stage": str(stage), "build": build, "pids": untracked}, None
         return {"state": "stopped", "stage": str(stage), "build": build}, None
     owner_file(pidfile)
     record = core.read_json(pidfile)
@@ -502,16 +636,47 @@ def runtime_status(stage: Path, build: int) -> tuple[dict, dict | None]:
             or record["pid"] <= 1 or not record.get("prefix") or not record.get("runner")):
         raise LinuxClientError("Cannot verify the marker-owned client identity.")
     state = "stale"
+    supervisor_running = client_running = False
     if (record.get("bootId") == boot_id()
             and process_start(record["pid"]) == record.get("processStartTicks")):
         try:
-            identity = process_identity(record["pid"], stage, Path(record["prefix"]))
+            identity = process_identity(record["pid"], stage, Path(record["prefix"]),
+                flatpak_app=record.get("flatpakApp"), runner=Path(record["runner"]), include_flatpak_client=False)
             if any(identity[key] != record.get(key) for key in identity):
                 raise LinuxClientError("Live PID executable, command or working directory changed since launch.")
             state = "running"
+            supervisor_running = True
         except FileNotFoundError:
             pass
-    return {"state": state, "stage": str(stage), "build": build, "pid": record["pid"]}, record
+    signal_pid = record["pid"]
+    if record.get("flatpakApp"):
+        child = record.get("flatpakClient")
+        if (record.get("processKind") != "flatpak-bwrap-v1" or not isinstance(child, dict)
+                or type(child.get("pid")) is not int or child["pid"] <= 1 or not child.get("processStartTicks")):
+            raise LinuxClientError("Flatpak process marker has no captured client identity.")
+        if record.get("bootId") == boot_id() and process_start(child["pid"]) == child["processStartTicks"]:
+            try:
+                snapshot = process_snapshot(child["pid"])
+                if (not bound_flatpak_client(snapshot, stage, Path(record["prefix"]), Path(record["runner"]), record["flatpakApp"])
+                        or captured_client_identity(snapshot) != child):
+                    raise LinuxClientError("Captured Wine client identity changed since launch.")
+                client_running = True
+                state = "running"
+                if not supervisor_running:
+                    signal_pid = child["pid"]
+            except FileNotFoundError:
+                pass
+        if supervisor_running and not client_running:
+            state = "client-exited"
+    report = {"state": state, "stage": str(stage), "build": build, "pid": signal_pid}
+    if record.get("flatpakApp"):
+        report.update({"supervisorRunning": supervisor_running, "clientRunning": client_running,
+                       "supervisorPid": record["pid"]})
+    if state == "stale":
+        untracked = stage_processes(stage)
+        if untracked:
+            report.update({"state": "untracked-running", "pids": untracked})
+    return report, record
 
 
 def stop_client(args) -> dict:
@@ -522,16 +687,25 @@ def stop_client(args) -> dict:
 
 def stop_client_locked(args, stage: Path) -> dict:
     report, record = runtime_status(stage, args.build)
-    if args.dry_run or record is None:
+    if args.dry_run or record is None or report["state"] == "untracked-running":
         report["dryRun"] = args.dry_run
         return report
-    if report["state"] == "running":
-        pid = record["pid"]
+    if report["state"] in {"running", "client-exited"}:
         # Revalidate immediately before the signal. Never use a prefix-wide
         # wineserver kill, which could terminate unrelated applications.
         fresh, _ = runtime_status(stage, args.build)
-        if fresh["state"] == "running":
-            if record.get("background") and os.getpgid(pid) == pid:
+        if record.get("flatpakApp") and fresh.get("clientRunning"):
+            # A Wine client may have a different process group/session from
+            # bwrap. Signal its captured, freshly verified PID explicitly.
+            try:
+                os.kill(record["flatpakClient"]["pid"], signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            fresh, _ = runtime_status(stage, args.build)
+        if fresh["state"] in {"running", "client-exited"} and (
+                not record.get("flatpakApp") or fresh.get("supervisorRunning")):
+            pid = fresh["pid"]
+            if record.get("background") and pid == record["pid"] and os.getpgid(pid) == pid:
                 os.killpg(pid, signal.SIGTERM)
             else:
                 os.kill(pid, signal.SIGTERM)

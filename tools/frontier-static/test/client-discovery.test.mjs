@@ -10,15 +10,15 @@ function writeFile(filePath, contents = "fixture") {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, contents);
 }
-function populateBuild(buildRoot, { build, platform, sync = build, blueName = platform === "windows" ? "blue.pyd" : "blue.so", } = {}) {
+function populateBuild(buildRoot, { build, platform, sync = build, blueName = platform === "windows" ? "blue.pyd" : "blue.so", codename = "cycle-6", branch = "//frontier/cycle-6", } = {}) {
     writeFile(path.join(buildRoot, "start.ini"), [
         "[main]",
         "version = 20.04",
         `build = ${build}`,
-        "codename = cycle-6",
+        `codename = ${codename}`,
         "region = ccp",
         `sync = ${sync}`,
-        "branch = //frontier/cycle-6",
+        `branch = ${branch}`,
         "appname = FRONTIER",
         "",
     ].join("\n"));
@@ -66,6 +66,7 @@ test("discovers the Windows channel layout and records exact metadata", (t) => {
     assert.equal(selected.metadata.region, "ccp");
     assert.equal(selected.nativeBlueName, "blue.pyd");
     assert.equal(selected.buildRoot, fs.realpathSync.native(buildRoot));
+    assert.equal(selected.files.collisionBundle, fs.realpathSync.native(path.join(buildRoot, "bin64", "bundle.collision")));
     assert.equal(selected.resFilesRoot, fs.realpathSync.native(path.join(root, "ResFiles")));
 });
 test("accepts an explicit Windows build directory with sibling ResFiles", (t) => {
@@ -78,6 +79,28 @@ test("accepts an explicit Windows build directory with sibling ResFiles", (t) =>
     assert.equal(selected.channel, "stillness");
     assert.equal(selected.nativeBlueName, "blue.dll");
     assert.equal(selected.clientRoot, fs.realpathSync.native(root));
+});
+test("discovers historical clients without collision bundles and omits unavailable paths from JSON", (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "Frontier Historical Client "));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const buildRoot = makeWindowsFixture(root, "nebula", 2703993, {
+        codename: "FRONTIER-RELEASE",
+        branch: "//eve-frontier/branches/release/RELEASE",
+    });
+    fs.rmSync(path.join(buildRoot, "bin64", "bundle.collision"));
+    const selected = selectBuild(discoverFrontierClients({ clientRoot: buildRoot }), 2703993);
+    assert.equal(selected.metadata.build, 2703993);
+    assert.equal(selected.metadata.sync, 2703993);
+    assert.equal(selected.metadata.codename, "FRONTIER-RELEASE");
+    assert.equal(selected.metadata.branch, "//eve-frontier/branches/release/RELEASE");
+    assert.equal(selected.channel, "nebula");
+    assert.equal(selected.platform, "windows");
+    assert.equal(Object.hasOwn(selected.files, "collisionBundle"), false);
+    const result = spawnSync(process.execPath, [DISCOVERY_CLI, "--client-root", buildRoot, "--build", "2703993", "--json"], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    const record = JSON.parse(result.stdout);
+    assert.deepEqual(record.metadata, selected.metadata);
+    assert.equal(Object.hasOwn(record.files, "collisionBundle"), false);
 });
 test("preserves discovery of the existing macOS SharedCache app layout", (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontier-macos-"));

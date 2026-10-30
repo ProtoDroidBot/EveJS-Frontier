@@ -1,0 +1,337 @@
+{
+  "format": "evejs-frontier-feature-profile-evidence-v1",
+  "build": 2703993,
+  "source": {
+    "clientDirectory": "nebula",
+    "archiveSHA256": "c31d2d4ba8edbd1e15297623dbb6856b6f515376e20b2286da98c20ecda271a9",
+    "pythonVersion": "3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]",
+    "method": "Read-only CPython 3.12 marshal/dis inspection of supplied code.ccp; no client imports or gameplay launch"
+  },
+  "modules": {
+    "frontier/beta.pyc": {
+      "profile": {
+        "source_member_sha256": "32fe75fe9dc31b34e3ac90856c5aa2f375dbae58e6aabd3b25fca978d593df43",
+        "source_code_sha256": "d32a556f2f82c16f7af7a491934da6d7c281be6e0589a2186641d55915f9ed3e",
+        "patched_member_sha256": "13a6a8b92dd20bed31eb1c00df27f1b238ade5eace8aae218ccae902020a8224",
+        "patched_code_sha256": "2e73c01ab4de9e889318139ec1f135f357133aefb6bbc0d85c1b9885a3294be0"
+      },
+      "sourceAssignments": {
+        "FRNOTIER_BETA_HIDE_CYNO_JUMP": true,
+        "FRONTIER_BETA_CLIENT_RANGE_BASED_OCCLUSION": true,
+        "FRONTIER_BETA_DISABLE_LOW_POST_PROCESSING_OPTION": true,
+        "FRONTIER_BETA_DISABLE_SCANNING": true,
+        "FRONTIER_BETA_DISABLE_WEAPON_GROUPS": true,
+        "FRONTIER_BETA_GOTO_LINE_COMMAND_ENABLED": false,
+        "FRONTIER_BETA_HIDE_AGENTS": true,
+        "FRONTIER_BETA_HIDE_AGENTS_LOBBY_WINDOW": true,
+        "FRONTIER_BETA_HIDE_CHARACTER_CLONE_STATE": true,
+        "FRONTIER_BETA_HIDE_CHARACTER_DECORATIONS": true,
+        "FRONTIER_BETA_HIDE_CHARACTER_INFO": true,
+        "FRONTIER_BETA_HIDE_CHARACTER_INTERACTION_SECURITY_STATUS": true,
+        "FRONTIER_BETA_HIDE_CHARACTER_SHEET_AUGMENTATIONS_TAB": true,
+        "FRONTIER_BETA_HIDE_CHARACTER_SHEET_SKINS_TAB": true,
+        "FRONTIER_BETA_HIDE_CLASSIC_MAP": true,
+        "FRONTIER_BETA_HIDE_CONTEXTUAL_OFFERS": true,
+        "FRONTIER_BETA_HIDE_CORPORATION_OFFICES": true,
+        "FRONTIER_BETA_HIDE_CSAT_SURVEY": true,
+        "FRONTIER_BETA_HIDE_DAILY_LOGIN_REWARDS": true,
+        "FRONTIER_BETA_HIDE_DRONES_AND_FIGHTERS": true,
+        "FRONTIER_BETA_HIDE_EMPTY_WRECKS": true,
+        "FRONTIER_BETA_HIDE_FITTING_CAPACITOR_PANEL": true,
+        "FRONTIER_BETA_HIDE_HYPERNET_RELAY": true,
+        "FRONTIER_BETA_HIDE_JOURNAL": true,
+        "FRONTIER_BETA_HIDE_JUMP_CLONES": true,
+        "FRONTIER_BETA_HIDE_LANGUAGE_SELECTION": true,
+        "FRONTIER_BETA_HIDE_LEGACY_HUD": true,
+        "FRONTIER_BETA_HIDE_LOBBY_WINDOW": true,
+        "FRONTIER_BETA_HIDE_MAP_BROWSER": true,
+        "FRONTIER_BETA_HIDE_MINING_LEDGER": true,
+        "FRONTIER_BETA_HIDE_MOON_MINING": true,
+        "FRONTIER_BETA_HIDE_PLEX": true,
+        "FRONTIER_BETA_HIDE_PROJECT_DISCOVERY": true,
+        "FRONTIER_BETA_HIDE_PROVING_GROUNDS": true,
+        "FRONTIER_BETA_HIDE_RIGS_AND_SUBSYSTEMS": true,
+        "FRONTIER_BETA_HIDE_SCHOOL_STATION": true,
+        "FRONTIER_BETA_HIDE_SECURITY_MARKET": true,
+        "FRONTIER_BETA_HIDE_SECURITY_OFFICE": true,
+        "FRONTIER_BETA_HIDE_SHIP_STANCE": true,
+        "FRONTIER_BETA_HIDE_SHIP_TREE": true,
+        "FRONTIER_BETA_HIDE_SKILLS": true,
+        "FRONTIER_BETA_HIDE_SKINS": true,
+        "FRONTIER_BETA_HIDE_STANDING": true,
+        "FRONTIER_BETA_HIDE_STRUCTURES": true,
+        "FRONTIER_BETA_HIDE_TARGET_ROTATING_ARROWS": true,
+        "FRONTIER_BETA_LOCAL_CHAT_BLACKOUT_ENABLED": true,
+        "FRONTIER_BETA_PLACEHOLDER_CHARACTER_PORTRAITS_ENABLED": true,
+        "FRONTIER_BETA_SAFETY_DEFAULT_OFF": true,
+        "FRONTIER_BETA_SHOW_ID_BARCODE": true
+      },
+      "selectedAssignments": {
+        "FRONTIER_BETA_HIDE_SKILLS": {
+          "source": true,
+          "patched": false
+        }
+      },
+      "assignmentLoadOffset": 26,
+      "codeByteDifferences": [
+        27
+      ]
+    }
+  },
+  "scope": {
+    "selected": [
+      "FRONTIER_BETA_HIDE_SKILLS"
+    ],
+    "absentModernAssignments": [
+      "FRONTIER_BETA_HIDE_MAPVIEW_MARKERS",
+      "FRONTIER_BETA_DISABLE_SAFE_LOGOFF",
+      "FRONTIER_BETA_HIDE_HUD_SYSTEM_INFO_PANEL",
+      "FRONTIER_BETA_HIDE_HUD_ROUTE_PANEL",
+      "FRONTIER_BETA_HIDE_HUD_SEARCH_PANEL"
+    ],
+    "absentModules": [
+      "frontier/shell/common/const.pyc"
+    ],
+    "preservedPolicy": "Keep every other source assignment and all other modules unchanged; retain Phase4 scanning, drones/fighters, rigs, structures, and range-occlusion choices."
+  },
+  "selectedConsumers": [
+    {
+      "function": "<module>",
+      "line": 1,
+      "member": "frontier/beta.pyc"
+    },
+    {
+      "function": "<module>",
+      "line": 1,
+      "member": "eve/client/script/ui/eveCommands.pyc"
+    },
+    {
+      "function": "EveCommandService",
+      "line": 339,
+      "member": "eve/client/script/ui/eveCommands.pyc"
+    },
+    {
+      "function": "EveCommandService.SetDefaultShortcutMappingGAME",
+      "line": 489,
+      "member": "eve/client/script/ui/eveCommands.pyc"
+    },
+    {
+      "function": "<module>",
+      "line": 1,
+      "member": "eve/client/script/ui/login/charSelection/characterSlots.pyc"
+    },
+    {
+      "function": "SmallCharacterSlot.LoadSlot",
+      "line": 633,
+      "member": "eve/client/script/ui/login/charSelection/characterSlots.pyc"
+    },
+    {
+      "function": "SkillQueueCont.SetSkillQueueActivityState",
+      "line": 1082,
+      "member": "eve/client/script/ui/login/charSelection/characterSlots.pyc"
+    },
+    {
+      "function": "<module>",
+      "line": 1,
+      "member": "eve/client/script/ui/shared/fittingScreen/filterBtn.pyc"
+    },
+    {
+      "function": "AddHardwareButtons",
+      "line": 47,
+      "member": "eve/client/script/ui/shared/fittingScreen/filterBtn.pyc"
+    },
+    {
+      "function": "AddFittingFilterButtons",
+      "line": 75,
+      "member": "eve/client/script/ui/shared/fittingScreen/filterBtn.pyc"
+    },
+    {
+      "function": "<module>",
+      "line": 1,
+      "member": "eve/client/script/ui/shared/fittingScreen/warningIconCont.pyc"
+    },
+    {
+      "function": "WarningIconCont.ApplyAttributes",
+      "line": 24,
+      "member": "eve/client/script/ui/shared/fittingScreen/warningIconCont.pyc"
+    },
+    {
+      "function": "WarningIconCont.__UpdateIcon_thread",
+      "line": 84,
+      "member": "eve/client/script/ui/shared/fittingScreen/warningIconCont.pyc"
+    },
+    {
+      "function": "<module>",
+      "line": 1,
+      "member": "eve/client/script/ui/shared/info/infoWindow.pyc"
+    },
+    {
+      "function": "InfoWindow.ConstructHeaderShip",
+      "line": 1039,
+      "member": "eve/client/script/ui/shared/info/infoWindow.pyc"
+    },
+    {
+      "function": "<module>",
+      "line": 1,
+      "member": "eve/client/script/ui/shared/info/panels/panelRequirements.pyc"
+    },
+    {
+      "function": "PanelRequirements.RequirementsVisible",
+      "line": 39,
+      "member": "eve/client/script/ui/shared/info/panels/panelRequirements.pyc"
+    },
+    {
+      "function": "<module>",
+      "line": 1,
+      "member": "eve/client/script/ui/shared/market/marketbase.pyc"
+    },
+    {
+      "function": "MarketBase.SettingMenu",
+      "line": 650,
+      "member": "eve/client/script/ui/shared/market/marketbase.pyc"
+    },
+    {
+      "function": "MarketBase.LoadDetails",
+      "line": 1275,
+      "member": "eve/client/script/ui/shared/market/marketbase.pyc"
+    },
+    {
+      "function": "MarketBase.ReloadType",
+      "line": 1984,
+      "member": "eve/client/script/ui/shared/market/marketbase.pyc"
+    },
+    {
+      "function": "MarketGroupEntry.ApplyAttributes",
+      "line": 3223,
+      "member": "eve/client/script/ui/shared/market/marketbase.pyc"
+    },
+    {
+      "function": "<module>",
+      "line": 1,
+      "member": "eve/client/script/ui/shared/neocom/characterSheetWindow.pyc"
+    },
+    {
+      "function": "CharacterSheetWindow.OpenSkillHistory",
+      "line": 446,
+      "member": "eve/client/script/ui/shared/neocom/characterSheetWindow.pyc"
+    },
+    {
+      "function": "CharacterSheetWindow.OpenSkillHistoryHilightSkills",
+      "line": 484,
+      "member": "eve/client/script/ui/shared/neocom/characterSheetWindow.pyc"
+    },
+    {
+      "function": "<module>",
+      "line": 1,
+      "member": "eve/client/script/ui/shared/neocom/charsheet/characterOverviewPanel/characterOverviewPanel.pyc"
+    },
+    {
+      "function": "CharacterSheetCharacterOverviewPanel.ConstructCharacterInfo",
+      "line": 188,
+      "member": "eve/client/script/ui/shared/neocom/charsheet/characterOverviewPanel/characterOverviewPanel.pyc"
+    },
+    {
+      "function": "CharacterSheetCharacterOverviewPanel.ConstructBottomCont",
+      "line": 287,
+      "member": "eve/client/script/ui/shared/neocom/charsheet/characterOverviewPanel/characterOverviewPanel.pyc"
+    },
+    {
+      "function": "<module>",
+      "line": 1,
+      "member": "eve/client/script/ui/shared/neocom/charsheet/characterPanel.pyc"
+    },
+    {
+      "function": "CharacterPanel.ConstructLayout",
+      "line": 38,
+      "member": "eve/client/script/ui/shared/neocom/charsheet/characterPanel.pyc"
+    },
+    {
+      "function": "<module>",
+      "line": 1,
+      "member": "eve/client/script/ui/shared/neocom/charsheet/historyPanel.pyc"
+    },
+    {
+      "function": "HistoryPanel.ConstructLayout",
+      "line": 21,
+      "member": "eve/client/script/ui/shared/neocom/charsheet/historyPanel.pyc"
+    },
+    {
+      "function": "<module>",
+      "line": 1,
+      "member": "eve/client/script/ui/shared/neocom/neocom/neocomContainer.pyc"
+    },
+    {
+      "function": "NeocomContainer._ConstructCharCont",
+      "line": 258,
+      "member": "eve/client/script/ui/shared/neocom/neocom/neocomContainer.pyc"
+    },
+    {
+      "function": "<module>",
+      "line": 1,
+      "member": "eve/client/script/ui/shared/tooltip/item.pyc"
+    },
+    {
+      "function": "InventoryItemTooltip.Layout",
+      "line": 43,
+      "member": "eve/client/script/ui/shared/tooltip/item.pyc"
+    }
+  ],
+  "serverSupport": {
+    "skillManager": "server/src/services/skills/skillMgrService.ts",
+    "skillHandler": "server/src/services/skills/skillHandlerService.ts",
+    "skillManager2": "server/src/services/skills/skillMgr2Service.ts",
+    "auditedManagerMethods": [
+      "GetMySkillInfo",
+      "GetSkills",
+      "GetSkillHistory",
+      "GetSkillQueue",
+      "GetSkillQueueAndFreePoints",
+      "SaveNewQueue",
+      "AbortTraining",
+      "GetAttributes",
+      "PurchaseSkills",
+      "InjectSkillIntoBrain"
+    ],
+    "qualification": "The existing legacy skillMgr/skillHandler service supplies skill state/history and queue/training operations. The patch removes only the existing legacy UI suppression. This source audit does not establish native rendering or gameplay acceptance."
+  },
+  "unchangedAdjacentModules": {
+    "eve/client/script/parklife/shipNavigation/beta.pyc": {
+      "assignments": {},
+      "codeSHA256": "dc84c534b6c36153db202827e63fc09c89d64719964f439a99e3330b5cac9610",
+      "memberSHA256": "8524a5af05cbcad4a70da88c4dbc17699ceb097a02120a220b052759f900544b"
+    },
+    "frontier/character_creation/beta.pyc": {
+      "assignments": {},
+      "codeSHA256": "ea1726185666e32f564a6bc1b0e3362f6e2fef1d6391bdc9e9903515b9b607d0",
+      "memberSHA256": "5796f821ec877b8a00e5c0874d38539e90c510a701e1227e58e5d68d507b5382"
+    },
+    "frontier/help/beta.pyc": {
+      "assignments": {},
+      "codeSHA256": "9fc9561bc9c408628711da5384eaa05377e486fd3e40d39178e2f5730f920047",
+      "memberSHA256": "80326e827545e7f91848549a9e62ae1173fe7278ee7a551cd8c4863e81c13b06"
+    },
+    "frontier/hud/beta.pyc": {
+      "assignments": {},
+      "codeSHA256": "df6e78bfedf8ca125b21b5d633009ae557b91cd3e5020fe15305c054358779ea",
+      "memberSHA256": "df13516f5cdaa3778b75f457ff6d89241fade6287899f579175db745543cefa5"
+    },
+    "frontier/targetCone/beta.pyc": {
+      "assignments": {},
+      "codeSHA256": "f4bde718423ddacbde5cc28de8ffb8a33a97a8375fe85b55980ff3d2c8e6307d",
+      "memberSHA256": "7ab75a61987bd565ad2a95384f9642a68f6c2718489b8e73549dcd74eb20d363"
+    }
+  },
+  "validation": {
+    "exactSourceAndPatchedMemberHashes": true,
+    "exactSourceAndPatchedCodeHashes": true,
+    "onlyOneAssignmentChanged": true,
+    "clientLaunchValidated": false,
+    "gameplayValidated": false,
+    "copiedFullArchivePatchCheckRestore": true,
+    "idempotent": true,
+    "sourceAndTargetTamperingRejected": true,
+    "unrelatedArchiveMembersPreserved": true,
+    "sourceArchiveUnchanged": true,
+    "testedOn": "2026-10-29"
+  }
+}

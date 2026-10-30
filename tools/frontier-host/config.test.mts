@@ -5,7 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { parseBuild, resolveBuildProfile, resolveHostPaths, assertNodeVersion, assertNoSymlink } from "./config.mjs";
-import { parseOptions } from "./index.mjs";
+import { parseOptions, windowsServerPlan } from "./index.mjs";
+import { parseServerArgs, serverEnvironment, serverPaths } from "./server.mjs";
 import { setupPlan } from "./setup.mjs";
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -43,6 +44,24 @@ test("server-only Linux setup installs server native modules before compiling", 
   assert.deepEqual(plan.slice(0, 3).map(step => step.args), [["ci", "--include=dev", "--ignore-scripts"], ["ci"], ["run", "build"]]);
   assert.equal(plan[1].cwd, path.join(REPO, "server"));
   assert.equal(plan.some(step => step.args?.includes("stage")), false);
+});
+
+test("Windows and Linux server dispatch share catalogued identity for every selected build", () => {
+  for (const build of ["3366068", "3388875", "3502403", "3551616", "3572727", "3640684"]) {
+    const plan = windowsServerPlan(REPO, parseServerArgs(["start", "--build", build]));
+    const profile = resolveBuildProfile(REPO, build);
+    const linux = serverEnvironment(serverPaths(REPO, build), profile);
+    for (const [flag, name] of [["-ClientVersion", "EVEJS_CLIENT_VERSION"], ["-MachoVersion", "EVEJS_MACHO_VERSION"],
+      ["-Codename", "EVEJS_PROJECT_CODENAME"], ["-Birthday", "EVEJS_EVE_BIRTHDAY"],
+      ["-Region", "EVEJS_PROJECT_REGION"], ["-ProjectVersion", "EVEJS_PROJECT_VERSION"]]) {
+      assert.equal(plan.args[plan.args.indexOf(flag) + 1], linux[name], `${build}: ${flag}`);
+    }
+    assert.equal(plan.env.EVEJS_CLIENT_BUILD_PROFILE, linux.EVEJS_CLIENT_BUILD_PROFILE);
+  }
+  const stop = windowsServerPlan(REPO, parseServerArgs(["stop", "--build", "3502403", "--dry-run"]));
+  assert.ok(stop.args.includes("-ServerOnly"));
+  assert.ok(stop.args.includes("-DryRun"));
+  assert.equal(stop.args.includes("-Codename"), false);
 });
 
 test("private paths reject symlink ancestors without creating destination files", { skip: process.platform === "win32" }, t => {

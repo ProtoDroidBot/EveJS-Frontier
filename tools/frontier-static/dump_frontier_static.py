@@ -9,6 +9,21 @@ import pickle
 import sqlite3
 import sys
 import types
+from urllib.parse import quote
+
+
+LEGACY_PHASE4_PROFILE = "frontier-phase4-2703993-v1"
+LEGACY_PHASE4_ABSENT_NATIVE = frozenset((
+    "creationHardpointTypes", "creationModules", "creationParts", "creationTemplates",
+))
+
+
+def is_legacy_phase4(request):
+    if request.get("schemaProfile") != LEGACY_PHASE4_PROFILE:
+        return False
+    if request.get("client", {}).get("build") != 2703993:
+        raise ValueError("The Phase4 schema profile requires exact client build 2703993")
+    return True
 
 
 BOOLEAN_FIELDS = {
@@ -247,7 +262,13 @@ def write_jsonl(out_dir, file_name, rows):
 
 
 def export_native_tables(request, out_dir, messages, report):
+    legacy = is_legacy_phase4(request)
     for resource_key, module_name, file_name in NATIVE_TABLES:
+        if resource_key not in request["resources"]:
+            if legacy and resource_key in LEGACY_PHASE4_ABSENT_NATIVE:
+                report["outputs"][file_name] = write_jsonl(out_dir, file_name, ())
+                continue
+            raise KeyError(f"Required native resource is missing: {resource_key}")
         loader = importlib.import_module(module_name)
         table = loader.load(resource_path(request, resource_key))
         rows = (
@@ -255,6 +276,89 @@ def export_native_tables(request, out_dir, messages, report):
             for key in sorted_keys(table)
         )
         report["outputs"][file_name] = write_jsonl(out_dir, file_name, rows)
+
+
+def project_legacy_blueprints(source_rows, type_ids):
+    """Retain source rows while excluding only activities with dangling type refs."""
+    projected, diagnostics = [], []
+    for row in sorted(source_rows, key=lambda value: value["_key"]):
+        activities = dict(row["activities"])
+        for activity, definition in sorted(row["activities"].items()):
+            if not isinstance(activity, str) or not isinstance(definition, dict):
+                raise ValueError(f"Invalid Phase4 blueprint activity: {row['_key']}")
+            unresolved = set()
+            for field in ("materials", "products", "skills"):
+                if field not in definition:
+                    continue
+                references = definition[field]
+                if not isinstance(references, list):
+                    raise ValueError(f"Invalid Phase4 blueprint {field}: {row['_key']}")
+                for reference in references:
+                    if (not isinstance(reference, dict) or
+                        type(reference.get("typeID")) is not int or reference["typeID"] <= 0):
+                        raise ValueError(f"Invalid Phase4 blueprint type reference: {row['_key']}")
+                    if reference["typeID"] not in type_ids:
+                        unresolved.add((field, reference["typeID"]))
+            if unresolved:
+                del activities[activity]
+                diagnostics.append({
+                    "_key": f"{row['_key']}:{activity}",
+                    "blueprintTypeID": row["_key"],
+                    "activity": activity,
+                    "reason": "unresolved-type-reference",
+                    "references": [{"field": field, "typeID": type_id}
+                                   for field, type_id in sorted(unresolved)],
+                })
+        projected.append({**row, "activities": activities})
+    return projected, diagnostics
+
+
+def export_legacy_blueprints(request, out_dir, report):
+    """Phase4 blueprints.static is a JSON SQLite cache, not an FSD binary."""
+    if not is_legacy_phase4(request):
+        return
+    source = resource_path(request, "legacyBlueprints")
+    uri = "file:" + quote(os.path.abspath(source).replace("\\", "/"), safe="/:")
+    connection = sqlite3.connect(uri + "?mode=ro&immutable=1", uri=True)
+    try:
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(cache)")]
+        if columns != ["key", "value", "time"]:
+            raise ValueError("Unexpected Phase4 blueprint SQLite cache schema")
+
+        def invalid_constant(value):
+            raise ValueError(f"Nonfinite blueprint JSON number: {value}")
+
+        def rows():
+            seen = set()
+            for key, payload in connection.execute(
+                "SELECT key, value FROM cache ORDER BY CAST(key AS INTEGER), key"
+            ):
+                if not isinstance(key, str) or not key.isascii() or not key.isdecimal() or int(key) <= 0:
+                    raise ValueError("Invalid Phase4 blueprint cache key")
+                blueprint_id = int(key)
+                if blueprint_id in seen:
+                    raise ValueError(f"Duplicate Phase4 blueprint ID: {blueprint_id}")
+                seen.add(blueprint_id)
+                row = json.loads(payload, parse_constant=invalid_constant)
+                if (not isinstance(row, dict) or "_key" in row or
+                    type(row.get("blueprintTypeID")) is not int or
+                    row["blueprintTypeID"] != blueprint_id or
+                    not isinstance(row.get("activities"), dict) or
+                    type(row.get("maxProductionLimit")) is not int or
+                    row["maxProductionLimit"] < 0):
+                    raise ValueError(f"Invalid Phase4 blueprint record: {blueprint_id}")
+                yield {"_key": blueprint_id, **row}
+
+        source_rows = list(rows())
+        with open(os.path.join(out_dir, "types.jsonl"), encoding="utf-8") as handle:
+            type_ids = {json.loads(line)["_key"] for line in handle if line.strip()}
+        projected, diagnostics = project_legacy_blueprints(source_rows, type_ids)
+        for name, values in (("legacyBlueprintsSource.jsonl", source_rows),
+                             ("legacyBlueprintDiagnostics.jsonl", diagnostics),
+                             ("blueprints.jsonl", projected)):
+            report["outputs"][name] = write_jsonl(out_dir, name, values)
+    finally:
+        connection.close()
 
 
 def load_static(resource, schema=None):
@@ -396,12 +500,23 @@ def frontier_dungeon_row(dungeon_id, dungeon, messages):
 
 
 def export_landscape_sites(request, out_dir, messages, report):
+    dungeon_loader = importlib.import_module("dungeonsLoader")
+    dungeons = dungeon_loader.load(resource_path(request, "dungeons"))
+    report["outputs"]["frontierDungeonTemplates.jsonl"] = write_jsonl(
+        out_dir,
+        "frontierDungeonTemplates.jsonl",
+        (frontier_dungeon_row(key, dungeons[key], messages) for key in sorted_keys(dungeons)),
+    )
+    if is_legacy_phase4(request) and not any(
+        key in request["resources"] for key in ("landscapes", "ecosystems")
+    ):
+        for file_name in ("landscapeEcosystems.jsonl", "landscapeDungeonTemplates.jsonl", "landscapeSites.jsonl"):
+            report["outputs"][file_name] = write_jsonl(out_dir, file_name, ())
+        return
     landscape_loader = importlib.import_module("landscapeLoader")
     ecosystem_loader = importlib.import_module("ecosystemLoader")
-    dungeon_loader = importlib.import_module("dungeonsLoader")
     landscapes = landscape_loader.load(resource_path(request, "landscapes"))
     ecosystems = ecosystem_loader.load(resource_path(request, "ecosystems"))
-    dungeons = dungeon_loader.load(resource_path(request, "dungeons"))
 
     referenced_dungeon_ids = set()
 
@@ -460,15 +575,6 @@ def export_landscape_sites(request, out_dir, messages, report):
             if dungeon_id in dungeons
         ),
     )
-    report["outputs"]["frontierDungeonTemplates.jsonl"] = write_jsonl(
-        out_dir,
-        "frontierDungeonTemplates.jsonl",
-        (
-            frontier_dungeon_row(dungeon_id, dungeons[dungeon_id], messages)
-            for dungeon_id in sorted_keys(dungeons)
-        ),
-    )
-
     def rows():
         for solar_system_id in sorted_keys(landscapes):
             landscape = landscapes[solar_system_id]
@@ -535,7 +641,9 @@ def static_row(key, value, name_field=None):
     return row
 
 
-def export_universe_tables(request, out_dir, report):
+def export_universe_tables(request, out_dir, report, messages=None):
+    legacy = is_legacy_phase4(request)
+    messages = messages or {}
     systems = load_static(
         resource_path(request, "systems"),
         resource_path(request, "systemsSchema"),
@@ -555,27 +663,67 @@ def export_universe_tables(request, out_dir, report):
         resource_path(request, "jumpsSchema"),
     )
 
+    def named_static_row(key, value):
+        row = static_row(key, value, "name")
+        if legacy and "name" not in row:
+            name_id = int(value.nameID)
+            name = localized_text(messages, name_id)
+            if not name:
+                raise ValueError(f"Missing Phase4 geography localization: {name_id}")
+            row["name"] = {"en": name}
+        return row
+
     report["outputs"]["mapRegions.jsonl"] = write_jsonl(
         out_dir,
         "mapRegions.jsonl",
-        (static_row(key, regions[key], "name") for key in sorted_keys(regions)),
+        (named_static_row(key, regions[key]) for key in sorted_keys(regions)),
     )
     report["outputs"]["mapConstellations.jsonl"] = write_jsonl(
         out_dir,
         "mapConstellations.jsonl",
-        (static_row(key, constellations[key], "name") for key in sorted_keys(constellations)),
+        (named_static_row(key, constellations[key]) for key in sorted_keys(constellations)),
     )
+
+    if legacy:
+        empty_system_ids = []
+        for key in sorted_keys(systems):
+            system_content = content[key]
+            if optional(system_content, "star") is None:
+                if (optional(system_content, "planets", {}) or
+                    optional(system_content, "stargates", {}) or
+                    optional(systems[key], "planetItemIDs", []) or
+                    optional(systems[key], "sunTypeID", 0)):
+                    raise ValueError(f"Phase4 system {key} has bodies without a source star")
+                empty_system_ids.append(int(key))
+        report["legacyUniverse"] = {"authoredEmptySystemIDs": empty_system_ids}
 
     def solar_system_rows():
         for key in sorted_keys(systems):
             system = systems[key]
+            if legacy and key not in content:
+                raise ValueError(f"Missing Phase4 solar-system content: {key}")
             system_content = content.get(key, None)
             star = optional(system_content, "star")
             star_statistics = optional(star, "statistics")
+            if legacy:
+                system_name = localized_text(messages, int(system.nameID))
+                if not system_name:
+                    raise ValueError(f"Missing Phase4 geography localization: {system.nameID}")
+            else:
+                system_name = str(system.name)
+            legacy_fields = {}
+            if legacy:
+                legacy_fields["sourceHasStar"] = star is not None
+                for field in ("visualEffect", "disallowedAnchorCategories", "disallowedAnchorGroups"):
+                    try:
+                        legacy_fields[field] = to_plain(getattr(system_content, field))
+                    except (AttributeError, KeyError):
+                        pass
             yield {
                 "_key": key,
+                **legacy_fields,
                 "constellationID": int(system.constellationID),
-                "name": {"en": str(system.name)},
+                "name": {"en": system_name},
                 "nameID": int(system.nameID),
                 "position": vector(system.center),
                 "radius": float(optional(system_content, "radius", 0.0)),
@@ -585,7 +733,7 @@ def export_universe_tables(request, out_dir, report):
                 "securityClass": str(optional(system, "securityClass", "")),
                 "securityStatus": float(optional(system, "securityStatus", 0.0)),
                 "starID": int(optional(star, "id", 0) or 0),
-                "starTemperature": clean_float(float(optional(star_statistics, "temperature", 5778.0) or 5778.0)),
+                "starTemperature": clean_float(float(optional(star_statistics, "temperature", 0.0 if legacy else 5778.0) or (0.0 if legacy else 5778.0))),
                 "sunTypeID": int(optional(system, "sunTypeID", 0) or 0),
             }
 
@@ -767,8 +915,9 @@ def main():
     )
 
     export_native_tables(request, out_dir, messages, report)
+    export_legacy_blueprints(request, out_dir, report)
     export_landscape_sites(request, out_dir, messages, report)
-    export_universe_tables(request, out_dir, report)
+    export_universe_tables(request, out_dir, report, messages)
     print(json.dumps(report, sort_keys=True))
 
 

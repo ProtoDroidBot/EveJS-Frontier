@@ -1,3 +1,5 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 // Phase 0 / 0.C: characterState owns the `characters` table; access flows
 // through a strict ownership-scoped repository.
@@ -1059,7 +1061,7 @@ function buildChargeDogmaPrimeEntry(item, options = {}) {
             Number(attributeID),
             Number(value),
         ]),
-    }, now, options.compatibilityProfile);
+    }, now, options.compatibilityProfile, options.clientBuild ?? Number(require("../../config").clientBuild));
     return {
         type: "object",
         name: "util.KeyVal",
@@ -1113,7 +1115,7 @@ function buildInventoryDogmaPrimeEntry(item, options = {}) {
                             Number(attributeID),
                             Number(value),
                         ]),
-                    }, now, options.compatibilityProfile)],
+                    }, now, options.compatibilityProfile, options.clientBuild ?? Number(require("../../config").clientBuild))],
                 ["description", options.description || "item"],
                 ["time", now],
                 ["wallclockTime", now],

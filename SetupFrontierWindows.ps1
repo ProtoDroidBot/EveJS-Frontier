@@ -4,12 +4,15 @@
 param(
     [ValidateRange(0, 2147483647)] [int]$Build = 0,
     [string]$SourceRoot,
+    [string]$Python,
+    [string]$StagingBase,
     [switch]$NonInteractive,
     [switch]$Status,
     [switch]$DryRun,
     [switch]$CopyResFiles,
     [switch]$CleanStage,
     [switch]$SkipStage,
+    [switch]$SkipDapp,
     [switch]$ForceData
 )
 
@@ -36,21 +39,23 @@ function Get-GitPath {
     $git = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($git) { return $git.Source }
-    $candidate = Join-Path $env:ProgramFiles 'Git\cmd\git.exe'
-    if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    if ($env:ProgramFiles) {
+        $candidate = Join-Path $env:ProgramFiles 'Git\cmd\git.exe'
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
     return $null
 }
 
 function Get-PrerequisiteReport {
     $git = Get-GitPath
     $node = $null
-    $python = $null
+    $pythonPath = $null
     try { $node = Get-FrontierNodePath } catch {}
-    try { $python = Get-FrontierPython312Path } catch {}
+    try { $pythonPath = Get-FrontierPython312Path -RepoRoot $RepoRoot -PythonPath $script:Python } catch {}
     $gitVersion = if ($git) { (& $git --version) -replace '^git version\s+', '' } else { $null }
     $nodeVersion = if ($node) { (& $node --version).Trim() } else { $null }
-    $npmVersion = if ($node) { (& (Join-Path (Split-Path -Parent $node) 'npm.cmd') --version).Trim() } else { $null }
-    $pythonVersion = if ($python) { (& $python --version 2>&1).ToString().Trim() } else { $null }
+    $npmVersion = if ($node) { (& (Get-FrontierNpmPath) --version).Trim() } else { $null }
+    $pythonVersion = if ($pythonPath) { (& $pythonPath --version 2>&1).ToString().Trim() } else { $null }
     return [ordered]@{
         git = $gitVersion
         powerShell = $PSVersionTable.PSVersion.ToString()
@@ -58,202 +63,109 @@ function Get-PrerequisiteReport {
         npm = $npmVersion
         python = $pythonVersion
         nodePath = $node
-        pythonPath = $python
+        pythonPath = $pythonPath
     }
 }
 
 function Ensure-Prerequisites {
     if (-not (Get-GitPath)) { Invoke-WingetInstall 'Git.Git' }
     try { [void](Get-FrontierNodePath) } catch { Invoke-WingetInstall 'OpenJS.NodeJS.LTS' }
-    try { [void](Get-FrontierPython312Path) } catch { Invoke-WingetInstall 'Python.Python.3.12' }
+    if ($Python -or $env:EVEJS_FRONTIER_NATIVE_PYTHON312) {
+        [void](Get-FrontierPython312Path -RepoRoot $RepoRoot -PythonPath $Python)
+    }
+    else {
+        try { [void](Get-FrontierPython312Path -RepoRoot $RepoRoot) }
+        catch { Invoke-WingetInstall 'Python.Python.3.12' }
+    }
 
     $node = Get-FrontierNodePath
     $nodeVersion = (& $node --version).Trim()
     if ($nodeVersion -notmatch '^v24\.') {
         throw "Node.js 24 LTS is required; resolved $nodeVersion at $node"
     }
-    $python = Get-FrontierPython312Path
+    $python = Get-FrontierPython312Path -RepoRoot $RepoRoot -PythonPath $Python
     $implementation = & $python -c 'import platform; print(platform.python_implementation())'
     if ($implementation.Trim() -ne 'CPython') { throw 'CPython 3.12 x64 is required.' }
 }
 
-function Initialize-LegacyEvmBackendConfiguration {
-    param([Parameter(Mandatory)] [string]$NodePath, [Parameter(Mandatory)] [int]$ClientBuild)
-    $catalog = Get-Content -LiteralPath (Join-Path $RepoRoot 'server\src\config\clientBuildCatalog.json') -Raw | ConvertFrom-Json
-    $profile = @($catalog.profiles | Where-Object { [string]$_.clientBuild -eq [string]$ClientBuild })
-    if ($profile.Count -ne 1 -or $null -eq $profile[0].PSObject.Properties['blockchain'] -or
-        [string]$profile[0].blockchain.protocol -ne 'evm') { return }
-    $worldPath = [string]$env:EVEJS_SUI_WORLD_CONFIG_PATH
-    if ([string]::IsNullOrWhiteSpace($worldPath)) {
-        $worldPath = Join-Path $RepoRoot "_local\frontier-world\$ClientBuild\world.private.json"
-    }
-    elseif (-not [IO.Path]::IsPathFullyQualified($worldPath)) { $worldPath = Join-Path $RepoRoot $worldPath }
-    $worldPath = [IO.Path]::GetFullPath($worldPath)
-    $manifestPath = [string]$env:EVEJS_LEGACY_EVM_SUI_BRIDGE_PATH
-    if ([string]::IsNullOrWhiteSpace($manifestPath) -and (Test-Path -LiteralPath $worldPath -PathType Leaf)) {
-        $worldConfig = Get-Content -LiteralPath $worldPath -Raw | ConvertFrom-Json
-        if ($null -ne $worldConfig.PSObject.Properties['legacyEvmBridgePath']) {
-            $manifestPath = [string]$worldConfig.legacyEvmBridgePath
-            if (-not [string]::IsNullOrWhiteSpace($manifestPath) -and -not [IO.Path]::IsPathFullyQualified($manifestPath)) {
-                $manifestPath = Join-Path (Split-Path -Parent $worldPath) $manifestPath
-            }
-            if ([string]::IsNullOrWhiteSpace($manifestPath) -or -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-                throw "Referenced EVM backend secrets are missing; restore them before setup: $manifestPath"
-            }
-        }
-    }
-    $syncScript = Join-Path $RepoRoot 'tools\frontier-contracts\sync-legacy-evm-sui.mjs'
-    if (-not (Test-Path -LiteralPath $syncScript -PathType Leaf)) {
-        throw 'EVM backend setup requires compiled tools. Run npm run build:server and npm run build:tools.'
-    }
-    $syncArgs = @($syncScript, '--world-config', $worldPath, '--build', [string]$ClientBuild, '--prepare-only')
-    if (-not [string]::IsNullOrWhiteSpace($manifestPath)) {
-        if (-not [IO.Path]::IsPathFullyQualified($manifestPath)) { $manifestPath = Join-Path $RepoRoot $manifestPath }
-        $syncArgs += @('--out', [IO.Path]::GetFullPath($manifestPath))
-    }
-    $output = & $NodePath @syncArgs
-    if ($LASTEXITCODE -ne 0) { throw 'Initial EVM-to-Sui backend preparation failed.' }
-    try { $result = ($output -join [Environment]::NewLine) | ConvertFrom-Json }
-    catch { throw 'Initial EVM-to-Sui backend preparation returned invalid metadata.' }
-    if ($result.enabled -eq $true) {
-        if ([int]$result.clientBuild -ne $ClientBuild -or [string]::IsNullOrWhiteSpace([string]$result.manifestPath)) {
-            throw 'Initial EVM-to-Sui backend preparation selected another client build.'
-        }
-        Set-FrontierPrivateFileAcl -Path ([string]$result.manifestPath)
-        Write-SetupStep "Prepared EVM-to-Sui backend: $($result.manifestPath)"
-        Write-Output '[evejs-frontier] FrontierWorld up/sync will bind this configuration to the deployed Sui world.'
-    }
-}
-
+# This entry point retains Windows prerequisite installation and discovery.
+# All preparation phases are planned and run by the shared host workflow.
 $report = Get-PrerequisiteReport
 if ($Status) {
     Write-Output ($report | ConvertTo-Json -Depth 4)
     try {
         $client = Invoke-FrontierDiscovery -RepoRoot $RepoRoot -SourceRoot $SourceRoot -Build $Build
         Write-Output "[evejs-frontier] Installed Frontier: build=$($client.metadata.build) sync=$($client.metadata.sync) root=$($client.buildRoot)"
-        & (Join-Path $RepoRoot 'StageFrontierClient.ps1') -SourceRoot $client.buildRoot `
-            -Build ([int]$client.metadata.build) -Status
+        $stageStatus = @{
+            SourceRoot = $client.buildRoot
+            Build = [int]$client.metadata.build
+            Status = $true
+        }
+        if ($StagingBase) { $stageStatus.StagingBase = $StagingBase }
+        & (Join-Path $RepoRoot 'StageFrontierClient.ps1') @stageStatus
         & (Join-Path $RepoRoot 'StartFrontierServer.ps1') -Build ([string]$client.metadata.build) -Status
     }
     catch { Write-Warning $_.Exception.Message }
     return
 }
 
-if ($DryRun) {
-    Write-Output ($report | ConvertTo-Json -Depth 4)
-    $client = Invoke-FrontierDiscovery -RepoRoot $RepoRoot -SourceRoot $SourceRoot -Build $Build
-    & (Join-Path $RepoRoot 'StageFrontierClient.ps1') -SourceRoot $client.buildRoot `
-        -Build ([int]$client.metadata.build) -CopyResFiles:$CopyResFiles -DryRun
-    $catalog = Get-Content -LiteralPath (Join-Path $RepoRoot 'server\src\config\clientBuildCatalog.json') -Raw | ConvertFrom-Json
-    $profile = @($catalog.profiles | Where-Object { [string]$_.clientBuild -eq [string]$client.metadata.build })
-    if ($profile.Count -eq 1 -and $null -ne $profile[0].PSObject.Properties['blockchain'] -and
-        [string]$profile[0].blockchain.protocol -eq 'evm') {
-        Write-Output '[evejs-frontier] Dry run: would prepare the private EVM-to-Sui backend without starting Docker or efctl.'
-    }
-    return
-}
-
-Ensure-Prerequisites
+if ($DryRun) { Write-Output ($report | ConvertTo-Json -Depth 4) }
+else { Ensure-Prerequisites }
 $node = Get-FrontierNodePath
-$npm = Get-FrontierNpmPath
-$systemPython = Get-FrontierPython312Path
 $nodeDirectory = Split-Path -Parent $node
 $oldPath = $env:Path
 $env:Path = "$nodeDirectory;$oldPath"
+Push-Location -LiteralPath $RepoRoot
 try {
-    Write-SetupStep 'Installing locked root Node dependencies ...'
-    & $npm --prefix $RepoRoot ci --include=dev
-    if ($LASTEXITCODE -ne 0) { throw 'Root npm ci failed.' }
-    Write-SetupStep 'Installing locked server Node dependencies ...'
-    & $npm --prefix (Join-Path $RepoRoot 'server') ci
-    if ($LASTEXITCODE -ne 0) { throw 'Server npm ci failed.' }
-
-    & $node -e "const D=require('./server/node_modules/better-sqlite3'); const d=new D(':memory:'); console.log(d.prepare('select sqlite_version() v').get().v); d.close();"
-    if ($LASTEXITCODE -ne 0) { throw 'better-sqlite3 failed its Node ABI in-memory probe.' }
-
-    $venv = Join-Path $RepoRoot '_local\frontier-python312'
-    $venvPython = Join-Path $venv 'Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
-        Write-SetupStep 'Creating the ignored CPython 3.12 environment ...'
-        & $systemPython -m venv $venv
-        if ($LASTEXITCODE -ne 0) { throw 'Python 3.12 venv creation failed.' }
+    $hostEntry = Join-Path $RepoRoot 'tools\frontier-host\index.mjs'
+    if ($DryRun) {
+        if (-not (Test-Path -LiteralPath $hostEntry -PathType Leaf)) {
+            throw 'Host tools are not compiled. Run npm ci --include=dev --ignore-scripts, then npm run build:tools before previewing setup.'
+        }
+        foreach ($source in Get-ChildItem -LiteralPath (Split-Path -Parent $hostEntry) -Filter '*.mts' -File |
+            Where-Object { $_.Name -notlike '*.test.mts' }) {
+            $emitted = [IO.Path]::ChangeExtension($source.FullName, '.mjs')
+            if (-not (Test-Path -LiteralPath $emitted -PathType Leaf) -or
+                $source.LastWriteTimeUtc -gt (Get-Item -LiteralPath $emitted).LastWriteTimeUtc) {
+                throw 'Host tools are stale. Run npm run build:tools before previewing setup.'
+            }
+        }
     }
-    & $venvPython -m pip install -r (Join-Path $RepoRoot 'tools\frontier-client\requirements-windows-frontier.txt')
-    if ($LASTEXITCODE -ne 0) { throw 'Frontier Windows Python dependency installation failed.' }
-
-    Write-SetupStep 'Generating or reusing local TLS certificates ...'
-    & (Join-Path $RepoRoot 'tools\ClientSETUP\scripts\Install-EvEJSCerts.ps1') -SkipClientBundles
-    foreach ($privateFile in @(
-        (Join-Path $RepoRoot 'server\certs\xmpp-ca-key.pem'),
-        (Join-Path $RepoRoot 'server\certs\xmpp-dev-key.pem'),
-        (Join-Path $RepoRoot 'server\src\_secondary\express\certs\gateway-dev-key.pem')
-    )) { Set-FrontierPrivateFileAcl $privateFile }
+    else {
+        $npm = Get-FrontierNpmPath
+        if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'node_modules\typescript\bin\tsc') -PathType Leaf)) {
+            Write-SetupStep 'Bootstrapping the shared host compiler ...'
+            & $npm --prefix $RepoRoot ci --include=dev --ignore-scripts
+            if ($LASTEXITCODE -ne 0) { throw 'Root npm ci failed while bootstrapping host tools.' }
+        }
+        # Existing ignored JavaScript may belong to the old host that called this
+        # script. Rebuild every actual run before delegating to avoid recursion.
+        Write-SetupStep 'Compiling the shared host workflow ...'
+        & $npm --prefix $RepoRoot run build:tools
+        if ($LASTEXITCODE -ne 0) { throw 'Host tool compilation failed.' }
+    }
 
     $client = Invoke-FrontierDiscovery -RepoRoot $RepoRoot -SourceRoot $SourceRoot -Build $Build
-    $Build = [int]$client.metadata.build
-    Initialize-LegacyEvmBackendConfiguration -NodePath $node -ClientBuild $Build
-    $snapshot = Join-Path $RepoRoot "_local\frontier-sde\$Build"
-    $contracts = Join-Path $RepoRoot "_local\frontier-contracts\$Build"
-    $database = Join-Path $RepoRoot "_local\frontier-gameStore\$Build\data"
-    $snapshotCollision = Join-Path $snapshot 'assets\collision\bundle.collision'
-    $databaseCollision = Join-Path (
-        Split-Path -Parent $database
-    ) 'assets\collision\bundle.collision'
-
-    $snapshotManifest = Join-Path $snapshot 'frontier-extraction-manifest.json'
-    $upgradeSnapshot = (Test-Path -LiteralPath $snapshotManifest) -and
-        -not (Test-Path -LiteralPath $snapshotCollision -PathType Leaf)
-    if (-not (Test-Path -LiteralPath $snapshotManifest) -or $upgradeSnapshot -or $ForceData) {
-        Write-SetupStep "Extracting untouched Frontier build $Build static data ..."
-        $extractArgs = @('run', 'frontier:extract', '--', '--client-root', [string]$client.buildRoot, '--build', [string]$Build)
-        if ($ForceData -or $upgradeSnapshot) { $extractArgs += '--force' }
-        & $npm @extractArgs
-        if ($LASTEXITCODE -ne 0) { throw 'Frontier static extraction failed.' }
+    $hostArguments = @($hostEntry, 'setup', '--build', [string]$client.metadata.build,
+        '--client-root', [string]$client.buildRoot)
+    if ($DryRun) {
+        if ($Python) { $hostArguments += @('--python', $Python) }
+        $hostArguments += '--dry-run'
     }
-    & $npm run frontier:validate -- --snapshot $snapshot
-    if ($LASTEXITCODE -ne 0) { throw 'Frontier static validation failed.' }
-
-    if (-not (Test-Path -LiteralPath (Join-Path $contracts 'frontier-contract-manifest.json')) -or $ForceData) {
-        Write-SetupStep "Exporting Frontier build $Build public contracts ..."
-        $contractArgs = @('run', 'frontier:contracts', '--', '--client-root', [string]$client.buildRoot, '--build', [string]$Build)
-        if ($ForceData) { $contractArgs += '--force' }
-        & $npm @contractArgs
-        if ($LASTEXITCODE -ne 0) { throw 'Frontier contract export failed.' }
+    else {
+        $nativePython = Get-FrontierPython312Path -RepoRoot $RepoRoot -PythonPath $Python
+        $hostArguments += @('--python', $nativePython)
     }
-
-    $upgradeDatabase = (Test-Path -LiteralPath $database) -and
-        -not (Test-Path -LiteralPath $databaseCollision -PathType Leaf)
-    if (-not (Test-Path -LiteralPath $database) -or $upgradeDatabase -or $ForceData) {
-        Write-SetupStep "Generating the isolated Frontier build $Build database ..."
-        $databaseArgs = @('run', 'frontier:database', '--', '--snapshot', $snapshot)
-        if ($ForceData -or $upgradeDatabase) { $databaseArgs += '--force' }
-        & $npm @databaseArgs
-        if ($LASTEXITCODE -ne 0) { throw 'Frontier database generation failed.' }
-    }
-
-    if (-not $SkipStage) {
-        & (Join-Path $RepoRoot 'StageFrontierClient.ps1') -SourceRoot $client.buildRoot `
-            -Build $Build -CopyResFiles:$CopyResFiles -Clean:$CleanStage
-    }
-    $runtimeRoot = Join-Path $RepoRoot "_local\frontier-runtime\$Build"
-    if (Test-Path -LiteralPath $runtimeRoot -PathType Container) {
-        $runtimeMarker = Join-Path $runtimeRoot '.evejs-frontier-runtime'
-        if (-not (Test-Path -LiteralPath $runtimeMarker -PathType Leaf)) {
-            Write-Warning (
-                "An unmarked server runtime remains at $runtimeRoot. " +
-                'StartFrontierServer.ps1 will refuse it until the directory is preserved and reconciled.'
-            )
-        }
-        elseif ($ForceData) {
-            Write-Warning (
-                "-ForceData rebuilt generated data but preserved the mutable server runtime at $runtimeRoot. " +
-                "Stop the server and use .\StartFrontierServer.ps1 -Build $Build -ResetRuntime -InitializeOnly " +
-                'only if a runtime reset is intended.'
-            )
-        }
-    }
-    Write-SetupStep "Windows Frontier setup completed for build $Build."
+    if ($StagingBase) { $hostArguments += @('--staging-base', [IO.Path]::GetFullPath($StagingBase)) }
+    if ($SkipStage) { $hostArguments += '--skip-stage' }
+    if ($SkipDapp) { $hostArguments += '--skip-dapp' }
+    if ($CleanStage) { $hostArguments += '--clean-stage' }
+    if ($CopyResFiles) { $hostArguments += '--copy-resfiles' }
+    if ($ForceData) { $hostArguments += '--force-data' }
+    & $node @hostArguments
+    if ($LASTEXITCODE -ne 0) { throw "Shared Frontier setup failed (exit $LASTEXITCODE)." }
 }
 finally {
+    Pop-Location
     $env:Path = $oldPath
 }

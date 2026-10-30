@@ -1,6 +1,17 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
+const { isLegacyIndustryProfile } = require("./legacyIndustryStaticData");
+function roundIndustryValue(value) {
+    if (isLegacyIndustryProfile()) {
+        // Native 2703993 uses Python's int(round(...)): exact halves go to the
+        // nearest even integer. Do not change the rounding of other profiles.
+        const lower = Math.floor(value);
+        if (value - lower === 0.5)
+            return lower % 2 === 0 ? lower : lower + 1;
+    }
+    return Math.round(value);
+}
 const { TABLE, readStaticTable, } = require(path.join(__dirname, "../_shared/referenceData"));
 const { getCachedCharacterSkillMap, getSkillMutationVersion, } = require(path.join(__dirname, "../skills/skillState"));
 const { resolveCharacterIndustryAttributes, } = require(path.join(__dirname, "../dogma/brain/providers/industryBrainProvider"));
@@ -260,13 +271,14 @@ function resolveIndustryJobTimeSeconds(definition, activityID, runs, timeEfficie
         facilityModifier *
         characterModifier *
         requiredSkillModifier;
-    return Math.max(1, Math.round(totalSeconds));
+    return Math.max(1, roundIndustryValue(totalSeconds));
 }
 function clearIndustryParityCaches() {
     characterSkillLevelsCache.clear();
     requiredSkillTimePercentCache.clear();
 }
 module.exports = {
+    roundIndustryValue,
     buildIndustryActivityMaterials,
     clearIndustryParityCaches,
     getIndustryActivity,

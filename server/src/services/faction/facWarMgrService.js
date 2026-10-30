@@ -4,7 +4,7 @@ const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
 const { getCharacterRecord } = require(path.join(__dirname, "../character/characterState"));
-const { buildKeyVal, buildList, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
+const { buildDict, buildKeyVal, buildList, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 function resolveCharacterID(args, session) {
     return Number((Array.isArray(args) && args.length > 0 && args[0]) ||
         (session &&
@@ -115,6 +115,18 @@ function buildSingleRankInfo(characterID, charData, session) {
 class FacWarMgrService extends BaseService {
     constructor() {
         super("facWarMgr");
+    }
+    Handle_GetFacWarSystems() {
+        // The local warfare runtime has no configured theaters, matching
+        // fwWarzoneSolarsystem's empty occupation state. General map factionID
+        // ownership does not designate a system as a faction-warfare system.
+        // The client caches and tests membership in this collection; None fails.
+        return buildList([]);
+    }
+    Handle_GetAllSystemOccupiers() {
+        // No warfare systems means no warfare occupiers. Keep the dictionary
+        // contract used by map consumers without inventing classic-EVE occupancy.
+        return buildDict([]);
     }
     Handle_GetMyCharacterRankOverview(args, session) {
         const characterID = resolveCharacterID(args, session);

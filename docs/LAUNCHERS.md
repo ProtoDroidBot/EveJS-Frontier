@@ -4,46 +4,49 @@ This is the "what should I click?" page. First decide whether you are running
 EVE Frontier or conventional EVE Online; their launchers and client patches
 are intentionally separate.
 
-## EVE Frontier on Windows (build 3502403 candidate)
+## EVE Frontier on Windows and Linux
 
-Use these PowerShell 7 launchers only for the exact Frontier workflow:
+Use the same npm commands for setup, world synchronization and daily launch.
+Each command requires the exact client build; the examples use the Windows
+candidate `3502403`. See [FRONTIER_SETUP.md](FRONTIER_SETUP.md) for first-time
+prerequisites, host/prefix trust and Linux Wine parameters.
 
 | Run this | Use it when | What it does |
 |---|---|---|
-| `SetupFrontierWindows.bat` or `SetupFrontierWindows.ps1` | First setup or a build refresh | Installs/reports prerequisites, prepares build-numbered data and contracts, and stages the discovered Frontier client |
-| `StageFrontierClient.bat` or `StageFrontierClient.ps1` | You need to recreate only the isolated client stage | Copies the build, creates a `ResFiles` junction by default (or copies it with `-CopyResFiles`), and runs the exact patch transaction |
-| `PatchFrontierClientTrust.ps1` | You need to patch or independently check one stage | Applies only exact-build profiles; `-Check` is required before launch and does not mutate |
-| `StartFrontierServer.ps1` | Daily Frontier server use | Initializes/reuses the build-numbered runtime, builds/starts the Smart Assembly HTTPS dApp, and starts only loopback listeners; the market stays disabled |
-| `PlayFrontier.ps1` | Daily Frontier client use | Runs staged `-Check`, then launches only the staged `exefile.exe` with the local Frontier environment |
-| `CaptureFrontierSession.ps1` | Session-free launch proved insufficient | Captures one official launcher process without displaying credentials and restricts the ignored session file to the current SID |
-| `StopFrontier.ps1` | Stop a server started with `-Background` | Verifies and stops the exact marker-owned server and Smart Assembly dApp PIDs |
+| `npm run frontier:doctor -- --build 3502403` | Inspect host readiness | Checks prerequisites, exact-build data and TLS without changing them |
+| `npm run frontier:setup -- --build 3502403 --client-root <path>` | First setup or a build refresh | Installs locked dependencies in order, compiles, prepares TLS/data/contracts and stages the client |
+| `npm run frontier:stage -- --build 3502403 --source-root <path>` | Recreate only the isolated client stage | Uses the same platform adapter as setup; Linux also requires `--staging-base` |
+| `npm run frontier:world -- up --build 3502403` | Create a disposable local chain | Deploys and synchronizes the selected build's world and dApp configuration |
+| `npm run frontier:sync -- --build 3502403` | Retain an already running deployment | Revalidates and refreshes world, NPC and dApp configuration |
+| `npm run frontier:server -- start --build 3502403` | Daily server use | Starts the native server and HTTPS dApp against the synchronized world |
+| `npm run frontier:launch -- --build 3502403` | Daily client use | Verifies and launches the selected stage; Linux also requires its stage and Wine runtime parameters |
+| `npm run frontier:server -- status --build 3502403` | Inspect server processes | Reports the marker-owned server and dApp processes |
+| `npm run frontier:server -- stop --build 3502403` | Stop background server processes | Stops only the selected runtime's recorded processes |
 
-The normal order is:
+All aliases enter `frontier:host`. Additional client operations use
+`npm run frontier:host -- client check|patch|trust|status|stop --build 3502403`
+with action-specific options; `client --help` shows the full interface. Windows
+trust remains in its platform certificate workflow. `--dry-run` is available
+for setup, staging and launch previews.
 
-```powershell
-.\SetupFrontierWindows.ps1 -Status
-.\SetupFrontierWindows.ps1 -SourceRoot 'C:\CCP\EVE Frontier\stillness'
-.\StartFrontierServer.ps1 -Build 3502403
-# In another PowerShell:
-.\PlayFrontier.ps1 -Build 3502403
+The existing `SetupFrontierWindows.bat`/`.ps1` wrapper bootstraps Windows
+prerequisites and then delegates to shared setup. Native Windows staging,
+patching, launch and process scripts remain platform adapters. Linux shell
+helpers dispatch through the same host commands; `StageFrontierClient.sh` and
+`PlayFrontier.sh` select those helpers on Linux and retain the original macOS
+implementation on macOS. macOS retains its accepted `3467658` profile.
+
+For a fresh source checkout, install the root compiler without running the
+postinstall build, then compile the host tools:
+
+```sh
+npm ci --include=dev --ignore-scripts
+npm run build:tools
 ```
 
-Status and preview commands do not start the client:
-
-```powershell
-.\SetupFrontierWindows.ps1 -Status
-.\StageFrontierClient.ps1 -Build 3502403 -DryRun
-.\PatchFrontierClientTrust.ps1 -StagedRoot "$env:LOCALAPPDATA\EveJS-Frontier\windows\staged-client\3502403" -Check
-.\StartFrontierServer.ps1 -Build 3502403 -Status
-.\StopFrontier.ps1 -Build 3502403 -DryRun
-```
-
-Windows build `3502403` uses `blue.pyd`, not `blue.dll`. No live acceptance
-has been established for this candidate; the earlier `3474408` smoke run
-does not transfer to it. See [FRONTIER_BUILD_3502403.md](FRONTIER_BUILD_3502403.md).
-Setup and staging discover the installed build; Start, Play, Stop, and the
-Frontier server test runner default to `3502403`. Pass an explicit older build
-to use an existing older runtime. macOS shell defaults remain `3467658`.
+Windows build `3502403` uses `blue.pyd`. Automated workflow checks do not
+establish live gameplay acceptance; see
+[FRONTIER_BUILD_3502403.md](FRONTIER_BUILD_3502403.md).
 
 ## Conventional EVE Online build 3396210
 

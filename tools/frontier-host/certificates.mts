@@ -51,7 +51,7 @@ function writePair(certPath: string, keyPath: string, certificate: string, key: 
   catch (error) { fs.unlinkSync(keyPath); throw error; }
 }
 
-function protectPrivateKey(keyPath: string) {
+export function protectPrivateKey(keyPath: string) {
   if (process.platform !== "win32") { fs.chmodSync(keyPath, 0o600); return; }
   const result = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `
     $ErrorActionPreference = 'Stop'

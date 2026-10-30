@@ -144,9 +144,14 @@ test("Linux server environment shares exact identity and keeps all listeners loc
   assert.equal(environment.EVEJS_PROJECT_CODENAME, "cycle-7");
   for (const field of ["EVEJS_GAME_SERVER_BIND_HOST", "EVEJS_IMAGE_SERVER_BIND_HOST", "EVEJS_MICROSERVICES_BIND_HOST", "EVEJS_XMPP_SERVER_BIND_HOST", "EVEJS_REDSHIFT_MONITOR_HOST"]) assert.equal(environment[field], "127.0.0.1");
   assert.equal(environment.EVEJS_PERSISTENCE_WORKER, "1");
+  assert.equal(environment.EVEJS_COLLISION_BUNDLE_REQUIRED, "1");
   assert.equal(environment.EVEJS_CONFIG_DIR, layout.runtimeRoot);
   assert.equal(serverEnvironment(layout, { clientBuild: 3640684, clientVersion: 20.04, clientCodename: "cycle-7", machoVersion: 489 }).EVEJS_CLIENT_BUILD_PROFILE, "auto");
   assert.throws(() => serverEnvironment(layout, { clientBuild: 3502403 }), /does not match/);
+  const legacy = serverPaths(layout.repoRoot, "2703993");
+  assert.equal(serverEnvironment(legacy, { clientBuild: 2703993, clientVersion: 20.04, clientCodename: "FRONTIER-RELEASE", machoVersion: 489 }).EVEJS_COLLISION_BUNDLE_REQUIRED, "0");
+  const unconverted = serverPaths(layout.repoRoot, "2702949");
+  assert.equal(serverEnvironment(unconverted, { clientBuild: 2702949, clientVersion: 20.04 }).EVEJS_COLLISION_BUNDLE_REQUIRED, "1");
 });
 
 function processMarker(layout: ReturnType<typeof serverPaths>, identity: any) {

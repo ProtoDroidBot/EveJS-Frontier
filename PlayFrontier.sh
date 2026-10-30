@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$(uname -s)" == "Linux" ]]; then
+  exec bash "$SCRIPT_DIR/PlayFrontierLinux.sh" "$@"
+fi
+
 STAGED_ROOT="${HOME}/Library/Application Support/evejs-frontier/macos/staged-client/current"
 SESSION_FILE="${HOME}/Library/Application Support/evejs-frontier/macos/launcher-session.args"
 LOG_ROOT="${HOME}/Library/Application Support/evejs-frontier/macos/logs"

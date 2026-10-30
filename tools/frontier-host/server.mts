@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { resolveHostPaths, resolveBuildProfile, assertNodeVersion } from "./config.mjs";
-import { readBuildManifest, verifyAttestedFile, validateContracts } from "./data.mjs";
+import { readBuildManifest, validateCollisionAssets, validateContracts } from "./data.mjs";
+import { resolveStaticSchema } from "../frontier-static/lib/static-schema.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const PORTS = [443, 5222, 26000, 26101, 26102, 26103, 26401];
@@ -117,11 +118,9 @@ export function validateStartupArtifacts(layout: Layout) {
     const stat = fs.statSync(file);
     if (!stat.isFile() || stat.size === 0) throw new Error(`Generated baseline table is missing or empty: ${file}`);
   }
-  const collision = database.assets?.collisionBundle;
-  verifyAttestedFile(layout.generatedRoot, collision?.path, collision);
-  if (String(collision.sha256).toLowerCase() !== String(snapshot.assets?.collisionBundle?.sha256).toLowerCase()) throw new Error("Generated collision asset differs from the selected snapshot.");
+  const collisionSha256 = validateCollisionAssets(layout.generatedRoot, snapshot, database);
   validateContracts(layout.contractsRoot, layout.build);
-  return { build: layout.build, collisionSha256: collision.sha256 };
+  return { build: layout.build, collisionSha256 };
 }
 
 /** Publish a complete copy atomically; never recognize an arbitrary existing directory. */
@@ -203,7 +202,7 @@ export function processState(layout: Layout, role: "server" | "dapp") {
 export function serverEnvironment(layout: Layout, profile: any, quiet = false): NodeJS.ProcessEnv {
   if (String(profile.clientBuild) !== layout.build) throw new Error("Server environment profile does not match the exact build.");
   return { ...process.env, EVEJS_CONFIG_DIR: layout.runtimeRoot, EVEJS_LOG_DIR: path.join(layout.runtimeRoot, "logs"),
-    EVEJS_GAMESTORE_DATA_DIR: layout.runtimeData, EVEJS_PERSISTENCE_WORKER: "1", EVEJS_COLLISION_BUNDLE_REQUIRED: "1",
+    EVEJS_GAMESTORE_DATA_DIR: layout.runtimeData, EVEJS_PERSISTENCE_WORKER: "1", EVEJS_COLLISION_BUNDLE_REQUIRED: resolveStaticSchema(layout.build).collisionBundle ? "1" : "0",
     EVEJS_STATIC_JSONL_ROOT: layout.staticRoot, EVEJS_CLIENT_COMPATIBILITY_PROFILE: "frontier", EVEJS_CLIENT_BUILD_PROFILE: profile.runtimeProfileId || "auto",
     EVEJS_CLIENT_VERSION: Number(profile.clientVersion).toFixed(2), EVEJS_CLIENT_BUILD: layout.build, EVEJS_EVE_BIRTHDAY: String(profile.eveBirthday ?? 170472),
     EVEJS_MACHO_VERSION: String(profile.machoVersion), EVEJS_PROJECT_CODENAME: profile.clientCodename,
