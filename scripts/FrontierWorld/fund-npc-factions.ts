@@ -8,6 +8,7 @@ import { SUI_CHARACTER_TENANT } from "../../server/src/services/frontier/suiChar
 import { suiGrpcClient } from "../../server/src/services/frontier/suiGrpcClient";
 
 type CliOptions = {
+  build?: string;
   worldConfigPath?: string;
   factionsConfigPath?: string;
   dryRun?: boolean;
@@ -36,7 +37,11 @@ function parseArgs(args: string[]): CliOptions {
     }
     const value = args[++index];
     if (!value) throw new Error(`Missing value for ${flag}`);
-    if (flag === "--world-config") options.worldConfigPath = path.resolve(value);
+    if (flag === "--build") {
+      assert.match(value, /^\d+$/, "--build must be numeric");
+      options.build = value;
+    }
+    else if (flag === "--world-config") options.worldConfigPath = path.resolve(value);
     else if (flag === "--factions-config") options.factionsConfigPath = path.resolve(value);
     else throw new Error(`Unknown option ${flag}`);
   }
@@ -44,7 +49,7 @@ function parseArgs(args: string[]): CliOptions {
 }
 
 async function main(options: CliOptions) {
-  const build = String(process.env.EVEJS_CLIENT_BUILD || "3502403");
+  const build = options.build || String(process.env.EVEJS_CLIENT_BUILD || "3502403");
   assert.match(build, /^[0-9]+$/, "EVEJS_CLIENT_BUILD must be numeric");
   const worldConfigPath = options.worldConfigPath || path.resolve(
     __dirname,

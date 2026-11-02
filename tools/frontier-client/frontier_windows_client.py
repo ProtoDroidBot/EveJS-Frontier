@@ -730,114 +730,97 @@ def run_python_patcher(script: Path, archive: Path, build: int, check: bool) -> 
     return lines[-1]
 
 
+def _code_patch_adapter(key, script, label, states, write_states=("source",),
+                        *, fixed_state=None, partial_error=None):
+    return {"key": key, "script": script, "label": label, "states": frozenset(states),
+            "writeStates": frozenset(write_states), "fixedState": fixed_state,
+            "partialError": partial_error}
+
+
+# Portable dispatch and state policy live here. Exact member hashes and the
+# build-specific changes remain in the individual patcher profiles.
+CODE_PATCH_ADAPTERS = {
+    "docking": _code_patch_adapter("docking", DOCKING_PATCHER, "station-docking", ("source", "patched")),
+    "nativeDocking": _code_patch_adapter("docking", DOCKING_PATCHER, "station-docking", ("native",),
+                                         (), fixed_state="native"),
+    "features": _code_patch_adapter("features", FEATURE_PATCHER, "Frontier-feature", ("source", "patched", "partial"),
+                                    partial_error="code.ccp contains a partial Frontier feature patch."),
+    "industryStorage": _code_patch_adapter("industryStorage", INDUSTRY_STORAGE_PATCHER, "Industry storage adapter",
+        ("source", "patched", "outdated", "partial"), ("source", "outdated"),
+        partial_error="code.ccp contains a partial Industry storage adapter."),
+    "mapViewLifecycle": _code_patch_adapter("mapViewLifecycle", MAP_VIEW_PATCHER, "map-view lifecycle", ("source", "patched")),
+    "fittingCompatibility": _code_patch_adapter("fittingCompatibility", FITTING_COMPATIBILITY_PATCHER, "fitting compatibility",
+        ("source", "patched", "outdated"), ("source", "outdated")),
+    "inventoryView": _code_patch_adapter("inventoryView", INVENTORY_VIEW_PATCHER, "inventory-view compatibility",
+        ("source", "patched", "outdated", "partial"), ("source", "outdated"),
+        partial_error="code.ccp contains a partial inventory-view adapter."),
+    "collisionVfx": _code_patch_adapter("collisionVfx", COLLISION_VFX_PATCHER, "collision VFX",
+        ("source", "patched", "outdated"), ("source", "outdated")),
+    "asteroidVisualScale": _code_patch_adapter("asteroidVisualScale", ASTEROID_VISUAL_SCALE_PATCHER, "asteroid visual-scale",
+        ("source", "patched", "outdated"), ("source", "outdated")),
+    "creationTransform": _code_patch_adapter("creationTransform", CREATION_TRANSFORM_PATCHER, "Creation transform",
+        ("source", "patched", "outdated"), ("source", "outdated")),
+    "dungeonPropHologram": _code_patch_adapter("dungeonPropHologram", DUNGEON_PROP_HOLOGRAM_PATCHER, "dungeon hologram",
+        ("source", "patched", "outdated"), ("source", "outdated")),
+    "physicsGun": _code_patch_adapter("physicsGun", PHYSICS_GUN_PATCHER, "Physics Gun",
+        ("source", "patched", "outdated"), ("source", "outdated")),
+    "turretTracking": _code_patch_adapter("turretTracking", TURRET_TRACKING_PATCHER, "turret tracking",
+        ("source", "patched", "outdated"), ("source", "outdated")),
+}
+
+_BASE_CODE_PATCHES = ("docking", "features")
+_3502403_CHECK_PATCHES = (*_BASE_CODE_PATCHES, "industryStorage", "mapViewLifecycle", "fittingCompatibility",
+    "inventoryView", "collisionVfx", "asteroidVisualScale", "creationTransform", "dungeonPropHologram", "physicsGun", "turretTracking")
+_3502403_WRITE_PATCHES = (*_BASE_CODE_PATCHES, "industryStorage", "mapViewLifecycle", "fittingCompatibility",
+    "turretTracking", "inventoryView", "collisionVfx", "asteroidVisualScale", "creationTransform", "dungeonPropHologram", "physicsGun")
+
+# Each entry supplies inspection and mutation order separately. A build is
+# admitted explicitly; branch names and numeric ordering never select patches.
+CODE_PATCH_PLANS = {
+    2703993: (("nativeDocking", "features"), ("features",)),
+    3467658: (_BASE_CODE_PATCHES, _BASE_CODE_PATCHES),
+    3474408: (_BASE_CODE_PATCHES, _BASE_CODE_PATCHES),
+    3488090: (_BASE_CODE_PATCHES, _BASE_CODE_PATCHES),
+    3502403: (_3502403_CHECK_PATCHES, _3502403_WRITE_PATCHES),
+    3640684: (_BASE_CODE_PATCHES, _BASE_CODE_PATCHES),
+}
+
+
+def _resolve_code_patch_plan(build):
+    if type(build) is not int or build not in CODE_PATCH_PLANS:
+        raise FrontierWindowsError(f"No exact client code patch plan is registered for build {build}.")
+    checks, writes = CODE_PATCH_PLANS[build]
+    return (tuple(CODE_PATCH_ADAPTERS[name] for name in checks),
+            tuple(CODE_PATCH_ADAPTERS[name] for name in writes))
+
+
 def code_patch_states(archive: Path, build: int) -> dict:
-    docking = run_python_patcher(DOCKING_PATCHER, archive, build, check=True)
-    features = run_python_patcher(FEATURE_PATCHER, archive, build, check=True)
-    if docking not in {"source", "patched"}:
-        raise FrontierWindowsError(f"Unexpected station-docking state: {docking}")
-    if features not in {"source", "patched", "partial"}:
-        raise FrontierWindowsError(f"Unexpected Frontier-feature state: {features}")
-    states = {"docking": docking, "features": features}
-    if build == 3502403:
-        industry = run_python_patcher(INDUSTRY_STORAGE_PATCHER, archive, build, check=True)
-        if industry not in {"source", "patched", "outdated", "partial"}:
-            raise FrontierWindowsError(f"Unexpected Industry storage adapter state: {industry}")
-        states["industryStorage"] = industry
-        map_view = run_python_patcher(MAP_VIEW_PATCHER, archive, build, check=True)
-        if map_view not in {"source", "patched"}:
-            raise FrontierWindowsError(f"Unexpected map-view lifecycle state: {map_view}")
-        states["mapViewLifecycle"] = map_view
-        fitting = run_python_patcher(FITTING_COMPATIBILITY_PATCHER, archive, build, check=True)
-        if fitting not in {"source", "patched", "outdated"}:
-            raise FrontierWindowsError(f"Unexpected fitting compatibility state: {fitting}")
-        states["fittingCompatibility"] = fitting
-        inventory_view = run_python_patcher(INVENTORY_VIEW_PATCHER, archive, build, check=True)
-        if inventory_view not in {"source", "patched", "outdated", "partial"}:
-            raise FrontierWindowsError(f"Unexpected inventory-view compatibility state: {inventory_view}")
-        states["inventoryView"] = inventory_view
-        collision_vfx = run_python_patcher(COLLISION_VFX_PATCHER, archive, build, check=True)
-        if collision_vfx not in {"source", "patched", "outdated"}:
-            raise FrontierWindowsError(f"Unexpected collision VFX state: {collision_vfx}")
-        states["collisionVfx"] = collision_vfx
-        asteroid_visual_scale = run_python_patcher(
-            ASTEROID_VISUAL_SCALE_PATCHER, archive, build, check=True)
-        if asteroid_visual_scale not in {"source", "patched", "outdated"}:
-            raise FrontierWindowsError(
-                f"Unexpected asteroid visual-scale state: {asteroid_visual_scale}")
-        states["asteroidVisualScale"] = asteroid_visual_scale
-        creation_transform = run_python_patcher(
-            CREATION_TRANSFORM_PATCHER, archive, build, check=True
-        )
-        if creation_transform not in {"source", "patched", "outdated"}:
-            raise FrontierWindowsError(
-                f"Unexpected Creation transform state: {creation_transform}"
-            )
-        states["creationTransform"] = creation_transform
-        dungeon_hologram = run_python_patcher(
-            DUNGEON_PROP_HOLOGRAM_PATCHER, archive, build, check=True
-        )
-        if dungeon_hologram not in {"source", "patched", "outdated"}:
-            raise FrontierWindowsError(f"Unexpected dungeon hologram state: {dungeon_hologram}")
-        states["dungeonPropHologram"] = dungeon_hologram
-        physics_gun = run_python_patcher(PHYSICS_GUN_PATCHER, archive, build, check=True)
-        if physics_gun not in {"source", "patched", "outdated"}:
-            raise FrontierWindowsError(f"Unexpected Physics Gun state: {physics_gun}")
-        states["physicsGun"] = physics_gun
-        turret_tracking = run_python_patcher(TURRET_TRACKING_PATCHER, archive, build, check=True)
-        if turret_tracking not in {"source", "patched", "outdated"}:
-            raise FrontierWindowsError(f"Unexpected turret tracking state: {turret_tracking}")
-        states["turretTracking"] = turret_tracking
+    checks, _writes = _resolve_code_patch_plan(build)
+    states = {}
+    for adapter in checks:
+        state = run_python_patcher(adapter["script"], archive, build, check=True)
+        if state not in adapter["states"]:
+            raise FrontierWindowsError(f"Unexpected {adapter['label']} state: {state}")
+        states[adapter["key"]] = state
     return states
 
 
 def expected_code_states(build: int, state: str) -> dict:
-    result = {"docking": state, "features": state}
-    if build == 3502403:
-        result["industryStorage"] = state
-        result["mapViewLifecycle"] = state
-        result["fittingCompatibility"] = state
-        result["inventoryView"] = state
-        result["collisionVfx"] = state
-        result["asteroidVisualScale"] = state
-        result["creationTransform"] = state
-        result["dungeonPropHologram"] = state
-        result["physicsGun"] = state
-        result["turretTracking"] = state
-    return result
+    checks, _writes = _resolve_code_patch_plan(build)
+    return {adapter["key"]: adapter["fixedState"] or state for adapter in checks}
 
 
 def patch_code_archive(archive: Path, build: int) -> dict:
+    checks, writes = _resolve_code_patch_plan(build)
     states = code_patch_states(archive, build)
-    if states["features"] == "partial":
-        raise FrontierWindowsError("code.ccp contains a partial Frontier feature patch.")
-    if states.get("industryStorage") == "partial":
-        raise FrontierWindowsError("code.ccp contains a partial Industry storage adapter.")
-    if states.get("inventoryView") == "partial":
-        raise FrontierWindowsError("code.ccp contains a partial inventory-view adapter.")
-    if states["docking"] == "source":
-        run_python_patcher(DOCKING_PATCHER, archive, build, check=False)
-    if states["features"] == "source":
-        run_python_patcher(FEATURE_PATCHER, archive, build, check=False)
-    if states.get("industryStorage") in {"source", "outdated"}:
-        run_python_patcher(INDUSTRY_STORAGE_PATCHER, archive, build, check=False)
-    if states.get("mapViewLifecycle") == "source":
-        run_python_patcher(MAP_VIEW_PATCHER, archive, build, check=False)
-    if states.get("fittingCompatibility") in {"source", "outdated"}:
-        run_python_patcher(FITTING_COMPATIBILITY_PATCHER, archive, build, check=False)
-    if states.get("turretTracking") in {"source", "outdated"}:
-        run_python_patcher(TURRET_TRACKING_PATCHER, archive, build, check=False)
-    if states.get("inventoryView") in {"source", "outdated"}:
-        run_python_patcher(INVENTORY_VIEW_PATCHER, archive, build, check=False)
-    if states.get("collisionVfx") in {"source", "outdated"}:
-        run_python_patcher(COLLISION_VFX_PATCHER, archive, build, check=False)
-    if states.get("asteroidVisualScale") in {"source", "outdated"}:
-        run_python_patcher(ASTEROID_VISUAL_SCALE_PATCHER, archive, build, check=False)
-    if states.get("creationTransform") in {"source", "outdated"}:
-        run_python_patcher(CREATION_TRANSFORM_PATCHER, archive, build, check=False)
-    if states.get("dungeonPropHologram") in {"source", "outdated"}:
-        run_python_patcher(DUNGEON_PROP_HOLOGRAM_PATCHER, archive, build, check=False)
-    if states.get("physicsGun") in {"source", "outdated"}:
-        run_python_patcher(PHYSICS_GUN_PATCHER, archive, build, check=False)
+    # Validate the complete selection before the first writer can mutate it.
+    for adapter in checks:
+        if states[adapter["key"]] == "partial":
+            raise FrontierWindowsError(adapter["partialError"] or
+                                       f"code.ccp contains a partial {adapter['label']} patch.")
+    for adapter in writes:
+        if states[adapter["key"]] in adapter["writeStates"]:
+            run_python_patcher(adapter["script"], archive, build, check=False)
     patched = code_patch_states(archive, build)
     if patched != expected_code_states(build, "patched"):
         raise FrontierWindowsError(f"code.ccp did not reach the exact patched state: {patched}")

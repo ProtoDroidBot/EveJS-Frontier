@@ -33,7 +33,11 @@ const {
 } = require(path.join(__dirname, "../skills/skillState"));
 const {
   normalizeActivationStateForProfile,
+  usesLegacyFrontierDogmaProfile,
 } = require(path.join(__dirname, "../dogma/dogmaInfoCompatibility"));
+const { getShipFuelCharge, getShipFuelProperties } = require(path.join(
+  __dirname, "../frontier/fuelTankRuntime",
+));
 const {
   undockSession,
   ejectSession,
@@ -560,10 +564,17 @@ class ShipService extends BaseService {
       this._getShipID(session);
     const skillPoints = getCharacterSkillPointTotal(charID) || 0;
     const shipCondition = getShipConditionState(activeShip);
+    const rowOptions = {
+      compatibilityProfile: session && session.compatibilityProfile,
+      clientBuild: Number(require("../../config").clientBuild),
+    };
+    const legacyFuel = usesLegacyFrontierDogmaProfile(rowOptions.compatibilityProfile, rowOptions.clientBuild)
+      ? { fuelCharge: getShipFuelCharge(activeShip), fuelEfficiency: getShipFuelProperties(activeShip).fuelEfficiency }
+      : {};
     const fittedItems = getFittedModuleItems(charID, shipID);
     const moduleEntries = fittedItems.map((item) => [
       item.itemID,
-      this._buildPackedInstanceRow(buildModuleStatusSnapshot(item)),
+      this._buildPackedInstanceRow(buildModuleStatusSnapshot(item), rowOptions),
     ]);
 
     return normalizeActivationStateForProfile(
@@ -580,7 +591,8 @@ class ShipService extends BaseService {
                 armorDamage: shipCondition.armorDamage,
                 shieldCharge: shipCondition.shieldCharge,
                 incapacitated: shipCondition.incapacitated,
-              }),
+                ...legacyFuel,
+              }, rowOptions),
             ],
             [
               charID,
@@ -588,7 +600,7 @@ class ShipService extends BaseService {
                 itemID: charID,
                 online: true,
                 skillPoints,
-              }),
+              }, rowOptions),
             ],
             ...moduleEntries,
           ],
@@ -602,6 +614,7 @@ class ShipService extends BaseService {
         buildActivationHeatStateDict(),
       ],
       session && session.compatibilityProfile,
+      rowOptions.clientBuild,
     );
   }
 
@@ -652,12 +665,12 @@ class ShipService extends BaseService {
     };
   }
 
-  _buildInstanceRowDescriptor() {
+  _buildInstanceRowDescriptor(columns = INSTANCE_ROW_DESCRIPTOR_COLUMNS) {
     return {
       type: "objectex1",
       header: [
         { type: "token", value: "blue.DBRowDescriptor" },
-        [INSTANCE_ROW_DESCRIPTOR_COLUMNS],
+        [columns],
       ],
       list: [],
       dict: [],
@@ -673,11 +686,20 @@ class ShipService extends BaseService {
     armorDamage = 0.0,
     shieldCharge = 0.0,
     incapacitated = false,
-  }: Record<string, any>) {
+    fuelCharge = 0.0,
+    fuelEfficiency = 0.0,
+  }: Record<string, any>, options: Record<string, any> = {}) {
+    const legacy = usesLegacyFrontierDogmaProfile(
+      options.compatibilityProfile,
+      options.clientBuild ?? Number(require("../../config").clientBuild),
+    );
+    const columns = legacy
+      ? [...INSTANCE_ROW_DESCRIPTOR_COLUMNS, ["fuelCharge", DBTYPE_R8], ["fuelEfficiency", DBTYPE_R8]]
+      : INSTANCE_ROW_DESCRIPTOR_COLUMNS;
     return {
       type: "packedrow",
-      header: this._buildInstanceRowDescriptor(),
-      columns: INSTANCE_ROW_DESCRIPTOR_COLUMNS,
+      header: this._buildInstanceRowDescriptor(columns),
+      columns,
       fields: {
         instanceID: itemID,
         online,
@@ -687,6 +709,7 @@ class ShipService extends BaseService {
         armorDamage,
         shieldCharge,
         incapacitated,
+        ...(legacy ? { fuelCharge, fuelEfficiency } : {}),
       },
     };
   }

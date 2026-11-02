@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { readResourceIndex, resolveIndexedResource, } from "./lib/resource-index.mjs";
 import { discoverFrontierClients, selectBuild, } from "./lib/frontier-client-discovery.mjs";
 import { buildPythonInvocation, resolveFrontierPython, } from "./lib/frontier-python.mjs";
+import { assertStaticSource, resolveStaticSchema } from "./lib/static-schema.mjs";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "../..");
 const COLLISION_ASSET_PATH = "assets/collision/bundle.collision";
@@ -227,25 +228,52 @@ function prepareDestination(outDir, force) {
     }
     fs.rmSync(outDir, { recursive: true });
 }
+// Read-only source validation, also used before setup installs dependencies.
 function buildRequest(selected, clientRoot) {
     const indexPath = selected.files.resourceIndex;
     const entries = readResourceIndex(indexPath);
     const resFilesRoot = selected.resFilesRoot;
     const resources = {};
-    for (const [key, logicalPath] of Object.entries(REQUIRED_RESOURCES)) {
+    const schema = resolveStaticSchema(selected.build);
+    const requiredResources = Object.fromEntries(Object.entries(REQUIRED_RESOURCES)
+        .filter(([key]) => !schema.omittedResourceKeys.includes(key)));
+    if (schema.id === "frontier-phase4-2703993-v1")
+        requiredResources.legacyBlueprints = "res:/staticdata/blueprints.static";
+    const missing = Object.values(requiredResources).filter(logicalPath => !entries.has(logicalPath));
+    if (schema.collisionBundle && !selected.files.collisionBundle)
+        missing.unshift("bin64/bundle.collision");
+    if (missing.length) {
+        throw new Error(`Frontier build ${selected.build} is recognized, but the current static extractor requires ` +
+            `inputs absent from this layout: ${missing.join(", ")}. ` +
+            "Older clients can legitimately omit these inputs and need a build-specific data conversion.");
+    }
+    if (!schema.collisionBundle && selected.files.collisionBundle)
+        throw new Error("The audited Phase 4 source layout has no collision bundle.");
+    for (const [key, logicalPath] of Object.entries(requiredResources)) {
         resources[key] = resolveIndexedResource(entries, logicalPath, resFilesRoot);
+        if (schema.id === "frontier-phase4-2703993-v1") {
+            const resource = resources[key];
+            const observed = crypto.createHash("md5").update(fs.readFileSync(resource.physicalPath)).digest("hex");
+            if (observed !== resource.sourceHash.toLowerCase())
+                throw new Error(`Indexed Frontier resource MD5 mismatch: ${logicalPath}`);
+        }
     }
     const mapObjectsPath = selected.files.mapObjects;
     if (!fs.existsSync(mapObjectsPath) || !fs.statSync(mapObjectsPath).isFile()) {
         throw new Error(`Frontier mapObjects database not found: ${mapObjectsPath}`);
     }
     const collisionBundlePath = selected.files.collisionBundle;
-    const collisionBundle = inspectCollisionBundle(collisionBundlePath);
+    const collisionBundle = schema.collisionBundle ? inspectCollisionBundle(collisionBundlePath) : null;
+    const indexSha256 = sha256File(indexPath);
+    const sourceIdentity = schema.id === "frontier-phase4-2703993-v1" ? Object.fromEntries(["codeArchive", "nativeBlue"].map(key => [key, { sha256: sha256File(selected.files[key]), size: fs.statSync(selected.files[key]).size }])) : {};
+    assertStaticSource(selected.build, { index: { sha256: indexSha256 }, ...sourceIdentity });
     const main = selected.startIni;
     if (String(main["main.appname"] || "").toUpperCase() !== "FRONTIER") {
         throw new Error(`Selected client is not EVE Frontier: ${selected.startIniPath}`);
     }
     return {
+        schemaProfile: schema.id,
+        ...sourceIdentity,
         client: {
             appName: main["main.appname"],
             branch: main["main.branch"],
@@ -262,24 +290,25 @@ function buildRequest(selected, clientRoot) {
         index: {
             entryCount: entries.size,
             path: indexPath,
-            sha256: sha256File(indexPath),
+            sha256: indexSha256,
         },
         mapObjectsDb: {
             physicalPath: mapObjectsPath,
             sha256: sha256File(mapObjectsPath),
             size: fs.statSync(mapObjectsPath).size,
         },
-        collisionBundle: {
+        collisionBundle: collisionBundle ? {
             physicalPath: collisionBundlePath,
             sha256: sha256File(collisionBundlePath),
             size: fs.statSync(collisionBundlePath).size,
             ...collisionBundle,
-        },
+        } : null,
         resources,
     };
 }
 function publicSourceRequest(request) {
     return {
+        ...(request.codeArchive ? { codeArchive: request.codeArchive, nativeBlue: request.nativeBlue } : {}),
         client: {
             appName: request.client.appName,
             branch: request.client.branch,
@@ -299,7 +328,7 @@ function publicSourceRequest(request) {
             sha256: request.mapObjectsDb.sha256,
             size: request.mapObjectsDb.size,
         },
-        collisionBundle: {
+        collisionBundle: request.collisionBundle ? {
             items: request.collisionBundle.items,
             maxCollisionID: request.collisionBundle.maxCollisionID,
             meshItems: request.collisionBundle.meshItems,
@@ -307,7 +336,7 @@ function publicSourceRequest(request) {
             sha256: request.collisionBundle.sha256,
             size: request.collisionBundle.size,
             uniformItems: request.collisionBundle.uniformItems,
-        },
+        } : null,
         resources: Object.fromEntries(Object.entries(request.resources).map(([key, value]) => [
             key,
             {
@@ -372,25 +401,28 @@ function main() {
     const lines = result.stdout.trim().split(/\r?\n/).filter(Boolean);
     const report = JSON.parse(lines.at(-1));
     const outputs = outputMetadata(workDir, report.outputs);
-    const collisionAssetPath = path.join(workDir, ...COLLISION_ASSET_PATH.split("/"));
-    fs.mkdirSync(path.dirname(collisionAssetPath), { recursive: true });
-    fs.copyFileSync(request.collisionBundle.physicalPath, collisionAssetPath);
-    const collisionAsset = {
-        bytes: fs.statSync(collisionAssetPath).size,
-        items: request.collisionBundle.items,
-        maxCollisionID: request.collisionBundle.maxCollisionID,
-        meshItems: request.collisionBundle.meshItems,
-        minCollisionID: request.collisionBundle.minCollisionID,
-        path: COLLISION_ASSET_PATH,
-        schema: COLLISION_SCHEMA,
-        sha256: sha256File(collisionAssetPath),
-        uniformItems: request.collisionBundle.uniformItems,
-    };
+    let collisionAsset = null;
+    if (request.collisionBundle) {
+        const collisionAssetPath = path.join(workDir, ...COLLISION_ASSET_PATH.split("/"));
+        fs.mkdirSync(path.dirname(collisionAssetPath), { recursive: true });
+        fs.copyFileSync(request.collisionBundle.physicalPath, collisionAssetPath);
+        collisionAsset = {
+            bytes: fs.statSync(collisionAssetPath).size,
+            items: request.collisionBundle.items,
+            maxCollisionID: request.collisionBundle.maxCollisionID,
+            meshItems: request.collisionBundle.meshItems,
+            minCollisionID: request.collisionBundle.minCollisionID,
+            path: COLLISION_ASSET_PATH,
+            schema: COLLISION_SCHEMA,
+            sha256: sha256File(collisionAssetPath),
+            uniformItems: request.collisionBundle.uniformItems,
+        };
+    }
     const manifest = {
-        assets: {
-            collisionBundle: collisionAsset,
-        },
+        assets: collisionAsset ? { collisionBundle: collisionAsset } : {},
         format: "evejs-frontier-static-v1",
+        schemaProfile: request.schemaProfile,
+        ...(report.legacyUniverse ? { legacyUniverse: report.legacyUniverse } : {}),
         generatedAt: new Date().toISOString(),
         localization: {
             language: report.localizationLanguage,
@@ -399,9 +431,9 @@ function main() {
         outputs,
         source: publicSourceRequest(request),
         totals: {
-            assetBytes: collisionAsset.bytes,
+            assetBytes: collisionAsset?.bytes ?? 0,
             bytes: Object.values(outputs).reduce((sum, entry) => sum + entry.bytes, 0) +
-                collisionAsset.bytes,
+                (collisionAsset?.bytes ?? 0),
             records: Object.values(outputs).reduce((sum, entry) => sum + entry.records, 0),
         },
     };
@@ -421,5 +453,5 @@ if (process.argv[1] &&
         process.exitCode = 1;
     }
 }
-export { COLLISION_ASSET_PATH, REQUIRED_RESOURCES, discoverBuilds, inspectCollisionBundle, parseArgs, selectBuild, };
+export { COLLISION_ASSET_PATH, REQUIRED_RESOURCES, buildRequest, discoverBuilds, inspectCollisionBundle, parseArgs, selectBuild, };
 //# sourceMappingURL=extract-frontier-static.mjs.map

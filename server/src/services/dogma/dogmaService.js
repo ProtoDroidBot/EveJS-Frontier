@@ -8,7 +8,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const database = require(path.join(__dirname, "../../gameStore"));
 const BaseService = require(path.join(__dirname, "../baseService"));
-const { normalizeActivationStateForProfile, normalizeInfoAttributesForProfile, } = require(path.join(__dirname, "./dogmaInfoCompatibility"));
+const { getCharacterInventoryCategoryIDForProfile, normalizeActivationStateForProfile, normalizeInfoAttributesForProfile, usesLegacyFrontierDogmaProfile, } = require(path.join(__dirname, "./dogmaInfoCompatibility"));
 const { resolveSessionCharacterID, } = require(path.join(__dirname, "../_shared/sessionIdentity"));
 const log = require(path.join(__dirname, "../../utils/logger"));
 const { throwWrappedUserError } = require(path.join(__dirname, "../../common/machoErrors"));
@@ -221,7 +221,6 @@ function clampRatio(value, fallback = 1) {
 const MODULE_ATTRIBUTE_DURATION = getAttributeIDByNames("duration") || 73;
 const CHARACTER_TYPE_ID = 1373;
 const CHARACTER_GROUP_ID = 1;
-const CHARACTER_CATEGORY_ID = 3;
 const FLAG_PILOT = 57;
 const DBTYPE_I2 = 0x02;
 const DBTYPE_I4 = 0x03;
@@ -859,6 +858,9 @@ class DogmaService extends BaseService {
     _getCharID(session) {
         return resolveSessionCharacterID(session);
     }
+    _getCharacterCategoryID(session) {
+        return getCharacterInventoryCategoryIDForProfile(session && session.compatibilityProfile, Number(require("../../config").clientBuild));
+    }
     _isControllingStructureSession(session) {
         const structureID = Number(session && (session.structureID || session.structureid)) || 0;
         const shipID = Number(session && (session.shipID || session.shipid)) || 0;
@@ -1223,7 +1225,7 @@ class DogmaService extends BaseService {
             // semantics at the 100ns FILETIME precision used by the wire payload.
             wallclockTime = time - 1n;
         }
-        const resolvedAttributes = normalizeInfoAttributesForProfile(attributes || { type: "dict", entries: [] }, time, session && session.compatibilityProfile);
+        const resolvedAttributes = normalizeInfoAttributesForProfile(attributes || { type: "dict", entries: [] }, time, session && session.compatibilityProfile, Number(require("../../config").clientBuild));
         const entries = [
             ["itemID", itemID],
             ["invItem", resolvedInvItem],
@@ -1254,22 +1256,28 @@ class DogmaService extends BaseService {
             },
         };
     }
-    _buildInstanceRowDescriptor() {
+    _buildInstanceRowDescriptor(columns = INSTANCE_ROW_DESCRIPTOR_COLUMNS) {
         return {
             type: "objectex1",
             header: [
                 { type: "token", value: "blue.DBRowDescriptor" },
-                [INSTANCE_ROW_DESCRIPTOR_COLUMNS],
+                [columns],
             ],
             list: [],
             dict: [],
         };
     }
-    _buildPackedInstanceRow({ itemID, online = false, damage = 0.0, charge = 0.0, skillPoints = 0, armorDamage = 0.0, shieldCharge = 0.0, incapacitated = false, }) {
+    _buildPackedInstanceRow({ itemID, online = false, damage = 0.0, charge = 0.0, skillPoints = 0, armorDamage = 0.0, shieldCharge = 0.0, incapacitated = false, fuelCharge = 0.0, fuelEfficiency = 0.0, }, options = {}) {
+        const legacy = usesLegacyFrontierDogmaProfile(options.compatibilityProfile, options.clientBuild ?? Number(require("../../config").clientBuild));
+        // Native 2703993 BaseDogmaItem.Load indexes all nine instance values.
+        // Packed R8 fields take raw numbers; marshal-real wrappers are unnecessary.
+        const columns = legacy
+            ? [...INSTANCE_ROW_DESCRIPTOR_COLUMNS, ["fuelCharge", DBTYPE_R8], ["fuelEfficiency", DBTYPE_R8]]
+            : INSTANCE_ROW_DESCRIPTOR_COLUMNS;
         return {
             type: "packedrow",
-            header: this._buildInstanceRowDescriptor(),
-            columns: INSTANCE_ROW_DESCRIPTOR_COLUMNS,
+            header: this._buildInstanceRowDescriptor(columns),
+            columns,
             fields: {
                 instanceID: itemID,
                 online,
@@ -1279,6 +1287,7 @@ class DogmaService extends BaseService {
                 armorDamage,
                 shieldCharge,
                 incapacitated,
+                ...(legacy ? { fuelCharge, fuelEfficiency } : {}),
             },
         };
     }
@@ -4013,14 +4022,15 @@ class DogmaService extends BaseService {
         return context.chargeByFlag.get(Number(flagID) || 0) || null;
     }
     _buildActivationState(charID, shipID, shipRecord = null, options = {}) {
+        const clientBuild = options.clientBuild ?? Number(require("../../config").clientBuild);
         return normalizeActivationStateForProfile([
-            this._buildShipState(charID, shipID, shipRecord, options),
+            this._buildShipState(charID, shipID, shipRecord, { ...options, clientBuild }),
             options.includeCharges === false
                 ? this._buildEmptyDict()
                 : this._buildChargeStateDict(charID, shipID, options),
             buildWeaponBankStateDict(shipID, { characterID: charID }),
             buildActivationHeatStateDict(currentFileTime()),
-        ], options.compatibilityProfile);
+        ], options.compatibilityProfile, clientBuild);
     }
     _getCharacterItemLocationID(session, options = {}) {
         const allowShipLocation = options.allowShipLocation !== false;
@@ -4047,7 +4057,7 @@ class DogmaService extends BaseService {
                     locationID,
                     flagID: FLAG_PILOT,
                     groupID: CHARACTER_GROUP_ID,
-                    categoryID: CHARACTER_CATEGORY_ID,
+                    categoryID: this._getCharacterCategoryID(session),
                     quantity: -1,
                     singleton: 1,
                     stacksize: 1,
@@ -4066,7 +4076,7 @@ class DogmaService extends BaseService {
             locationID,
             flagID: FLAG_PILOT,
             groupID: CHARACTER_GROUP_ID,
-            categoryID: CHARACTER_CATEGORY_ID,
+            categoryID: this._getCharacterCategoryID(session),
             quantity: -1,
             singleton: 1,
             stacksize: 1,
@@ -4271,6 +4281,13 @@ class DogmaService extends BaseService {
     }
     _buildShipState(charID, shipID, shipRecord = null, options = {}) {
         const shipCondition = getShipConditionState(shipRecord);
+        const rowOptions = {
+            compatibilityProfile: options.compatibilityProfile,
+            clientBuild: options.clientBuild ?? Number(require("../../config").clientBuild),
+        };
+        const legacyFuel = usesLegacyFrontierDogmaProfile(rowOptions.compatibilityProfile, rowOptions.clientBuild)
+            ? { fuelCharge: getShipFuelCharge(shipRecord), fuelEfficiency: getShipFuelProperties(shipRecord).fuelEfficiency }
+            : {};
         const standardFittedItems = options.includeFittedItems === false
             ? []
             : this._isFittingContextMatch(options.fittingContext, charID, shipID, options)
@@ -4314,7 +4331,8 @@ class DogmaService extends BaseService {
                         armorDamage: shipCondition.armorDamage,
                         shieldCharge: shipCondition.shieldCharge,
                         incapacitated: shipCondition.incapacitated,
-                    }),
+                        ...legacyFuel,
+                    }, rowOptions),
                 ],
                 [
                     charID,
@@ -4322,7 +4340,7 @@ class DogmaService extends BaseService {
                         itemID: charID,
                         online: true,
                         skillPoints: getCharacterSkillPointTotal(charID) || 0,
-                    }),
+                    }, rowOptions),
                 ],
                 ...fittedItems.map((item) => {
                     const snapshot = buildModuleStatusSnapshot(item);
@@ -4331,7 +4349,7 @@ class DogmaService extends BaseService {
                     }
                     return [
                         item.itemID,
-                        this._buildPackedInstanceRow(snapshot),
+                        this._buildPackedInstanceRow(snapshot, rowOptions),
                     ];
                 }),
             ],
@@ -7728,7 +7746,7 @@ class DogmaService extends BaseService {
                 ? FLAG_PILOT
                 : this._resolveActiveShipFlagID(session, shipMetadata, 4),
             groupID: isCharacter ? 1 : shipMetadata.groupID,
-            categoryID: isCharacter ? 3 : shipMetadata.categoryID,
+            categoryID: isCharacter ? this._getCharacterCategoryID(session) : shipMetadata.categoryID,
             quantity: isCharacter
                 ? -1
                 : (shipMetadata.quantity === undefined || shipMetadata.quantity === null

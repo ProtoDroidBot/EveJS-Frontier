@@ -1377,6 +1377,7 @@ function buildChargeDogmaPrimeEntry(item, options: Record<string, any> = {}) {
     },
     now,
     options.compatibilityProfile,
+    options.clientBuild ?? Number(require("../../config").clientBuild),
   );
 
   return {
@@ -1443,7 +1444,8 @@ function buildInventoryDogmaPrimeEntry(item, options: Record<string, any> = {}) 
             Number(attributeID),
             Number(value),
           ]),
-        }, now, options.compatibilityProfile)],
+        }, now, options.compatibilityProfile,
+        options.clientBuild ?? Number(require("../../config").clientBuild))],
         ["description", options.description || "item"],
         ["time", now],
         ["wallclockTime", now],

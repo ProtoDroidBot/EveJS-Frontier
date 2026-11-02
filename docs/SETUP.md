@@ -1,5 +1,8 @@
 # EvEJS Setup
 
+For **EVE Frontier**, use the [server, world, and client setup guide](FRONTIER_SETUP.md).
+The instructions on this page target conventional EVE Online build `3396210`.
+
 This is the clear, first-time setup guide.
 
 If you are brand new to EvEJS, start here.

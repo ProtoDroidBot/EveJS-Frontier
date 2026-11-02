@@ -1,5 +1,11 @@
 # EVE Frontier on Windows
 
+For first startup with no running server or synced world, follow the
+[server, world, and client setup guide](FRONTIER_SETUP.md). It puts client/data
+preparation, dApp HTTPS, world deployment/sync, server startup, and client launch
+in order using explicit build `3502403`. This page provides detailed staging
+and historical validation notes.
+
 > The current Windows defaults target build `3502403`. See
 > [FRONTIER_BUILD_3502403.md](FRONTIER_BUILD_3502403.md) for its candidate
 > status, exact native hashes, and upgrade notes. This guide retains the
@@ -98,8 +104,10 @@ cannot load the native client modules, it can build a small runner that loads
 the client's `python312.dll` dynamically. Only that fallback requires Visual
 Studio 2022 C++ Build Tools and a Windows SDK.
 
-Rust, Docker, the market service, the SQLite command-line tool, and OpenSSL are
-not required. The Frontier server explicitly disables the market daemon.
+Rust, the market service, the SQLite command-line tool, and OpenSSL are not
+required for extraction/staging. The complete Sui-backed startup additionally
+requires Docker, efctl, pnpm, and dApp HTTPS preparation; see the setup guide
+above. The Frontier server explicitly disables the market daemon.
 
 ## Discover the official client
 

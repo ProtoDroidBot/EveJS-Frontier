@@ -4,6 +4,8 @@ const log = require(path.join(__dirname, "../../utils/logger"));
 const {
   getCharacterTutorialSnapshot,
   isAirNpeEnabled,
+  isNewCharacterIntroCinematicEnabled,
+  isNewCharacterTutorialEnabled,
   markCharacterTutorialSkipped,
 } = require(path.join(__dirname, "./tutorialRuntime"));
 
@@ -23,6 +25,16 @@ class AirNpeService extends BaseService {
   Handle_is_air_npe_enabled(args, session, kwargs) {
     log.debug("[AirNpeService] is_air_npe_enabled called");
     return isAirNpeEnabled();
+  }
+
+  // Native 2703993 AirNpeController queries these independent feature flags
+  // before entering a character and caches their plain boolean responses.
+  Handle_is_air_npe_intro_video_enabled() {
+    return isNewCharacterIntroCinematicEnabled();
+  }
+
+  Handle_is_air_npe_tutorial_enabled() {
+    return isNewCharacterTutorialEnabled();
   }
 
   Handle_get_air_npe_state(args, session) {

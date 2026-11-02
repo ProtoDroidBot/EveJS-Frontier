@@ -791,6 +791,10 @@ function startServer(runtimeContext) {
         next();
     });
     app.use(express.json({ limit: "1mb" }));
+    if (Number(config.clientBuild) === 2455427 &&
+        require("../../services/frontier/legacyEvmSuiBridge").resolveLegacyEvmSuiBridgePath(config)) {
+        require("./legacyBlockchainProxyEndpoints").installLegacyBlockchainProxyEndpoints(app);
+    }
     app.get("/health", (req, res) => {
         res.status(200).json({
             status: "ok",

@@ -3,7 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
-const { getCharacterTutorialSnapshot, isAirNpeEnabled, markCharacterTutorialSkipped, } = require(path.join(__dirname, "./tutorialRuntime"));
+const { getCharacterTutorialSnapshot, isAirNpeEnabled, isNewCharacterIntroCinematicEnabled, isNewCharacterTutorialEnabled, markCharacterTutorialSkipped, } = require(path.join(__dirname, "./tutorialRuntime"));
 function resolveCharacterID(args, session) {
     const directArg = Array.isArray(args) ? Number(args[0]) : NaN;
     if (Number.isFinite(directArg) && Math.trunc(directArg) > 0) {
@@ -18,6 +18,14 @@ class AirNpeService extends BaseService {
     Handle_is_air_npe_enabled(args, session, kwargs) {
         log.debug("[AirNpeService] is_air_npe_enabled called");
         return isAirNpeEnabled();
+    }
+    // Native 2703993 AirNpeController queries these independent feature flags
+    // before entering a character and caches their plain boolean responses.
+    Handle_is_air_npe_intro_video_enabled() {
+        return isNewCharacterIntroCinematicEnabled();
+    }
+    Handle_is_air_npe_tutorial_enabled() {
+        return isNewCharacterTutorialEnabled();
     }
     Handle_get_air_npe_state(args, session) {
         log.debug("[AirNPE] get_air_npe_state called");

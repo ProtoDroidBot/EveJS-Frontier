@@ -18,6 +18,15 @@ import zipfile
 MODULE_NAME = "menucheckers/celestialCheckers.pyc"
 DEFAULT_CLIENT_BUILD = 3502403
 BUILD_PROFILES = {
+    # This older branch has native docking predicates and no disabling flag.
+    # Its archive identity is recorded for provenance; member/code identities
+    # remain authoritative after other independently verified archive patches.
+    2703993: {
+        "mode": "native-enabled",
+        "source_archive_sha256": "c31d2d4ba8edbd1e15297623dbb6856b6f515376e20b2286da98c20ecda271a9",
+        "source_member_sha256": "d7312451a7df2ca69cf75b0ca927e020f17855c96194859b225afb6e6470cb0b",
+        "source_code_sha256": "6fd1817d00417957cad19967ac5d20be51179cbadc3ef3b4625a050582ce2925",
+    },
     3450341: {
         "source_member_sha256": "cbdd5ede870cc365456144fe1ddade1994f4c01ece2f6e10db40dadd0854e6e2",
         "source_code_sha256": "e19c523167bf7b386b38b2c8fb164ef1c6037b64e996d3229aaff3351f2bdce6",
@@ -180,9 +189,17 @@ def resolve_build_profile(client_build):
 
 
 def inspect_state(member, code, profile):
-    instruction = find_docking_constant(code)
     member_digest = sha256_bytes(member)
     code_digest = code_sha256(code)
+    if profile.get("mode") == "native-enabled":
+        if (member_digest == profile["source_member_sha256"]
+                and code_digest == profile["source_code_sha256"]):
+            return "native"
+        raise DockingPatchError(
+            "celestialCheckers.pyc is not the exact native-enabled source "
+            f"(member_sha256={member_digest}, code_sha256={code_digest})."
+        )
+    instruction = find_docking_constant(code)
     if (
         instruction.argval is True
         and member_digest == profile["source_member_sha256"]
@@ -208,6 +225,8 @@ def inspect_state(member, code, profile):
 
 
 def build_patched_member(member, code, profile):
+    if profile.get("mode") == "native-enabled":
+        raise DockingPatchError("The native-enabled docking profile requires no bytecode rewrite.")
     instruction = find_docking_constant(code)
     if instruction.argval is not True:
         raise DockingPatchError("Station docking is not in the source-disabled state.")
@@ -274,6 +293,9 @@ def main():
     member, code = load_module(archive_path)
     state = inspect_state(member, code, profile)
     if args.check:
+        print(state)
+        return 0
+    if state == "native":
         print(state)
         return 0
     if state == "source":

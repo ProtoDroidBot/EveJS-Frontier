@@ -12,11 +12,230 @@ const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const POWERSHELL = "pwsh";
 const WORLD_SCRIPT = path.join(REPO_ROOT, "FrontierWorld.ps1");
 const START_SCRIPT = path.join(REPO_ROOT, "StartFrontierServer.ps1");
-const probe = process.platform === "win32"
-  ? spawnSync(POWERSHELL, ["-NoLogo", "-NoProfile", "-Command", "exit 0"])
-  : { status: 1 };
-const canRunPowerShell = process.platform === "win32" &&
+const probe = spawnSync(POWERSHELL, ["-NoLogo", "-NoProfile", "-Command", "exit 0"]);
+const canRunPowerShell = ["win32", "linux"].includes(process.platform) &&
   !probe.error && probe.status === 0;
+
+function runWorldFunctions(names, body, environment = {}) {
+  return spawnSync(POWERSHELL, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `
+    $ErrorActionPreference = 'Stop'
+    $PSNativeCommandUseErrorActionPreference = $false
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+      $env:EVEJS_TEST_WORLD_SCRIPT, [ref]$null, [ref]$null)
+    foreach ($name in ($env:EVEJS_TEST_FUNCTION_NAMES | ConvertFrom-Json)) {
+      $function = $ast.Find({ param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+      }, $true)
+      if ($null -eq $function) { throw "Missing tested function $name" }
+      Invoke-Expression $function.Extent.Text
+    }
+    $script:PathComparison = if ($IsWindows) {
+      [StringComparison]::OrdinalIgnoreCase
+    } else { [StringComparison]::Ordinal }
+    ${body}
+  `], {
+    encoding: "utf8",
+    env: { ...process.env, EVEJS_TEST_WORLD_SCRIPT: WORLD_SCRIPT,
+      EVEJS_TEST_FUNCTION_NAMES: JSON.stringify(names), ...environment },
+    timeout: 15000,
+  });
+}
+
+test("World Docker ownership accepts only the native workspace path",
+  { skip: !canRunPowerShell }, (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "evejs Docker world ownership "));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const expected = path.join(root, "World-Contracts");
+    fs.mkdirSync(expected);
+    const body = `
+      $SkipDockerOwnershipCheck = $false
+      $WorldContractsRoot = $env:EVEJS_TEST_WORLD_CONTRACTS
+      function Get-Command {
+        param($Name)
+        $expectedCommand = if ($IsWindows) { 'docker.exe' } else { 'docker' }
+        if ($Name -cne $expectedCommand) { throw "Non-native Docker command: $Name" }
+        return [pscustomobject]@{ Source = {
+          $global:LASTEXITCODE = 0
+          if ($args[0] -eq 'ps') { Write-Output 'sui-playground'; return }
+          if ($args[0] -ne 'inspect') { throw 'Unexpected Docker operation' }
+          ConvertTo-Json -Compress -InputObject @(@{
+            Type = 'bind'; Destination = '/workspace/world-contracts'
+            Source = $env:EVEJS_TEST_MOUNT_SOURCE
+          })
+        } }
+      }
+      Assert-DockerWorkspaceOwnership
+      Write-Output 'ownership-verified'
+    `;
+    const functions = ["Test-SamePath", "Assert-DockerWorkspaceOwnership"];
+    const valid = runWorldFunctions(functions, body, {
+      EVEJS_TEST_WORLD_CONTRACTS: expected, EVEJS_TEST_MOUNT_SOURCE: expected,
+    });
+    assert.equal(valid.status, 0, valid.stderr || valid.stdout);
+    assert.match(valid.stdout, /ownership-verified/);
+    for (const mount of [path.join(root, "other-workspace"),
+      ...(process.platform === "linux" ? [path.join(root, "world-contracts")] : [])]) {
+      const rejected = runWorldFunctions(functions, body, {
+        EVEJS_TEST_WORLD_CONTRACTS: expected, EVEJS_TEST_MOUNT_SOURCE: mount,
+      });
+      assert.notEqual(rejected.status, 0);
+      assert.match(rejected.stderr, /belongs to.*not/s);
+    }
+  });
+
+test("World Docker ownership qualifies Linux Desktop VM aliases without admitting foreign workspaces",
+  { skip: !canRunPowerShell || process.platform !== "linux" }, (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "evejs Docker Desktop ownership "));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const expected = path.join(root, "World-Contracts");
+    fs.mkdirSync(expected);
+    const endpoint = `unix://${path.join(os.homedir(), ".docker", "desktop", "docker.sock")}`;
+    const mockDocker = path.join(root, "docker-mock.ps1");
+    fs.writeFileSync(mockDocker, `
+      $global:LASTEXITCODE = 0
+      if ($args[0] -eq 'ps') { Write-Output 'sui-playground'; return }
+      if ($args[0] -eq 'inspect') {
+        $items = @(for ($index = 0; $index -lt [int]$env:EVEJS_TEST_MOUNT_COUNT; $index++) {
+          @{ Type = 'bind'; Destination = '/workspace/world-contracts'; Source = $env:EVEJS_TEST_MOUNT_SOURCE }
+        })
+        ConvertTo-Json -Compress -InputObject $items
+        return
+      }
+      if ($args[0] -eq 'context' -and $args[1] -eq 'show') {
+        Write-Output $env:EVEJS_TEST_DOCKER_CONTEXT; return
+      }
+      if ($args[0] -eq 'context' -and $args[1] -eq 'inspect' -and $args[2] -eq 'desktop-linux') {
+        if ($env:EVEJS_TEST_BAD_ENDPOINT_JSON -eq '1') { Write-Output '{bad'; return }
+        ConvertTo-Json -Compress -InputObject $env:EVEJS_TEST_DOCKER_ENDPOINT
+        return
+      }
+      if ($args[0] -eq 'info') {
+        if ($env:EVEJS_TEST_BAD_OS_JSON -eq '1') { Write-Output '{bad'; return }
+        ConvertTo-Json -Compress -InputObject $env:EVEJS_TEST_DOCKER_OS
+        return
+      }
+      throw 'Unexpected Docker operation'
+    `);
+    const body = `
+      $SkipDockerOwnershipCheck = $false
+      $WorldContractsRoot = $env:EVEJS_TEST_WORLD_CONTRACTS
+      function Get-Command {
+        param($Name)
+        if ($Name -cne 'docker') { throw "Non-native Docker command: $Name" }
+        return [pscustomobject]@{ Source = $env:EVEJS_TEST_DOCKER_MOCK_PATH }
+      }
+      Assert-DockerWorkspaceOwnership
+      Write-Output 'ownership-verified'
+    `;
+    const functions = ["Test-SamePath", "Resolve-DockerDesktopLinuxMountSource", "Assert-DockerWorkspaceOwnership"];
+    const defaults = {
+      DOCKER_HOST: "", DOCKER_CONTEXT: "",
+      EVEJS_TEST_WORLD_CONTRACTS: expected,
+      EVEJS_TEST_DOCKER_MOCK_PATH: mockDocker,
+      EVEJS_TEST_MOUNT_SOURCE: `/host_mnt${expected}`,
+      EVEJS_TEST_MOUNT_COUNT: "1",
+      EVEJS_TEST_DOCKER_CONTEXT: "desktop-linux",
+      EVEJS_TEST_DOCKER_ENDPOINT: endpoint,
+      EVEJS_TEST_DOCKER_OS: "Docker Desktop",
+    };
+    for (const prefix of ["/host_mnt", "/run/desktop/mnt/host"]) {
+      const result = runWorldFunctions(functions, body, { ...defaults, EVEJS_TEST_MOUNT_SOURCE: `${prefix}${expected}` });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /ownership-verified/);
+    }
+    for (const [changes, failure] of [
+      [{ EVEJS_TEST_MOUNT_SOURCE: `/host_mnt${path.join(root, "other-workspace")}` }, /belongs to.*not/s],
+      [{ EVEJS_TEST_MOUNT_SOURCE: `/host_mnt${expected.toLowerCase()}` }, /belongs to.*not/s],
+      [{ EVEJS_TEST_MOUNT_SOURCE: `/host_mnt${expected}/../World-Contracts` }, /noncanonical/],
+      [{ EVEJS_TEST_MOUNT_SOURCE: `/arbitrary/host_mnt${expected}` }, /belongs to.*not/s],
+      [{ EVEJS_TEST_DOCKER_CONTEXT: "default" }, /desktop-linux context/],
+      [{ EVEJS_TEST_DOCKER_OS: "Ubuntu 24.04" }, /does not identify as Docker Desktop/],
+      [{ EVEJS_TEST_DOCKER_ENDPOINT: "tcp://127.0.0.1:2375" }, /native Desktop Unix socket/],
+      [{ EVEJS_TEST_DOCKER_ENDPOINT: "unix:///home/other/.docker/desktop/docker.sock" }, /native Desktop Unix socket/],
+      [{ DOCKER_HOST: "tcp://127.0.0.1:2375" }, /endpoint overrides/],
+      [{ DOCKER_CONTEXT: "another-context" }, /endpoint overrides/],
+      [{ EVEJS_TEST_BAD_ENDPOINT_JSON: "1" }, /malformed endpoint/],
+      [{ EVEJS_TEST_BAD_OS_JSON: "1" }, /malformed daemon/],
+      [{ EVEJS_TEST_MOUNT_COUNT: "0" }, /no provable/],
+      [{ EVEJS_TEST_MOUNT_COUNT: "2" }, /no provable/],
+    ]) {
+      const result = runWorldFunctions(functions, body, { ...defaults, ...changes });
+      assert.notEqual(result.status, 0, JSON.stringify(changes));
+      assert.match(result.stderr, failure, JSON.stringify(changes));
+    }
+  });
+
+test("Linux world credentials are replaced atomically with private modes and refuse symlinks",
+  { skip: !canRunPowerShell || process.platform !== "linux" }, (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "evejs private world files "));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const destination = path.join(root, "world.private.json");
+    fs.writeFileSync(destination, "old", { mode: 0o644 });
+    const functions = ["Set-WorldPrivateFilePermissions", "Write-WorldPrivateLinesAtomic"];
+    const write = runWorldFunctions(functions, `
+      Write-WorldPrivateLinesAtomic -Path $env:EVEJS_TEST_PRIVATE_PATH -Lines @('{"fixture":true}')
+    `, { EVEJS_TEST_PRIVATE_PATH: destination });
+    assert.equal(write.status, 0, write.stderr || write.stdout);
+    assert.equal(fs.statSync(destination).mode & 0o777, 0o600);
+    assert.deepEqual(JSON.parse(fs.readFileSync(destination, "utf8")), { fixture: true });
+    const target = path.join(root, "retained.json");
+    fs.writeFileSync(target, "retain this content");
+    fs.unlinkSync(destination);
+    fs.symlinkSync(target, destination);
+    const rejected = runWorldFunctions(functions, `
+      Write-WorldPrivateLinesAtomic -Path $env:EVEJS_TEST_PRIVATE_PATH -Lines @('replacement')
+    `, { EVEJS_TEST_PRIVATE_PATH: destination });
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /symlink credential path/);
+    assert.equal(fs.readFileSync(target, "utf8"), "retain this content");
+    assert.equal(fs.lstatSync(destination).isSymbolicLink(), true);
+    assert.deepEqual(fs.readdirSync(root).sort(), ["retained.json", "world.private.json"]);
+  });
+
+test("World sync sends the selected build to NPC funding despite an inherited build",
+  { skip: !canRunPowerShell }, () => {
+    const result = runWorldFunctions(["Invoke-NpcFactionFunding"], `
+      $SkipNpcFactionFunding = $false
+      $DryRun = $false
+      $Build = '3640684'
+      $RepoRoot = $env:EVEJS_TEST_REPO_ROOT
+      $WorldConfigPath = Join-Path $RepoRoot '_local/frontier-world/3640684/world.private.json'
+      $NpcFactionConfigPath = Join-Path $RepoRoot 'npc-factions.config.json'
+      function Get-Command {
+        param($Name)
+        if ($Name -in @('node', 'node.exe')) {
+          return [pscustomobject]@{ Source = {
+            $global:LASTEXITCODE = 0
+            $script:fundingArguments = @($args | ForEach-Object { [string]$_ })
+          } }
+        }
+        return [pscustomobject]@{ Source = { $global:LASTEXITCODE = 0 } }
+      }
+      Invoke-NpcFactionFunding
+      ConvertTo-Json -Compress -InputObject $script:fundingArguments
+    `, { EVEJS_TEST_REPO_ROOT: REPO_ROOT, EVEJS_CLIENT_BUILD: "3502403" });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const args = JSON.parse(result.stdout);
+    assert.equal(args[args.indexOf("--build") + 1], "3640684");
+    assert.equal(args[args.indexOf("--world-config") + 1],
+      path.join(REPO_ROOT, "_local", "frontier-world", "3640684", "world.private.json"));
+  });
+
+test("NPC funding accepts an explicit numeric build and rejects an invalid build",
+  () => {
+    const { parseNpcFactionFundingArgs } = require("../FrontierWorld/fund-npc-factions");
+    const args = parseNpcFactionFundingArgs([
+      "--build", "3640684", "--world-config", "world.private.json", "--dry-run",
+    ]);
+    assert.equal(args.build, "3640684");
+    assert.equal(args.worldConfigPath, path.resolve("world.private.json"));
+    assert.equal(args.dryRun, true);
+    for (const value of ["cycle-7", "3502403/../../outside", "--dry-run"]) {
+      assert.throws(() => parseNpcFactionFundingArgs(["--build", value]), /--build must be numeric/);
+    }
+    assert.throws(() => parseNpcFactionFundingArgs(["--build"]), /Missing value for --build/);
+  });
 
 function runLiveChainIdentifier(scriptPath, environment = {}) {
   return spawnSync(POWERSHELL, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `
@@ -67,7 +286,7 @@ for (const scriptPath of [WORLD_SCRIPT, START_SCRIPT]) {
   test(`Live chain validation in ${path.basename(scriptPath)} rejects failed or malformed CLI responses`,
     { skip: !canRunPowerShell }, () => {
       for (const [environment, expected] of [
-        [{ EVEJS_TEST_DOCKER_MISSING: "1" }, /docker.exe is not available/],
+        [{ EVEJS_TEST_DOCKER_MISSING: "1" }, /docker(?:\.exe)? is not available/],
         [{ EVEJS_TEST_DOCKER_EXIT: "124" }, /not ready; refusing to (publish world IDs|start the server)/],
         [{ EVEJS_TEST_CHAIN_ID: "" }, /invalid hex chain identifier/],
         [{ EVEJS_TEST_CHAIN_ID: "4f22e97" }, /invalid hex chain identifier/],
@@ -552,6 +771,19 @@ function writeFixture(root) {
 }
 
 function writeFakeEfctl(root) {
+  if (process.platform !== "win32") {
+    const executable = path.join(root, "fake-efctl");
+    fs.writeFileSync(executable, [
+      "#!/bin/sh",
+      'if [ "$1" = version ]; then',
+      "  printf '%s\\n' 'efctl v99.0.0 test-fixture'",
+      "  exit 0",
+      "fi",
+      'printf \'%s\\n\' "$*" >> "$FAKE_EFCTL_LOG"',
+      "",
+    ].join("\n"), { mode: 0o700 });
+    return executable;
+  }
   const executable = path.join(root, "fake-efctl.cmd");
   fs.writeFileSync(
     executable,
@@ -595,6 +827,29 @@ function runWorld(args, environment) {
     },
   );
 }
+
+test("Linux world shell wrapper resolves native efctl and preserves paths containing spaces",
+  { skip: !canRunPowerShell || process.platform !== "linux" }, (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "evejs shell world dry run "));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const source = writeFixture(root);
+    fs.copyFileSync(writeFakeEfctl(root), path.join(root, "efctl"));
+    const destination = path.join(root, "private world output");
+    const log = path.join(root, "efctl.log");
+    const result = spawnSync("bash", [path.join(REPO_ROOT, "FrontierWorld.sh"),
+      "up", "-SourceRoot", source, "-DestinationRoot", destination,
+      "-SkipDockerOwnershipCheck", "-DryRun", "--with-graphql"], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${root}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH}`,
+        FAKE_EFCTL_LOG: log },
+      timeout: 15000,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Would run:.*env up/s);
+    assert.match(result.stdout, /--with-graphql/);
+    assert.equal(fs.existsSync(destination), false, "dry-run must not publish a credential file");
+    assert.equal(fs.existsSync(log), false, "dry-run must not invoke efctl lifecycle commands");
+  });
 
 test(
   "Frontier world sync publishes only validated runtime identity and the admin signer",
@@ -640,6 +895,10 @@ test(
     });
     assert.match(config.artifacts.assemblyEnergySha256, /^[0-9a-f]{64}$/);
     assert.equal(config.adminPrivateKey, ADMIN_PRIVATE_KEY);
+    if (process.platform !== "win32") {
+      assert.equal(fs.statSync(configPath).mode & 0o777, 0o600,
+        "the synchronized signer must be readable only by the current user");
+    }
     assert.equal(text.includes("PLAYER_A_PRIVATE_KEY"), false);
     assert.equal(text.includes("PLAYER_B_PRIVATE_KEY"), false);
     assert.equal(text.includes("GOVERNOR_PRIVATE_KEY"), false);

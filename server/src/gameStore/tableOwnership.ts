@@ -209,6 +209,10 @@ define(["frontierDockingPoints"], {
 define(["frontierProgressionState"], {
   tier: TIERS.RUNTIME, domain: "service:frontier-progression", confidence: CONFIDENCE.SCANNER,
 });
+define(["frontierLegacyEvmRelayState", "frontierLegacyEvmWalletState"], {
+  tier: TIERS.RUNTIME, domain: "service:legacy-evm-sui", confidence: CONFIDENCE.SCANNER,
+  note: "Legacy Ethereum replay journal, verified wallet bindings and encrypted recovery/custody for the Sui bridge.",
+});
 define(["frontierEconomyState", "digitalChemistryState"], {
   tier: TIERS.RUNTIME, domain: "service:frontier-economy", confidence: CONFIDENCE.SCANNER,
 });

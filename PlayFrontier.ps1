@@ -18,6 +18,42 @@ if ($env:OS -ne 'Windows_NT') { throw 'PlayFrontier.ps1 supports Windows only.' 
 
 $RepoRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 Import-Module (Join-Path $RepoRoot 'tools\frontier-client\FrontierWindows.Common.psm1') -Force
+
+function ConvertTo-FrontierNativeArgument {
+    param([AllowEmptyString()] [string]$Value)
+    # Start-Process joins ArgumentList with spaces. Quote every argument using
+    # the native Windows backslash/quote rules, including empty values and a
+    # final backslash before the closing quote.
+    $quoted = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    $quoted = [regex]::Replace($quoted, '(\\+)$', '$1$1')
+    return '"' + $quoted + '"'
+}
+
+function Invoke-WithFrontierClientEnvironment {
+    param([Parameter(Mandatory)] [hashtable]$Values,
+          [Parameter(Mandatory)] [scriptblock]$Action)
+    $saved = @{}
+    try {
+        foreach ($key in $Values.Keys) {
+            $saved[$key] = @{
+                Present = Test-Path -LiteralPath "Env:$key"
+                Value = [Environment]::GetEnvironmentVariable($key, 'Process')
+            }
+            [Environment]::SetEnvironmentVariable($key, [string]$Values[$key], 'Process')
+        }
+        & $Action
+    }
+    finally {
+        foreach ($key in $saved.Keys) {
+            if ($saved[$key].Present) {
+                [Environment]::SetEnvironmentVariable($key, $saved[$key].Value, 'Process')
+            }
+            else {
+                Remove-Item -LiteralPath "Env:$key" -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
 $WindowsRoot = Join-Path $env:LOCALAPPDATA 'EveJS-Frontier\windows'
 if (-not $StagedRoot) { $StagedRoot = Join-Path $WindowsRoot "staged-client\$Build" }
 $StagedRoot = [IO.Path]::GetFullPath($StagedRoot)
@@ -121,9 +157,12 @@ if ($Background) {
         $process = $null
         $processStartTicks = [int64]0
         try {
-            $process = Start-Process -FilePath $exefile -ArgumentList $arguments.ToArray() `
-                -WorkingDirectory $workDir -Environment $environment `
-                -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+            $nativeArguments = @($arguments | ForEach-Object { ConvertTo-FrontierNativeArgument $_ })
+            $process = Invoke-WithFrontierClientEnvironment -Values $environment -Action {
+                Start-Process -FilePath $exefile -ArgumentList $nativeArguments `
+                    -WorkingDirectory $workDir `
+                    -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+            }
             $process.Refresh()
             $processStartTicks = $process.StartTime.ToUniversalTime().Ticks
             $pidMarker = [ordered]@{
@@ -187,18 +226,8 @@ if ($Background) {
 
 New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
 [IO.File]::WriteAllText($jsonlPath, '', [Text.UTF8Encoding]::new($false))
-$original = @{}
-foreach ($key in $environment.Keys) {
-    $original[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
-    [Environment]::SetEnvironmentVariable($key, $environment[$key], 'Process')
-}
-try {
+Invoke-WithFrontierClientEnvironment -Values $environment -Action {
     Push-Location $workDir
     try { & $exefile @arguments }
     finally { Pop-Location }
-}
-finally {
-    foreach ($key in $environment.Keys) {
-        [Environment]::SetEnvironmentVariable($key, $original[$key], 'Process')
-    }
 }

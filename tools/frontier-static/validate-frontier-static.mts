@@ -5,10 +5,12 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   inspectCollisionBundle,
 } from "./extract-frontier-static.mjs";
+import { snapshotStaticSchema } from "./lib/static-schema.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "../..");
@@ -92,6 +94,37 @@ function sha256File(filePath) {
   return hash.digest("hex");
 }
 
+function blueprintReferences(label: string, activity: any, typeIDs: Set<unknown>, allowUnresolved = false) {
+  assert(activity && typeof activity === "object" && !Array.isArray(activity), `${label} has unsupported activity shape`);
+  if (activity.time !== undefined) {
+    assert(Number.isFinite(activity.time) && activity.time >= 0, `${label} has invalid time`);
+  }
+  const references: { field: string; typeID: number }[] = [];
+  for (const field of ["materials", "products", "skills"]) {
+    if (activity[field] === undefined) continue;
+    assert(Array.isArray(activity[field]), `${label} has unsupported ${field} shape`);
+    for (const entry of activity[field]) {
+      assert(entry && Number.isSafeInteger(entry.typeID) && entry.typeID > 0, `${label} ${field} has invalid type identity`);
+      if (!typeIDs.has(String(entry.typeID))) {
+        assert(allowUnresolved, `${label} ${field} references unknown type ${entry.typeID}`);
+        if (!references.some(reference => reference.field === field && reference.typeID === entry.typeID)) {
+          references.push({ field, typeID: entry.typeID });
+        }
+      }
+      if (field === "skills") {
+        assert(Number.isInteger(entry.level) && entry.level >= 0 && entry.level <= 5, `${label} skills has invalid level`);
+      } else {
+        assert(Number.isFinite(entry.quantity) && entry.quantity > 0, `${label} ${field} has invalid quantity`);
+      }
+      if (entry.probability !== undefined) {
+        assert(Number.isFinite(entry.probability) && entry.probability >= 0 && entry.probability <= 1,
+          `${label} ${field} has invalid probability`);
+      }
+    }
+  }
+  return references.sort((left, right) => left.field.localeCompare(right.field) || left.typeID - right.typeID);
+}
+
 async function readJsonl(snapshot, fileName, onRecord: (record: Record<string, any>) => void = () => {}) {
   const filePath = path.join(snapshot, fileName);
   const input = fs.createReadStream(filePath, { encoding: "utf8" });
@@ -126,59 +159,73 @@ async function validateSnapshot(snapshot) {
   assert(fs.existsSync(manifestPath), `Snapshot manifest not found: ${manifestPath}`);
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   assert(manifest.format === "evejs-frontier-static-v1", "Unrecognized snapshot format");
+  const schema = snapshotStaticSchema(manifest);
 
   const collisionAsset = manifest.assets && manifest.assets.collisionBundle;
-  assert(collisionAsset, "Manifest is missing the collision bundle asset");
-  assert(
-    collisionAsset.schema === "destiny.buffers.CollisionData",
-    "Collision bundle declares an unexpected schema",
-  );
-  const collisionPath = path.resolve(snapshot, String(collisionAsset.path || ""));
-  const collisionRelativePath = path.relative(snapshot, collisionPath);
-  assert(
-    collisionRelativePath &&
-      !collisionRelativePath.startsWith("..") &&
-      !path.isAbsolute(collisionRelativePath),
-    "Collision bundle path escapes the snapshot",
-  );
-  assert(fs.existsSync(collisionPath), "Snapshot collision bundle is missing");
-  assert(
-    fs.statSync(collisionPath).size === collisionAsset.bytes,
-    "Collision bundle byte size mismatch",
-  );
-  assert(
-    sha256File(collisionPath) === collisionAsset.sha256,
-    "Collision bundle SHA-256 mismatch",
-  );
-  assert(
-    collisionAsset.sha256 === manifest.source.collisionBundle.sha256,
-    "Collision bundle does not match the selected client source",
-  );
-  assert(
-    collisionAsset.items === manifest.source.collisionBundle.items,
-    "Collision bundle item count does not match the selected client source",
-  );
-  const observedCollision = inspectCollisionBundle(collisionPath);
-  for (const fieldName of [
-    "items",
-    "maxCollisionID",
-    "meshItems",
-    "minCollisionID",
-    "uniformItems",
-  ]) {
+  if (schema.collisionBundle) {
+    assert(collisionAsset, "Manifest is missing the collision bundle asset");
     assert(
-      observedCollision[fieldName] === collisionAsset[fieldName],
-      `Collision bundle ${fieldName} does not match its manifest`,
+      collisionAsset.schema === "destiny.buffers.CollisionData",
+      "Collision bundle declares an unexpected schema",
     );
+    const collisionPath = path.resolve(snapshot, String(collisionAsset.path || ""));
+    const collisionRelativePath = path.relative(snapshot, collisionPath);
+    assert(
+      collisionRelativePath &&
+        !collisionRelativePath.startsWith("..") &&
+        !path.isAbsolute(collisionRelativePath),
+      "Collision bundle path escapes the snapshot",
+    );
+    assert(fs.existsSync(collisionPath), "Snapshot collision bundle is missing");
+    assert(
+      fs.statSync(collisionPath).size === collisionAsset.bytes,
+      "Collision bundle byte size mismatch",
+    );
+    assert(
+      sha256File(collisionPath) === collisionAsset.sha256,
+      "Collision bundle SHA-256 mismatch",
+    );
+    assert(
+      collisionAsset.sha256 === manifest.source.collisionBundle.sha256,
+      "Collision bundle does not match the selected client source",
+    );
+    assert(
+      collisionAsset.items === manifest.source.collisionBundle.items,
+      "Collision bundle item count does not match the selected client source",
+    );
+    const observedCollision = inspectCollisionBundle(collisionPath);
+    for (const fieldName of [
+      "items",
+      "maxCollisionID",
+      "meshItems",
+      "minCollisionID",
+      "uniformItems",
+    ]) {
+      assert(
+        observedCollision[fieldName] === collisionAsset[fieldName],
+        `Collision bundle ${fieldName} does not match its manifest`,
+      );
+    }
+  } else {
+    assert(!collisionAsset && !manifest.source.collisionBundle,
+      "Historical static schema must not declare a collision bundle");
+    assert(!fs.existsSync(path.join(snapshot, "assets/collision/bundle.collision")),
+      "Historical static schema contains an unexpected collision bundle");
   }
 
-  for (const fileName of REQUIRED_FILES) {
+  const requiredFiles = schema.id === "frontier-phase4-2703993-v1"
+    ? [...REQUIRED_FILES, "blueprints.jsonl", "legacyBlueprintsSource.jsonl", "legacyBlueprintDiagnostics.jsonl"] : REQUIRED_FILES;
+  for (const fileName of requiredFiles) {
     const metadata = manifest.outputs[fileName];
     assert(metadata, `Manifest is missing required output: ${fileName}`);
     const filePath = path.join(snapshot, fileName);
     assert(fs.existsSync(filePath), `Snapshot file is missing: ${fileName}`);
     assert(fs.statSync(filePath).size === metadata.bytes, `Byte size mismatch: ${fileName}`);
     assert(sha256File(filePath) === metadata.sha256, `SHA-256 mismatch: ${fileName}`);
+    if (schema.emptyOutputs.includes(fileName)) {
+      assert(metadata.records === 0 && metadata.bytes === 0,
+        `Static schema ${schema.id} requires an empty unavailable output: ${fileName}`);
+    }
   }
 
   const observedCounts = new Map();
@@ -202,6 +249,45 @@ async function validateSnapshot(snapshot) {
     assert(row.name && typeof row.name.en === "string", `Type ${row._key} has no English name`);
   });
   const typeIDs = types.keys;
+
+  let blueprintCount: number | null = null;
+  let excludedBlueprintActivities: number | null = null;
+  if (schema.id === "frontier-phase4-2703993-v1") {
+    const runtimeBlueprints = new Map<string, Record<string, any>>();
+    await load("blueprints.jsonl", (row) => {
+      assert(typeIDs.has(String(row._key)), `Blueprint ${row._key} has unknown blueprint type`);
+      assert(row.activities && typeof row.activities === "object" && !Array.isArray(row.activities),
+        `Blueprint ${row._key} has unsupported activities shape`);
+      for (const [activityName, activity] of Object.entries<any>(row.activities)) {
+        blueprintReferences(`Blueprint ${row._key} activity ${activityName}`, activity, typeIDs);
+      }
+      runtimeBlueprints.set(String(row._key), row);
+    });
+    const expectedDiagnostics: Record<string, any>[] = [];
+    const sourceBlueprints = await load("legacyBlueprintsSource.jsonl", (row) => {
+      assert(typeIDs.has(String(row._key)), `Source blueprint ${row._key} has unknown blueprint type`);
+      assert(row.activities && typeof row.activities === "object" && !Array.isArray(row.activities),
+        `Source blueprint ${row._key} has unsupported activities shape`);
+      const activities: Record<string, any> = {};
+      for (const [activityName, activity] of Object.entries<any>(row.activities)) {
+        const references = blueprintReferences(`Source blueprint ${row._key} activity ${activityName}`, activity, typeIDs, true);
+        if (references.length) expectedDiagnostics.push({ _key: `${row._key}:${activityName}`,
+          blueprintTypeID: row._key, activity: activityName, reason: "unresolved-type-reference", references });
+        else activities[activityName] = activity;
+      }
+      assert(isDeepStrictEqual(runtimeBlueprints.get(String(row._key)), { ...row, activities }),
+        `Blueprint ${row._key} runtime activities differ from the reproducible legacy source projection`);
+    });
+    assert(sourceBlueprints.count === runtimeBlueprints.size, "Legacy source/runtime blueprint identities differ");
+    const actualDiagnostics: Record<string, any>[] = [];
+    await load("legacyBlueprintDiagnostics.jsonl", row => { actualDiagnostics.push(row); });
+    const order = (left: Record<string, any>, right: Record<string, any>) =>
+      left.blueprintTypeID - right.blueprintTypeID || String(left.activity).localeCompare(String(right.activity));
+    assert(isDeepStrictEqual(actualDiagnostics.sort(order), expectedDiagnostics.sort(order)),
+      "Legacy blueprint exclusion diagnostics differ from the reproducible source projection");
+    blueprintCount = runtimeBlueprints.size;
+    excludedBlueprintActivities = expectedDiagnostics.length;
+  }
 
   const creationHardpointTypeIDs = (
     await load("creationHardpointTypes.jsonl")
@@ -265,8 +351,10 @@ async function validateSnapshot(snapshot) {
       }
     }
   });
-  assert(creationParts.count > 0, "Frontier creation data contains no hull parts");
-  assert(creationTemplates.count > 0, "Frontier creation data contains no ship templates");
+  if (schema.creation) {
+    assert(creationParts.count > 0, "Frontier creation data contains no hull parts");
+    assert(creationTemplates.count > 0, "Frontier creation data contains no ship templates");
+  }
 
   const frontierDungeonIDs = new Set();
   await load("frontierDungeonTemplates.jsonl", (row) => {
@@ -338,21 +426,33 @@ async function validateSnapshot(snapshot) {
   });
   const relayComponents = componentsByTypeID.get(90184);
   const relaySiteComponents = componentsByTypeID.get(91717);
-  assert(relayComponents, "Relay type 90184 has no space-component definition");
-  assert(
-    Number(relayComponents.smartDeployable?.constructionSite) === 91717,
-    "Relay type 90184 does not map to construction site 91717",
-  );
-  assert(
-    relaySiteComponents?.assemblyConstruction,
-    "Relay construction site 91717 has no assemblyConstruction component",
-  );
+  if (schema.relayConstruction) {
+    assert(relayComponents, "Relay type 90184 has no space-component definition");
+    assert(
+      Number(relayComponents.smartDeployable?.constructionSite) === 91717,
+      "Relay type 90184 does not map to construction site 91717",
+    );
+    assert(
+      relaySiteComponents?.assemblyConstruction,
+      "Relay construction site 91717 has no assemblyConstruction component",
+    );
+  }
 
   const systemIDs = new Set();
   const systemStarIDs = new Map();
+  let expectedStars = 0;
   const systems = await load("mapSolarSystems.jsonl", (row) => {
     systemIDs.add(Number(row._key));
     systemStarIDs.set(Number(row._key), Number(row.starID));
+    if (schema.authoredStarlessSystems) {
+      assert(typeof row.sourceHasStar === "boolean", `System ${row._key} has no source star-presence declaration`);
+      if (!row.sourceHasStar) {
+        assert(row.starID === 0 && row.sunTypeID === 0, `Authored starless system ${row._key} declares a star`);
+        return;
+      }
+      assert(Number(row.starID) > 0 && Number(row.sunTypeID) > 0, `System ${row._key} has invalid source star identity`);
+    }
+    expectedStars += 1;
   });
 
   const landscapeSiteIDs = new Set();
@@ -386,7 +486,7 @@ async function validateSnapshot(snapshot) {
       `Landscape site ${siteID} has an invalid position`,
     );
   });
-  assert(landscapeSites.count > 0, "Frontier landscape contains no sites");
+  if (schema.landscape) assert(landscapeSites.count > 0, "Frontier landscape contains no sites");
 
   const stars = await load("mapStars.jsonl", (row) => {
     assert(systemIDs.has(Number(row.solarSystemID)), `Star ${row._key} has unknown system`);
@@ -395,7 +495,8 @@ async function validateSnapshot(snapshot) {
       `System ${row.solarSystemID} does not point back to star ${row._key}`,
     );
   });
-  assert(stars.count === systems.count, "Every Frontier system must have exactly one star");
+  assert(stars.count === expectedStars, schema.authoredStarlessSystems
+    ? "Every populated source system must have exactly one star" : "Every Frontier system must have exactly one star");
 
   for (const fileName of [
     "mapPlanets.jsonl",
@@ -442,7 +543,10 @@ async function validateSnapshot(snapshot) {
   const checked = {
     build: manifest.source.client.build,
     categories: categoryIDs.size,
-    collisionItems: collisionAsset.items,
+    collisionItems: collisionAsset?.items ?? null,
+    schemaProfile: schema.id,
+    blueprints: blueprintCount,
+    excludedBlueprintActivities,
     frontierDungeons: frontierDungeonIDs.size,
     groups: groups.count,
     landscapeDungeons: landscapeDungeonIDs.size,

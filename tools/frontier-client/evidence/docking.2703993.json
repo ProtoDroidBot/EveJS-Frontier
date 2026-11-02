@@ -1,0 +1,88 @@
+{
+  "format": "evejs-frontier-docking-profile-evidence-v1",
+  "build": 2703993,
+  "recordedDate": "2026-10-29",
+  "mode": "native-enabled",
+  "checkState": "native",
+  "applyState": "native",
+  "module": "menucheckers/celestialCheckers.pyc",
+  "source": {
+    "archiveSha256": "c31d2d4ba8edbd1e15297623dbb6856b6f515376e20b2286da98c20ecda271a9",
+    "memberBytes": 96777,
+    "memberSha256": "d7312451a7df2ca69cf75b0ca927e020f17855c96194859b225afb6e6470cb0b",
+    "canonicalCodeSha256": "6fd1817d00417957cad19967ac5d20be51179cbadc3ef3b4625a050582ce2925",
+    "pythonMagicHex": "cb0d0d0a"
+  },
+  "derivation": {
+    "python": "CPython3.12",
+    "canonicalHashAlgorithm": "patch_frontier_docking.code_sha256: JSON-normalized recursive code-object signature",
+    "codeObjectsInspected": 197,
+    "dockingDisabledReferences": 0,
+    "reasonNoRewrite": "The exact source has native station/structure docking predicates and no DOCKING_DISABLED assignment or reference. Returning native records verified source capability without claiming a nonexistent mutation.",
+    "methods": [
+      {
+        "qualifiedName": "CelestialChecker.IsDockable",
+        "firstLine": 1475,
+        "canonicalCodeSha256": "85bfb9d0b9fd5f11eac450f35d4d4b7fdcb2c373d9314262f943891a5da7fb34",
+        "globalAndAttributeNames": [
+          "IsStation",
+          "IsDockableStructure"
+        ],
+        "disassembly": "1475           0 RESUME                   0\n\n1476           2 LOAD_FAST                0 (self)\n               4 LOAD_ATTR                1 (NULL|self + IsStation)\n              24 CALL                     0\n              32 COPY                     1\n              34 POP_JUMP_IF_TRUE        16 (to 68)\n              36 POP_TOP\n              38 LOAD_FAST                0 (self)\n              40 LOAD_ATTR                3 (NULL|self + IsDockableStructure)\n              60 CALL                     0\n         >>   68 RETURN_VALUE\n"
+      },
+      {
+        "qualifiedName": "CelestialChecker.OfferDock",
+        "firstLine": 594,
+        "canonicalCodeSha256": "244a68e8ce4c299460d748325a812936a6cbe0c9ee838591f3d2830fefbb59c0",
+        "globalAndAttributeNames": [
+          "IsDockable",
+          "session",
+          "IsPilotInShipInSpace",
+          "isPilotWarping",
+          "getDistanceToActiveShip",
+          "IsStructure",
+          "IsStructureOnline"
+        ],
+        "disassembly": "594           0 RESUME                   0\n\n595           2 LOAD_FAST                0 (self)\n              4 LOAD_ATTR                1 (NULL|self + IsDockable)\n             24 CALL                     0\n             32 POP_JUMP_IF_TRUE         1 (to 36)\n\n596          34 RETURN_CONST             1 (False)\n\n597     >>   36 LOAD_FAST                0 (self)\n             38 LOAD_ATTR                2 (session)\n             58 LOAD_ATTR                5 (NULL|self + IsPilotInShipInSpace)\n             78 CALL                     0\n             86 POP_JUMP_IF_TRUE         1 (to 90)\n\n598          88 RETURN_CONST             1 (False)\n\n599     >>   90 LOAD_FAST                0 (self)\n             92 LOAD_ATTR                2 (session)\n            112 LOAD_ATTR                7 (NULL|self + isPilotWarping)\n            132 CALL                     0\n            140 POP_JUMP_IF_FALSE        1 (to 144)\n\n600         142 RETURN_CONST             1 (False)\n\n601     >>  144 LOAD_FAST                0 (self)\n            146 LOAD_ATTR                9 (NULL|self + getDistanceToActiveShip)\n            166 CALL                     0\n            174 STORE_FAST               1 (dist)\n\n602         176 LOAD_FAST                1 (dist)\n            178 POP_JUMP_IF_NOT_NONE     1 (to 182)\n\n603         180 RETURN_CONST             0 (None)\n\n604     >>  182 LOAD_FAST                0 (self)\n            184 LOAD_ATTR               11 (NULL|self + IsStructure)\n            204 CALL                     0\n            212 POP_JUMP_IF_FALSE       17 (to 248)\n            214 LOAD_FAST                0 (self)\n            216 LOAD_ATTR               13 (NULL|self + IsStructureOnline)\n            236 CALL                     0\n            244 POP_JUMP_IF_TRUE         1 (to 248)\n\n605         246 RETURN_CONST             1 (False)\n\n606     >>  248 RETURN_CONST             2 (True)\n"
+      },
+      {
+        "qualifiedName": "CelestialChecker.OfferUndock",
+        "firstLine": 1348,
+        "canonicalCodeSha256": "a9479d49f1acd17273c673ccb9787e6ab4c8a9454a3a6bc3acec6a389d7e137d",
+        "globalAndAttributeNames": [
+          "session",
+          "IsPilotControllingStructure",
+          "IsPilotInStructure",
+          "item",
+          "itemID",
+          "structureid"
+        ],
+        "disassembly": "1348           0 RESUME                   0\n\n1349           2 LOAD_FAST                0 (self)\n               4 LOAD_ATTR                0 (session)\n              24 LOAD_ATTR                3 (NULL|self + IsPilotControllingStructure)\n              44 CALL                     0\n              52 POP_JUMP_IF_FALSE        1 (to 56)\n\n1350          54 RETURN_CONST             1 (False)\n\n1351     >>   56 LOAD_FAST                0 (self)\n              58 LOAD_ATTR                0 (session)\n              78 LOAD_ATTR                5 (NULL|self + IsPilotInStructure)\n              98 CALL                     0\n             106 POP_JUMP_IF_TRUE         1 (to 110)\n\n1352         108 RETURN_CONST             1 (False)\n\n1353     >>  110 LOAD_FAST                0 (self)\n             112 LOAD_ATTR                6 (item)\n             132 LOAD_ATTR                8 (itemID)\n             152 LOAD_FAST                0 (self)\n             154 LOAD_ATTR                0 (session)\n             174 LOAD_ATTR               10 (structureid)\n             194 COMPARE_OP              40 (==)\n             198 POP_JUMP_IF_FALSE        1 (to 202)\n\n1354         200 RETURN_CONST             2 (True)\n\n1355     >>  202 RETURN_CONST             1 (False)\n"
+      }
+    ]
+  },
+  "verifiedBehavior": {
+    "isDockable": "IsStation() or IsDockableStructure(); station success short-circuits the structure query.",
+    "offerDock": "Requires a dockable target, pilot in ship in space, pilot not warping, known distance, and an online structure when target is a structure. Native missing-distance result is None.",
+    "offerUndock": "Requires the pilot not to be controlling a structure, to be inside a structure, and item.itemID equal to session.structureid."
+  },
+  "tests": {
+    "command": "EVEJS_FRONTIER_2703993_CLIENT_ROOT=<nebula> python3.12 -B -m unittest discover -s tools/frontier-client/test -p test_2703993_docking_profile.py -v",
+    "targetedTestsPassed": 6,
+    "copiedFullArchiveHashAndMtimeUnchanged": true,
+    "checkApplyRepeatApplyState": "native",
+    "unknownMemberRejectedBeforeWrite": true,
+    "memberHeaderMutationRejected": true,
+    "codeMutationRejected": true,
+    "independentStationMenuPredicateAvoidsIrrelevantFailingStructureQuery": true,
+    "originalArchiveUnchanged": true,
+    "existingBytecodeProfileUnitTestsPassed": 4,
+    "existing3502403IntegrationTestSkipped": "Separate build source not selected in this run."
+  },
+  "acceptance": {
+    "bytecodeModified": false,
+    "adapterInjected": false,
+    "nativeGameLaunchValidated": false,
+    "serverDockingAcceptanceValidated": false
+  }
+}

@@ -137,7 +137,18 @@ function getCharacterCreationSchools(options = {}) {
     if (options && options.refresh) {
         clearReferenceCache(TABLE.CHARACTER_CREATION_SCHOOLS);
     }
-    return readStaticRows(TABLE.CHARACTER_CREATION_SCHOOLS)
+    // This early Frontier client's native schools differ from the classic
+    // bootstrap school table. The same authority must serve creation, RPC
+    // metadata and character normalization, otherwise school 14 becomes 33
+    // when the new character is first read back.
+    const config = require("../../config");
+    const { resolveClientBuildProfile } = require("../../config/clientBuildProfiles");
+    const schools = Number(config.clientBuild) === 2703993 &&
+        config.clientCompatibilityProfile === "frontier" &&
+        resolveClientBuildProfile(config)?.id === "frontier-2703993"
+        ? require("./legacyFrontierCharacterCreation2703993.json").schools
+        : readStaticRows(TABLE.CHARACTER_CREATION_SCHOOLS);
+    return schools
         .map((entry) => normalizeCharacterCreationSchool(entry))
         .filter(Boolean)
         .map((entry) => cloneValue(entry));

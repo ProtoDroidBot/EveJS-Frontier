@@ -20,6 +20,7 @@ const packetCodecPool = require(path.join(__dirname, "./tcp/packetCodecPool"));
 const { MACHONETMSG_TYPE } = require(path.join(__dirname, "../common/packetTypes"));
 const { encodeAddress } = require(path.join(__dirname, "../common/machoAddress"));
 const config = require(path.join(__dirname, "../config"));
+const { normalizeDogmaNotificationForProfile } = require(path.join(__dirname, "../services/dogma/dogmaInfoCompatibility"));
 const { composeSessionRoleMask, } = require(path.join(__dirname, "../services/account/accountRoleProfiles"));
 const sessionChangeDebugPath = path.join(__dirname, "../../logs/session-change-debug.log");
 const SESSION_CHANGE_ALLOWED_KEYS = new Set([
@@ -620,6 +621,9 @@ class ClientSession {
             });
             return;
         }
+        payloadTuple = normalizeDogmaNotificationForProfile(notifyType, payloadTuple, this.compatibilityProfile, Number(config.clientBuild));
+        if (payloadTuple === null)
+            return;
         // Source address: Node
         // C++: packet->source.type = PyAddress::Node; packet->source.objectID = m_services.GetNodeID();
         const sourceAddr = encodeAddress({

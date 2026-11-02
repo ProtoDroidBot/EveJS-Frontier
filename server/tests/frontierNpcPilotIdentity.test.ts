@@ -17,7 +17,7 @@ function fixture(t) {
   const oldEnabled = config.npcPilotIdentitiesEnabled;
   config.clientCompatibilityProfile = "frontier";
   config.npcPilotIdentitiesEnabled = true;
-  const tables = ["npcPilotIdentities", "npcEntities", "npcModules", "npcCargo", "npcRuntimeControllers"];
+  const tables = ["npcPilotIdentities", "npcEntities", "npcModules", "npcCargo", "npcRuntimeControllers", "npcRuntimeState"];
   const backups = tables.map(name => [name, structuredClone(database.read(name, "/").data)]);
   const entities = new Map<number, any>();
   const scene = {
@@ -25,6 +25,14 @@ function fixture(t) {
     getCurrentSimTimeMs: () => 1000,
     getEntityByID: id => entities.get(id) || null,
   };
+  t.mock.method(runtime, "ensureScene", systemID => {
+    assert.equal(systemID, scene.systemID);
+    return scene;
+  });
+  t.mock.method(runtime, "removeDynamicEntity", (systemID, entityID) => {
+    assert.equal(systemID, scene.systemID);
+    return entities.delete(entityID);
+  });
   t.mock.method(runtime, "spawnDynamicShip", (_systemID, spec) => {
     const entity = { ...spec, kind: "ship" };
     entities.set(spec.itemID, entity);

@@ -16,9 +16,9 @@ class IndustryMonitorService extends BaseService {
             buildAvailableMaterialsPayload(result.data.availableMaterials),
         ];
     }
-    Handle_DisconnectJob(args) {
+    Handle_DisconnectJob(args, session) {
         const monitorID = args && args.length > 0 ? args[0] : null;
-        disconnectMonitor(monitorID);
+        disconnectMonitor(monitorID, session);
         return null;
     }
 }

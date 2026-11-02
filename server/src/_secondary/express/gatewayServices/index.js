@@ -1,4 +1,7 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 const { createFrontierEconomyGatewayService } = require("./frontierEconomyGatewayService");
+const { createLegacyEvmGatewayService } = require("./legacyEvmGatewayService");
 const { createCompatibilityGatewayService } = require("./compatibilityGatewayService");
 const { createAssemblyGateGatewayService, } = require("./assemblyGateGatewayService");
 const { createAssemblyNetworkNodeGatewayService, } = require("./assemblyNetworkNodeGatewayService");
@@ -26,6 +29,7 @@ const { createDailyGoalsGatewayService, } = require("./dailyGoalsGatewayService"
 const { createExplorationGatewayService } = require("./explorationGatewayService");
 function createGatewayServiceRegistry(context) {
     const services = [
+        createLegacyEvmGatewayService(context),
         createFrontierEconomyGatewayService(context),
         createAssemblyGateGatewayService(context),
         createAssemblyNetworkNodeGatewayService(context),

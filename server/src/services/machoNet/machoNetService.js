@@ -13,6 +13,7 @@ const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
 const config = require(path.join(__dirname, "../../config"));
+const { usesLegacyFrontierDogmaProfile } = require("../dogma/dogmaInfoCompatibility");
 const sessionRegistry = require(path.join(__dirname, "../chat/sessionRegistry"));
 const { buildDict, buildKeyVal, extractDictEntries, normalizeNumber, normalizeText, unwrapMarshalValue, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const { buildGlobalConfigDict, buildServerStatusResponse, getRuntimeGlobalConfigOverrides, getRuntimeGlobalConfigValue, resetRuntimeGlobalConfigForTests, setRuntimeGlobalConfigValue, } = require(path.join(__dirname, "./globalConfig"));
@@ -262,6 +263,8 @@ class MachoNetService extends BaseService {
                 ["blueprintManager", null],
                 ["facilityManager", null],
                 ["industryManager", null],
+                ...(usesLegacyFrontierDogmaProfile(config.clientCompatibilityProfile, Number(config.clientBuild))
+                    ? [["industryManager2", null], ["stationConstructableManager", null]] : []),
                 ["industryMonitor", null],
                 ["repairSvc", "station"],
                 ["repackagingSvc", null],

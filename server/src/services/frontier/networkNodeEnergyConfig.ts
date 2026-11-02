@@ -1,4 +1,5 @@
 /** Shared cache of the deployed world's EnergyConfig; populated by read-only RPC. */
+import { listLegacyEvmBuildAdapters } from "./legacyEvmBuildAdapters";
 export const NETWORK_NODE_RADIUS_METERS = 80_000;
 export const NETWORK_NODE_TYPE_ID = 88092;
 export const DEFAULT_NETWORK_NODE_MAX_ENERGY = 1000;
@@ -19,11 +20,12 @@ function energyMap(entries: ReadonlyArray<EnergyEntry>, label: string) {
   return result;
 }
 
-/** Require the synchronized world manifest, static client catalog and chain table to agree exactly. */
+/** Keep chain requirements exact; audited legacy clients may use a subset of the deployed catalog. */
 export function assertAssemblyEnergyConfigMatches(
   chainEntries: ReadonlyArray<EnergyEntry>,
   manifestEntries: ReadonlyArray<EnergyEntry> | null | undefined,
   componentRows: any[],
+  clientBuild?: number,
 ) {
   if (!manifestEntries) {
     throw new Error("Synchronized world has no assembly energy manifest; run FrontierWorld.ps1 sync");
@@ -35,7 +37,8 @@ export function assertAssemblyEnergyConfigMatches(
     .map(row => Number(row.typeID ?? row._key))
     .filter(typeID => Number.isSafeInteger(typeID) && typeID > 0));
   const missingManifest = [...catalog].filter(typeID => !manifest.has(typeID));
-  const staleManifest = [...manifest.keys()].filter(typeID => !catalog.has(typeID));
+  const legacyClient = listLegacyEvmBuildAdapters().some(adapter => adapter.clientBuild === clientBuild);
+  const staleManifest = legacyClient ? [] : [...manifest.keys()].filter(typeID => !catalog.has(typeID));
   if (missingManifest.length || staleManifest.length) {
     throw new Error(`Assembly energy manifest does not match the client catalog` +
       `${missingManifest.length ? ` (missing ${missingManifest.join(", ")})` : ""}` +

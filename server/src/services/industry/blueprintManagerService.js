@@ -6,6 +6,9 @@ const { buildDict, buildList, } = require(path.join(__dirname, "../_shared/servi
 const { buildBlueprintInstancePayload, } = require(path.join(__dirname, "./industryPayloads"));
 const { getBlueprintByItemID, listBlueprintInstancesByOwner, } = require(path.join(__dirname, "./industryRuntimeState"));
 const log = require(path.join(__dirname, "../../utils/logger"));
+const config = require("../../config");
+const { usesLegacyFrontierDogmaProfile } = require("../dogma/dogmaInfoCompatibility");
+const { throwWrappedUserError } = require("../../common/machoErrors");
 class BlueprintManagerService extends BaseService {
     constructor() {
         super("blueprintManager");
@@ -19,7 +22,13 @@ class BlueprintManagerService extends BaseService {
     Handle_GetBlueprintData(args, session) {
         const blueprintID = args && args.length > 0 ? args[0] : null;
         log.debug(`[BlueprintManager] GetBlueprintData(${String(blueprintID)})`);
-        return buildBlueprintInstancePayload(getBlueprintByItemID(blueprintID, session) || {});
+        const blueprint = getBlueprintByItemID(blueprintID, session);
+        if (!blueprint && usesLegacyFrontierDogmaProfile(session?.compatibilityProfile ?? config.clientCompatibilityProfile, Number(config.clientBuild))) {
+            // Native station recipes have no physical blueprint item. Job loading
+            // catches UserError and clones the authored blueprint type instead.
+            throwWrappedUserError("IndustryBlueprintNotFound", { blueprintID: Number(blueprintID) || 0 });
+        }
+        return buildBlueprintInstancePayload(blueprint || {});
     }
     Handle_GetBlueprintDataByOwner(args, session) {
         const ownerID = args && args.length > 0 ? args[0] : null;

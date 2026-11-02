@@ -10,7 +10,6 @@ const REQUIRED_BUILD_FILES = Object.freeze({
     mapObjects: path.join("bin64", "staticdata", "mapObjects.db"),
     caBundle: path.join("bin64", "cacert.pem"),
     certifiCaBundle: path.join("bin64", "packages", "certifi", "cacert.pem"),
-    collisionBundle: path.join("bin64", "bundle.collision"),
 });
 function isDirectory(candidate) {
     try {
@@ -124,6 +123,12 @@ function validateClientLayout(layout) {
             throw new Error(`Frontier ${name} not found: ${filePath}`);
         }
         files[name] = canonicalPath(filePath);
+    }
+    // Historical clients can predate this asset. Discovery identifies the
+    // installation; static extraction verifies the assets its format requires.
+    const collisionBundle = path.join(buildRoot, "bin64", "bundle.collision");
+    if (isFile(collisionBundle)) {
+        files.collisionBundle = canonicalPath(collisionBundle);
     }
     const windowsExecutable = path.join(buildRoot, "bin64", "exefile.exe");
     const macExecutable = path.join(buildRoot, "bin64", "exefile");

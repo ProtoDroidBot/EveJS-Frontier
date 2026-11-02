@@ -46,6 +46,9 @@ const {
   buildInventoryDogmaPrimeEntry,
 } = require(path.join(__dirname, "../character/characterState"));
 const {
+  getCharacterInventoryCategoryIDForProfile,
+} = require(path.join(__dirname, "../dogma/dogmaInfoCompatibility"));
+const {
   ITEM_FLAGS,
   FIGHTER_TUBE_FLAGS,
   ensureFreeStationFuelSupply,
@@ -253,7 +256,6 @@ const CONTAINER_STRUCTURE_ID = 10014;
 const CONTAINER_CAPSULEER_DELIVERIES_ID = 10015;
 const CHARACTER_TYPE_ID = 1373;
 const CHARACTER_GROUP_ID = 1;
-const CHARACTER_CATEGORY_ID = 3;
 const STATION_TYPE_ID = DEFAULT_STATION.stationTypeID;
 const STATION_GROUP_ID = 15;
 const STATION_CATEGORY_ID = 3;
@@ -5413,7 +5415,10 @@ class InvBrokerService extends BaseService {
       flagID: 0,
       quantity: -1,
       groupID: CHARACTER_GROUP_ID,
-      categoryID: CHARACTER_CATEGORY_ID,
+      categoryID: getCharacterInventoryCategoryIDForProfile(
+        session && session.compatibilityProfile,
+        Number(require("../../config").clientBuild),
+      ),
       customInfo: "",
       singleton: 1,
       stacksize: 1,

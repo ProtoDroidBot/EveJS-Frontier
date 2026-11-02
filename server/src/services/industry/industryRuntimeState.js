@@ -23,7 +23,7 @@ const { resolveSystemCostIndex, } = require(path.join(__dirname, "./industrySyst
 const { resolveBlueprintActivityPrice, } = require(path.join(__dirname, "./industryPricing"));
 const { canSeeCorporationBlueprints, canTakeFromOwnerLocation, canUseCorporationWallet, canViewOwnerLocation, getAccessibleCorpHangarFlags, getSessionCharacterID, getSessionCorporationID, hasCorporationIndustryJobAccess, isCharacterOwner, isCorporationOwner, normalizeRoleValue, } = require(path.join(__dirname, "./industryAccess"));
 const { throwWrappedUserError, } = require(path.join(__dirname, "../../common/machoErrors"));
-const { currentFileTime, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
+const { currentFileTime, unwrapMarshalValue, } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const { BLUEPRINT_CATEGORY_ID, COST_PERCENTAGE, DEFAULT_ACCOUNT_KEY, DEFAULT_TAX_RATE, INDUSTRY_ACTIVITY, INDUSTRY_BLUEPRINT_STATE_TABLE, INDUSTRY_ERROR, INDUSTRY_INSTALLED_LOCATION_ID, INDUSTRY_JOBS_TABLE, INDUSTRY_RUNTIME_TABLE, INDUSTRY_STATUS, ITEM_FLAG_CORP_DELIVERIES, ITEM_FLAG_CORP_HANGAR_1, ITEM_FLAG_HANGAR, MAX_JOB_LENGTH_SECONDS, MAX_COPY_RUNS, MAX_INVENTION_RUNS, MAX_MATERIAL_EFFICIENCY, MAX_MANUFACTURING_RUNS, MAX_TIME_EFFICIENCY, INVENTION_MATERIAL_EFFICIENCY, INVENTION_SKILL_PROBABILITY, INVENTION_SKILL_PROBABILITY_LOWER, INVENTION_TIME_EFFICIENCY, RESEARCH_TIME_MULTIPLIERS, SCC_SURCHARGE_RATE, SCC_SURCHARGE_RESEARCH_DISCOUNT_MODIFIER, STEP_MATERIAL_EFFICIENCY, STEP_TIME_EFFICIENCY, } = require(path.join(__dirname, "./industryConstants"));
 const JOB_ID_START = 970000000000000;
 const MONITOR_ID_START = 1;
@@ -1554,6 +1554,25 @@ function applyWalletCharge(ownerID, account, amount, session) {
     });
 }
 function installIndustryJob(session, requestInput) {
+    if (require("./legacyIndustryStaticData").isLegacyIndustryProfile()) {
+        // The older client retains the classic install RPC as well as its station
+        // API. Both must obey the same free, atomic station-manufacturing policy.
+        const request = parseIndustryRequest(requestInput);
+        const characterID = Number(session && (session.characterID || session.charid));
+        const stationID = Number(session && (session.stationID || session.stationid));
+        const productTypeID = Number(request.productTypeID || request.blueprintTypeID);
+        const locations = [request.inputLocation, request.outputLocation].filter(Boolean);
+        if (Number(request.activityID) !== INDUSTRY_ACTIVITY.MANUFACTURING ||
+            (Number(request.ownerID) > 0 && Number(request.ownerID) !== characterID) ||
+            (Number(request.facilityID) > 0 && Number(request.facilityID) !== stationID) ||
+            (Number(request.blueprintTypeID) > 0 && Number(request.blueprintTypeID) !== productTypeID) ||
+            locations.some(location => Number(location.itemID) > 0 &&
+                (Number(location.itemID) !== stationID || Number(location.flagID) !== ITEM_FLAG_HANGAR))) {
+            throwWrappedUserError("CustomNotify", { notify: "Use your current station hangar and a published manufacturing recipe." });
+        }
+        const result = require("./legacyIndustryRuntime").installLegacyIndustryJob(session, productTypeID, request.runs);
+        return { success: true, data: { jobID: result.data.jobID, job: result.data, quote: result.data } };
+    }
     const quoteResult = quoteIndustryJob(session, requestInput);
     if (!quoteResult.success) {
         throwIndustryValidationError(quoteResult.errors);
@@ -1957,6 +1976,11 @@ function deliverIndustryJob(session, jobID) {
             notify: "That industry job could not be found.",
         });
     }
+    // Chat commands and internal callers also enter here. Native station jobs
+    // must use the same atomic receipt/output transition as their RPC handlers.
+    if (currentJob.legacyFrontierBuild === 2703993) {
+        return require("./legacyIndustryRuntime").completeLegacyIndustryJob(session, jobID);
+    }
     if (!isCharacterOwner(session, currentJob.ownerID) && !hasCorporationIndustryJobAccess(session, currentJob.ownerID)) {
         throwWrappedUserError("CustomNotify", {
             notify: "You do not have access to that industry job.",
@@ -2127,6 +2151,9 @@ function cancelIndustryJob(session, jobID) {
             notify: "That industry job could not be found.",
         });
     }
+    if (currentJob.legacyFrontierBuild === 2703993) {
+        return require("./legacyIndustryRuntime").cancelLegacyIndustryJob(session, jobID);
+    }
     if (!isCharacterOwner(session, currentJob.ownerID) && !hasCorporationIndustryJobAccess(session, currentJob.ownerID)) {
         throwWrappedUserError("CustomNotify", {
             notify: "You do not have access to that industry job.",
@@ -2168,7 +2195,17 @@ function getJobCountsByInstaller(installerID) {
     }
     return counts;
 }
+function usesLegacyIndustryMonitor(session) {
+    const config = require("../../config");
+    return require("./legacyIndustryStaticData").isLegacyIndustryProfile({
+        clientBuild: config.clientBuild,
+        clientCompatibilityProfile: session?.compatibilityProfile ?? config.clientCompatibilityProfile,
+    });
+}
 function resolveMonitorAvailableMaterials(session, request) {
+    if (usesLegacyIndustryMonitor(session)) {
+        return require("./legacyIndustryRuntime").getLegacyIndustryAvailableMaterials(session, request);
+    }
     const blueprint = getBlueprintByItemID(request && request.blueprintID);
     const definition = getBlueprintDefinitionByTypeID(blueprint && blueprint.typeID);
     const activity = getIndustryActivity(definition, request && request.activityID);
@@ -2196,8 +2233,17 @@ function connectMonitor(session, requestInput) {
     const request = requestInput && requestInput.rawRequest
         ? requestInput
         : parseIndustryRequest(requestInput);
+    const legacy = usesLegacyIndustryMonitor(session);
+    // Validate ownership/location and read real stock before allocating a legacy
+    // monitor. An invalid read must not leave a counter/monitor mutation behind.
+    const legacyContext = legacy
+        ? require("./legacyIndustryRuntime").getLegacyIndustryMonitorContext(session, request) : null;
+    const availableMaterials = legacy ? resolveMonitorAvailableMaterials(session, request) : null;
     const runtimeTable = ensureRuntimeTable();
     const monitorID = Math.max(MONITOR_ID_START, toInt(runtimeTable._meta.nextMonitorID, MONITOR_ID_START));
+    if (legacy && (!Number.isSafeInteger(monitorID) || !Number.isSafeInteger(monitorID + 1))) {
+        throwWrappedUserError("CustomNotify", { notify: "The manufacturing material monitor counter is invalid." });
+    }
     runtimeTable._meta.nextMonitorID = monitorID + 1;
     runtimeTable.monitors[String(monitorID)] = {
         monitorID,
@@ -2205,19 +2251,60 @@ function connectMonitor(session, requestInput) {
         blueprintID: toInt(request.blueprintID, 0),
         createdAt: Date.now(),
     };
-    persistRuntimeTable(runtimeTable);
+    let saved;
+    try {
+        saved = persistRuntimeTable(runtimeTable);
+    }
+    catch (error) {
+        if (!legacy)
+            throw error;
+        throwWrappedUserError("CustomNotify", { notify: "The manufacturing material monitor could not be persisted." });
+    }
+    if (legacy && !saved) {
+        throwWrappedUserError("CustomNotify", { notify: "The manufacturing material monitor could not be persisted." });
+    }
+    if (legacy) {
+        if (!(session._legacyIndustryMonitors instanceof Map))
+            session._legacyIndustryMonitors = new Map();
+        session._legacyIndustryMonitors.set(monitorID, Object.freeze({ ...legacyContext }));
+    }
     return {
         success: true,
         data: {
             monitorID,
-            availableMaterials: resolveMonitorAvailableMaterials(session, request),
+            availableMaterials: legacy ? availableMaterials : resolveMonitorAvailableMaterials(session, request),
         },
     };
 }
-function disconnectMonitor(monitorID) {
+function disconnectMonitor(monitorID, session = null) {
+    const legacy = usesLegacyIndustryMonitor(session);
+    const numericMonitorID = legacy ? Number(unwrapMarshalValue(monitorID)) : toInt(monitorID, 0);
+    const bindings = session?._legacyIndustryMonitors;
+    if (legacy) {
+        if (!Number.isSafeInteger(numericMonitorID) || numericMonitorID <= 0) {
+            throwWrappedUserError("CustomNotify", { notify: "The manufacturing material monitor ID is invalid." });
+        }
+        // A connection can unsubscribe its own monitor. Replayed or foreign IDs
+        // leave persistent monitors belonging to other connections untouched.
+        if (!(bindings instanceof Map) || !bindings.has(numericMonitorID))
+            return { success: true };
+    }
     const runtimeTable = ensureRuntimeTable();
-    delete runtimeTable.monitors[String(toInt(monitorID, 0))];
-    persistRuntimeTable(runtimeTable);
+    delete runtimeTable.monitors[String(numericMonitorID)];
+    let saved;
+    try {
+        saved = persistRuntimeTable(runtimeTable);
+    }
+    catch (error) {
+        if (!legacy)
+            throw error;
+        throwWrappedUserError("CustomNotify", { notify: "The manufacturing material monitor could not be disconnected." });
+    }
+    if (legacy && !saved) {
+        throwWrappedUserError("CustomNotify", { notify: "The manufacturing material monitor could not be disconnected." });
+    }
+    if (legacy)
+        bindings.delete(numericMonitorID);
     return {
         success: true,
     };

@@ -661,6 +661,9 @@ class SmartAssemblyService extends BaseService {
   }
 
   _beginStateTransition(args, session, targetStatus) {
+    if (require("../../config/clientBuildProfiles").getClientBlockchainProtocol(require("../../config")) === "evm") {
+      throwAssemblyError({ errorMsg: "INVALID_ASSEMBLY_SIGNATURE" });
+    }
     const itemID = Number(args && args[0]) || 0;
     const result = getDeploymentRuntime().beginAssemblyStateTransition(
       session,
@@ -681,6 +684,9 @@ class SmartAssemblyService extends BaseService {
   }
 
   _commitStateTransition(args, session, targetStatus) {
+    if (require("../../config/clientBuildProfiles").getClientBlockchainProtocol(require("../../config")) === "evm") {
+      throwAssemblyError({ errorMsg: "INVALID_ASSEMBLY_SIGNATURE" });
+    }
     const itemID = Number(args && args[0]) || 0;
     const result = getDeploymentRuntime().commitAssemblyStateTransition(
       session,

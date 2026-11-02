@@ -1,36 +1,47 @@
 # Frontier World Sync
 
+For the ordered first-start workflow, including client/server data and dApp
+prerequisites, start with [Frontier server, world, and client setup](FRONTIER_SETUP.md).
+With no running or synced world, use `up`; `sync` requires an existing deployment.
+
 `FrontierWorld.ps1` connects EveJS to the disposable Sui localnet managed by
-`efctl.exe`. The EveJS repository root is the default efctl workspace, with
+native `efctl.exe` on Windows or `efctl` on Linux. The EveJS repository root is the default efctl workspace, with
 `world-contracts` and `builder-scaffold` supplied by pinned Git submodules. It
 publishes the current deployment identity into EveJS only after the local chain
 and generated artifacts agree.
 
 The deployment is split into the base world plus NPC, assembly-access,
-catapult, Smart Industry, and transponder feature packages. The public feature
-manifest keeps each package's current call target, stable type origin, and
-shared registry separate from the base-world identity.
+catapult, Smart Industry, transponder, action-queue, Industry Actions, Logistics
+Actions, Infrastructure Actions, and Automation feature packages. The public
+feature manifest keeps each package's current call target, stable type origin,
+and shared registry separate from the base-world identity.
 
 `efctl env up` regenerates this disposable local chain and redeploys the world,
 so package and shared-object IDs can change on every up/restart. Using this
 wrapper ensures EveJS receives the newly deployed values.
 
-For the current checkout, the defaults resolve to:
+The default workspace is the repository containing `FrontierWorld.ps1`, not
+a fixed drive or checkout path. For the default build `3502403`:
 
 ```text
-efctl workspace: D:\carbonengine-stuff_EF\EveJS-Frontier
-world contracts: D:\carbonengine-stuff_EF\EveJS-Frontier\world-contracts
-builder scaffold: D:\carbonengine-stuff_EF\EveJS-Frontier\builder-scaffold
-assembly dApp:    D:\carbonengine-stuff_EF\EveJS-Frontier\smart-assembly-control
-EveJS config:    D:\carbonengine-stuff_EF\EveJS-Frontier\_local\frontier-world\3502403\world.private.json
-Feature config:  D:\carbonengine-stuff_EF\EveJS-Frontier\_local\frontier-world\3502403\world-features.v1.json
+efctl workspace:  <repo>
+world contracts:  <repo>\world-contracts
+builder scaffold: <repo>\builder-scaffold
+assembly dApp:    <repo>\smart-assembly-control
+EveJS config:     <repo>\_local\frontier-world\3502403\world.private.json
+Feature config:   <repo>\_local\frontier-world\3502403\world-features.v1.json
 ```
 
 The `_local` output is ignored by Git. Its ACL is restricted to the current
-Windows user because it contains the admin signer used by local character
+Windows user, or its file mode to `0600` on Linux, because it contains the admin signer used by local character
 provisioning. The tool copies no player, governor, or sponsor keys and does not
 copy either submodule, dependency stores, build output, or logs. Generated
 deployment artifacts remain ignored inside `world-contracts`.
+
+Linux uses native PowerShell 7.2+ through `bash FrontierWorld.sh sync -Build 3502403`,
+or `npm run frontier:host -- world sync --build 3502403`. The same
+workspace ownership, artifact hashes and live chain checks apply on both hosts.
+The wrapper passes its selected build explicitly to NPC faction funding.
 
 This workflow is independent of the EveJS databases. It neither initializes a
 database nor starts the EveJS server, so the world can be prepared and synced
@@ -41,6 +52,20 @@ public-only `.env.local` and `.deployment-source.json` from the same validated
 `world-contracts` deployment. It never copies the admin signer into the dApp.
 The native Windows server launcher builds and starts that configured dApp
 automatically.
+
+For a catalogued EVM client, pass its exact `-Build` to setup, world commands and
+the server launcher. Initial Windows setup prepares the build's private
+`legacy-evm-sui.private.json`; world `sync`, `up` and `restart` synchronize it
+and add its path to `world.private.json`. The bridge selects the corresponding
+wallet/bootstrap adapter automatically. Authenticated characters receive stable
+encrypted wallet passphrases, and owned runtime assemblies use the build's
+object-ID formula without a separate account or assembly mapping file.
+Sync preserves existing recovery keys, wallet pins and authored settings.
+Keep the private bridge file with the wallet database across world resets.
+For EVM clients, energy metadata records the deployment's source build separately;
+the worker permits a client catalog subset while still matching every deployed
+energy requirement and rejecting missing requirements for client assembly types.
+See [EVM clients with a Sui backend](client-builds/evm-to-sui.md) for details.
 
 ## Commands
 
@@ -61,6 +86,9 @@ Run from PowerShell 7:
 
 # Show efctl environment status and the local EveJS sync state.
 .\FrontierWorld.ps1 status
+
+# Set up the current Sui world for a catalogued EVM client.
+.\FrontierWorld.ps1 up -Build 2703993
 ```
 
 `FrontierWorld.bat` exposes the same commands from `cmd.exe`. A no-write check
@@ -188,10 +216,10 @@ module set, exact shared-registry type, retained type origin, UpgradeCap
 owner/policy, and a feature-specific transaction dry run.
 
 The `world-contracts/scripts/deploy-world.sh` submodule script cleans deployment outputs
-and performs a fresh publish of all six packages. It is not a per-feature
-upgrade command. Preserve the base package, Object Registry, Admin ACL, feature
-type origins, and registries when upgrading a call implementation. The full
-topology and current upgrade limitations are documented in
+and performs a fresh publish of the base world and its feature packages. It is
+not a per-feature upgrade command. Preserve the base package, Object Registry,
+Admin ACL, feature type origins, and registries when upgrading a call
+implementation. The full topology and current upgrade limitations are documented in
 `world-contracts/docs/package-topology.md`.
 
 `down` changes the synchronized state before tearing down the chain. A

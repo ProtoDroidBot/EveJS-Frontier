@@ -1,11 +1,15 @@
+import type { ClientBuildProfile } from "./config/clientBuildProfiles";
+
 export interface RuntimeContextOptions {
   serviceManager?: Record<string, any>;
   gatewayRuntime?: Record<string, any> | null;
+  clientBuildProfile?: ClientBuildProfile | null;
 }
 
 export interface RuntimeContext {
   serviceManager: Record<string, any>;
   gatewayRuntime: Record<string, any> | null;
+  clientBuildProfile: ClientBuildProfile | null;
 }
 
 "use strict";
@@ -21,6 +25,7 @@ function createRuntimeContext(options: RuntimeContextOptions = {}): Readonly<Run
   return Object.freeze({
     serviceManager,
     gatewayRuntime: options.gatewayRuntime || null,
+    clientBuildProfile: options.clientBuildProfile || null,
   });
 }
 

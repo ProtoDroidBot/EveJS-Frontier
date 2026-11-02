@@ -3,9 +3,118 @@ const log = require("../../utils/logger");
 const {
   buildDict,
 } = require("../_shared/serviceHelpers");
-const {
-  getCharacterRecord,
-} = require("./characterState");
+const characterState = require("./characterState");
+const { throwWrappedUserError, isMachoWrappedException } = require("../../common/machoErrors");
+const { createTableRepository } = require("../../gameStore/tableRepository");
+const { usesLegacyFrontierDogmaProfile } = require("../dogma/dogmaInfoCompatibility");
+const MAX_FILETIME = (1n << 63n) - 1n;
+const MAX_SAFE_COUNT = BigInt(Number.MAX_SAFE_INTEGER);
+const MAX_PROGRESS_ENTRIES = 10000;
+let characterRepository;
+
+function rejectProgress(info = "The achievement progress update is invalid."): never {
+  throwWrappedUserError("CustomInfo", { info });
+  throw new Error(info);
+}
+
+function unwrapInteger(value) {
+  if (value && typeof value === "object" && !Buffer.isBuffer(value) &&
+      ["int", "long", "real"].includes(value.type)) {
+    return value.value;
+  }
+  return value;
+}
+
+function integer(value, maximum, allowString = false) {
+  value = unwrapInteger(value);
+  let result;
+  if (typeof value === "bigint") result = value;
+  else if (typeof value === "number" && Number.isSafeInteger(value)) result = BigInt(value);
+  else if (allowString && typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value)) result = BigInt(value);
+  else return rejectProgress();
+  if (result < 0n || result > maximum) return rejectProgress();
+  return result;
+}
+
+function dictionaryEntries(value, stored = false) {
+  let entries;
+  if (value instanceof Map) entries = [...value.entries()];
+  else if (value && value.type === "dict" && Array.isArray(value.entries)) entries = value.entries;
+  else if (stored && Array.isArray(value)) entries = value;
+  else if (value && typeof value === "object" && !Array.isArray(value) &&
+      (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)) {
+    entries = Object.entries(value);
+  } else return rejectProgress();
+  if (entries.length > MAX_PROGRESS_ENTRIES || entries.some(entry => !Array.isArray(entry) || entry.length !== 2)) {
+    return rejectProgress();
+  }
+  return entries;
+}
+
+function completedMap(value, stored = false): Map<number, string> {
+  const result = new Map<number, string>();
+  for (let [key, timestamp] of dictionaryEntries(value, stored)) {
+    if (Buffer.isBuffer(key)) key = key.toString("utf8");
+    const id = Number(integer(key, MAX_SAFE_COUNT, true));
+    if (id <= 0 || result.has(id)) return rejectProgress();
+    result.set(id, integer(timestamp, MAX_FILETIME, stored).toString());
+  }
+  return result;
+}
+
+function statisticMap(value, stored = false): Map<string, number> {
+  const result = new Map<string, number>();
+  for (let [key, count] of dictionaryEntries(value, stored)) {
+    if (Buffer.isBuffer(key)) key = key.toString("utf8");
+    if (typeof key !== "string" || !key.trim() || key.length > 256 || /[\x00-\x1f\x7f]/.test(key) || result.has(key)) {
+      return rejectProgress();
+    }
+    result.set(key, Number(integer(count, MAX_SAFE_COUNT, stored)));
+  }
+  return result;
+}
+
+function progressSource(state, names) {
+  if (!state || typeof state !== "object" || Array.isArray(state)) return undefined;
+  const key = names.find(name => Object.prototype.hasOwnProperty.call(state, name));
+  return key === undefined ? undefined : state[key];
+}
+
+const EVENT_KEYS = ["eventDict", "eventCounts", "clientEventCounts"];
+const COMPLETED_KEYS = ["completedDict", "completedAchievements"];
+
+function hasProgress(state) {
+  return progressSource(state, EVENT_KEYS) !== undefined || progressSource(state, COMPLETED_KEYS) !== undefined;
+}
+
+function selectedCharacter(session, required = false) {
+  const values = [session?.characterID, session?.charID, session?.charid]
+    .filter(value => value !== undefined && value !== null);
+  const ids = values.map(value => Number(integer(value, MAX_SAFE_COUNT))).filter(id => id > 0);
+  if (ids.length === 0) {
+    if (required) rejectProgress("Achievement progress requires a selected character.");
+    return null;
+  }
+  if (ids.some(id => id !== ids[0]) || session?._characterControlDisconnected === true || session?.socket?.destroyed) {
+    return rejectProgress("Achievement progress requires a valid selected character session.");
+  }
+  const accountID = session?.userid === undefined || session?.userid === null
+    ? 0 : Number(integer(session.userid, MAX_SAFE_COUNT));
+  if (required && accountID <= 0) {
+    return rejectProgress("Achievement progress requires an authenticated account.");
+  }
+  const record = characterState.getCharacterRecord(ids[0]);
+  if (!record) return rejectProgress("The selected character is unavailable.");
+  if (accountID > 0 && Number(record.accountId ?? record.accountID ?? record.userID ?? record.userid) !== accountID) {
+    return rejectProgress("That character is not available on this account.");
+  }
+  return { characterID: ids[0], record };
+}
+
+function repository() {
+  characterRepository ||= createTableRepository("service:character", { strict: true });
+  return characterRepository;
+}
 
 const GOLDEN_LOGIN_EVENT_COUNT_ENTRIES = [
   ["client_activateAutopilot", 1n],
@@ -72,39 +181,13 @@ function cloneEntries(entries) {
     : [];
 }
 
-function normalizeDictEntries(source, fallbackEntries) {
-  if (source && source.type === "dict" && Array.isArray(source.entries)) {
-    return cloneEntries(source.entries);
-  }
-  if (source instanceof Map) {
-    return Array.from(source.entries());
-  }
-  if (Array.isArray(source)) {
-    return cloneEntries(source);
-  }
-  if (source && typeof source === "object") {
-    return Object.entries<any>(source).map(([key, value]) => {
-      const numericKey = Number(key);
-      return [
-        Number.isFinite(numericKey) && String(numericKey) === key
-          ? numericKey
-          : key,
-        value,
-      ];
-    });
-  }
-  return cloneEntries(fallbackEntries);
-}
-
 function resolveAchievementState(session) {
-  const characterID =
-    Number(session && (session.characterID || session.charID || session.charid)) || 0;
-  const characterRecord = characterID ? getCharacterRecord(characterID) : null;
-  return (
-    (session && session.achievementState) ||
-    (characterRecord && characterRecord.achievementState) ||
-    null
-  );
+  const selected = selectedCharacter(session);
+  const persisted = selected?.record?.achievementState;
+  // First-warp tracking deliberately keeps only a partial session cache.
+  // Stored counter maps must win over that cache on subsequent reads.
+  if (hasProgress(persisted)) return persisted;
+  return session?.achievementState || persisted || null;
 }
 
 function extractOptionalBoolean(value) {
@@ -146,7 +229,7 @@ class AchievementTrackerMgrService extends BaseService {
       return explicitValue;
     }
 
-    const characterRecord = characterID ? getCharacterRecord(characterID) : null;
+    const characterRecord = characterID ? characterState.getCharacterRecord(characterID) : null;
     const persistedValue = extractOptionalBoolean(
       characterRecord &&
         characterRecord.achievementState &&
@@ -160,14 +243,18 @@ class AchievementTrackerMgrService extends BaseService {
       "[AchievementTrackerMgr] GetCompletedAchievementsAndClientEventCount called",
     );
     const state = resolveAchievementState(session);
-    const eventEntries = normalizeDictEntries(
-      state && (state.eventDict || state.eventCounts || state.clientEventCounts),
-      GOLDEN_LOGIN_EVENT_COUNT_ENTRIES,
-    );
-    const completedEntries = normalizeDictEntries(
-      state && (state.completedDict || state.completedAchievements),
-      GOLDEN_LOGIN_COMPLETED_ACHIEVEMENT_ENTRIES,
-    );
+    const config = require("../../config");
+    const emptyInitialState = this.name === "achievementTrackerMgr" &&
+      usesLegacyFrontierDogmaProfile(session?.compatibilityProfile ?? config.clientCompatibilityProfile, Number(config.clientBuild));
+    const actualProgress = hasProgress(state);
+    const eventSource = progressSource(state, EVENT_KEYS);
+    const completedSource = progressSource(state, COMPLETED_KEYS);
+    const eventEntries = eventSource !== undefined
+      ? [...statisticMap(eventSource, true)]
+      : emptyInitialState || actualProgress ? [] : cloneEntries(GOLDEN_LOGIN_EVENT_COUNT_ENTRIES);
+    const completedEntries = completedSource !== undefined
+      ? [...completedMap(completedSource, true)].map(([id, time]) => [id, BigInt(time)])
+      : emptyInitialState || actualProgress ? [] : cloneEntries(GOLDEN_LOGIN_COMPLETED_ACHIEVEMENT_ENTRIES);
     return buildDict([
       ["eventDict", buildDict(eventEntries)],
       ["completedDict", buildDict(completedEntries)],
@@ -178,6 +265,48 @@ class AchievementTrackerMgrService extends BaseService {
     log.debug(
       "[AchievementTrackerMgr] UpdateClientAchievmentsAndCounters called",
     );
+    if (!Array.isArray(args) || args.length !== 2) return rejectProgress();
+    // Native uploads contain cumulative absolute totals, not increments.
+    // Validate both complete dictionaries before preparing any mutation.
+    const incomingCompleted = completedMap(args[0]);
+    const incomingStatistics = statisticMap(args[1]);
+    const selected = selectedCharacter(session, true);
+    let nextState;
+    try {
+      const repo = repository();
+      const read = repo.read("characters", `/${selected.characterID}`);
+      const raw = read.success && read.data;
+      if (!raw || Number(raw.accountId ?? raw.accountID ?? raw.userID ?? raw.userid) !==
+          Number(selected.record.accountId ?? selected.record.accountID ?? selected.record.userID ?? selected.record.userid)) {
+        return rejectProgress("The selected character changed while saving achievement progress.");
+      }
+      if (raw.achievementState !== undefined && raw.achievementState !== null &&
+          (typeof raw.achievementState !== "object" || Array.isArray(raw.achievementState))) return rejectProgress();
+      const state = raw.achievementState || {};
+      const completedSource = progressSource(state, COMPLETED_KEYS);
+      const statisticSource = progressSource(state, EVENT_KEYS);
+      const completed = completedMap(completedSource === undefined ? {} : completedSource, true);
+      const statistics = statisticMap(statisticSource === undefined ? {} : statisticSource, true);
+      for (const [id, time] of incomingCompleted) if (!completed.has(id)) completed.set(id, time);
+      for (const [name, count] of incomingStatistics) statistics.set(name, Math.max(statistics.get(name) ?? 0, count));
+      if (completed.size > MAX_PROGRESS_ENTRIES || statistics.size > MAX_PROGRESS_ENTRIES) return rejectProgress();
+      nextState = {
+        ...state,
+        completedDict: Object.fromEntries([...completed].sort(([a], [b]) => a - b)),
+        eventDict: Object.fromEntries([...statistics].sort(([a], [b]) => a.localeCompare(b))),
+      };
+      const proposal = repo.prepareAtomicRowWrite("characters", String(selected.characterID), {
+        ...raw, achievementState: nextState,
+      });
+      const committed = repo.commitAtomicRowWrites([proposal]);
+      if (!committed?.success) return rejectProgress("Achievement progress could not be saved. Please try again.");
+    } catch (error) {
+      if (isMachoWrappedException(error)) throw error;
+      return rejectProgress("Achievement progress could not be saved. Please try again.");
+    }
+    // Only publish the warm session cache after SQLite and the shared record
+    // cache have committed. Failed saves leave both progress views unchanged.
+    session.achievementState = JSON.parse(JSON.stringify(nextState));
     return null;
   }
 }

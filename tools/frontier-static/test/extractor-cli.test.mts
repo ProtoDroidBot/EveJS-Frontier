@@ -1,12 +1,59 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import {
   REQUIRED_RESOURCES,
+  buildRequest,
   parseArgs,
   selectBuild,
 } from "../extract-frontier-static.mjs";
+
+function sourceFixture(t: { after: (fn: () => void) => void }, omitted: string[] = []) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontier-extraction-source-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const cache = path.join(root, "ResFiles");
+  fs.mkdirSync(path.join(cache, "ab"), { recursive: true });
+  fs.writeFileSync(path.join(cache, "ab/cd"), "fixture");
+  const resourceIndex = path.join(root, "resfileindex.txt");
+  fs.writeFileSync(resourceIndex, Object.values(REQUIRED_RESOURCES)
+    .filter(logicalPath => !omitted.includes(logicalPath))
+    .map(logicalPath => `${logicalPath},ab/cd,unused,7,7`).join("\n"));
+  const mapObjects = path.join(root, "mapObjects.db");
+  fs.writeFileSync(mapObjects, "fixture");
+  return { root, selected: { build: 2702949, resFilesRoot: cache,
+    files: { resourceIndex, mapObjects } as Record<string, string> } };
+}
+
+test("extraction reports historical layout requirements together without writing files", t => {
+  const missing = ["creation_hardpoint_types", "creation_modules", "creation_parts", "creation_templates", "ecosystem", "landscape"]
+    .map(name => `res:/staticdata/${name}.fsdbinary`);
+  const { root, selected } = sourceFixture(t, missing);
+  const before = fs.readdirSync(root, { recursive: true });
+  assert.throws(() => buildRequest(selected, root), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /build 2702949 is recognized/);
+    assert.match(error.message, /Older clients can legitimately omit/);
+    for (const input of ["bin64/bundle.collision", ...missing]) assert.ok(error.message.includes(input));
+    return true;
+  });
+  assert.deepEqual(fs.readdirSync(root, { recursive: true }), before);
+});
+
+test("optional collision discovery preserves strict extraction and cache validation", t => {
+  const { root, selected } = sourceFixture(t);
+  assert.throws(() => buildRequest(selected, root), /requires inputs absent from this layout: bin64\/bundle\.collision/);
+  selected.files.collisionBundle = path.join(root, "bundle.collision");
+  fs.writeFileSync(selected.files.collisionBundle, Buffer.alloc(4, 255));
+  assert.throws(() => buildRequest(selected, root), /Invalid collision FlatBuffer/);
+  const payload = path.join(selected.resFilesRoot, "ab/cd");
+  fs.writeFileSync(payload, "short");
+  assert.throws(() => buildRequest(selected, root), /resource size mismatch/);
+  fs.unlinkSync(payload);
+  assert.throws(() => buildRequest(selected, root), /Indexed Frontier resource is missing/);
+});
 
 test("the Frontier snapshot includes deployable component authority", () => {
   assert.equal(

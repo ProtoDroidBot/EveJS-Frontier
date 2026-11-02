@@ -288,10 +288,24 @@ test("construction-site assemblies retain their deposit-then-construct workflow 
 
 test("construction realization rechecks clearance without consuming deposited materials", t => {
   const f = fixture(t);
+  let shipX = 0;
+  t.mock.method(spaceRuntime, "getEntity", (_session, itemID) => (
+    Number(itemID) === Number(f.ship.itemID)
+      ? { itemID: f.ship.itemID, position: { x: shipX, y: 0, z: 0 } }
+      : null
+  ));
   const first = f.place(ASSEMBLY_TYPE_ID, [100, 0, 0]);
-  const second = f.place(ASSEMBLY_TYPE_ID, [1500, 0, 0]);
   assert.equal(first.success, true, first.errorMsg);
+  // Keep the sites clear using this build's authored footprint, moving the
+  // builder alongside the second site so placement remains within range.
+  const radius = Math.max(250,
+    Number(itemStore.getItemMetadata(ASSEMBLY_TYPE_ID).radius) || 0,
+    Number(itemStore.getItemMetadata(SITE_TYPE_ID).radius) || 0,
+    Number(first.data.item.radius) || 0, Number(first.data.item.spaceRadius) || 0);
+  shipX = 100 + radius * 2 + 1000;
+  const second = f.place(ASSEMBLY_TYPE_ID, [shipX, 0, 0]);
   assert.equal(second.success, true, second.errorMsg);
+  shipX = 0;
   const originalSecondPosition = second.data.item.spaceState.position;
   assert.equal(itemStore.updateInventoryItem(second.data.item.itemID, item => ({
     ...item, spaceState: { ...item.spaceState, position: first.data.item.spaceState.position },

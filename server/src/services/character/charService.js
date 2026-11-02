@@ -11,6 +11,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const BaseService = require("../baseService");
 const log = require("../../utils/logger");
 const config = require("../../config");
+const { resolveClientBuildProfile } = require("../../config/clientBuildProfiles");
+const { resolveLegacyFrontierCharacterCreation } = require("./legacyFrontierCharacterCreation");
 const interactiveWorkloadGate = require("../../utils/interactiveWorkloadGate");
 // Phase 0 / 0.C: character-domain writes via the strict character repository.
 const { createTableRepository, } = require("../../gameStore/tableRepository");
@@ -883,7 +885,11 @@ class CharService extends BaseService {
      *   (name, bloodlineID, genderID, ancestryID, charInfo, portraitInfo, schoolID)
      */
     Handle_CreateCharacterWithDoll(args, session, kwargs, creationOptions = {}) {
-        const createSignature = resolveCreateCharacterSignature(args);
+        // Internal adapters can identify a verified wire signature even when the
+        // client supplies no doll/portrait objects for the heuristic to recognize.
+        const createSignature = creationOptions.argumentSignature === "latest-container"
+            ? "latest-container"
+            : resolveCreateCharacterSignature(args);
         let characterName = args && args.length > 0 ? args[0] : "New Character";
         const raceID = createSignature === "latest-container"
             ? readCreationIntArg(args, 7, 1)
@@ -1100,11 +1106,14 @@ class CharService extends BaseService {
         });
         if (!rookieShipResult.success) {
             log.warn(`[CharService] CreateCharacterWithDoll failed to provision rookie ship for char=${newCharId} typeID=${starterShipTypeID} error=${rookieShipResult.errorMsg}`);
-            if (creationOptions.initializeCreation === true) {
+            if (creationOptions.initializeCreation === true ||
+                creationOptions.requireStarterShip === true) {
                 const rollback = rollbackNewCharacterBootstrap(newCharId);
                 log.warn(`[CharService] Rolled back failed Frontier character bootstrap char=${newCharId} success=${rollback.success}`);
                 throwWrappedUserError("CustomInfo", {
-                    info: "The starter Creation could not be initialized. Please try again.",
+                    info: creationOptions.initializeCreation === true
+                        ? "The starter Creation could not be initialized. Please try again."
+                        : "The starter ship could not be initialized. Please try again.",
                 });
             }
         }
@@ -1253,6 +1262,44 @@ class CharService extends BaseService {
             throwWrappedUserError("CustomInfo", {
                 info: "The Sui Character could not be created on the local network. Please try again.",
             });
+        });
+    }
+    Handle_CreateCharacter2(args, session) {
+        // EmpireSelectionContainer.SaveCurrentCharacter in build 2703993 sends
+        // (name, bloodlineID, raceID, genderID, ancestryID, schoolID) and expects
+        // the plain character ID. It does not send doll or portrait objects.
+        if (resolveClientBuildProfile(config)?.id !== "frontier-2703993" ||
+            Number(config.clientBuild) !== 2703993 ||
+            config.clientCompatibilityProfile !== "frontier") {
+            throwWrappedUserError("CustomInfo", {
+                info: "This character creation method is unavailable for the selected client build.",
+            });
+        }
+        const values = Array.isArray(args) && args.length === 6
+            ? args.slice(1).map(unwrapCreationArg)
+            : [];
+        if (values.length !== 5 ||
+            !values.every((value) => typeof value === "number" && Number.isSafeInteger(value)) ||
+            values[0] <= 0 || values[1] <= 0 || values[4] <= 0 ||
+            values[2] !== 0 || values[3] !== 64) {
+            throwWrappedUserError("CustomInfo", {
+                info: "The Frontier character creation request is invalid.",
+            });
+        }
+        const [bloodlineID, raceID, genderID, ancestryID, schoolID] = values;
+        const origin = resolveLegacyFrontierCharacterCreation({ bloodlineID, raceID, schoolID });
+        const characterName = args[0];
+        if (this.suiCharacterProvisioningEnabled) {
+            const pendingCharacter = findPendingSuiCharacter(session && session.userid, characterName);
+            if (pendingCharacter)
+                return this._resumePendingSuiCharacter(pendingCharacter);
+        }
+        return this.Handle_CreateCharacterWithDoll([characterName, bloodlineID, genderID, ancestryID, null, null, schoolID, raceID], session, null, {
+            ...origin,
+            argumentSignature: "latest-container",
+            requireStarterShip: true,
+            initializeCreation: false,
+            provisionSuiCharacter: this.suiCharacterProvisioningEnabled,
         });
     }
     Handle_CreateCharacterInSpace(args, session) {
