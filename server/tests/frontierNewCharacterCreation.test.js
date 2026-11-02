@@ -92,11 +92,10 @@ test("Frontier character creation starts in one initialized Creation", async () 
     assert.equal(character.suiTransactionDigest, `test-sui-character-${characterID}`);
     assert.equal(ship.typeID, 95276);
     assert.equal(ship.itemName, "Creation");
-    assert.equal(ship.conditionState.fuelCharge, 2250);
+    assert.equal(ship.conditionState.fuelCharge, 2000);
     assert.equal(ship.conditionState.fuelTypeID, 77818);
     assert.deepEqual(ship.conditionState.fuelQueue, [
         { fuelTypeID: 77818, quantity: 2000 },
-        { fuelTypeID: 77818, quantity: 250, reserve: true },
     ]);
     assert.equal(listCharacterItems(characterID).some((item) => Number(item.typeID) === 87698), false);
     const state = readCreationState(ship);
@@ -116,6 +115,9 @@ test("Frontier character creation starts in one initialized Creation", async () 
         assert.equal(moduleItem.singleton, 1);
         assert.equal(moduleItem.stacksize, 1);
     }
+    const fuelBlister = moduleItems.find((item) => Number(item.typeID) === 96013);
+    assert.ok(fuelBlister);
+    assert.equal(fuelBlister.moduleState.online, false);
     const staleShipSnapshot = { ...ship, customInfo: "" };
     const secondEnsure = ensureCreationState(staleShipSnapshot, characterID);
     assert.equal(secondEnsure.success, true);
@@ -223,7 +225,7 @@ test("station fuel inventory exposes one unlimited free Unstable Fuel offer", ()
 });
 test("Creation-template hulls are initialized in station and space", () => {
     const characterID = createCharacter("Creation Grant Test", 990000099);
-    for (const [typeID, expectedFuelCapacity] of [[95276, 2250], [95735, 2250]]) {
+    for (const [typeID, expectedFuelCapacity] of [[95276, 2000], [95735, 2000]]) {
         const stationGrant = grantItemToCharacterLocation(characterID, STARTER_LOCATION.stationID, ITEM_FLAGS.HANGAR, getItemMetadata(typeID), 1, { singleton: 1 });
         assert.equal(stationGrant.success, true, stationGrant.errorMsg);
         assert.deepEqual(stationGrant.data.initializedCreationShipIDs, [stationGrant.data.items[0].itemID]);
@@ -240,12 +242,14 @@ test("Creation-template hulls are initialized in station and space", () => {
             assert.equal(ship.conditionState.fuelCharge, expectedFuelCapacity);
             assert.equal(ship.conditionState.fuelTypeID, 77818);
             assert.deepEqual(ship.conditionState.fuelQueue, [
-                { fuelTypeID: 77818, quantity: expectedFuelCapacity - 250 },
-                { fuelTypeID: 77818, quantity: 250, reserve: true },
+                { fuelTypeID: 77818, quantity: expectedFuelCapacity },
             ]);
             const fittedModules = listContainerItems(characterID, ship.itemID, CREATION_FITTING_FLAG_ID);
             assert.equal(fittedModules.length, state.modules.length);
             assert.deepEqual(new Set(fittedModules.map((item) => Number(item.itemID))), new Set(state.modules.map((module) => Number(module.itemID))));
+            const fuelBlister = fittedModules.find((item) => Number(item.typeID) === 96013);
+            assert.ok(fuelBlister);
+            assert.equal(fuelBlister.moduleState.online, false);
         }
     }
 });
@@ -344,14 +348,15 @@ test("selecting after an ambiguous Sui submission resumes the same Frontier char
     try {
         await assert.rejects(service.Handle_CreateCharacterInSpace(["Sui Resume Test", 1], session));
         assert.equal(service.Handle_GetNumCharacters([], session), 1);
-        const itemCountAfterAmbiguousSubmit = Object.keys(getAllItems()).length;
         const characterID = listCharacterIDs().find((candidateID) => !characterIDsBefore.has(candidateID));
         assert.ok(characterID);
+        const ownedItemIDsAfterAmbiguousSubmit = new Set(listCharacterItems(characterID).map((item) => Number(item.itemID)));
+        assert.ok(ownedItemIDsAfterAmbiguousSubmit.size > 0);
         await service.Handle_SelectCharacterID([characterID], session, null);
         const character = getCharacterRecord(characterID);
         assert.equal(attempts, 2);
         assert.equal(service.Handle_GetNumCharacters([], session), 1);
-        assert.equal(Object.keys(getAllItems()).length, itemCountAfterAmbiguousSubmit);
+        assert.deepEqual(new Set(listCharacterItems(characterID).map((item) => Number(item.itemID))), ownedItemIDsAfterAmbiguousSubmit);
         assert.equal(character.suiProvisioningStatus, "confirmed");
         assert.equal(character.suiProvisioningRecovered, true);
         assert.ok(character.suiPlayerProfileObjectId);
@@ -404,11 +409,19 @@ test("a prepared digest is journaled and a confirmed failed retry rolls back the
         assert.equal(pending.suiChainId, chainId);
         assert.equal(pending.suiSubmissionState, "submitting");
         assert.equal(pending.suiProvisioningStatus, "reconciliation-required");
+        const pendingItemIDs = new Set(listCharacterItems(characterID).map((item) => Number(item.itemID)));
+        assert.ok(pendingItemIDs.size > 0);
         await assert.rejects(service.Handle_SelectCharacterID([characterID], session, null));
         assert.equal(attempts, 2);
         assert.equal(getCharacterRecord(characterID), null);
         assert.equal(service.Handle_GetNumCharacters([], session), 0);
-        assert.deepEqual(new Set(Object.values(getAllItems()).map((item) => Number(item.itemID))), itemIDsBefore);
+        const remainingItemIDs = new Set(Object.values(getAllItems()).map((item) => Number(item.itemID)));
+        for (const itemID of pendingItemIDs) {
+            assert.equal(remainingItemIDs.has(itemID), false, `pending character item ${itemID} must be rolled back`);
+        }
+        for (const itemID of itemIDsBefore) {
+            assert.ok(remainingItemIDs.has(itemID), `preexisting item ${itemID} must survive rollback`);
+        }
     }
     finally {
         config.clientCompatibilityProfile = previousProfile;

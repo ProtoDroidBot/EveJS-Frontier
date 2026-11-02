@@ -8,12 +8,13 @@ import {
   createLegacyEvmTypedData, evmKeccakHex, hashLegacyEvmTypedData,
   type LegacyEvmDomain,
 } from "../src/services/frontier/legacyEvmAuthorization";
+import { deriveLegacyEvmSmartObjectID } from "../src/services/frontier/legacyEvmClientConfig";
 
 const OWNER = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf";
 const OTHER = "0x2b5ad5c4795c026514f8317c7a215e218dccd6cf";
 const WORLD = "0x" + "11".repeat(20);
 const SYSTEM = "0x" + "55".repeat(32);
-const OBJECT = ((1n << 255n) + 42n).toString();
+const OBJECT = deriveLegacyEvmSmartObjectID("dev", 1001, 2973163);
 const DOMAIN: LegacyEvmDomain = { name: "ERC2771Forwarder", version: "1", chainId: 31337,
   verifyingContract: "0x" + "22".repeat(20) };
 const KEY = Buffer.from("01".padStart(64, "0"), "hex");
@@ -76,6 +77,7 @@ function fixture(overrides: Record<string, any> = {}) {
   const options = {
     config, clientBuild: 2973163, repo, now: () => NOW,
     character: { getCharacterRecord: (id: number) => [42, 43].includes(id) ? { accountId: 7 } : null },
+    bootstrap: { getWalletBinding: () => null, characterExists: async () => true },
     isSuiAuthoritative: () => true,
     runWithState: async (itemID: number, operation: () => any) => { stateReads.push(itemID); return operation(); },
     deployment: { requestAuthorizedAssemblyStateTransition(candidate: any, itemID: number, targetStatus: number) {
@@ -133,23 +135,29 @@ test("only the server-bound wallet and authenticated character account may relay
 });
 
 test("missing wallet binding or Sui authority never falls back to a local accepted relay", async () => {
-  const noWallet = fixture({ config: { ...fixture().config, accounts: {} } });
+  const noWallet = fixture({ config: { ...fixture().config, accounts: { "8": { evmAddress: OTHER } } } });
   await assert.rejects(noWallet.bridge.relay(signedRequest(), noWallet.session), /LEGACY_EVM_WALLET_BINDING_UNAVAILABLE/);
   const offline = fixture({ isSuiAuthoritative: () => false });
   await assert.rejects(offline.bridge.relay(signedRequest(), offline.session), /ASSEMBLY_STATE_UNAVAILABLE/);
   assert.equal(offline.calls.length, 0);
   assert.equal(Object.keys(offline.repo.rows).length, 0);
+  const noCharacter = fixture({ bootstrap: { getWalletBinding: () => null, characterExists: async () => false } });
+  await assert.rejects(noCharacter.bridge.relay(signedRequest(), noCharacter.session), /LEGACY_EVM_SUI_CHARACTER_UNAVAILABLE/);
+  assert.equal(noCharacter.calls.length, 0);
+  assert.equal(Object.keys(noCharacter.repo.rows).length, 0);
 });
 
 test("the adapter accepts only mapped lifecycle objects, selectors, system IDs and delegators", async () => {
   const f = fixture();
+  assert.throws(() => fixture({ config: { ...f.config, objects: { [OBJECT]: 1002 } } }),
+    /INVALID_LEGACY_EVM_OBJECT_MAPPING/);
   const invalid = [
     [lifecycleCall({ objectID: BigInt(OBJECT) + 1n }), /LEGACY_EVM_OBJECT_NOT_MAPPED/],
     [lifecycleCall({ function: "destroy(uint256)" }), /UNSUPPORTED_LEGACY_EVM_CALL/],
     [lifecycleCall({ systemID: "0x" + "66".repeat(32) }), /UNSUPPORTED_LEGACY_EVM_CALL/],
     [lifecycleCall({ delegator: OTHER }), /LEGACY_EVM_CALL_MISMATCH/],
-    [lifecycleCall() + "00", /UNSUPPORTED_LEGACY_EVM_CALL/],
-    ["0x12345678", /UNSUPPORTED_LEGACY_EVM_CALL/],
+    [lifecycleCall() + "00", /LEGACY_EVM_CALL_MISMATCH/],
+    ["0x12345678", /LEGACY_EVM_CALL_MISMATCH/],
   ] as const;
   for (const [data, error] of invalid) await assert.rejects(f.bridge.relay(signedRequest({ data }), f.session), error);
   assert.deepEqual(decodeLegacyEvmLifecycleCall(lifecycleCall(), OWNER, f.config.systems),
@@ -245,7 +253,7 @@ test("client credentials are selected from the authenticated account", () => {
   assert.deepEqual(f.bridge.getClientConfiguration(f.session), { web3Config: f.config.web3Config,
     tenant: "dev", worldApiBaseUrl: f.config.worldApiBaseUrl, walletPassphrase: "fixture-passphrase" });
   assert.throws(() => f.bridge.getClientConfiguration({ userid: 8, characterID: 42 }), /CHARACTER_IDENTITY_MISMATCH/);
-  assert.throws(() => fixture({ clientBuild: 3640684 }), /UNSUPPORTED_LEGACY_EVM_BUILD/);
-  assert.throws(() => fixture({ clientBuild: 2455427 }), /UNSUPPORTED_LEGACY_EVM_BUILD/);
-  assert.throws(() => fixture({ clientBuild: 3502403 }), /UNSUPPORTED_LEGACY_EVM_BUILD/);
+  for (const clientBuild of [3640684, 2455426, 3502403]) {
+    assert.throws(() => fixture({ clientBuild }), /Unsupported EVM client build/);
+  }
 });

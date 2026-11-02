@@ -31,6 +31,19 @@ function scalarAttributes(info) {
   }
   return values;
 }
+function mockNativeAttributeCatalog(t) {
+  const reference = require("../src/services/_shared/referenceData");
+  const readStaticTable = reference.readStaticTable;
+  // These wire-shape units supply their own attributes. Native metadata is
+  // checked separately below against the real build 2703993 baseline.
+  const schema = {
+    source: { buildNumber: 2703993, authority: "eve-frontier-client-static-2703993", profile: "frontier" },
+    attributeTypesByID: Object.fromEntries([18, 55, 5607, 5633, 5635].map(attributeID => [attributeID, { attributeID }])),
+  };
+  t.mock.method(reference, "readStaticTable", (table, ...args) => (
+    table === reference.TABLE.TYPE_DOGMA ? schema : readStaticTable(table, ...args)
+  ));
+}
 function nativeBaseline(t) {
   if (Number(database.read("characterCreationRaces", "/source/buildNumber").data) !== 2703993) {
     t.skip("requires an isolated build 2703993 baseline");
@@ -90,6 +103,7 @@ test("Dogma compatibility opts in only for exact numeric 2703993 Frontier", () =
 });
 
 test("2703993 common GetInfo returns scalar wire values and keeps independent clocks", t => {
+  mockNativeAttributeCatalog(t);
   const service = new DogmaService();
   t.mock.method(service, "_sessionFileTime", () => NOW);
   t.mock.method(service, "_nowFileTime", () => NOW + 1n);
@@ -104,7 +118,8 @@ test("2703993 common GetInfo returns scalar wire values and keeps independent cl
   assert.equal(fields.get("wallclockTime"), NOW + 1n);
 });
 
-test("2703993 inventory and charge primes use scalar attributes through shared lazy build selection", () => {
+test("2703993 inventory and charge primes use scalar attributes through shared lazy build selection", t => {
+  mockNativeAttributeCatalog(t);
   const item = { itemID: 9988400000232, typeID: 77818, ownerID: 140000001,
     locationID: 9988400000231, flagID: 5, groupID: 1920, categoryID: 8,
     quantity: 7, stacksize: 7, singleton: 0 };

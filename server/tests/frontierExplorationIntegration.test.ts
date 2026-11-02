@@ -267,9 +267,11 @@ function isolatedPublicGateway(runtime, sessions, eventRouter = null) {
       };
       if (resolved === path.join(root, "services/chat/sessionRegistry.js")) return registry;
       if (resolved === path.join(root, "config/index.js")) return { clientBuild: 3640684 };
+      if (["config/clientBuildProfiles.js", "config/clientBuildCatalog.json"].some(suffix => resolved === path.join(root, suffix))) return nativeRequire(request);
       if (resolved.endsWith("/frontierContractProfile.js")) return load(resolved);
       if (resolved.endsWith("/frontierContracts3640684.json")) return nativeRequire(request);
       if (resolved.endsWith("/progressionGatewayNotices.js")) return { installProgressionNoticePublisher() {} };
+      if (resolved.endsWith("/legacyEvmGatewayService.js")) return { LEGACY_EVM_GATEWAY_REQUESTS: [] };
       if (resolved.endsWith("/frontierEconomyGatewayService.js") && eventRouter) return { routeGatewayEvent: eventRouter };
       if (resolved.includes("/utils/logger/")) return new Proxy({}, { get: () => () => {} });
       if (["config/index.js", "services/inventory/itemStore.js", "services/ship/shipCosmeticsState.js", "services/newEdenStore/storeState.js", "services/structure/structurePaintworkState.js", "services/structure/structureState.js", "space/runtime.js", "_secondary/chat/chatRuntime.js"].some(suffix => resolved === path.join(root, suffix))) return {};

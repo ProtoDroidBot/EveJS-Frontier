@@ -330,7 +330,7 @@ test("default runtime persists local assembly grants through the owned game-stor
     [ASSEMBLY]: {
       itemID: ASSEMBLY,
       ownerID: 140000001,
-      typeID: 87119,
+      typeID: 87161,
       locationID: 30000004,
       singleton: 1,
       stacksize: 1,
@@ -339,7 +339,7 @@ test("default runtime persists local assembly grants through the owned game-stor
         evejsFrontierConstruction: {
           activationCompleteAtMs: 0,
           assemblyStatus: 2,
-          assemblyTypeID: 87119,
+          assemblyTypeID: 87161,
           completedAtMs: 1,
           ownerID: 140000001,
           solarSystemID: 30000004,
@@ -353,6 +353,7 @@ test("default runtime persists local assembly grants through the owned game-stor
     grantID: IDS[7], idempotencyKey: "real-store-grant", expiresInMs: 10_000,
   });
   assert.equal(grant.success, true, grant.errorMsg);
+  assert.equal(grant.data.authority, "local");
   const persisted = database.read("assemblyAccessPolicies", "/");
   assert.equal(persisted.success, true);
   assert.equal(persisted.data.grants[IDS[7]].recipientPrincipal, ALICE);

@@ -66,6 +66,7 @@ test("a signed legacy relay records a real Sui lifecycle intent once through the
   const { secp256k1 } = require("@noble/curves/secp256k1.js");
   const { createLegacyEvmTypedData, evmKeccakHex, hashLegacyEvmTypedData } = require("../src/services/frontier/legacyEvmAuthorization");
   const { createLegacyEvmSuiBridge } = require("../src/services/frontier/legacyEvmSuiBridge");
+  const { deriveLegacyEvmSmartObjectID } = require("../src/services/frontier/legacyEvmClientConfig");
   const suiState = require("../src/services/frontier/suiAssemblyState");
   const characterState = require("../src/services/character/characterState");
   const energy = require("../src/services/frontier/networkNodeEnergyRuntime");
@@ -78,7 +79,8 @@ test("a signed legacy relay records a real Sui lifecycle intent once through the
     verifyingContract: `0x${"22".repeat(20)}` };
   const word = (value: string | number) => BigInt(value).toString(16).padStart(64, "0");
   const selector = (signature: string) => evmKeccakHex(Buffer.from(signature)).slice(2, 10);
-  const innerCall = selector("bringOffline(uint256)") + word(42);
+  const objectID = deriveLegacyEvmSmartObjectID("dev", 1001, 2973163);
+  const innerCall = selector("bringOffline(uint256)") + word(objectID);
   const data = "0x" + selector("callFrom(address,bytes32,bytes)") + ownerAddress.slice(2).padStart(64, "0") +
     system.slice(2) + word(96) + word(36) + innerCall.padEnd(128, "0");
   const typed = createLegacyEvmTypedData(domain, { from: ownerAddress, to: world, value: 0, gas: 1000000,
@@ -116,9 +118,10 @@ test("a signed legacy relay records a real Sui lifecycle intent once through the
     return operation();
   }));
   const bridge = createLegacyEvmSuiBridge({ clientBuild: 2973163, now: () => now,
+    bootstrap: { getWalletBinding: () => null, characterExists: async () => true },
     config: {
       format: "evejs-legacy-evm-sui-v1", clientBuild: 2973163, tenant: "dev", domain, worldAddress: world,
-      accounts: { "7": { evmAddress: ownerAddress } }, objects: { "42": 1001 },
+      accounts: { "7": { evmAddress: ownerAddress } }, objects: { [objectID]: 1001 },
       systems: { bringOffline: { systemId: system } },
     },
     character: { getCharacterRecord: (id: number) => id === SESSION.characterID ? { accountId: 7 } : null },

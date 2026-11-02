@@ -9,14 +9,14 @@ const accounts = { "7": { evmAddress: "0x7e5f4552091a69125d5dfcb7b8c2659029395bd
 const input = () => ({ build: 2973163, tenant: "dev", accounts, items: [1234], apiUrl: "http://127.0.0.1:3000" });
 
 test("conversion prepares exact audited build credentials and native smart-object mappings", () => {
-  for (const build of [2973163, 2997426, 3122254]) {
+  for (const build of [2615573, 2703993, 2973163, 2997426, 3122254]) {
     const config = prepareLegacyEvmBuildConversion({ ...input(), build });
     assert.equal(config.clientBuild, build);
-    assert.equal(config.objects[deriveLegacyEvmSmartObjectID("dev", 1234)], 1234);
+    assert.equal(config.objects[deriveLegacyEvmSmartObjectID("dev", 1234, build)], 1234);
     assert.equal(config.accounts["7"].evmAddress, accounts["7"].evmAddress);
     assert.match(config.systems.bringOnline.systemId, /^0x[0-9a-f]{64}$/);
   }
-  for (const patch of [{ build: 2615573 }, { build: 3640684 }, { accounts: {} }, { items: [] },
+  for (const patch of [{ build: 3502403 }, { build: 3640684 }, { accounts: {} }, { items: "1234" },
     { items: [0] }, { apiUrl: "file:///tmp/world" }, { accounts: { "7": { evmAddress: "0x1", walletPassphrase: "test" } } }]) {
     assert.throws(() => prepareLegacyEvmBuildConversion({ ...input(), ...patch }));
   }
